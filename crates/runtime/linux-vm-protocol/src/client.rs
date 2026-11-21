@@ -86,8 +86,16 @@ impl<S: Duplex> LaunchSignals<S> {
 
 /// What serves one connection a launched program made to the guest's agent
 /// socket: the host's end of it, on a thread of its own, for as long as it
-/// lasts. The connection ends when the program closes it or the launch ends.
-pub type AgentServer = Arc<dyn Fn(UnixStream) + Send + Sync>;
+/// lasts, with the program that made it. The connection ends when the program
+/// closes it or the launch ends.
+pub type AgentServer = Arc<dyn Fn(AgentCaller, UnixStream) + Send + Sync>;
+
+/// Who made a connection to the guest's agent socket, as the guest says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentCaller {
+    /// The executable the connecting process runs.
+    pub program: String,
+}
 
 /// Start `launch` and relay its stdio until it exits. `on_signals` receives a
 /// handle before the first byte is relayed, so a caller can forward its own
@@ -168,8 +176,11 @@ fn relay_frames<S: Duplex>(
                     pump_stdin(input, Arc::clone(writer));
                 }
             }
-            GuestMessage::AgentOpened { connection } => match agents {
-                Some(agents) => carry(connection, agents, writer, carried)?,
+            GuestMessage::AgentOpened {
+                connection,
+                program,
+            } => match agents {
+                Some(agents) => carry(connection, AgentCaller { program }, agents, writer, carried)?,
                 None => {
                     let _ = send(
                         &mut *writer.lock().map_err(|_| ProtocolError::Closed)?,
@@ -214,6 +225,7 @@ fn relay_frames<S: Duplex>(
 /// host's, and carry what its server writes back to the guest.
 fn carry<S: Duplex>(
     connection: u64,
+    caller: AgentCaller,
     agents: &AgentServer,
     writer: &Arc<Mutex<S>>,
     carried: &mut Carried,
@@ -242,7 +254,7 @@ fn carry<S: Duplex>(
         }
     });
     let agents = Arc::clone(agents);
-    std::thread::spawn(move || agents(theirs));
+    std::thread::spawn(move || agents(caller, theirs));
     Ok(())
 }
 
@@ -373,7 +385,8 @@ mod tests {
                 assert_eq!(launch.argv, ["claude"]);
                 send(&mut guest, &GuestMessage::Started { pid: 42 }).unwrap();
                 for connection in [1, 2] {
-                    send(&mut guest, &GuestMessage::AgentOpened { connection }).unwrap();
+                    let program = "/usr/bin/tilo-runtime".to_owned();
+                    send(&mut guest, &GuestMessage::AgentOpened { connection, program }).unwrap();
                 }
                 send(
                     &mut guest,
@@ -418,7 +431,8 @@ mod tests {
                 answered
             });
             let (ended, endings) = std::sync::mpsc::channel();
-            let server: AgentServer = Arc::new(move |mut theirs: UnixStream| {
+            let server: AgentServer = Arc::new(move |caller, mut theirs: UnixStream| {
+                assert_eq!(caller.program, "/usr/bin/tilo-runtime");
                 let mut byte = [0_u8; 1];
                 while theirs.read(&mut byte).is_ok_and(|read| read == 1) {
                     if byte[0] == b'\n' {

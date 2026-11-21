@@ -550,7 +550,7 @@ fn pump<S: Duplex, R: Read + Send + 'static>(
 #[cfg(target_os = "linux")]
 type Served = (
     crate::agent_socket::Serving,
-    mpsc::Receiver<std::os::unix::net::UnixStream>,
+    mpsc::Receiver<crate::agent_socket::Connected>,
 );
 #[cfg(not(target_os = "linux"))]
 type Served = std::convert::Infallible;
@@ -594,18 +594,22 @@ impl Carried {
 /// numbered, until the launch is no longer served.
 #[cfg(target_os = "linux")]
 fn carry<S: Duplex>(
-    connections: mpsc::Receiver<std::os::unix::net::UnixStream>,
+    connections: mpsc::Receiver<crate::agent_socket::Connected>,
     writer: &Writer<S>,
     carried: &Carried,
 ) {
     let (writer, carried) = (Arc::clone(writer), carried.clone());
     std::thread::spawn(move || {
-        for (connection, stream) in (1_u64..).zip(connections) {
+        for (connection, connected) in (1_u64..).zip(connections) {
+            let crate::agent_socket::Connected { stream, program } = connected;
             let Ok(reading) = stream.try_clone() else {
                 continue;
             };
             carried.0.lock_recover().insert(connection, stream);
-            let opened = GuestMessage::AgentOpened { connection };
+            let opened = GuestMessage::AgentOpened {
+                connection,
+                program,
+            };
             if send(&mut *writer.lock_recover(), &opened).is_err() {
                 carried.close(connection);
                 return;

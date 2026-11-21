@@ -57,7 +57,11 @@ fn me(home: &Path) -> GuestUser {
 /// the connections it was handed.
 fn server(handed: &Arc<AtomicUsize>) -> AgentServer {
     let handed = Arc::clone(handed);
-    Arc::new(move |mut theirs: UnixStream| {
+    Arc::new(move |caller, mut theirs: UnixStream| {
+        assert!(
+            caller.program.contains("python"),
+            "the guest names the program that connected: {caller:?}"
+        );
         handed.fetch_add(1, Ordering::SeqCst);
         let mut line = Vec::new();
         let mut byte = [0_u8; 1];
@@ -213,7 +217,7 @@ if os.fork() == 0:
         let (ending, ended) = mpsc::channel();
         let agents: AgentServer = {
             let ending = Mutex::new(ending);
-            Arc::new(move |mut theirs: UnixStream| {
+            Arc::new(move |_, mut theirs: UnixStream| {
                 let mut byte = [0_u8; 1];
                 while theirs.read(&mut byte).is_ok_and(|read| read == 1) {
                     if byte[0] == b'\n' {

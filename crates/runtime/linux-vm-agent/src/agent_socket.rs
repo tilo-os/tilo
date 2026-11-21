@@ -45,7 +45,14 @@ struct State {
     listening: bool,
     /// Each launch that serves agents, by its program's process, and where its
     /// connections go.
-    launches: BTreeMap<u32, Sender<UnixStream>>,
+    launches: BTreeMap<u32, Sender<Connected>>,
+}
+
+/// A connection a launch's process made, and the executable that process
+/// runs.
+pub struct Connected {
+    pub stream: UnixStream,
+    pub program: String,
 }
 
 /// The socket held for a launch that is starting.
@@ -59,7 +66,7 @@ impl Opening<'_> {
     /// is kept: the connections it and its descendants make arrive, in the
     /// order they made them, on the receiver, which ends with it.
     #[must_use]
-    pub fn serve(mut self, pid: u32) -> (Serving, Receiver<UnixStream>) {
+    pub fn serve(mut self, pid: u32) -> (Serving, Receiver<Connected>) {
         let (handing, connections) = mpsc::channel();
         self.state.launches.insert(pid, handing);
         let socket = Arc::clone(self.socket);
@@ -129,24 +136,31 @@ impl AgentSocket {
                 continue;
             };
             // A connection of no launch's is closed here, unread.
-            if let Some(launch) = self.launch_of(&stream) {
-                let _ = launch.send(stream);
+            if let Some((launch, program)) = self.launch_of(&stream) {
+                let _ = launch.send(Connected { stream, program });
             }
         }
     }
 
-    /// The launch the process at the other end of `stream` is of: the
-    /// nearest of its lineage that serves agents, when it is the tenant's.
-    fn launch_of(&self, stream: &UnixStream) -> Option<Sender<UnixStream>> {
+    /// The launch the process at the other end of `stream` is of (the
+    /// nearest of its lineage that serves agents, when it is the tenant's),
+    /// and the executable it runs.
+    fn launch_of(&self, stream: &UnixStream) -> Option<(Sender<Connected>, String)> {
         let (pid, uid) = peer(stream)?;
         if uid != self.uid {
             return None;
         }
         let lineage = self.processes.lineage(pid);
-        let state = self.state.lock_recover();
-        lineage
-            .iter()
-            .find_map(|process| state.launches.get(process).cloned())
+        let launch = {
+            let state = self.state.lock_recover();
+            lineage
+                .iter()
+                .find_map(|process| state.launches.get(process).cloned())?
+        };
+        let program = std::fs::read_link(format!("/proc/{pid}/exe"))
+            .map(|exe| exe.display().to_string())
+            .unwrap_or_default();
+        Some((launch, program))
     }
 }
 

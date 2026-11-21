@@ -11,7 +11,7 @@
 //! host  → Stdin(..) | CloseStdin | Signal guest → Stdout(..) | Stderr(..)
 //!         | Resize                        guest → Exited(ExitStatus), close
 //! host  → LaunchServingAgents(Launch)     guest → as for Launch, and:
-//!                                         guest → AgentOpened { connection }
+//!                                         guest → AgentOpened { connection, program }
 //! host  ⇄ AgentBytes { connection, .. }   guest ⇄ AgentBytes { connection, .. }
 //! host  → AgentClose { connection }       guest → AgentClosed { connection }
 //! ```
@@ -176,6 +176,9 @@ pub enum GuestMessage {
     /// socket; its bytes and its end carry `connection`.
     AgentOpened {
         connection: u64,
+        /// The program the connecting process runs, as the guest's kernel
+        /// names its executable: what a person's "Always allow" is kept by.
+        program: String,
     },
     /// What that process wrote on the connection.
     AgentBytes {
