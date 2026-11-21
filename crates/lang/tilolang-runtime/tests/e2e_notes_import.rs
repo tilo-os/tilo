@@ -158,6 +158,13 @@ mod cases {
             }
         }
 
+        fn text_of(&self, note: &ResourceRef, field: &str) -> String {
+            match self.rt.read(note, field).unwrap() {
+                Value::Text(text) => text,
+                other => panic!("{field} reads {other:?}"),
+            }
+        }
+
         fn body_of(&self, note: &ResourceRef) -> RichValue {
             match self.rt.read(note, "body").unwrap() {
                 Value::Rich(body) => body,
@@ -220,7 +227,6 @@ mod cases {
 
     /// Every node of `kind` in the tree, in the order they stand.
     fn of_kind<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-        /// Every node of `kind` under `node`, in the order they stand.
         fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
             if node.kind == kind {
                 out.push(node);
@@ -421,5 +427,112 @@ mod cases {
         n.import(&archive);
         n.import(&archive);
         assert_eq!(n.notes().len(), 1, "the page already made its note");
+    }
+
+    /// An import from another service says where each page came from in its own file beside the
+    /// pages: a page keeps the title that service gave it, who wrote it, its address there, the
+    /// page it stood under and its dates. Importing the page again by its address there — however
+    /// its words changed — opens the note it made rather than making a second one.
+    #[test]
+    fn a_migrated_page_keeps_where_it_came_from_and_its_note() {
+        let device = Device::default();
+        let pixels = png();
+        let record = |path: &str, title: &str, page: &str, above: &str| {
+            format!(
+                "{path}\t{title}\tAda\tOutline\t{page}\t{above}\t2025-08-01T10:00:00Z\t\
+                 2025-09-01T10:00:00Z\n"
+            )
+        };
+        let said = format!(
+            "tilo-import 1\n{}{}",
+            record(
+                "Q3 plan.md",
+                "Q3 plan",
+                "https://outline.example/doc/top",
+                ""
+            ),
+            record(
+                "Q3 plan/Ideas.md",
+                "Ideas to ship",
+                "https://outline.example/doc/ideas",
+                "https://outline.example/doc/top"
+            ),
+        );
+        let archive = device.archive(
+            "Outline pages.zip",
+            &[
+                ("tilo-import.tsv", said.as_bytes()),
+                (
+                    "Q3 plan.md",
+                    "# Q3 plan\n\nShip the offline editor.\n".as_bytes(),
+                ),
+                (
+                    "Q3 plan/Ideas.md",
+                    "Three ideas, and no heading of its own.\n\n\
+                     ![a fox](Ideas/images/fox.png)\n"
+                        .as_bytes(),
+                ),
+                ("Q3 plan/Ideas/images/fox.png", pixels.as_slice()),
+            ],
+        );
+        // The page's words changed where it came from: it is the same page there, so the second
+        // archive names the same page address, and its file's bytes are not the first one's.
+        let changed = device.archive(
+            "Outline pages.zip",
+            &[
+                ("tilo-import.tsv", said.as_bytes()),
+                (
+                    "Q3 plan/Ideas.md",
+                    "Rewritten at the source since.\n".as_bytes(),
+                ),
+            ],
+        );
+        let n = Notes::new(device);
+        n.import(&archive);
+
+        assert_eq!(n.notes().len(), 2, "a note a page");
+        let plan = n.note_titled("Q3 plan");
+        let ideas = n.note_titled("Ideas to ship");
+        assert_eq!(
+            n.parent_of(&ideas),
+            Some(ResourceRef::clone(&plan)),
+            "the page stands under the page it stood under there, by that page's address"
+        );
+        assert_eq!(n.text_of(&ideas, "by"), "Ada");
+        assert_eq!(n.text_of(&ideas, "service"), "Outline");
+        assert_eq!(
+            n.text_of(&ideas, "page"),
+            "https://outline.example/doc/ideas"
+        );
+        assert_eq!(n.text_of(&ideas, "created"), "2025-08-01T10:00:00Z");
+        assert_eq!(n.text_of(&ideas, "updated"), "2025-09-01T10:00:00Z");
+        assert_eq!(
+            n.title_of(&ideas),
+            "Ideas to ship",
+            "the service's title, not its file's name"
+        );
+        let body = n.body_of(&ideas).written_text();
+        assert!(
+            body.contains("Three ideas, and no heading of its own."),
+            "{body}"
+        );
+        let images = n.images_of(&ideas);
+        assert_eq!(images.len(), 1, "the picture the page shows: {images:?}");
+        assert_eq!(images[0].1, Value::text("fox.png"));
+
+        // The page's words changed where it came from: it is the same page there, so it is the
+        // same note here, and the note is the person's now.
+        n.import(&changed);
+        assert_eq!(n.notes().len(), 2, "the page already made its note");
+        assert_eq!(
+            n.notes().first().map(|note| n.title_of(note)),
+            Some("Q3 plan".to_owned())
+        );
+        assert!(
+            n.body_of(&n.note_titled("Ideas to ship"))
+                .written_text()
+                .contains("Three ideas"),
+            "the note is the person's now, as they left it"
+        );
     }
 }

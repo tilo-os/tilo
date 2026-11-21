@@ -1,9 +1,4 @@
-app so.tilo.lang.notes "Notes" (
-    icon: .file_text,
-    category: .office,
-    tagline: "Notes you write alone or together",
-    keywords: ["note", "memo", "memos", "notebook", "journal", "markdown", "notepad", "textedit", "apple notes", "google keep", "onenote", "obsidian"],
-)
+app so.tilo.lang.notes "Notes" (icon: .file_text, category: .office)
 
 use so.tilo.lang.discussion as discussion
 
@@ -396,38 +391,50 @@ action import_page(
 }
 
 /// Imports a zip of pages as notes under the notebook, a page under the page that held it, in one
-/// change: undo takes the whole import back. That is this app's own notebook written out, and a
-/// Notion export: a page per `.md` file, its pictures beside it, and a database beside it as a
-/// `.csv` that becomes a table at its page. Each page's title is its first heading, or its file's
-/// name; the pictures a page shows are the files it stands beside, a reference read from the
-/// page's own folder, and a link to a page of the archive is the reference to the note that page
-/// made. A page that is imported already keeps the note it made.
+/// change: undo takes the whole import back. That is this app's own notebook written out, a
+/// Notion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures
+/// beside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's
+/// title is its first heading, or its file's name; the pictures a page shows are the files it
+/// stands beside, a reference read from the page's own folder, and a link to a page of the archive
+/// is the reference to the note that page made. A migration says where each page came from in its
+/// own file beside the pages, and a page that is imported already keeps the note it made.
 action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "imported a notebook") {
     match file.files() {
         .ok(files) => {
             let names = files.map(f -> f.name)
             let pictures = files.filter(f -> f.media.starts_with("image/"))
+            // Where each page of a migration came from, by the file it is written at: a page of
+            // an export nobody migrated is at no key of it.
+            let came_from = provenance(files)
             // A page under the page it stood under comes after it: its parent is a note then.
             let pages = files
                 .filter(f -> f.media == "text/markdown")
                 .filter(p -> not p.name.starts_with("__MACOSX/"))
                 .sort_by(p -> p.name.split("/").len())
-            let fresh = pages.filter(p -> nb.notes.find(n -> n.source == p.url) == .none)
+            let fresh = pages.filter(p -> note_of(nb, p, came_from) == .none)
             // Every page makes its note before any page is read: a link reaches the note a page
             // written after it made, whichever of the two stands first in the archive.
             let at: Map<Text> = Map<Text>()
             for page in pages {
-                if let existing = nb.notes.find(n -> n.source == page.url) {
+                if let existing = note_of(nb, page, came_from) {
                     at.put(page.name, existing.id)
                 } else {
-                    let parent = nb.notes.find(n -> n.origin == "{folder_of(page.name)}.md")
+                    let record = came_from.get(page.name) ?? ""
+                    let named = record_field(record, 1)
+                    let title = if named != "" { named } else { page_name(page.name) }
+                    let parent = under_note(nb, page, record)
                     let made = nb.notes.insert(
                         Note(
-                            title: page_name(page.name),
+                            title: title,
                             body: RichText(""),
                             parent: parent,
                             source: page.url,
                             origin: page.name,
+                            by: record_field(record, 2),
+                            service: record_field(record, 3),
+                            page: record_field(record, 4),
+                            created: record_field(record, 6),
+                            updated: record_field(record, 7),
                         ),
                     )
                     at.put(page.name, made.id)
@@ -442,10 +449,18 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
             // shows: the files it stands beside, by the name each stood under, which an export of
             // it writes beside it again.
             for page in fresh {
-                if let made = nb.notes.find(n -> n.source == page.url) {
+                let record = came_from.get(page.name) ?? ""
+                if let made = note_of(nb, page, came_from) {
                     match page.text() {
                         .ok(text) => {
-                            let title = first_heading(text) ?? page_name(page.name)
+                            // A service's page keeps the title that service gave it; one of an
+                            // export is titled as its first heading says.
+                            let named = record_field(record, 1)
+                            let title = if named != "" {
+                                named
+                            } else {
+                                first_heading(text) ?? page_name(page.name)
+                            }
                             let shown = pictures_shown(
                                 without_heading(text, title),
                                 page.name,
@@ -498,6 +513,100 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
             }
         }
     }
+}
+
+/// The file an import from another service carries beside its pages, saying where each came
+/// from: one record a line, the first naming the format that line is written in.
+fn provenance_file() -> Text {
+    "tilo-import.tsv"
+}
+
+/// Where each page of `files` came from, by the path of the file it is written at: the record the
+/// migration's own file carries for it — the page's title there, who wrote it, the service, its
+/// address there, the page it stood under, and when it was written and changed there — each
+/// field escaped, so a title holding a tab is still one field. Nothing for a file no migration
+/// wrote, and nothing for a file that names another format than this one.
+fn provenance(files: List<File>) -> Map<Text> {
+    let records: Map<Text> = Map<Text>()
+    for f in files {
+        if f.name == provenance_file() {
+            match f.text() {
+                .ok(text) => {
+                    let lines = text.split("\n")
+                    if let first = lines.first() {
+                        if first.trim() == "tilo-import 1" {
+                            for line in lines {
+                                let fields = line.split("\t")
+                                if fields.len() >= 8 {
+                                    records.put(unescaped(fields.first() ?? ""), line)
+                                }
+                            }
+                        }
+                    }
+                }
+                .err(_) => {}
+            }
+        }
+    }
+    records
+}
+
+/// The `at`th field of a provenance record `line`, as the migration wrote it; nothing when the
+/// record states no such field.
+fn record_field(line: Text, at: Int) -> Text {
+    let fields = line.split("\t")
+    if line == "" or at >= fields.len() {
+        return ""
+    }
+    unescaped(fields.take(at + 1).last() ?? "")
+}
+
+/// The note a page of an import already made: the one its file came in as, or — for a page a
+/// migration brings — the one its address where it came from made, so a page whose words changed
+/// there since is still the same note.
+fn note_of(nb: Notebook, page: File, came_from: Map<Text>) -> Option<Note> {
+    let address = record_field(came_from.get(page.name) ?? "", 4)
+    nb.notes.find(n -> n.source == page.url or (address != "" and n.page == address))
+}
+
+/// The note a page of an import stands under: the note of the page its record says it stood
+/// under there, else the note of the page whose folder its own path names — `Q3 plan/Ideas.md`
+/// under `Q3 plan.md`.
+fn under_note(nb: Notebook, page: File, record: Text) -> Option<Note> {
+    let above = record_field(record, 5)
+    if above != "" {
+        let known = nb.notes.find(n -> n.page == above)
+        if known != .none {
+            return known
+        }
+    }
+    nb.notes.find(n -> n.origin == "{folder_of(page.name)}.md")
+}
+
+/// `field` with the escapes a migration writes: a backslash, a tab, a line break and a carriage
+/// return, each as the two characters that stand for it.
+fn unescaped(field: Text) -> Text {
+    let out = ""
+    let escaped = false
+    for ch in field.split("") {
+        if escaped {
+            if ch == "t" {
+                out = "{out}\t"
+            } else if ch == "n" {
+                out = "{out}\n"
+            } else if ch == "r" {
+                out = "{out}\r"
+            } else {
+                out = "{out}{ch}"
+            }
+            escaped = false
+        } else if ch == "\\" {
+            escaped = true
+        } else {
+            out = "{out}{ch}"
+        }
+    }
+    out
 }
 
 /// The title a page of an export is named by before what it says is read: its own file's name —
