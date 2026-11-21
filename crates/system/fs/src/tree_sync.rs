@@ -969,18 +969,7 @@ impl Sync {
             // The host did not take a write: its changes are still this namespace's, and go out
             // again, with all made since, once the record's wait is over. What the host holds
             // is what was last merged from it.
-            Wake::Refused { chunk, reason } => {
-                let held = self.documents.entry(chunk).or_default();
-                held.sent = held
-                    .merged
-                    .iter()
-                    .flatten()
-                    .map(|hash| automerge::ChangeHash(*hash))
-                    .collect();
-                if held.refused.refused(Instant::now()) {
-                    tracing::warn!(%reason, workspace = %self.workspace, chunk, "the workspace refused a change to its files; it goes again after a wait");
-                }
-            }
+            Wake::Refused { chunk, reason } => self.refused(chunk, &reason),
             Wake::Landed(chunk) => {
                 self.unread.insert(chunk);
                 self.documents.entry(chunk).or_default().refused.landed();
@@ -997,6 +986,22 @@ impl Sync {
                     self.status.lock_recover().opened = true;
                 }
             }
+        }
+    }
+
+    /// The host did not take this device's writes to `chunk`, for `reason`: their changes are
+    /// still this namespace's, and go out again, with all made since, once the record's wait is
+    /// over. What the host holds is what was last merged from it.
+    fn refused(&mut self, chunk: TreeChunk, reason: &str) {
+        let held = self.documents.entry(chunk).or_default();
+        held.sent = held
+            .merged
+            .iter()
+            .flatten()
+            .map(|hash| automerge::ChangeHash(*hash))
+            .collect();
+        if held.refused.refused(Instant::now()) {
+            tracing::warn!(%reason, workspace = %self.workspace, chunk, "the workspace refused a change to its files; it goes again after a wait");
         }
     }
 
@@ -1392,9 +1397,11 @@ impl Sync {
     }
 
     /// Take the server's answers to [`Self::confirm`]'s asks: a document all of whose writes are
-    /// durable there is held by the workspace; one the server refused is asked again once its
-    /// next write went out.
+    /// durable there is held by the workspace. One the server refused, or did not answer in
+    /// time, is not: its changes go out again after the record's wait, as a refused write's do,
+    /// and it is asked again once they went. Until then nothing that may name it goes out.
     fn confirmations(&mut self) {
+        let mut refused = Vec::new();
         for (chunk, held) in &mut self.documents {
             let answer = held.confirming.as_mut().and_then(answered);
             match answer {
@@ -1403,11 +1410,14 @@ impl Sync {
                     held.confirming = None;
                 }
                 Some(Err(refusal)) => {
-                    tracing::warn!(%refusal, chunk, workspace = %self.workspace, "a chunk of the workspace's tree did not reach it; it goes again");
                     held.confirming = None;
+                    refused.push((*chunk, refusal));
                 }
                 None => {}
             }
+        }
+        for (chunk, refusal) in refused {
+            self.refused(chunk, &refusal);
         }
     }
 
