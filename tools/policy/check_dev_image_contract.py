@@ -25,7 +25,7 @@ toolchain, and it is unsealed. Two ways that could leak into production:
    feature, or a dev-image source file.
 
 os/Containerfile.host-dev, the development server image, is held to the same
-rule: it builds FROM the server image, labels itself the server-dev flavour,
+rule: it builds FROM the server image, labels itself sh.tilo.image.development,
 writes base.json alone (the server's flavour and update policy stay), builds no
 UKI of its own (its seal is seal-host-dev's), and no t check that signs,
 attests or publishes, or that a release tag runs, depends on it.
@@ -217,10 +217,14 @@ def check_dev_server_containerfile(repo: Path) -> list[Finding]:
         findings.append(Finding(f"{shown}:{last_line}", "the final stage is not FROM ${HOST_IMAGE}, the "
                                 "server image", WHY_SERVER,
                                 "build the last stage FROM ${HOST_IMAGE}, the image image-host built."))
-    if not re.search(r'LABEL\b.*\bsh\.tilo\.image\.flavour="?server-dev"?', final_text):
+    if not re.search(r'LABEL\b.*\bsh\.tilo\.image\.development="?true"?', final_text):
         findings.append(Finding(f"{shown}:{last_line}", "the final stage does not label the image "
-                                'sh.tilo.image.flavour="server-dev"', WHY_SERVER,
-                                'add `LABEL sh.tilo.image.flavour="server-dev"` to the last stage.'))
+                                'sh.tilo.image.development="true"', WHY_SERVER,
+                                'add `LABEL sh.tilo.image.development="true"` to the last stage.'))
+    if re.search(r'\bsh\.tilo\.image\.flavour=', final_text):
+        findings.append(Finding(f"{shown}:{last_line}", "the final stage relabels the server's flavour",
+                                WHY_SERVER, "keep the server image's own sh.tilo.image.flavour; the "
+                                "installer admits a preloaded server target by it."))
     if not re.search(r"finalize-dev-image\.py\s+--base-only\b", final_text):
         findings.append(Finding(f"{shown}:{last_line}", "the final stage never writes base.json with "
                                 "os/scripts/finalize-dev-image.py --base-only", WHY_SERVER,

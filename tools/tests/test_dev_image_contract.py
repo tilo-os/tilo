@@ -86,13 +86,14 @@ class DevImageContractTests(unittest.TestCase):
             self.assertIn("never runs os/scripts/unseal-rootfs.py", errors)
 
     def test_dev_server_image_stays_a_development_image(self):
-        with self.subTest(phase='the server-dev label and base.json alone'):
+        with self.subTest(phase='the development label, the server flavour and base.json alone'):
             root = self.fixture()
             recipe = root / "os/Containerfile.host-dev"
-            self.edit(recipe, 'sh.tilo.image.flavour="server-dev"', 'sh.tilo.image.flavour="server"')
+            self.edit(recipe, 'sh.tilo.image.development="true"', 'sh.tilo.image.flavour="dev"')
             self.edit(recipe, "finalize-dev-image.py --base-only \\", "finalize-dev-image.py \\")
             errors = "\n".join(self.findings(root))
-            self.assertIn('does not label the image sh.tilo.image.flavour="server-dev"', errors)
+            self.assertIn('does not label the image sh.tilo.image.development="true"', errors)
+            self.assertIn("relabels the server's flavour", errors)
             self.assertIn("never writes base.json with os/scripts/finalize-dev-image.py --base-only", errors)
         with self.subTest(phase='its seal is the seal step\'s'):
             root = self.fixture()

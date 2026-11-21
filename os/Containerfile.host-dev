@@ -97,5 +97,8 @@ RUN --network=none \
     && systemd-sysext --version >/dev/null \
     && bootc container lint
 
-LABEL sh.tilo.image.flavour="server-dev" \
+# The flavour stays the server's: the installer admits a preloaded server target
+# by it, and what the image does is the server's. This label says it is the
+# development one.
+LABEL sh.tilo.image.development="true" \
       org.opencontainers.image.title="Tilo development server (not for release)"
