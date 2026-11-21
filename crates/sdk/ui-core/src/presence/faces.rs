@@ -48,6 +48,20 @@ impl<'a> Face<'a> {
         Self::wearing(AvatarFace::member(name, member), colour)
     }
 
+    /// The face a search row states for its member ([`crate::search::RowFace`]): the same
+    /// face and colour, dimmed while they are away.
+    #[must_use]
+    pub fn of_row(row: &'a crate::search::RowFace) -> Self {
+        Self {
+            avatar: row.avatar(),
+            colour: row.colour,
+            dimmed: row.dimmed,
+            active: None,
+            scale: 1.0,
+            follows_you: false,
+        }
+    }
+
     /// Software, not a person: the agent's mark ([`AvatarFace::agent`]), for a stack that knows
     /// only whether its member is one.
     #[must_use]

@@ -51,7 +51,8 @@ pub struct CommandRow {
     pub description_is_path: bool,
     pub facts: Vec<String>,
     pub image: Option<AppImage>,
-    pub avatar: Option<(String, String)>,
+    /// The member the row leads with, in place of its icon.
+    pub avatar: Option<RowFace>,
     pub badge: Option<String>,
     pub keycaps: Option<Vec<String>>,
     pub faces: Vec<RowFace>,
@@ -72,7 +73,9 @@ impl CommandRow {
     }
 }
 
-/// One person in a row's face stack ([`CommandRow::faces`]).
+/// One member of a row: who leads it ([`CommandRow::avatar`]) or who is stacked beside it
+/// ([`CommandRow::faces`]), drawn with the one face every surface draws them with
+/// ([`Self::avatar`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowFace {
     pub name: String,
@@ -80,6 +83,39 @@ pub struct RowFace {
     pub colour: Color,
     pub is_agent: bool,
     pub dimmed: bool,
+}
+
+impl RowFace {
+    /// A member an app knows by name and identity alone, in the colour the one rule gives
+    /// them ([`crate::presence::identity_colour_of`]).
+    #[must_use]
+    pub fn of_member(
+        name: impl Into<String>,
+        identity: impl Into<String>,
+        is_agent: bool,
+    ) -> Self {
+        let identity = identity.into();
+        Self {
+            colour: crate::presence::identity_colour_of(&identity, is_agent),
+            name: name.into(),
+            identity,
+            is_agent,
+            dimmed: false,
+        }
+    }
+
+    /// The face itself, as the bar's stack, a chip and history draw this member
+    /// ([`crate::widget::AvatarFace`]): their colour, an agent's mark for software.
+    #[must_use]
+    pub fn avatar(&self) -> crate::widget::AvatarFace<'_> {
+        let face = crate::widget::AvatarFace::new(&self.name, &self.identity)
+            .presence(self.colour);
+        if self.is_agent {
+            face.agent()
+        } else {
+            face
+        }
+    }
 }
 
 /// A modifier held while a row is activated, choosing an alternative activation the row

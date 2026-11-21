@@ -301,6 +301,25 @@ impl Source for Settings {
 mod tests {
     use super::*;
 
+    /// The notification switch Settings publishes is offered as the action "Notification
+    /// banners", with every language's word for it as a keyword. A query finds it by a word
+    /// of its own name, typed whole or begun, never by the first letters of a word in
+    /// another language: "Ben" is a person, not those banners.
+    #[test]
+    fn a_setting_is_found_by_its_name_and_not_by_the_first_letters_of_a_translation() {
+        let setting = index::SETTINGS
+            .iter()
+            .find(|setting| setting.id == "notifications.banners")
+            .expect("Settings indexes notification banners");
+        let keywords = setting.search_words();
+        let row = ("Notification banners", keywords.as_slice(), Some("Notifications"));
+        let found = |needle| crate::rank::published_action_match_scores(needle, [row])[0].is_some();
+        assert!(!found("Ben"), "the German name does not surface it: {keywords:?}");
+        assert!(found("ban"), "the English name does: {keywords:?}");
+        assert!(found("banners"), "{keywords:?}");
+        assert!(found("toasts"), "a word people use for it: {keywords:?}");
+    }
+
     fn opens(hit: &Hit) -> (String, String) {
         let Target::Invoke(target) = &hit.target else {
             panic!("a settings row opens Settings by address");

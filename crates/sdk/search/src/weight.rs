@@ -31,7 +31,9 @@ pub enum MatchTier {
     /// Every word of the query occurs in some field, though no field holds
     /// the whole query ([`Matching::spanning`](crate::Matching::spanning)).
     Spanning,
-    /// The query occurs inside the field, not at a word start.
+    /// The query occurs inside a word of the field, not at a word start, where the
+    /// field admits an inside-word match; a script written without spaces has no word
+    /// start to match at.
     Contains,
     WordPrefix,
     /// The query is some later whole word (or words) of the field.
@@ -92,6 +94,11 @@ impl MatchTier {
             Self::Contains if weight <= FieldWeight::KEYWORD && weight != FieldWeight::IDENTITY => {
                 None
             }
+            // A name is found from the start of any of its words; a word people use for
+            // the thing without it being its name is typed whole. "wlan" is Network, "wla"
+            // is not, and no row surfaces for the first letters of an alias in another
+            // language.
+            Self::WordPrefix | Self::Prefix if weight == FieldWeight::KEYWORD => None,
             _ => Some(self.percent().saturating_mul(i32::from(weight.percent())) / 100),
         }
     }
@@ -199,6 +206,11 @@ mod tests {
             assert_eq!(MatchTier::Contains.rank_in(FieldWeight::IDENTITY), Some(30));
             assert_eq!(MatchTier::Contains.rank_in(FieldWeight::KEYWORD), None);
             assert_eq!(MatchTier::Contains.rank_in(FieldWeight::SUBTITLE), None);
+            // A name is found from a word's start; an alias only typed whole.
+            assert_eq!(MatchTier::WordPrefix.rank_in(FieldWeight::TITLE), Some(72));
+            assert_eq!(MatchTier::WordPrefix.rank_in(FieldWeight::KEYWORD), None);
+            assert_eq!(MatchTier::Prefix.rank_in(FieldWeight::KEYWORD), None);
+            assert_eq!(MatchTier::Word.rank_in(FieldWeight::KEYWORD), Some(64));
         }
     }
 }

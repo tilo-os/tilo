@@ -94,9 +94,8 @@ pub struct CommandEntry {
     pub icon: Option<Icon>,
     /// The application artwork, painted in place of `icon` when it decodes.
     pub image: Option<icons::AppImage>,
-    /// A person as `(name, key)`: their avatar in place of `icon`, its initials from the name and its
-    /// colour from the key.
-    pub avatar: Option<(String, String)>,
+    /// The member the row leads with, in place of `icon` ([`RowFace::of_member`]).
+    pub avatar: Option<RowFace>,
     /// The people the row is about, as a stack of faces at its trailing end.
     pub faces: Vec<RowFace>,
     /// What choosing the row does, shown at its trailing edge ("Join", "Open"), for a row whose outcome
@@ -253,7 +252,7 @@ impl CommandEntry {
     /// Show the row as a person ([`Self::avatar`]).
     #[must_use]
     pub fn avatar(mut self, name: impl Into<String>, key: impl Into<String>) -> Self {
-        self.avatar = Some((name.into(), key.into()));
+        self.avatar = Some(RowFace::of_member(name, key, false));
         self
     }
 

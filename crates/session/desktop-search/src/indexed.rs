@@ -131,13 +131,7 @@ fn titles_of(entries: &[IndexedEntry]) -> HashMap<(String, String), Vec<(String,
 
 /// A person as a row's face stack draws them.
 fn face(name: &str, person: &IndexPerson) -> ui::search::RowFace {
-    ui::search::RowFace {
-        name: name.to_owned(),
-        identity: person.identity.clone(),
-        colour: ui::presence::identity_colour(&person.identity),
-        is_agent: person.agent,
-        dimmed: false,
-    }
+    ui::search::RowFace::of_member(name.to_owned(), person.identity.clone(), person.agent)
 }
 
 /// What each person the entries name is called, by `(workspace, identity)`:
@@ -420,7 +414,7 @@ impl IndexedContent {
         &self,
         slot: &IndexKey,
         entry: &IndexEntry,
-    ) -> (Option<(String, String)>, Vec<ui::search::RowFace>) {
+    ) -> (Option<ui::search::RowFace>, Vec<ui::search::RowFace>) {
         let people: Vec<(String, &IndexPerson)> = entry
             .people
             .iter()
@@ -428,9 +422,7 @@ impl IndexedContent {
             .collect();
         match entry.kind {
             Some(IndexKind::Agent | IndexKind::Message | IndexKind::Person) => (
-                people
-                    .first()
-                    .map(|(name, person)| (name.clone(), person.identity.clone())),
+                people.first().map(|(name, person)| face(name, person)),
                 Vec::new(),
             ),
             Some(IndexKind::Conversation) => (
@@ -975,7 +967,7 @@ mod tests {
             };
             assert_eq!(
                 row.avatar,
-                Some(("Ada".to_owned(), "agent:a_ada".to_owned()))
+                Some(ui::search::RowFace::of_member("Ada", "agent:a_ada", true))
             );
 
             let other =
@@ -1243,7 +1235,7 @@ mod tests {
             };
             assert_eq!(
                 row.avatar,
-                Some(("Aria".to_owned(), "u_aria".to_owned()))
+                Some(ui::search::RowFace::of_member("Aria", "u_aria", false))
             );
             let Target::Invoke(target) = &hit.target else {
                 panic!("a message opens where it lives");

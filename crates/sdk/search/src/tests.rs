@@ -290,8 +290,8 @@ tilo_test_env::scenario! {
                 assert_eq!(keys(&index, "st"), [0], "initials typed whole");
                 assert_eq!(keys(&index, "tv"), [4], "a whole word of a description");
                 assert!(keys(&index, "sh").is_empty(), "not a word begun");
-                assert_eq!(keys(&index, "pin"), [0], "three letters begin a keyword");
-                assert_eq!(keys(&index, "pic"), [1]);
+                assert!(keys(&index, "pin").is_empty(), "a keyword is typed whole");
+                assert!(keys(&index, "pic").is_empty(), "not a keyword's word begun");
                 assert_eq!(keys(&index, "pho"), [1]);
             }
         }

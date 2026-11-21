@@ -122,6 +122,20 @@ pub fn identity_colour(user_id: &str) -> vello::peniko::Color {
     presence_colour(user_color(user_id))
 }
 
+/// [`identity_colour`] for a member known by its id and whether it is software: an agent
+/// wears its client's hue ([`PresenceHue::of_agent`], the same for every run of it), as the
+/// bar, a chip and history draw it.
+///
+/// [`PresenceHue::of_agent`]: crate::tokens::PresenceHue::of_agent
+#[must_use]
+pub fn identity_colour_of(id: &str, is_agent: bool) -> vello::peniko::Color {
+    if is_agent {
+        presence_colour(identity_rgb(crate::tokens::PresenceHue::of_agent(id)))
+    } else {
+        identity_colour(id)
+    }
+}
+
 /// The face of someone here whose person the workspace does not know yet:
 /// grey, which the presence palette paints neutral
 /// ([`crate::tokens::colors::PresencePalette::of`]), never a ring colour

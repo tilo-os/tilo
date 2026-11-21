@@ -9,8 +9,7 @@ use tilo_search::fold;
 pub use tilo_search::{FieldWeight, MatchTier};
 
 /// The tier at which folded `query` meets folded `text`, if it occurs: exact, prefix, a
-/// later word start, or (once the query is long enough to be a remembered fragment)
-/// anywhere.
+/// later word start, or (a script written without spaces, with no word starts) anywhere.
 #[must_use]
 pub fn match_tier(query: &str, text: &str) -> Option<MatchTier> {
     if query.is_empty() {
@@ -70,7 +69,8 @@ mod tests {
             );
             assert_eq!(match_tier("dune", "redundant"), None);
             assert_eq!(match_tier("dunda", "redundant"), Some(MatchTier::Contains));
-            // Too short to be a remembered fragment: only word starts count.
+            // A run without word spaces has no word start to match at.
+            assert_eq!(match_tier("世界", "你好世界"), Some(MatchTier::Contains));
             assert_eq!(match_tier("dun", "redundant"), None);
             assert_eq!(match_tier("", "anything"), None);
             assert_eq!(

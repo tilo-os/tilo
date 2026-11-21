@@ -88,13 +88,13 @@ pub(super) fn draw(
     });
     if let Some(x) = image_x {
         text_x = x;
-    } else if let Some((name, key)) = &row.avatar {
-        let face = avatar_rect(rect);
-        crate::widget::AvatarFace::new(name, key).paint(
+    } else if let Some(face) = &row.avatar {
+        let at = avatar_rect(rect);
+        face.avatar().paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            face,
+            at,
         );
-        text_x = face.x1 + 10.0;
+        text_x = at.x1 + 10.0;
     } else if let Some(icon) = result.icon {
         let at = icon_rect(rect);
         let ink = if selected { label_ink } else { colors.text_dim };
@@ -243,13 +243,7 @@ fn draw_trailing(
             .faces
             .iter()
             .take(shown)
-            .map(|face| {
-                let shown = crate::presence::Face::new(&face.name, &face.identity, face.colour);
-                crate::presence::Face {
-                    dimmed: face.dimmed,
-                    ..if face.is_agent { shown.agent() } else { shown }
-                }
-            })
+            .map(crate::presence::Face::of_row)
             .collect();
         stack.paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),

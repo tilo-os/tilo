@@ -11,10 +11,11 @@ use crate::weight::{FieldWeight, MatchTier};
 
 /// The byte range in raw `text`, a field of `weight`, of the occurrence of
 /// `query` the index matches there under folding: the first one starting a
-/// word, or inside a word where a field of `weight` matches inside words
-/// (a name or an identity, the query long enough to be a fragment). A query
-/// only beginning a name ([`MIN_ALIAS_SCALARS`]) shows in any other field
-/// only as a whole word. `None` where the index finds no match.
+/// word, or inside a word where a field of `weight` matches inside words (a
+/// name or an identity, the query long enough to be a fragment, or a script
+/// written without word spaces). A query only beginning a name
+/// ([`MIN_ALIAS_SCALARS`]) shows in any other field only as a whole word.
+/// `None` where the index finds no match.
 ///
 /// [`MIN_ALIAS_SCALARS`]: crate::MIN_ALIAS_SCALARS
 #[must_use]
@@ -58,18 +59,39 @@ pub fn locate(query: &str, text: &str, weight: FieldWeight) -> Option<Range<usiz
             .map(|(at, _)| at)
             .find(|at| starts_word(*at) && ends_word(*at))?
     } else {
-        let inside_words = infix_allowed(&scalars) && MatchTier::Contains.rank_in(weight).is_some();
+        let inside_run =
+            infix_allowed(&scalars) && MatchTier::Contains.rank_in(weight).is_some();
         let mut occurrences = folded.match_indices(query.as_str()).map(|(at, _)| at);
         let first = occurrences.next()?;
-        if starts_word(first) {
+        let at = if starts_word(first) {
             first
         } else if let Some(at) = occurrences.find(|at| starts_word(*at)) {
             at
-        } else if inside_words {
+        } else if inside_run {
             first
         } else {
             return None;
+        };
+        // The tier this occurrence is, so a field that refuses it in the ranking
+        // (`rank_in`) is not marked: a highlight shows exactly what a search found.
+        let field_start = at == 0;
+        let tier = if !starts_word(at) {
+            MatchTier::Contains
+        } else if ends_word(at) {
+            if field_start {
+                MatchTier::PrefixWord
+            } else {
+                MatchTier::Word
+            }
+        } else if field_start {
+            MatchTier::Prefix
+        } else {
+            MatchTier::WordPrefix
+        };
+        if tier.rank_in(weight).is_none() {
+            return None;
         }
+        at
     };
     // The match covers every raw scalar that contributed a folded byte.
     let start = *origin.get(at)?;

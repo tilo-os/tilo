@@ -9,6 +9,7 @@
 use ui::floating_surface::{Recipient, RecipientKind};
 use ui::search::FieldWeight;
 use ui::search::system::{ResourceKind, rank_fields};
+use ui::search::{CommandRow, RowFace, SearchRow};
 
 use crate::model::{Hit, InvokeTarget, Source, Target};
 
@@ -59,7 +60,15 @@ impl Source for People {
             .filter_map(|person| {
                 let score = rank_fields(needle, &[(&person.name, FieldWeight::TITLE)])?;
                 Some(Hit {
-                    row: None,
+                    // The person's own face, as the bar's stack and every chip draw it.
+                    row: Some(SearchRow::Command(Box::new(CommandRow {
+                        avatar: Some(RowFace::of_member(
+                            person.name.clone(),
+                            person.id.clone(),
+                            false,
+                        )),
+                        ..CommandRow::default()
+                    }))),
                     preview: None,
                     faces: Vec::new(),
                     outcome: None,
@@ -70,7 +79,7 @@ impl Source for People {
                     subtitle: None,
                     facts: Vec::new(),
                     score,
-                    icon: Some(ui::icons::Icon::User),
+                    icon: None,
                     target: Target::Invoke(Box::new(InvokeTarget::action(
                         CHAT,
                         &self.workspace,

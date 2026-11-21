@@ -77,15 +77,9 @@ fn prefix_query(prefix: Term) -> BoxQuery {
     Box::new(query)
 }
 
-/// Fewest letters a query needs before it matches inside a word. "not" is
-/// not looking for "another", and "s" is not looking for every word with an
-/// "s" in it; a word start is where a person's query begins until it is long
-/// enough to be a fragment they remember.
-pub const MIN_INFIX_SCALARS: usize = 4;
-
 /// Whether `scalar` belongs to a script written without spaces between words
 /// (Han, kana, Hangul, Thai and the like). There a word start is not marked
-/// in the text, so a short query must still match inside a run.
+/// in the text, so a query must still match inside a run.
 fn unspaced_script(scalar: char) -> bool {
     matches!(u32::from(scalar),
         0x0E00..=0x0EFF // Thai, Lao
@@ -99,8 +93,16 @@ fn unspaced_script(scalar: char) -> bool {
         | 0x20000..=0x3FFFF)
 }
 
+/// Fewest letters a query needs before it matches inside a word. "not" is
+/// not looking for "another", and "s" is not looking for every word with an
+/// "s" in it; a word start is where a person's query begins until it is long
+/// enough to be a fragment they remember. A script without word spaces has no
+/// word start to match at, so any query matches inside its runs.
+pub const MIN_INFIX_SCALARS: usize = 4;
+
 /// Whether the folded `query` may match inside a word: it is long enough to
-/// be a remembered fragment, or written in a script without word spaces.
+/// be a remembered fragment, or written in a script without word spaces. Which
+/// fields admit that is the field weight's to say ([`MatchTier::rank_in`]).
 pub(crate) fn infix_allowed(query: &[char]) -> bool {
     let letters = query
         .iter()
@@ -138,8 +140,9 @@ pub(crate) fn admitted(names_only: bool, tier: MatchTier, weight: FieldWeight) -
         )
 }
 
-/// `infix_allowed` for typed text: whether `query` may match inside a word
-/// ([`MatchTier::Contains`]) rather than only at word starts.
+/// [`infix_allowed`] for typed text: whether `query` may match inside a word
+/// ([`MatchTier::Contains`]) rather than only at word starts. A field of its own
+/// weight still decides whether it admits such a match.
 #[must_use]
 pub fn matches_inside_words(query: &str) -> bool {
     let scalars: Vec<char> = query.chars().collect();
