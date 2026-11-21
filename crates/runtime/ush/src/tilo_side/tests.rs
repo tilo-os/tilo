@@ -271,7 +271,10 @@ tilo_test_env::scenario! {
             "sh -c 'echo $$ > pid; exec sleep 30' &\n",
             "until test -s pid; do sleep 0.02; done\n",
             "kill -STOP %1\n",
-            "sh -c 'cut -d\" \" -f3 /proc/$(cat pid)/stat'\n",
+            // A stop is delivered when the program is next scheduled, so its state is
+            // looked at until it shows the stop, for at most ten seconds.
+            "sh -c 'n=0; while s=$(cut -d\" \" -f3 /proc/$(cat pid)/stat); ",
+            "[ \"$s\" != T ] && [ $n -lt 500 ]; do n=$((n+1)); sleep 0.02; done; echo $s'\n",
             "jobs\n",
             "kill -CONT %1\n",
             "jobs\n",
