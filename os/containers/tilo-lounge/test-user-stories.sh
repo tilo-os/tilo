@@ -20,7 +20,7 @@
 # A shell story needs the session build TILO_NESTED_SESSION_BUILD names
 # (dist/dev/nested-session-build.sh's) and ffmpeg for the videos. A story that
 # names `servers` meets a server this script starts beside it as root (podman),
-# so it runs in a VM, and its driver reads the server's own state as another
+# so its check is a VM, and its driver reads the server's own state as another
 # client would. A page story
 # needs node, chromium, curl, bwrap, ffmpeg, the stack's environment
 # (TILO_SH_PROGRAMS, TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY naming what t
@@ -157,8 +157,8 @@ red=()
 # The servers a story's people meet, started beside it and stopped after it: a
 # story marked `servers` meets a real Nextcloud (servers.sh's, seeded with the
 # person's files, calendars and a second person an invitation can name). podman
-# starts the containers as root, which is why these stories run in the check's
-# VM; nothing of them is left behind.
+# starts the containers as root, which is why these stories' check is a VM;
+# nothing of them is left behind.
 servers_sh=$repo/crates/system/cloud-source-dav/tests/servers.sh
 serving=
 stop_servers() {

@@ -28,8 +28,8 @@ import urllib.request
 
 from story import Failed, until
 
-# How long the person's browser's side of a sign-in may take on a server that is
-# standing on the check's own loopback.
+# How long the person's browser's side of a sign-in may take, on a server on the check's own
+# loopback.
 PAGE_SECONDS = 30.0
 
 
