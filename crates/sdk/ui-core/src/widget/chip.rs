@@ -1394,7 +1394,13 @@ impl Widget for Chip {
                     .with_state(state),
             )
         } else {
-            Some(AccessNode::new(Role::StaticText).with_value(self.label.clone()))
+            // A chip that names a value rather than running anything reads as that value, as a
+            // `Text` does: its words are what a reader, a screen reader and a test find it by.
+            Some(
+                AccessNode::new(Role::StaticText)
+                    .with_name(self.label.clone())
+                    .with_value(self.label.clone()),
+            )
         }
     }
 }
@@ -1859,9 +1865,12 @@ mod tests {
                 assert!(node.state.focusable);
 
                 let plain = Chip::new("tag");
+                let node = Widget::accessibility(&plain).unwrap();
+                assert_eq!(node.role, Role::StaticText);
                 assert_eq!(
-                    Widget::accessibility(&plain).unwrap().role,
-                    Role::StaticText
+                    node.name.as_deref(),
+                    Some("tag"),
+                    "a chip that names a value is found by its words, as a text is"
                 );
             }
 
