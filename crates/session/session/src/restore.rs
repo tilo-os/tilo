@@ -347,7 +347,7 @@ impl Restore {
             }
             // The person opened this app before this session read the layout: the window the
             // launch started takes the tab its window was left in, and it is not asked for again.
-            if self.take_over_launch(desktop, &saved) {
+            if self.take_over_launch(desktop, apps, &saved) {
                 return;
             }
             if self.open(desktop, apps, saved) {
@@ -359,7 +359,12 @@ impl Restore {
     /// The window a launch of `saved`'s app started takes the tab its window was left in, rather
     /// than a second window being asked for: the person opened the app before this session read
     /// the layout. Whether the saved tab waits for that window now.
-    fn take_over_launch(&mut self, desktop: &ShellDesktop, saved: &Saved) -> bool {
+    fn take_over_launch(
+        &mut self,
+        desktop: &ShellDesktop,
+        apps: &Apps,
+        saved: &Saved,
+    ) -> bool {
         let launched = desktop.with_policy(|policy| policy.launch_tab_of(&saved.app));
         let theirs = launched.filter(|tab| {
             *tab != saved.tab
@@ -372,10 +377,16 @@ impl Restore {
         if theirs.is_none() && !unplaced {
             return false;
         }
-        match theirs {
-            Some(theirs) => desktop.with_policy(|policy| policy.release_tab(theirs)),
-            None => desktop.with_policy(|policy| policy.release_held(&saved.app)),
+        if let Some(theirs) = theirs {
+            // The launch's own tab was made and its window is on its way: the place goes.
+            desktop.with_policy(|policy| policy.release_tab(theirs));
+        } else if !apps.start_into_tab(&saved.app, saved.tab) {
+            // The place is held and nothing was planned for it: it goes, and the tab waits as one
+            // the restore asks for would.
+            desktop.with_policy(|policy| policy.give_up_held(&saved.app));
         }
+        // The tab the person left the window in takes the window: the launch's own place, when it
+        // had one, is given up before it, so the window lands here and nowhere else.
         desktop.with_policy(|policy| policy.adopt(&saved.app, saved.tab, None));
         self.opening = Some(Opening {
             tab: saved.tab,

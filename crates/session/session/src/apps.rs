@@ -1088,6 +1088,51 @@ impl Apps {
         }
     }
 
+    /// Start the launch queued for `app` into `tab`, a saved window's tab that nothing has asked
+    /// for again: a launch asked for before the restore read the layout starts the app into the
+    /// tab its window was left in, and the place the shell holds for a tab of its own goes, so no
+    /// second tab is made beside it. Whether a launch was waiting for the shell to make its tab.
+    pub(crate) fn start_into_tab(&self, app: &str, tab: u64) -> bool {
+        let ask = self
+            .state
+            .borrow_mut()
+            .planned
+            .get_mut(app)
+            .and_then(VecDeque::pop_front);
+        let Some(ask) = ask else {
+            return false;
+        };
+        let Some(desktop) = self.desktop.borrow().clone() else {
+            return false;
+        };
+        desktop.with_policy(|policy| policy.give_up_held(app));
+        let workspace = match &ask.workspace {
+            Some(workspace) => {
+                self.carry_to(tab, workspace);
+                self.workspace_named(workspace)
+            }
+            None => self.workspace_of(Some(tab)),
+        };
+        let started = self.starting_tool(ask.tool_context.as_deref(), || {
+            self.start_window(
+                &ask.launch,
+                &workspace,
+                ask.new_window,
+                Some(tab),
+                ask.reveal.as_deref(),
+            )
+            .map(|_| ())
+        });
+        match started {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(%error, app, "a launch asked for before the restore did not start");
+                self.could_not_open(Some(tab), app, None, &error.to_string());
+                true
+            }
+        }
+    }
+
     /// Start the window an app asked this session for in the tab the shell holds for it: a window of
     /// its own, beside the app's own, showing the item the app named when it named one. The tab is
     /// the window's instance ([`Self::start_window`]).
@@ -1408,13 +1453,12 @@ impl Apps {
         {
             return Beginning::StartIn { tab };
         }
-        Beginning::Start {
-            new_window: matches!(answer, Answer::Start { new_window: true })
-                // A place of its own — one an app or an agent asked for, never the person's own
-                // (`Focus`) — starts the window beside the view it was asked by, so the person's
-                // window keeps its place.
-                || place.is_some_and(|place| !matches!(place, LaunchPlace::Focus)),
-        }
+        let new_window = matches!(answer, Answer::Start { new_window: true })
+            // A place of its own — one an app or an agent asked for, never the person's own
+            // (`Focus`) — starts the window beside the view it was asked by, so the person's
+            // window keeps its place.
+            || place.is_some_and(|place| !matches!(place, LaunchPlace::Focus));
+        Beginning::Start { new_window }
     }
 
     /// The workspace a launch that names none belongs to: the one in front, with what the person
