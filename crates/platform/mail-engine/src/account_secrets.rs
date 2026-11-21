@@ -35,10 +35,6 @@ pub struct SecretRelease {
 
 impl SecretRelease {
     /// Ownership on the window's route, captured while the window is built.
-    #[cfg_attr(
-        not(feature = "live"),
-        expect(dead_code, reason = "a page holds no account secrets to release")
-    )]
     pub fn capture() -> Option<Self> {
         Client::capture().map(|client| Self::from(Source::Route(Box::new(client))))
     }
@@ -48,10 +44,6 @@ impl SecretRelease {
         Self::from(Source::Root(root))
     }
 
-    #[cfg_attr(
-        not(feature = "live"),
-        expect(dead_code, reason = "a page holds no account secrets to release")
-    )]
     fn from(source: Source) -> Self {
         Self {
             source,
@@ -118,10 +110,6 @@ enum Asked {
 }
 
 enum Source {
-    #[cfg_attr(
-        not(feature = "live"),
-        expect(dead_code, reason = "a page holds no account secrets to release")
-    )]
     Route(Box<Client>),
     #[cfg(any(test, feature = "test-support"))]
     Root(std::path::PathBuf),

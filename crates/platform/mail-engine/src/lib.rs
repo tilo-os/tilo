@@ -55,4 +55,5 @@ pub mod oauth;
 pub mod store;
 pub mod sync;
 pub mod transport;
+#[cfg(feature = "live")]
 pub(crate) mod validate;
