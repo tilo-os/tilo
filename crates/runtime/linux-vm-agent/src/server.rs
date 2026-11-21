@@ -394,7 +394,7 @@ impl Agent {
     }
 
     #[cfg(not(target_os = "linux"))]
-    #[allow(clippy::unused_self, reason = "the Linux guest's serves its socket")]
+    #[allow(clippy::unused_self, reason = "the Linux build serves the agent socket, and this stub keeps its receiver")]
     fn spawn(
         &self,
         command: &mut Command,
@@ -422,7 +422,7 @@ impl Agent {
     }
 
     #[cfg(not(target_os = "linux"))]
-    #[allow(clippy::unused_self, reason = "the Linux guest's reads its socket")]
+    #[allow(clippy::unused_self, reason = "the Linux build reads the agent socket, and this stub keeps its receiver")]
     fn names_agent_socket(&self, _request: &mut Launch) -> Result<(), String> {
         Err("an agent socket needs a Linux guest".to_owned())
     }
