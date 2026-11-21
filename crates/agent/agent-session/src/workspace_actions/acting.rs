@@ -1,9 +1,17 @@
 //! Claiming an action and performing it: what a worker does with a job
 //! once it knows the workspace it is for.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "claiming and performing an action name the worker's own types"
+)]
 use super::*;
 
 impl Worker {
+    #[allow(
+        clippy::result_large_err,
+        reason = "a claim that cannot be made is the receipt answered"
+    )]
     pub(super) fn claim(
         &self,
         invocation: InvocationId,

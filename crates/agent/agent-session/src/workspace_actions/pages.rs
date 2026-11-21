@@ -410,7 +410,7 @@ impl Worker {
             let state = match self.refresh(workspace_id, Needs::Workspace) {
                 Ok(state) => state,
                 Err(error) if acting && not_ready(&error) && tries < ACT_TRIES => {
-                    tries += 1;
+                    tries = tries.saturating_add(1);
                     std::thread::sleep(ACT_WAIT);
                     continue 'act;
                 }
@@ -420,7 +420,7 @@ impl Worker {
             let key = match self.bounded_replica(workspace_id, &who, &route, &state) {
                 Ok(key) => key,
                 Err(error) if acting && not_ready(&error) && tries < ACT_TRIES => {
-                    tries += 1;
+                    tries = tries.saturating_add(1);
                     std::thread::sleep(ACT_WAIT);
                     continue 'act;
                 }
@@ -433,7 +433,7 @@ impl Worker {
                 .ok_or_else(|| unavailable("the page's document did not open"))?
                 .held
                 .app
-                .page_act(act.clone())
+                .page_act(act)
                 .map_err(not_shown)?;
             let acted = started.elapsed();
             self.save_page(workspace_id, &key, (&who, &route, &state))?;
