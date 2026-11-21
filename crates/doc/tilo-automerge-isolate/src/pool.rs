@@ -42,7 +42,7 @@ const STARTUP: Duration = Duration::from_secs(30);
 
 pub(crate) struct Pool {
     limits: Limits,
-    slots: Vec<Mutex<Option<Worker>>>,
+    places: Vec<Mutex<Option<Worker>>>,
     turns: Turns,
     routes: Mutex<Routes>,
     #[cfg(test)]
@@ -54,7 +54,7 @@ impl Pool {
         let count = limits.workers.max(1);
         Self {
             limits,
-            slots: (0..count).map(|_| Mutex::new(None)).collect(),
+            places: (0..count).map(|_| Mutex::new(None)).collect(),
             turns: Turns::new(count),
             routes: Mutex::new(Routes::default()),
             #[cfg(test)]
@@ -133,7 +133,7 @@ impl Pool {
                 prepare,
                 incoming,
             };
-            match self.call(&mut worker.slot, &request, trusted, incoming.len())? {
+            match self.call(&mut worker.held, &request, trusted, incoming.len())? {
                 Reply::Uncached(cached) => {
                     next = match next {
                         Next::Cached => {
@@ -174,9 +174,9 @@ impl Pool {
             bytes: bytes.len(),
             preferred: None,
         })?;
-        let slot = worker.at;
+        let worker_at = worker.at;
         match self.call(
-            &mut worker.slot,
+            &mut worker.held,
             &Request::Load { incoming: bytes },
             0,
             bytes.len(),
@@ -187,7 +187,7 @@ impl Pool {
                 // the result against the heads `bytes` store; this load takes
                 // its hashes rather than doing that a second time.
                 let mut doc = engine::load_validated(bytes, &hashes)?;
-                self.remember(Key::of(&mut doc), slot);
+                self.remember(Key::of(&mut doc), worker_at);
                 Ok(doc)
             }
             Reply::Invalid(message) => Err(Rejected::Invalid(message)),
@@ -198,14 +198,14 @@ impl Pool {
     /// Wait for `job`'s turn at a worker.
     fn turn(&self, job: Job) -> Result<Turn<'_>, Rejected> {
         let at = self.turns.take(job);
-        let Some(slot) = self.slots.get(at) else {
+        let Some(place) = self.places.get(at) else {
             self.turns.release(at, false);
             return Err(Rejected::Crashed);
         };
         Ok(Turn {
             turns: &self.turns,
             at,
-            slot: slot.lock_recover(),
+            held: place.lock_recover(),
         })
     }
 
@@ -217,7 +217,7 @@ impl Pool {
 
     fn call(
         &self,
-        slot: &mut Option<Worker>,
+        place: &mut Option<Worker>,
         request: &Request<'_>,
         trusted_bytes: usize,
         untrusted_bytes: usize,
@@ -226,18 +226,18 @@ impl Pool {
         let mut frame = Some(request.encode());
         let mut retried = false;
         loop {
-            if slot.as_mut().is_some_and(Worker::exited) {
-                *slot = None;
+            if place.as_mut().is_some_and(Worker::exited) {
+                *place = None;
             }
-            if slot.is_none() {
-                *slot = Some(Worker::spawn(&self.limits)?);
+            if place.is_none() {
+                *place = Some(Worker::spawn(&self.limits)?);
             }
-            let worker = slot.as_mut().ok_or(Rejected::Crashed)?;
+            let worker = place.as_mut().ok_or(Rejected::Crashed)?;
             let frame = frame.take().unwrap_or_else(|| request.encode());
             match worker.call(frame, deadline) {
                 Ok(reply) => return Ok(reply),
                 Err(error) => {
-                    let idle = slot.take().is_some_and(Worker::kill_after_idle);
+                    let idle = place.take().is_some_and(Worker::kill_after_idle);
                     if idle && !retried && error == Rejected::Crashed {
                         retried = true;
                         continue;
@@ -253,12 +253,12 @@ impl Pool {
 struct Turn<'a> {
     turns: &'a Turns,
     at: usize,
-    slot: MutexGuard<'a, Option<Worker>>,
+    held: MutexGuard<'a, Option<Worker>>,
 }
 
 impl Drop for Turn<'_> {
     fn drop(&mut self) {
-        self.turns.release(self.at, self.slot.is_some());
+        self.turns.release(self.at, self.held.is_some());
     }
 }
 
@@ -281,7 +281,7 @@ fn mib(bytes: usize) -> f64 {
 
 #[derive(Default)]
 struct Routes {
-    slots: HashMap<Key, (usize, u64)>,
+    entries: HashMap<Key, (usize, u64)>,
     tick: u64,
 }
 
@@ -289,22 +289,22 @@ impl Routes {
     fn get(&mut self, key: &Key) -> Option<usize> {
         self.tick = self.tick.saturating_add(1);
         let tick = self.tick;
-        self.slots.get_mut(key).map(|(slot, used)| {
+        self.entries.get_mut(key).map(|(worker_at, used)| {
             *used = tick;
-            *slot
+            *worker_at
         })
     }
 
-    fn insert(&mut self, key: Key, slot: usize) {
+    fn insert(&mut self, key: Key, worker_at: usize) {
         self.tick = self.tick.saturating_add(1);
-        if self.slots.len() >= ROUTES && !self.slots.contains_key(&key) {
-            let mut used: Vec<u64> = self.slots.values().map(|(_, used)| *used).collect();
+        if self.entries.len() >= ROUTES && !self.entries.contains_key(&key) {
+            let mut used: Vec<u64> = self.entries.values().map(|(_, used)| *used).collect();
             let cut = used.len() / 4;
             let (_, oldest, _) = used.select_nth_unstable(cut);
             let oldest = *oldest;
-            self.slots.retain(|_, (_, used)| *used > oldest);
+            self.entries.retain(|_, (_, used)| *used > oldest);
         }
-        self.slots.insert(key, (slot, self.tick));
+        self.entries.insert(key, (worker_at, self.tick));
     }
 }
 
@@ -657,7 +657,7 @@ mod tests {
             assert_eq!(routes.get(&key(0)), Some(1), "a live route was dropped");
             assert_eq!(routes.get(&key(ROUTES)), Some(0));
             assert!(routes.get(&key(1)).is_none(), "the oldest route was kept");
-            assert!(routes.slots.len() > ROUTES / 2);
+            assert!(routes.entries.len() > ROUTES / 2);
         }
 
         phase an_idle_worker_exits_and_the_next_request_starts_another;
@@ -670,9 +670,9 @@ mod tests {
             doc.put(automerge::ROOT, "k", 1).unwrap();
             doc.commit();
             let mut first = pool.load(&doc.save()).unwrap();
-            let pid = (pool.slots[0]).lock_recover().as_ref().unwrap().child.id();
+            let pid = (pool.places[0]).lock_recover().as_ref().unwrap().child.id();
             tilo_test_env::wait_until(format!("idle worker {pid} to exit"), || {
-                (pool.slots[0]).lock_recover().as_mut().unwrap().exited()
+                (pool.places[0]).lock_recover().as_mut().unwrap().exited()
             });
             let mut remote = first.fork();
             remote.put(automerge::ROOT, "k", 2).unwrap();
@@ -691,12 +691,12 @@ mod tests {
             doc.put(automerge::ROOT, "k", 1).unwrap();
             doc.commit();
             pool.load(&doc.save()).unwrap();
-            let mut worker = (pool.slots[0]).lock_recover().take().unwrap();
+            let mut worker = (pool.places[0]).lock_recover().take().unwrap();
             let pid = libc::pid_t::try_from(worker.child.id()).unwrap();
             // SAFETY: signalling our own child.
             unsafe { libc::kill(pid, libc::SIGALRM) };
             tilo_test_env::wait_until("the signalled worker to exit", || worker.exited());
-            *(pool.slots[0]).lock_recover() = Some(worker);
+            *(pool.places[0]).lock_recover() = Some(worker);
             assert!(pool.load(&doc.save()).is_ok());
         }
 

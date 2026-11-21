@@ -13,7 +13,7 @@
 //!   theirs first.
 //!
 //! A request whose state a worker already holds waits for that worker while
-//! a small request runs on it, since rebuilding the state elsewhere costs
+//! a small request goes to it, since rebuilding the state elsewhere costs
 //! more than that wait; behind a large one it takes any free worker.
 
 use std::collections::HashMap;
@@ -294,7 +294,7 @@ mod tests {
         assert!(state.dispatch());
         assert!(state.granted.contains_key(&5));
 
-        // With one worker, a large request still runs.
+        // With one worker, a large request still goes through.
         let turns = Turns::new(1);
         let mut state = turns.state.lock_recover();
         state.waiting.push(Waiting {

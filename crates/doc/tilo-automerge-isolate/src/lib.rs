@@ -143,7 +143,7 @@ impl Caller {
         })
     }
 
-    /// Run `work` with this thread's requests made as this caller's.
+    /// Do `work` with this thread's requests made as this caller's.
     pub fn enter<R>(self, work: impl FnOnce() -> R) -> R {
         struct Restore(Option<Caller>);
         impl Drop for Restore {
@@ -410,7 +410,7 @@ fn serve_if_requested() -> Option<u8> {
 /// Set once this executable's `main` called [`dispatch_early`]: its workers
 /// start with the worker argument alone. Otherwise the executable is a test
 /// harness serving them through [`test_worker!`], whose workers also carry the
-/// arguments that make libtest run that one test and nothing else.
+/// arguments that make libtest take that one test and nothing else.
 static SERVES_FROM_MAIN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 #[cfg(target_os = "linux")]

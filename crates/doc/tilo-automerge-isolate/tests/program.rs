@@ -30,7 +30,7 @@ fn a_program_starts_its_workers_with_the_worker_argument_alone() {
         .env(PROGRAM, "1")
         .status_locked()
         .unwrap();
-    assert!(status.success(), "the program's run failed: {status}");
+    assert!(status.success(), "the program's start failed: {status}");
 }
 
 /// What a program does: serve its workers first thing, then admit a change,
@@ -55,7 +55,7 @@ fn be_the_program() {
         .collect();
     assert!(
         workers.contains(&vec!["tilo_automerge_isolate_worker".to_owned()]),
-        "this program's children run with {workers:?}"
+        "this program's children start with {workers:?}"
     );
 }
 
