@@ -28,6 +28,14 @@
 //! that site ([`TurnUses::release`]), asking the person first as for every use. Their allow
 //! fills nothing by itself: it lets that agent's next fill of that item at that site through.
 //!
+//! A secret the agent has no item for yet is asked for through the vault's own ask
+//! ([`person_vault::ASK`]), the one way an agent comes by one: the tool call ends at once, and
+//! this server asks the person on their own devices, in the system's protected password field
+//! and in the system's words ([`person_vault::AskForItem::words`]). What they type goes into
+//! their vault, and the agent is woken once in its conversation with them, told the item's
+//! reference or that they declined. The ask is held by this process alone: a server that stops
+//! while its person is asked asks nobody again, and the agent asks again when it is told to.
+//!
 //! Nothing here keeps a secret, and nothing here shows one. The arguments name the item by
 //! its reference, the question shows it withheld, and the entry answers what the person would
 //! be answered: the account, the provider. A text released for a page passes through here
@@ -53,6 +61,7 @@ use tilo_resource::Resource as _;
 use tilo_workspace_agent::Agent;
 use zeroize::Zeroizing;
 
+use super::calendar_connect::{PutAsk, Typed, ask_for_password};
 use super::turn_provider::{Ending, Rows};
 use super::{
     Ask, CHAT, Reply, ServerAgents, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
@@ -149,6 +158,9 @@ impl TurnUses {
         };
         let mut offered = agents.workspaces.uses_offered(&hosted).await;
         offered.extend(agents.workspaces.calls_offered(&hosted).await);
+        if agents.workspaces.secret_ask_for_turn(&hosted).await.is_ok() {
+            offered.push(person_vault::ask_row());
+        }
         // A page's field is offered where this server places Browser windows, to a turn the
         // entry would not refuse before the vault is opened.
         if agents.browsers.is_some() && agents.workspaces.may_fill_pages(&hosted).await.is_ok() {
@@ -412,10 +424,10 @@ impl TurnProvider for TurnUses {
         (!rows.is_empty()).then(|| Pending::ready(Ok(rows)))
     }
 
-    /// A use by reference is this server's entry's to answer, also for a turn
-    /// it offers none, which the entry then refuses.
+    /// A use by reference and the ask for a secret are this server's entry's to answer, also
+    /// for a turn it offers none, which the entry then refuses.
     fn takes(&self, target: &RemoteActionTarget) -> bool {
-        person_vault::described_use(target).is_some()
+        person_vault::described_use(target).is_some() || *target == person_vault::ask_target()
     }
 
     /// A turn's caller changes when its person writes again while it works,
@@ -425,8 +437,147 @@ impl TurnProvider for TurnUses {
             if request.target == person_vault::page_target() {
                 return self.fill_page(&caller, &request).await;
             }
+            if request.target == person_vault::ask_target() {
+                return self.ask_for_secret(&caller, &request).await;
+            }
             self.take(&caller, &request).await
         })
+    }
+}
+
+/// What an agent is told when its person is asked for a secret: nothing is kept yet, and it
+/// neither waits nor asks again.
+const SECRET_ASKED: &str = "Your person is asked on their own device for this, in a protected \
+     field you cannot read. Nothing is kept yet. Tell them in one line to type it there. Once \
+     they have, you are told here the reference the workspace's vault keeps it under. Do not make this call \
+     again.";
+
+/// What the agent is told its person did with an ask for a secret.
+const SECRET_TYPED: &str = "they typed it where you cannot read it";
+const SECRET_DECLINED: &str = "they declined to type it";
+const SECRET_UNANSWERED: &str = "they were not asked, or did not answer in time";
+
+/// An ask for a secret, held while its person is asked. Nothing in it is a secret.
+struct SecretAsk {
+    id: String,
+    agent: String,
+    name: String,
+    person: String,
+    workspace: String,
+    asked: person_vault::AskForItem,
+    asked_in: Value,
+}
+
+impl PutAsk for SecretAsk {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn by_agent(&self) -> &str {
+        &self.agent
+    }
+
+    fn agent_name(&self) -> &str {
+        &self.name
+    }
+
+    fn of_person(&self) -> &str {
+        &self.person
+    }
+
+    fn in_workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    fn item(&self) -> person_vault::AskForItem {
+        self.asked.clone()
+    }
+
+    fn said(&self) -> String {
+        self.asked.words(&self.name)
+    }
+
+    fn put_in(&self) -> &Value {
+        &self.asked_in
+    }
+}
+
+impl TurnUses {
+    /// Ask the person `caller` acts for for the secret `request` names, on their own devices:
+    /// the call ends at once, and the agent is woken with how they answered.
+    async fn ask_for_secret(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<InvocationUpdate, ActionCallError> {
+        let narrowed = narrowing(&self.agent, &self.workspace);
+        let hosted = HostedTurn {
+            workspace: self.workspace_id,
+            caller,
+            keeper: &self.agent.keeper,
+            bound: narrowed.as_deref(),
+        };
+        let using = self.agents.workspaces.secret_ask_for_turn(&hosted).await?;
+        let InvokeArgument::Json(arguments) = &request.argument else {
+            return Err(ActionCallError::InvalidRequest {
+                reason: "an ask for a secret names its kind and where it belongs".to_owned(),
+            });
+        };
+        let asked: person_vault::AskForItem =
+            serde_json::from_value(Value::Object(arguments.clone())).map_err(|_| {
+                ActionCallError::InvalidRequest {
+                    reason: "an ask for a secret names its kind (login, key, code-generator, \
+                             ssh-key or value), belongsTo and, when known, username, and \
+                             never the secret"
+                        .to_owned(),
+                }
+            })?;
+        let asked = asked
+            .checked()
+            .map_err(|reason| ActionCallError::InvalidRequest { reason })?;
+        let open = SecretAsk {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            agent: using.agent,
+            name: using.name,
+            person: hex::encode(using.person),
+            workspace: using.workspace,
+            asked,
+            asked_in: asked_in(caller),
+        };
+        let agents = self.agents.clone();
+        tokio::spawn(async move { agents.ask_and_tell(open).await });
+        Ok(InvocationUpdate::Failed {
+            invocation: request.invocation,
+            error: ActionFailure {
+                code: ASKED_FIRST.to_owned(),
+                message: SECRET_ASKED.to_owned(),
+                details: None,
+                retryable: false,
+            },
+        })
+    }
+}
+
+impl ServerAgents {
+    /// Ask the person `open` names for its secret, and wake the agent that asked once with how
+    /// they answered: the reference the workspace's vault keeps it under, where they typed it.
+    async fn ask_and_tell(&self, open: SecretAsk) {
+        let asked = format!("Ask for {}", open.asked.belongs_to.join(" and "));
+        let (answered, came) = match ask_for_password(&self.workspaces, &open).await {
+            Typed::Kept(reference) => (
+                SECRET_TYPED,
+                format!(
+                    "The workspace's vault keeps it as {reference}. Pass that reference where an action \
+                     takes the secret: it is never the secret itself."
+                ),
+            ),
+            Typed::Declined => (SECRET_DECLINED, "Nothing was kept.".to_owned()),
+            Typed::Unanswered(why) => (
+                SECRET_UNANSWERED,
+                format!("Nothing was kept: {why}. Tell them so; ask again when they want."),
+            ),
+        };
+        self.tell_of_password(&open, &asked, (answered, &came)).await;
     }
 }
 

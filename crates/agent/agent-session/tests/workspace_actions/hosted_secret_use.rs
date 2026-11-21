@@ -2,8 +2,10 @@
 //! no device of theirs on while it works.
 //!
 //! The whole chain through the server's own interfaces: the assistant needs a mail account and
-//! asks for the password as a secret; the person's device answers into the protected path, their
-//! vault on the server; the turn that follows holds only the reference and calls the use; the first
+//! asks for the password, first in the conversation, which refuses it, then through the vault;
+//! the server asks the person's own device in the system's protected field, keeps what they type
+//! in the workspace's vault on the server and tells the assistant the reference; the turn that follows holds
+//! only the reference and calls the use; the first
 //! use asks the person; they answer "Always"; the server signs in and adds the account; the second
 //! use asks nothing. The password is in no message, no tool result, no model request, no log line
 //! and nowhere on the server's disk in the clear.
@@ -427,6 +429,47 @@ impl Hosted {
         on_page(&mut self.page, action, argument).await
     }
 
+    /// What the model was shown of each of its tool calls, one a line.
+    pub(super) fn tool_results(&self) -> String {
+        self.model
+            .asked()
+            .iter()
+            .filter_map(|asked| asked.request.messages.last())
+            .map(|message| format!("{message:?}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The assistant is woken once by what the server tells it, and answers `says`: everything
+    /// its model was sent for that turn.
+    pub(super) async fn woken_with(&self, says: &str) -> String {
+        self.model.then(Reply::text(says));
+        let deadline = tilo_test_env::hang_deadline();
+        let turns = loop {
+            let turns = self.agents.turns(&self.workspace).await.unwrap();
+            if !turns.is_empty() {
+                break turns;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the assistant was never told what came of it"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(turns.len(), 1, "it is told once: {turns:?}");
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            self.agents.answer(&self.workspace, &turns[0]),
+        )
+        .await
+        .expect("the turn ends")
+        .unwrap();
+        format!(
+            "{:?}",
+            self.model.asked().last().expect("it was asked").request
+        )
+    }
+
     /// What the model was shown of its last tool call: the request that followed it.
     pub(super) fn last_tool_result(&self) -> String {
         let asked = self.model.asked();
@@ -486,12 +529,17 @@ fn add_mail(call: &str, address: &str, reference: &str) -> Reply {
     )
 }
 
-/// The assistant asks for the password as a secret, and the person's device answers into their
-/// vault: the turn that follows is woken by their words and holds the reference. The reference.
+/// The assistant asks for the password. It tries the conversation first, in words and by the
+/// kind of question that once asked for a secret there, and is refused both times, told to ask
+/// through the vault: no question is posted, so the password can't be answered into the
+/// conversation. Its ask through the vault ends at once; the server asks her own device in the
+/// protected field, in the system's words, keeps what she types in her vault, and wakes the
+/// assistant once with the reference. The reference.
 pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
     hosted: &mut Hosted,
 ) -> String {
     let conversation = hosted.conversation();
+    let devices = hosted.her_devices();
     hosted
         .turn(
             "Please connect my mail, ada@example.test.",
@@ -501,56 +549,75 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
                     "chat/Messages#ask",
                     &serde_json::json!({
                         "channel": conversation.as_str(),
-                        "text": "I need the password of ada@example.test.",
+                        "text": "What is the password of ada@example.test? Reply with it here.",
+                        "answers": [{"id": "later", "label": "Later"}],
+                    }),
+                ),
+                does(
+                    "call-2",
+                    "chat/Messages#ask",
+                    &serde_json::json!({
+                        "channel": conversation.as_str(),
+                        "text": "I need the sign-in of ada@example.test.",
                         "kind": "secret",
                         "detail": {"kind": "login", "belongsTo": [IMAP, SMTP], "username": "ada"},
                     }),
                 ),
-                Reply::text("I asked you for the password. Type it into the field in our chat."),
+                does(
+                    "call-3",
+                    "vault/vault#ask",
+                    &serde_json::json!({
+                        "kind": "login", "belongsTo": [IMAP, SMTP], "username": "ada",
+                    }),
+                ),
+                Reply::text("I asked you for the password. Type it where your device asks."),
             ],
         )
         .await;
-    let asked = hosted.questions(chat::question::SECRET).await;
+    let results = hosted.tool_results();
     assert_eq!(
-        asked.len(),
-        1,
-        "the assistant asked for one secret: {}",
+        results.matches("vault's `ask`").count(),
+        2,
+        "both questions in the conversation are refused, and say where to ask: {results}"
+    );
+    assert!(
+        hosted.last_tool_result().contains("protected field"),
+        "the ask through the vault says she is asked where it cannot read: {}",
         hosted.last_tool_result()
     );
-    let (question, held) = &asked[0];
-    assert_eq!(held.author, MemberId::agent(SCOUT));
-    assert_eq!(
-        held.question.as_ref().unwrap().person,
-        MemberId::person(hosted.person()),
-        "only its own person is asked"
+    let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
+    assert!(
+        part.messages
+            .iter()
+            .all(|(_, message)| message.question.is_none()),
+        "no question was posted in the conversation"
     );
 
-    // The protected path: the person's device hands what they typed to their vault on the server,
-    // and answers the question with the reference the vault gave.
-    let kept = hosted
-        .on_device(
-            (
-                person_vault::PROVIDER,
-                person_vault::RESOURCE,
-                person_vault::ADD,
-            ),
-            serde_json::json!({
-                "kind": "login", "belongsTo": [IMAP, SMTP], "username": "ada", "secret": PASSWORD,
-            }),
-        )
-        .await;
-    let reference = kept["reference"].as_str().expect("a reference").to_owned();
+    // Her device is asked in the system's protected field, in the system's words.
+    let asked = devices.asked(1).await;
+    let ask = asked[0].ask.as_ref().expect("a question in words");
+    assert!(ask.secret && ask.typed && ask.choices.is_empty(), "{ask:?}");
+    for said in [
+        format!("asks for the password of ada at {IMAP} and {SMTP}."),
+        "never sees what you type: your vault keeps it for those places alone.".to_owned(),
+    ] {
+        assert!(ask.question.contains(&said), "{said:?}: {}", ask.question);
+    }
+    devices.answer(
+        0,
+        tilo_server_protocol::certify::ConfirmationAnswer::Secret(
+            tilo_server_protocol::certify::TypedSecret::new(PASSWORD.to_owned()),
+        ),
+    );
+
+    // The assistant is woken once with the reference her vault keeps it under.
+    let told = hosted.woken_with("Thanks, it is in your vault now.").await;
+    let at = told.find("vault.item:").expect("the assistant is told the reference");
+    let reference = told[at..at + "vault.item:".len() + 32].to_owned();
     assert!(
         person_vault::ItemRef::parse(&reference).is_some(),
         "{reference}"
     );
-    hosted
-        .answers(
-            question,
-            chat::question::FILLED,
-            serde_json::json!({"reference": reference}),
-        )
-        .await;
     reference
 }
 

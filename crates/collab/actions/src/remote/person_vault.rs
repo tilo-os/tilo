@@ -70,6 +70,14 @@ pub const FORGET_ENTRY: &str = "forget-entry";
 /// that asked, with the site the window's engine says the page is at.
 pub const FILL_PAGE: &str = "fill-page";
 
+/// Ask the person for a secret ([`AskForItem`]): the one way an agent comes by one. The person
+/// types it into the system's protected password field on a device of their own, in the
+/// system's words ([`AskForItem::words`]), and the workspace's vault keeps it for the places asked for
+/// alone. Whoever asked is answered the item's reference ([`Asked`]), never the secret. No
+/// question in a conversation asks for a secret ([`asks_for_secret`]): what a person answers
+/// there is read by everyone in it, and by the agent's model.
+pub const ASK: &str = "ask";
+
 /// The kind of resource a reference is the address of: what a parameter that
 /// takes a secret by reference names as its resource kind.
 pub const ITEM_KIND: &str = "vault.item";
@@ -388,8 +396,8 @@ pub struct TakeBack {
 }
 
 /// What every use by reference says of the reference it takes.
-const REFERENCE: &str = "The `reference` a question of kind `secret` was answered with \
-     (`vault.item:…`). It names the vault item and is never the secret itself.";
+const REFERENCE: &str = "The `reference` the vault's `ask` answered with (`vault.item:…`). It \
+     names the vault item and is never the secret itself.";
 /// What every use by reference says of the reason it may carry.
 const REASON: &str = "Why you need it, in one sentence your person reads when they are asked \
      whether you may.";
@@ -459,12 +467,12 @@ pub fn use_rows() -> Vec<CatalogueRow> {
             ),
             format!(
                 "Add a mail account for your person, signing in with a password their vault \
-                 keeps. You never hold the password. To get it, ask with Chat's `ask`, kind \
-                 `secret`, detail `{{kind: \"login\", belongsTo: [\"imap://<incomingHost>: \
-                <incomingPort>\", \"smtp://<outgoingHost>:<outgoingPort>\"], username}}`: your \
-                 person types it into a protected field, and the answer `filled` carries a \
-                 `reference` in its detail. Pass that reference as `password`. The item must \
-                 be a login that belongs to both servers, and it is sent nowhere else. \
+                 keeps. You never hold the password. To get it, call the vault's `ask` with \
+                 kind `login`, belongsTo `[\"imap://<incomingHost>:<incomingPort>\", \
+                 \"smtp://<outgoingHost>:<outgoingPort>\"]` and the username: your person \
+                 types it into a protected field, and you are told the `reference` their \
+                 vault keeps it under. Pass that reference as `password`. The item must be a \
+                 login that belongs to both servers, and it is sent nowhere else. \
                  {ASKED_FIRST}"
             ),
             vec![
@@ -516,12 +524,12 @@ pub fn use_rows() -> Vec<CatalogueRow> {
             ),
             format!(
                 "Keep the API key of one of your person's model providers from a key their \
-                 vault keeps. You never hold the key. To get it, ask with Chat's `ask`, kind \
-                 `secret`, detail `{{kind: \"key\", belongsTo: [\"<the web address of the \
-                 provider's endpoint, such as https://api.example.com>\"]}}`: your person types \
-                 it into a protected field, and the answer `filled` carries a `reference` in \
-                 its detail. Pass that reference as `key`. The item must be a key that belongs \
-                 to the provider's endpoint, and it is kept for no other. {ASKED_FIRST}"
+                 vault keeps. You never hold the key. To get it, call the vault's `ask` with \
+                 kind `key` and belongsTo `[\"<the web address of the provider's endpoint, \
+                 such as https://api.example.com>\"]`: your person types it into a protected \
+                 field, and you are told the `reference` the workspace's vault keeps it under. Pass that \
+                 reference as `key`. The item must be a key that belongs to the provider's \
+                 endpoint, and it is kept for no other. {ASKED_FIRST}"
             ),
             vec![
                 ActionParam::required(
@@ -699,12 +707,12 @@ pub fn call_rows() -> Vec<CatalogueRow> {
              unless it says otherwise), and only to the service the item belongs to: `url` \
              must be at that service's web address, over https. You never hold the key, and \
              it is struck from what you are answered: the status, the headers and the body. \
-             To get the key, ask with Chat's `ask`, kind `secret`, detail `{{kind: \"key\", \
-             belongsTo: [\"<the service's web address, such as https://api.example.com>\"], \
-             sentIn}}`, where `sentIn` says how the service takes its key when not as a bearer \
-             token: `basic`, `header:<name>` such as `header:X-Api-Key`, or `query:<name>`. \
-             Your person types it into a protected field, and the answer `filled` carries a \
-             `reference` in its detail. Pass that reference as `key`. {CALL_ASKED_FIRST}"
+             To get the key, call the vault's `ask` with kind `key`, belongsTo `[\"<the \
+             service's web address, such as https://api.example.com>\"]` and `sentIn`, which \
+             says how the service takes its key when not as a bearer token: `basic`, \
+             `header:<name>` such as `header:X-Api-Key`, or `query:<name>`. Your person types \
+             it into a protected field, and you are told the `reference` the workspace's vault keeps it \
+             under. Pass that reference as `key`. {CALL_ASKED_FIRST}"
         ),
         vec![
             ActionParam::required("url", ParamType::Text, "The address to call."),
@@ -725,6 +733,211 @@ pub fn call_rows() -> Vec<CatalogueRow> {
         ],
     )]
 }
+
+/// The most places one asked-for secret belongs to.
+pub const MAX_ASKED_PLACES: usize = 4;
+/// The longest user name and `sentIn` an ask names, in bytes.
+const MAX_ASKED_NAME_BYTES: usize = 320;
+
+/// What [`ASK`] asks the person for: what kind of secret, where it belongs and the name it signs
+/// in with. It holds no secret, and nothing in it is worded by the agent: the person reads the
+/// system's words for it ([`Self::words`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AskForItem {
+    pub kind: ItemKind,
+    /// Where it belongs, each a web address or a server ([`looks_like_place`]): the only places
+    /// it is ever handed to.
+    pub belongs_to: Vec<String>,
+    /// The name it signs in with, when it has one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub username: String,
+    /// Where a key rides in a request to its service, as [`AddItem::sent_in`] says it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sent_in: String,
+}
+
+impl AskForItem {
+    /// The ask as it is put: places that each could name one, a name on one line.
+    ///
+    /// # Errors
+    /// What makes it no ask to put, in words that never quote it.
+    pub fn checked(mut self) -> Result<Self, String> {
+        if self.belongs_to.is_empty() || self.belongs_to.len() > MAX_ASKED_PLACES {
+            return Err(format!(
+                "belongsTo: 1 to {MAX_ASKED_PLACES} places, each a web address such as \
+                 https://example.com or a server such as imap://mail.example.com:993"
+            ));
+        }
+        for place in &mut self.belongs_to {
+            *place = place.trim().to_owned();
+            if !looks_like_place(place) {
+                return Err(
+                    "belongsTo: each place is a web address such as https://example.com or a \
+                     server such as imap://mail.example.com:993 or ssh://git.example.com"
+                        .to_owned(),
+                );
+            }
+        }
+        self.username = self.username.trim().to_owned();
+        self.sent_in = self.sent_in.trim().to_owned();
+        for (name, said) in [("username", &self.username), ("sentIn", &self.sent_in)] {
+            if said.len() > MAX_ASKED_NAME_BYTES || said.chars().any(char::is_control) {
+                return Err(format!("{name}: a few words on one line"));
+            }
+        }
+        if !self.sent_in.is_empty() && self.kind != ItemKind::Key {
+            return Err("sentIn: only a key says how it is sent".to_owned());
+        }
+        Ok(self)
+    }
+
+    /// What the person reads where they are asked, in the system's words: what is asked for,
+    /// where it goes, and that `agent` never sees it.
+    #[must_use]
+    pub fn words(&self, agent: &str) -> String {
+        let what = match self.kind {
+            ItemKind::Login => "the password",
+            ItemKind::Key => "the key",
+            ItemKind::CodeGenerator => "the setup key of the code generator",
+            ItemKind::SshKey => "the ssh key",
+            ItemKind::Value => "the value",
+        };
+        let places = self.belongs_to.join(" and ");
+        let of = if self.username.is_empty() {
+            String::new()
+        } else {
+            format!(" of {}", self.username)
+        };
+        let alone = if self.belongs_to.len() == 1 {
+            "that place alone"
+        } else {
+            "those places alone"
+        };
+        format!(
+            "{agent} asks for {what}{of} at {places}. {agent} never sees what you type: your \
+             vault keeps it for {alone}."
+        )
+    }
+}
+
+/// What [`ASK`] is answered with: the item the person's vault now keeps, or none where they
+/// declined.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Asked {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ItemRef>,
+}
+
+/// The target of [`ASK`].
+#[must_use]
+pub fn ask_target() -> RemoteActionTarget {
+    target(ASK)
+}
+
+/// [`ASK`] as a catalogue offers it to an agent acting for the person.
+#[must_use]
+pub fn ask_row() -> CatalogueRow {
+    use crate::{ActionParam, ParamType};
+    use_row(
+        (PROVIDER, RESOURCE, "Vault"),
+        (ASK, "Ask your person for a secret"),
+        "Ask your person for a password, a key or another secret. This is the one way to get \
+         one: a question in a conversation never asks for a secret, and one that does is \
+         refused. Your person types it into the system's protected field on their own device, \
+         in words the system writes; you never see it. The workspace's vault keeps it for the places in \
+         `belongsTo` alone: a site as `https://example.com`, a server as \
+         `imap://mail.example.com:993` or `ssh://git.example.com`. You are told the \
+         `reference` it is kept under (`vault.item:…`), or that they declined: pass the \
+         reference where an action takes the secret. Where nobody watches, the call ends at \
+         once and you are told in your conversation with them; do not make it again."
+            .to_owned(),
+        vec![
+            ActionParam::required(
+                "kind",
+                ParamType::Text,
+                "What it is: `login` (a password), `key`, `code-generator`, `ssh-key` or `value`.",
+            ),
+            ActionParam::required(
+                "belongsTo",
+                ParamType::Array,
+                "Where it belongs: each a web address or a server, at most four.",
+            ),
+            ActionParam::optional(
+                "username",
+                ParamType::Text,
+                "The name it signs in with, when you know it.",
+            ),
+            ActionParam::optional(
+                "sentIn",
+                ParamType::Text,
+                "For a key: how its service takes it when not as a bearer token: `basic`, \
+                 `header:<name>` or `query:<name>`.",
+            ),
+        ],
+    )
+}
+
+/// Whether `words` ask for a password, a key or another secret: what no question in a
+/// conversation asks for, since what the person answers there is read by everyone in it and by
+/// the agent's model ([`ASK`] asks instead). A first check on the words alone, in the languages
+/// Tilo speaks: it catches a plain question, and never decides what an answer may hold.
+#[must_use]
+pub fn asks_for_secret(words: &str) -> bool {
+    const ALONE: [&str; 14] = [
+        "password",
+        "passwords",
+        "passphrase",
+        "passcode",
+        "passcodes",
+        "credential",
+        "credentials",
+        "cvv",
+        "cvc",
+        "2fa",
+        "otp",
+        "passwort",
+        "kennwort",
+        "zugangsdaten",
+    ];
+    const PAIRS: [(&str, &str); 17] = [
+        ("pin", "code"),
+        ("pin", "number"),
+        ("your", "pin"),
+        ("api", "key"),
+        ("access", "key"),
+        ("secret", "key"),
+        ("private", "key"),
+        ("ssh", "key"),
+        ("recovery", "key"),
+        ("access", "token"),
+        ("api", "token"),
+        ("auth", "token"),
+        ("bearer", "token"),
+        ("verification", "code"),
+        ("recovery", "code"),
+        ("security", "code"),
+        ("card", "number"),
+    ];
+    let lower = words.to_lowercase();
+    let tokens: Vec<&str> = lower
+        .split(|sign: char| !sign.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect();
+    tokens.iter().any(|token| {
+        ALONE.contains(token) || token.ends_with("passwort") || token.ends_with("password")
+    }) || tokens
+        .windows(2)
+        .any(|pair| PAIRS.contains(&(pair[0], pair[1])))
+}
+
+/// What a question that asks for a secret is refused with: where to ask instead.
+pub const ASK_INSTEAD: &str = "A question here never asks for a password, a key or another \
+     secret: what your person answers is read by everyone in the conversation, and by you. Ask \
+     with the vault's `ask` (Ask your person for a secret) instead: they type it into a \
+     protected field on their own device, and you are told the reference the workspace's vault keeps it \
+     under.";
 
 /// What every call that sends an item's secret out says of being asked
 /// first.
@@ -779,7 +992,7 @@ mod call_tests {
         );
         let described = action.description.unwrap_or_default();
         for said in [
-            "kind `secret`",
+            "vault's `ask`",
             "sentIn",
             "`reference`",
             "asked first",
@@ -856,6 +1069,77 @@ mod tests {
 
     const ID: &str = "0123456789abcdef0123456789abcdef";
 
+    /// A question that asks for a secret is told apart from one that only mentions a word
+    /// near one: what a person would type a password, a key or a code into is caught.
+    #[test]
+    fn a_question_for_a_secret_is_told_apart() {
+        for asking in [
+            "What is your Fastmail password?",
+            "Could you paste the API key for OpenRouter?",
+            "Send me the access token, please",
+            "What's the PIN code of the card?",
+            "Your 2FA code?",
+            "Wie lautet dein Passwort?",
+            "Type your app-password here",
+            "the card number and CVV",
+        ] {
+            assert!(asks_for_secret(asking), "{asking}");
+        }
+        for plain in [
+            "Should I pin this message?",
+            "Which calendar should the meeting go in?",
+            "Shall I book the 9:40 train or the 10:10 one?",
+            "Is the key meeting on Monday?",
+        ] {
+            assert!(!asks_for_secret(plain), "{plain}");
+        }
+    }
+
+    /// An ask names only places a secret can belong to, and the person reads the system's
+    /// words for it, which say where it goes and who never sees it.
+    #[test]
+    fn an_ask_for_a_secret_is_checked_and_worded_by_the_system() {
+        let ask: AskForItem = serde_json::from_value(serde_json::json!({
+            "kind": "login",
+            "belongsTo": [" https://example.com "],
+            "username": "ada",
+        }))
+        .unwrap();
+        let ask = ask.checked().unwrap();
+        assert_eq!(
+            ask.words("Scout"),
+            "Scout asks for the password of ada at https://example.com. Scout never sees what \
+             you type: your vault keeps it for that place alone."
+        );
+        for wrong in [
+            serde_json::json!({"kind": "login", "belongsTo": []}),
+            serde_json::json!({"kind": "login", "belongsTo": ["my bank"]}),
+            serde_json::json!({"kind": "login", "belongsTo": ["https://a.example"], "sentIn": "basic"}),
+        ] {
+            let ask: AskForItem = serde_json::from_value(wrong).unwrap();
+            assert!(ask.checked().is_err());
+        }
+        assert!(
+            serde_json::from_value::<AskForItem>(serde_json::json!({
+                "kind": "login",
+                "belongsTo": ["https://example.com"],
+                "secret": "hunter2",
+            }))
+            .is_err(),
+            "an ask carries no secret"
+        );
+        let row = ask_row();
+        let action = row.action.unwrap();
+        assert_eq!(action.address.action, ASK);
+        assert!(
+            action
+                .params
+                .iter()
+                .all(|param| param.ty != crate::ParamType::Secret && !takes_item(param)),
+            "an ask takes no secret and no reference"
+        );
+    }
+
     /// What could name a place passes the first check, and plain words,
     /// a bare host and another scheme do not.
     #[test]
@@ -908,7 +1192,7 @@ mod tests {
             );
             assert_eq!(action.contract.kind, crate::ActionKind::Outside);
             let description = action.description.as_deref().unwrap();
-            for said in ["kind `secret`", "`reference`", "asked first", "Always"] {
+            for said in ["vault's `ask`", "`reference`", "asked first", "Always"] {
                 assert!(description.contains(said), "{said}: {description}");
             }
             let target = RemoteActionTarget {

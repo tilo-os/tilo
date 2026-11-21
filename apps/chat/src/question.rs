@@ -11,8 +11,15 @@
 //! acting for them, never from a device that is not theirs, and nobody else
 //! in the workspace. An answer names one of the question's own answers and
 //! nothing wider. What a host does on it (run the one action that asked
-//! first, keep a secret, sign in) is its kind's, decided where the answer is
-//! read and never by the button.
+//! first) is its kind's, decided where the answer is read and never by the
+//! button.
+//!
+//! No question asks for a password, a key or another secret, in any kind:
+//! what its person answers is read by everyone in the conversation and by
+//! the agent that asked. A secret is asked for in the system's protected
+//! field on the person's own device, and only through the vault
+//! ([`tilo_actions::remote::person_vault::ASK`]); [`asks_for_no_secret`]
+//! refuses one that asks here.
 //!
 //! # Kinds
 //!
@@ -25,7 +32,6 @@
 //! |---|---|---|---|
 //! | [`CHOICE`] | the asker's own, each with its label | none | the label is posted as the person's own message |
 //! | [`ACTION`] | [`ALLOW`], [`DENY`], and [`ALWAYS`] where one event may do that kind of thing unasked from then on, or an agent may use one vault item at the same place | the invocation as its host keeps it; `draft` is the [`tilo_actions::Draft`] the person reviews, and `use.item` says which item of their vault it would use: its kind and where, never its address | its host says it [`STARTED`], runs that one invocation or drops it, and says which ([`Question::settle`]) |
-//! | [`SECRET`] | none of its own: [`FILLED`], or [`DECLINED`] | what is asked for: its `kind`, the places it `belongsTo` and, when known, the `username` | the person's device hands what they typed into the protected field to their vault, and the answer's detail carries the vault item's `reference`, never the secret |
 //!
 //! To add a kind: give it a name here, say what its detail holds and what
 //! its answers mean in this table, draw its card where the others are drawn
@@ -43,17 +49,6 @@ use ui::tilo_resource::{self, ActionCx, Atom, JsonSchema, Model, Refusal};
 pub const CHOICE: &str = "choice";
 /// The kind that asks about one action its person's grants leave to them.
 pub const ACTION: &str = "action";
-/// The kind that asks its person for a secret, typed into a protected field
-/// on a device of theirs and kept in their vault: whoever asked is answered
-/// with the vault item's reference, never the secret.
-pub const SECRET: &str = "secret";
-
-/// The answer of a [`SECRET`] question whose secret its person's vault now
-/// keeps.
-pub const FILLED: &str = "filled";
-/// The answer of a [`SECRET`] question whose secret its person does not give.
-pub const DECLINED: &str = "declined";
-
 /// The answer that runs the one action an [`ACTION`] question shows.
 pub const ALLOW: &str = "allow";
 /// The answer that drops it.
@@ -184,6 +179,34 @@ fn kept_detail(detail: Option<serde_json::Value>) -> Result<Atom, Refusal> {
         return Err(Refusal::new("a question's detail is too large"));
     }
     Ok(Atom(text))
+}
+
+/// The kind its asker once asked a secret with, and that no question has any more.
+const SECRET_KIND: &str = "secret";
+
+/// Refuse a question that asks for a password, a key or another secret, in its `text` or in
+/// the labels of its `answers`, or by the kind once used for one. A question of kind [`ACTION`]
+/// is its host's, worded by the host and answered with buttons alone, and is not read here.
+///
+/// # Errors
+/// Where to ask for a secret instead ([`tilo_actions::remote::person_vault::ASK_INSTEAD`]).
+pub fn asks_for_no_secret(
+    kind: Option<&str>,
+    text: &str,
+    answers: Option<&[Choice]>,
+) -> Result<(), Refusal> {
+    use tilo_actions::remote::person_vault::{ASK_INSTEAD, asks_for_secret};
+    if kind == Some(SECRET_KIND) {
+        return Err(Refusal::new(ASK_INSTEAD));
+    }
+    if kind == Some(ACTION) {
+        return Ok(());
+    }
+    let labels = answers.unwrap_or_default().iter().map(|answer| answer.label.as_str());
+    if std::iter::once(text).chain(labels).any(asks_for_secret) {
+        return Err(Refusal::new(ASK_INSTEAD));
+    }
+    Ok(())
 }
 
 /// The person the invoker of `cx` acts for: who a question it asks is put to.

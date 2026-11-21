@@ -215,6 +215,14 @@ impl PersonAsk {
         if !self.choices.iter().all(|choice| seen.insert(choice)) {
             return Err("choices: each once".to_owned());
         }
+        // What the person answers is the agent's to read: a secret is asked for in the
+        // system's protected field instead, never in a question's words.
+        if std::iter::once(&self.question)
+            .chain(&self.choices)
+            .any(|words| super::person_vault::asks_for_secret(words))
+        {
+            return Err(super::person_vault::ASK_INSTEAD.to_owned());
+        }
         self.typed |= self.choices.is_empty();
         Ok(self)
     }

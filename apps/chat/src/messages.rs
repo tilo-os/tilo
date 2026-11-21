@@ -931,15 +931,10 @@ impl ChatMessages {
     /// is posted as their own message. Only they answer it, and
     /// `withdraw-question` takes it back.
     ///
-    /// For a password, a key or any other secret, ask with the kind `secret`
-    /// and never in words. `detail` says what it is: its `kind` (`login`,
-    /// `key`, `code-generator`, `ssh-key` or `value`), the places it
-    /// `belongsTo` (a site as `https://example.com`, a server as
-    /// `imap://mail.example.com:993` or `ssh://git.example.com`) and, when
-    /// you know it, the `username`. Your person types it into a protected
-    /// field. You are answered `filled` with a `reference` in the answer's
-    /// detail, which the actions that sign in take in place of the secret,
-    /// or `declined`. You never see what was typed.
+    /// Never ask here for a password, a key or any other secret: what your
+    /// person answers is read by everyone in the conversation, so a question
+    /// that asks for one is refused. The vault's `ask` asks for it in a
+    /// protected field on their own device instead.
     #[action(incoming_message, audience = "agents")]
     pub fn ask(
         &mut self,
@@ -948,15 +943,14 @@ impl ChatMessages {
         #[param("What is asked, in words")] text: NonBlank,
         #[param("The answers offered, in order: each an id and what its button says")]
         answers: Option<Vec<Choice>>,
-        #[param("The kind of question: `secret` asks for a secret; a choice when absent")]
+        #[param("The kind of question; a choice when absent")]
         kind: Option<String>,
-        #[param(
-            "What the kind keeps with the question: for a secret what it is and where it belongs; leave it out for a choice"
-        )]
+        #[param("What the kind keeps with the question; leave it out for a choice")]
         detail: Option<serde_json::Value>,
         #[param("The message it answers in a thread")] parent: Option<Id>,
     ) -> Result<(), Refusal> {
         let person = crate::question::asked_person(cx)?;
+        crate::question::asks_for_no_secret(kind.as_deref(), text.as_str(), answers.as_deref())?;
         let question = Question::asked(person, kind, answers.unwrap_or_default(), detail)?;
         let id = cx.id();
         let ts = cx.now_ms();

@@ -32,7 +32,7 @@ use super::calendar_connect::{
 use super::mail::narrowing;
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
-use crate::workspaces::LoginAsked;
+use tilo_actions::remote::person_vault::AskForItem;
 use crate::workspaces::hosted_use::{
     HostedTurn, MAIL_CONNECT, MailAsk, MailCarried, TurnMailConnect,
 };
@@ -76,7 +76,7 @@ impl PutAsk for MailAsk {
         &self.workspace
     }
 
-    fn login(&self) -> LoginAsked {
+    fn item(&self) -> AskForItem {
         MailAsk::login(self)
     }
 

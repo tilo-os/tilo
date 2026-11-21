@@ -848,6 +848,19 @@ impl Workspaces {
         })
     }
 
+    /// Whether `turn` may ask its person for a secret ([`person_vault::ASK`]): the turn is its
+    /// keeper's own, and an agent that anything narrows holds a rule that names the ask. The
+    /// turn as the entry knows it.
+    ///
+    /// # Errors
+    /// As [`Self::keepers_turn`], and [`NotPermitted`] for a narrowed agent without that rule.
+    pub async fn secret_ask_for_turn(
+        &self,
+        turn: &HostedTurn<'_>,
+    ) -> Result<KeepersTurn, ActionCallError> {
+        self.turn_uses_for(turn, &person_vault::ask_target()).await
+    }
+
     /// [`Self::keepers_turn`] for a use by reference: an agent that anything
     /// narrows also holds a rule that names `target`.
     async fn turn_uses_for(

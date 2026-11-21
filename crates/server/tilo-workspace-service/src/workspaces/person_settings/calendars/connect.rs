@@ -168,10 +168,12 @@ impl ConnectAsk {
     /// What the vault keeps the password as: a login at the calendar
     /// server's own origin, under the user name.
     #[must_use]
-    pub fn login(&self) -> crate::workspaces::LoginAsked {
-        crate::workspaces::LoginAsked {
+    pub fn login(&self) -> tilo_actions::remote::person_vault::AskForItem {
+        tilo_actions::remote::person_vault::AskForItem {
+            kind: tilo_actions::remote::person_vault::ItemKind::Login,
             belongs_to: vec![self.place.clone()],
             username: self.username.clone(),
+            sent_in: String::new(),
         }
     }
 

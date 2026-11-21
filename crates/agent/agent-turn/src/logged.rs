@@ -208,9 +208,9 @@ mod tests {
             ),
             "invalid_arguments: required argument `title` was not supplied"
         );
-        // As Chat refuses a question for a secret: its sentence, then what was wrong with what
-        // the caller wrote, then the arguments to ask again with. The sentence loses the words
-        // the call wrote too.
+        // A refusal in three parts: its sentence, then what was wrong with what the caller
+        // wrote, then the arguments to ask again with. The sentence loses the words the call
+        // wrote too.
         let secret = "failed: action_failed: a question for a secret says where the secret \
             belongs. In your detail: a place is written with what it is reached by, and yours \
             is `mail.plum.example`. Ask again with exactly these arguments: \

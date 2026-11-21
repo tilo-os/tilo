@@ -43,7 +43,7 @@ use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{
-    self, AddItem, AlwaysUse, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse, ItemUses, ItemView,
+    self, AddItem, AlwaysUse, AskForItem, Entries, ForgetEntry, ItemKind, ItemRef, ItemUse, ItemUses, ItemView,
     KeepEntry, KeptItems, RemoveItem, TakeBack, UsesOf,
 };
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
@@ -53,28 +53,20 @@ use super::person_asking::{ApprovalChange, is_scoped_approval};
 use super::workspace_stores::Store;
 use super::{WorkspaceId, Workspaces};
 
-/// What the vault is asked to keep where a person is asked for a login's password: where it
-/// belongs and the name it signs in with. It holds no secret.
-#[derive(Clone, Debug)]
-pub struct LoginAsked {
-    pub belongs_to: Vec<String>,
-    pub username: String,
-}
-
 impl Workspaces {
-    /// Ask `person`, on their own devices, for the password `question` words, and keep what
-    /// they type in `workspace`'s vault as a login `asked` names: the reference of the item it
-    /// is kept as, `None` where they declined. The password goes from their device's protected
-    /// field to this host and into the vault; only the reference comes back.
+    /// Ask `person`, on their own devices, for the secret `question` words, and keep what they
+    /// type in `workspace`'s vault as the item `asked` names: the reference of the item it is
+    /// kept as, `None` where they declined. The secret goes from their device's protected field
+    /// to this host and into the vault; only the reference comes back.
     ///
     /// # Errors
     /// No device of theirs could be asked, nobody answered in time, or the vault did not keep
     /// what they typed.
-    pub async fn ask_for_login(
+    pub async fn ask_for_item(
         &self,
         (person, workspace): ([u8; 32], &str),
         question: tilo_server_protocol::certify::PendingConfirmation,
-        asked: LoginAsked,
+        asked: AskForItem,
     ) -> Result<Option<ItemRef>, String> {
         use tilo_server_protocol::certify::ConfirmationAnswer;
         if !question.ask.as_ref().is_some_and(|ask| ask.secret) {
@@ -87,10 +79,10 @@ impl Workspaces {
         };
         let root = self.workspace_root(workspace);
         let adding = AddItem {
-            kind: ItemKind::Login,
+            kind: asked.kind,
             belongs_to: asked.belongs_to,
             username: asked.username,
-            sent_in: String::new(),
+            sent_in: asked.sent_in,
             secret: typed.expose().to_owned(),
         };
         let kept = tokio::task::spawn_blocking(move || add(&root, adding))
@@ -304,8 +296,56 @@ impl Workspaces {
                 )?;
                 said(key_from_item(&root, &setting, &by, purpose, &self.model_reach()).await)
             }
+            (person_vault::PROVIDER, person_vault::ASK) => {
+                let asked: AskForItem = argument(
+                    request,
+                    "an ask for a secret names its kind, where it belongs and, when known, the \
+                     name it signs in with, and never the secret",
+                )?;
+                let asked = asked.checked().map_err(refused)?;
+                let id = workspace_id.map(|id| id.to_string()).unwrap_or_default();
+                let workspace = self.summary(&id).await.map_or(id, |summary| summary.name);
+                let question = secret_question(caller, &by, &workspace, &asked);
+                let person = Self::asking_person(caller, certificate, workspace_id)?;
+                let kept = self
+                    .ask_for_item((person, &reach.workspace.to_string()), question, asked)
+                    .await;
+                said(kept.map(|reference| person_vault::Asked { reference }))
+            }
             _ => Err(ActionCallError::UnknownAction),
         }
+    }
+}
+
+/// How long a person's devices ask for a secret before the ask lapses, in nanoseconds.
+const SECRET_WAIT_NS: u64 = 30 * 60 * 1_000_000_000;
+
+/// The question that asks the person `caller` acts for for the secret `asked` names, in the
+/// system's words: `by` is the agent that asks, by the name its person knows it under.
+pub fn secret_question(
+    caller: &Caller,
+    by: &str,
+    workspace: &str,
+    asked: &AskForItem,
+) -> tilo_server_protocol::certify::PendingConfirmation {
+    let mut id = [0_u8; 32];
+    tilo_failure::ignored!(
+        "a question without random bytes is still one question",
+        getrandom::fill(&mut id).ok()
+    );
+    tilo_server_protocol::certify::PendingConfirmation {
+        id,
+        agent_id: caller.acting().agent_id().unwrap_or_default().to_owned(),
+        agent_label: by.to_owned(),
+        workspace: workspace.to_owned(),
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(SECRET_WAIT_NS),
+        ask: Some(tilo_server_protocol::certify::AgentAsk {
+            question: asked.words(by),
+            choices: Vec::new(),
+            typed: true,
+            secret: true,
+        }),
+        ..tilo_server_protocol::certify::PendingConfirmation::default()
     }
 }
 

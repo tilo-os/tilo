@@ -191,10 +191,12 @@ impl MailAsk {
     /// What the vault keeps the password as: a login that belongs to both
     /// servers, under the name the account signs in with.
     #[must_use]
-    pub fn login(&self) -> crate::workspaces::LoginAsked {
-        crate::workspaces::LoginAsked {
+    pub fn login(&self) -> tilo_actions::remote::person_vault::AskForItem {
+        tilo_actions::remote::person_vault::AskForItem {
+            kind: tilo_actions::remote::person_vault::ItemKind::Login,
             belongs_to: self.belongs_to.to_vec(),
             username: self.username.clone(),
+            sent_in: String::new(),
         }
     }
 

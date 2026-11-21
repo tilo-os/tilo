@@ -239,9 +239,9 @@ async fn it_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines,
     );
 }
 
-/// Nothing she answers reaches her conversation: no question of Chat asks for a password.
+/// Nothing she answers reaches her conversation: no question of Chat asks her anything.
 async fn nothing_asks_in_chat(hosted: &Hosted) {
-    assert!(hosted.questions(chat::question::SECRET).await.is_empty());
+    assert!(hosted.questions(chat::question::CHOICE).await.is_empty());
     assert!(
         hosted.questions(chat::question::ACTION).await.is_empty(),
         "nothing asks her to allow a use"

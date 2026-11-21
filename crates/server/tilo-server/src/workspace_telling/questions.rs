@@ -83,43 +83,38 @@ pub(super) fn questions(
 
 /// The waiting `question` of `message` as its person is told it: the
 /// message's words, where it is, and a button for each answer it offers,
-/// which invokes Chat's own answering verb as the person. What asks for a
-/// secret has no button and its words stay on the host: a secret is typed
-/// into the protected field in Tilo.
+/// which invokes Chat's own answering verb as the person. No question asks
+/// for a secret: Chat refuses one, and a secret is typed into the system's
+/// protected field on the person's device instead.
 fn telling(
     workspace: &str,
     (id, message): (&Id, &chat::chat::Message),
     question: &chat::question::Question,
     told: String,
 ) -> ToTell {
-    let secret = question.kind.0 == chat::question::SECRET;
     let answering = collab_types::document::chain_resource_id(&chat::parts::chain());
-    let actions = if secret {
-        Vec::new()
-    } else {
-        question
-            .answers
-            .iter()
-            .enumerate()
-            .map(|(place, answer)| {
-                let mut arguments = Map::new();
-                arguments.insert("message".into(), json!(id.as_str()));
-                arguments.insert("answer".into(), json!(answer.id));
-                Offered {
-                    id: answer.id.clone(),
-                    label: answer.label.clone(),
-                    main: place == 0,
-                    target: OfferedTarget {
-                        app: CHAT.to_owned(),
-                        record: String::new(),
-                        resource: answering.clone(),
-                        action: chat::parts::ChatMessages::ANSWER_QUESTION.id().to_owned(),
-                    },
-                    arguments,
-                }
-            })
-            .collect()
-    };
+    let actions = question
+        .answers
+        .iter()
+        .enumerate()
+        .map(|(place, answer)| {
+            let mut arguments = Map::new();
+            arguments.insert("message".into(), json!(id.as_str()));
+            arguments.insert("answer".into(), json!(answer.id));
+            Offered {
+                id: answer.id.clone(),
+                label: answer.label.clone(),
+                main: place == 0,
+                target: OfferedTarget {
+                    app: CHAT.to_owned(),
+                    record: String::new(),
+                    resource: answering.clone(),
+                    action: chat::parts::ChatMessages::ANSWER_QUESTION.id().to_owned(),
+                },
+                arguments,
+            }
+        })
+        .collect();
     ToTell {
         id: Some(told),
         kind: Kind::Question,
@@ -134,7 +129,7 @@ fn telling(
             name: message.author_name.clone().unwrap_or_default(),
         }),
         workspace: Some(workspace.to_owned()),
-        words_stay: secret,
+        words_stay: false,
         spender: None,
     }
 }
@@ -365,8 +360,7 @@ mod tests {
 
     /// A question that waits is told the person it asks, with a button
     /// for each answer that invokes Chat's own answering verb; a question
-    /// answered or taken back waits no more; what asks for a secret is
-    /// told without its words leaving the host; a plain message is nobody's
+    /// answered or taken back waits no more; a plain message is nobody's
     /// question.
     #[test]
     #[expect(
@@ -399,19 +393,12 @@ mod tests {
             ),
             ("m2", message("Which deck?", Some(answered))),
             ("m3", message("Which deck?", Some(taken_back))),
-            (
-                "m4",
-                message(
-                    "The password for the registry is needed.",
-                    Some(question(chat::question::SECRET, &[])),
-                ),
-            ),
         ] {
             part.messages.push(Id::from_raw(id.to_owned()), message);
         }
 
         let found = questions(WORKSPACE, &part);
-        assert_eq!(found.len(), 4, "the plain message asks nobody");
+        assert_eq!(found.len(), 3, "the plain message asks nobody");
         assert!(found.iter().all(|(person, _)| *person == ADA));
 
         let QuestionUpdate::Waits(waits) = &found[0].1 else {
@@ -482,9 +469,5 @@ mod tests {
                 if id.ends_with(":m2") && device == "Ada's phone"
         ));
         assert!(matches!(&found[2].1, QuestionUpdate::TakenBack { id } if id.ends_with(":m3")));
-        let QuestionUpdate::Waits(secret) = &found[3].1 else {
-            panic!("what asks for a secret waits");
-        };
-        assert!(secret.words_stay && secret.tell.actions.is_empty());
     }
 }

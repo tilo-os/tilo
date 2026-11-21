@@ -12,7 +12,7 @@
 //! The password is its person's to type where no agent reads it. So the tool call ends at once,
 //! told that they are asked, and this server asks them itself, on their own devices: the
 //! system's protected password field on the sheet their shell or their page draws, in the words
-//! the server's entry says ([`Workspaces::ask_for_login`]). What they type goes from that field
+//! the server's entry says ([`Workspaces::ask_for_item`]). What they type goes from that field
 //! to this server and into the workspace's vault; only the item's reference comes back here.
 //!
 //! The ask is claimed once they answered, so an answer is carried out at most once. Then the
@@ -44,7 +44,8 @@ use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::hosted_use::{
     CALENDAR_CONNECT, CALENDARS, ConnectAsk, Connected, HostedTurn, TurnConnect,
 };
-use crate::workspaces::{LoginAsked, Workspaces};
+use crate::workspaces::Workspaces;
+use tilo_actions::remote::person_vault::AskForItem;
 
 /// What an agent is told when its person is asked for the password: nothing is connected yet,
 /// and it neither waits nor asks again.
@@ -125,8 +126,8 @@ pub(super) trait PutAsk: Sync {
     fn of_person(&self) -> &str;
     /// The workspace it was asked in.
     fn in_workspace(&self) -> &str;
-    /// What the vault keeps the password as.
-    fn login(&self) -> LoginAsked;
+    /// What the vault keeps what is typed as.
+    fn item(&self) -> AskForItem;
     /// The question's words, as this server says them.
     fn said(&self) -> String;
     /// Where and for which turn it was asked.
@@ -154,7 +155,7 @@ impl PutAsk for ConnectAsk {
         &self.workspace
     }
 
-    fn login(&self) -> LoginAsked {
+    fn item(&self) -> AskForItem {
         ConnectAsk::login(self)
     }
 
@@ -246,7 +247,7 @@ pub(super) async fn ask_for_password(workspaces: &Workspaces, open: &dyn PutAsk)
         ..PendingConfirmation::default()
     };
     match workspaces
-        .ask_for_login((person, open.in_workspace()), question, open.login())
+        .ask_for_item((person, open.in_workspace()), question, open.item())
         .await
     {
         Ok(Some(kept)) => Typed::Kept(kept),

@@ -607,3 +607,34 @@ fn a_question_survives_the_window_closing_and_is_answered_after() {
     let question = row(&mut app, &asked.id).question.expect("it asked");
     assert!(matches!(question.state(), QuestionState::Answered(given) if given.answer.0 == DENY));
 }
+
+/// An agent that asks its person for a password in the conversation is refused, in words that
+/// send it to the vault's own ask, whether it words the question or names the kind once used for
+/// a secret: nothing is posted, so nobody answers it with the password in the conversation.
+#[test]
+fn a_question_for_a_password_is_refused_and_nothing_is_posted() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let me = window_person(&mut app);
+    for asking in [
+        json!({"channel": CHANNEL, "text": "What is the password of ada@plum.example?",
+            "answers": [{"id": "later", "label": "Later"}]}),
+        json!({"channel": CHANNEL, "text": "Which one should I use?",
+            "answers": [{"id": "key", "label": "Paste the API key"}]}),
+        json!({"channel": CHANNEL, "text": "The sign-in of ada@plum.example", "kind": "secret"}),
+    ] {
+        let refused = app
+            .call_by(agent_for(&me), &chain(), "ask", asking.clone())
+            .expect_err("a question for a secret is refused");
+        assert!(
+            refused.to_string().contains("vault's `ask`"),
+            "the refusal says where to ask instead: {refused}"
+        );
+    }
+    app.settle();
+    assert!(
+        mounted_rows(&mut app, CHANNEL)
+            .iter()
+            .all(|row| !row.text.contains("ada@plum.example") && !row.text.contains("API key")),
+        "nothing was posted"
+    );
+}

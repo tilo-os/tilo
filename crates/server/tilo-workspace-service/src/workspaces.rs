@@ -134,7 +134,6 @@ pub mod person_asking;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_vault;
 #[cfg(not(target_arch = "wasm32"))]
-pub use person_vault::LoginAsked;
 // What a workspace keeps on the host beside its records, and who reaches it.
 #[cfg(not(target_arch = "wasm32"))]
 mod workspace_stores;

@@ -212,7 +212,7 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
     );
     assert!(
         hosted.questions(chat::question::ACTION).await.is_empty()
-            && hosted.questions(chat::question::SECRET).await.is_empty(),
+            && hosted.questions(chat::question::CHOICE).await.is_empty(),
         "nothing asks in her conversation"
     );
     assert!(

@@ -1420,6 +1420,7 @@ impl Workspaces {
                         person_accounts::PROVIDER,
                         person_accounts::ADD_MAIL_WITH_ITEM
                     ) | (person_models::PROVIDER, person_models::SET_KEY_FROM_ITEM)
+                        | (person_vault::PROVIDER, person_vault::ASK)
                 ) =>
             {
                 self.vault_use_invoke(workspace_id, caller, certificate, request)
