@@ -607,9 +607,16 @@ class Walk:
     def chooser_step(self, ident: str) -> dict | None:
         """The chooser's own step `ident` ("select", "confirm"), as the sheet
         publishes it: the person's way through the chooser, not a shortcut past
-        it."""
-        return next((a for a in self.session.actions("")
-                     if a.get("operation") == FILE_CHOOSER_STEP and a.get("id") == ident), None)
+        it. The action's operation is the sheet's vocabulary; a session that
+        lists it another way still names the sheet in its provider."""
+        def of(action: dict) -> bool:
+            operation = str(action.get("operation") or "")
+            return (action.get("id") == ident
+                    and (operation.startswith(FILE_CHOOSER_STEP)
+                         or FILE_CHOOSER in operation
+                         or FILE_CHOOSER in str(action.get("provider") or "")))
+
+        return next((a for a in self.session.actions("") if of(a)), None)
 
     def op_choose(self, value) -> dict:
         """Choose the fixture file a person's chooser offers: the sheet the app's
