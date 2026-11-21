@@ -612,6 +612,19 @@ class TilolangPackages(unittest.TestCase):
             self.assertEqual(environment['COHORT_APPS'], 'notes tl-discussion tl-notes')
             self.assertEqual(environment['REQUIRE_MIN'], '3')
 
+    def test_the_tilolang_host_ships_stripped_for_the_runtime_bundle(self):
+        # A release link without LTO keeps every symbol; the runtime bundle
+        # takes executables up to 64 MiB, so its host is stripped.
+        args = SimpleNamespace(compiler_interface_out=None)
+        with patch.object(ASSEMBLER, 'run') as run:
+            ASSEMBLER.prepare_tools(args)
+        self.assertNotIn('tilolang-process', run.call_args.args[0])
+        with patch.object(ASSEMBLER, 'run') as run:
+            ASSEMBLER.prepare_tools(args, tilolang=True)
+        argv = run.call_args.args[0]
+        self.assertIn('tilolang-process', argv)
+        self.assertIn('profile.release.package."tilolang-process".strip="symbols"', argv)
+
     def test_the_runtime_is_baked_by_the_shared_script_beside_the_toolkit(self):
         with patch.object(ASSEMBLER, 'run',
                           return_value=SimpleNamespace(stdout='0.1.0+tilolang\n')) as run:
