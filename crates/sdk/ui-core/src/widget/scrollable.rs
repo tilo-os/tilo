@@ -1208,8 +1208,9 @@ impl Widget for Scrollable {
         &mut self,
         action: crate::widget::PrimaryScrollAction,
     ) -> crate::widget::PrimaryScrollResult {
+        // As any scroll does, it asks for the frame that places what came into view.
         action.apply_to(self, Self::primary_vertical_scroll, |s, _, next| {
-            s.set_offset_y(next as f32);
+            s.scroll_by(0.0, next as f32 - s.offset_y);
         })
     }
 
