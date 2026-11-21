@@ -67,7 +67,13 @@ impl VirtualRows {
         let by_order = rows.len() == self.mounted.len();
         let mut paired: Vec<(u32, ListKey, Composed)> = Vec::with_capacity(rows.len());
         let mut loose: Vec<Composed> = Vec::new();
-        for (at, row) in rows.into_iter().enumerate() {
+        for (at, mut row) in rows.into_iter().enumerate() {
+            // A row kept from the frame before holds the disclosure and the notes the tree gave
+            // it then, and those notes the rows under it as they were: the tree gives them again
+            // below, from the rows as they are now.
+            let (disclosure, notes) = (disclosure_path(&row.path), notes_path(&row.path));
+            row.children
+                .retain(|part| part.path != disclosure && part.path != notes);
             let mounted = if by_order {
                 self.mounted.get(at)
             } else {
@@ -125,7 +131,7 @@ impl VirtualRows {
             Icon::ChevronDown
         };
         let mut part = Composed::new(
-            format!("{row_path}/disclosure"),
+            disclosure_path(row_path),
             "RowDisclosure",
             [rect.x0, rect.y0, rect.width(), rect.height()],
         );
@@ -188,13 +194,23 @@ fn group(parent: &str, row: [f64; 4], children: Vec<Composed>) -> Composed {
         ));
     }
     let mut group = Composed::new(
-        format!("{parent}/notes"),
+        notes_path(parent),
         "TreeNotes",
         [rect.x0, rect.y0, rect.width(), rect.height()],
     );
     group.tag = Some("ul");
     group.children = children;
     group
+}
+
+/// Where the tree composes the disclosure of the row at `row`.
+fn disclosure_path(row: &str) -> String {
+    format!("{row}/disclosure")
+}
+
+/// Where the tree composes the notes of the row at `row`, the rows under it.
+fn notes_path(row: &str) -> String {
+    format!("{row}/notes")
 }
 
 fn near(left: f64, right: f64) -> bool {
