@@ -1065,7 +1065,6 @@ session-deleted-workspace-body = It is gone from this computer and from your lis
 session-owner-deleted-workspace = { $name } was deleted by its owner
 session-owner-deleted-workspace-body = It is gone from this computer, and nothing in it can be opened anymore.
 session-joined-workspace = You joined { $name }
-session-joined-workspace-body = It is open now, with everything its people keep in it.
 session-join-failed-title = Couldn't join the workspace
 session-awaiting-admission = This device isn't in { $name } yet
 session-awaiting-admission-body = { $host } hosts { $name } and has to take this device in first. Its apps here wait until this device reaches { $host } once.

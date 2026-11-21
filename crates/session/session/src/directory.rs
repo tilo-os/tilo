@@ -224,7 +224,7 @@ fn join_listed(state: &DirectoryState, store: &Store, host: &dyn Host, key: &str
 
 /// Say the workspace `name` is theirs now, or no longer, in `words`' own: marked as the
 /// workspace's news.
-pub(crate) fn workspace_notice(notices: &dyn Notices, words: (&str, &str), name: &str) {
+pub(crate) fn workspace_notice(notices: &dyn Notices, words: (&str, Option<&str>), name: &str) {
     let (title, body) = words;
     let name = tilo_desktop_surface::names::workspace(name);
     notices.show(
@@ -232,20 +232,15 @@ pub(crate) fn workspace_notice(notices: &dyn Notices, words: (&str, &str), name:
             String::new(),
             1,
             tilo_desktop_surface::i18n::t_args(title, &[("name", name.into())]),
-            tilo_desktop_surface::i18n::t(body),
+            body.map(tilo_desktop_surface::i18n::t).unwrap_or_default(),
         )
         .about(NotificationIconKind::Workspace),
     );
 }
 
-/// Say the person joined `name`, where they are now: a note that the workspace is theirs, its
-/// windows open there.
+/// Confirm the person joined `name` once the workspace is open.
 pub(crate) fn joined_notice(notices: &dyn Notices, name: &str) {
-    workspace_notice(
-        notices,
-        ("session-joined-workspace", "session-joined-workspace-body"),
-        name,
-    );
+    workspace_notice(notices, ("session-joined-workspace", None), name);
 }
 
 /// Say this device holds the workspace `name` but `host` , its host, has not taken it in yet: a

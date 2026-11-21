@@ -690,8 +690,13 @@ pub fn minimum_card_height(
 ) -> f64 {
     let (_, pad_y) = card_pad(theme);
     let text = CardText::of(card);
+    let header = if text.caption.is_empty() {
+        text.time.as_str()
+    } else {
+        text.caption.as_str()
+    };
     let text_height: f64 = [
-        (text.caption.as_str(), theme.text(TextRole::Caption)),
+        (header, theme.text(TextRole::Caption)),
         (text.title.as_str(), theme.text(TextRole::Label).strong()),
         (text.body.as_str(), theme.text(TextRole::Caption)),
     ]
@@ -742,19 +747,11 @@ impl CardText {
         let caption = single_line_text(card.caption);
         let time = single_line_text(card.time);
         let body = single_line_text(card.body);
-        if caption.is_empty() && !time.is_empty() {
-            let body = if body.is_empty() {
-                time
-            } else {
-                format!("{body} \u{b7} {time}")
-            };
-            return Self {
-                caption,
-                time: String::new(),
-                title: single_line_text(card.title),
-                body,
-            };
-        }
+        let (body, time) = if caption.is_empty() && body.is_empty() {
+            (time, String::new())
+        } else {
+            (body, time)
+        };
         Self {
             caption,
             time,

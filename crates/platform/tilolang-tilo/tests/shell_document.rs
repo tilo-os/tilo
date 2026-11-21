@@ -1069,20 +1069,12 @@ fn banner_line_of(r: &Replica) -> (Option<String>, Option<String>) {
 fn a_banner_shows_the_parts_the_notice_has() {
     let mut r = workspace();
     r.commit();
-    notice_shown(
-        &r,
-        1,
-        "It is open now, with everything its people keep in it.",
-        "",
-    );
+    notice_shown(&r, 1, "", "");
     r.commit();
     assert_eq!(
         banner_line_of(&r),
-        (
-            Some("It is open now, with everything its people keep in it.".to_owned()),
-            None
-        ),
-        "a notice with no sender names none"
+        (None, None),
+        "a notice with only a title adds no sender or message"
     );
 
     notice_shown(&r, 2, "From Ada", "Mail");

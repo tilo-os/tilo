@@ -54,7 +54,10 @@ use crate::workspace_settings;
 pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
     crate::directory::workspace_notice(
         notices,
-        ("session-left-workspace", "session-left-workspace-body"),
+        (
+            "session-left-workspace",
+            Some("session-left-workspace-body"),
+        ),
         &tilo_desktop_surface::names::workspace(name),
     );
 }

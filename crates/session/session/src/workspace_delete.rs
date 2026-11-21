@@ -89,7 +89,7 @@ impl Shared {
             &*self.telling(),
             (
                 "session-deleted-workspace",
-                "session-deleted-workspace-body",
+                Some("session-deleted-workspace-body"),
             ),
             name,
         );
@@ -116,7 +116,7 @@ impl Shared {
                     &*self.telling(),
                     (
                         "session-owner-deleted-workspace",
-                        "session-owner-deleted-workspace-body",
+                        Some("session-owner-deleted-workspace-body"),
                     ),
                     &name,
                 );

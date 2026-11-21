@@ -625,20 +625,17 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_time_without_an_app_follows_the_body;
-    // Without an app's name over the title, how long ago a card arrived follows its body instead of
-    // alone on a line of its own, at the end of a text column an action cuts short.
+    phase the_body_and_time_are_separate_lines;
     {
         let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
             .body("Launch notes")
             .time("just now");
         let text = CardText::of(&card);
-        assert!(
-            !text.has_header(),
-            "no line over the title for the time alone"
-        );
-        assert_eq!(text.body, "Launch notes \u{b7} just now");
+        assert!(text.has_header());
+        assert_eq!(text.time, "just now");
+        assert_eq!(text.body, "Launch notes");
         let bare = CardText::of(&ToastCard::new("Done", ToastKind::Info).time("just now"));
+        assert!(!bare.has_header());
         assert_eq!(bare.body, "just now");
         let attributed = CardText::of(&card.caption("Notes"));
         assert!(
