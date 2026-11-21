@@ -10,7 +10,9 @@
 use collab_types::OwnResource;
 #[cfg(feature = "apps")]
 use tilo_peer_state::PeerDocumentCapture;
-use tilo_peer_state::{PeerDocumentReadError, StatePeer};
+use tilo_peer_state::StatePeer;
+#[cfg(feature = "apps")]
+use tilo_peer_state::PeerDocumentReadError;
 #[cfg(feature = "apps")]
 use tilo_user_identity::DeviceCert;
 
