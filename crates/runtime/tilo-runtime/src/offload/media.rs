@@ -15,10 +15,34 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use fs::document_media::DocumentMedia;
 use runtime_fs::blobs::{BlobScope, ReadOutcome};
+use tilo_fs::document_media::DocumentMedia;
 
-use crate::offload_content::BindError;
+/// Why a workspace file could not be bound as a job input.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BindError {
+    /// This device holds no manifest under that hash.
+    UnknownManifest,
+    /// The manifest is known but not every byte is on this device yet.
+    NotLocal,
+    /// The local bytes do not match the manifest.
+    Integrity,
+    /// Where the workspaces' media is kept did not answer.
+    Media(String),
+}
+
+impl std::fmt::Display for BindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownManifest => f.write_str("no workspace content under that manifest"),
+            Self::NotLocal => f.write_str("the file's content is not on this device yet"),
+            Self::Integrity => f.write_str("the file's local content does not match its manifest"),
+            Self::Media(why) => write!(f, "the workspace's media: {why}"),
+        }
+    }
+}
+
+impl std::error::Error for BindError {}
 
 /// What a [`WorkspaceMedia`] call answers, later.
 pub type MediaFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

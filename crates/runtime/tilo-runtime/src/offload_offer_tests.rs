@@ -9,7 +9,7 @@ use std::{
 use neighbour_wire::placement::{Answer, Choice, Power, Rank, pick};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, Pending, pending};
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId};
-use tilo_server::offload::{BindError, MediaFuture};
+use crate::offload::{BindError, MediaFuture};
 
 /// The workspace the fixtures invoke in.
 const WORKSPACE: &str = "3f2a1b7c-4d8e-4f60-9a51-2b3c4d5e6f70";

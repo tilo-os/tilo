@@ -18,7 +18,7 @@
 //! in process ([`crate::profile::MediaHost::store`]); the desktop session's
 //! apps keep theirs in the filesystem daemon, which the route reaches over
 //! the daemon's document-media socket as the session
-//! ([`WorkspaceMedia`](tilo_server::offload::WorkspaceMedia)).
+//! ([`WorkspaceMedia`]).
 
 use std::{
     collections::HashMap,
@@ -43,7 +43,9 @@ use tilo_workspace_service::content::{ContentState, RouteContent};
 // route binds its inputs from in the same scope the apps' own content is
 // addressed in, and hands it to [`offer_offload`] beside the peers it asks.
 pub use runtime_fs::blobs::BlobScope;
-pub use tilo_server::offload::{BindError, MediaFuture, WorkspaceMedia};
+pub use media::{BindError, MediaFuture, WorkspaceMedia};
+
+mod media;
 
 /// Set to `off` (or `0`, `false`, `no`) to keep every offloadable action on
 /// this device even when a home relay could place it elsewhere.

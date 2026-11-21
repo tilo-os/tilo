@@ -122,10 +122,6 @@ tilo-server-session = { path = "../../server/tilo-server-session" }
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
-# The offload route a session's action API places offloadable actions
-# through: the compute session with the home relay, placement and the
-# workspace-scoped route (`tilo_server::offload`). Its tests also start real relays.
-tilo-server = { path = "../../server/tilo-server" }
 tilo-rt.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
 tilo-session-client = { path = "../../session/client" }
@@ -161,6 +157,8 @@ tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "mi
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [dev-dependencies]
+# The relays the replica tests start.
+tilo-server = { path = "../../server/tilo-server" }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The attachment an app makes to the host this runtime serves, which the
 # process-boundary tests drive as an app inside a login does.
