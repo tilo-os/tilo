@@ -76,7 +76,10 @@ impl Default for Roots {
     }
 }
 
-/// The serial and WWN a whole block device reports, from its sysfs directory.
+/// The serial and WWN a whole block device reports, from its sysfs directory:
+/// where `lsblk` reads them, so a disk resolves by the identity the person and
+/// the installer see. NVMe and SCSI disks report their serial on the device, a
+/// virtio disk on the disk itself.
 fn stable_ids(sys: &Path) -> Vec<(String, String)> {
     let read = |path: PathBuf| -> Option<String> {
         let value = std::fs::read_to_string(path).ok()?;
@@ -86,6 +89,7 @@ fn stable_ids(sys: &Path) -> Vec<(String, String)> {
     let device = sys.join("device");
     [
         ("serial", device.join("serial")),
+        ("serial", sys.join("serial")),
         ("wwid", device.join("wwid")),
         ("wwid", sys.join("wwid")),
     ]
@@ -273,6 +277,21 @@ mod tests {
             resolve(&TargetDisk::parse("serial:NOPE").unwrap(), &roots)
                 .unwrap_err()
                 .contains("no disk reports")
+        );
+    }
+
+    #[test]
+    fn a_virtio_disk_resolves_by_the_serial_it_reports_itself() {
+        let (_work, roots) = roots();
+        for (name, dev) in [("vda", "252:0"), ("vdb", "252:16")] {
+            let sys = roots.sys_block.join(name);
+            write(&sys.join("dev"), dev);
+            write(&sys.join("serial"), &format!("disk-{name}\n"));
+            write(&roots.dev.join(name), "");
+        }
+        assert_eq!(
+            resolve(&TargetDisk::parse("serial:disk-vdb").unwrap(), &roots).unwrap(),
+            roots.dev.join("vdb")
         );
     }
 
