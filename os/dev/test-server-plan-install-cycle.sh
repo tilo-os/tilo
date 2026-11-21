@@ -318,9 +318,14 @@ root_growth_gib="${TILO_SERVER_CYCLE_ROOT_GROWTH_GIB:-50}"
 qemu-img create -f qcow2 -F qcow2 -b "$(cd "$(dirname "$fedora_image")" && pwd)/$(basename "$fedora_image")" \
   "$retained" "$((base_gib + root_growth_gib))G" >/dev/null
 target_disk="$cycle_dir/target.qcow2"
-target_gib="${TILO_SERVER_CYCLE_TARGET_GIB:-96}"
+target_gib="${TILO_SERVER_CYCLE_TARGET_GIB:-128}"
 qemu-img create -f qcow2 "$target_disk" "${target_gib}G" >/dev/null
-target_bytes=$(( (target_gib - 44) << 30 ))
+# The installed system gets what the staging partitions the bundle asks for
+# leave of the disk, less a GiB for the partition table and alignment.
+staging_bytes="$(jq '[.components[].minimum_partition_bytes] | add' "$manifest")"
+target_bytes=$(( (target_gib << 30) - staging_bytes - (1 << 30) ))
+[ "$target_bytes" -ge $((16 << 30)) ] \
+  || die "a ${target_gib} GiB disk leaves $target_bytes bytes beside the ${staging_bytes}-byte staging"
 
 mkdir -p "$storage/ssh"
 chmod 0700 "$storage/ssh"
