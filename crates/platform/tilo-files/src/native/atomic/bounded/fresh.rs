@@ -258,7 +258,7 @@ fn checkpoint(at: FreshCheckpoint) -> io::Result<()> {
         Ok(())
     }
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 pub(super) fn with_failure<T>(at: FreshCheckpoint, f: impl FnOnce() -> T) -> T {
     struct Restore(Option<FreshCheckpoint>);
     impl Drop for Restore {

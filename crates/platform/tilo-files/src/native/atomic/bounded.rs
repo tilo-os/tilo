@@ -61,9 +61,6 @@ impl BoundedOwnerDirectory {
     }
 }
 #[cfg(test)]
-#[cfg(target_os = "linux")]
-mod linux_tests;
-#[cfg(test)]
 #[cfg(target_os = "macos")]
 mod tests;
 

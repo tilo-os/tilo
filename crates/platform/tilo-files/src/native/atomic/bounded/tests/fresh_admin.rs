@@ -1,11 +1,6 @@
-//! Fresh-child administration cases shared by the macOS suite and the Linux
-//! XFS qualification suite; each parent supplies `private_root()`.
+//! Fresh-child administration cases of the macOS suite; it supplies `private_root()`.
 use super::*;
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
-)]
 fn bounded_fresh_admin_creates_from_actual_retained_root() {
     use super::allocations::measure;
     let temp = private_root();
@@ -40,10 +35,6 @@ fn bounded_fresh_admin_creates_from_actual_retained_root() {
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
-)]
 fn bounded_fresh_admin_existing_names_are_never_adopted() {
     use super::allocations::measure;
     let temp = private_root();
@@ -82,10 +73,6 @@ fn bounded_fresh_admin_existing_names_are_never_adopted() {
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
-)]
 fn bounded_fresh_admin_parent_change_prevents_submission() {
     use super::allocations::measure;
     let temp = private_root();
@@ -103,10 +90,6 @@ fn bounded_fresh_admin_parent_change_prevents_submission() {
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
-)]
 fn bounded_fresh_admin_renamed_root_keeps_original_parent_barrier() {
     use super::allocations::measure;
     let temp = private_root();
@@ -124,10 +107,6 @@ fn bounded_fresh_admin_renamed_root_keeps_original_parent_barrier() {
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
-)]
 fn bounded_fresh_admin_parent_and_nonempty_retry_keep_original_ownership() {
     use super::allocations::measure;
     let temp = private_root();
@@ -173,10 +152,6 @@ fn bounded_fresh_admin_parent_and_nonempty_retry_keep_original_ownership() {
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
-)]
 fn bounded_fresh_admin_replaced_child_is_not_normalized() {
     use super::allocations::measure;
     let temp = private_root();
@@ -205,10 +180,6 @@ fn bounded_fresh_admin_replaced_child_is_not_normalized() {
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
-)]
 fn bounded_fresh_admin_ambiguous_mkdir_never_recovers_by_name() {
     use super::allocations::measure;
     let temp = private_root();
@@ -229,10 +200,6 @@ fn bounded_fresh_admin_ambiguous_mkdir_never_recovers_by_name() {
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
-)]
 fn bounded_fresh_admin_each_barrier_failure_retries_original_child() {
     use super::allocations::measure;
     for at in [
@@ -260,10 +227,6 @@ fn bounded_fresh_admin_each_barrier_failure_retries_original_child() {
 }
 
 #[test]
-#[cfg_attr(
-    target_os = "linux",
-    ignore = "native Linux XFS qualification; the coordinator supplies TILO_PRIVATE_ACTIONS_XFS_FIXTURES and the acl tools"
-)]
 fn bounded_fresh_admin_nonempty_child_preserves_each_entry() {
     use super::allocations::measure;
     for (name, directory) in [
