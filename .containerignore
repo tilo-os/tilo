@@ -32,6 +32,9 @@ os/rootfs/
 # The server image's programs: tools/ci/publish/host-build.sh lays the built
 # binaries into its own build context's bin/, so no repository has one.
 bin/
+# The server image's components laid out from os/components.toml (`images = ["host"]`), by the
+# same script, into its context's host-components/.
+host-components/
 
 # Containerfile.host's context is assembled by tools/ci/publish/host-build.sh, which copies the
 # built programs into bin/. They are staged at build time and never come from the repository

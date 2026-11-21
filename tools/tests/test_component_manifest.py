@@ -410,7 +410,7 @@ class InstallerTests(unittest.TestCase):
                     status = self.run_installer("--from", str(out), "--dest", str(image), "--by-layer", "--all")
                 self.assertEqual(status, 0)
                 manifest = installer.load_manifest(REPO / "os/components.toml")
-                expected = {f"{e.layer}{e.to}" for e in manifest.files()
+                expected = {f"{e.layer}{e.to}" for c in manifest.production_components() for e in c.files
                             if e.layer != "direct" and not e.dev_only}
                 installed = {p.relative_to(image).as_posix()
                              for p in image.rglob("*") if p.is_file() or p.is_symlink()}

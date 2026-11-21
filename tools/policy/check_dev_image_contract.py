@@ -28,7 +28,9 @@ os/Containerfile.host-dev, the development server image, is held to the same
 rule: it builds FROM the server image, labels itself sh.tilo.image.development,
 writes base.json alone (the server's flavour and update policy stay), builds no
 UKI of its own (its seal is seal-host-dev's), and no t check that signs,
-attests or publishes, or that a release tag runs, depends on it.
+attests or publishes, or that a release tag runs, depends on it; the one
+publication allowed downstream is an unsigned development push into the dev
+repository, which production policy refuses by name.
 
 Every finding names file:line, why it matters, and the fix.
 """
@@ -52,6 +54,9 @@ DEV_SERVER_CHECK = "image-host-dev"
 # What signs, attests or publishes an image: none of it may ever see the development server.
 RELEASE_STEPS = re.compile(r"oci-sign\.sh|oci-attest\.sh|oci-publish\.sh|os-release\.sh|host-seal\.sh apply")
 DEV_REPOSITORY = "registry.tilo.so/tilo/tilo-vm"
+# The one publication downstream of the development server image may make: unsigned, on main's
+# development channel, into the dev repository.
+DEV_PUBLISH = re.compile(r"oci-publish\.sh dev " + re.escape(DEV_REPOSITORY) + r"(?=[\s\"'])")
 # Unsigned OS images from main integration builds; dev disks build on them.
 INTEGRATION_REPOSITORY = "registry.tilo.so/tilo/tilo-ci"
 RERUN = "python3 tools/policy/check_dev_image_contract.py   (or tools/policy/run.sh)"
@@ -262,11 +267,15 @@ def check_dev_server_never_released(repo: Path) -> list[Finding]:
         if check["name"] not in downstream:
             continue
         why = []
-        if check.get("id_token"):
+        run = check.get("run", "")
+        # A development build pushed unsigned to the dev repository, which production policy
+        # refuses by name (check_production_policy): no machine can install or update from it.
+        dev_only = DEV_PUBLISH.search(run) and not RELEASE_STEPS.search(DEV_PUBLISH.sub("", run))
+        if check.get("id_token") and not dev_only:
             why.append("takes an identity token")
         if any(str(trigger).startswith("tag:") for trigger in check.get("on", [])):
             why.append("runs on a release tag")
-        if RELEASE_STEPS.search(check.get("run", "")):
+        if RELEASE_STEPS.search(run) and not dev_only:
             why.append("signs, attests or publishes")
         if why:
             findings.append(Finding(

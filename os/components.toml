@@ -54,6 +54,11 @@
 #   outside_sessions  vm scope only: true when no session runs these files, so
 #               a swap leaves running sessions as they are
 #   optional    true when the image may legitimately omit the component
+#   images      the images that carry it: "os" (the OS image and the dev image
+#               built on it; the default) and "host" (the server image,
+#               os/Containerfile.host). A program both carry but build or place
+#               differently is two components, one for each; each image's build
+#               and a swap into a machine of that image read the same entry.
 #   layer       default image layer for its files (see below)
 #   files       list of { from, to, mode } entries (a boot component whose
 #               install is not driven by this manifest yet may omit packages
@@ -619,6 +624,29 @@ files = [
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.path", to = "/usr/lib/systemd/system/tilo-node-session@.path", mode = "0644" },
+]
+
+# The server image's own server: the daemon, its admin and enroll programs, built
+# without the browser listener a node serves (`web`) and linked from /usr/bin
+# straight to their programs, since the server image carries no `tilo` to answer
+# for them. tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it
+# out from this entry, as a swap into a server does.
+[[component]]
+name = "host-server"
+kind = "userspace"
+scope = "vm"
+images = ["host"]
+packages = ["tilo-server"]
+bins = ["tilo-server", "tilo-server-admin", "tilo-enroll"]
+units = ["tilo-server.service"]
+layer = "host-binaries"
+files = [
+  { from = "tilo-server", to = "/usr/libexec/tilo/tilo-server", mode = "0755" },
+  { link = "../libexec/tilo/tilo-server", to = "/usr/bin/tilo-server" },
+  { from = "tilo-server-admin", to = "/usr/libexec/tilo/tilo-server-admin", mode = "0755" },
+  { link = "../libexec/tilo/tilo-server-admin", to = "/usr/bin/tilo-server-admin" },
+  { from = "tilo-enroll", to = "/usr/libexec/tilo/tilo-enroll", mode = "0755" },
+  { link = "../libexec/tilo/tilo-enroll", to = "/usr/bin/tilo-enroll" },
 ]
 
 [[component]]

@@ -378,6 +378,7 @@ inputs = [
   "crates/packaging/tilo-app-package/max-app-bytes",
   "crates/dev/tilo-vmd/data/72-vkms-seat.rules", "crates/dev/tilo-vmd/data/73-uinput-seat.rules",
   "crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service",
+  "crates/dev/tilo-vmd/data/tilo-vm-incoming.service",
   "crates/dev/tilo-vmd/data/tilo-vm-restore.service", "crates/dev/tilo-vmd/data/tilo-vm-session@.service",
   "crates/dev/tilo-vmd/data/tilo-vm-vkms.conf", "crates/dev/tilo-vmd/data/tilo-vm-community.toml",
   "crates/session/install-profile-model/locales.txt",

@@ -61,6 +61,9 @@ mkdir -p "$context/bin" "$context/keys/release" \
   "$context/os/usr/libexec" "$context/os/scripts" "$context/docs/app-model"
 cat os/Containerfile.host os/image/boot.Containerfile > "$context/Containerfile"
 cp "$binaries"/* "$context/bin/"
+# The server image's components, placed as os/components.toml says (`images = ["host"]`).
+python3 os/scripts/install-components.py --all --image host --from "$binaries" \
+  --dest "$context/host-components" --quiet
 cp os/containers/tilo-vm-host/hosted-jail.json "$context/os/containers/tilo-vm-host/"
 cp os/etc/containers/policy.json "$context/os/etc/containers/"
 cp os/etc/containers/registries.d/*.yaml "$context/os/etc/containers/registries.d/"

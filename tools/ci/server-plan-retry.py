@@ -9,9 +9,9 @@ disk, all of COMMIT. The tree under test differs from COMMIT; this decides how e
 difference reaches the proof, and prints it as one JSON document:
 
   components  rebuilt as tilo-vm layers (os/components.toml) from this tree
-  server      of those, the ones the installed server runs: the live installer copies their
-              layers into its tilo-vm state, and its first boot merges them
-  owner       of those, the ones the owner's dev disk takes before its session starts
+  server      of those, the server image's (`images = ["host"]`): the live installer copies
+              their layers into the installed server's tilo-vm state, and its first boot merges them
+  owner       of those, the OS image's, which the owner's dev disk takes before its session starts
   direct      files the proof reads straight from this tree (its scripts)
   outside     files no part of this proof builds or reads
   refused     differences the base would have to be rebuilt for, each with the reason
@@ -77,14 +77,15 @@ def changed_paths(root: Path, base: str) -> list[str]:
     return sorted(paths)
 
 
-def host_bins(root: Path) -> set[str]:
-    """The programs the server image carries, as tools/ci/publish/server-binaries.sh builds them."""
+def unlisted_host_bins(root: Path) -> set[str]:
+    """The server image's programs no os/components.toml entry places, as
+    tools/ci/publish/server-binaries.sh builds them beside its `images = ["host"]` components."""
     script = (root / "tools/ci/publish/server-binaries.sh").read_text(encoding="utf-8")
     block = re.search(r"^  host\)\n(.*?);;", script, re.S | re.M)
     bins = re.search(r"bins=\(([^)]*)\)", block.group(1)) if block else None
     if not bins:
         raise SystemExit("server-plan-retry: server-binaries.sh names no host programs")
-    return set(bins.group(1).split())
+    return {word for word in bins.group(1).split() if not word.startswith(('"', "$"))}
 
 
 def bin_roots(package: dict, root: Path) -> list[tuple[str, Path, bool]]:
@@ -129,7 +130,7 @@ def select(root: Path, base: str) -> dict:
     packages, by_dir = package_maps(metadata, root)
     reverse = link_dependants(packages)
     components = tomllib.loads((root / "os/components.toml").read_text(encoding="utf-8"))["component"]
-    server_bins = host_bins(root)
+    unlisted = unlisted_host_bins(root)
 
     affected: set[str] = set()
     direct, outside, refused = [], [], []
@@ -156,6 +157,9 @@ def select(root: Path, base: str) -> dict:
             outside.append(path)
 
     chosen, server, owner_side = [], [], []
+    if affected & unlisted:
+        refused.append({"component": "server image", "programs": sorted(affected & unlisted),
+                        "reason": "the server image builds it outside os/components.toml, so no layer replaces it"})
     for component in components:
         bins = set(component.get("bins", ()))
         hit = bins & affected
@@ -183,9 +187,13 @@ def select(root: Path, base: str) -> dict:
                             "reason": "a session component, and neither guest's session is a tilo-vm account"})
             continue
         chosen.append(name)
-        if hit & server_bins:
+        # Each image takes the components os/components.toml places in it (`images`): the
+        # installed server the server image's, the owner's dev disk the OS image's.
+        images = component.get("images", ["os"])
+        if "host" in images:
             server.append(name)
-        owner_side.append(name)
+        if "os" in images:
+            owner_side.append(name)
     return {"base": base, "components": chosen, "server": server, "owner": owner_side,
             "programs": sorted(affected), "direct": direct, "outside": outside, "refused": refused}
 

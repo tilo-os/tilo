@@ -45,9 +45,13 @@ case $image in
     # unlock chain its encrypted root needs (tilo-auth, tilo-rollback, the sign-in screen the
     # root discovery steps aside from, and the sibling factor's enrolment program), and tilo-crypto,
     # which verifies the signed boot chain a release adds to the image. One feature
-    # resolution, so the shared workspace crates compile once.
-    packages=(-p tilo-server -p tilo-fs --bin tilo-server --bin tilo-server-admin \
-                --bin tilo-enroll --bin fs
+    # resolution, so the shared workspace crates compile once. The server itself is the
+    # server image's components in os/components.toml (`images = ["host"]`), the entry a swap
+    # into a server builds from too.
+    read -ra host_components <<<"$(python3 os/scripts/install-components.py --dry-run --format cargo --all --image host)"
+    mapfile -t host_bins < <(python3 os/scripts/install-components.py --dry-run --format bins --all --image host)
+    packages=("${host_components[@]}"
+              -p tilo-fs --bin fs
               -p linux-vm --bin tilo-linux-vm --bin tilo-hosted-jail
               -p tilo-api --bin tilo-api
               -p tilolang-process --bin tilolang-process
@@ -60,7 +64,7 @@ case $image in
               -p tilo-boot-signin --bin tilo-boot-signin
               -p tilo-crypto --bin tilo-crypto
               -p tilo-boot-order --bin tilo-default-start)
-    bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-linux-vm tilo-hosted-jail tilo-api
+    bins=("${host_bins[@]}" fs tilo-linux-vm tilo-hosted-jail tilo-api
           tilolang-process
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
           tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start) ;;

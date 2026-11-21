@@ -38,6 +38,9 @@ SCOPES = ("session", "vm")
 # initramfs, installer media); a dev swap is redirected to their `scenario`,
 # unless the component declares `dev_swap`.
 KINDS = ("userspace", "boot")
+# The images a component goes into: "os", the OS image the dev image is built on, and "host",
+# the server image (os/Containerfile.host). A component names those it is in with `images`.
+IMAGES = ("os", "host")
 # How `tilo-vm swap` handles a boot component that it can swap: "reboot" builds
 # it with `dev_build`, installs it VM-wide as the next boot entry and reboots.
 DEV_SWAPS = ("reboot",)
@@ -132,6 +135,8 @@ class Component:
     # Boot components tilo-vm can swap: how, and the script that builds them.
     dev_swap: str | None = None
     dev_build: str | None = None
+    # The images that carry it: the OS image (and the dev image built on it), the server image.
+    images: tuple[str, ...] = ("os",)
 
     @property
     def dev_only(self) -> bool:
@@ -160,11 +165,11 @@ class Manifest:
     def files(self) -> list[FileEntry]:
         return [entry for component in self.components for entry in component.files]
 
-    def production_components(self) -> tuple[Component, ...]:
-        return tuple(c for c in self.components if not c.dev_only)
+    def production_components(self, image: str = "os") -> tuple[Component, ...]:
+        return tuple(c for c in self.components if not c.dev_only and image in c.images)
 
-    def dev_image_components(self) -> tuple[Component, ...]:
-        return tuple(c for c in self.components if c.in_dev_image)
+    def dev_image_components(self, image: str = "os") -> tuple[Component, ...]:
+        return tuple(c for c in self.components if c.in_dev_image and image in c.images)
 
     def layers(self) -> list[str]:
         seen: list[str] = []
@@ -248,10 +253,10 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
         raise ManifestError("the manifest declares no [[component]] tables")
     components: list[Component] = []
     names: set[str] = set()
-    destinations: dict[str, str] = {}
+    destinations: dict[tuple[str, str], str] = {}
     allowed = {"name", "kind", "scope", "scenario", "profile", "packages", "bins", "features",
                "dev_features", "units", "user_units", "app_manifests", "optional", "layer", "files",
-               "dev_swap", "dev_build", "outside_sessions"}
+               "dev_swap", "dev_build", "outside_sessions", "images"}
     for raw in raw_components:
         name = raw.get("name")
         if not isinstance(name, str) or not NAME_RE.match(name):
@@ -324,17 +329,22 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
         if (dev_features or dev_layers) and (kind != "userspace" or profile != "release"):
             raise ManifestError(f"{where}: `dev_features` and `dev-*` layers are for kind = \"userspace\" "
                                 "components with the release profile, which the dev image rebuilds")
+        images = _strings(raw.get("images"), where, "images") or ("os",)
+        if any(image not in IMAGES for image in images) or len(set(images)) != len(images):
+            raise ManifestError(f"{where}: `images` names each of {', '.join(IMAGES)} at most once")
         for entry in files:
-            if entry.to in destinations:
-                raise ManifestError(f"{where}: {entry.to} is already installed by component {destinations[entry.to]!r}")
-            destinations[entry.to] = name
+            for image in images:
+                if (image, entry.to) in destinations:
+                    raise ManifestError(f"{where}: {entry.to} is already installed in the {image} image "
+                                        f"by component {destinations[image, entry.to]!r}")
+                destinations[image, entry.to] = name
         components.append(Component(
             name=name, kind=kind, scope=scope, scenario=scenario, profile=profile, packages=packages,
             bins=_strings(raw.get("bins"), where, "bins"),
             features=_strings(raw.get("features"), where, "features"),
             units=units, user_units=user_units, app_manifests=app_manifests,
             optional=optional, files=files, dev_features=dev_features,
-            dev_swap=dev_swap, dev_build=dev_build,
+            dev_swap=dev_swap, dev_build=dev_build, images=images,
         ))
     return Manifest(path=path, components=tuple(components), external_units=external_units)
 
@@ -349,19 +359,19 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> Manifest:
 
 
 def select_components(manifest: Manifest, names: list[str], everything: bool,
-                      dev: bool = False) -> tuple[Component, ...]:
+                      dev: bool = False, image: str = "os") -> tuple[Component, ...]:
     if bool(names) + everything + dev != 1:
         raise ManifestError("name components to install, or pass --all or --dev (exactly one of these)")
     if everything:
-        return manifest.production_components()
+        return manifest.production_components(image)
     if dev:
-        return manifest.dev_image_components()
+        return manifest.dev_image_components(image)
     return tuple(manifest.component(n) for n in names)
 
 
 def select(manifest: Manifest, names: list[str], everything: bool, layers: list[str],
-           by_layer: bool, dev: bool = False) -> list[FileEntry]:
-    components = select_components(manifest, names, everything, dev)
+           by_layer: bool, dev: bool = False, image: str = "os") -> list[FileEntry]:
+    components = select_components(manifest, names, everything, dev, image)
     known_layers = manifest.layers()
     for layer in layers:
         if layer not in known_layers:
@@ -590,7 +600,7 @@ def print_components(manifest: Manifest, fmt: str) -> None:
         "profile": c.profile, "packages": list(c.packages),
         "bins": list(c.bins), "features": list(c.features), "units": list(c.units),
         "user_units": list(c.user_units), "optional": c.optional,
-        "dev_features": list(c.dev_features), "dev_only": c.dev_only,
+        "dev_features": list(c.dev_features), "dev_only": c.dev_only, "images": list(c.images),
         "dev_swap": c.dev_swap, "dev_build": c.dev_build,
     } for c in manifest.components]
     if fmt == "json":
@@ -639,6 +649,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--format", choices=("text", "json", "contract", "cargo", "bins"), default="text",
                         help="output format for --dry-run and --list; `cargo` prints the cargo build "
                         "arguments of the selection, `bins` its binaries one per line")
+    parser.add_argument("--image", choices=IMAGES, default="os",
+                        help="the image --all and --dev select for: os (the OS image, default) or "
+                        "host (the server image)")
     parser.add_argument("--quiet", action="store_true", help="print only errors")
     args = parser.parse_args(argv)
 
@@ -650,10 +663,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.format in ("cargo", "bins"):
             if not args.dry_run:
                 parser.error(f"--format {args.format} needs --dry-run")
-            print_cargo(select_components(manifest, args.components, args.all, args.dev),
+            print_cargo(select_components(manifest, args.components, args.all, args.dev, args.image),
                         args.dev, args.format)
             return 0
-        entries = select(manifest, args.components, args.all, args.layers, args.by_layer, args.dev)
+        entries = select(manifest, args.components, args.all, args.layers, args.by_layer, args.dev,
+                         args.image)
         if args.dry_run:
             print_plan(entries, args.format)
             return 0
