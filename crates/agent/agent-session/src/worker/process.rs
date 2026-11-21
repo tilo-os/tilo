@@ -18,8 +18,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use super::proto::{FRAMING, Mode, PROTOCOL_VERSION, Reply, Request, Slot};
 use super::ENV;
+use super::proto::{FRAMING, Mode, PROTOCOL_VERSION, Reply, Request, Slot};
 use tilo_lock::MutexRecover as _;
 
 /// How long a worker may take to start, load what it needs and confine

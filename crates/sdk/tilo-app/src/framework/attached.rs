@@ -72,7 +72,11 @@ impl ChainLevel {
     /// The id of the item at `at`, read without building it.
     #[must_use]
     pub fn id(&self, at: usize) -> Option<&str> {
-        self.0.children().as_slice().get(at).map(ui_core::published::SharedResource::id)
+        self.0
+            .children()
+            .as_slice()
+            .get(at)
+            .map(ui_core::published::SharedResource::id)
     }
 
     /// Whether the level holds no item.

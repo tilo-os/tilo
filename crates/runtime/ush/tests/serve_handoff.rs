@@ -611,8 +611,9 @@ fn serve_in_background(socket: &Path, store: &Store) {
     tilo_test_env::wait_for("the supervisor's socket", || socket.exists().then_some(()));
     // Binding creates the path a moment before the listener accepts it, and a
     // connect in that window is refused: connecting is what says it serves.
-    tilo_test_env::wait_for("the supervisor to serve its socket", || {
-        match UnixStream::connect(socket) {
+    tilo_test_env::wait_for(
+        "the supervisor to serve its socket",
+        || match UnixStream::connect(socket) {
             Ok(_) => Some(()),
             Err(error)
                 if matches!(
@@ -623,8 +624,8 @@ fn serve_in_background(socket: &Path, store: &Store) {
                 None
             }
             Err(error) => panic!("connect: {error}"),
-        }
-    });
+        },
+    );
 }
 
 fn serve_fixture(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathBuf) {

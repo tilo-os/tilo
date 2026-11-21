@@ -1540,7 +1540,11 @@ mod tests {
             .status_locked()
             .unwrap();
         let took = started.elapsed();
-        assert_eq!(status.code(), Some(1), "the stopped child ended as {status}");
+        assert_eq!(
+            status.code(),
+            Some(1),
+            "the stopped child ended as {status}"
+        );
         assert!(
             took < Duration::from_secs(30),
             "the stopped child ended only after {} s",

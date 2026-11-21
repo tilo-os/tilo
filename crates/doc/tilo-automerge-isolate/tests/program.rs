@@ -2,7 +2,10 @@
 //! argument alone: libtest's arguments belong to a test binary's workers, and
 //! a person reading a program's process list should not see them.
 
-#![allow(clippy::unwrap_used, reason = "in a test these are the assertion, not a hazard")]
+#![allow(
+    clippy::unwrap_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 use std::process::Command;
 
@@ -58,7 +61,11 @@ fn children() -> Vec<u32> {
     let mut children = Vec::new();
     for task in std::fs::read_dir("/proc/self/task").unwrap() {
         let listed = std::fs::read_to_string(task.unwrap().path().join("children")).unwrap();
-        children.extend(listed.split_whitespace().map(|pid| pid.parse::<u32>().unwrap()));
+        children.extend(
+            listed
+                .split_whitespace()
+                .map(|pid| pid.parse::<u32>().unwrap()),
+        );
     }
     children
 }

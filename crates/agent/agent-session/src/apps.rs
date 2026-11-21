@@ -889,7 +889,12 @@ impl Replica {
             return self.survey_page_of(Listed::Chain(&level), false, query, window);
         }
         let tree = self.view.published();
-        self.survey_page_of(Listed::Tree(tree.as_slice(), Some(&tree)), false, query, window)
+        self.survey_page_of(
+            Listed::Tree(tree.as_slice(), Some(&tree)),
+            false,
+            query,
+            window,
+        )
     }
 
     /// The page a lookup `query` asks for, answered from the one resource it
@@ -1015,9 +1020,10 @@ impl Replica {
         // notebook's thousands of notes or a chain's issues, are not walked.
         let parent = query.parent_resource.as_deref().unwrap_or("");
         let (resources, identity) = match listed {
-            Listed::Tree(resources, identity) => {
-                (resources, identity.map(|tree| Walked::Tree(std::rc::Rc::clone(tree))))
-            }
+            Listed::Tree(resources, identity) => (
+                resources,
+                identity.map(|tree| Walked::Tree(std::rc::Rc::clone(tree))),
+            ),
             Listed::Chain(level) => (&[][..], Some(Walked::Chain(level.clone()))),
         };
         let (level, level_in_chain) = match listed {
@@ -1148,28 +1154,24 @@ impl Replica {
             let items = level.len().saturating_sub(start);
             let mut item_rows = 0usize;
             let mut previous: Option<usize> = None;
-            complete = self.survey_level_from(
-                level,
-                (start, parent),
-                &mut |local, placed| {
-                    if previous != Some(local) {
-                        // The resources before this one admitted what they did;
-                        // those the walk skipped admitted nothing.
-                        if previous.is_some() {
-                            counted.push(item_rows);
-                        }
-                        counted.resize(local, 0);
-                        item_rows = 0;
-                        previous = Some(local);
+            complete = self.survey_level_from(level, (start, parent), &mut |local, placed| {
+                if previous != Some(local) {
+                    // The resources before this one admitted what they did;
+                    // those the walk skipped admitted nothing.
+                    if previous.is_some() {
+                        counted.push(item_rows);
                     }
-                    let before = walk.total;
-                    let go = visit(placed, &mut walk, &in_chains);
-                    if walk.total > before {
-                        item_rows = item_rows.saturating_add(1);
-                    }
-                    go
-                },
-            );
+                    counted.resize(local, 0);
+                    item_rows = 0;
+                    previous = Some(local);
+                }
+                let before = walk.total;
+                let go = visit(placed, &mut walk, &in_chains);
+                if walk.total > before {
+                    item_rows = item_rows.saturating_add(1);
+                }
+                go
+            });
             // The resources walked to the end are counted whole; the one the
             // page stopped in is walked again from its start by the next one.
             if complete {
@@ -1271,10 +1273,7 @@ impl Replica {
             // level's own items offered each. A window is counted in rows, and an
             // issue offers a couple of dozen, so building as many items as
             // there are rows left would build every item to the end.
-            let rows_each = level_rows
-                .checked_div(level.len())
-                .unwrap_or(1)
-                .max(1);
+            let rows_each = level_rows.checked_div(level.len()).unwrap_or(1).max(1);
             while complete && walk.total < walk.end && next_child < past_len {
                 // The items the rows the page still needs take: each item may
                 // offer fewer, so the walk asks again from where this window
