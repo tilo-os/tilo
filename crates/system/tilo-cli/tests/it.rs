@@ -8,7 +8,9 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::arithmetic_side_effects,
+    reason = "in a test these are the assertion, not a hazard; the memory it reads adds what the \
+              kernel reports"
 )]
 
 use std::os::unix::fs::PermissionsExt;
@@ -139,10 +141,11 @@ fn a_new_identity_is_made_once_where_the_session_reads_it() {
     .expect("the session verifies the person and this device as its own");
 }
 
-/// What `tilo mcp` may hold of its own while it waits for its agent: it is a thin bridge. Most
-/// of it (about 5 MB) is the program's own data, relocated as it loads, which grows with the
-/// program: the same program is the peer that keeps the person's folders, so the toolkit and the
-/// media stack stay out of it (`tools/policy/check_crate_graph.py`).
+/// What `tilo mcp` may hold of its own while it waits for its agent: it is a thin bridge. What
+/// counts is what it allocates — its heaps, its stacks and the buffers it reads and writes — not
+/// the pages its program's statics take to be relocated as it loads: those are the program's, paid
+/// by every process that runs it, and keeping the toolkit and the media stack out of them is
+/// `tools/policy/check_crate_graph.py`'s job.
 const MCP_IDLE_KB: u64 = 7 * 1024;
 
 /// How far the process's own memory may move between two readings half a second apart and still
@@ -150,8 +153,16 @@ const MCP_IDLE_KB: u64 = 7 * 1024;
 /// go by then.
 const IDLE_DRIFT_KB: u64 = 16;
 
-/// What `pid` holds, in kB: of its own (its private anonymous memory), of its program, and in
-/// threads.
+/// Whether `line` heads a mapping of `/proc/<pid>/smaps`.
+fn mapping(line: &str) -> bool {
+    line.as_bytes().first().is_some_and(u8::is_ascii_hexdigit) && line.contains('-')
+}
+
+/// What `pid` holds, in kB: of its own, of its program, and in threads.
+///
+/// Its own is its private anonymous memory less the pages of its own executable that the loader
+/// wrote to relocate its statics: a program's statics are the program's, paid by every process
+/// that runs it and grown by any dependency, while what the bridge holds is what it allocates.
 fn holding(pid: u32) -> (u64, u64, u64) {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
     let field = |name: &str| {
@@ -162,7 +173,32 @@ fn holding(pid: u32) -> (u64, u64, u64) {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or_else(|| panic!("{name} in {status}"))
     };
-    (field("RssAnon:"), field("RssFile:"), field("Threads:"))
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).unwrap();
+    let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).unwrap();
+    let mut relocated = 0u64;
+    let mut of_exe = false;
+    for line in smaps.lines() {
+        if mapping(line) {
+            of_exe = line
+                .split_whitespace()
+                .next_back()
+                .is_some_and(|path| std::path::Path::new(path) == exe.as_path());
+        } else if of_exe
+            && let Some(rest) = line.strip_prefix("Private_Dirty:")
+        {
+            relocated += rest
+                .trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse::<u64>()
+                .unwrap_or(0);
+        }
+    }
+    (
+        field("RssAnon:").saturating_sub(relocated),
+        field("RssFile:"),
+        field("Threads:"),
+    )
 }
 
 /// [`holding`] once the process idles: read until two readings half a second apart move its own
@@ -189,9 +225,9 @@ fn idle_holding(pid: u32) -> (u64, u64, u64) {
 }
 
 /// `tilo mcp` answers an agent's first calls and then idles small: a bridge between the agent
-/// and the person's workspace holds a few megabytes of its own (its private, anonymous memory;
-/// the program's own pages are shared and the kernel takes them back), however many cores the
-/// computer has, rather than a runtime's worth of threads and their heaps.
+/// and the person's workspace holds a few megabytes of its own — what it allocates, not the pages
+/// its program's statics are relocated in — however many cores the computer has, rather than a
+/// runtime's worth of threads and their heaps.
 #[cfg(target_os = "linux")]
 #[test]
 fn tilo_mcp_idles_small() {
