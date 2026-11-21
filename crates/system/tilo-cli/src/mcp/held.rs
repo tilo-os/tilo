@@ -107,6 +107,14 @@ impl Place {
     /// Whether the login under this device's directory is still `key`'s: a login made again
     /// makes another device, and the holder of the one it replaced ends so that one computer
     /// keeps one holder and one live connection.
+    /// The device's directory, which the holder keeps the device's state in.
+    pub(crate) fn device_dir(&self) -> PathBuf {
+        self.lock
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default()
+    }
+
     fn serves_current_login(&self) -> bool {
         let Some(dir) = self.lock.parent() else {
             return true;
@@ -336,11 +344,7 @@ pub(crate) fn hold<E: Enter>(
     shared: Arc<Shared<E>>,
     home: PathBuf,
 ) -> Result<ExitCode> {
-    let device_dir = place
-        .lock
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
+    let device_dir = place.device_dir();
     hold_for(
         place,
         shared,
@@ -1153,7 +1157,16 @@ async fn follow_session(
     if let Some(followed) = personal {
         peer.take_personal(&session.device, followed).await;
     }
+    // The device's own service holds what the session takes part in, so the keys its key service
+    // settles over the member copies are there for the folders, and again once the folders
+    // entered more of the person's workspaces.
+    if let Some(own) = &session.own {
+        own.hold(&session.device).await;
+    }
     peer.reconcile(&session.device).await;
+    if let Some(own) = &session.own {
+        own.hold(&session.device).await;
+    }
 }
 
 /// Once no connection has been open for `linger`; never without one.

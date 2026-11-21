@@ -44,6 +44,7 @@ mod mcp;
 mod migrate;
 mod nouns;
 mod os;
+mod own_device;
 mod peer;
 mod person;
 mod sdk;
@@ -2055,6 +2056,11 @@ deployment to fall back to.
   /usr/share/doc/tilo/repair-mode.md  how the entry is built, and its threat model"
     );
 }
+
+// Workspaces the binary's own tests hold keep their documents in workers this test executable
+// serves, as `main` does through `dispatch_early`.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 
 #[cfg(test)]
 mod tests {

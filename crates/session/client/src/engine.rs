@@ -787,7 +787,9 @@ impl Engine {
 
     /// Where the device hosting `workspace` is reached, when this device is an admitted member of
     /// it and another device hosts it: what this device's workspace service holds its member copy
-    /// of `workspace` by. `None` for a workspace hosted here, not admitted yet, or not held.
+    /// of `workspace` by. The host its own entry names, else a device the workspace's governance
+    /// names among those keeping it, as a device that entered as a further device of its person
+    /// holds no entry of its own. `None` for a workspace hosted here, not admitted yet, or not held.
     #[must_use]
     pub fn member_of(
         &self,
@@ -796,10 +798,14 @@ impl Engine {
         let own = self.identity.device_public_key();
         self.owner
             .with_current(workspace, |view| {
-                let hint = view.transport_hint().ok().cloned();
-                Ok(hint.filter(|hint| {
-                    !hint.host.is_of_device(&own) && Admission::of(view, own) == Admission::Admitted
-                }))
+                if Admission::of(view, own) != Admission::Admitted {
+                    return Ok(None);
+                }
+                let entry = view.transport_hint().ok().cloned();
+                Ok(entry
+                    .into_iter()
+                    .chain(view.keeping_devices())
+                    .find(|hint| !hint.host.is_of_device(&own)))
             })
             .ok()
             .flatten()

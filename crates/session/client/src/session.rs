@@ -273,6 +273,10 @@ pub struct Lent {
     /// cut the first off; a session opened before the endpoint is bound waits for it and binds
     /// none in its place.
     pub endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
+    /// The session is the device's own, not one beside it: it joins the workspaces' live
+    /// sessions on the lent endpoint. A device that runs a session of its own beside this one
+    /// lends none, as a second live session under its key would shadow that one's.
+    pub own: bool,
 }
 
 /// [`start_session`] for a session of a device that lends it what its own session runs
@@ -286,7 +290,7 @@ pub fn start_session_lent(
 ) -> Link {
     let (mut task, link, receiver) = session_task(config, signer, store, lent.keys, true);
     if let Some(endpoint) = lent.endpoint {
-        task.dial.lend(endpoint);
+        task.dial.lend(endpoint, lent.own);
     }
     n0_future::task::spawn(task.run(receiver));
     link

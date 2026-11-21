@@ -221,7 +221,7 @@ async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
     };
     let own = Arc::new(std::sync::OnceLock::new());
     let mut dial = Dial::for_page(&[0; 32]);
-    dial.lend(Arc::clone(&own));
+    dial.lend(Arc::clone(&own), false);
 
     // Before the device's endpoint is bound the host is not reached.
     let early = connect(&config, &device, &mut dial).await;

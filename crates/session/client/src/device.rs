@@ -111,7 +111,7 @@ impl Device {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn connect(sign_in: &SignIn, signer: Arc<dyn DeviceSigner>) -> Self {
-        Self::entering(sign_in, signer, None)
+        Self::entering(sign_in, signer, None, None)
     }
 
     /// [`Self::connect`], its session entering a workspace through its entry as it opens.
@@ -120,18 +120,19 @@ impl Device {
         sign_in: &SignIn,
         signer: Arc<dyn DeviceSigner>,
         entering: Option<tilo_server_protocol::entering::Entering>,
+        lent: Option<crate::Lent>,
     ) -> Self {
-        Self::over(
-            PeerConfig {
-                host: sign_in.server.clone(),
-                cert: sign_in.cert.clone(),
-                server_cert: sign_in.server_cert.clone(),
-                revocations: tilo_user_identity::RevocationList::new(),
-                entering,
-            },
-            signer,
-            &sign_in.label,
-        )
+        let config = PeerConfig {
+            host: sign_in.server.clone(),
+            cert: sign_in.cert.clone(),
+            server_cert: sign_in.server_cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+            entering,
+        };
+        match lent {
+            Some(lent) => Self::over_lent(config, signer, &sign_in.label, lent),
+            None => Self::over(config, signer, &sign_in.label),
+        }
     }
 
     /// Take `sign_in`'s device into the workspace its link names ([`Self::enter_workspace`]). The
@@ -145,6 +146,21 @@ impl Device {
         entry: Option<&Entry>,
         sign_in: &SignIn,
         signer: Arc<dyn DeviceSigner>,
+    ) -> Result<Self, CertifyError> {
+        Self::enter_lent(entry, sign_in, signer, None).await
+    }
+
+    /// [`Self::enter`], its session running on what the device's own service `lent` it: the
+    /// endpoint the device runs under its key and the key service its groups are settled by.
+    ///
+    /// # Errors
+    /// As [`Self::enter`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn enter_lent(
+        entry: Option<&Entry>,
+        sign_in: &SignIn,
+        signer: Arc<dyn DeviceSigner>,
+        lent: Option<crate::Lent>,
     ) -> Result<Self, CertifyError> {
         let workspace = sign_in.link.workspace_id();
         WorkspaceId::parse(&workspace)
@@ -161,7 +177,7 @@ impl Device {
             }
         });
         let through_entry = entering.is_some();
-        let device = Self::entering(sign_in, signer, entering);
+        let device = Self::entering(sign_in, signer, entering, lent);
         // An entry that fails, or that its caller gives up on, ends the session it started: the
         // device's next try opens another under the same key, and a server keeps one connection
         // per key, so the two would cut each other off for as long as both dial.

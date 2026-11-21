@@ -364,7 +364,7 @@ async fn connect_retrying(key: &SigningKey, device: &Device) -> Result<Entered> 
     let mut pause = std::time::Duration::from_secs(1);
     let mut last = None;
     for _ in 0..ENTER_TRIES {
-        match connect(key, device).await {
+        match connect(key, device, None).await {
             Ok(entered) => return Ok(entered),
             Err(error) => {
                 debug_why("entering the workspace", &error);
@@ -383,10 +383,15 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
         .build()?)
 }
 
-/// Enter the workspace `device` names, as that device.
-pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered> {
+/// Enter the workspace `device` names, as that device, its session running on what the device's
+/// own service `lent` it where it runs one.
+pub(crate) async fn connect(
+    key: &SigningKey,
+    device: &Device,
+    lent: Option<tilo_session_client::Lent>,
+) -> Result<Entered> {
     if let Some(address) = &device.server_address {
-        return connect_over_iroh(key, device, address).await;
+        return connect_over_iroh(key, device, address, lent).await;
     }
     let link = PairingLink::parse(&format!(
         "{}#/@{}/w/{}?pair={}",
@@ -407,7 +412,7 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
         server_cert,
     };
     let entry = entry_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
-    Ok(Entered::enter(entry.as_ref(), &signed, Arc::new(key.clone())).await?)
+    Ok(Entered::enter_lent(entry.as_ref(), &signed, Arc::new(key.clone()), lent).await?)
 }
 
 /// Where the server `device` reaches is dialed: at the address its invitation signed, or at
@@ -433,9 +438,10 @@ async fn connect_over_iroh(
     key: &SigningKey,
     device: &Device,
     address: &ServerAddress,
+    lent: Option<tilo_session_client::Lent>,
 ) -> Result<Entered> {
     let signed = signed_over_iroh(device, address)?;
-    Ok(Entered::enter(None, &signed, Arc::new(key.clone())).await?)
+    Ok(Entered::enter_lent(None, &signed, Arc::new(key.clone()), lent).await?)
 }
 
 /// `device` signed in at the server dialed over iroh at `address`.
@@ -1323,7 +1329,8 @@ pub fn login_held(
             });
     let site = site_origin(site)?;
     let runtime = runtime()?;
-    let (key, device, others) = runtime.block_on(enter_with_a_held_key(person, &agent, &site, workspace))?;
+    let (key, device, others) =
+        runtime.block_on(enter_with_a_held_key(person, &agent, &site, workspace))?;
     let dir = device_dir()?;
     store(&dir, &key, &device)?;
     println!(
@@ -1356,11 +1363,7 @@ async fn enter_with_a_held_key(
     agent: &agent::Agent,
     site: &str,
     workspace: Option<&str>,
-) -> anyhow::Result<(
-    SigningKey,
-    Device,
-    usize,
-)> {
+) -> anyhow::Result<(SigningKey, Device, usize)> {
     let origin = home_server(&Origin::new(&http(), site)).await?;
     let server = Origin::new(&http(), &origin);
     let info = https::server_info(&server).await.map_err(|error| {

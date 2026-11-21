@@ -273,6 +273,7 @@ impl HostedWorkspaces {
             tilo_session_client::Lent {
                 keys: self.0.engine.keys().get(),
                 endpoint: self.0.endpoint.clone(),
+                own: false,
             },
         );
         let host = Arc::new(ServerAddress {

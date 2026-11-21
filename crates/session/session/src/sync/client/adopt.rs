@@ -412,26 +412,9 @@ pub(super) async fn hold_every_workspace(engine: &Engine, own_service: &OwnServi
     let Some(service) = own_service.get() else {
         return;
     };
-    let copies = service.workspaces();
-    for workspace in engine.workspaces() {
-        let Some(hint) = engine.member_of(workspace) else {
-            continue;
-        };
-        if copies
-            .is_member(&workspace.to_string())
-            .await
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        match tokio::time::timeout(SETTLE_WITHIN, copies.hold_as_member(workspace, &hint)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => {
-                tracing::warn!(%error, %workspace, "a workspace this device takes part in is not held on its service");
-            }
-            Err(_) => {
-                tracing::warn!(%workspace, "a workspace's member copy did not arrive on this device's service in time");
-            }
-        }
-    }
+    let held = engine
+        .workspaces()
+        .into_iter()
+        .filter_map(|workspace| Some((workspace, engine.member_of(workspace)?)));
+    tilo_workspace_service::own_device::hold_as_members(service.workspaces(), held).await;
 }

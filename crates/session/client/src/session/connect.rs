@@ -66,6 +66,9 @@ pub(super) struct Dial {
     /// is made again.
     #[cfg(not(target_arch = "wasm32"))]
     lent: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
+    /// The lent endpoint is this session's own: it joins the live sessions from it.
+    #[cfg(not(target_arch = "wasm32"))]
+    lent_own: bool,
 }
 
 impl Dial {
@@ -81,7 +84,7 @@ impl Dial {
     /// the cached group and then silence. The device's own session opens the live session instead.
     pub(super) fn live_session(&self) -> Option<(Arc<Dialer>, Vec<u8>)> {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.lent.is_some() {
+        if self.lent.is_some() && !self.lent_own {
             return None;
         }
         let dialer = self.dialer.clone()?;
@@ -98,8 +101,9 @@ impl Dial {
     /// Dial from `endpoint`, the one this device already runs under its key,
     /// once it is bound.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn lend(&mut self, endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>) {
+    pub(super) fn lend(&mut self, endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>, own: bool) {
         self.lent = Some(endpoint);
+        self.lent_own = own;
     }
 
     /// Let go of the host, waiting for it to hear: a session that ends for

@@ -29,6 +29,7 @@
 
 pub(crate) mod held;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,6 +64,9 @@ pub(crate) struct Session {
     /// of their own that would cut this one off. `None` when the login's key
     /// does not read as one, and the workspace's own calls still serve.
     api: Option<Arc<tilo_api::direct::Direct>>,
+    /// This device's own workspace service, which the session runs on, where the device's holder
+    /// opened one: it holds the workspaces the session takes part in as member copies.
+    own: Option<Arc<crate::own_device::OwnDevice>>,
 }
 
 impl Session {
@@ -100,13 +104,52 @@ pub(crate) trait Enter: Send + Sync + 'static {
 }
 
 /// This computer's device, as `tilo login` left it, or why there is none to
-/// enter with.
-struct LoggedIn(Result<(SigningKey, Device), String>);
+/// enter with, and, for the device's holder, where its own workspace service is kept.
+struct LoggedIn {
+    device: Result<(SigningKey, Device), String>,
+    own: Option<Own>,
+}
+
+/// The device's own workspace service, opened below `dir` the first time the holder enters.
+struct Own {
+    dir: PathBuf,
+    opened: tokio::sync::OnceCell<Arc<crate::own_device::OwnDevice>>,
+}
+
+impl Own {
+    /// The service, opened now if it is not yet.
+    async fn open(
+        &self,
+        key: &SigningKey,
+        device: &Device,
+    ) -> Result<Arc<crate::own_device::OwnDevice>, String> {
+        self.opened
+            .get_or_try_init(|| async {
+                let server = crate::login::server_of(device)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let (cert, _) = device.certs().map_err(|error| error.to_string())?;
+                crate::own_device::OwnDevice::open(&self.dir, key, &cert, &server)
+                    .await
+                    .map(Arc::new)
+            })
+            .await
+            .cloned()
+    }
+}
 
 impl Enter for LoggedIn {
     async fn enter(&self) -> Result<Arc<Session>, String> {
-        let (key, device) = self.0.as_ref().map_err(Clone::clone)?;
-        let entered = tokio::time::timeout(ENTERING, crate::login::connect(key, device))
+        let (key, device) = self.device.as_ref().map_err(Clone::clone)?;
+        let own = match &self.own {
+            Some(own) => Some(own.open(key, device).await.map_err(|why| {
+                tracing::warn!(%why, "this device's own workspace service did not open");
+                format!("Tilo couldn't open this computer's workspace service: {why}")
+            })?),
+            None => None,
+        };
+        let lent = own.as_deref().map(crate::own_device::OwnDevice::lent);
+        let entered = tokio::time::timeout(ENTERING, crate::login::connect(key, device, lent))
             .await
             .map_err(|_| {
                 format!(
@@ -132,6 +175,7 @@ impl Enter for LoggedIn {
         Ok(Arc::new(Session {
             device: entered,
             api,
+            own,
         }))
     }
 }
@@ -437,7 +481,9 @@ pub fn serve(hold: bool) -> Result<ExitCode> {
         // and more with `RUST_LOG` (`debug`, `tilo_fs=trace,warn`).
         crate::log_to_stderr(tracing_subscriber::filter::LevelFilter::WARN);
         let home = tilo_paths::home().ok_or_else(|| anyhow::anyhow!("HOME is missing"))?;
-        return held::hold(&place.map_err(anyhow::Error::msg)?, shared(device), home);
+        let place = place.map_err(anyhow::Error::msg)?;
+        let shared = held_shared(device, place.device_dir().join("own"));
+        return held::hold(&place, shared, home);
     }
     let reached = place
         .as_ref()
@@ -508,11 +554,32 @@ impl Enter for NoSession {
 }
 
 fn shared(device: Result<(SigningKey, Device), String>) -> Arc<Shared<LoggedIn>> {
+    logged_in(device, None)
+}
+
+/// [`shared`] for the device's holder, which keeps the device's own workspace service below `dir`.
+fn held_shared(
+    device: Result<(SigningKey, Device), String>,
+    dir: PathBuf,
+) -> Arc<Shared<LoggedIn>> {
+    logged_in(
+        device,
+        Some(Own {
+            dir,
+            opened: tokio::sync::OnceCell::new(),
+        }),
+    )
+}
+
+fn logged_in(
+    device: Result<(SigningKey, Device), String>,
+    own: Option<Own>,
+) -> Arc<Shared<LoggedIn>> {
     let login = device
         .as_ref()
         .map(|(_, device)| device.clone())
         .map_err(Clone::clone);
-    Arc::new(Shared::new(LoggedIn(device), login))
+    Arc::new(Shared::new(LoggedIn { device, own }, login))
 }
 
 /// The answer to one JSON-RPC line on `connection`, or `None` for a
@@ -591,8 +658,9 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
             Err(request) => served.server.handle(request).await,
         },
         Err(problem) => unreachable_answer(&request, problem),
-    }?;
-    Some(answer.to_string())
+    };
+    drop(served);
+    Some(answer?.to_string())
 }
 
 /// `request` when it is a tool call on the person's account (`account/…`:
@@ -651,6 +719,7 @@ pub(crate) async fn peer_status<E: Enter>(shared: &Shared<E>) -> Value {
     let connected = session
         .as_ref()
         .is_some_and(|session| session.device.is_live());
+    drop(session);
     let (mut mounted, failed, workspaces, complete) = match held::PEER.get() {
         Some(peer) => {
             let (workspaces, complete) = peer.workspaces().await;
@@ -736,12 +805,19 @@ fn unreachable_answer(request: &Value, problem: &str) -> Option<Value> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "a test's connection and the session it holds stay up until the test ends"
+)]
 mod tests {
     use super::*;
 
     fn connection_saying(why: &str) -> Connection<LoggedIn> {
         Connection::new(Arc::new(Shared::new(
-            LoggedIn(Err(why.to_owned())),
+            LoggedIn {
+                device: Err(why.to_owned()),
+                own: None,
+            },
             Err(why.to_owned()),
         )))
     }
