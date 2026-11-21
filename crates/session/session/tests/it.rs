@@ -47,8 +47,6 @@ mod app_open_budget;
 mod app_records;
 #[path = "app_sheets.rs"]
 mod app_sheets;
-#[path = "app_side_records.rs"]
-mod app_side_records;
 #[path = "app_socket.rs"]
 mod app_socket;
 #[path = "ask.rs"]

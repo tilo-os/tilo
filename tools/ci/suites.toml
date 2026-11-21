@@ -1630,11 +1630,9 @@ inputs = [
   "crates/system/system-stats/src/protocol.rs",
   "crates/platform/tilo-render-protocol/src/broker.rs",
   "apps/*/tilo-app.toml",
-  # Every app's manifest and baseline the app-side ratchet reads: it lists
-  # what each app still does for itself (its own records, identity, sync) and
-  # fails if the list grows.
+  # Every app's manifest, which the mount's service tests read the declared
+  # services of.
   "apps/*/Cargo.toml",
-  "crates/session/session/tests/baselines/app-side-records.txt",
   # The catalogues the locale-leak test reads words of: the toolkit's, which
   # every window carries, and the Settings index's, which every window offers.
   "crates/sdk/ui-core/locales/en-US.ftl",
@@ -1656,7 +1654,6 @@ readers = [
   "crates/session/session/tests/common/people.rs",
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/tests/session_package.rs",
-  "crates/session/session/tests/app_side_records.rs",
   "crates/session/session/tests/files_tree.rs",
 ]
 
