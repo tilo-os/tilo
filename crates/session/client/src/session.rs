@@ -378,6 +378,7 @@ fn session_task(
         key_state,
         route_keys: BTreeMap::new(),
         new_keys: Vec::new(),
+        opens_as_before: std::collections::HashSet::new(),
         keys_generation: 0,
         refused: (0, String::new()),
         surface_wants: neighbour_wire::content::ContentWants::default(),
@@ -562,6 +563,11 @@ struct Task {
     route_keys: BTreeMap<DocumentRoute, RouteKeys>,
     /// Routes whose keys arrived since the session last acted on them.
     new_keys: Vec<DocumentRoute>,
+    /// Those of [`Self::new_keys`] whose sealed history the keys held before already opened
+    /// whole: the keys moved on to a later epoch and still hold the earlier ones, as they do when
+    /// a member is admitted, so nothing the replica holds opens now that did not before, and
+    /// their records did not land.
+    opens_as_before: std::collections::HashSet<DocumentRoute>,
     /// The channels' generation the keys were last read at.
     keys_generation: u64,
     /// Documents refused, with the last reason, for the diagnostics.
@@ -2347,16 +2353,57 @@ impl Task {
         };
         let change = self.workspace_keys.workspace_change(keys.workspace());
         let installed = match self.route_keys.get(route) {
-            Some(RouteKeys::Engine(held)) => *held == change,
+            Some(RouteKeys::Engine(held, _)) => *held == change,
             Some(RouteKeys::Handed) => true,
             Some(RouteKeys::Waiting) | None => false,
         };
         if !installed {
+            let before = match self.route_keys.get(route) {
+                Some(RouteKeys::Engine(_, epoch)) => Some(*epoch),
+                _ => None,
+            };
+            if before.is_some_and(|before| self.opened_before(route, &keys, before)) {
+                self.opens_as_before.insert(route.clone());
+            } else {
+                self.opens_as_before.remove(route);
+            }
             self.route_keys
-                .insert(route.clone(), RouteKeys::Engine(change));
+                .insert(route.clone(), RouteKeys::Engine(change, keys.epoch()));
             self.new_keys.push(route.clone());
         }
         true
+    }
+
+    /// Whether every write the replica holds sealed of `route` opened with the keys it held at
+    /// epoch `before`, which `keys` still hold: each sealed with the workspace's content keys at
+    /// that epoch or an earlier one. A write sealed otherwise, or later, may open only now.
+    fn opened_before(
+        &self,
+        route: &DocumentRoute,
+        keys: &key_group::ContentKeys,
+        before: u64,
+    ) -> bool {
+        let Ok(workspace) = route.workspace_id() else {
+            return false;
+        };
+        keys.holds_epoch(before)
+            && self
+                .replicas
+                .owner()
+                .with_current(workspace, |view| {
+                    Ok(view.peer().publication().sealed_keys_available(
+                        &route.app_id,
+                        &route.document,
+                        |sealed| {
+                            matches!(
+                                sealed.scheme,
+                                collab_types::EncryptionScheme::ContentKey { .. }
+                            ) && sealed.epoch <= before
+                                && keys.holds_epoch(sealed.epoch)
+                        },
+                    ))
+                })
+                .unwrap_or(false)
     }
 
     /// Say keys as they are taken up, ahead of the records they open, which
@@ -2415,8 +2462,13 @@ impl Task {
                     self.live_sessions_due.insert(workspace_id);
                 }
                 self.release_live(&route);
-                // What the replica holds sealed for these keys opens now.
-                self.landed(&route, None);
+                // What the replica holds sealed for these keys opens now. Keys that open only
+                // what the earlier ones did leave the record as its readers read it: telling them
+                // it landed had each read every record of the workspace again on an admission,
+                // and open the writes of its own it had not read yet, seconds for a large tracker.
+                if !self.opens_as_before.remove(&route) {
+                    self.landed(&route, None);
+                }
                 // A compaction it could not take without them is asked for again at once.
                 if self.behind.contains_key(&route) {
                     self.replays.insert(route.clone());
@@ -2439,7 +2491,7 @@ impl Task {
         for (route, keys) in &self.route_keys {
             let state = match keys {
                 RouteKeys::Waiting => "waiting",
-                RouteKeys::Engine(_) => "ready",
+                RouteKeys::Engine(..) => "ready",
                 RouteKeys::Handed => "handed",
             };
             let _ = write!(
@@ -2519,8 +2571,8 @@ fn keyless_keys(
 enum RouteKeys {
     /// No keys yet.
     Waiting,
-    /// The channels hold keys, as of the channel's change.
-    Engine(u64),
+    /// The channels hold keys, as of the channel's change, at the epoch they seal with.
+    Engine(u64, u64),
     /// A host device handed over the keys of a record whose group this device
     /// is not admitted to itself: the workspace's own keys for the record.
     Handed,
