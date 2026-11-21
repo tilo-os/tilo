@@ -820,11 +820,15 @@ chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
 # at that path is the workspace to the apps. A session that may not mount there keeps its
 # own folder and says so: its apps then see no workspace.
 files_mount=$files_state/mount
+if [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; then
+    mkdir -p /var/workspace 2>/dev/null || true
+fi
 if [[ -d /var/workspace ]] && { [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; } \
-    && ! mountpoint -q /var/workspace; then
+    && ! mountpoint -q /var/workspace 2>/dev/null; then
     files_mount=/var/workspace
     chmod 700 "$files_mount" 2>/dev/null || true
 fi
+say "the session's workspace mounts at $files_mount"
 # This build's daemon, mounting this session's workspace: no capability list yet (the session
 # publishes the person's own as its apps are granted), so the device acts as itself. Its
 # authority and content sockets live in /run/tilo on a Tilo machine, which the image's tmpfiles
