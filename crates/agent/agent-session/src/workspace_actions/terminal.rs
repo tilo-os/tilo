@@ -398,6 +398,21 @@ impl Worker {
             cluster_id: workspace.clone(),
             ..route
         };
+        let state = match self.window_default_founded(workspace_id, caller, &route, state) {
+            Ok(state) => state,
+            Err(outcome) => {
+                let reason = match outcome {
+                    crate::member::actions::Outcome::Rejected(error) => {
+                        return Some(Err(InvocationReceipt {
+                            invocation,
+                            status: tilo_actions::remote::ReceiptStatus::Rejected { error },
+                        }));
+                    }
+                    crate::member::actions::Outcome::Failed(failure) => failure.message,
+                };
+                return Some(refused(reason));
+            }
+        };
         if let Err(receipt) = self.terminal_admitted(workspace_id, caller, request, &route, &state)
         {
             return Some(Err(receipt));
@@ -408,6 +423,59 @@ impl Worker {
             route,
             asked,
         }))
+    }
+
+    /// `state`, holding the session record at `route` once this founded it when it is a
+    /// window's default session that no device wrote yet.
+    ///
+    /// A fresh Terminal window on a device shows its tab's default session
+    /// ([`DocumentId::window_default`](ui::resource::DocumentId::window_default)) and asks
+    /// the host for its shell before anything is written to it, as the session lives here.
+    /// So the host founds it at that id, with the genesis every device derives for it, so
+    /// whatever a device writes to it later merges with this; founded for the caller only
+    /// when they may make Terminal records in the workspace ([`Worker::founder`]).
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt answered"
+    )]
+    fn window_default_founded(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        route: &DocumentRoute,
+        state: super::WorkspaceState,
+    ) -> Result<super::WorkspaceState, crate::member::actions::Outcome> {
+        let Ok(record) = super::reads::document_id(&route.document) else {
+            return Ok(state);
+        };
+        let window_default = ui::resource::DocumentId::window_default_of_storage_key(
+            &record.storage_key(),
+        )
+        .is_some_and(|default| default == record);
+        if !window_default || state.document(route).is_ok() {
+            return Ok(state);
+        }
+        let who = if self.acts_for_owner(caller) {
+            None
+        } else {
+            self.bounded(caller)
+        };
+        let founder = self.founder(workspace_id, &route.cluster_id, &route.app_id, who.as_ref())?;
+        let at = self.found(
+            workspace_id,
+            &route.cluster_id,
+            &route.app_id,
+            crate::apps::Seed::NewAt(record),
+            founder,
+        )?;
+        debug_assert_eq!(&at, route, "a record founded at its id keeps its route");
+        tracing::info!(
+            %workspace_id,
+            record = %route.document,
+            acting = ?caller.acting(),
+            "founded a window's Terminal session no device wrote yet"
+        );
+        self.refreshed_for(workspace_id, route, true)
     }
 
     /// Start `request` when it is a `run` of a Terminal session this host

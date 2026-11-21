@@ -164,6 +164,9 @@ mod hosted_agent_sessions;
 #[path = "workspace_actions/hosted_agent_terminal.rs"]
 mod hosted_agent_terminal;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_terminal_fresh_tab.rs"]
+mod hosted_terminal_fresh_tab;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_agent_turns.rs"]
 mod hosted_agent_turns;
 #[cfg(test)]

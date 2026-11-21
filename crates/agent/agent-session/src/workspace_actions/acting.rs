@@ -588,10 +588,6 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt answered"
     )]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one app opened: its route, its genesis and its keys, in order"
-    )]
     pub(super) fn open_new(
         &mut self,
         workspace_id: WorkspaceId,
@@ -599,27 +595,11 @@ impl Worker {
         app: &str,
         who: Option<&bounded::Bounded>,
     ) -> Result<ActionOutput, Outcome> {
-        let refused = |reason: String| Outcome::Rejected(ActionCallError::Refused { reason });
-        let (creator, actor, permissions) = match who {
-            None => (self.member.clone(), crate::ReplicaActor::Owner, None),
-            Some(who) => {
-                let policy = self
-                    .policy_for(workspace_id, who, workspace, None)
-                    .map_err(Outcome::Rejected)?;
-                let permissions =
-                    bounded::bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
-                if permissions.answer(&TreePath::root().app(app), ActionKind::Undoable)
-                    != Answer::Allow
-                {
-                    return Err(Outcome::Rejected(ActionCallError::NotPermitted));
-                }
-                let actor = bounded::member_actor(&policy, who, &self.own_device, None)
-                    .map_err(Outcome::Rejected)?;
-                (who.person.clone(), actor, Some(permissions))
-            }
-        };
-        let (route, genesis) = if self.catalogue.placed(app).is_some() {
-            self.placed_route(workspace_id, workspace, app)?
+        let founder = self.founder(workspace_id, workspace, app, who)?;
+        let route = if self.catalogue.placed(app).is_some() {
+            let (route, genesis) = self.placed_route(workspace_id, workspace, app)?;
+            self.save_genesis(workspace_id, &route, genesis, founder.permissions.as_ref())?;
+            route
         } else {
             // An app that keeps one record per workspace opens that record: the
             // one the workspace holds when it has it, founded only when its host
@@ -644,28 +624,114 @@ impl Worker {
                     });
                 }
             }
-            let hosted = ConfinedReplica::open(
-                &self.catalogue,
-                app,
-                workspace,
-                &MemberId::Person(creator),
-                &actor,
-                Seed::New,
-                true,
-            )
-            .map_err(|error| refused(error.to_string()))?;
-            let hosted = self.lend(hosted, workspace);
-            let route = DocumentRoute {
-                app_id: app.to_owned(),
-                cluster_id: workspace.to_owned(),
-                document: hosted.wire_document().to_owned(),
-            };
-            let genesis = hosted
-                .take_mutation()
-                .map_err(|error| refused(error.to_string()))?;
-            (route, genesis)
+            self.found(workspace_id, workspace, app, Seed::New, founder)?
         };
-        if let (Some(permissions), Some(mutation)) = (&permissions, &genesis) {
+        Ok(ActionOutput {
+            value: Some(serde_json::json!({
+                "provider": resource_provider(&route),
+                "record": route.document,
+            })),
+            resources: Vec::new(),
+        })
+    }
+
+    /// Who founds a record of `app` in `workspace` for `who` (the host's own person when
+    /// `None`), refused when `who` may not make records of `app` there.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt answered"
+    )]
+    pub(super) fn founder(
+        &self,
+        workspace_id: WorkspaceId,
+        workspace: &str,
+        app: &str,
+        who: Option<&bounded::Bounded>,
+    ) -> Result<Founder, Outcome> {
+        let Some(who) = who else {
+            return Ok(Founder {
+                creator: self.member.clone(),
+                actor: crate::ReplicaActor::Owner,
+                permissions: None,
+            });
+        };
+        let policy = self
+            .policy_for(workspace_id, who, workspace, None)
+            .map_err(Outcome::Rejected)?;
+        let permissions = bounded::bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
+        if permissions.answer(&TreePath::root().app(app), ActionKind::Undoable) != Answer::Allow {
+            return Err(Outcome::Rejected(ActionCallError::NotPermitted));
+        }
+        let actor = bounded::member_actor(&policy, who, &self.own_device, None)
+            .map_err(Outcome::Rejected)?;
+        Ok(Founder {
+            creator: who.person.clone(),
+            actor,
+            permissions: Some(permissions),
+        })
+    }
+
+    /// Found a record of `app` in `workspace` as `seed` names it, as `founder`
+    /// ([`Self::founder`]): its genesis, as the app makes it, saved as theirs. A
+    /// record named by its id ([`Seed::NewAt`]) is founded with the genesis every device's
+    /// first window of it makes, so what they write to it later merges with this.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt answered"
+    )]
+    pub(super) fn found(
+        &mut self,
+        workspace_id: WorkspaceId,
+        workspace: &str,
+        app: &str,
+        seed: Seed,
+        founder: Founder,
+    ) -> Result<DocumentRoute, Outcome> {
+        let refused = |reason: String| Outcome::Rejected(ActionCallError::Refused { reason });
+        let Founder {
+            creator,
+            actor,
+            permissions,
+        } = founder;
+        let hosted = ConfinedReplica::open(
+            &self.catalogue,
+            app,
+            workspace,
+            &MemberId::Person(creator),
+            &actor,
+            seed,
+            true,
+        )
+        .map_err(|error| refused(error.to_string()))?;
+        let hosted = self.lend(hosted, workspace);
+        let route = DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_owned(),
+            document: hosted.wire_document().to_owned(),
+        };
+        let genesis = hosted
+            .take_mutation()
+            .map_err(|error| refused(error.to_string()))?;
+        self.save_genesis(workspace_id, &route, genesis, permissions.as_ref())?;
+        Ok(route)
+    }
+
+    /// Save `genesis`, the first change of the new record at `route`, bounded by
+    /// `permissions` when someone other than the host's own person founds it.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt answered"
+    )]
+    fn save_genesis(
+        &mut self,
+        workspace_id: WorkspaceId,
+        route: &DocumentRoute,
+        genesis: Option<DocumentMutation>,
+        permissions: Option<&ui::permissions::PermissionContext>,
+    ) -> Result<(), Outcome> {
+        let refused = |reason: String| Outcome::Rejected(ActionCallError::Refused { reason });
+        let app = route.app_id.as_str();
+        if let (Some(permissions), Some(mutation)) = (permissions, &genesis) {
             let unwritable =
                 bounded::refused_writes(permissions, (app, None), None, mutation, (None, false))
                     .map_err(|reason| commit_failed(reason, false))?;
@@ -681,7 +747,7 @@ impl Worker {
                 .shared
                 .link
                 .get()
-                .and_then(|link| link.serving_keys(&route, true))
+                .and_then(|link| link.serving_keys(route, true))
         {
             let keys = keys.map_err(|reason| {
                 Outcome::Rejected(ActionCallError::Unavailable {
@@ -696,15 +762,17 @@ impl Worker {
                 .map_err(|closed| refused(closed.to_string()))?;
         }
         if let Some(mutation) = genesis {
-            self.commit(workspace_id, &route, &mutation)
+            self.commit(workspace_id, route, &mutation)
                 .map_err(refused)?;
         }
-        Ok(ActionOutput {
-            value: Some(serde_json::json!({
-                "provider": resource_provider(&route),
-                "record": route.document,
-            })),
-            resources: Vec::new(),
-        })
+        Ok(())
     }
+}
+
+/// Who founds a new record ([`Worker::founder`]): the member it is made by, the actor it is
+/// written as, and the access that bounds its genesis when that is not the host's own person.
+pub(super) struct Founder {
+    creator: ui::permissions::policy::PersonId,
+    actor: crate::ReplicaActor,
+    permissions: Option<ui::permissions::PermissionContext>,
 }
