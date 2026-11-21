@@ -206,3 +206,140 @@ fn a_scrolled_page_is_handed_what_composing_it_all_gives() {
         );
     }
 }
+
+/// Every page of the sidebar, picked, pointed across and scrolled: each frame a page is handed is
+/// what composing the whole window gives, so no part of it stands twice or is left out.
+#[test]
+fn every_page_is_handed_what_composing_it_all_gives() {
+    crate::support::installed("gallery");
+    let mut app = TestApp::<TlApp>::drive_at("custom", (1280, 800)).expect("the scenario stages");
+    let harness = app.harness();
+    harness.set_scene_drawn(false);
+    harness.set_coalesce_input_frames(true);
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+        let _ = harness.compose_frame();
+    }
+    // Each frame at an instant of its own, a page's frame later than the last, and the whole
+    // window composed at that same instant: what moves with the clock (a bar's sliding
+    // segment) is where both put it.
+    let started = ui::time::now();
+    let mut frame = 0_u32;
+    let mut checked = |harness: &mut ui::headless::FrameHarness, what: &str| {
+        frame = frame.saturating_add(1);
+        let at = started + std::time::Duration::from_millis(u64::from(frame) * 17);
+        ui::time::testing::with_monotonic_time(at, || {
+            let _ = harness.poll_frame();
+            let whole = harness.composition();
+            let handed = harness.compose_frame().is_some();
+            let presented = harness
+                .presented_composition()
+                .expect("a composition was handed over");
+            if let Some(differs) = first_difference(&presented.root, &whole.root) {
+                panic!(
+                    "{what}: what the page shows is not the whole window's composition ({}): {differs}",
+                    if handed {
+                        "handed over"
+                    } else {
+                        "nothing handed over"
+                    }
+                );
+            }
+            assert_eq!(
+                *presented, whole,
+                "{what}: the page shows the whole window's composition"
+            );
+        });
+    };
+    for place in [
+        "Basics",
+        "Controls",
+        "Feedback",
+        "Backlog",
+        "Release board",
+        "Data",
+        "Media",
+        "Places",
+        "Shell parts",
+        "Charts and views",
+    ] {
+        let (x, y) = words_at(harness.presented_composition(), place)
+            .unwrap_or_else(|| panic!("the sidebar names {place}"));
+        harness.click_at(x, y);
+        for _ in 0..3 {
+            checked(harness, &format!("{place}: opened"));
+        }
+        for step in 0..24 {
+            let at = f64::from(step);
+            harness.hover_at(320.0 + at * 38.0, 90.0 + at * 28.0);
+            checked(harness, &format!("{place}: pointed at step {step}"));
+        }
+        let scroller = harness.presented_composition().and_then(|composition| {
+            let mut best: Option<(String, f64)> = None;
+            let mut nodes = vec![&composition.root];
+            while let Some(node) = nodes.pop() {
+                if let Some([_, content, viewport]) = node.scroll
+                    && node.rect[0] > 200.0
+                    && content > viewport
+                    && best
+                        .as_ref()
+                        .is_none_or(|(_, room)| content - viewport > *room)
+                {
+                    best = Some((node.path.clone(), content - viewport));
+                }
+                nodes.extend(&node.children);
+            }
+            best
+        });
+        if let Some((scroller, room)) = scroller {
+            for step in 1..=5 {
+                let offset = (f64::from(step) * 37.5).min(room);
+                harness.scroll_composed(&scroller, offset);
+                checked(harness, &format!("{place}: scrolled to {offset}"));
+                harness.hover_at(700.0, 300.0 + f64::from(step) * 20.0);
+                checked(
+                    harness,
+                    &format!("{place}: pointed at after scrolling to {offset}"),
+                );
+            }
+        }
+    }
+}
+
+/// The first part where `shown` and `whole` differ, and how.
+fn first_difference(
+    shown: &ui::composition::Composed,
+    whole: &ui::composition::Composed,
+) -> Option<String> {
+    if shown.path != whole.path {
+        return Some(format!("{} stands where {} does", shown.path, whole.path));
+    }
+    if shown.children.len() != whole.children.len() {
+        return Some(format!(
+            "{} holds {} parts, not {}: {:?} against {:?}",
+            shown.path,
+            shown.children.len(),
+            whole.children.len(),
+            shown.children.iter().map(|c| &c.path).collect::<Vec<_>>(),
+            whole.children.iter().map(|c| &c.path).collect::<Vec<_>>()
+        ));
+    }
+    for (a, b) in shown.children.iter().zip(&whole.children) {
+        if let Some(differs) = first_difference(a, b) {
+            return Some(differs);
+        }
+    }
+    let own = |node: &ui::composition::Composed| ui::composition::Composed {
+        children: Vec::new(),
+        ..node.clone()
+    };
+    (own(shown) != own(whole)).then(|| {
+        format!(
+            "{} ({}): {:?} against {:?}",
+            shown.path,
+            shown.widget,
+            own(shown),
+            own(whole)
+        )
+    })
+}

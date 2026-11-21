@@ -135,10 +135,13 @@ pub(super) struct Read {
 struct KeptParts<'a> {
     parts: HashMap<&'a str, &'a Composed>,
     stood_on: &'a HashMap<String, [u8; 4]>,
+    /// The widget each kept part is, with its address, where one of this frame's widgets is
+    /// there.
+    widgets: HashMap<&'a str, (usize, &'a dyn Widget)>,
 }
 
 impl<'a> KeptParts<'a> {
-    fn of(kept: &'a Kept) -> Self {
+    fn of(kept: &'a Kept, widgets: &HashMap<usize, Vec<(String, &'a dyn Widget)>>) -> Self {
         fn index<'a>(node: &'a Composed, parts: &mut HashMap<&'a str, &'a Composed>) {
             parts.insert(node.path.as_str(), node);
             for child in &node.children {
@@ -149,9 +152,22 @@ impl<'a> KeptParts<'a> {
         for root in std::iter::once(&kept.composition.root).chain(&kept.composition.layers) {
             index(root, &mut parts);
         }
+        let widgets = widgets
+            .iter()
+            .flat_map(|(&address, all)| {
+                all.iter()
+                    .map(move |(path, widget)| (path, (address, *widget)))
+            })
+            .filter_map(|(path, widget)| {
+                parts
+                    .get_key_value(path.as_str())
+                    .map(|(&path, _)| (path, widget))
+            })
+            .collect();
         Self {
             parts,
             stood_on: &kept.stood_on,
+            widgets,
         }
     }
 }
@@ -197,60 +213,59 @@ impl<'a> Walk<'a> {
 
     /// The part the kept composition holds for `widget` at `path`, when composing it again would
     /// give the same: the widget, and every one under it, paints as it did ([`Widget::needs_redraw`]),
-    /// is the size it was, scrolled as it was, on the same ground.
+    /// stands where it stood, scrolled as it was, on the same ground.
     ///
-    /// It may stand elsewhere: the layout is the one the kept composition read (see
-    /// [`Read`]), so a widget that moved, as a scrolled list's rows do, moved with everything in
-    /// it, and the part is the kept one moved as far.
-    fn reuse(&self, node: NodeId, path: &str, widget: &dyn Widget) -> Option<Composed> {
+    /// Each widget in the part is checked, not only the outermost: a scroll inside it moves what
+    /// it scrolls and changes nothing of the widgets around. A part that moved is composed again,
+    /// as what a widget composes of its own (a list's day heading held at its top while its rows
+    /// scroll) need not move with it.
+    fn reuse(&self, path: &str, widget: &dyn Widget) -> Option<Composed> {
         let kept = self.kept.as_ref()?;
         let before = *kept.parts.get(path)?;
-        let rect = widget.get_rect();
         let ground = self.ground_colours.borrow().last().copied();
-        let same = before.widget == widget.name()
-            && before.rect[2].to_bits() == rect.width().to_bits()
-            && before.rect[3].to_bits() == rect.height().to_bits()
-            && kept.stood_on.get(path).copied() == ground
-            && before.scroll
-                == widget.primary_vertical_scroll().map(|region| {
-                    [
-                        region.metrics.offset,
-                        region.metrics.content,
-                        region.metrics.viewport,
-                    ]
-                })
-            && !widget.needs_redraw()
-            && !widget.needs_animation_frame();
-        if !same {
+        let stands = |part: &Composed, widget: &dyn Widget| {
+            let rect = widget.get_rect();
+            part.widget == widget.name()
+                && part.rect.map(f64::to_bits)
+                    == [rect.x0, rect.y0, rect.width(), rect.height()].map(f64::to_bits)
+                && part.scroll
+                    == widget.primary_vertical_scroll().map(|region| {
+                        [
+                            region.metrics.offset,
+                            region.metrics.content,
+                            region.metrics.viewport,
+                        ]
+                    })
+                && !widget.needs_redraw()
+                && !widget.needs_animation_frame()
+        };
+        if kept.stood_on.get(path).copied() != ground || !stands(before, widget) {
             return None;
         }
-        self.mark_placed(node);
+        let mut parts = vec![before];
+        while let Some(part) = parts.pop() {
+            if let Some(&(_, widget)) = kept.widgets.get(part.path.as_str())
+                && !stands(part, widget)
+            {
+                return None;
+            }
+            parts.extend(&part.children);
+        }
+        // Every widget the part holds counts as placed, as composing it would count it: one laid
+        // out as a tree of its own (a tree's rows) is not also composed over the window.
+        let mut placed = self.placed.borrow_mut();
         let mut stood_on = self.stood_on.borrow_mut();
         let mut carry = vec![before];
         while let Some(part) = carry.pop() {
+            if let Some(&(address, _)) = kept.widgets.get(part.path.as_str()) {
+                placed.insert(address);
+            }
             if let Some(&ground) = kept.stood_on.get(&part.path) {
                 stood_on.insert(part.path.clone(), ground);
             }
             carry.extend(&part.children);
         }
-        let mut part = before.clone();
-        let moved = [rect.x0 - before.rect[0], rect.y0 - before.rect[1]];
-        if moved != [0.0, 0.0] {
-            part.translate(moved);
-        }
-        Some(part)
-    }
-
-    /// Every widget laid out at `node` or under it counts as placed, as composing it would count it.
-    fn mark_placed(&self, node: NodeId) {
-        let mut placed = self.placed.borrow_mut();
-        let mut nodes = vec![node];
-        while let Some(node) = nodes.pop() {
-            if let Some(&address) = self.node_widgets.get(&node) {
-                placed.insert(address);
-            }
-            nodes.extend(self.taffy.children(node).unwrap_or_default());
-        }
+        Some(before.clone())
     }
 
     fn compose(
@@ -328,7 +343,7 @@ impl<'a> Walk<'a> {
                 children: Vec::new(),
             };
         };
-        if let Some(reused) = self.reuse(node, path, widget) {
+        if let Some(reused) = self.reuse(path, widget) {
             return reused;
         }
         if let Some(&ground) = self.ground_colours.borrow().last() {
@@ -480,6 +495,7 @@ impl FrameHarness {
         for root in self.presentation_roots() {
             index_widgets(root, "", &mut sibling_counts, &mut widgets);
         }
+        let kept = kept.map(|kept| KeptParts::of(kept, &widgets));
         let walk = Walk {
             widgets,
             node_widgets: self
@@ -493,7 +509,7 @@ impl FrameHarness {
             open: std::cell::RefCell::default(),
             grounds: std::cell::RefCell::default(),
             ground_colours: std::cell::RefCell::default(),
-            kept: kept.map(KeptParts::of),
+            kept,
             stood_on: std::cell::RefCell::default(),
         };
         let mut anonymous = 0;
