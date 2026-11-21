@@ -39,6 +39,8 @@ mod e2e_native;
 mod e2e_native_ui;
 #[path = "e2e_notes.rs"]
 mod e2e_notes;
+#[path = "e2e_notes_import.rs"]
+mod e2e_notes_import;
 #[path = "e2e_todo.rs"]
 mod e2e_todo;
 #[path = "effects.rs"]

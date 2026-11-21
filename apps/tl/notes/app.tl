@@ -198,6 +198,16 @@ action insert_image(n: Note, image: File) (icon: .image, did: "added an image") 
     n.images.put(image.url, base_name(image.name))
 }
 
+/// Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note
+/// holds the address of its bytes, and the name it came in as, which an export writes beside it.
+/// `picture` is the editor's word of it: its name, then the address of its content.
+action keep_image(n: Note, picture: List<Text>) (did: "added an image") {
+    let address = picture.at(1) ?? ""
+    if address != "" {
+        n.images.put(address, base_name(picture.at(0) ?? "Pasted image.png"))
+    }
+}
+
 /// A note as Markdown: its title, then its body, each picture it shows written beside it as
 /// `<note>/images/<name>`, a path another reader of the file follows and this app reads again
 /// as the address of the picture's bytes.
@@ -304,7 +314,7 @@ action import_markdown(nb: Notebook, file: File) -> Note (
     if let imported = nb.notes.find(n -> n.source == file.url) {
         return imported
     }
-    let named = title_words(file.name)
+    let named = page_name(file.name)
     match file.text() {
         .ok(text) => {
             let title = first_heading(text) ?? named
@@ -327,19 +337,22 @@ action import_markdown(nb: Notebook, file: File) -> Note (
     }
 }
 
-/// Imports a zip of Markdown (a notebook this app exported, or a Notion export) as notes under
-/// the notebook, a page under the page that held it, in one change: undo takes the whole import
-/// back. Each page's title is its first heading, or its file's name; the pictures a page shows
-/// are the files it stands beside, a reference read from the page's own folder, and a link to a
-/// page of the archive is the reference to the note that page made. A page that is imported
-/// already keeps the note it made.
+/// Imports a zip of pages as notes under the notebook, a page under the page that held it, in one
+/// change: undo takes the whole import back. That is this app's own notebook written out, and a
+/// Notion export: a page per `.md` file, its pictures beside it, and a database beside it as a
+/// `.csv` that becomes a table at its page. Each page's title is its first heading, or its file's
+/// name; the pictures a page shows are the files it stands beside, a reference read from the
+/// page's own folder, and a link to a page of the archive is the reference to the note that page
+/// made. A page that is imported already keeps the note it made.
 action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "imported a notebook") {
     match file.files() {
         .ok(files) => {
+            let names = files.map(f -> f.name)
             let pictures = files.filter(f -> f.media.starts_with("image/"))
             // A page under the page it stood under comes after it: its parent is a note then.
             let pages = files
                 .filter(f -> f.media == "text/markdown")
+                .filter(p -> not p.name.starts_with("__MACOSX/"))
                 .sort_by(p -> p.name.split("/").len())
             let fresh = pages.filter(p -> nb.notes.find(n -> n.source == p.url) == .none)
             // Every page makes its note before any page is read: a link reaches the note a page
@@ -352,7 +365,7 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
                     let parent = nb.notes.find(n -> n.origin == "{folder_of(page.name)}.md")
                     let made = nb.notes.insert(
                         Note(
-                            title: title_words(page.name),
+                            title: page_name(page.name),
                             body: RichText(""),
                             parent: parent,
                             source: page.url,
@@ -367,14 +380,14 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
                     }
                 }
             }
-            // Then what each page says, and the pictures it shows: the files it stands beside,
-            // by the name each stood under, which an export of it writes beside it again.
+            // Then what each page says, the tables its export wrote beside it, and the pictures it
+            // shows: the files it stands beside, by the name each stood under, which an export of
+            // it writes beside it again.
             for page in fresh {
-                let named = title_words(page.name)
                 if let made = nb.notes.find(n -> n.source == page.url) {
                     match page.text() {
                         .ok(text) => {
-                            let title = first_heading(text) ?? named
+                            let title = first_heading(text) ?? page_name(page.name)
                             let shown = pictures_shown(
                                 without_heading(text, title),
                                 page.name,
@@ -391,6 +404,19 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
                             made.body = RichText(why)
                         }
                     }
+                    // A database exported beside its page comes after what the page says, as the
+                    // table its rows are.
+                    for database in csv_beside(page.name, names) {
+                        if let data = files.find(f -> f.name == database) {
+                            let csv = match data.text() {
+                                .ok(text) => text
+                                .err(_) => ""
+                            }
+                            if let table = csv_table(csv) {
+                                made.body = RichText(made.body, RichText.from_markdown(table))
+                            }
+                        }
+                    }
                     let shown = made.body.markdown
                     for picture in pictures {
                         if shown.contains(picture.url) {
@@ -405,7 +431,7 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
             if nb.notes.find(n -> n.source == file.url) == .none {
                 nb.notes.insert(
                     Note(
-                        title: title_words(file.name),
+                        title: stem_of(file.name),
                         body: RichText(why),
                         source: file.url,
                         origin: file.name,
@@ -414,6 +440,13 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
             }
         }
     }
+}
+
+/// The title a page of an export is named by before what it says is read: its own file's name —
+/// and nothing for a page the export never titled (`Untitled 1a2b3c4d`), which is called what a
+/// titleless note is called until its heading names it.
+fn page_name(name: Text) -> Text {
+    if untitled_name(name) { "" } else { stem_of(name) }
 }
 
 /// The folder the page at `path` stands in, as a page's own folder names it: nothing at the top
@@ -465,7 +498,7 @@ view notebook_menu(nb: Notebook, open: Option<Note>) {
         ui.MenuItem("Import Markdown…", icon: .file_plus) {
             on choose: file.choose(import_markdown(nb), accept: ["text/markdown"])
         }
-        ui.MenuItem("Import a zip of Markdown…", icon: .file_plus) {
+        ui.MenuItem("Import a Notion export or a zip of Markdown…", icon: .file_plus) {
             on choose: file.choose(import_archive(nb), accept: ["application/zip"])
         }
         ui.MenuItem("Export the notebook…", icon: .download) {
@@ -561,6 +594,9 @@ view note_page(n: Note) {
         ) {
             on links_open(open): set(linking, open)
             on links_query(text): set(link_text, text)
+            // A picture pasted or dropped into the body is in it already, where the caret was:
+            // the note keeps its name beside the address its bytes were kept at.
+            on image(picture): keep_image(n, picture)
         }
         std.linked(n, compact: true)
         std.after_body {
@@ -727,7 +763,19 @@ fn pages_linked(n: Note, pages: Map<Text>) -> Map<Text> {
     links
 }
 
-/// A file's name without its extension: `fox.png` is `fox`.
+/// The name at the end of a path: a file's own name, not the folders it stands in
+/// (`Notes/Meeting.md` is `Meeting.md`).
+fn base_name(path: Text) -> Text {
+    path.split("/").last() ?? path
+}
+
+/// The folder a path stands in (`Notes/Meeting.md` is `Notes`), and nothing at the top.
+fn folder_of(path: Text) -> Text {
+    let parts = path.split("/")
+    if parts.len() <= 1 { "" } else { parts.take(parts.len() - 1).join("/") }
+}
+
+/// A file's name without its extension: `fox.png` is `fox`, and `a.plan.md` is `a.plan`.
 fn stem_of(name: Text) -> Text {
     let parts = base_name(name).split(".")
     if parts.len() <= 1 { base_name(name) } else { parts.take(parts.len() - 1).join(".") }
@@ -739,23 +787,158 @@ fn extension_of(name: Text) -> Text {
     if parts.len() <= 1 { "" } else { ".{parts.last() ?? ""}" }
 }
 
-/// The name at the end of a path: a file's own name, not the folders it stands in.
-fn base_name(path: Text) -> Text {
-    path.split("/").last() ?? path
+/// Whether an export named the page at `name` one it never titled: Notion writes
+/// `Untitled <id>`, a run of hex digits after the word, for a page the person left without a
+/// title, and what the page says names it instead.
+fn untitled_name(name: Text) -> Bool {
+    let stem = stem_of(name)
+    if not stem.starts_with("Untitled ") {
+        return false
+    }
+    let rest = stem.slice("Untitled ".len(), stem.len())
+    rest.len() >= 8 and hex_digits(rest)
 }
 
-/// The folder a path stands in (`Notes/Meeting.md` is `Notes`), and nothing at the top.
-fn folder_of(path: Text) -> Text {
-    let parts = path.split("/")
-    if parts.len() <= 1 { "" } else { parts.take(parts.len() - 1).join("/") }
+/// Whether `text` is only hex digits: the run an export names an untitled page by.
+fn hex_digits(text: Text) -> Bool {
+    for ch in text.split("") {
+        if not "0123456789abcdefABCDEF".contains(ch) {
+            return false
+        }
+    }
+    true
 }
 
-/// The words a file's own name gives a note: the name at the end of its path, without the
-/// extension (`Notes/Meeting.md` is `Meeting`).
-fn title_words(name: Text) -> Text {
-    let base = base_name(name)
-    let dot = base.find(".") ?? base.len()
-    if dot == 0 { base } else { base.slice(0, dot) }
+/// The data files an export wrote beside the page at `page`: the `.csv` files of its own folder
+/// called what the page is called, or that and one more word (`Q3 plan Tasks.csv`, the database
+/// `Tasks` of the page `Q3 plan`). In name order, so the same export reads the same way twice.
+fn csv_beside(page: Text, names: List<Text>) -> List<Text> {
+    let folder = folder_of(page)
+    let stem = stem_of(page)
+    let beside = names.filter(
+        n -> folder_of(n) == folder
+            and extension_of(n).lower() == ".csv"
+            and database_of(stem_of(n), stem)
+    )
+    beside.sort_by(n -> n)
+}
+
+/// Whether the file called `name` is a database of the page called `stem`: the page's own name,
+/// or that and one more word (`Tasks`, `Tasks 2`).
+fn database_of(name: Text, stem: Text) -> Bool {
+    name == stem or name.starts_with("{stem} ") or name.starts_with("{stem}_")
+}
+
+/// `csv` as a Markdown table: its first row the header, then one line for each row after it. A
+/// quoted field keeps the commas and line breaks it holds, as RFC 4180 has them; a table's cell
+/// writes a line break as a space and a `|` escaped, so the cell ends where it should, and a row
+/// of nothing is left out. `.none` when the file states no field at all, or holds more than a
+/// note's table takes (a database of 64 000 characters is a page of a document, not a note).
+fn csv_table(csv: Text) -> Option<Text> {
+    if csv.len() > 64000 {
+        return .none
+    }
+    let rows = csv_rows(csv)
+    let header = rows.first() ?? []
+    if header.is_empty() {
+        return .none
+    }
+    let width = header.len()
+    let table = "{table_row(header, width)}\n{table_rule(width)}\n"
+    let heading = true
+    for row in rows {
+        if heading {
+            heading = false
+        } else if not empty_row(row) {
+            table = "{table}{table_row(row, width)}\n"
+        }
+    }
+    .some(table)
+}
+
+/// The rows `csv` holds, each its fields: comma apart, and a quoted field kept whole — its commas,
+/// its line breaks, and `""` as the one quote it writes.
+fn csv_rows(csv: Text) -> List<List<Text>> {
+    let rows: List<List<Text>> = []
+    let row: List<Text> = []
+    let field = ""
+    let quoted = false
+    let just_closed = false
+    for ch in csv.split("") {
+        if quoted {
+            if ch == "\"" {
+                quoted = false
+                just_closed = true
+            } else {
+                field = "{field}{ch}"
+            }
+        } else if just_closed and ch == "\"" {
+            // `""` inside a quoted field writes one quote, and the quote goes on.
+            field = "{field}\""
+            quoted = true
+            just_closed = false
+        } else {
+            just_closed = false
+            if ch == "\"" {
+                quoted = true
+            } else if ch == "," {
+                row = [row, [field]].flat_map(fields -> fields)
+                field = ""
+            } else if ch == "\n" {
+                row = [row, [field]].flat_map(fields -> fields)
+                if not empty_row(row) {
+                    rows = [rows, [row]].flat_map(held -> held)
+                }
+                row = []
+                field = ""
+            } else if ch != "\r" {
+                field = "{field}{ch}"
+            }
+        }
+    }
+    row = [row, [field]].flat_map(fields -> fields)
+    if not empty_row(row) {
+        rows = [rows, [row]].flat_map(held -> held)
+    }
+    rows
+}
+
+/// Whether `row` states nothing: no field, or only fields of space.
+fn empty_row(row: List<Text>) -> Bool {
+    row.filter(field -> not field.trim().is_empty()).is_empty()
+}
+
+/// One row of a Markdown table `width` cells wide: each field as a cell, and a missing field an
+/// empty one, so every row of a table ends where its header does.
+fn table_row(fields: List<Text>, width: Int) -> Text {
+    let cells = padded_cells(fields.take(width).map(field -> table_cell(field)), width)
+    let joined = cells.join("|")
+    "|{joined}|"
+}
+
+/// A Markdown table's rule, `width` cells wide: one run of dashes under each header cell.
+fn table_rule(width: Int) -> Text {
+    let cells = padded_cells([], width).map(cell -> " --- ")
+    let joined = cells.join("|")
+    "|{joined}|"
+}
+
+/// `cells` made `width` of them: an empty cell for each the row holds fewer than the table is
+/// wide.
+fn padded_cells(cells: List<Text>, width: Int) -> List<Text> {
+    if cells.len() >= width {
+        cells
+    } else {
+        padded_cells([cells, [" "]].flat_map(held -> held), width)
+    }
+}
+
+/// A Markdown table cell of `field`: its pipe escaped, its line breaks written as spaces, and a
+/// space at each side of it.
+fn table_cell(field: Text) -> Text {
+    let escaped = field.trim().replace("\\", "\\\\").replace("|", "\\|")
+    let flat = escaped.replace("\n", " ").replace("\r", " ")
+    " {flat} "
 }
 
 /// The words of a Markdown document's first heading, when it has one.

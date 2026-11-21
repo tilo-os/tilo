@@ -140,6 +140,12 @@ d-4s5iqnfo = Insert image
 
 d-4s5iqnfo-image = Image
 
+d-zfjavdpr = Keep image
+    .doc = Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note holds the address of its bytes, and the name it came in as, which an export writes beside it.
+    .did = added an image
+
+d-zfjavdpr-picture = Picture
+
 d-xptsjaii = Export markdown
     .doc = A note as Markdown: its title, then its body, each picture it shows written beside it as `<note>/images/<name>`, a path another reader of the file follows and this app reads again as the address of the picture's bytes.
 
@@ -156,7 +162,7 @@ d-t4nxxtng = Import markdown
 d-t4nxxtng-file = File
 
 d-h3zczsen = Import archive
-    .doc = Imports a zip of Markdown (a notebook this app exported, or a Notion export) as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
+    .doc = Imports a zip of pages as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back.
     .did = imported a notebook
 
 d-h3zczsen-file = File
@@ -179,7 +185,7 @@ d-x4im3xs5 = Notebook head
 d-qrsfr4a5 = Notebook menu
     .w-file = File
     .w-import-markdown = Import Markdown…
-    .w-import-a-zip-of-markdown = Import a zip of Markdown…
+    .w-import-a-notion-export-or-a = Import a Notion export or a zip of Markdown…
     .w-export-the-notebook = Export the notebook…
     .w-insert-an-image = Insert an image…
     .w-export-this-note = Export this note…
