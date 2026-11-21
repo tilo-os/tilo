@@ -1,21 +1,21 @@
-//! The apps a server runs for the workspaces it hosts, on the same app broker and with the same
-//! sandbox a device runs them with.
+//! The apps a server runs for the workspaces it holds, with the same sandbox a device runs them
+//! with.
 //!
-//! A hosted workspace's apps are the packages its governance installed: the server keeps each
-//! one's `.tapp` file as the workspace's other holders do, installs it into a package store of
-//! that workspace's own and verifies the installation exactly as a device's launch verifies it
-//! ([`HostedPackages::verified`]). A package whose bytes do not hold together, or that is not
+//! A workspace's apps are the packages it installed: the server keeps each one's `.tapp` file as
+//! every device of the workspace does, installs it into a package store of that workspace's own
+//! and verifies the installation exactly as a device's launch verifies it
+//! ([`WorkspacePackages::verified`]). A package whose bytes do not hold together, or that is not
 //! the app it was installed as, is refused.
 //!
-//! An instance runs in a tilolang process started through `tilo-launcher tilolang-process`
-//! (bubblewrap, Landlock, seccomp): a server without that launcher runs no app at all
-//! ([`tilo_launcher`]), never one unconfined.
+//! The system runs a package's code in a tilolang process started through `tilo-launcher
+//! tilolang-process` (bubblewrap, Landlock, seccomp): a server without that launcher runs no app
+//! at all ([`tilo_launcher`]), never one unconfined.
 //!
-//! The only window a server serves is a page open on it. Each instance's collaboration
-//! connection is made by this process for a window it serves, and the broker attests the
-//! connection as that window only, once ([`HostedApps::connect_window`]); nothing else that
-//! reaches the broker's socket is believed to be one of its apps. What the window shows is the
-//! page's to say: the connection names a window, not how it is drawn.
+//! The only window a server serves is a page open on it. The collaboration connection of each
+//! window is made by this process, and the broker attests the connection as that window only,
+//! once ([`ServerLauncher::connect_window`]); nothing else that reaches the broker's socket is
+//! believed to be one of its apps. How the window is drawn is the page's to say: the connection
+//! names a window, not how it shows.
 
 use std::collections::BTreeSet;
 use std::os::fd::OwnedFd;
@@ -32,17 +32,17 @@ use tilo_desktop_model::Workspace;
 pub const NO_WINDOW: &str =
     "this server shows an app only in a page open on it, and no page is open for this launch";
 
-/// Why a server starts no windowless instance yet.
-pub const NO_WINDOWLESS: &str =
+/// Why a server runs no app's code for a call without a page open on it yet.
+pub const NO_PAGE_FOR_CALL: &str =
     "this server runs no app without a page open on it yet, so the action has nowhere to run";
 
 /// The packages of the workspaces this server hosts, each installed into a store of its
 /// workspace's own under `root` and verified there as a launch verifies it.
-pub struct HostedPackages {
+pub struct WorkspacePackages {
     root: PathBuf,
 }
 
-impl HostedPackages {
+impl WorkspacePackages {
     /// Packages kept under `root`.
     #[must_use]
     pub const fn new(root: PathBuf) -> Self {
@@ -57,7 +57,7 @@ impl HostedPackages {
         let data_home = launcher::appdir::host_data_home()
             .ok_or("this server has no data home to keep its workspaces' apps in")?;
         Ok(Self::new(
-            data_home.join("tilo").join("hosted-packages"),
+            data_home.join("tilo").join("workspace-packages"),
         ))
     }
 
@@ -71,7 +71,7 @@ impl HostedPackages {
         ))
     }
 
-    /// `tapp`, the package `workspace`'s governance installed as `app`, installed for this
+    /// `tapp`, the package `workspace` installed as `app`, installed for this
     /// server to run and verified as a launch verifies it: its files, its signature, its
     /// publisher not revoked, and a tilolang app.
     ///
@@ -96,7 +96,7 @@ impl HostedPackages {
                     Ok(package_store::Admission {
                         pinned: false,
                         attested_by: String::new(),
-                        source: format!("the governance of workspace {workspace}"),
+                        source: format!("installed by workspace {workspace}"),
                         held: false,
                     })
                 },
@@ -131,8 +131,8 @@ pub fn launcher_candidates() -> Vec<PathBuf> {
     out
 }
 
-/// The first of `candidates` that is a file: the launcher every app instance on this server is
-/// started through.
+/// The first of `candidates` that is a file: the launcher every app on this server is started
+/// through.
 ///
 /// # Errors
 /// None is installed: then no app runs here, since none may run unconfined.
@@ -160,18 +160,18 @@ pub fn tilo_launcher(candidates: &[PathBuf]) -> Result<PathBuf, String> {
 struct Window {
     app: String,
     workspace: String,
-    instance: u64,
+    tab: u64,
 }
 
 /// The app broker's launcher on a server: the windows it serves, whose connections it made.
-pub struct HostedApps {
+pub struct ServerLauncher {
     /// The broker's socket, which a window's connection is made on.
     collab_socket: PathBuf,
     /// The windows whose connection was made and not yet attested: each is believed once.
     windows: Mutex<BTreeSet<Window>>,
 }
 
-impl HostedApps {
+impl ServerLauncher {
     /// The launcher of the broker listening on `collab_socket`.
     #[must_use]
     pub const fn new(collab_socket: PathBuf) -> Self {
@@ -187,7 +187,7 @@ impl HostedApps {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The collaboration connection of the window `instance` of `app` in `workspace`, which this
+    /// The collaboration connection of the window `tab` of `app` in `workspace`, which this
     /// server serves: named for that window, and attested by the broker as that window only, once.
     ///
     /// # Errors
@@ -196,23 +196,23 @@ impl HostedApps {
         &self,
         app: &str,
         workspace: &str,
-        instance: u64,
+        tab: u64,
     ) -> std::io::Result<OwnedFd> {
-        if instance == 0 {
+        if tab == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "a window's instance is never 0",
+                "a window's tab is never 0",
             ));
         }
         let window = Window {
             app: app.to_owned(),
             workspace: workspace.to_owned(),
-            instance,
+            tab,
         };
         let mut stream = std::os::unix::net::UnixStream::connect(&self.collab_socket)?;
         self.windows().insert(window.clone());
         if let Err(error) =
-            launcher::services::write_collab_window_handoff(&mut stream, app, workspace, instance)
+            launcher::services::write_collab_window_handoff(&mut stream, app, workspace, tab)
         {
             self.windows().remove(&window);
             return Err(error);
@@ -220,24 +220,24 @@ impl HostedApps {
         Ok(OwnedFd::from(stream))
     }
 
-    /// Take the record of the window this process made a connection for, once.
-    fn take_window(&self, pid: u32, app: &str, workspace: &str, instance: Option<u64>) -> bool {
+    /// Take the note of the window this process made a connection for, once.
+    fn take_window(&self, pid: u32, app: &str, workspace: &str, tab: Option<u64>) -> bool {
         if pid != std::process::id() {
             return false;
         }
-        let Some(instance) = instance.filter(|instance| *instance != 0) else {
+        let Some(tab) = tab.filter(|tab| *tab != 0) else {
             return false;
         };
         self.windows().remove(&Window {
             app: app.to_owned(),
             workspace: workspace.to_owned(),
-            instance,
+            tab,
         })
     }
 }
 
-impl LauncherServices for HostedApps {
-    /// The apps a hosted workspace offers are its governance's, which the workspace publishes
+impl LauncherServices for ServerLauncher {
+    /// The apps a workspace offers are the packages it installed, which the workspace publishes
     /// itself; this launcher lists none of its own.
     fn applications(&self) -> Vec<LaunchableApplication> {
         Vec::new()
@@ -254,7 +254,7 @@ impl LauncherServices for HostedApps {
     }
 
     fn windowless(&self, app: &str, _: &str) -> Result<Option<WindowlessStart>, String> {
-        Err(format!("{app} did not run: {NO_WINDOWLESS}"))
+        Err(format!("{app} did not run: {NO_PAGE_FOR_CALL}"))
     }
 
     /// Only a connection this process made for a window it serves is one of its apps.
@@ -271,12 +271,12 @@ impl LauncherServices for HostedApps {
         pid: u32,
         app: &str,
         workspace: &str,
-        window_instance: Option<u64>,
+        tab: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
         Ok(self
-            .take_window(pid, app, workspace, window_instance)
+            .take_window(pid, app, workspace, tab)
             .then_some(AuthenticatedApplicationLaunch {
-                continuation_instance: window_instance,
+                continuation_instance: tab,
                 launch_ticket: None,
                 windowless: false,
             }))
@@ -284,5 +284,5 @@ impl LauncherServices for HostedApps {
 }
 
 #[cfg(test)]
-#[path = "hosted_apps_tests.rs"]
+#[path = "server_apps_tests.rs"]
 mod tests;
