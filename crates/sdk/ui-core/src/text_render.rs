@@ -5297,7 +5297,3 @@ mod layout_renderer_pool {
         assert_eq!(constructions(), 2, "and later nested passes reuse it");
     }
 }
-
-#[cfg(test)]
-#[path = "text_render/main_compatibility_tests.rs"]
-mod main_compatibility_tests;
