@@ -1400,7 +1400,6 @@ mod tests {
                 let status = std::process::Command::new(current)
                     .arg("seccomp::tests::thread_creation_probe_in_clean_process")
                     .arg("--exact")
-                    .arg("--ignored")
                     .arg("--test-threads=1")
                     .env("TILO_SECCOMP_THREAD_PROBE", "1")
                     .status_locked()
@@ -1793,8 +1792,10 @@ mod tests {
         }
     }
 
+    /// A clean process for `seccomp_filters_are_enforced_by_the_kernel` to
+    /// re-exec with `TILO_SECCOMP_THREAD_PROBE` set, since the parent's own
+    /// threads were made before its filters. Anywhere else it returns at once.
     #[test]
-    #[ignore = "helper process for seccomp_filters_are_enforced_by_the_kernel"]
     #[cfg(target_os = "linux")]
     #[allow(
         clippy::exit,

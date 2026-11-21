@@ -678,14 +678,15 @@ mod tests {
     /// Live-kernel enforcement: a forked child installs an application
     /// ruleset granting one directory read-only, then proves a granted read
     /// succeeds and a write beneath it is refused. Forked because
-    /// `restrict_self` cannot be undone.
-    ///
-    /// ```bash
-    /// cargo test -p tilo-sandbox-core --lib -- --ignored application_ruleset_enforces
-    /// ```
+    /// `restrict_self` cannot be undone, and skipped where the kernel's
+    /// Landlock ABI is below the ABI 5 floor.
     #[test]
-    #[ignore = "requires a live Landlock ABI 5 kernel; run with --ignored"]
     fn application_ruleset_enforces_read_only_in_forked_child() {
+        let abi = kernel_abi();
+        if abi < FS_ABI as i32 {
+            eprintln!("skipped: kernel Landlock ABI {abi} is below the ABI 5 floor");
+            return;
+        }
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
 
