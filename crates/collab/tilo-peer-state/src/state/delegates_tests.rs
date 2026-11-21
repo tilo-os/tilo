@@ -176,7 +176,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
             .governance_mut()
             .admit_agent(foreign, foreign_grant, &authority, now)
             .unwrap_err()
-            .contains("owner's agents")
+            .contains("only the agents of the workspace's owner and its administrators")
     );
     assert!(
         governor

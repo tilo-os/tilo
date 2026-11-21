@@ -1681,15 +1681,15 @@ impl PeerPublication<'_> {
         if !self.awaiting_reseal(app, document) {
             return None;
         }
-        // The owner's devices hold the workspace's keys; the first of them to open the
-        // workspace after updating seals the document again.
+        // The devices of its owner and its administrators keep the workspace's history; the
+        // first of them to open the workspace after updating seals the document again.
         let mut holders: Vec<String> = self
             .peer
             .core
             .certificates
             .values()
             .filter(|cert| {
-                cert.user_public_key == self.peer.core.owner
+                self.peer.governs_history(&cert.user_public_key)
                     && cert.capabilities.holds_workspace_keys()
             })
             .map(|cert| cert.device_label.clone())

@@ -1582,7 +1582,7 @@ impl DirectSync {
                 hello,
                 self.0.admission.is_none()
                     && replica.has_governance()
-                    && replica.signed_by_owner(&device),
+                    && replica.signed_by_governor(&device),
             )
         };
         let mut messages = vec![hello];

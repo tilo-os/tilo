@@ -1107,7 +1107,7 @@ pub(crate) fn add_member_with(
     )
     .unwrap();
     let owner = peer
-        .owner_certificates()
+        .certificates()
         .into_iter()
         .find(|cert| cert.device_public_key == authority.verifying_key().to_bytes())
         .unwrap();

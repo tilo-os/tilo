@@ -59,7 +59,7 @@ impl NativeWorkspaceOwner {
             // other member the changes it made, which every key holder admits.
             let writes_checkpoint = candidate
                 .peer
-                .signed_by_owner(&candidate.device().device_public_key);
+                .signed_by_governor(&candidate.device().device_public_key);
             let previous = candidate.peer.clone();
             let (receipt, record) = candidate.change(|live, record| {
                 let before = live.workspace_heads().unwrap_or_default();

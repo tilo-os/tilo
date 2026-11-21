@@ -137,7 +137,7 @@ impl StatePeer {
         publisher: [u8; 32],
         now: SystemTime,
     ) -> Result<(), AdmissionError> {
-        self.owner_device(&publisher, now)
+        self.governor_device(&publisher, now)
             .map(drop)
             .map_err(AdmissionError::from)
     }

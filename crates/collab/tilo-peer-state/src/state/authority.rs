@@ -229,16 +229,68 @@ impl StatePeer {
             .is_some_and(|cert| !self.core.revocations.refuses(cert))
     }
 
-    /// Whether `device` is a known, unrevoked device of the owner's, at no
-    /// particular time: for evidence a device of theirs signed earlier.
+    /// Whether `person` governs the workspace's history: its owner, or one of
+    /// its administrators as the governance this replica holds names them.
+    /// Their devices sign the workspace's checkpoints and bases and relay
+    /// what its members write, so a workspace whose owner handed it on keeps
+    /// being served by the administrator that holds it, visibly, through the
+    /// grant every member reads and its owner may withdraw.
     #[must_use]
-    pub fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
+    pub fn governs_history(&self, person: &[u8; 32]) -> bool {
+        *person == self.core.owner
+            || self.core.workspace_doc.as_ref().is_some_and(|doc| {
+                doc.workspace_policy(&self.core.workspace)
+                    .is_administrator(&hex::encode(person))
+            })
+    }
+
+    /// The workspace's administrators, by their root keys, as the governance
+    /// this replica holds names them ([`Self::governs_history`]).
+    #[must_use]
+    pub(super) fn administrator_roots(&self) -> Vec<[u8; 32]> {
+        let Some(doc) = self.core.workspace_doc.as_ref() else {
+            return Vec::new();
+        };
+        doc.workspace_policy(&self.core.workspace)
+            .administrators()
+            .filter_map(|person| {
+                let mut root = [0; 32];
+                hex::decode_to_slice(person, &mut root).ok()?;
+                Some(root)
+            })
+            .collect()
+    }
+
+    /// Whether `device` is a known, unrevoked device of a person who governs
+    /// the workspace's history ([`Self::governs_history`]), at no particular
+    /// time: for evidence a device of theirs signed earlier.
+    #[must_use]
+    pub fn signed_by_governor(&self, device: &[u8; 32]) -> bool {
         self.known_device(device)
             && self
                 .core
                 .certificates
                 .get(device)
-                .is_some_and(|cert| cert.user_public_key == self.core.owner)
+                .is_some_and(|cert| self.governs_history(&cert.user_public_key))
+    }
+
+    /// `device`'s certificate when it is a device of a person who governs the
+    /// workspace's history ([`Self::governs_history`]), current at `now`.
+    pub(super) fn governor_device(
+        &self,
+        device: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<&DeviceCert, String> {
+        let cert = self
+            .certificate(device, now)
+            .map_err(|error| error.to_string())?;
+        if !self.governs_history(&cert.user_public_key) {
+            return Err(
+                "the publisher is not a device of the workspace's owner or an administrator's"
+                    .into(),
+            );
+        }
+        Ok(cert)
     }
 
     /// The member's own record `app`'s `record` is, as a write of it or the
@@ -751,17 +803,17 @@ impl StatePeer {
             .map(|(member, _, _)| member)
             .ok_or(MembershipError::Revoked)
     }
-    /// Whether the device that wrote a change is one of the owner's: a known
-    /// device of theirs now, or, for a change that is `history`, one they
-    /// removed since.
-    pub(super) fn wrote_as_owner(&self, device: &[u8; 32], history: bool) -> bool {
-        self.signed_by_owner(device)
+    /// Whether the device that wrote a change is one of a governor's
+    /// ([`Self::governs_history`]): a known device of theirs now, or, for a
+    /// change that is `history`, one they removed since.
+    pub(super) fn wrote_as_governor(&self, device: &[u8; 32], history: bool) -> bool {
+        self.signed_by_governor(device)
             || (history
                 && self
                     .core
                     .certificates
                     .get(device)
-                    .is_some_and(|cert| cert.user_public_key == self.core.owner))
+                    .is_some_and(|cert| self.governs_history(&cert.user_public_key)))
     }
     /// The id the cut of a removal names `write`, a write to `document` of
     /// `app`, by: `None` when the write does not encode.

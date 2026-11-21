@@ -342,7 +342,7 @@ impl StatePeer {
             .is_err_and(|error| !error.is_device_failure())
             && self
                 .certificate(&source, now)
-                .is_ok_and(|cert| cert.user_public_key == self.core.owner)
+                .is_ok_and(|cert| self.governs_history(&cert.user_public_key))
             && let workspace::base::Lineage::Newer { base, .. } =
                 workspace::base::lineage(self.core.workspace_doc.as_deref(), workspace_changes)
         {
@@ -554,6 +554,7 @@ impl StatePeer {
                 .ok_or(error)?,
         };
         let owner = self.core.owner;
+        let administrators = self.administrator_roots();
         let from = hex::encode(source);
         // A copy that knows its device, a member's that may write here, keeps
         // the work delegations it holds where a base lacks them.
@@ -586,6 +587,7 @@ impl StatePeer {
                 workspace: &self.core.workspace,
                 source: workspace::Writer { key: &from, access },
                 owner: &owner,
+                administrators: &administrators,
                 now_ns: now_ns(now),
                 keeps_delegations: keeper.is_some(),
             },

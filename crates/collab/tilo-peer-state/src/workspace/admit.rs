@@ -59,6 +59,19 @@ impl Writer<'_> {
     fn governs(&self, owner: &[u8; 32]) -> bool {
         matches!(self.access, SenderAccess::Member { person, .. } if person == *owner)
     }
+
+    /// Whether the sender keeps the workspace's history for its members: a
+    /// device of its owner, or of one of `administrators`, from a device of
+    /// their own. They relay what members recorded and send the workspace's
+    /// compacted base; only the owner's devices write its governance beyond
+    /// the operations every receiver judges ([`Self::governs`]).
+    fn keeps_history(&self, owner: &[u8; 32], administrators: &[[u8; 32]]) -> bool {
+        self.governs(owner)
+            || matches!(
+                self.access,
+                SenderAccess::Member { person, foreign: false } if administrators.contains(&person)
+            )
+    }
 }
 
 /// Everything [`admit_workspace_changes`] decides a batch against.
@@ -69,8 +82,11 @@ pub struct WorkspaceAdmission<'a> {
     /// The workspace id as governance and capability scopes spell it.
     pub workspace: &'a str,
     pub source: Writer<'a>,
-    /// The workspace's owner: the person the workspace was made for.
+    /// The workspace's owner, as the governance held names them.
     pub owner: &'a [u8; 32],
+    /// The workspace's administrators, by root, as the governance held
+    /// names them ([`Writer::keeps_history`]).
+    pub administrators: &'a [[u8; 32]],
     /// The instant the batch is judged at, in nanoseconds since the Unix
     /// epoch: grant expiry, and the certificate a saved shortcut's proof
     /// carries. Not whole seconds: a certificate issued earlier in this
@@ -229,6 +245,9 @@ pub fn admit_workspace_changes(
         return holder_writes(&input, changes);
     }
     let governs = input.source.governs(input.owner);
+    let keeps = input
+        .source
+        .keeps_history(input.owner, input.administrators);
     let writes = governs || may_write(input.before, input.workspace, &input.source, input.now_ns)?;
     match super::base::lineage(input.before, changes) {
         super::base::Lineage::Same { changes, replaced } => {
@@ -272,7 +291,7 @@ pub fn admit_workspace_changes(
                 rebased: false,
             })
         }
-        super::base::Lineage::Newer { base, changes } if governs => {
+        super::base::Lineage::Newer { base, changes } if keeps => {
             let candidate = super::candidate_on(*base, &changes)?;
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
@@ -441,10 +460,12 @@ fn checked_as(
         workspace,
         source,
         owner,
+        administrators,
         now_ns,
         keeps_delegations: _,
     } = *input;
     let governs = source.governs(owner);
+    let keeps = source.keeps_history(owner, administrators);
     let declared = uuid::Uuid::parse_str(workspace)
         .map_err(|_| WorkspaceRefusal::DeclaredWorkspaceMismatch)?;
     if super::declared_workspace_mismatches(candidate, declared) {
@@ -453,9 +474,9 @@ fn checked_as(
     if !governs && !governed && !super::governance_unchanged(before, candidate) {
         return Err(WorkspaceRefusal::GovernanceWriter);
     }
-    if !governs {
-        // The owner's devices relay what members recorded; anyone else
-        // records only their own.
+    if !keeps {
+        // The owner's and the administrators' devices relay what members
+        // recorded; anyone else records only their own.
         if !super::effect_slices_kept(before, candidate, source.person()) {
             return Err(WorkspaceRefusal::ReceiptWriter);
         }

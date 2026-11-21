@@ -32,7 +32,7 @@ pub(super) fn hold_covered_empty_documents(peer: &mut StatePeer) -> Result<usize
         if coverage.workspace != peer.core.workspace
             || !coverage.heads.is_empty()
             || peer.core.documents.contains_key(&route)
-            || !peer.signed_by_owner(&coverage.author)
+            || !peer.signed_by_governor(&coverage.author)
         {
             continue;
         }

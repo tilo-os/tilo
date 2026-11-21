@@ -251,8 +251,15 @@ impl StatePeer {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
+        let person = hex::encode(user_public_key);
+        let workspace = self.core.workspace.clone();
+        let held = doc.workspace_policy(&workspace).clone();
+        // A member is someone a device of theirs was admitted for, or whom
+        // the workspace holds already: an owner it was handed from stays a
+        // member, though their devices came in as the owner's.
         let policy = doc.policy();
         if admitted
+            && !held.members.contains_key(&person)
             && !policy.identities.values().any(|bytes| {
                 GovernedIdentity::decode(bytes).is_ok_and(|identity| {
                     identity.device_cert.user_public_key == user_public_key
@@ -262,9 +269,6 @@ impl StatePeer {
         {
             return Err("member is absent from governed admission history".into());
         }
-        let person = hex::encode(user_public_key);
-        let workspace = self.core.workspace.clone();
-        let held = doc.workspace_policy(&workspace).clone();
         let admin_id = administrator_grant_id(user_public_key);
         let moderation_id = tilo_action_policy::roles::administrator_moderation_grant_id(&person);
         let before_role = held.members.get(&person).copied();
@@ -283,9 +287,8 @@ impl StatePeer {
         // go together.
         if administrator {
             // Whoever makes them an administrator gives the grants: the
-            // owner's device, whom the workspace is kept for, or another
-            // administrator, as the workspace's policy decides for every
-            // device that replays the change.
+            // owner's device or another administrator's, as the workspace's
+            // policy decides for every device that replays the change.
             let giver = Grantee::person(hex::encode(
                 self.certificate(&key.device_public_key(), now)
                     .map_err(|error| error.to_string())?

@@ -134,7 +134,7 @@ impl StatePeer {
             // The workspace governs the checkpoints its owner's devices
             // publish, and only theirs: a record any other writer publishes
             // is that writer's own change, merged into what a device holds.
-            if !self.signed_by_owner(author.as_bytes()) {
+            if !self.signed_by_governor(author.as_bytes()) {
                 return Ok((message, None));
             }
             // And of a route, the workspace governs the one its coverage row

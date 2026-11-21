@@ -2,7 +2,7 @@
 //! every device that replays it holds the new owner, whenever the transfer
 //! reached it, and the owner it replaced stays as an administrator.
 use super::*;
-use crate::admission_tests::{add_editor, seeded};
+use crate::admission_tests::{add_editor, add_member_with, seeded};
 use tilo_action_policy::roles;
 
 /// A replica of `governor`'s workspace joined through `through`, a device of
@@ -170,5 +170,45 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .is_administrator(&new)
         );
+    }
+    phase the_owner_it_replaced_keeps_serving_as_an_administrator;
+    {
+        let (mut governor, host_key, _, _, now) = seeded();
+        let host = governor
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == host_key.verifying_key().to_bytes())
+            .unwrap();
+        let (_, person) = add_editor(&mut governor, &host_key, now);
+        governor
+            .governance_mut()
+            .transfer_ownership(person, &host_key, now)
+            .unwrap();
+        assert_ne!(governor.owner(), host.user_public_key);
+        assert!(governor.governs_history(&host.user_public_key));
+        assert!(
+            governor.signed_by_governor(&host.device_public_key),
+            "its checkpoints are the workspace's"
+        );
+        // It still admits whom an invitation names, and every replica takes
+        // the admission it signed.
+        let (_, _, bob) = add_member_with(&mut governor, &host_key, now, 30, 31);
+        let late = replica(&mut governor, &host_key, &host, now);
+        assert!(
+            late.governance()
+                .governed_policy()
+                .unwrap()
+                .members
+                .contains_key(&hex::encode(bob))
+        );
+        assert_eq!(late.owner(), person);
+        // Withdrawn as an administrator by the owner, it keeps nothing.
+        let owner_key = SigningKey::from_bytes(&[6; 32]);
+        governor
+            .governance_mut()
+            .set_member_role(host.user_public_key, crate::join::Role::Editor, &owner_key, now)
+            .unwrap();
+        assert!(!governor.governs_history(&host.user_public_key));
+        assert!(!governor.signed_by_governor(&host.device_public_key));
     }
 }

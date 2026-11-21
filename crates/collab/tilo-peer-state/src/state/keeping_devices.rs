@@ -86,19 +86,21 @@ impl PeerGovernance<'_> {
     }
 
     /// The holder whose copy makes the workspace's compacted base, the same
-    /// on every device: of the owner's own holders with the keys, the device
-    /// the workspace was founded on while it is one, else the first by device
+    /// on every device: of the holders with the keys that are the owner's or
+    /// an administrator's ([`StatePeer::governs_history`]), the device the
+    /// workspace was founded on while it is one, else the first by device
     /// key. `None` while it names no such holder. A newer base is taken only
-    /// from the owner's devices, and only one device may make each, so when
-    /// the one making it stops holding the workspace the next one takes over.
+    /// from those people's devices, and only one device may make each, so
+    /// when the one making it stops holding the workspace the next one takes
+    /// over.
     #[must_use]
     pub fn base_maker(self) -> Option<[u8; 32]> {
-        let owner = self.peer.owner();
         let makers: Vec<[u8; 32]> = self
             .keeping_devices()
             .iter()
             .filter(|hint| {
-                hint.host.user_public_key == owner && holder_role(hint) == CopyRole::KeyHolder
+                self.peer.governs_history(&hint.host.user_public_key)
+                    && holder_role(hint) == CopyRole::KeyHolder
             })
             .map(|hint| hint.host.device_public_key)
             .collect();

@@ -53,7 +53,7 @@ impl StatePeer {
                 return Err("local app publication cannot create a record owner".into());
             }
             if genesis
-                && !self.signed_by_owner(&source)
+                && !self.signed_by_governor(&source)
                 && !self.may_create_document(
                     &self.membership(source, now)?,
                     &Route {
@@ -262,7 +262,7 @@ impl StatePeer {
         };
         // Whether the change's writer is one of the owner's devices: a device
         // of theirs removed since wrote its history as one.
-        let by_owner = self.wrote_as_owner(&source, history);
+        let by_owner = self.wrote_as_governor(&source, history);
         let payload = collab_types::validate_whole_document_payload_route(
             &app_id,
             &cluster_id,
