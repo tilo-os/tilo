@@ -15,7 +15,7 @@ use std::fmt::Write as _;
 
 use super::watch::history_entries;
 use super::{
-    ActionProvider, Addressed, Failure, McpServer, OneCall, ParsedPath, Reply, Value, json,
+    ActionProvider, Address, Addressed, Failure, McpServer, OneCall, Reply, Segment, Value, json,
 };
 use tilo_actions::remote::workspace_invocations::{
     InvocationChange, InvocationsQuery, edited_after,
@@ -180,9 +180,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             document.app_id,
             document.record
         );
-        let parsed = ParsedPath {
-            app: document.app.clone(),
-            segments: Vec::new(),
+        let parsed = Address {
+            segments: vec![Segment::named(document.app.clone())],
             action: None,
         };
         let at = self

@@ -1,91 +1,10 @@
-//! The names a path may take: the address an action answers, the close
-//! matches of an action nobody has, and the keys that tell colliding titles
-//! apart.
+//! The names a path may take: the address an action answers, the same path
+//! after a restart, and the titles a listing tells apart by their places.
 
-use super::super::mcp_agent_paths::{CLOSE_MATCHES, close_matches};
-use super::super::{Node, bound_key, pick};
 use super::*;
 
 tilo_test_env::scenario! {
     fn a_path_a_name_or_an_address_leads_to_one_resource_or_says_what_was_meant;
-
-    phase an_action_no_resource_offers_names_at_most_five_close_matches;
-    // An action nobody has is answered with what may have been meant, at most
-    // [`CLOSE_MATCHES`] of them, never the app's whole list.
-    {
-        let ids: Vec<String> = [
-            "mark-read",
-            "read-aloud",
-            "read",
-            "archive",
-            "reply",
-            "remove",
-            "rename",
-            "restore",
-            "reload",
-            "read-more",
-            "read-later",
-            "react",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-        let close = close_matches("read", &ids, CLOSE_MATCHES);
-        assert_eq!(close.len(), CLOSE_MATCHES, "{close:?}");
-        assert!(close.iter().all(|id| id.contains("read")), "{close:?}");
-        assert_eq!(close_matches("arch", &ids, CLOSE_MATCHES), ["archive"]);
-        assert!(close_matches("explode", &ids, CLOSE_MATCHES).is_empty());
-    }
-
-    phase a_repeated_title_is_named_by_its_place_and_the_path_takes_it;
-    // Two pages titled alike are named by their places, and that name is a
-    // path back to each: the first keeps the title, the second its place.
-    {
-        let node = |id: &str, ordinal: usize| Node {
-            id: format!("notes.page:{id}"),
-            kind: "notes.page".into(),
-            label: "TODO".into(),
-            key: format!("notes.page:{id}"),
-            parent: "notes.pages".into(),
-            ordinal,
-            container: false,
-            actions: Vec::new(),
-        };
-        let nodes = vec![node("aaaaaaaa", 1), node("bbbbbbbb", 2)];
-        assert_eq!(nodes[0].name(&nodes), "TODO");
-        assert_eq!(nodes[1].name(&nodes), "TODO 2");
-        let id = |name: &str| {
-            pick(name, &nodes, None)
-                .unwrap()
-                .map(|found| found.id.clone())
-        };
-        assert_eq!(id("TODO"), Some("notes.page:aaaaaaaa".into()));
-        assert_eq!(id("TODO 2"), Some("notes.page:bbbbbbbb".into()));
-        assert_eq!(id("TODO 3"), None);
-    }
-
-    phase a_title_that_names_several_offers_the_keys_that_tell_them_apart;
-    // A title several resources share is refused with the key each one goes by:
-    // the key is a name the next path can use.
-    {
-        let node = |key: &str| Node {
-            id: format!("notes.page:{key}"),
-            kind: "notes.page".into(),
-            label: "README".into(),
-            key: format!("notes.page:{key}"),
-            parent: "notes.notebook".into(),
-            ordinal: 1,
-            container: false,
-            actions: Vec::new(),
-        };
-        let nodes = vec![node("aaaaaaaa"), node("bbbbbbbb")];
-        let error = pick("README", &nodes, None).unwrap_err();
-        assert_eq!(
-            error,
-            "README names 2 resources: README (notes.page:aaaaaaaa), README (notes.page:bbbbbbbb); \
-         name one by its key"
-        );
-    }
 
     phase a_resource_is_named_by_the_address_an_action_answers;
     // A resource is also named by the address an action answers it by
@@ -112,44 +31,6 @@ tilo_test_env::scenario! {
             assert!(!failed, "{text}");
             assert!(text.contains("#append-paragraph(text)"), "{text}");
         });
-    }
-
-    phase bound_ids_decode_to_the_apps_own_name_and_nothing_else_does;
-    {
-        assert_eq!(
-            bound_key(&bound("a", TODO_BODY)).as_deref(),
-            Some(TODO_BODY)
-        );
-        assert_eq!(bound_key("notes.notebook"), None);
-        assert_eq!(bound_key("tilo-ui-bound:v1:a:b:zz"), None);
-        assert_eq!(bound_key("tilo-ui-bound:v1:a:b:abc"), None);
-    }
-
-    phase a_path_is_app_names_and_an_action;
-    {
-        assert_eq!(
-            parse_path("notes/Todo/body#append-paragraph").unwrap(),
-            ParsedPath {
-                app: "notes".into(),
-                segments: vec!["Todo".into(), "body".into()],
-                action: Some("append-paragraph".into()),
-            }
-        );
-        assert_eq!(
-            parse_path("  notes ").unwrap(),
-            ParsedPath {
-                app: "notes".into(),
-                segments: Vec::new(),
-                action: None,
-            }
-        );
-        // A title with a slash or a hash writes it escaped.
-        let parsed = parse_path(r"notes/Q1\/Q2 plan\#1#rename").unwrap();
-        assert_eq!(parsed.segments, vec!["Q1/Q2 plan#1".to_owned()]);
-        assert_eq!(parsed.action.as_deref(), Some("rename"));
-        assert_eq!(path_name("Q1/Q2 plan#1"), r"Q1\/Q2 plan\#1");
-        assert!(parse_path("").is_err());
-        assert!(parse_path("#rename").is_err());
     }
 
     phase a_path_means_the_same_resource_after_the_desktop_restarts;

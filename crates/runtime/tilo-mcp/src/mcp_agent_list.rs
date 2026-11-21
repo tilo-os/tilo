@@ -129,14 +129,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// anywhere.
     pub(super) async fn files_resolved(
         &self,
-        parsed: &super::ParsedPath,
+        parsed: &super::Address,
         forms: &super::ProgramForms,
         reaching: usize,
     ) -> Result<super::Resolved, String> {
         let mut resolved = self.folder_resolved(parsed, forms, reaching).await?;
         resolved.children.retain(|node| {
-            node.kind == tilo_actions::remote::FOUND_FILE
-                || node.kind == fs_protocol::tree::FOLDER_KIND
+            node.resource_type == tilo_actions::remote::FOUND_FILE
+                || node.resource_type == fs_protocol::tree::FOLDER_KIND
         });
         Ok(resolved)
     }
@@ -148,7 +148,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// listing's page and one past it ([`super::McpServer::files_resolved`]), or every one.
     pub(super) async fn folder_resolved(
         &self,
-        parsed: &super::ParsedPath,
+        parsed: &super::Address,
         forms: &super::ProgramForms,
         reaching: usize,
     ) -> Result<super::Resolved, String> {

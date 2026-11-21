@@ -131,7 +131,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         wait_ms: Option<u64>,
     ) -> Result<Resolution, Failure> {
         let answered = |done: Done| Resolution::Done(Box::new(done));
-        let parsed = parse_path(path).map_err(|why| format!("invalid_arguments: {why}"))?;
+        let parsed = Address::parse(path).map_err(|why| format!("invalid_arguments: {why}"))?;
         let action = parsed.action.clone().ok_or_else(|| {
             format!(
                 "invalid_arguments: name the action: {path}#<action>; tilo_ls {path} lists them"
@@ -144,8 +144,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .await
             .map_err(|why| refused_as("not_found", why))?
         else {
-            let AppRef::Installed { app_id, .. } = self.app_ref(&parsed.app).await? else {
-                return Err(format!("{} started while it was asked to", parsed.app).into());
+            let AppRef::Installed { app_id, .. } = self.app_ref(&app_of(&parsed)).await? else {
+                return Err(format!("{} started while it was asked to", app_of(&parsed)).into());
             };
             return (self.launched((&parsed, &app_id, &action), arguments, invocation, wait_ms))
                 .await
@@ -220,7 +220,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// app started or launched, or the workspace refused it).
     async fn resolve_in_target(
         &self,
-        parsed: &ParsedPath,
+        parsed: &Address,
         action: &str,
         mut resolved: Resolved,
         arguments: serde_json::Map<String, Value>,
@@ -254,7 +254,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
             // `notes#open` is what the listing of a stopped app says to
             // call; once the app runs, it answers what is in it.
-            let opens = parsed.segments.is_empty() && arguments.is_empty();
+            let opens = below_app(parsed).is_empty() && arguments.is_empty();
             // There it names the app's own verb, never an action whose id only begins with it
             // (Notes' `open-link`): one by its whole id was asked above.
             if opens && starts_app(action) {
@@ -263,7 +263,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // With arguments the word that starts an app is no other action's either: it names
             // an action of the running app only where the app calls one that, by its id or its
             // label, never another whose id merely begins with it, which nobody asked for.
-            let starts = parsed.segments.is_empty() && starts_app(action);
+            let starts = below_app(parsed).is_empty() && starts_app(action);
             let picked = self.pick_action_in(action, &resolved).await;
             // Found, and refused below as the word that starts an app: the word only begins
             // the id of another action the app offers.

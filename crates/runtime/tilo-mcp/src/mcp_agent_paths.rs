@@ -1,83 +1,12 @@
-//! The names an action answers by, and how close a name that runs nothing is
-//! to one that would: an answer names a resource whole
+//! The resource an argument names, bound from the path a caller wrote, and
+//! the address an action answers by: an answer names a resource whole
 //! (`tasks.tracker/issues/7`), and that is a path the next call takes.
 
 use super::{
     ActionDescriptor, ActionProvider, Failure, Level, Levels, McpServer, Node, ROOT_PEEK, Resolved,
     Value, json,
 };
-
-/// The close matches an action no resource offers is told with.
-pub(super) const CLOSE_MATCHES: usize = 5;
-
-/// `arguments` with each parameter's value written as the label a person reads
-/// replaced by the value the app takes, whatever its case or spacing
-/// (`In review` for `in-review`, a status or a choice of a kind of thing alike).
-fn bind_choices(descriptor: &ActionDescriptor, arguments: &mut serde_json::Map<String, Value>) {
-    for param in &descriptor.params {
-        let Some(given) = arguments
-            .get(param.name.as_ref())
-            .and_then(Value::as_str)
-            .map(plain)
-        else {
-            continue;
-        };
-        let choice = param
-            .choices
-            .iter()
-            .find(|choice| plain(choice) == given)
-            .map(|choice| Value::String(choice.to_string()))
-            .or_else(|| {
-                forms(param.schema.as_deref()?)
-                    .into_iter()
-                    .find(|(name, _)| plain(name) == given)
-                    .map(|(_, value)| value)
-            });
-        if let Some(choice) = choice {
-            arguments.insert(param.name.to_string(), choice);
-        }
-    }
-}
-
-/// The action ids closest to `name`, best first, at most `limit`: those it is
-/// part of, one of whose words it is, or whose start it shares.
-pub(super) fn close_matches(name: &str, ids: &[String], limit: usize) -> Vec<String> {
-    let lower = name.to_lowercase();
-    let mut scored: Vec<(u8, &String)> = ids
-        .iter()
-        .filter_map(|id| {
-            let named = id.to_lowercase();
-            let rank = if named.contains(&lower) {
-                0
-            } else if lower.contains(&named) {
-                1
-            } else if shared_start(&named, &lower) >= 3 {
-                2
-            } else {
-                return None;
-            };
-            Some((rank, id))
-        })
-        .collect();
-    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
-    scored
-        .into_iter()
-        .take(limit)
-        .map(|(_, id)| id.clone())
-        .collect()
-}
-
-/// How many bytes the start of `a` and `b` share, to the last `-`.
-fn shared_start(a: &str, b: &str) -> usize {
-    let common = a
-        .bytes()
-        .zip(b.bytes())
-        .take_while(|(left, right)| left == right)
-        .count();
-    a.get(..common)
-        .and_then(|start| start.rfind('-'))
-        .unwrap_or(common)
-}
+use tilo_actions::tree::{Address, Segment, bind_choices};
 
 /// The app a name beginning with a kind names (`tasks.tracker` is the Tasks
 /// app's tracker), when the name is one kind and no app: a kind is the app's
@@ -88,14 +17,6 @@ pub(super) fn kind_address(name: &str) -> Option<&str> {
     let (app, kind) = name.split_once('.')?;
     (!app.is_empty() && !kind.is_empty() && !kind.starts_with('.') && !kind.ends_with('.'))
         .then_some(app)
-}
-
-impl Node {
-    /// Whether `address` names this resource whole, as an action answers it
-    /// (`tasks.tracker/issues/7`): the id it is published under, or its key.
-    pub(super) fn address_is(&self, address: &str) -> bool {
-        self.id == address || self.key == address
-    }
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
@@ -205,13 +126,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // An id is the address an item is published under (`notes.pages/pages/<id>`), read
         // as an address whole; a string is a path, as a listing writes one.
         let parsed = if by_id {
-            ParsedPath {
-                app: address.clone(),
-                segments: Vec::new(),
+            Address {
+                segments: vec![Segment::named(address.clone())],
                 action: None,
             }
         } else {
-            match parse_path(&address) {
+            match Address::parse(&address) {
                 Ok(parsed) => parsed,
                 Err(why) => return Err(format!("invalid_arguments: {why}").into()),
             }
@@ -236,7 +156,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .filter(|kept| !kept.is_empty());
         let mut reference = serde_json::Map::new();
         reference.insert("app".into(), json!(resolved.app_id));
-        reference.insert("kind".into(), json!(node.kind));
+        reference.insert("kind".into(), json!(node.resource_type));
         reference.insert("id".into(), json!(node.id));
         reference.insert("label".into(), json!(node.label));
         if let Some(kept) = kept {
@@ -338,113 +258,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             revision: here.revision,
         }))
     }
-}
-
-/// A path, taken apart: `app/segment/segment#action`.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct ParsedPath {
-    pub(super) app: String,
-    pub(super) segments: Vec<String>,
-    pub(super) action: Option<String>,
-}
-
-impl ParsedPath {
-    /// The path as it names a resource, whole: the app and every segment,
-    /// without an action after `#`.
-    pub(super) fn address(&self) -> String {
-        if self.segments.is_empty() {
-            self.app.clone()
-        } else {
-            format!("{}/{}", self.app, self.segments.join("/"))
-        }
-    }
-}
-
-/// Parse `text`. A name containing `/`, `#` or `\` writes it with a leading
-/// backslash.
-pub(super) fn parse_path(text: &str) -> Result<ParsedPath, String> {
-    let mut parts: Vec<String> = vec![String::new()];
-    let mut action = String::new();
-    let mut in_action = false;
-    let mut escaped = false;
-    for character in text.trim().chars() {
-        if escaped {
-            escaped = false;
-            push_char(&mut parts, &mut action, in_action, character);
-            continue;
-        }
-        match character {
-            '\\' => escaped = true,
-            '#' if !in_action => in_action = true,
-            '/' if !in_action => parts.push(String::new()),
-            other => push_char(&mut parts, &mut action, in_action, other),
-        }
-    }
-    let action = in_action.then_some(action);
-    let mut parts = parts
-        .into_iter()
-        .map(|part| part.trim().to_owned())
-        .filter(|part| !part.is_empty());
-    let app = parts
-        .next()
-        .ok_or("a path starts with an app: notes/Todo")?;
-    let action = action
-        .map(|action| action.trim().to_owned())
-        .filter(|action| !action.is_empty());
-    Ok(ParsedPath {
-        app,
-        segments: parts.collect(),
-        action,
-    })
-}
-
-fn push_char(parts: &mut [String], action: &mut String, in_action: bool, character: char) {
-    if in_action {
-        action.push(character);
-    } else if let Some(part) = parts.last_mut() {
-        part.push(character);
-    }
-}
-
-/// `text` as a value is compared to a parameter's choices: its letters alone,
-/// in one case, so `In review`, `In Review` and `in-review` are one value.
-fn plain(text: &str) -> String {
-    text.chars()
-        .filter(char::is_ascii_alphanumeric)
-        .map(|character| character.to_ascii_lowercase())
-        .collect()
-}
-
-/// The values a parameter's schema offers as alternatives, each as the name a
-/// person reads it by and the value the app takes (`{"title": "In review",
-/// "const": "in-review"}`, or a one-field object with the constant).
-fn forms(schema: &Value) -> Vec<(String, Value)> {
-    let Some(alternatives) = schema
-        .get("anyOf")
-        .or_else(|| schema.get("oneOf"))
-        .and_then(Value::as_array)
-    else {
-        return Vec::new();
-    };
-    let mut forms = Vec::new();
-    for alternative in alternatives {
-        let Some(fields) = alternative.as_object() else {
-            continue;
-        };
-        let constant = fields.get("const").cloned().or_else(|| {
-            let only = fields.get("required")?.as_array()?.first()?.as_str()?;
-            fields.get("properties")?.get(only)?.get("const").cloned()
-        });
-        let name = fields
-            .get("title")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| constant.as_ref().and_then(Value::as_str).map(str::to_owned));
-        if let (Some(name), Some(constant)) = (name, constant) {
-            forms.push((name, constant));
-        }
-    }
-    forms
 }
 
 /// What a resource reference an action takes is written with.

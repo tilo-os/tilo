@@ -48,7 +48,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         args: ViewArgs,
         structured: bool,
     ) -> Result<Reply, Failure> {
-        let parsed = parse_path(&args.path)?;
+        let parsed = Address::parse(&args.path)?;
         if parsed.action.is_some() {
             return Err(
                 "tilo_view looks at what a resource's view shows; run an action with tilo_do"
@@ -59,7 +59,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // does not run.
         // A path naming a kind (`tasks.issues`) names what an app serves rather than
         // an app: that one answers wherever what it keeps is served.
-        match self.app_ref(&parsed.app).await {
+        match self.app_ref(&app_of(&parsed)).await {
             Ok(AppRef::Running { .. }) => {}
             Ok(AppRef::Installed { app_id, opens }) => {
                 if !opens {
@@ -68,7 +68,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 self.started_provider(&app_id, None).await?;
             }
             Err(why) => {
-                if self.kind_app(&parsed.app).await.is_none() {
+                if self.kind_app(&app_of(&parsed)).await.is_none() {
                     return Err(why.into());
                 }
             }
@@ -90,7 +90,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if let Some(scale) = args.scale {
             arguments.insert("scale".into(), json!(scale));
         }
-        let path = format!("{}#{OUTLINE}", parsed.app);
+        let path = format!("{}#{OUTLINE}", app_of(&parsed));
         // The whole read's bound, app start included: a view still loading past it is
         // answered with what it has.
         let settle_by = tokio::time::Instant::now()

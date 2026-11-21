@@ -7,7 +7,9 @@ use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, InvocationReceipt, InvocationState,
     InvokeRequest, Pending, ReceiptStatus,
 };
-use tilo_actions::{ActionContract, ActionKind, ExecutionLocus, InputSpec, InvocationUpdate};
+use tilo_actions::{
+    ActionContract, ActionKind, ExecutionLocus, InputSpec, InvocationUpdate, OperationKind,
+};
 
 const APP: &str = "so.tilo.test";
 const PROVIDER: &str = "record:so.tilo.test:";

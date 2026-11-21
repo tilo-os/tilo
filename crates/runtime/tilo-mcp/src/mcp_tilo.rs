@@ -423,6 +423,12 @@ impl ProgramForms {
     }
 }
 
+impl tilo_actions::tree::TypeNames for ProgramForms {
+    fn calls(&self, name: &str, resource_type: &str) -> bool {
+        Self::answers(self, name, resource_type)
+    }
+}
+
 /// The names a package reading a surface gives the type of resources of `kind`
 /// (`tilolang_tilo::catalogue::kind_type_name`): a tilolang kind's own type (`tl.<app>.<Type>`),
 /// else its last segment in upper camel case, or its last two when that one is taken

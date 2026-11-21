@@ -3,6 +3,7 @@
 
 use super::*;
 use tilo_actions::remote::Within;
+use tilo_actions::tree::BOUND_PREFIX;
 
 /// What one name asked of one level of one app's directory: the app's provider, the parent and
 /// the name.
@@ -298,7 +299,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                         .to_owned()
                 });
         }
-        let parsed = parse_path(place)?;
+        let parsed = Address::parse(place)?;
         match self.resolve(&parsed).await?.0 {
             Ok(Resolved {
                 node: Some(node), ..
@@ -440,11 +441,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// app shows the record it acts in; these are the rest, so none of them goes unseen.
     pub(super) async fn other_resources(
         &self,
-        parsed: &ParsedPath,
+        parsed: &Address,
         resolved: &Resolved,
         (lines, rows): (&mut Vec<String>, &mut Vec<Value>),
     ) {
-        if !parsed.segments.is_empty() || parsed.app.contains('@') {
+        if !below_app(parsed).is_empty() || app_of(parsed).contains('@') {
             return;
         }
         let Ok((_, running)) = self.providers().await else {
@@ -489,7 +490,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         node.id == found.resource
             || (node.label.trim().eq_ignore_ascii_case(found.label.trim())
-                && (node.kind == found.kind || !found.kind.contains('.')))
+                && (node.resource_type == found.kind || !found.kind.contains('.')))
     }
 
     /// The path `tilo_ls` takes from the app's root down to the resource
@@ -509,7 +510,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         reads: &mut Reads,
     ) -> Option<(String, String)> {
         let node = self.find_node(provider, found, reads).await?;
-        let kind = node.kind.clone();
+        let kind = node.resource_type.clone();
         // The name of each step from the hit up, best last.
         let mut names: Vec<String> = Vec::new();
         let mut here = node;
@@ -872,26 +873,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 }
 
-impl Node {
-    /// [`Self::name`] as a search result names it: a name that would be
-    /// written with escapes (a file's title, `files/legal/contract.txt`)
-    /// gives way to its key's last part, which `tilo_ls` takes as well, so
-    /// the path reads plainly and the title is shown beside it whole.
-    fn found_name(&self, siblings: &[Node]) -> String {
-        let name = self.name(siblings);
-        if !name.contains('\\') {
-            return name;
-        }
-        let tail = self.key.rsplit('/').next().unwrap_or_default();
-        for plain in [tail, self.token()] {
-            if !plain.is_empty() && !plain.contains(['/', '#', '\\']) {
-                return plain.to_owned();
-            }
-        }
-        name
-    }
-}
-
 /// The ids of the apps `name` names among those `running` and `installed`:
 /// its whole id or the name `tilo_ls` lists it by, any case. An error naming
 /// the apps there are when it names none, so a search narrowed to an app
@@ -929,7 +910,7 @@ fn searched_apps(
             .map(|app| (app.app_id.as_str(), app.label.as_str()))
             .chain(running.iter().map(|app_id| (app_id.as_str(), "")))
             .collect();
-        meant.extend(super::names::app_meant(name, &named)?);
+        meant.extend(tilo_actions::tree::app_meant(name, &named)?);
     }
     if !meant.is_empty() {
         return Ok(meant);

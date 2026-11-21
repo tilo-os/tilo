@@ -3,7 +3,7 @@
 //! whether or not the app runs already.
 
 use super::{ActionProvider, Addressed, McpServer, OneCall, Value, json};
-use super::{Done, LsArgs, ParsedPath, Reply, app_names, outcome};
+use super::{Address, Done, LsArgs, Reply, app_names, app_of, below_app, outcome};
 use std::fmt::Write as _;
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
@@ -11,15 +11,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// what is in it.
     pub(super) async fn launch(
         &self,
-        parsed: &ParsedPath,
+        parsed: &Address,
         app_id: &str,
         action: &str,
         arguments: serde_json::Map<String, Value>,
         invocation: Option<String>,
         wait_ms: Option<u64>,
     ) -> Result<(Value, Reply), String> {
-        if !parsed.segments.is_empty() || !starts_app(action) {
-            return Err(Self::not_running_note(&parsed.app, true));
+        if !below_app(parsed).is_empty() || !starts_app(action) {
+            return Err(Self::not_running_note(&app_of(parsed), true));
         }
         let value = self
             .app_in_workspace(app_id, action, arguments, invocation, wait_ms)
@@ -35,7 +35,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// [`Self::launch`] as a call's answer: `pdf-viewer#open content=…` opens a file, running or not.
     pub(super) async fn launched(
         &self,
-        (parsed, app_id, action): (&ParsedPath, &str, &str),
+        (parsed, app_id, action): (&Address, &str, &str),
         arguments: serde_json::Map<String, Value>,
         invocation: Option<String>,
         wait_ms: Option<u64>,
@@ -79,7 +79,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // Only a path that begins with Files' name is read here before it is read where it acts.
         let app = path.split(['#', '/']).next().unwrap_or_default().trim();
         if names_files(app)
-            && let Ok(parsed) = super::parse_path(path)
+            && let Ok(parsed) = Address::parse(path)
             && let Some(action) = parsed.action.as_deref()
             && in_workspace_folder(&parsed, action, &arguments)
         {
@@ -272,10 +272,10 @@ pub(super) fn starts_app(action: &str) -> bool {
 /// Whether `name` names Files, every workspace's own folder: its name, the last part of its id,
 /// or its id, in any case and however its words are parted (`file_explorer`).
 pub(super) fn names_files(name: &str) -> bool {
-    let name = super::names::folded(name);
+    let name = tilo_actions::tree::folded(name);
     ["files", "file-explorer", "so.tilo.file-explorer"]
         .iter()
-        .any(|files| name == super::names::folded(files))
+        .any(|files| name == tilo_actions::tree::folded(files))
 }
 
 /// Whether `action` with `arguments`, asked of the app `parsed` names, is one of Files' verbs on
@@ -284,12 +284,12 @@ pub(super) fn names_files(name: &str) -> bool {
 /// change or read. Those go to the workspace, which changes its tree wherever that is kept, as a file put
 /// into the workspace does; with a `device` they stay Files' own on that device.
 pub(super) fn in_workspace_folder(
-    parsed: &ParsedPath,
+    parsed: &Address,
     action: &str,
     arguments: &serde_json::Map<String, Value>,
 ) -> bool {
-    parsed.segments.is_empty()
-        && names_files(&parsed.app)
+    below_app(parsed).is_empty()
+        && names_files(&app_of(parsed))
         && (fs_protocol::tree::is_tree_verb(action)
             || action == fs_protocol::tree::WRITE_FILE
             || reads_workspace_folder(action, arguments))

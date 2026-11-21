@@ -24,8 +24,8 @@ use super::{
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::Found;
-use tilo_actions::{ActionDescriptor, OperationKind};
 use tilo_lock::MutexRecover as _;
 
 #[path = "mcp_answer.rs"]
@@ -41,8 +41,6 @@ use launch::{names_files, opens_a_file, starts_app};
 mod link;
 #[path = "mcp_agent_list.rs"]
 mod list;
-#[path = "mcp_agent_names.rs"]
-mod names;
 #[path = "mcp_agent_record.rs"]
 mod record;
 #[path = "mcp_render.rs"]
@@ -58,7 +56,7 @@ mod view;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
 use answer::{action_named, action_row, actions_named, answer_of, outcome, text_result};
-use level::{LevelPages, LsCursor, PageMark};
+use level::read_on;
 use render::{
     action_line, action_page, block_line, parse_read_cursor, read_answer, restart_pause,
     strip_blank,
@@ -110,10 +108,6 @@ const LS_PAGE_MAX: usize = 1_000;
 const LABEL_CHARS: usize = 60;
 /// Longest first sentence of an action's description in an action's page.
 const DESCRIPTION_CHARS: usize = 200;
-/// How many names an error lists before it stops.
-const NAMES_LISTED: usize = 12;
-/// What a bound UI resource's id starts with (ui-core's publication prefix).
-const BOUND_PREFIX: &str = "tilo-ui-bound:v1:";
 /// Pages of installed apps read at most: a page holds 256.
 const INSTALLED_PAGES: usize = 4;
 
@@ -195,41 +189,6 @@ impl Reply {
     }
 }
 
-/// A name written into a path: `/`, `#` and `\` escaped.
-fn path_name(name: &str) -> String {
-    let mut written = String::with_capacity(name.len());
-    for character in name.chars() {
-        if matches!(character, '/' | '#' | '\\') {
-            written.push('\\');
-        }
-        written.push(character);
-    }
-    written
-}
-
-/// The logical id a bound UI resource's id carries in hex at its end
-/// (`tilo-ui-bound:v1:<publication>:<instance>:<hex>`): what the app calls
-/// the resource, which survives the publication the rest of the id names.
-fn bound_key(id: &str) -> Option<String> {
-    let hex = id.strip_prefix(BOUND_PREFIX)?;
-    let hex = hex.rsplit(':').next()?;
-    if hex.is_empty() || hex.len() % 2 != 0 {
-        return None;
-    }
-    let bytes = (0..hex.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(hex.get(at..at.checked_add(2)?)?, 16).ok())
-        .collect::<Option<Vec<u8>>>()?;
-    String::from_utf8(bytes)
-        .ok()
-        .filter(|key| !key.is_empty() && !key.chars().any(char::is_control))
-}
-
-#[allow(
-    clippy::wildcard_imports,
-    reason = "split out of this module, it reads this module's names"
-)]
-mod mcp_agent_node;
 #[allow(
     clippy::wildcard_imports,
     reason = "split out of this module, it reads this module's names"
@@ -243,13 +202,34 @@ mod mcp_agent_tools;
 )]
 mod mcp_agent_pick;
 
-use mcp_agent_node::{Level, Node, level_of, shared_names};
-use mcp_agent_paths::{CLOSE_MATCHES, ParsedPath, close_matches, kind_address, parse_path};
-use mcp_agent_pick::{
-    action_rank, is_program_form, named_beyond_its_start, only_by_id, pick, pick_action,
-    pick_action_anywhere, published_on, rank, reads_action,
-};
+use mcp_agent_paths::kind_address;
+use mcp_agent_pick::{pick_action_anywhere, published_on};
 pub(super) use mcp_agent_tools::{held_until_ended, tool_definitions};
+use tilo_actions::tree::{
+    Address, CLOSE_MATCHES, Level, LsCursor, NAMES_LISTED, Names, Node, PageMark, Segment,
+    TypeNames, action_rank, app_meant, bound_key, is_program_form, level_of,
+    named_beyond_its_start, only_by_id, path_name, pick, pick_action, rank, reads_action,
+    shared_names,
+};
+
+/// The app a path starts with, as it was written (`browser@4711`).
+fn app_of(parsed: &Address) -> String {
+    parsed
+        .segments
+        .first()
+        .map(Segment::written)
+        .unwrap_or_default()
+}
+
+/// The segments of a path below the app it starts with.
+fn below_app(parsed: &Address) -> &[Segment] {
+    parsed.segments.get(1..).unwrap_or_default()
+}
+
+/// `forms` as the names a pick reads types by.
+fn typed(forms: Option<&ProgramForms>) -> Option<&dyn TypeNames> {
+    forms.map(|forms| forms as &dyn TypeNames)
+}
 
 /// [`list_names`], or `none` for no names: an empty list reads as a
 /// sentence cut short.
@@ -321,7 +301,7 @@ fn read_arguments(
             match param.ty {
                 tilo_actions::ParamType::Object => json!({
                     "id": node.id,
-                    "kind": node.kind,
+                    "kind": node.resource_type,
                     "label": node.label,
                 }),
                 // A chain's read names its item by the address it is an item of the chain at,
@@ -793,7 +773,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .map(|node| {
                 json!({
                     "id": node.id,
-                    "kind": node.kind,
+                    "kind": node.resource_type,
                     "key": node.key,
                     "name": node.label,
                 })
@@ -1205,12 +1185,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // only a name no page carries is not there.
             let (picked, here) = if let Some(owner) = parent {
                 self.level_holding(provider, &owner.id, levels, |level| {
-                    Ok(pick(segment, level.whole_children(), forms)?.cloned())
+                    Ok(pick(segment, level.whole_children(), typed(forms))?.cloned())
                 })
                 .await?
             } else {
                 let here = self.app_children(provider, levels).await?;
-                (pick(segment, &here.children, forms)?.cloned(), here)
+                (pick(segment, &here.children, typed(forms))?.cloned(), here)
             };
             let found = match picked {
                 Some(node) => Some(node),
@@ -1219,7 +1199,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if let Some(found) = found {
                 return Ok((found, here));
             }
-            if looks >= LOOKS_AGAIN || (here.read_on() && began.elapsed() >= LOOKS_MOMENT) {
+            if looks >= LOOKS_AGAIN || (read_on(&here) && began.elapsed() >= LOOKS_MOMENT) {
                 // Each name as the address that takes it, not the word alone:
                 // a caller reading where it went wrong writes the next call
                 // from what it is told, and a word it cannot place is no
@@ -1261,11 +1241,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .filter(|node| {
                     within.is_none_or(|owner| {
                         node.key.contains(owner.token()) || Self::below(node, owner, levels)
-                    }) && rank(name, node, forms).is_some()
+                    }) && rank(name, node, typed(forms)).is_some()
                 })
                 .cloned()
                 .collect();
-            if let Some(found) = pick(name, &pool, forms)? {
+            if let Some(found) = pick(name, &pool, typed(forms))? {
                 return Ok(Some(found.clone()));
             }
             let unread = levels
@@ -1314,12 +1294,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// a caller that shows what it found names the type the same way without asking again.
     async fn resolve(
         &self,
-        parsed: &ParsedPath,
+        parsed: &Address,
     ) -> Result<(Result<Resolved, String>, Option<ProgramForms>), String> {
-        if parsed
-            .segments
+        if below_app(parsed)
             .iter()
-            .any(|segment| is_program_form(segment))
+            .any(|segment| is_program_form(&segment.written()))
             && let Some(forms) = self.program_forms().await
         {
             let by_type = self.resolve_with(parsed, Some(&forms), usize::MAX).await?;
@@ -1339,14 +1318,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// a read takes every one (`usize::MAX`).
     async fn resolve_with(
         &self,
-        parsed: &ParsedPath,
+        parsed: &Address,
         forms: Option<&ProgramForms>,
         reaching: usize,
     ) -> Result<Result<Resolved, String>, String> {
         let mut levels = Levels::new();
-        let reference = match self.app_ref(&parsed.app).await {
+        let reference = match self.app_ref(&app_of(parsed)).await {
             Ok(reference) => reference,
-            Err(why) => match self.kind_app(&parsed.app).await {
+            Err(why) => match self.kind_app(&app_of(parsed)).await {
                 Some((app_id, provider, _)) => {
                     return Ok(Ok(self
                         .resolve_in(parsed, app_id, provider, true, forms, &mut levels, reaching)
@@ -1380,7 +1359,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .await?))
             }
             AppRef::Installed { opens: false, .. } => {
-                Ok(Err(Self::not_running_note(&parsed.app, false)))
+                Ok(Err(Self::not_running_note(&app_of(parsed), false)))
             }
         }
     }
@@ -1393,7 +1372,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// the next call found none).
     async fn resolve_published(
         &self,
-        parsed: &ParsedPath,
+        parsed: &Address,
         app_id: String,
         newest: String,
         list: bool,
@@ -1462,7 +1441,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// one resource past it, or every one ([`Self::app_children_listed`]).
     async fn resolve_in(
         &self,
-        parsed: &ParsedPath,
+        parsed: &Address,
         app_id: String,
         provider: String,
         list: bool,
@@ -1470,12 +1449,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         levels: &mut Levels,
         reaching: usize,
     ) -> Result<Resolved, String> {
-        let app = parsed.app.to_lowercase();
+        let app = app_of(parsed).to_lowercase();
         // What an action answered is a path the next call takes as it is:
         // `tasks.tracker/issues/7` names one resource whole, where its parts
         // named one at a time would name every kind that shares a word.
-        if kind_address(&parsed.app).is_some() {
-            let address = parsed.address();
+        if kind_address(&app_of(parsed)).is_some() {
+            let address = parsed.resource();
             if let Some(found) = self
                 .by_item_address(&app_id, &provider, &address, levels)
                 .await?
@@ -1491,9 +1470,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // The address each level is listed at, as the app's own listing writes
         // it: what a name not found there is answered with.
         let mut at = app.clone();
-        for segment in &parsed.segments {
+        for segment in below_app(parsed) {
             let (found, siblings) = self
-                .step(&provider, &at, chain.last(), segment, levels, forms)
+                .step(
+                    &provider,
+                    &at,
+                    chain.last(),
+                    &segment.written(),
+                    levels,
+                    forms,
+                )
                 .await?;
             at = format!("{at}/{}", found.name(&siblings.children));
             chain.push(found);
@@ -1648,7 +1634,7 @@ fn freely_named(
                 .filter_map(|(_, app)| Some((app["app_id"].as_str()?, ""))),
         )
         .collect();
-    let Some(app_id) = names::app_meant(name, &listed)? else {
+    let Some(app_id) = app_meant(name, &listed)? else {
         return Err(no_app_named(name, running, installed));
     };
     // Its newest window, or else whatever answers for it without one.
@@ -1802,7 +1788,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if path.is_empty() {
             return self.list_apps(offset, limit, structured).await;
         }
-        let parsed = parse_path(path)?;
+        let parsed = Address::parse(path)?;
         // How a program writes what this lists: the listing is the one a program reads, and a
         // path names what it lists the same way, so the path is resolved by it too.
         let forms_timed = super::timing_start();
@@ -1820,17 +1806,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let cached = reused.is_some();
         let mut resolved = match reused.take() {
             Some(resolved) => resolved,
-            None => std::sync::Arc::new(if names_files(&parsed.app) && parsed.action.is_none() {
-                self.files_resolved(&parsed, &forms, end).await?
-            } else {
-                match self.resolve_with(&parsed, Some(&forms), end).await? {
-                    Ok(resolved) => resolved,
-                    Err(note) => {
-                        super::timing_done("ls.resolve", resolving);
-                        return Ok(Reply::ok(note));
+            None => std::sync::Arc::new(
+                if names_files(&app_of(&parsed)) && parsed.action.is_none() {
+                    self.files_resolved(&parsed, &forms, end).await?
+                } else {
+                    match self.resolve_with(&parsed, Some(&forms), end).await? {
+                        Ok(resolved) => resolved,
+                        Err(note) => {
+                            super::timing_done("ls.resolve", resolving);
+                            return Ok(Reply::ok(note));
+                        }
                     }
-                }
-            }),
+                },
+            ),
         };
         super::timing_done("ls.resolve", resolving);
         self.acted_in(&resolved.provider, &resolved.app_id);
@@ -1848,7 +1836,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                         .node
                         .as_ref()
                         .map_or(resolved.app_id.as_str(), |node| {
-                            forms.kind(&node.kind).unwrap_or(&node.kind)
+                            forms.kind(&node.resource_type).unwrap_or(&node.resource_type)
                         }),
                     "actions": [action_row(&found)],
                     "rows": [],
@@ -1946,7 +1934,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                         .iter()
                         .any(|param| param.name.as_ref() == "item")
                 });
-            let titled = mcp_agent_node::Names::of(children.iter().chain(&resolved.node));
+            let titled = Names::of(children.iter().chain(&resolved.node));
             let shared = shared_names(&children, &titled);
             entries.resize(first, (String::new(), None));
             for (index, child) in children.iter().enumerate() {
@@ -1958,7 +1946,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 }
                 // A resource a program passes as a value goes by a reference, as an answer's.
                 let mut line = self
-                    .listed_reference(&child.kind, &child.id)
+                    .listed_reference(&child.resource_type, &child.id)
                     .map(|reference| format!("{reference}  "))
                     .unwrap_or_default();
                 let name = child.name_in(&titled);
@@ -1970,7 +1958,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // (`tasks.Task`): the one name a listing prints and a path resolves by, so a
                 // row read off the listing walks back to this very resource. Never the
                 // published kind (`tl.<app>.<Type>`), which no program writes.
-                let _ = write!(line, "  {}", forms.kind(&child.kind).unwrap_or(&child.kind));
+                let _ = write!(
+                    line,
+                    "  {}",
+                    forms
+                        .kind(&child.resource_type)
+                        .unwrap_or(&child.resource_type)
+                );
                 // A title two rows share does not say which is which: the row's
                 // own id does, beside it.
                 if shared.contains(&name.trim().to_lowercase()) {
@@ -1984,7 +1978,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 let row = child.listing_row(
                     &resolved.path,
                     &name,
-                    forms.kind(&child.kind).unwrap_or(&child.kind),
+                    forms
+                        .kind(&child.resource_type)
+                        .unwrap_or(&child.resource_type),
                     inherited_read || reads_action(&child.actions).is_some(),
                 );
                 entries.push((line, Some(row)));
@@ -2019,7 +2015,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .skip(offset.saturating_sub(first))
             .take(limit)
         {
-            let kind = forms.kind(&child.kind).unwrap_or(&child.kind);
+            let kind = forms
+                .kind(&child.resource_type)
+                .unwrap_or(&child.resource_type);
             let listed = kinds.entry(kind).or_insert_with(|| json!([]));
             if let Value::Array(listed) = listed {
                 for action in child.listed_actions() {
@@ -2032,7 +2030,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let mut text = resolved.path.clone();
         // What this is, by the same name its own row here would give it.
         if let Some(node) = &resolved.node {
-            let _ = write!(text, "  ({})", forms.kind(&node.kind).unwrap_or(&node.kind));
+            let _ = write!(
+                text,
+                "  ({})",
+                forms
+                    .kind(&node.resource_type)
+                    .unwrap_or(&node.resource_type)
+            );
         } else {
             let _ = write!(text, "  ({})", resolved.app_id);
         }
@@ -2098,7 +2102,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .node
                 .as_ref()
                 .map_or(resolved.app_id.as_str(), |node| {
-                    forms.kind(&node.kind).unwrap_or(&node.kind)
+                    forms
+                        .kind(&node.resource_type)
+                        .unwrap_or(&node.resource_type)
                 })
                 .to_owned();
             let mut answer = json!({
@@ -2197,7 +2203,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // Boxed: the wait it holds is no part of every agent call's future.
             return Box::pin(self.agent_record((app, record), args.parts, args.after)).await;
         }
-        let parsed = parse_path(&args.path)?;
+        let parsed = Address::parse(&args.path)?;
         if parsed.action.is_some() {
             return Err("tilo_read reads a resource; run an action with tilo_do".into());
         }
@@ -2205,17 +2211,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // signed package's surface is what its types are read from, and what
         // its records are decided against, before its first window.
         if structured
-            && parsed.segments.is_empty()
+            && below_app(&parsed).is_empty()
             && let Ok(AppRef::Installed { app_id, .. } | AppRef::Running { app_id, .. }) =
-                self.app_ref(&parsed.app).await
+                self.app_ref(&app_of(&parsed)).await
             && let Some(surface) = self.surface_bytes(&app_id).await
         {
-            return Ok(Self::app_surface(&parsed.app, &app_id, &surface));
+            return Ok(Self::app_surface(&app_of(&parsed), &app_id, &surface));
         }
         // A path in Files reads the workspace's own folder, wherever its tree is kept: a file
         // by its path, or what a folder holds. A window of Files shows another device's folder,
         // which a path in the workspace does not name.
-        let (mut resolved, forms) = if names_files(&parsed.app) {
+        let (mut resolved, forms) = if names_files(&app_of(&parsed)) {
             let forms = self.program_forms().await.unwrap_or_default();
             let resolved = self.folder_resolved(&parsed, &forms, usize::MAX).await?;
             (resolved, Some(forms))
@@ -2283,7 +2289,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .unwrap_or_default();
         let mut read = ResourceRead::of(&output).at(
             &resolved.path,
-            resolved.node.as_ref().map(|node| node.kind.as_str()),
+            resolved
+                .node
+                .as_ref()
+                .map(|node| node.resource_type.as_str()),
         );
         // A program reads what a listing showed, so the type it reads is the one the listing
         // named (`tasks.Task`), whether the app's own answer gave it or the node's kind did.
@@ -2612,7 +2621,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .strip_prefix(app)
             .and_then(|rest| rest.strip_prefix('.'))?
             .to_owned();
-        let naming = |node: &Node| node.kind == kind || node.kind.starts_with(&format!("{kind}."));
+        let naming = |node: &Node| {
+            node.resource_type == kind || node.resource_type.starts_with(&format!("{kind}."))
+        };
         let mut candidates = vec![provider.clone()];
         if let Ok((_, running)) = self.providers().await {
             candidates.extend(
@@ -2643,16 +2654,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// the caller asks once.
     async fn acting_in(
         &self,
-        parsed: &ParsedPath,
+        parsed: &Address,
         action: &str,
         wait_ms: Option<u64>,
     ) -> Result<Option<(String, String, bool)>, String> {
-        let reference = match self.app_ref(&parsed.app).await {
+        let reference = match self.app_ref(&app_of(parsed)).await {
             Ok(reference) => reference,
             // An action's answer names the resource it made by its kind
             // (`tasks.tracker/issues/7`), which is a path the next command
             // takes as it is.
-            Err(why) => match self.kind_app(&parsed.app).await {
+            Err(why) => match self.kind_app(&app_of(parsed)).await {
                 Some((app_id, provider, pinned)) => {
                     return Ok(Some((app_id, provider, pinned)));
                 }
@@ -2661,9 +2672,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         match reference {
             AppRef::Installed { opens: false, .. } => {
-                Err(Self::not_running_note(&parsed.app, false))
+                Err(Self::not_running_note(&app_of(parsed), false))
             }
-            AppRef::Installed { .. } if starts_app(action) && parsed.segments.is_empty() => {
+            AppRef::Installed { .. } if starts_app(action) && below_app(parsed).is_empty() => {
                 Ok(None)
             }
             // Any other action, on the app or on a resource inside it, starts the app without a
@@ -2683,11 +2694,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
     /// Run the one action `path` names, answering what the host answered as it is.
     /// The program forms an app declares, when `parsed` names a segment by one.
-    async fn forms_named(&self, parsed: &ParsedPath) -> Option<ProgramForms> {
-        if parsed
-            .segments
+    async fn forms_named(&self, parsed: &Address) -> Option<ProgramForms> {
+        if below_app(parsed)
             .iter()
-            .any(|segment| is_program_form(segment))
+            .any(|segment| is_program_form(&segment.written()))
         {
             self.program_forms().await
         } else {

@@ -1,138 +1,21 @@
-//! How far a directory listing was read, and where it goes on: the pages a
-//! level was read from, the cursor `tilo_ls` hands out to read on from the
-//! page its next resource starts in, and the reads that page a level in.
-
-use std::collections::HashSet;
+//! How far a directory listing is read: the reads that page a level in, up to
+//! the pages a first read is bound to or on to the resource a listing wants.
 
 use super::{
     ActionDescriptor, ActionProvider, CatalogueLimits, CatalogueQuery, CatalogueRow,
     DEFAULT_WAIT_MS, LEVEL_PAGES, Level, Levels, McpServer, Node, PAGE_ROWS, ROOT_PEEK,
     cannot_be_read_now, level_of, restart_pause,
 };
+use tilo_actions::tree::{LevelPages, PageMark, distinct_children};
 
 /// How often [`McpServer::level_from`] reads on from where it stood at the revision a
 /// directory moved on to, while writes beside it keep moving it on.
 const RESUMES: u32 = 16;
 
-/// The rows a [`Level`] was read from, where each of its pages after the
-/// first started, and, when the read stopped at its bound before the last
-/// page, where the directory goes on: a listing paging past what was read
-/// reads on from there ([`McpServer::level_reaching`]), and the next page of
-/// a listing starts at the page its first resource was read in
-/// ([`LsCursor`]).
-#[derive(Clone, Default)]
-pub(crate) struct LevelPages {
-    pub(super) rows: Vec<CatalogueRow>,
-    pub(super) marks: Vec<PageMark>,
-    pub(super) rest: Option<PageMark>,
-}
-
-/// Where one page of a directory starts: the row it starts at among those
-/// read, and the cursor and revision that ask for it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct PageMark {
-    pub(super) row: usize,
-    pub(super) cursor: Vec<u8>,
-    pub(super) revision: String,
-}
-
-impl Level {
-    /// Whether the directory goes on past what was read.
-    pub(super) fn unread(&self) -> bool {
-        self.pages.rest.is_some()
-    }
-
-    /// The resources of the level every row of which was read. A read that stopped at its
-    /// bound may have stopped inside its last resource, whose other rows (the actions it
-    /// offers, the one that reads it among them) are on the page after: that one is no
-    /// resource to name or act on until the level is read on.
-    pub(super) fn whole_children(&self) -> &[Node] {
-        match self.children.split_last() {
-            Some((_, whole)) if self.unread() => whole,
-            _ => &self.children,
-        }
-    }
-
-    /// Whether the provider's cursors the level was read by are row offsets ([`row_offset`]),
-    /// as far as a cursor it handed out says.
-    fn pages_by_offset(&self) -> bool {
-        self.pages
-            .rest
-            .iter()
-            .chain(&self.pages.marks)
-            .next()
-            .is_some_and(|mark| mark.cursor.len() == size_of::<u64>())
-    }
-
-    /// Whether the level was read on past the pages its first read is bound to
-    /// ([`LEVEL_PAGES`]): each page after the first leaves its mark.
-    pub(super) fn read_on(&self) -> bool {
-        self.pages.marks.len() >= LEVEL_PAGES
-    }
-
-    /// The provider's cursor for the row the resource at `child` among the
-    /// level's rows starts at, and the revision it was read at: where a
-    /// listing's next page asks for its first resource, so that page reads
-    /// from there and not from the level's first one. A resource past the
-    /// rows read starts at the page the level goes on from; `None` only when
-    /// the rows read cover the directory whole, so there is nowhere to go on
-    /// from.
-    pub(super) fn row_mark(&self, parent: &str, child: usize) -> Option<(Vec<u8>, String)> {
-        let rows = &self.pages.rows;
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut at = None;
-        for (index, row) in rows.iter().enumerate() {
-            let id = row.resource.id.as_str();
-            if (!parent.is_empty() && id == parent) || !seen.insert(id) {
-                continue;
-            }
-            if seen.len() == child.saturating_add(1) {
-                at = Some(index);
-                break;
-            }
-        }
-        let Some(at) = at else {
-            // The page asks for a resource past those read: it stands on the
-            // page the directory goes on from, if it does, and else after
-            // every row read, where the directory holds nothing more.
-            if let Some(rest) = self.pages.rest.as_ref() {
-                return Some((rest.cursor.clone(), rest.revision.clone()));
-            }
-            let mark = self.pages.marks.last()?;
-            let offset = row_offset(&mark.cursor)
-                .saturating_add(spanned(rows.get(mark.row..).unwrap_or_default()));
-            return Some((
-                u64::try_from(offset)
-                    .unwrap_or(u64::MAX)
-                    .to_le_bytes()
-                    .to_vec(),
-                mark.revision.clone(),
-            ));
-        };
-        // The marks a level leaves are pages of it, each with the provider's
-        // row cursor it started at: the rows since move that on by as many as each stands
-        // for. A row of the first page, which leaves no mark, is that many rows from the
-        // directory's start, at the revision the level was read at, where the provider's
-        // cursors are row offsets.
-        let (offset, revision) = match self.pages.marks.iter().rev().find(|mark| mark.row <= at) {
-            Some(mark) => (
-                row_offset(&mark.cursor)
-                    .saturating_add(spanned(rows.get(mark.row..at).unwrap_or_default())),
-                &mark.revision,
-            ),
-            None if !self.revision.is_empty() && self.pages_by_offset() => {
-                (spanned(rows.get(..at).unwrap_or_default()), &self.revision)
-            }
-            None => return None,
-        };
-        Some((
-            u64::try_from(offset)
-                .unwrap_or(u64::MAX)
-                .to_le_bytes()
-                .to_vec(),
-            revision.clone(),
-        ))
-    }
+/// Whether `level` was read on past the pages its first read is bound to
+/// ([`LEVEL_PAGES`]): each page after the first leaves its mark.
+pub(super) fn read_on(level: &Level) -> bool {
+    level.pages.marks.len() >= LEVEL_PAGES
 }
 
 /// What to ask a provider for so a page reaches `reach` resources of the
@@ -155,16 +38,6 @@ fn page_bounds(rows: &[CatalogueRow], parent: &str, reach: usize) -> (u32, Optio
     )
 }
 
-/// The row a provider's cursor names: how many rows of the directory it
-/// stands at.
-fn row_offset(cursor: &[u8]) -> usize {
-    <[u8; 8]>::try_from(cursor)
-        .map(u64::from_le_bytes)
-        .ok()
-        .and_then(|offset| usize::try_from(offset).ok())
-        .unwrap_or(0)
-}
-
 /// Why a read of a level's pages gave no level.
 enum Unread {
     /// The app's directory moved on between pages, to the revision named.
@@ -174,76 +47,6 @@ enum Unread {
     /// The app the query named could not be listed, and why: what it keeps did
     /// not mount yet, or the caller may not read it now.
     Unavailable(String),
-}
-
-/// A cursor `tilo_ls` issues: how many entries the listing is past, and,
-/// for a resource's listing, the directory page the next one starts in and
-/// how many resources that page holds before it, so the next page reads
-/// from there instead of every page before it. Written
-/// `<offset>` or `<offset>.<skip>.<revision hex>.<cursor hex>[.<after hex>]`.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct LsCursor {
-    pub(super) offset: usize,
-    pub(super) resume: Option<(PageMark, usize)>,
-    /// The resource the page before ended at, where the next page resumes in a directory:
-    /// read on from the same row once the directory moved on, a page that finds it again
-    /// starts after it, so what writes put before it never lists a resource twice.
-    pub(super) after: Option<String>,
-}
-
-impl LsCursor {
-    pub(super) fn parse(text: &str) -> Option<Self> {
-        let mut parts = text.split('.');
-        let offset = parts.next()?.parse().ok()?;
-        let Some(skip) = parts.next() else {
-            return Some(Self {
-                offset,
-                resume: None,
-                after: None,
-            });
-        };
-        let skip = skip.parse().ok()?;
-        let revision = String::from_utf8(hex::decode(parts.next()?).ok()?).ok()?;
-        let cursor = hex::decode(parts.next()?).ok()?;
-        let after = match parts.next() {
-            Some(after) => Some(String::from_utf8(hex::decode(after).ok()?).ok()?),
-            None => None,
-        };
-        if parts.next().is_some() || cursor.is_empty() {
-            return None;
-        }
-        Some(Self {
-            offset,
-            resume: Some((
-                PageMark {
-                    row: 0,
-                    cursor,
-                    revision,
-                },
-                skip,
-            )),
-            after,
-        })
-    }
-
-    pub(super) fn write(&self) -> String {
-        match &self.resume {
-            None => self.offset.to_string(),
-            Some((mark, skip)) => {
-                let mut written = format!(
-                    "{}.{skip}.{}.{}",
-                    self.offset,
-                    hex::encode(mark.revision.as_bytes()),
-                    hex::encode(&mark.cursor)
-                );
-                if let Some(after) = &self.after {
-                    written.push('.');
-                    written.push_str(&hex::encode(after.as_bytes()));
-                }
-                written
-            }
-        }
-    }
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
@@ -632,28 +435,4 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .retain(|node| !all.iter().any(|owner| owner.beside(node)));
         Ok(root)
     }
-}
-
-/// How many of the provider's rows `rows` stand for: a resource's actions sent as one row
-/// ([`CatalogueQuery::by_resource`]) are a row each where the provider counts its cursor.
-fn spanned(rows: &[CatalogueRow]) -> usize {
-    rows.iter()
-        .map(|row| {
-            row.offered
-                .as_ref()
-                .map_or(1, |offered| offered.actions.len().max(1))
-        })
-        .sum()
-}
-
-/// How many resources of the level under `parent` `rows` name: each once,
-/// and never `parent` itself, whose own actions are the level's own.
-fn distinct_children(rows: &[CatalogueRow], parent: &str) -> usize {
-    let mut seen = HashSet::new();
-    for row in rows {
-        if row.resource.id != parent {
-            seen.insert(row.resource.id.as_str());
-        }
-    }
-    seen.len()
 }

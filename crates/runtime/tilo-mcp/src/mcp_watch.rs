@@ -480,7 +480,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let Some(path) = path_named(path) else {
             return Ok(None);
         };
-        let parsed = parse_path(path)?;
+        let parsed = Address::parse(path)?;
         let (Ok(resolved), _) = self.resolve(&parsed).await? else {
             return Ok(None);
         };

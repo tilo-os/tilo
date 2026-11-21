@@ -189,6 +189,7 @@ pub mod step;
 pub mod surface;
 pub mod task_step;
 pub mod terminal_text;
+pub mod tree;
 
 pub use action::{
     Action, ActionError, ActionId, Declined, Doc, EncodedAction, ExecutionLocus, MAX_TEXT_BYTES,

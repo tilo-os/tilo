@@ -117,7 +117,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         args: LinkArgs,
         structured: bool,
     ) -> Result<Reply, Failure> {
-        let parsed = parse_path(&args.path)?;
+        let parsed = Address::parse(&args.path)?;
         if parsed.action.is_some() {
             return Err(format!(
                 "a link names a resource, not an action: tilo_link {{path: \"{}\"}}",
@@ -128,7 +128,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let Some((app_id, provider, pinned)) =
             self.acting_in(&parsed, SHARE_LINK_ACTION, None).await?
         else {
-            return Err(Self::not_running_note(&parsed.app, true).into());
+            return Err(Self::not_running_note(&app_of(&parsed), true).into());
         };
         let mut levels = Levels::new();
         let resolved = if pinned {
