@@ -17,6 +17,8 @@ Every command talks to the stack TILO_API_URL names, with the key TILO_API_KEY h
                          the answer to the action TARGET (`workspace/servers#add`) with the
                          arguments JSON
   workspaces             the workspaces the key reaches
+  bytes WORKSPACE PATH   the bytes of the file at PATH (`files/docs/handover-1.txt`) as the
+                         server serves them: their length and SHA-256
   words SEED             the 24 recovery words of the root whose 32-byte seed the file SEED
                          holds, as an earlier tilo kept it: what its person types into
                          `tilo login --recovery-key`. Needs no API.
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import re
 import json
 import os
 import sys
@@ -166,6 +169,29 @@ def counts(workspace: str) -> dict:
     return line
 
 
+def file_bytes(workspace: str, path: str) -> dict:
+    # The row as the app lists it: a file's name within its folder is one segment, its
+    # slashes escaped (`files/docs\\/handover-1.txt`).
+    app, _, name = path.partition("/")
+    row = next((row for row in rows(workspace, app) if row.replace("\\/", "/") == path), None)
+    if row is None:
+        raise Refused(f"no {path} in {app}")
+    resource = "/".join(urllib.parse.quote(part, safe="") for part in row.split("/", 1))
+    read = json.dumps(call("GET", f"/v1/workspaces/{workspace}/resources/{resource}"))
+    found = re.search(r"tilo\.content:[0-9a-f]{64}", read)
+    if not found:
+        raise Refused(f"{path} names no content: {read[:300]}")
+    request = urllib.request.Request(
+        URL + f"/v1/workspaces/{workspace}/content/{urllib.parse.quote(found.group(), safe='')}",
+        headers={"Authorization": f"Bearer {KEY}"})
+    try:
+        with urllib.request.urlopen(request, timeout=120) as answer:
+            body = answer.read()
+    except urllib.error.HTTPError as error:
+        raise Refused(f"{path}: {error.code} {error.read().decode(errors='replace')[:400]}") from None
+    return {"path": path, "length": len(body), "sha256": hashlib.sha256(body).hexdigest()}
+
+
 def lacking(workspace: str, expected: dict) -> list[str]:
     missing = []
     for path in ("chat/Messages", "mail/Messages"):
@@ -239,6 +265,8 @@ def main(argv: list[str]) -> int:
                     return expect(workspace, json.load(file), float(seconds[0]) if seconds else 0)
             case ["act", workspace, target, *args]:
                 print(json.dumps(act(workspace, target, **(json.loads(args[0]) if args else {}))))
+            case ["bytes", workspace, path]:
+                print(json.dumps(file_bytes(workspace, path)))
             case ["workspaces"]:
                 print(json.dumps(call("GET", "/v1/workspaces")))
             case _:

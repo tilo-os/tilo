@@ -1199,6 +1199,12 @@ owner_api_key() {
   local answer api_key said=$state/owner/keys-create.err status=0
   if [[ ! -s $state/owner/api-key ]]; then
     mkdir -p "$state/owner"
+    # A person named by owner/key but kept on no computer here (a stack another server's person
+    # moves to) approves nothing until they sign in: tilo would wait for a browser instead. An
+    # earlier tilo (TILO_SH_TILO_BIN) keeps them in its state folder instead.
+    [[ -d $state/owner/home/.config/tilo/identity \
+      || -f $state/owner/home/.local/state/tilo/identity/user-identity/privkey.bin ]] \
+      || die "the stack's person ($(cat "$state/owner/key")) is not signed in here: stack.sh person login --recovery-key, with their 24 words on standard input"
     answer=$(as_owner keys create 'Local stack' --json 2>"$said") || status=$?
     if ((status != 0)); then
       # Why, in tilo's own words (it says them on stderr), and whether the
@@ -2572,6 +2578,7 @@ down() {
     [[ -f $state/$pid.pid ]] && { kill "$(cat "$state/$pid.pid")" 2>/dev/null || true; rm -f "$state/$pid.pid"; }
   done
   stop_mail_stand_in
+  stop_people_holders
   if [[ -n $wipe ]]; then
     # The volumes belong to the containers' users (10001, 65532) inside this
     # account's user namespace: only that namespace removes them.
@@ -2582,6 +2589,30 @@ down() {
   else
     say "stopped; its state stays in $state (stack.sh down --wipe deletes it)"
   fi
+}
+
+# The holders (`tilo mcp --hold`) the stack's people started with a home under its state, as
+# their tilo does once it logs in, stopped, and the workspace folders they mounted there let go:
+# they outlive the stack otherwise, and a wipe cannot remove a folder still mounted. A holder
+# that read its person's root hides its environment, so it is known by the lock it holds on
+# its device's holder.lock (/proc/locks names the process).
+stop_people_holders() {
+  local lock inode pid mount pids=()
+  while IFS= read -r lock; do
+    inode=$(stat -c %i "$lock" 2>/dev/null) || continue
+    while read -r pid; do pids+=("$pid"); done \
+      < <(awk -v inode="$inode" '{ split($6, at, ":"); if (at[3] == inode) print $5 }' /proc/locks)
+  done < <(find "$state" -xdev -name holder.lock 2>/dev/null)
+  ((${#pids[@]})) && kill "${pids[@]}" 2>/dev/null
+  for pid in "${pids[@]}"; do
+    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    kill -9 "$pid" 2>/dev/null
+  done
+  while read -r _ mount _; do
+    mount=$(printf '%b' "$mount")
+    [[ $mount == "$state"/* ]] || continue
+    fusermount3 -u "$mount" 2>/dev/null || fusermount -u "$mount" 2>/dev/null || true
+  done < /proc/self/mounts
 }
 
 # host_keeps_no_vault: whether the server of the stack that is up keeps no

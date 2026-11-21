@@ -22,7 +22,8 @@
 #   5. the earlier stack stops, its state kept, as a server taken off the move does; the owner
 #      has this commit's server let it go (`server.remove`, naming it by its device key, since
 #      its site answers no more), and the workspace is still served, takes writes, and its
-#      owner's tilo reads through this commit's server what the earlier one was written.
+#      owner's tilo reads through this commit's server what the earlier one was written, and
+#      it serves the bytes of a file the earlier one kept.
 #      Choosing its servers, the person it was kept for is its owner from then on. Nothing
 #      waits on the earlier server: the owner's key decides where the workspace is kept, and the
 #      next of its holders makes its base once the earlier one is gone.
@@ -309,6 +310,15 @@ if data expect "$workspace" "$steps/everything.json" 60 >/dev/null 2>"$steps/aft
   pass '5b. the workspace is still served, every record in it, with the earlier server gone'
 else
   fail '5b. the workspace is still served, every record in it, with the earlier server gone' "$(cat "$steps/after.err")"
+fi
+# A file's bytes, not only its name: the earlier server kept them, and it answers no more.
+wanted=$(python3 -I -c 'import hashlib; print(hashlib.sha256(b"File 1, written before the handover.\n" * 50).hexdigest())')
+if data bytes "$workspace" files/docs/handover-1.txt >"$steps/bytes.json" 2>"$steps/bytes.err" \
+  && grep -qF "$wanted" "$steps/bytes.json"; then
+  pass '5e. this commit'\''s server serves the bytes of a file the earlier one was written'
+else
+  fail '5e. this commit'\''s server serves the bytes of a file the earlier one was written' \
+    "$(cat "$steps/bytes.json" "$steps/bytes.err" 2>/dev/null | head -c 600)"
 fi
 data counts "$workspace" >"$steps/after-counts.json" 2>&1 || true
 say "this commit's server holds, alone: $(cat "$steps/after-counts.json")"
