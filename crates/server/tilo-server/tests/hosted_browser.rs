@@ -379,7 +379,12 @@ async fn subscribe_in(
     loop {
         match tilo_test_env::within("ready timeout", client.recv()).await {
             Some(Envelope::Ready { .. }) => return client,
-            Some(Envelope::WorkspaceBootstrap { .. } | Envelope::Delta { .. }) => {}
+            // The person's workspace list comes whenever their workspaces change.
+            Some(
+                Envelope::WorkspaceBootstrap { .. }
+                | Envelope::Delta { .. }
+                | Envelope::PersonalList { .. },
+            ) => {}
             other => panic!("{other:?}"),
         }
     }
@@ -1757,6 +1762,25 @@ async fn an_environment_hears_its_own_record_and_no_other() {
     );
 }
 
+/// What the workspace's store keeps that `device` wrote. The workspace keeps its own governance
+/// beside it, which is not counted.
+fn written_by(state_root: &std::path::Path, device: [u8; 32]) -> Vec<Envelope> {
+    tilo_server::store::WorkspaceStore::open(state_root, WS, true)
+        .unwrap()
+        .load_retained()
+        .unwrap()
+        .into_iter()
+        .filter_map(|frame| {
+            tilo_server::frame::decode(frame.get(4..)?)
+                .ok()
+                .filter(|envelope| {
+                    matches!(envelope, Envelope::Delta { author_device_public_key, .. }
+                    if *author_device_public_key == device)
+                })
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn an_environment_writes_its_record_and_no_other() {
     let fixture = fixture(Arc::new(Counting::default())).await;
@@ -1801,23 +1825,18 @@ async fn an_environment_writes_its_record_and_no_other() {
             .any(|envelope| matches!(envelope, Envelope::NotAuthorised { .. })),
         "its own record is its to write: {tolerance:?}"
     );
-    let retained: Vec<Envelope> =
-        tilo_server::store::WorkspaceStore::open(&fixture.server.state_root, WS, true)
-            .unwrap()
-            .load_retained()
-            .unwrap()
-            .into_iter()
-            .filter_map(|frame| {
-                // The workspace keeps its own governance beside it: what is
-                // counted is what the environment's device wrote.
-                tilo_server::frame::decode(frame.get(4..)?)
-                    .ok()
-                    .filter(|envelope| {
-                        matches!(envelope, Envelope::Delta { author_device_public_key, .. }
-                        if *author_device_public_key == device)
-                    })
-            })
-            .collect();
+    // The server keeps a write as it takes it in, and says nothing back to its writer: the
+    // store is read until the write is there, however long a loaded server takes.
+    let retained = tilo_test_env::within("the window's write is kept", async {
+        loop {
+            let kept = written_by(&fixture.server.state_root, device);
+            if !kept.is_empty() {
+                return kept;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     assert_eq!(
         changed(&retained),
         [window_channel()],

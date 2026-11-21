@@ -135,9 +135,9 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
             signature: [0; 64],
         })
         .unwrap();
-    let received = tilo_test_env::within("a message on second", second.recv())
-        .await
-        .unwrap();
+    // The person's workspace list comes whenever their workspaces change; the change is what
+    // the second page is waiting for.
+    let received = crate::common::next(&second, |env| matches!(env, Envelope::Delta { .. })).await;
     let Envelope::Delta {
         author_device_public_key,
         delta,
