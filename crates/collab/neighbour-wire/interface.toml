@@ -158,6 +158,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DeltaSegment::Literal" = "#1 tuple(Vec<u8>)"
 "DeviceAction" = "struct"
 "DeviceAction.message" = "#4 RemoteActionMessage with=message_frame"
+"DeviceAction.placement" = "#5 Option<Vec<u8>> with=serde_bytes"
 "DeviceAction.request_id" = "#1 Uuid"
 "DeviceAction.source" = "#2 [u8; 32]"
 "DeviceAction.target" = "#3 [u8; 32]"
