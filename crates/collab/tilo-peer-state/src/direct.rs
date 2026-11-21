@@ -134,6 +134,38 @@ async fn fetch_store(
     Err("the device's store ended the history before the last frame".into())
 }
 
+/// What this device's owner decided of `message`, `author`'s frame, as the
+/// link hands it on: landed when it changed what the workspace holds.
+fn heard_of(
+    author: [u8; 32],
+    message: NeighbourMsg,
+    report: Result<crate::AdmissionReport, crate::AdmissionError>,
+    retained: bool,
+) -> Heard {
+    let (landed, report) = match report {
+        Ok(report) => (report.changed || report.metadata_changed, Ok(report)),
+        Err(error) if error.is_device_failure() => {
+            tracing::warn!(
+                %error,
+                "this device could not decide a link's frame; nothing was refused"
+            );
+            (false, Err(error))
+        }
+        Err(error) => {
+            tracing::warn!(%error, "a direct link carried a frame the workspace refused");
+            (false, Err(error))
+        }
+    };
+    Heard {
+        author,
+        message,
+        landed,
+        retained,
+        report,
+        fresh: true,
+    }
+}
+
 /// Write `frame` as the control stream's next record.
 async fn write_link<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
@@ -321,9 +353,16 @@ impl Pairing {
         member.admits(theirs)?;
         // Each side's catch-up is history, however old what it carries: it is
         // judged as retained, never as a late live frame.
-        for authored in holder.catch_up().await? {
-            member.admit(authored.from, authored.message, true).await;
-        }
+        member
+            .admit_history(
+                holder
+                    .catch_up()
+                    .await?
+                    .into_iter()
+                    .map(|authored| (authored.from, authored.message))
+                    .collect(),
+            )
+            .await;
         for authored in member.catch_up().await? {
             holder.admit(authored.from, authored.message, true).await;
         }
@@ -1013,14 +1052,21 @@ impl DirectSync {
         let mut cursors = self.cursors();
         loop {
             let (frames, more) = host.replay(&cursors)?;
+            let mut authored = Vec::with_capacity(frames.len());
             for message in &frames {
                 let author = store::author_of(message)
                     .ok_or("the store replayed a message that is not a document frame")?;
-                if self.admit(author, message.clone(), true).await {
-                    for state in host.answer_state_request().await {
-                        self.admit(state.from, state.message, true).await;
-                    }
-                }
+                authored.push((author, message.clone()));
+            }
+            if self.admit_history(authored).await {
+                let state = host.answer_state_request().await;
+                self.admit_history(
+                    state
+                        .into_iter()
+                        .map(|state| (state.from, state.message))
+                        .collect(),
+                )
+                .await;
             }
             store::advance(&mut cursors, &frames);
             if !more {
@@ -1236,16 +1282,36 @@ impl DirectSync {
     /// names as its author. A frame still waiting for history after that waits
     /// for what the other device lacks too: asking again would bring nothing.
     async fn ask_store(&self, control: &mut Control) -> Result<(), String> {
-        let frames = fetch_store(control, self.cursors()).await?;
-        tracing::debug!(
-            workspace = ?self.workspace().ok(),
-            frames = frames.len(),
-            "the other device's history is taken in"
-        );
-        for (author, message) in frames {
-            self.admit(author, message, true).await;
+        let mut cursors = self.cursors();
+        let mut taken = 0_usize;
+        write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
+        // Each round is taken in as it comes, while the other device reads
+        // the next: what the device's apps open first is here before the
+        // last of a long history is.
+        while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
+            let LinkFrame::Frames { frames, more } = frame else {
+                return Err("the device answered something else than retained frames".into());
+            };
+            let messages = frames
+                .iter()
+                .map(|(_, message)| message.clone())
+                .collect::<Vec<_>>();
+            store::advance(&mut cursors, &messages);
+            taken = taken.saturating_add(frames.len());
+            if more {
+                write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
+            }
+            self.admit_history(frames).await;
+            if !more {
+                tracing::debug!(
+                    workspace = ?self.workspace().ok(),
+                    frames = taken,
+                    "the other device's history is taken in"
+                );
+                return Ok(());
+            }
         }
-        Ok(())
+        Err("the device's store ended the history before the last frame".into())
     }
 
     /// The frames the other device's store holds after `cursors`, read over
@@ -1285,6 +1351,9 @@ impl DirectSync {
             }
         }
         let mut opens_an_ask = true;
+        // The state an ask opens with that earlier answers had no room for.
+        let mut state = std::collections::VecDeque::new();
+        let own = self.device();
         while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
             let LinkFrame::Cursors(cursors) = frame else {
                 return Err("the device asked for something else than retained frames".into());
@@ -1296,31 +1365,53 @@ impl DirectSync {
                     .holds(self.workspace()?, remote, &cursors)
                     .map_err(|error| error.to_string())?;
             }
-            let (kept, more) = self.replay(&cursors)?;
-            let mut frames = Vec::new();
+            let reaches = self.reach_of(remote);
             if opens_an_ask {
-                frames.extend(
+                state.extend(
                     self.answer_state_request()
                         .await
                         .into_iter()
+                        .filter(|state| reaches(&state.message))
                         .map(|state| (state.from, state.message)),
                 );
             }
-            // A frame the store keeps names its own author; one that does not
-            // is this device's.
-            let own = self.device();
-            let reaches = self.reach_of(remote);
-            frames.retain(|(_, message)| reaches(message));
-            frames.extend(
-                kept.into_iter()
-                    .filter(|message| reaches(message))
-                    .map(|message| (store::author_of(&message).unwrap_or(own), message)),
-            );
+            // An answer carries a round's worth of bytes: the state holds a
+            // checkpoint of every record, and in one answer a workspace's
+            // records outgrew what a link takes in one frame, which ended the
+            // link at every try. The state goes first, a round at a time, in
+            // its order (its governance before the records it admits); the
+            // store's frames follow once it is all sent.
+            let with_state = !state.is_empty();
+            let mut frames = Vec::new();
+            let mut bytes = 0_u64;
+            while let Some((_, message)) = state.front() {
+                let size = postcard::to_allocvec(message).map_or(u64::MAX, |bytes| {
+                    u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+                });
+                if !frames.is_empty() && bytes.saturating_add(size) > Budget::default().max_bytes {
+                    break;
+                }
+                bytes = bytes.saturating_add(size);
+                frames.extend(state.pop_front());
+            }
+            let more = if state.is_empty() {
+                let (kept, more) = self.replay(&cursors)?;
+                // A frame the store keeps names its own author; one that does
+                // not is this device's.
+                frames.extend(
+                    kept.into_iter()
+                        .filter(|message| reaches(message))
+                        .map(|message| (store::author_of(&message).unwrap_or(own), message)),
+                );
+                more
+            } else {
+                true
+            };
             tracing::debug!(
                 workspace = ?self.workspace().ok(),
                 frames = frames.len(),
                 more,
-                with_state = opens_an_ask,
+                with_state,
                 "a link's ask for history is answered"
             );
             write_link(&mut control.send, &LinkFrame::Frames { frames, more }).await?;
@@ -1741,7 +1832,98 @@ impl DirectSync {
             self.carry_governance(author, message, retained);
             return (false, None);
         }
-        let mut heard = self.judge(author, message, retained, history).await;
+        let heard = self.judge(author, message, retained, history).await;
+        self.settle(heard)
+    }
+
+    /// Admit `frames`, history the other device holds, each with its author,
+    /// in order: [`Self::admit`] for each of them, except that this device's
+    /// owner takes in each run of them between two channels' governance
+    /// together and commits the workspace once for the run, not once for each
+    /// frame. A device's first sync is its workspace's whole history, and a
+    /// commit per frame rewrote what the device held for every one of them.
+    ///
+    /// Returns whether any frame left something waiting for history this
+    /// device does not hold.
+    async fn admit_history(&self, frames: Vec<([u8; 32], NeighbourMsg)>) -> bool {
+        let Some(admission) = &self.0.admission else {
+            let mut lacks_history = false;
+            for (author, message) in frames {
+                lacks_history |= self.admit(author, message, true).await;
+            }
+            return lacks_history;
+        };
+        let mut lacks_history = false;
+        let mut run = Vec::with_capacity(frames.len());
+        for (claimed, message) in frames {
+            let author = store::author_of(&message).unwrap_or(claimed);
+            if channel_governance(&message) {
+                lacks_history |= self.admit_run(admission, std::mem::take(&mut run)).await;
+                self.carry_governance(author, message, true);
+                continue;
+            }
+            run.push((author, message));
+        }
+        lacks_history | self.admit_run(admission, run).await
+    }
+
+    /// Take `run`, frames of retained history with their authors, into this
+    /// device's owner in one commit, keep its verdicts on them, and settle each
+    /// as [`Self::admit`] does. Whether any of them waits for history.
+    async fn admit_run(&self, admission: &Admission, run: Vec<([u8; 32], NeighbourMsg)>) -> bool {
+        if run.is_empty() {
+            return false;
+        }
+        let now = tilo_clock::wall();
+        let inputs = run
+            .iter()
+            .map(|(author, message)| {
+                (
+                    TransportOrigin::RetainedServerDelta(*author),
+                    message.clone(),
+                )
+            })
+            .collect();
+        let reports = match admission
+            .owner
+            .receive_batch(admission.workspace, inputs, now)
+        {
+            Ok(reports) => reports,
+            // The commit failed: so did every frame of it, as one frame's
+            // failed commit fails that frame.
+            Err(error) => run
+                .iter()
+                .map(|_| Err(crate::AdmissionError::from(error.clone())))
+                .collect(),
+        };
+        let verdicts: Vec<_> = run
+            .iter()
+            .map(|(_, message)| message)
+            .zip(&reports)
+            .filter(|(_, report)| !report.as_ref().is_err_and(arrived_late))
+            .collect();
+        if !verdicts.is_empty()
+            && let Err(error) = admission
+                .owner
+                .keep_verdicts(admission.workspace, &verdicts, &*self.0.signer, now)
+                .await
+        {
+            tracing::warn!(%error, "a document write's verdict was not kept");
+        }
+        drop(verdicts);
+        let mut lacks_history = false;
+        for ((author, message), report) in run.into_iter().zip(reports) {
+            lacks_history |= self.settle(heard_of(author, message, report, true)).0;
+        }
+        lacks_history
+    }
+
+    /// What `heard`, a frame this device's workspace decided, settles: it is
+    /// kept at this device's store, carried on to the workspace's other
+    /// devices where this one is their host, and handed to its engine.
+    /// Whether it waits for history, and whether the workspace keeps it.
+    fn settle(&self, mut heard: Heard) -> (bool, Option<Kept>) {
+        let retained = heard.retained;
         let lacks_history = heard
             .report
             .as_ref()
@@ -1912,28 +2094,7 @@ impl DirectSync {
         {
             tracing::warn!(%error, "a document write's verdict was not kept");
         }
-        let (landed, report) = match report {
-            Ok(report) => (report.changed || report.metadata_changed, Ok(report)),
-            Err(error) if error.is_device_failure() => {
-                tracing::warn!(
-                    %error,
-                    "this device could not decide a link's frame; nothing was refused"
-                );
-                (false, Err(error))
-            }
-            Err(error) => {
-                tracing::warn!(%error, "a direct link carried a frame the workspace refused");
-                (false, Err(error))
-            }
-        };
-        Heard {
-            author,
-            message,
-            landed,
-            retained,
-            report,
-            fresh: true,
-        }
+        heard_of(author, message, report, retained)
     }
 
     /// Take `message` into this device's own replica: whether it is the
@@ -2393,6 +2554,10 @@ async fn read_authored(recv: &mut RecvStream) -> Result<Option<Authored>, String
 fn short(key: &[u8; 32]) -> String {
     hex::encode(&key[..4])
 }
+
+#[cfg(test)]
+#[path = "direct_history_tests.rs"]
+mod history_tests;
 
 #[cfg(test)]
 mod tests {
