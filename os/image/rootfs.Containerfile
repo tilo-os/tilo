@@ -181,8 +181,8 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          -o -path '*/gstreamer-1.0/libgstnice.so' \
          -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
       \( -type f -o -type l \) -print -quit | grep -q . \
-    # The rpmdb finaliser ran after every package change; none comes now.
-    && rm -f /usr/libexec/tilo/finalize-rpmdb \
+    # The rpmdb finaliser was build scratch under /run; nothing runs it now.
+    && rm -f /run/tilo/finalize-rpmdb \
     # The base image's tool for deriving base images, a Python program no
     # package owns; a derived image never runs it.
     && rm -f /usr/libexec/bootc-base-imagectl \

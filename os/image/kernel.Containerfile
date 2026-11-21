@@ -6,7 +6,7 @@
 FROM packages AS kernel-installed
 # The build-only dnf/rpm wrappers read it.
 ARG SOURCE_DATE_EPOCH=0
-ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
+ARG FINALIZE_RPMDB="/run/tilo/finalize-rpmdb"
 ARG RPMS_REF
 
 # ---------------------------------------------------------------------------

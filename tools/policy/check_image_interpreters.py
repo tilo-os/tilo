@@ -20,10 +20,10 @@ the same way. So is what the image builds take from elsewhere: a Containerfile
 ``os/components.toml`` file entry that installs a Python file into ``/usr`` or
 ``/etc``, listed as ``image:<destination>``.
 
-``image_interpreter_baseline.txt`` lists the scripts that predate the rule, by
-path, each with the reason it still ships. A flagged file missing from it
-fails, and so does a listed path that no longer holds an interpreter script,
-so the list only shrinks: porting or deleting a script removes its line.
+Any flagged file fails: there is no list of exceptions. A build tool that
+would otherwise be copied into the image belongs in build scratch (``/run/``)
+or is run from a bind mount, and the finished rootfs check
+(``os/scripts/verify-no-python-runtime.sh``) holds the same line.
 
 Build stages and CI tooling may use Python, so Containerfiles, ``os/scripts``,
 ``os/dev``, ``os/tests`` and ``os/kernel`` are not scanned. Untracked files are
@@ -33,7 +33,6 @@ ignored.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from pathlib import Path
 import re
 import subprocess
@@ -41,7 +40,6 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = Path("tools/policy/image_interpreter_baseline.txt")
 SCANNED = ("os/usr", "os/etc", "dist/session")
 # Test tooling next to the host payload; none of it is installed.
 UNSCANNED = ("dist/session/tests/", "dist/session/vm-e2e/")
@@ -55,16 +53,6 @@ PYTHON_COMMAND = re.compile(r"(^|[\s;|&(`$]|/)python(3(\.[0-9]+)?)?([\s;|&)`]|$)
 # Build-stage and scratch destinations: nothing there ships.
 BUILD_DESTINATIONS = ("/usr/local/", "/run/", "/tmp/", "/tilo", "/build", "/out", "/src", "/tree/", "/image/", "/repo")
 EXTENSIONS = (".py", ".js", ".mjs", ".cjs", ".pl")
-
-
-class BaselineError(ValueError):
-    """The baseline file is malformed."""
-
-
-@dataclass(frozen=True)
-class Entry:
-    line: int
-    reason: str
 
 
 def shebang_interpreter(first_line: bytes) -> str | None:
@@ -209,26 +197,6 @@ def declared_in(root: Path, path: str) -> str:
     return COMPONENTS.as_posix()
 
 
-def load_baseline(root: Path) -> dict[str, Entry]:
-    entries: dict[str, Entry] = {}
-    text = (root / BASELINE).read_text(encoding="utf-8")
-    for number, raw in enumerate(text.splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        path, _, reason = (part.strip() for part in line.partition("#"))
-        if not reason:
-            raise BaselineError(
-                f"{BASELINE}:{number}: `{path}` needs a reason after `#` saying why it still ships"
-            )
-        if path in entries:
-            raise BaselineError(
-                f"{BASELINE}:{number}: `{path}` is already listed on line {entries[path].line}"
-            )
-        entries[path] = Entry(number, reason)
-    return entries
-
-
 def staged_files(root: Path, *paths: str) -> list[str]:
     """The paths a commit adds or changes under ``paths``, read from the index."""
     output = subprocess.check_output(
@@ -265,22 +233,13 @@ def staged_shipped_scripts(root: Path) -> list[str]:
     return sorted(set(shipped))
 
 
-def check(root: Path = ROOT, staged: bool = False) -> tuple[list[str], list[str]]:
-    """Return interpreter scripts missing from the baseline and baseline paths no longer shipped.
+def check(root: Path = ROOT, staged: bool = False) -> list[str]:
+    """The interpreter scripts the image would carry.
 
-    ``staged`` judges the files the commit adds or changes, read from the index.
-    The stale half is an inventory of the tree: a commit cannot remove a baselined
-    script it does not stage, and the policy suite and CI hold the list to the tree.
+    ``staged`` judges the files the commit adds or changes, read from the index;
+    the policy suite and CI judge every shipped file of the tree.
     """
-    shipped = staged_shipped_scripts(root) if staged else shipped_scripts(root)
-    baseline = load_baseline(root)
-    new = [path for path in shipped if path not in baseline]
-    stale = (
-        []
-        if staged
-        else sorted(set(baseline) - set(shipped), key=lambda path: baseline[path].line)
-    )
-    return new, stale
+    return staged_shipped_scripts(root) if staged else shipped_scripts(root)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -294,31 +253,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     staged = parser.parse_args(argv).staged
     try:
-        new, stale = check(ROOT, staged)
-        baseline = load_baseline(ROOT)
-    except BaselineError as error:
-        print(error)
-        return 1
+        flagged = check(ROOT, staged)
     except (OSError, UnicodeError, subprocess.CalledProcessError) as error:
         print(f"  {error}", file=sys.stderr)
         return 1
-    for path in new:
+    for path in flagged:
         source = declared_in(ROOT, path)
         what = "is" if source == path else f"{path} is"
         print(
-            f"{source}: {what} an interpreter script in the OS image; ship compiled code instead "
-            f"(an exception is a line in {BASELINE} with its reason, made in review)"
+            f"{source}: {what} an interpreter script in the OS image; ship compiled code instead, "
+            "or keep a build tool in build scratch under /run"
         )
-    for path in stale:
-        print(
-            f"{BASELINE}:{baseline[path].line}: {path} no longer ships an interpreter script: "
-            "remove this line"
-        )
-    if new or stale:
-        print(f"No new interpreted code on the OS runtime path ({POLICY}).", file=sys.stderr)
+    if flagged:
+        print(f"No interpreted code on the OS runtime path ({POLICY}).", file=sys.stderr)
         return 1
-    judged = "staged" if staged else "baselined"
-    print(f"Image overlay interpreter scripts: {len(baseline)} {judged}, none new.", file=sys.stderr)
+    judged = "staged" if staged else "shipped"
+    print(f"Image overlay interpreter scripts: none {judged}.", file=sys.stderr)
     return 0
 
 

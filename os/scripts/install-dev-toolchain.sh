@@ -54,7 +54,7 @@ case "${1:-}" in
     xargs -r -a "$list" env LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo
     rm -f "$list"
     dnf clean all
-    if [ -x /usr/libexec/tilo/finalize-rpmdb ]; then /usr/libexec/tilo/finalize-rpmdb; fi
+    if [ -x /run/tilo/finalize-rpmdb ]; then /run/tilo/finalize-rpmdb; fi
     # The OS image drops finalize-rpmdb; DNF's history and ldconfig's aux-cache differ in every
     # build, so without this each build ships the whole layer anew.
     sh "$dev/os/scripts/clean-dnf-layer-state.sh"

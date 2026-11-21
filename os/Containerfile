@@ -372,7 +372,7 @@ FROM ${BASE_REF} AS builder-base
 # clock, and the transaction leaves its database finalized and no diagnostic state (DNF's history
 # and log, ldconfig's aux-cache, fontconfig's caches, a machine ID), as the packages layer does.
 ARG SOURCE_DATE_EPOCH=0
-COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
+COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /run/tilo/finalize-rpmdb
 COPY --chmod=0755 os/scripts/clean-dnf-layer-state.sh /usr/libexec/tilo/clean-dnf-layer-state
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
@@ -407,7 +407,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         nasm \
         gstreamer1-devel gstreamer1-plugins-base-devel \
     && dnf clean all \
-    && /usr/libexec/tilo/finalize-rpmdb
+    && /run/tilo/finalize-rpmdb
 
 # Fedora's sccache RPM is built without the S3 backend. Use the same pinned,
 # full-feature static client as the canonical CI builder so the nested image
@@ -1294,14 +1294,16 @@ RUN --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/run/tilo-
 # so the helper performs a checked single-file replacement within that existing
 # directory. This avoids asking the layer diff to capture a heavily rewritten
 # database inode and turns corruption into an immediate failure.
-COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
+# It is a build tool and nothing the image runs: it sits under /run, build
+# scratch, and is removed before the image is committed.
+COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /run/tilo/finalize-rpmdb
 COPY --chmod=0755 os/scripts/clean-dnf-layer-state.sh /usr/libexec/tilo/clean-dnf-layer-state
 COPY --from=dnf-build-clock /build-clock.so /usr/libexec/tilo/build-clock.so
 COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/dnf
 COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/rpm
 RUN test "$(command -v dnf)" = /usr/local/bin/dnf \
     && test "$(command -v rpm)" = /usr/local/bin/rpm
-ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
+ARG FINALIZE_RPMDB="/run/tilo/finalize-rpmdb"
 
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
@@ -1925,7 +1927,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 FROM packages AS kernel-installed
 # The build-only dnf/rpm wrappers read it.
 ARG SOURCE_DATE_EPOCH=0
-ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
+ARG FINALIZE_RPMDB="/run/tilo/finalize-rpmdb"
 ARG RPMS_REF
 
 # ---------------------------------------------------------------------------
@@ -2069,7 +2071,7 @@ RUN owner="$(rpm -qf /usr/bin/basename 2>&1 || true)" \
 FROM kernel-installed AS system
 # The build-only dnf/rpm wrappers read it.
 ARG SOURCE_DATE_EPOCH=0
-ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
+ARG FINALIZE_RPMDB="/run/tilo/finalize-rpmdb"
 ARG RPMS_REF
 ARG TILO_WINDOWS_ARCH
 
@@ -3339,8 +3341,8 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          -o -path '*/gstreamer-1.0/libgstnice.so' \
          -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
       \( -type f -o -type l \) -print -quit | grep -q . \
-    # The rpmdb finaliser ran after every package change; none comes now.
-    && rm -f /usr/libexec/tilo/finalize-rpmdb \
+    # The rpmdb finaliser was build scratch under /run; nothing runs it now.
+    && rm -f /run/tilo/finalize-rpmdb \
     # The base image's tool for deriving base images, a Python program no
     # package owns; a derived image never runs it.
     && rm -f /usr/libexec/bootc-base-imagectl \

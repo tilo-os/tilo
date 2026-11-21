@@ -25,8 +25,6 @@ checker = importlib.util.module_from_spec(SPEC)
 sys.modules["check_image_interpreters"] = checker
 SPEC.loader.exec_module(checker)
 
-HEADER = "# Interpreter scripts the image still ships.\n\n"
-
 
 class ImageInterpreterTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -34,9 +32,7 @@ class ImageInterpreterTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.git("init", "-q")
-        self.write("os/usr/libexec/tilo-linux-vm", "#!/usr/bin/env python3\nprint()\n")
         self.write("os/usr/libexec/tilo-compiled-wrapper", "#!/bin/bash\nexec true\n")
-        self.baseline("os/usr/libexec/tilo-linux-vm  # predates the rule\n")
 
     def git(self, *args: str) -> None:
         subprocess.run(
@@ -54,11 +50,9 @@ class ImageInterpreterTests(unittest.TestCase):
         if track:
             self.git("add", name)
 
-    def baseline(self, body: str) -> None:
-        self.write(str(checker.BASELINE), HEADER + body, track=False)
-
-    def test_baselined_script_and_shell_glue_pass(self) -> None:
-        self.assertEqual(checker.check(self.root), ([], []))
+    def test_compiled_code_and_shell_glue_pass(self) -> None:
+        self.write("os/usr/libexec/tilo-pipe", "#!/bin/bash\nsfdisk --json | jq -r .table\n")
+        self.assertEqual(checker.check(self.root), [])
 
     def test_unreadable_tracked_file_is_not_a_clean_inventory(self) -> None:
         relative = "os/usr/libexec/unobserved"
@@ -82,9 +76,8 @@ class ImageInterpreterTests(unittest.TestCase):
         self.write("os/etc/tilo/hook", "#!/usr/bin/python3 -I\n")
         self.write("os/usr/lib/tilo/serve", "#!/usr/bin/env -S node --no-warnings\n")
         self.write("os/usr/lib/tilo/report", "#!/usr/bin/perl -w\n")
-        new, stale = checker.check(self.root)
         self.assertEqual(
-            new,
+            checker.check(self.root),
             [
                 "os/etc/tilo/hook",
                 "os/usr/lib/tilo/report",
@@ -92,59 +85,43 @@ class ImageInterpreterTests(unittest.TestCase):
                 "os/usr/libexec/new-thing",
             ],
         )
-        self.assertEqual(stale, [])
 
     def test_source_file_without_shebang_fails(self) -> None:
         self.write("os/usr/lib/tilo/helper.py", "import os\n")
         self.write("os/usr/share/tilo/panel.mjs", "export {}\n")
-        new, _ = checker.check(self.root)
-        self.assertEqual(new, ["os/usr/lib/tilo/helper.py", "os/usr/share/tilo/panel.mjs"])
-
-    def test_renaming_a_baselined_script_does_not_admit_it(self) -> None:
-        self.git("mv", "os/usr/libexec/tilo-linux-vm", "os/usr/libexec/tilo-renamed")
         self.assertEqual(
             checker.check(self.root),
-            (["os/usr/libexec/tilo-renamed"], ["os/usr/libexec/tilo-linux-vm"]),
+            ["os/usr/lib/tilo/helper.py", "os/usr/share/tilo/panel.mjs"],
         )
 
-    def test_stale_entry_fails_and_names_its_line(self) -> None:
-        self.git("rm", "-qf", "os/usr/libexec/tilo-linux-vm")
-        self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-linux-vm"]))
-        out = io.StringIO()
-        with mock.patch.object(checker, "ROOT", self.root), contextlib.redirect_stdout(out):
-            self.assertEqual(checker.main([]), 1)
-        self.assertIn(
-            f"{checker.BASELINE}:3: os/usr/libexec/tilo-linux-vm no longer ships",
-            out.getvalue(),
-        )
-
-    def test_ported_script_is_stale(self) -> None:
+    def test_a_wrapper_that_execs_compiled_code_passes(self) -> None:
         self.write("os/usr/libexec/tilo-linux-vm", "#!/bin/sh\nexec /usr/libexec/tilo/tilo-linux-vm\n")
-        self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-linux-vm"]))
+        self.assertEqual(checker.check(self.root), [])
 
     def test_build_and_ci_scripts_outside_the_overlay_are_ignored(self) -> None:
         self.write("os/scripts/build-step.py", "#!/usr/bin/env python3\n")
         self.write("os/dev/vm-helper", "#!/usr/bin/env python3\n")
         self.write("os/Containerfile", "RUN python3 /tilo/windows_provider.py\n")
         self.write("tools/ci/report.py", "#!/usr/bin/env python3\n")
-        self.assertEqual(checker.check(self.root), ([], []))
+        self.assertEqual(checker.check(self.root), [])
 
     def test_untracked_files_are_ignored(self) -> None:
         self.write("os/usr/libexec/local-experiment", "#!/usr/bin/env python3\n", track=False)
-        self.assertEqual(checker.check(self.root), ([], []))
+        self.assertEqual(checker.check(self.root), [])
 
     def test_shell_scripts_that_run_python_fail_and_mentions_do_not(self) -> None:
         self.write("os/usr/libexec/tilo-pipe", "#!/bin/bash\nsfdisk --json | python3 -c 'import json'\n")
         self.write("os/usr/libexec/tilo-heredoc", "#!/bin/sh\nout=$(python3 - <<PY\nPY\n)\n")
         self.write("os/usr/libexec/tilo-mention", "#!/bin/sh\n# python3 used to do this\necho done\n")
-        new, _ = checker.check(self.root)
-        self.assertEqual(new, ["os/usr/libexec/tilo-heredoc", "os/usr/libexec/tilo-pipe"])
+        self.assertEqual(
+            checker.check(self.root),
+            ["os/usr/libexec/tilo-heredoc", "os/usr/libexec/tilo-pipe"],
+        )
 
     def test_host_payload_scripts_count_and_its_tests_do_not(self) -> None:
         self.write("dist/session/tilo-helper.py", "print()\n")
         self.write("dist/session/tests/fixture.py", "print()\n")
-        new, _ = checker.check(self.root)
-        self.assertEqual(new, ["dist/session/tilo-helper.py"])
+        self.assertEqual(checker.check(self.root), ["dist/session/tilo-helper.py"])
 
     def test_python_the_image_build_installs_counts(self) -> None:
         self.write("tools/client.py", "print()\n")
@@ -160,24 +137,10 @@ class ImageInterpreterTests(unittest.TestCase):
             '[[component]]\nname = "x"\nfiles = [\n'
             '  { from = "@manifest/scripts/check.py", to = "/usr/libexec/tilo-check", mode = "0755" },\n]\n',
         )
-        new, _ = checker.check(self.root)
         self.assertEqual(
-            new,
+            checker.check(self.root),
             ["image:/usr/libexec/runner.py", "image:/usr/libexec/tilo-check", "image:/usr/libexec/tilo/client.py"],
         )
-
-    def test_baseline_entry_needs_a_reason(self) -> None:
-        self.baseline("os/usr/libexec/tilo-linux-vm\n")
-        with self.assertRaisesRegex(checker.BaselineError, "needs a reason"):
-            checker.check(self.root)
-
-    def test_duplicate_baseline_entry_fails(self) -> None:
-        self.baseline(
-            "os/usr/libexec/tilo-linux-vm  # predates the rule\n"
-            "os/usr/libexec/tilo-linux-vm  # again\n"
-        )
-        with self.assertRaisesRegex(checker.BaselineError, "already listed on line 3"):
-            checker.check(self.root)
 
     def commit(self) -> None:
         self.git("-c", "user.name=Policy Test", "-c", "user.email=policy@example.org", "commit", "-qm", "the tree")
@@ -188,28 +151,14 @@ class ImageInterpreterTests(unittest.TestCase):
         # A script the commit does not stage has the verdict the commit that
         # added it gave it, and an untracked file is nobody's commit.
         self.write("os/usr/libexec/local-experiment", "#!/usr/bin/env python3\n", track=False)
-        self.assertEqual(
-            checker.check(self.root, staged=True),
-            (["os/usr/libexec/tilo-pipe"], []),
-        )
+        self.assertEqual(checker.check(self.root, staged=True), ["os/usr/libexec/tilo-pipe"])
 
     def test_staged_mode_reads_the_bytes_the_commit_stages(self) -> None:
         self.commit()
         self.write("os/usr/libexec/tilo-pipe", "#!/bin/bash\nsfdisk --json | python3 -c 'import json'\n")
         # Further work in the tree is not what the commit would ship.
         (self.root / "os/usr/libexec/tilo-pipe").write_text("#!/bin/bash\nexec true\n", encoding="utf-8")
-        self.assertEqual(
-            checker.check(self.root, staged=True),
-            (["os/usr/libexec/tilo-pipe"], []),
-        )
-
-    def test_staged_mode_reports_no_inventory_a_commit_cannot_change(self) -> None:
-        self.commit()
-        self.git("rm", "-qf", "os/usr/libexec/tilo-linux-vm")
-        # The stale baseline entry is an inventory of the tree; a commit that
-        # removes nothing staged cannot make it stale.
-        self.assertEqual(checker.check(self.root), ([], ["os/usr/libexec/tilo-linux-vm"]))
-        self.assertEqual(checker.check(self.root, staged=True), ([], []))
+        self.assertEqual(checker.check(self.root, staged=True), ["os/usr/libexec/tilo-pipe"])
 
     def test_staged_mode_judges_an_install_the_commit_changes(self) -> None:
         self.commit()
@@ -217,7 +166,7 @@ class ImageInterpreterTests(unittest.TestCase):
         self.write("os/Containerfile", "COPY tools/client.py /usr/libexec/tilo/client.py\n")
         self.assertEqual(
             checker.check(self.root, staged=True),
-            (["image:/usr/libexec/tilo/client.py"], []),
+            ["image:/usr/libexec/tilo/client.py"],
         )
 
     def test_shebang_interpreter(self) -> None:

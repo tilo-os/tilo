@@ -86,14 +86,16 @@ RUN --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/run/tilo-
 # so the helper performs a checked single-file replacement within that existing
 # directory. This avoids asking the layer diff to capture a heavily rewritten
 # database inode and turns corruption into an immediate failure.
-COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /usr/libexec/tilo/finalize-rpmdb
+# It is a build tool and nothing the image runs: it sits under /run, build
+# scratch, and is removed before the image is committed.
+COPY --chmod=0755 os/scripts/finalize-rpmdb.sh /run/tilo/finalize-rpmdb
 COPY --chmod=0755 os/scripts/clean-dnf-layer-state.sh /usr/libexec/tilo/clean-dnf-layer-state
 COPY --from=dnf-build-clock /build-clock.so /usr/libexec/tilo/build-clock.so
 COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/dnf
 COPY --chmod=0755 os/scripts/dnf-fixed-time.sh /usr/local/bin/rpm
 RUN test "$(command -v dnf)" = /usr/local/bin/dnf \
     && test "$(command -v rpm)" = /usr/local/bin/rpm
-ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
+ARG FINALIZE_RPMDB="/run/tilo/finalize-rpmdb"
 
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
