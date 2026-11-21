@@ -84,7 +84,6 @@ impl MediaProfile {
 #[serde(deny_unknown_fields)]
 struct RawMediaProfile {
     schema: u8,
-    #[serde(default = "install_profile_model::default_purpose")]
     purpose: String,
     #[serde(default)]
     device_label: String,
@@ -298,6 +297,7 @@ mod tests {
     fn good() -> serde_json::Value {
         serde_json::json!({
             "schema": 1,
+            "purpose": "computer",
             "hostname": "studio",
             "username": "ada",
             "full_name": "Ada",
@@ -311,7 +311,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn media_profile_validates_purpose_and_repairs_only_bad_values;
 
-        phase purpose_is_validated_and_legacy_profiles_keep_computer_defaults;
+        phase purpose_is_required_and_validated;
         {
             let parse = |purpose: Option<&str>| {
                 let mut object = serde_json::Map::new();
@@ -320,7 +320,8 @@ mod tests {
                 }
                 validate_object(&object)
             };
-            assert_eq!(parse(None).unwrap().purpose, "computer");
+            assert!(parse(None).is_err());
+            assert_eq!(parse(Some("computer")).unwrap().purpose, "computer");
             assert_eq!(parse(Some("server")).unwrap().purpose, "server");
             assert!(parse(Some("other-os")).is_err());
         }

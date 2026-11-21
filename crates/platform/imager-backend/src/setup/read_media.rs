@@ -41,7 +41,6 @@ struct Request {
     operation: String,
     target: TargetDrive,
     source_plans: Vec<Vec<u8>>,
-    #[serde(default)]
     purpose: ReadMediaPurpose,
     rendezvous: Rendezvous,
 }
@@ -873,12 +872,6 @@ mod tests {
             let mut unknown = serde_json::to_value(&request).unwrap();
             unknown["purpose"] = serde_json::json!("arbitrary-root-read");
             assert!(serde_json::from_value::<Request>(unknown).is_err());
-            let mut legacy = serde_json::to_value(&request).unwrap();
-            legacy.as_object_mut().unwrap().remove("purpose");
-            assert!(
-                serde_json::from_value::<Request>(legacy).unwrap().purpose
-                    == ReadMediaPurpose::OriginalRegistration
-            );
             request.purpose = ReadMediaPurpose::BootPending;
             assert!(request.validate().is_err());
             let registered_plans = request.source_plans.clone();

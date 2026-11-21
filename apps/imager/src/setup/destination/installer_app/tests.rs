@@ -2573,7 +2573,7 @@ fn count_focusable(widget: &dyn Widget) -> usize {
 fn prepared_profile_app() -> InstallerApp {
     let mut app = InstallerApp::with_disks(Disk::samples());
     let object = serde_json::json!({
-        "schema": 1, "hostname": "travel", "username": "owner",
+        "schema": 1, "purpose": "computer", "hostname": "travel", "username": "owner",
         "full_name": "Owner", "locale": "en_US.UTF-8", "keyboard": "us",
         "timezone": "UTC", "filesystem": "btrfs",
         "prepared_setup": {

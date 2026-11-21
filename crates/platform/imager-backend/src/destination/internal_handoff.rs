@@ -76,7 +76,8 @@ pub mod tests {
             "target_extent": {"first_lba": TARGET.0, "last_lba": TARGET.1},
             "owned_boot_entry": "0104",
             "original_boot_order": ["0001", "0000"],
-            "profile": {"hostname": "studio", "username": "ada", "locale": "en_US.UTF-8",
+            "profile": {"schema": 1, "purpose": "computer",
+                        "hostname": "studio", "username": "ada", "locale": "en_US.UTF-8",
                         "keyboard": "de"},
         })
     }
