@@ -1153,7 +1153,7 @@ doc = false
 "termcolor-1_4_1" = { package = "termcolor", version = "^1.4.1", default-features = false, features = [] }
 "terminal" = { path = "../../../apps/terminal", default-features = false, features = ["default", "desktop", "samples"] }
 "test-http" = { path = "../../../crates/dev/test-http", default-features = false, features = [] }
-"test-server" = { path = "../../../crates/dev/test-server", default-features = false, features = [] }
+"test-server" = { path = "../../../crates/dev/test-server", default-features = false, features = ["questions"] }
 "themes" = { path = "../../../apps/themes", default-features = false, features = [] }
 "thin-vec-0_2_19" = { package = "thin-vec", version = "^0.2.19", default-features = false, features = ["default", "std"] }
 "thiserror-1_0_69" = { package = "thiserror", version = "^1.0.69", default-features = false, features = [] }
@@ -3844,7 +3844,7 @@ doc = false
 "termcolor-1_4_1" = { package = "termcolor", version = "^1.4.1", default-features = false, features = [] }
 "terminal" = { path = "../../../apps/terminal", default-features = false, features = ["default", "desktop", "samples"] }
 "test-http" = { path = "../../../crates/dev/test-http", default-features = false, features = [] }
-"test-server" = { path = "../../../crates/dev/test-server", default-features = false, features = [] }
+"test-server" = { path = "../../../crates/dev/test-server", default-features = false, features = ["questions"] }
 "themes" = { path = "../../../apps/themes", default-features = false, features = [] }
 "thin-vec-0_2_19" = { package = "thin-vec", version = "^0.2.19", default-features = false, features = ["default", "std"] }
 "thiserror-1_0_69" = { package = "thiserror", version = "^1.0.69", default-features = false, features = [] }
