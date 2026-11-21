@@ -171,7 +171,8 @@ say "2. this commit's stack on $to_base ($to_programs), handed the Lounge"
 mkdir -p "$work/to/secrets" "$work/to/server/lounge" "$work/to/owner"
 cp "$work/from/secrets/workspace-root-lounge" "$work/to/secrets/workspace-root-lounge"
 cp "$work/from/server/lounge/workspace-id" "$work/to/server/lounge/workspace-id"
-cp "$work/from/owner/key" "$work/to/owner/key"
+# The device that holds the person's identity: logging in there again (stack.sh does, with
+# --new-identity) signs it in to this commit's API under the same person.
 ln -s "$work/from/owner/home" "$work/to/owner/home"
 lounge=$(cat "$work/from/server/lounge/workspace-id")
 stack to up >"$steps/to-up.log" 2>&1 &
@@ -248,6 +249,7 @@ api from
 data write "$workspace" earlier >"$steps/written-from.json" 2>"$steps/write-from.err" \
   || fail '4d. the earlier server takes a write' "$(cat "$steps/write-from.err")"
 if [[ -s $steps/written-from.json ]]; then
+  api to
   if data expect "$workspace" "$steps/written-from.json" 120 >/dev/null 2>"$steps/from-to.err"; then
     pass '4d. a write on the earlier server reaches this commit'\''s'
   else
