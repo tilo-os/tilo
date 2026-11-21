@@ -1046,11 +1046,16 @@ impl StatePeer {
         }
         let devices: Vec<_> = governance.key_holders(now)?.into_iter().collect();
         let access = governance.access_of(&devices, now)?;
-        Ok(access.len() != devices.len()
-            || access.values().any(|member| {
-                self.check_read_as(member, (app, document), None, now)
-                    .is_err()
-            }))
+        Ok(devices.iter().any(|device| match access.get(device) {
+            Some(member) => self
+                .check_read_as(member, (app, document), None, now)
+                .is_err(),
+            // A holder the governance names to hold the workspace's keys reads
+            // what they seal because it is named so, not through a member's
+            // role. A server that takes no member's work, or no longer does,
+            // has no member access, and the workspace key reaches it by right.
+            None => governance.holder_role(device) != Some(super::CopyRole::KeyHolder),
+        }))
     }
 
     /// Validate the group bound into the signed encryption metadata. A
