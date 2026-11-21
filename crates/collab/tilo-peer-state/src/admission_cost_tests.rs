@@ -7,7 +7,7 @@ use crate::join::{
     verify_join_proof,
 };
 use ed25519_dalek::SigningKey;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 fn key(n: u32, salt: u8) -> SigningKey {
