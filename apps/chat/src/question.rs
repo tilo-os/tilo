@@ -67,6 +67,10 @@ pub const DROPPED: &str = "dropped";
 /// The outcome of an answer its asker could not carry out.
 pub const FAILED: &str = "failed";
 
+/// What [`Question::settle`] refuses while nobody answered the question: a copy of the
+/// conversation that has not taken in its person's answer yet says this too.
+pub const NOT_ANSWERED: &str = "nobody answered the question yet";
+
 /// The most answers one question offers.
 pub const MAX_ANSWERS: usize = 6;
 /// The longest label of an answer's button, in bytes.
@@ -439,7 +443,7 @@ impl Question {
             QuestionState::Settled(..) => {
                 return Err(Refusal::new("what came of the answer is already said"));
             }
-            QuestionState::Waiting => return Err(Refusal::new("nobody answered the question yet")),
+            QuestionState::Waiting => return Err(Refusal::new(NOT_ANSWERED)),
             QuestionState::Withdrawn(_) => return Err(Refusal::new("the question was taken back")),
         }
         let detail = detail.unwrap_or_default().trim().to_owned();

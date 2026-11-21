@@ -903,32 +903,14 @@ impl Agents {
         (outcome, told): (&str, Option<String>),
     ) -> Result<(), String> {
         let holder = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
-        let route = DocumentRoute {
-            app_id: CHAT.to_owned(),
-            cluster_id: workspace.to_owned(),
-            document: found.document.clone(),
-        };
-        let mut arguments = Map::new();
-        arguments.insert("message".into(), json!(found.message));
-        arguments.insert("outcome".into(), json!(outcome));
-        if let Some(told) = told {
-            arguments.insert("detail".into(), json!(told));
-        }
-        let resource = format!(
-            "{}/messages/{}",
-            chat::parts::ChatMessages::KIND,
-            found.message
-        );
-        invoke_named(
-            &holder,
-            asker,
-            &route,
-            &resource,
-            "settle-question",
-            arguments,
+        super::vault_uses::settle(
+            (&holder, asker),
+            workspace,
+            (found.document.as_str(), found.message.as_str()),
+            outcome,
+            told,
         )
         .await
-        .map(drop)
     }
 
     /// Carry out `answer`, the person's own, to the question `found` names:

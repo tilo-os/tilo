@@ -45,6 +45,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chat::question::QuestionState::{Answered, Settled, Waiting, Withdrawn};
 use serde::{Deserialize, Serialize};
@@ -64,8 +65,8 @@ use zeroize::Zeroizing;
 use super::calendar_connect::{PutAsk, Typed, ask_for_password};
 use super::turn_provider::{Ending, Rows};
 use super::{
-    Ask, CHAT, Reply, ServerAgents, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
-    invoke_named,
+    Ask, CHAT, Reply, ServerAgents, Turn, TurnProvider, WRITE_WAIT, WorkspaceActionProvider,
+    WorkspaceId, invoke_named, later,
 };
 use crate::hosted_browser::{Release, Releasing, TurnFill};
 use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnRelease, TurnUse, UseAnswer};
@@ -686,16 +687,31 @@ pub(super) async fn settle(
         arguments.insert("detail".into(), json!(told));
     }
     let resource = format!("{}/messages/{message}", chat::parts::ChatMessages::KIND);
-    invoke_named(
-        service,
-        asker,
-        &route,
-        &resource,
-        "settle-question",
-        arguments,
-    )
-    .await
-    .map(drop)
+    // The answer was read from the workspace's own copy of the conversation, and the write goes
+    // to the copy its asker acts on, which takes the person's answer in a moment later: until it
+    // holds it, it refuses the settle as unanswered, and the settle is asked again.
+    let deadline = later(WRITE_WAIT);
+    let mut pause = Duration::from_millis(20);
+    loop {
+        let settled = invoke_named(
+            service,
+            asker,
+            &route,
+            &resource,
+            "settle-question",
+            arguments.clone(),
+        )
+        .await;
+        match settled {
+            Err(error)
+                if error.contains(chat::question::NOT_ANSWERED) && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(pause).await;
+                pause = (pause * 2).min(Duration::from_millis(500));
+            }
+            settled => return settled.map(drop),
+        }
+    }
 }
 
 /// An answered question about a use, and who asked it.
