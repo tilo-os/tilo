@@ -103,14 +103,14 @@ pub fn serve(stream: UnixStream, tester: &dyn AccountTester) {
     let mut nextcloud: Option<account_credentials::nextcloud::LoginFlow> = None;
     loop {
         let reply = match read_line(&mut reader) {
-            Ok(None) => return,
             Ok(Some(line)) => match serde_json::from_slice::<Request>(&line) {
                 Ok(request) => answer(request, tester, &mut nextcloud),
                 Err(_) => Reply::Failed {
                     message: "Settings asked something the session does not understand".into(),
                 },
             },
-            Err(_) => return,
+            // The connection closed, or what it sent cannot be read: nothing more is asked.
+            Ok(None) | Err(_) => return,
         };
         if write_line(&mut writing, &reply).is_err() {
             return;
@@ -246,6 +246,7 @@ impl Connection {
              and try again"
                 .to_owned()
         })?;
+        drop(stream);
         serde_json::from_slice(&line)
             .map_err(|_| "the session answered something Settings does not understand".to_owned())
     }
