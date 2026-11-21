@@ -1,4 +1,4 @@
-//! Actual Text color-cache regression for main's drawn_color input.
+//! Text's color cache follows the color it was drawn with.
 use super::*;
 fn draw_current(text: &mut Text, renderer: &mut TextRenderer, theme: &Theme) -> Scene {
     text.apply_layout_external(vello::kurbo::Rect::new(10.0, 20.0, 810.0, 120.0));

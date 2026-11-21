@@ -54,7 +54,7 @@ pub enum FloatingSurfaceProtocolSource {
 #[serde(rename_all = "snake_case")]
 /// Roles are additive wire values: an older peer refuses an unknown role;
 /// it must never reinterpret interactive content as a capture mirror. Adding
-/// a role preserves the existing framing, geometry, and legacy role values.
+/// a role keeps the existing framing, geometry, and the values of every existing role.
 pub enum FloatingSurfaceProtocolRole {
     PictureInPicture,
     ActiveCall,
@@ -149,7 +149,7 @@ pub enum FloatingSurfaceClientMessage {
         rect: [f64; 4],
         /// Shared placement/hit geometry inside that transparent window.
         content_rect: [f64; 4],
-        /// Interactive frame excluding shadow; absent means legacy window input.
+        /// Interactive frame excluding shadow; absent means the whole window takes input.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input_rect: Option<[f64; 4]>,
     },

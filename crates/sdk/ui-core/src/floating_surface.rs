@@ -453,7 +453,7 @@ pub struct FloatingSurfacePresentation {
     pub content_rect: Rect,
     pub window_rect: Rect,
     /// Includes interactive chrome, not just media; excludes shadow.
-    /// `None` preserves legacy whole-window hit testing.
+    /// `None`: the whole window is hit-tested.
     pub input_rect: Option<Rect>,
     /// The pointer crossed back into the parent app, but the shell still owns
     /// the visible pixels until it acknowledges suspension. Keeping this

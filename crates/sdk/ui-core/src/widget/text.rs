@@ -2287,8 +2287,8 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "text/main_compatibility_tests.rs"]
-mod main_compatibility_tests;
+#[path = "text/drawn_color_cache_tests.rs"]
+mod drawn_color_cache_tests;
 
 mod component;
 pub use component::TextProps;
