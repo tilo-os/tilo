@@ -13,27 +13,42 @@ use tilo_server_session::ServerClient;
 use super::Task;
 use tilo_server_protocol::WorkspaceId;
 
+/// What a message waits for before the host session carries it: the workspace
+/// whose transport carries the group it speaks for.
+struct Waiting {
+    workspace: WorkspaceId,
+    message: neighbour_wire::NeighbourMsg,
+}
+
 /// The channels' workspace transport over the host session: what they say
-/// waits here for the session to send it, newest per workspace, until the host
-/// admitted the session to its workspace.
+/// waits here for the session to send it, newest per group, until the host
+/// admitted the session to the workspace that carries the group.
 #[derive(Default)]
 pub(super) struct HostGovernance {
     pub(super) inbound: Mutex<Vec<tilo_workspace_keys::InboundGovernance>>,
-    outbound: Mutex<BTreeMap<WorkspaceId, neighbour_wire::NeighbourMsg>>,
+    outbound: Mutex<BTreeMap<WorkspaceId, Waiting>>,
 }
 
 impl HostGovernance {
-    /// What waits for the workspaces `admitted` names.
+    /// What waits for the workspaces `admitted` names, each with the workspace
+    /// whose transport carries it: the message's own group for the workspace's
+    /// group, the workspace's for a document's or a reader set's.
     pub(super) fn take_for(
         &self,
         admitted: impl Fn(WorkspaceId) -> bool,
     ) -> Vec<(WorkspaceId, neighbour_wire::NeighbourMsg)> {
         let outbound = std::mem::take(&mut *self.outbound.lock_recover());
-        let (due, waiting): (BTreeMap<_, _>, BTreeMap<_, _>) = outbound
-            .into_iter()
-            .partition(|(workspace_id, _)| admitted(*workspace_id));
+        let mut due = Vec::new();
+        let mut waiting = BTreeMap::new();
+        for (group, entry) in outbound {
+            if admitted(entry.workspace) {
+                due.push((entry.workspace, entry.message));
+            } else {
+                waiting.insert(group, entry);
+            }
+        }
         self.outbound.lock_recover().extend(waiting);
-        due.into_iter().collect()
+        due
     }
 }
 
@@ -44,8 +59,18 @@ impl tilo_workspace_keys::GovernanceTransport for HostGovernance {
         let NeighbourMsg::MlsAccessRequest { request, .. } = &message else {
             return false;
         };
-        let workspace_id = request.workspace;
-        self.outbound.lock_recover().insert(workspace_id, message);
+        // The group a request is for is not always the workspace that carries
+        // it: a document's or a reader set's group asks on its workspace's
+        // transport, and the host takes it there. A page is admitted to the
+        // workspace, never to the group, so a request kept until the group is
+        // sent would never leave.
+        let Some(workspace) = message.governance_workspace().and_then(WorkspaceId::parse) else {
+            return false;
+        };
+        let group = request.workspace;
+        self.outbound
+            .lock_recover()
+            .insert(group, Waiting { workspace, message });
         true
     }
 
@@ -103,5 +128,75 @@ impl Task {
             }
         }
         delivered
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use collab_types::{Ed25519PublicKey, MlsAccessRequestV1};
+    use neighbour_wire::{KeyScope, NeighbourMsg};
+    use tilo_server_protocol::WorkspaceId;
+
+    /// A device asking for the keys of `scope`.
+    fn asking(scope: &KeyScope) -> NeighbourMsg {
+        NeighbourMsg::MlsAccessRequest {
+            workspace: scope.to_string(),
+            request: Box::new(MlsAccessRequestV1::unsigned(
+                scope.group(),
+                Ed25519PublicKey::from_bytes([7; 32]),
+                vec![1, 2, 3],
+                1,
+            )),
+            delivery: 0,
+        }
+    }
+
+    /// A document's group asks on the transport of the workspace that carries it. A page is
+    /// admitted to the workspace and never to the group, so a request kept for the group is kept
+    /// forever: it goes once the workspace is admitted, and names the workspace, which is the
+    /// transport the host takes the request on.
+    #[test]
+    fn a_documents_group_asks_on_the_workspace_that_carries_it() {
+        let workspace = WorkspaceId::new();
+        let scope = KeyScope::document(workspace, "so.tilo.mail", "uuid:mailbox", None).unwrap();
+        let request = asking(&scope);
+        let governance = HostGovernance::default();
+        assert!(tilo_workspace_keys::GovernanceTransport::publish(
+            &governance, request
+        ));
+
+        // The page is not in the workspace yet: the request waits, and no other workspace's
+        // admission hands it over.
+        assert!(governance.take_for(|_| false).is_empty());
+        let elsewhere = WorkspaceId::new();
+        assert!(governance.take_for(|id| id == elsewhere).is_empty());
+
+        // Admitted to the workspace that carries the document, it goes there at once.
+        let sent = governance.take_for(|id| id == workspace);
+        let [(carrier, message)] = sent.as_slice() else {
+            panic!("one request goes");
+        };
+        assert_eq!(*carrier, workspace, "it rides the workspace's transport");
+        let NeighbourMsg::MlsAccessRequest { request: sent, .. } = message else {
+            panic!("an access request goes");
+        };
+        assert_eq!(sent.workspace, scope.group(), "for the document's group");
+    }
+
+    /// The workspace's own group still asks where it always did.
+    #[test]
+    fn a_workspaces_group_asks_on_its_own_transport() {
+        let workspace = WorkspaceId::new();
+        let scope = KeyScope::Workspace(workspace);
+        let request = asking(&scope);
+        let governance = HostGovernance::default();
+        assert!(tilo_workspace_keys::GovernanceTransport::publish(
+            &governance, request
+        ));
+        assert!(governance.take_for(|_| false).is_empty());
+        let sent = governance.take_for(|id| id == workspace);
+        assert_eq!(sent.len(), 1, "it goes once the workspace is admitted");
+        assert_eq!(sent[0].0, workspace);
     }
 }
