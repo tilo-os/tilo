@@ -177,7 +177,7 @@ jobs:
               ('tools/app_packaging_contract.py', 4099, 'f0a5862a39aca5fd0a61bd7915ca87c0915420989c056df3c64151ab9b70989b'),
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
               ('tools/ci/python.py', 4094, 'f203b780f78a8c5a0c0cd8a443439f927e4012f6f5a2d85fe580e284ecde1afa'),
-              ('tools/ci/resolve_builder.py', 8729, 'b1f1e38176b917e6f3ad8c35fdd34d4fa36c569b8deac80918d58698592236e6'),
+              ('tools/ci/resolve_builder.py', 8714, '1c9460830e205628e64181627e543237b7310502ffae0ed5f2ad80009e135cf1'),
               ('tools/ci/images.toml', 1502, '7dd643eec920e35e950f8ac427e17167cf455b34837710dea4ec21181132237f'),
           )
 
