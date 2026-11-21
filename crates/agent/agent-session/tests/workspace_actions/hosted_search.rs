@@ -1467,6 +1467,26 @@ async fn a_find_asks_what_its_caller_may_read_only_for_the_answers_it_returns() 
             .await;
         assert!(!failed, "{file}: {answered}");
     }
+    // An issue's write can land after it was answered, and a write landing lets go of what every
+    // caller was kept: the agent's finds are timed once the workspace took in every issue, when
+    // Ada's next find keeps what her last one was answered.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        served
+            .found(&workspace, &ada, ("grebe", &Within::default()))
+            .await;
+        let before = served.actions.search_permissions_read();
+        served
+            .found(&workspace, &ada, ("grebe", &Within::default()))
+            .await;
+        if served.actions.search_permissions_read() == before {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the workspace never took in the issues' writes"
+        );
+    }
     // An agent that may read everything pays for the answers it returns and keeps them: the
     // second find asks the workspace nothing.
     let mut reads = Vec::new();
