@@ -1,82 +1,59 @@
 <picture>
-
   <source media="(prefers-color-scheme: dark)" srcset="docs/brand/banner-dark.svg">
-  <img src="docs/brand/banner-light.svg" alt="Tilo — a desktop for doing things together." width="1200">
+  <img src="docs/brand/banner-light.svg" alt="Tilo" width="1200">
 </picture>
 
-[Website](https://tilo.so) · [Contribute](CONTRIBUTING.md) ·
-[Build an app](docs/app-development.md) ·
+**The open-source OS for people and agents.**
+
+[tilo.so](https://tilo.so) · [tilo.sh](https://tilo.sh) ·
+[Docs](https://docs.tilo.so) · [tilolang](https://tilolang.dev) ·
 [Source & issues](https://code.tilo.so/tilo/tilo)
 
-Tilo is a Linux desktop built around collaboration and around working across
-your own devices. You share a _workspace_ with someone and work together in
-every Tilo app, with full history, undo, search and sync between devices and
-people. You can add AI agents too, with their own permissions and history.
+Tilo is built around shared workspaces. All of your devices work as one computer, every app is multiplayer by default with full history and undo, and people and AI agents work together under the permissions you set.
 
-We build the desktop, the apps and the system underneath them together. Tilo
-is **early alpha**: expect things to break, and don't trust it with your only
-copy of important data.
+> ⚠️ **Early alpha:** Expect things to break. **Do not trust Tilo with your only copy of important data yet!**
 
-## How it works
+## Start here
 
-- **Workspaces are the unit of collaboration.** Each has its own members,
-  roles, apps, layout and data, and is on every device of every member.
-- **A workspace has one set of resources.** Files, mail, calendar, vault,
-  models and agents belong to the workspace, shared under the permissions its
-  owners set.
-- **One identity, and it controls your devices.** A member is an identity; each
-  of their devices has its own key, certified by that identity, and gets their
-  workspaces. Devices sync directly over iroh, end to end encrypted with MLS.
-- **Decentralized first.** A server is just a device that stores more; Tilo
-  needs none. [tilo.sh](https://tilo.sh) is our cloud offering.
-- **All shared state is CRDT.** Edits from several people and devices merge.
-- **Apps are resources, actions and views.** An app declares its typed state
-  and the actions that change it; collaboration, history and undo,
-  permissions, sync and search come from that. Scripts, assistive technology,
-  automations and agents use the same actions as the buttons, and when an agent
-  acts, every view of that resource shows it.
-- **Views compose.** Any resource can be shown again in another view, and a
-  new view can be written quickly in tilolang, also by an agent in a chat.
-- **The shell is a view.** Launcher, top bar and settings run on the same
-  toolkit and model as every other app, and you can customize it deeply. Windows sit in horizontally
-  scrolling strips; tabs can group different apps.
+- [**Hang out with us in the Lounge workspace**](https://tilo.sh)
+- **Give your agents a workspace:** open [tilo.sh](https://tilo.sh) → *New workspace* → *Setup with agent*
+- **Control Tilo from code:** use the [Python & TypeScript SDKs, MCP, or CLI](https://docs.tilo.so/agents-and-code/sdks)
+- **Build apps & generative UI:** learn [tilolang](https://tilolang.dev)
+- **Install [Tilo OS](https://tilo.so/os):** try it in a VM, add the desktop session to Linux, or follow the [install guide](docs/getting-started.md)
 
-The [architecture overview](docs/architecture/README.md) explains the model
-and where it lives in the code; [`workspace.md`](docs/architecture/workspace.md)
-is the full specification. The [apps directory](apps/README.md) lists the apps.
+## What you get
 
-## Try it
+- **Multiplayer for everything:** Invite people or AI agents into a workspace and work together live in notes, files, mail, calendar, terminal, or browser. You see what everyone is doing, decide what they can touch, and can undo any change.
+- **All your devices, one computer:** Your laptop, desktop, phone, and server sync directly peer-to-peer, end-to-end encrypted, with no account required. Pick up on your phone right where you left off on your laptop: files, photos, contacts, passwords, and open windows.
+- **Web access, your own NAS, or cloud:** Open [tilo.sh](https://tilo.sh) in any browser to reach your own devices without us hosting your data, deploy your own 24/7 Tilo Server/NAS, or add an optional cloud instance.
+- **Always-on agents you actually control:** Give agents a sandboxed workspace where they use the same apps you do (via MCP, Python/TypeScript SDKs, CLI, or `tilolang`). Watch what they do live, require approval before anything leaves your workspace, and undo any step in one click.
+- **Custom views and new apps in seconds:** Ask your agent to pull data and actions from any app into an interactive view right in chat, or build a brand-new native app in [tilolang](https://tilolang.dev) and share it to your workspace or publicly.
+- **Your desktop, your rules:** Ships with a scrolling window manager out of the box, and the entire shell is customizable. Want a 2D canvas, a classic desktop, Windows 95, or Liquid Glass? Switch looks or ask your agent to build one, and every app adapts.
+- **Zero-install native apps:** Search for any app and press Enter. Native apps weigh ~1–2 MB (built on **Tilo UI** and **tilolang**), open immediately without installing, and stay sandboxed. Pin the ones you want to keep.
+- **History and undo across apps and files:** Every edit in every app and in your synced files keeps its full history by author, so you can experiment freely and revert anything.
+- **One search for everything:** Find any file, note, email, book highlight, or external result from one search bar and jump straight to it.
+- **Accessible by design:** Every app exposes structured data and actions rather than opaque pixels, giving screen readers and assistive technology full access automatically.
+- **Native suite plus Linux & Windows apps:** Comes with ~40 native apps (office suite, notes, mail, calendar, browser, maps, photos, video editor, music, terminal), plus Flatpak Linux apps and Windows apps.
 
-There is no public release download yet. [Getting started](docs/getting-started.md)
-covers virtual machines, adding the desktop to an existing Linux system and
-installing the OS. From a checkout, one command runs it:
+## Get Tilo
 
-```sh
-cargo desktop     # the desktop in a window on your desktop
-cargo headless    # the session with no window, for agents and tests
-cargo web         # the web desktop on the local hosting stack
-```
+| Surface | What it is | How to get it |
+| --- | --- | --- |
+| **Web & Cloud** | Zero-install web client (P2P to your own devices) & optional cloud instances | Open [tilo.sh](https://tilo.sh) ([cloud docs](https://docs.tilo.so/cloud)) |
+| **Agents (MCP)** | Hosted MCP (`mcp.tilo.sh`) or local MCP | `claude mcp add --transport http tilo https://mcp.tilo.sh` ([MCP docs](https://docs.tilo.so/agents-and-code/mcp)) |
+| **SDKs** | `tilo-sdk` for Python & TypeScript | `uv add tilo-sdk` / `bun add tilo-sdk` ([SDK docs](https://docs.tilo.so/agents-and-code/sdks)) |
+| **CLI** | `tilo` command for workspaces, keys & actions | `curl -fsSL https://tilo.sh \| sh` ([quickstart](https://docs.tilo.so/quickstart)) |
+| **Desktop & OS** | Tilo Imager (AppImage, DMG, EXE), OS images & `tilo-session` Linux packages | [tilo.so/os](https://tilo.so/os) · [install guide](docs/getting-started.md) |
+| **Self-hosted server / NAS** | Tilo Server headless OS image | [server guide](https://docs.tilo.so/install/server) |
+| **Language & UI library** | `tilolang` & **Tilo UI** (`crates/sdk/ui-core`) | [tilolang.dev](https://tilolang.dev) · [architecture](docs/architecture/README.md) |
 
-[CONTRIBUTING.md](CONTRIBUTING.md#run-it) says what each needs and does.
+## Contribute
 
-## Help build it
+Code, bug reports, accessibility testing, translations, docs, and design feedback are all welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers building from source (`cargo desktop`, `cargo headless`, `cargo web`) and submitting a pull request.
 
-You don't need to understand the whole system to help, or even to program: bug
-reports, small fixes, accessibility testing, translations, documentation and
-design feedback all count. [CONTRIBUTING.md](CONTRIBUTING.md) takes you from a
-checkout to a pull request; [Build an app](docs/app-development.md) covers the
-app SDK.
-
-Our home is [code.tilo.so/tilo/tilo](https://code.tilo.so/tilo/tilo).
-[GitHub](https://github.com/tilo-os/tilo) is a mirror; please send issues and
-pull requests to Forgejo. People and coding agents are both welcome; if you
-use an agent, understand the change you submit and say what you tested.
-[AGENTS.md](AGENTS.md) is for the agent.
+Development happens on [code.tilo.so/tilo/tilo](https://code.tilo.so/tilo/tilo); [GitHub](https://github.com/tilo-os/tilo) is a mirror, so please open issues and pull requests on Forgejo. Coding agents are welcome too: understand what you submit and say what you tested ([AGENTS.md](AGENTS.md)).
 
 ## License and security
 
-Tilo is open source: everything you need to publish an app is MIT, the rest is
-AGPL 3.0. See [LICENSING.md](LICENSING.md).
-
-Please report vulnerabilities privately as described in
-[SECURITY.md](SECURITY.md), not in a public issue.
+Everything you need to build and publish an app is MIT; the rest is AGPL-3.0 ([LICENSING.md](LICENSING.md)).
+Report vulnerabilities privately per [SECURITY.md](SECURITY.md), not in a public issue.

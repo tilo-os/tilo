@@ -28,7 +28,7 @@ slug = ""
 source = "docs/tilo-sh/index.md"
 section = "Get started"
 nav = "Overview"
-description = "Workspaces for your agents and the people who check their work: what Tilo gives you and where to start."
+description = "Shared workspaces for your devices, your team, and your AI agents: what Tilo gives you and where to start."
 
 [[page]]
 slug = "quickstart"

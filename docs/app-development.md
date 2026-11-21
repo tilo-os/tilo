@@ -1,12 +1,17 @@
 # Build a Tilo app
 
-A Tilo app is a Rust crate on the `tilo-app` SDK. It declares its state as a
-typed resource, the changes it allows as actions, and views bound to both.
-From that the framework provides storage, sync between devices and people,
-history and per-author undo, permissions, search, the command palette, and the
-interface scripts and agents use to drive the app without the screen. The same
-source runs on Tilo, other Linux desktops, macOS, Windows, Android and the
-web.
+Most Tilo apps and custom views are written in **[tilolang](https://tilolang.dev)**
+([language overview](designs/app-language/README.md)), which compiles to sandboxed
+WebAssembly and renders natively with **Tilo UI**.
+
+When you need Rust (for example, wrapping a native library or embedding a custom
+renderer), you can also build an app directly on the `tilo-app` Rust SDK and Tilo UI.
+Both use the same model: declare your state as a typed resource, the changes it
+allows as actions, and views bound to both. From that the system provides storage,
+sync between devices and people, history and per-author undo, permissions, search,
+the command palette, and the interface scripts and agents use to drive the app
+without the screen. The same source works on Tilo, other Linux desktops, macOS,
+Windows, Android, and the web (iOS not yet).
 
 Tilo is in alpha: the SDK changes often. An app builds against the exact SDK
 revision its `Cargo.lock` pins, so it keeps building while the SDK moves on.

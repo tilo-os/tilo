@@ -115,6 +115,5 @@ its history.
 
 - [Workspaces](workspaces.md) and [resources and actions](resources-and-actions.md): the two ideas the
   rest builds on.
-- [One workspace per customer](../developers/one-workspace-per-customer.md): a workspace and a key per
-  customer, for your backend.
+- [Approvals](approvals.md) and [the hosted Browser](hosted-browser.md): human-in-the-loop actions.
 - [Identities and keys](identities.md#keys): what a key reaches, and how to narrow it.

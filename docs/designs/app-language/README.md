@@ -287,3 +287,4 @@ state, a function or a view (`template.rs`).
 | The shell | shell.md |
 | Language changes found by writing the apps | language-changes.md |
 | Chat | chat.md |
+| Developing, publishing and zero-install use | publishing.md |
