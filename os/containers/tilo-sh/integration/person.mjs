@@ -229,8 +229,12 @@ if (pairLink) {
 }
 
 if (rootFile) {
-  // The person this page is, opened elsewhere: the page's own identity module
-  // makes a recovery key for them and keeps the envelope that goes with it.
+  // The person this browser is, opened elsewhere. The page a workspace is
+  // served as holds no identity of its own, so this is the site's sign-in
+  // page: its own module makes a recovery key and keeps the envelope.
+  await tab.navigate(new URL('sign-in', site).href);
+  await until(`!!document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]')`,
+    'the site\'s sign-in page loading', stepLimit(2));
   const held = await tab.evaluate(`(async () => {
     // The page's modules live under the build's own version directory
     // (/v/<hash>/), which its preload hints name: the identity module is one
