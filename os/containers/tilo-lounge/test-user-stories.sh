@@ -18,7 +18,10 @@
 # link in it relative to WORK.
 #
 # A shell story needs the session build TILO_NESTED_SESSION_BUILD names
-# (dist/dev/nested-session-build.sh's) and ffmpeg for the videos. A page story
+# (dist/dev/nested-session-build.sh's) and ffmpeg for the videos. A story that
+# names `servers` meets a server this script starts beside it as root (podman),
+# so it runs in a VM, and its driver reads the server's own state as another
+# client would. A page story
 # needs node, chromium, curl, bwrap, ffmpeg, the stack's environment
 # (TILO_SH_PROGRAMS, TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY naming what t
 # built) and TILO_CLI_BIN. A story marked `"stack": false` needs none of the
@@ -45,6 +48,8 @@ done
 mkdir -p "$work"
 # How a story is walked: `shell`, `page` or `mount`.
 walk_of() { python3 -I -c 'import json, sys; print(next(s for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2])["walk"])' "$stories/stories.json" "$1"; }
+# The servers a story's people meet that this check starts itself (`servers`), if any.
+servers_of() { python3 -I -c 'import json, sys; print(next(s for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2]).get("servers", ""))' "$stories/stories.json" "$1"; }
 # Whether a story is walked on a stack of its own: every page story but those marked `"stack": false`.
 on_stack() { python3 -I -c 'import json, sys; s = next(s for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2]); sys.exit(0 if s["walk"] == "page" and s.get("stack", True) else 1)' "$stories/stories.json" "$1"; }
 stacked=0
@@ -149,6 +154,58 @@ fcntl.ioctl(sock, SIOCSIFFLAGS, struct.pack("16sH", b"lo", flags | IFF_UP))
 }
 
 red=()
+# The servers a story's people meet, started beside it and stopped after it: a
+# story marked `servers` meets a real Nextcloud (servers.sh's, seeded with the
+# person's files, calendars and a second person an invitation can name). podman
+# starts the containers as root, which is why these stories run in the check's
+# VM; nothing of them is left behind.
+servers_sh=$repo/crates/system/cloud-source-dav/tests/servers.sh
+serving=
+stop_servers() {
+  [[ -z $serving ]] || bash "$servers_sh" stop > /dev/null 2>&1 || true
+  serving=
+}
+trap stop_servers EXIT
+# What a story whose servers never came up is: not tested, never a person
+# meeting a broken Tilo, and the check fails.
+untested() {
+  local story=$1 why=$2 out=$3
+  python3 -I -c 'import json, sys, datetime
+json.dump({"id": sys.argv[1], "at": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "seconds": 0, "completed": False, "withinBudget": False, "brokeAt": None,
+           "untested": sys.argv[2], "steps": [], "timings": {}, "videos": []}, open(sys.argv[3], "w"))' \
+    "$story" "$why" "$out/story.json"
+  echo "NOT TESTED $story: $why"
+}
+start_servers() {
+  local story=$1 out=$2 servers=$3 started seeded
+  [[ $servers == nextcloud ]] || return 0
+  if [[ $EUID != 0 ]]; then
+    untested "$story" "its Nextcloud starts containers as root, which a sandbox job refuses" "$out"
+    return 1
+  fi
+  # A micro-VM has no systemd: podman manages cgroups itself and logs events to
+  # a file, as the cloud conformance suite's servers layer does.
+  mkdir -p /etc/containers/containers.conf.d
+  printf '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"\n' \
+    > /etc/containers/containers.conf.d/50-micro-vm.conf
+  if ! command -v podman > /dev/null; then
+    untested "$story" "podman, which starts its Nextcloud, is not installed (the check's setup installs it)" "$out"
+    return 1
+  fi
+  started=$(bash "$servers_sh" start) || {
+    untested "$story" "its Nextcloud and its database did not start (the log above says why)" "$out"
+    return 1
+  }
+  eval "$started"
+  serving=1
+  seeded=$(bash "$servers_sh" seed) || {
+    untested "$story" "its Nextcloud could not be given the person's files and calendars (the log above says why)" "$out"
+    return 1
+  }
+  eval "$seeded"
+}
+
 for story in "${asked[@]}"; do
   out=$work/$story
   rm -rf "$out"
@@ -156,14 +213,17 @@ for story in "${asked[@]}"; do
   driver=$(python3 -I -c 'import json, sys; print(next(s["driver"] for s in json.load(open(sys.argv[1]))["stories"] if s["id"] == sys.argv[2]))' "$stories/stories.json" "$story")
   { read -r TILO_SH_ADMISSION; read -r TILO_SH_MAIL_STAND_IN; read -r private_network; } < <(stacks_for_story "$story")
   export TILO_SH_ADMISSION TILO_SH_MAIL_STAND_IN private_network
+  status=0
+  if ! start_servers "$story" "$out" "$(servers_of "$story")"; then
+    red+=("$story")
+    continue
+  fi
   if [[ $(walk_of "$story") == shell ]]; then
     # Each person a headless Tilo session of their own, on a scratch home of its own; the
     # driver keeps what a person reads the story by and removes the sessions' state.
-    status=0
     PYTHONDONTWRITEBYTECODE=1 python3 "$stories/$driver" "$out" 2>&1 | tee "$out/driver.log" || status=$?
   elif ! on_stack "$story"; then
     # A story with no stack walks what it drives itself (its driver says what).
-    status=0
     node "$stories/$driver" "" "$out" 2>&1 | tee "$out/driver.log" || status=$?
   else
     # A stack of the story's own, fresh, its state beside the recording, and,
@@ -189,6 +249,13 @@ for story in "${asked[@]}"; do
     mkdir -p "$out/logs"
     cp "$out/state"/logs/*.log "$out/logs/" 2>/dev/null || true
     rm -rf "$out/state"
+  fi
+  if [[ -n $serving ]]; then
+    # What the Nextcloud said while the story was walked stays with the
+    # recording: a person meeting it is the one thing no shell log holds.
+    mkdir -p "$out/logs"
+    podman logs tilo-cloud-conformance-nextcloud > "$out/logs/nextcloud.log" 2>&1 || true
+    stop_servers
   fi
   python3 -I "$stories/judge.py" "$out" || echo "FAIL: $story: the judge did not answer"
   # The model's verdict: 1 accepted (or nothing on screen to judge), 0 rejected, 2 no model

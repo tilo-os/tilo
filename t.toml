@@ -3234,6 +3234,9 @@ name = "nested-session"
 egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
 needs = ["image-env-runtime-dev-tree-x86_64"]
+# The build's own default app set, and Calendar: a user story walks a person connecting their
+# calendar in it (stories/shell/calendar-invite.py), and a session installs only the apps its
+# build carries.
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees" }
 requires = ["arch=x86_64"]
 outputs = ["/target/nested-session/**"]
@@ -6786,70 +6789,42 @@ story = ["wait-list-sign-up", "mail-password", "invited-activity", "desktop-easy
 # Tilo session of their own, on the session the nested-session check built with the tree's apps, on
 # scratch homes (stories/shell/story.py). Each step is driven through the shell's own actions,
 # pointer and keys, decided by reading the shells' own state, timed against its budget and
-# snapshotted; each person's snapshots become their video. The page and recording:
-# `t outputs user-stories-shell/<story> --to DIR`, DIR/<story>/index.html. No secret is needed: the
-# judge looks only where the check holds ANTHROPIC_API_KEY, and a story whose steps pass is
-# otherwise "passed, not judged", never red for that alone.
+# snapshotted; each person's snapshots become their video. A story that meets a server (`servers`)
+# starts it here first, as root, and reads its state beside the person's (test-user-stories.sh):
+# the Nextcloud one story connects to over WebDAV and CalDAV is the conformance suite's own image,
+# which is why this check needs a VM and /dev/fuse (its account folders are FUSE mounts). The page
+# and recording: `t outputs user-stories-shell/<story> --to DIR`, DIR/<story>/index.html. No secret
+# is needed: the judge looks only where the check holds ANTHROPIC_API_KEY, and a story whose steps
+# pass is otherwise "passed, not judged", never red for that alone.
 [[check]]
 name = "user-stories-shell/{story}"
 on = ["schedule:0 6 * * *", "dispatch", "idle"]
-# The pinned assets the test environment fetches, and the judge's model where it has a key.
-egress = { to = ["code.tilo.so:443", "api.anthropic.com:443"] }
+# The pinned assets the test environment fetches, and the judge's model where it has a key. Not
+# pinned beside them: a story meeting its own server pulls that server's image (the conformance
+# Nextcloud and PostgreSQL) as it starts, and a registry's hosts are no fixed list. The walk
+# itself meets only its own loopback.
+egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/test-env.sh bash os/containers/tilo-lounge/test-user-stories.sh /target/user-stories-shell/{story} {story}"
 needs = ["nested-session", "lounge-check-cli"]
-# ffmpeg encodes each person's video. Not pinned: dnf installs the newest builds Fedora's updates
-# repository holds, and pip the newest Anthropic SDK, from hosts no fixed list names.
-setup = { run = "dnf install -y --setopt=install_weak_deps=False ffmpeg-free python3-pip && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }
+# ffmpeg encodes each person's video, and podman starts the Nextcloud a story's people meet. Not
+# pinned: dnf installs the newest builds Fedora's updates repository holds, and pip the newest
+# Anthropic SDK, from hosts no fixed list names.
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman ffmpeg-free python3-pip && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }
 # The session's apps read no NTFS image, whose set takes a minute to build. A story's people run
 # the `tilo` command against their own desktop, at the socket it serves its person's programs on
 # (the desktop API): it is the release the page stories drive, built once for them.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo" }
-requires = ["arch=x86_64"]
+# The account folders a cloud story's person sees are FUSE mounts.
+requires = ["/dev/fuse", "arch=x86_64"]
 isolation = "vm"
 cache = false
 # The story's page, its snapshots, videos and verdict, and each session's log. A red story keeps
 # them too: the recording is what says why.
 outputs = ["/target/user-stories-shell/{story}/index.html", "/target/user-stories-shell/{story}/{story}/**"]
 evidence = ["/target/user-stories-shell/{story}/index.html", "/target/user-stories-shell/{story}/{story}/**"]
-timeout_secs = 2400
+timeout_secs = 3000
 [check.matrix]
-story = ["invite-live", "agent-mcp", "second-device", "files-in"]
-
-# The user stories whose people meet a server of their own: a Nextcloud that
-# serves a person's files over WebDAV and their calendar over CalDAV. Each
-# story walks on a fresh stack of its own, in fresh browser profiles, every
-# step recorded and held to its budget as the other stories' are; the
-# difference is the real Nextcloud image (crates/system/cloud-source-dav/tests/
-# servers.sh, seeded with the person's files, calendars and a second person to
-# invite) on the check's own loopback.
-#
-# A VM, not a nested sandbox: podman starts the Nextcloud and PostgreSQL
-# containers as root, which a job's sandbox refuses, and the story's people
-# still run as an unprivileged user beside them (cloud-stories-in-vm.sh), as
-# the stack's checks do in theirs.
-[[check]]
-name = "user-stories-cloud/{story}"
-on = ["schedule:0 6 * * *", "dispatch"]
-# dnf, podman's image pulls and the judge's model: no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash os/containers/tilo-lounge/cloud-stories-in-vm.sh /target/user-stories/{story} {story}"
-needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
-# Its setup is not pinned, as the stories' is not; podman is what starts the
-# servers, and ffmpeg the people's recordings.
-setup = { run = "dnf install -y --setopt=install_weak_deps=False podman python3-httpx python3-pip openssl ffmpeg-free && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }
-# The judge reads ANTHROPIC_API_KEY, as every story's does; without it a story
-# whose steps pass is "passed, not judged".
-env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_VM_HOST = "0" }
-requires = ["arch=x86_64"]
-isolation = "vm"
-cache = false
-# The story's page, its recording and verdict, the stack's logs, and what the
-# Nextcloud beside it said. A red story keeps them too.
-outputs = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
-evidence = ["/target/user-stories/{story}/index.html", "/target/user-stories/{story}/{story}/**"]
-timeout_secs = 3600
-[check.matrix]
-story = ["calendar-invite", "nextcloud-files"]
+story = ["invite-live", "agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files"]
 
 # The big-folder user story: a person copies a photo library and a few long videos into their
 # workspace through its mounted folder, browses it, joins from a second computer and restarts the
