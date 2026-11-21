@@ -13,9 +13,15 @@
 //! whole and in order up to [`MAX_OUTPUT`], with how the command ended and, when the host
 //! refused it a VM, the host's typed refusal. A caller passing [`Seen`] is shown output as it
 //! grows, and [`Stopping`] ends a command as Ctrl+C does, in the shell and in the VM.
+//!
+//! The same session's shell also runs interactively on a pseudo-terminal
+//! ([`WorkspaceShells::interactive`]): it prompts and edits lines on the terminal, and its
+//! programs run on a terminal in the VM, so editors, prompts and `claude` work as on a device.
+//! [`crate::environment_terminals`] carries that terminal to a person's device.
 
 use std::collections::HashMap;
 use std::io;
+use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -29,7 +35,7 @@ use ush_tilo::{Acted, Environment, Keeping, NativeFiles, NoPrograms, Place, Prog
 
 use crate::content::EnvironmentContent;
 use crate::file_actions::{FileAction, Recoverable};
-use crate::hosted_vm::{HostedPrograms, HostedTarget, shares_of};
+use crate::hosted_vm::{HostedPrograms, HostedTarget, TerminalSlot, shares_of};
 use crate::machine_programs::MachinePrograms;
 use crate::policy::Policy;
 
@@ -65,7 +71,7 @@ pub struct WorkspaceShells {
     /// The hosted-VM service the workspaces' Browser starts on, when it is
     /// not the one the environment names.
     browsers: Option<PathBuf>,
-    sessions: Mutex<HashMap<(String, String), Shared>>,
+    sessions: Arc<Mutex<HashMap<(String, String), Shared>>>,
 }
 
 type FilesOf = dyn Fn(&str) -> PathBuf + Send + Sync;
@@ -98,6 +104,35 @@ struct Session {
     notices: ush_shell::io::Captured,
     refused: Arc<Mutex<Option<Refusal>>>,
     stopped: Arc<AtomicBool>,
+    /// The terminal the shell is on while it runs interactively; its programs and its line
+    /// editor find it here.
+    terminal: TerminalSlot,
+}
+
+/// A session's shell running interactively on a terminal ([`WorkspaceShells::interactive`]).
+pub struct Interactive {
+    stopped: Arc<AtomicBool>,
+    done: std::thread::JoinHandle<i32>,
+}
+
+impl Interactive {
+    /// Ctrl+C for what the shell runs itself (a loop, `sleep`, a wait on the hosts): a
+    /// terminal in cooked mode turns the key into a signal, and this shell's terminal is no
+    /// process's controlling one, so its holder tells the shell here.
+    pub fn interrupt(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.done.is_finished()
+    }
+
+    /// Wait for the shell to end, answering its exit status.
+    #[must_use]
+    pub fn wait(self) -> i32 {
+        self.done.join().unwrap_or(1)
+    }
 }
 
 impl WorkspaceShells {
@@ -109,7 +144,7 @@ impl WorkspaceShells {
             vms,
             on_machine: false,
             browsers: None,
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Arc::default(),
         }
     }
 
@@ -234,6 +269,51 @@ impl WorkspaceShells {
         Ok(session.run(command, agent, stopping, seen))
     }
 
+    /// Run `workspace`'s Terminal session `session` interactively on the pseudo-terminal whose
+    /// slave is `terminal`, until the shell exits or the terminal hangs up (its master closed).
+    /// It is the shell [`Self::run_for`] runs commands in, kept by the same session, paid for
+    /// by `payer` the same way; `runs_key` marks its runs for Terminal ([`ush_shell::Session`]).
+    /// The session ends with the shell: a later run starts a new one.
+    ///
+    /// # Errors
+    ///
+    /// The workspace's directory could not be made, or the terminal could not be shared.
+    pub fn interactive(
+        &self,
+        workspace: &str,
+        session: &str,
+        payer: Option<&Payer>,
+        terminal: OwnedFd,
+        runs_key: Option<String>,
+    ) -> io::Result<Interactive> {
+        let key = (workspace.to_owned(), session.to_owned());
+        let shared = self.session(workspace, session, payer)?;
+        let stopped = Arc::clone(&shared.lock().unwrap_or_else(PoisonError::into_inner).stopped);
+        let io = Stdio {
+            stdin: ush_shell::Input::host(std::fs::File::from(terminal.try_clone()?)),
+            stdout: Output::host(ush_shell::Std::Out, std::fs::File::from(terminal.try_clone()?)),
+            stderr: Output::host(ush_shell::Std::Err, std::fs::File::from(terminal.try_clone()?)),
+        };
+        let sessions = Arc::clone(&self.sessions);
+        let done = std::thread::Builder::new()
+            .name("workspace-shell".into())
+            .spawn(move || {
+                let status = {
+                    let mut session = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                    session.interactive(terminal, io, runs_key)
+                };
+                let mut sessions = sessions.lock().unwrap_or_else(PoisonError::into_inner);
+                if sessions
+                    .get(&key)
+                    .is_some_and(|kept| Arc::ptr_eq(kept, &shared))
+                {
+                    sessions.remove(&key);
+                }
+                status
+            })?;
+        Ok(Interactive { stopped, done })
+    }
+
     fn session(&self, workspace: &str, session: &str, payer: Option<&Payer>) -> io::Result<Shared> {
         let key = (workspace.to_owned(), session.to_owned());
         let open = self
@@ -317,6 +397,7 @@ impl WorkspaceShells {
             content: EnvironmentContent::at(root.join("content")),
         });
         let refused = Arc::new(Mutex::new(None));
+        let terminal = TerminalSlot::default();
         let programs: Arc<dyn Programs> = match target {
             Some(target) => {
                 let shared = files.clone();
@@ -327,7 +408,8 @@ impl WorkspaceShells {
                         ENVIRONMENT.to_owned(),
                         Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
                     )
-                    .reporting_refusals(Arc::clone(&refused)),
+                    .reporting_refusals(Arc::clone(&refused))
+                    .on_terminal_of(Arc::clone(&terminal)),
                 )
             }
             None if programs_here => Arc::new(MachinePrograms),
@@ -341,6 +423,8 @@ impl WorkspaceShells {
             programs,
             Arc::new(HostPlace {
                 stopped: Arc::clone(&stopped),
+                terminal: Arc::clone(&terminal),
+                cooked: Mutex::new(None),
             }),
             notices_out,
         );
@@ -359,11 +443,26 @@ impl WorkspaceShells {
             notices,
             refused,
             stopped,
+            terminal,
         })
     }
 }
 
 impl Session {
+    fn interactive(&mut self, terminal: OwnedFd, io: Stdio, runs_key: Option<String>) -> i32 {
+        let slot = || self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
+        *slot() = Some(terminal);
+        self.stopped.store(false, Ordering::SeqCst);
+        self.shell.set_stdio(io);
+        self.shell.set_render(Render::Text);
+        // The terminal is a real one now: programs may draw on it.
+        self.shell.set_var("TERM", TERMINAL);
+        let status = self.shell.interactive(&ush_shell::Session { runs_key });
+        self.shell.set_stdio(Stdio::null());
+        *slot() = None;
+        status
+    }
+
     fn run(
         &mut self,
         command: &str,
@@ -517,7 +616,12 @@ impl Environment for Files {
 
 struct HostPlace {
     stopped: Arc<AtomicBool>,
+    terminal: TerminalSlot,
+    cooked: Mutex<Option<libc::termios>>,
 }
+
+/// What a session's interactive terminal says it is: Terminal's emulator.
+const TERMINAL: &str = "xterm-256color";
 
 impl Place for HostPlace {
     fn interrupted(&self) -> bool {
@@ -551,6 +655,20 @@ impl Place for HostPlace {
 
     fn hostname(&self) -> String {
         "tilo".to_owned()
+    }
+
+    fn edit_mode(&self, on: bool) -> bool {
+        let terminal = self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
+        terminal
+            .as_ref()
+            .is_some_and(|fd| crate::tilo_side::edit_mode(fd.as_raw_fd(), &self.cooked, on))
+    }
+
+    fn columns(&self) -> usize {
+        let terminal = self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
+        terminal.as_ref().map_or(80, |fd| {
+            usize::from(crate::hosted_vm::terminal_size(fd).cols)
+        })
     }
 }
 

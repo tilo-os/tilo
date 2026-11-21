@@ -256,6 +256,37 @@ fn take_terminal(fd: libc::c_int) {
     }
 }
 
+/// Put the terminal `fd` in the line editor's key-at-a-time mode, keeping in `cooked` what
+/// it was, or back to that. Answers whether `fd` is a terminal to edit on.
+pub(crate) fn edit_mode(fd: libc::c_int, cooked: &Mutex<Option<libc::termios>>, on: bool) -> bool {
+    let mut cooked = cooked.lock().unwrap_or_else(PoisonError::into_inner);
+    if !on {
+        if let Some(settings) = cooked.take() {
+            unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &raw const settings) };
+        }
+        return true;
+    }
+    // SAFETY: tcgetattr and tcsetattr only read and write the termios
+    // struct we own, on a descriptor the caller holds.
+    let was = unsafe {
+        let mut now: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &raw mut now) != 0 {
+            return false;
+        }
+        let mut raw = now;
+        raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
+        raw.c_iflag &= !(libc::IXON | libc::ICRNL | libc::INLCR | libc::IGNCR);
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+        if libc::tcsetattr(fd, libc::TCSADRAIN, &raw const raw) != 0 {
+            return false;
+        }
+        now
+    };
+    cooked.get_or_insert(was);
+    true
+}
+
 impl Drop for DevicePlace {
     fn drop(&mut self) {
         WAKE.store(-1, Ordering::SeqCst);
@@ -284,33 +315,10 @@ impl Place for DevicePlace {
         let Some(fd) = self.terminal.as_ref().map(std::os::fd::AsRawFd::as_raw_fd) else {
             return false;
         };
-        let mut cooked = self.cooked.lock().unwrap_or_else(PoisonError::into_inner);
-        if !on {
-            if let Some(settings) = cooked.take() {
-                unsafe { libc::tcsetattr(fd, libc::TCSADRAIN, &raw const settings) };
-            }
-            return true;
+        if on {
+            take_terminal(fd);
         }
-        take_terminal(fd);
-        // SAFETY: tcgetattr and tcsetattr only read and write the termios
-        // struct we own, on a descriptor we hold.
-        let was = unsafe {
-            let mut now: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(fd, &raw mut now) != 0 {
-                return false;
-            }
-            let mut raw = now;
-            raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
-            raw.c_iflag &= !(libc::IXON | libc::ICRNL | libc::INLCR | libc::IGNCR);
-            raw.c_cc[libc::VMIN] = 1;
-            raw.c_cc[libc::VTIME] = 0;
-            if libc::tcsetattr(fd, libc::TCSADRAIN, &raw const raw) != 0 {
-                return false;
-            }
-            now
-        };
-        cooked.get_or_insert(was);
-        true
+        edit_mode(fd, &self.cooked, on)
     }
 
     fn field(&self) -> Option<Arc<dyn ush_shell::field::Field>> {

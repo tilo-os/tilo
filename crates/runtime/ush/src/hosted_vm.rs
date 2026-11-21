@@ -77,6 +77,10 @@ impl HostedTarget {
 
 type Shares = dyn Fn() -> Vec<ShareRequest> + Send + Sync;
 
+/// The terminal a session's programs run on, when it has one: its pseudo-terminal's slave,
+/// shared by whoever needs it while the session is attached to it.
+pub type TerminalSlot = std::sync::Arc<std::sync::Mutex<Option<OwnedFd>>>;
+
 pub struct HostedPrograms {
     target: HostedTarget,
     /// The session's Terminal marks key ([`crate::command_marks::KEY_ENV`]): the
@@ -85,7 +89,7 @@ pub struct HostedPrograms {
     workspace: String,
     environment: String,
     shares: Box<Shares>,
-    terminal: Option<OwnedFd>,
+    terminal: TerminalSlot,
     refusals: Option<std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>>,
 }
 
@@ -103,7 +107,7 @@ impl HostedPrograms {
             workspace,
             environment,
             shares,
-            terminal: None,
+            terminal: TerminalSlot::default(),
             refusals: None,
         }
     }
@@ -120,8 +124,20 @@ impl HostedPrograms {
     }
 
     #[must_use]
-    pub fn terminal(mut self, terminal: OwnedFd) -> Self {
-        self.terminal = is_terminal(&terminal).then_some(terminal);
+    pub fn terminal(self, terminal: OwnedFd) -> Self {
+        *self
+            .terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            is_terminal(&terminal).then_some(terminal);
+        self
+    }
+
+    /// Run programs on whatever terminal `slot` holds when each starts: a session whose
+    /// terminal comes and goes ([`crate::workspace_shell::WorkspaceShells::interactive`]).
+    #[must_use]
+    pub fn on_terminal_of(mut self, slot: TerminalSlot) -> Self {
+        self.terminal = slot;
         self
     }
 
@@ -456,7 +472,14 @@ impl Programs for HostedPrograms {
             Ok(stream) => stream,
             Err(error) => return failed(name, io, &format!("this workspace's Linux VM: {error}")),
         };
-        let terminal = self.terminal.as_ref().filter(|_| {
+        let terminal = self
+            .terminal
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|fd| is_terminal(fd))
+            .and_then(|fd| fd.try_clone().ok());
+        let terminal = terminal.as_ref().filter(|_| {
             io.stdin.host_stream() == Some(Std::In) && io.stdout.host_stream() == Some(Std::Out)
         });
         let launch = Launch {
@@ -530,7 +553,7 @@ fn is_terminal(fd: &OwnedFd) -> bool {
 }
 
 /// The terminal's size, 80x24 when it will not say.
-fn terminal_size(fd: &OwnedFd) -> TerminalSize {
+pub(crate) fn terminal_size(fd: &OwnedFd) -> TerminalSize {
     // SAFETY: TIOCGWINSZ writes only into the struct, which lives across
     // the call.
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
@@ -586,7 +609,8 @@ const RELAY_TICK: Duration = Duration::from_millis(100);
 
 /// Relay the session's keys and size to a program on a terminal in the VM
 /// until it ends. Reads only what is ready, so no read is left waiting for
-/// a key the shell needs next.
+/// a key the shell needs next. A terminal that hangs up (its window closed, or nobody
+/// came back to a kept session) ends the program, as a hangup ends one on a device.
 fn relay_terminal(fd: &OwnedFd, signals: &LaunchSignals<AgentStream>, finished: &AtomicBool) {
     let _raw = Raw::new(fd);
     let mut size = terminal_size(fd);
@@ -603,16 +627,29 @@ fn relay_terminal(fd: &OwnedFd, signals: &LaunchSignals<AgentStream>, finished: 
             let read =
                 unsafe { libc::read(fd.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
             let Ok(read) = usize::try_from(read) else {
-                continue;
+                let error = std::io::Error::last_os_error();
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+                ) {
+                    continue;
+                }
+                // A pty's slave reads EIO once its master is gone: a hangup.
+                let _ = signals.send(Signal::Terminate);
+                return;
             };
-            if read == 0
-                || signals
-                    .input(buffer.get(..read).unwrap_or_default())
-                    .is_err()
+            if read == 0 {
+                let _ = signals.send(Signal::Terminate);
+                return;
+            }
+            if signals
+                .input(buffer.get(..read).unwrap_or_default())
+                .is_err()
             {
                 return;
             }
         } else if ready > 0 && poll.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+            let _ = signals.send(Signal::Terminate);
             return;
         }
         let now = terminal_size(fd);
@@ -823,7 +860,10 @@ mod tests {
                 Box::new(Vec::new),
             )
             .terminal(slave.try_clone().unwrap());
-            assert!(programs.terminal.is_some(), "a pty is a terminal");
+            assert!(
+                programs.terminal.lock().unwrap().is_some(),
+                "a pty is a terminal"
+            );
             let (stdout, out) = Output::buffer();
             let io = Stdio {
                 stdin: Input::host(std::fs::File::from(slave.try_clone().unwrap())),

@@ -313,39 +313,10 @@ impl Host for DeviceHost {
     }
 
     fn edit_mode(&self, on: bool) -> bool {
-        let cooked = || {
-            self.cooked
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-        };
         if on {
             take_terminal();
-            // SAFETY: tcgetattr and tcsetattr only read and write the
-            // termios struct we own, on our own standard input.
-            unsafe {
-                let mut now: libc::termios = std::mem::zeroed();
-                if libc::tcgetattr(libc::STDIN_FILENO, &raw mut now) != 0 {
-                    return false;
-                }
-                let mut raw = now;
-                raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN);
-                raw.c_iflag &= !(libc::IXON | libc::ICRNL | libc::INLCR | libc::IGNCR);
-                raw.c_cc[libc::VMIN] = 1;
-                raw.c_cc[libc::VTIME] = 0;
-                if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &raw const raw) != 0 {
-                    return false;
-                }
-                cooked().get_or_insert(now);
-            }
-            return true;
         }
-        let settings = cooked().take();
-        if let Some(settings) = settings {
-            unsafe {
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &raw const settings);
-            }
-        }
-        true
+        crate::tilo_side::edit_mode(libc::STDIN_FILENO, &self.cooked, on)
     }
 
     fn columns(&self) -> usize {
