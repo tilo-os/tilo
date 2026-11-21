@@ -96,6 +96,22 @@ impl Writer {
         id: &str,
         fields: BTreeMap<String, Cell>,
     ) -> String {
+        let (placed, bodies) = self.draft(workspace, id, fields);
+        for body in bodies {
+            workspaces
+                .absorb(workspace, self.key.verifying_key().to_bytes(), &body)
+                .await
+                .unwrap();
+        }
+        placed
+    }
+
+    fn draft(
+        &mut self,
+        workspace: &str,
+        id: &str,
+        fields: BTreeMap<String, Cell>,
+    ) -> (String, Vec<Vec<u8>>) {
         let resource = Resource {
             readers: "*".into(),
             parent: None,
@@ -107,6 +123,7 @@ impl Writer {
             .put(KIND, id, resource, &Stamp::default())
             .unwrap();
         let mut placed = String::new();
+        let mut bodies = Vec::new();
         for write in written {
             let founding = self.seq == 0;
             let mutation = if founding {
@@ -115,14 +132,10 @@ impl Writer {
             } else {
                 collab_types::DocumentMutation::Incremental(write.change.raw_bytes().to_vec())
             };
-            let body = self.seal(workspace, &write.doc, &mutation.encode().unwrap(), founding);
-            workspaces
-                .absorb(workspace, self.key.verifying_key().to_bytes(), &body)
-                .await
-                .unwrap();
+            bodies.push(self.seal(workspace, &write.doc, &mutation.encode().unwrap(), founding));
             placed = write.doc;
         }
-        placed
+        (placed, bodies)
     }
 
     fn seal(&mut self, workspace: &str, doc: &str, plaintext: &[u8], founding: bool) -> Vec<u8> {
@@ -656,6 +669,184 @@ async fn a_members_store_document_reads_back_the_content_its_cells_name() {
         String::from_utf8_lossy(&read).contains(&hash),
         "the document names the picture's bytes, which the workspace keeps for it"
     );
+    server.shutdown().await;
+}
+
+/// Simulate shutdown after indexing a signed checkpoint but before the governor
+/// followed it.
+async fn index_retained_checkpoint(
+    workspaces: &Workspaces,
+    workspace: &str,
+    workspace_id: tilo_server_protocol::WorkspaceId,
+    member_key: SigningKey,
+) -> String {
+    let author = member_key.verifying_key().to_bytes();
+    let mut writer = Writer::new(workspaces, workspace, member_key).await;
+    let (document, bodies) = writer.draft(
+        workspace,
+        "i-1",
+        BTreeMap::from([("title".into(), Cell::One(Value::Text("First".into())))]),
+    );
+    let [body]: [Vec<u8>; 1] = bodies.try_into().unwrap();
+    let message = NeighbourMsg::from_kept(&body).unwrap();
+    let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+        panic!("a store document checkpoint");
+    };
+    let (channel, retention) = neighbour_wire::retention(&message, false).unwrap();
+    assert_eq!(retention, neighbour_wire::Retention::Checkpoint);
+    {
+        let state = workspaces.workspace(workspace).await.unwrap();
+        let mut governed = state.lock().await;
+        assert!(
+            governed
+                .take_resources(author, (APP, &document), envelope, None)
+                .await
+                .unwrap()
+        );
+        assert!(!governed.peer().holds_document(APP, &document));
+    }
+
+    let device = workspaces.member_identity().unwrap();
+    let context = context(workspace, &device.cert);
+    let records = &workspaces.inner.host.records;
+    let before = records.retained(workspace_id).await.unwrap();
+    let mut watches = workspaces.document_writes();
+    let refused = workspaces
+        .resource_command(&context, put_signed_issue("No signed base"))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("has not opened this resource's signed history"));
+    assert_eq!(records.retained(workspace_id).await.unwrap(), before);
+    assert!(watches.try_recv().is_err());
+    assert_eq!(
+        title_through_service(workspaces, &context, "i-1").await,
+        Some(Value::Text("First".into()))
+    );
+
+    workspaces
+        .inner
+        .host
+        .records
+        .carry(
+            workspace_id,
+            author,
+            crate::workspace_documents::HostCommit {
+                body,
+                channel,
+                checkpoint: true,
+            },
+        )
+        .await
+        .unwrap()
+        .durable()
+        .await
+        .unwrap();
+    document
+}
+
+fn signed_issue(title: &str) -> Resource {
+    Resource {
+        readers: "*".into(),
+        parent: None,
+        order: None,
+        fields: BTreeMap::from([("title".into(), Cell::One(Value::Text(title.into())))]),
+    }
+}
+
+fn put_signed_issue(title: &str) -> Command {
+    Command::Put {
+        kind: KIND.into(),
+        id: "i-1".into(),
+        resource: signed_issue(title),
+        stamp: Stamp::default(),
+    }
+}
+
+#[tokio::test]
+async fn retained_store_checkpoint_restores_signed_history_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let created = workspaces.create("Tasks").await.unwrap();
+    let workspace = created.workspace;
+    let (member_key, member) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let document =
+        index_retained_checkpoint(&workspaces, &workspace, created.workspace_id, member_key).await;
+    drop(workspaces);
+    server.shutdown().await;
+
+    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key),
+    }));
+    let history = workspaces
+        .document_history(&workspace, APP, &document)
+        .await
+        .unwrap()
+        .expect("the writer's checkpoint restores the signed history");
+    assert_eq!(history.writes.len(), 1);
+    assert_eq!(history.writes[0].author, member.device_public_key);
+    assert!(history.writes[0].mutation.is_ok());
+
+    let context = context(&workspace, &cert);
+    let records = &workspaces.inner.host.records;
+    let before_cancel = records.retained(created.workspace_id).await.unwrap();
+    let mut watches = workspaces.document_writes();
+    {
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        let mut governed = state.lock().await;
+        let device = workspaces.member_identity().unwrap();
+        let draft = governed
+            .store_with_surfaces()
+            .draft_field_update(
+                (KIND, "i-1"),
+                &signed_issue("Cancelled"),
+                &Stamp::default(),
+                device.device(),
+                None,
+                &|_: &tilo_resource_store::Proposal<'_>| true,
+            )
+            .unwrap()
+            .unwrap();
+        let refused = workspaces
+            .commit_resource_update(&mut governed, &device, APP, &draft, |_| false)
+            .await;
+        assert_eq!(
+            refused.unwrap_err(),
+            "the resource writer is no longer authorized"
+        );
+    }
+    assert!(
+        watches.try_recv().is_err(),
+        "a cancelled write wakes nobody"
+    );
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        Some(Value::Text("First".into()))
+    );
+    assert_eq!(
+        records.retained(created.workspace_id).await.unwrap(),
+        before_cancel,
+        "a cancelled write leaves retained history untouched"
+    );
+
+    workspaces
+        .resource_command(&context, put_signed_issue("Edited"))
+        .await
+        .unwrap();
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        Some(Value::Text("Edited".into()))
+    );
+    drop(workspaces);
     server.shutdown().await;
 }
 

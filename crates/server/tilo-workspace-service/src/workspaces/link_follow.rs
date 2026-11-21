@@ -478,12 +478,12 @@ impl Workspaces {
 }
 
 /// Whether `message`, which the server's device wrote, is a write one of its
-/// sessions made: a change to a document. A whole document under that key is
-/// the governor's own commit, and its copy already.
+/// sessions made: a change to a document or a resource store write. Other
+/// whole documents under that key are the governor's own commits.
 fn written_by_a_session(message: &neighbour_wire::NeighbourMsg) -> bool {
     matches!(
         message,
-        neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }
-            if !envelope.is_whole_resource()
+        neighbour_wire::NeighbourMsg::AppDocument { document_id, envelope, .. }
+            if !envelope.is_whole_resource() || collab_types::is_store_document(document_id)
     )
 }

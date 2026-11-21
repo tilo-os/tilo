@@ -214,10 +214,11 @@ impl GovernedWorkspace {
         }
     }
 
-    /// Take a member's write to a record the governor has into its copy,
-    /// in memory: [`Self::keep_followed`] writes it through. What admission
-    /// refused, it names with why in [`Followed::refused`], for the governor to
-    /// file as its verdict in the workspace document.
+    /// Take a member's write into the governor's copy, in memory:
+    /// [`Self::keep_followed`] writes it through. A retained checkpoint can
+    /// also restore signed history for a document placed by the store.
+    /// Admission refusals name the reason in [`Followed::refused`] so the
+    /// governor can file its verdict in the workspace document.
     pub(super) fn follow(
         &self,
         author: [u8; 32],
@@ -226,6 +227,7 @@ impl GovernedWorkspace {
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             document_id,
+            envelope,
             ..
         } = &message
         else {
@@ -233,7 +235,9 @@ impl GovernedWorkspace {
         };
         let received = {
             let mut peer = self.peer();
-            if !peer.holds_document(app_id, document_id) {
+            if !(peer.holds_document(app_id, document_id)
+                || (collab_types::is_store_document(document_id) && envelope.is_whole_resource()))
+            {
                 return Followed::default();
             }
             peer.receive_from(

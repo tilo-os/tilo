@@ -778,10 +778,13 @@ impl Workspaces {
         let author = device.device();
         let now = tilo_clock::wall();
         governed.may_start(author, (app, document), now)?;
-        // A staged edit is a delta. The ordinary founding path serializes the
-        // live store, which deliberately does not contain this edit yet.
+        // A staged edit is a delta. Recover its signed base from the same
+        // retained history the workspace replays on open.
         if !governed.peer().holds_document(app, document) {
-            return Err("the workspace has not opened this resource's signed history".into());
+            self.recall(governed).await?;
+            if !governed.peer().holds_document(app, document) {
+                return Err("the workspace has not opened this resource's signed history".into());
+            }
         }
         let request = governed.draft_resource_document(device, app, write).await?;
         let CommitOperation::Document {
@@ -920,19 +923,17 @@ impl Workspaces {
             } = &command
                 && governed.member.is_none()
                 && resource.readers == collab_types::EVERY_MEMBER
-                && let Some(document) = governed
+                && governed
                     .resources
                     .store_mut()
                     .index()
                     .get(kind, id)
-                    .filter(|held| {
+                    .is_some_and(|held| {
                         held.parent == resource.parent
                             && held.order == resource.order
                             && collab_types::store_document_readers(&held.doc)
                                 == Some(collab_types::EVERY_MEMBER)
                     })
-                    .map(|held| held.doc.clone())
-                && governed.peer().holds_document(context.app_id(), &document)
             {
                 let admit = |_: &tilo_resource_store::Proposal<'_>| true;
                 let write = governed.store_with_surfaces().draft_field_update(
