@@ -49,19 +49,23 @@ impl Described for Docked {
         // The bar stands in the column the content is read at: what follows those words in their
         // own column rather than across the window.
         let measure = column_of(content.as_ref());
-        let page = Page::full().foot();
-        let page = match measure {
-            Some(measure) => page.measure(measure),
-            None => page,
-        };
-        let stack = Stack::stack()
+        let mut stack = Stack::stack()
             .fill_width()
             .fill_height()
-            .push_part(part(content, Fit::fill(1.0)))
-            .push_part(part(
-                Box::new(page.push_part(Part::new(foot.unwrap_or_else(empty)))),
+            .push_part(part(content, Fit::fill(1.0)));
+        // A dock with nothing at its foot draws no bar: an empty page would paint its band over
+        // the content for no words at all.
+        if let Some(foot) = foot {
+            let page = Page::full().foot();
+            let page = match measure {
+                Some(measure) => page.measure(measure),
+                None => page,
+            };
+            stack = stack.push_part(part(
+                Box::new(page.push_part(Part::new(foot))),
                 Fit::hug(),
             ));
+        }
         Self { stack, editing: 0 }
     }
 
@@ -102,9 +106,14 @@ impl PartViews for Docked {
     }
 
     fn remove(&mut self, _index: usize) {
-        self.put(Box::new(crate::widget::Spacer::token(
-            crate::tokens::SpacingStep::S0,
-        )));
+        if self.editing == 0 {
+            self.put(Box::new(crate::widget::Spacer::token(
+                crate::tokens::SpacingStep::S0,
+            )));
+        } else {
+            // Nothing stands at the foot: the bar goes with what it held.
+            self.stack.remove(1);
+        }
     }
 
     fn move_view(&mut self, _from: usize, _to: usize) {}
@@ -158,6 +167,18 @@ impl Docked {
             }
         } else if let Some(page) = self.foot_page() {
             let _ = page.replace(0, view);
+        } else {
+            // The dock stood with nothing at its foot and is given something: the bar stands at
+            // the column's foot, where the content is read.
+            let measure = self.column();
+            let page = Page::full().foot();
+            let page = match measure {
+                Some(measure) => page.measure(measure),
+                None => page,
+            };
+            let bar = part(Box::new(page.push_part(Part::new(view))), Fit::hug());
+            let stack = std::mem::replace(&mut self.stack, Stack::stack());
+            self.stack = stack.push_part(bar);
         }
     }
 

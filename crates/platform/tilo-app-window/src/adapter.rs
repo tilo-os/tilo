@@ -220,17 +220,20 @@ impl Published {
     /// Where the composition moves the control, and what the person's language renames it by,
     /// change neither: the second task's Complete is not the first's.
     pub(crate) fn identity_of(&self, node: &UiNode) -> Option<String> {
+        // A control bound to a field says what it edits, before any event it also carries: the
+        // field is what the person writes in, and the events are what the writing does besides
+        // (a picture pasted into a note's body keeps its name, and the body is still the field).
+        if let Some(field) = Self::field_of(node) {
+            return Some(field);
+        }
         // One event per control runs what the person presses it for. A node whose events run
         // several actions is none of them in particular, so the first the ordered map holds answers
         // for it, the same one every frame.
-        if let Some(invoked) = node
+        let invoked = node
             .events
             .values()
-            .find_map(|event| event.invokes.as_ref())
-        {
-            return Some(self.naming(&invoked.resource, &invoked.action));
-        }
-        Self::field_of(node)
+            .find_map(|event| event.invokes.as_ref())?;
+        Some(self.naming(&invoked.resource, &invoked.action))
     }
 
     /// What the field a bound control edits is, as the address anyone runs its edit by: the record

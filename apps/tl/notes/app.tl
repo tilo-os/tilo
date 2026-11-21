@@ -870,19 +870,20 @@ view note_outline(headings: List<Text>, levels: List<Int>, reveal: State<Option<
     std.headings("Outline", headings, levels, reveal)
 }
 
-/// The notebook's controls in the window's bar, given the note open beside the tree: its file
-/// commands, the notebook's own and the open note's. What makes a note is the window's primary
-/// action, which the bar offers once, so no button of the head's draws it again; a note under the
-/// open one is one of the window's own actions, in the bar's menu and on `Ctrl+Shift+N`, and a
-/// row's hover offers the same under the note it will stand in (`add_child`).
+/// The notebook's controls in the sidebar's header, given the note open beside the tree: its own
+/// menu, which holds the open note's commands too. What makes a note is the window's primary
+/// action, which the bar offers once, so no button of the head's draws it again; a note under
+/// the open one is in that menu and on `Ctrl+Shift+N`, and a row's hover offers the same under
+/// the note it will stand in (`add_child`).
 view notebook_head(open: Option<Note>) {
     notebook_menu(root Notebook, open)
 }
 
-/// The notebook's file commands: a Markdown file or a zip of them in, the whole notebook out,
-/// and — while a note is open — a picture into it and the note out as a file of its own. They
-/// stand in the window's bar, where the controls of the page beside the tree stand, so the page
-/// keeps no file control of its own and every command has one place at every width.
+/// The notebook's own commands: a Markdown file or a zip of them in, the whole notebook out,
+/// and — while a note is open — a note under it, a picture into it and the note out as a file of
+/// its own. They stand in the window's bar's menu and the sidebar's header, where the notebook's
+/// controls stand, so the page keeps no file control of its own and every command has one place
+/// at every width.
 view notebook_menu(nb: Notebook, open: Option<Note>) {
     ui.MenuButton("File", icon: .file_plus) {
         ui.MenuItem("Import Markdown…", icon: .file_plus) {
@@ -895,6 +896,9 @@ view notebook_menu(nb: Notebook, open: Option<Note>) {
             on choose: file.save(export_notebook(nb), name: "Notes.zip")
         }
         if let n = open {
+            ui.MenuItem("New sub-note", icon: .plus) {
+                on choose: new_child(n)
+            }
             ui.MenuItem("Insert an image…", icon: .image) {
                 on choose: file.choose(
                     insert_image(n),

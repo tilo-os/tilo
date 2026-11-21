@@ -186,4 +186,56 @@ tilo_test_env::scenario! {
             );
         }
     }
+
+    phase a_dock_with_nothing_at_its_foot_paints_no_bar;
+    {
+        fn pages(node: &crate::headless::InspectionNode, out: &mut usize) {
+            if node.widget == "Page" {
+                *out += 1;
+            }
+            for child in &node.children {
+                pages(child, out);
+            }
+        }
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            docked(false),
+            (1600, 900),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        let mut found = 0;
+        pages(&harness.inspection().root, &mut found);
+        assert_eq!(
+            found, 0,
+            "a dock with nothing at its foot paints no bar over its content"
+        );
+    }
+
+    phase a_bar_given_to_a_dock_later_stands_at_its_foot;
+    {
+        fn pages(node: &crate::headless::InspectionNode, out: &mut usize) {
+            if node.widget == "Page" {
+                *out += 1;
+            }
+            for child in &node.children {
+                pages(child, out);
+            }
+        }
+        let mut docked = docked(false);
+        let Some(views) = crate::component::Described::part_views(&mut docked, "foot") else {
+            panic!("a column takes a bar after it was built");
+        };
+        views.insert(0, Box::new(crate::widget::Text::new("Outline")));
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            docked,
+            (1600, 900),
+            crate::theme::Theme::dark(),
+        );
+        harness.relayout();
+        let mut found = 0;
+        pages(&harness.inspection().root, &mut found);
+        assert_eq!(found, 1, "the bar stands at the column's foot: {found} pages");
+    }
 }

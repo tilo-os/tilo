@@ -737,7 +737,7 @@ fn planned_notebook(ada: &mut Replica) -> (ResourceRef, ResourceRef, ResourceRef
     let meeting = made(
         ada,
         "new_child",
-        vec![Value::resource(&notebook), Value::resource(&plan)],
+        vec![Value::resource(&plan)],
     );
     call(
         ada,
@@ -896,7 +896,6 @@ fn note_called(r: &mut Replica, notebook: &ResourceRef, title: &str) -> Resource
 /// A note inside `under`, titled `title`.
 fn note_under(
     r: &mut Replica,
-    notebook: &ResourceRef,
     under: &ResourceRef,
     title: &str,
 ) -> ResourceRef {
@@ -905,7 +904,7 @@ fn note_under(
         "ada",
         NOTES_APP,
         "new_child",
-        vec![Value::resource(notebook), Value::resource(under)],
+        vec![Value::resource(under)],
     ));
     call(
         r,
@@ -965,7 +964,7 @@ fn a_note_moved_by_a_tree_verb_comes_back_in_one_undo() {
 
     // Move up: Groceries goes over the branch as a whole, the note under it after it, and one
     // undo puts it back beside the branch.
-    let milk = note_under(&mut ada, &notebook, &groceries, "Milk");
+    let milk = note_under(&mut ada, &groceries, "Milk");
     call(
         &ada,
         "ada",

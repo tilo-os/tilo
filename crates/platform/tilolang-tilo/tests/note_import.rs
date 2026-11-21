@@ -199,7 +199,7 @@ fn note(r: &mut Replica, parent: Option<&ResourceRef>, titled: &str) -> Resource
         Some(p) => call(
             r,
             "new_child",
-            vec![Value::resource(&nb), Value::resource(p)],
+            vec![Value::resource(p)],
         ),
         None => call(r, "new_note", vec![Value::resource(&nb)]),
     };

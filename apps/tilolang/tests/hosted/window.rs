@@ -85,6 +85,18 @@ fn buttons_in(shell: &UiNode, name: &str) -> Vec<String> {
         .collect()
 }
 
+/// The labels of the menu's commands the shell's part `name` holds, however deep.
+fn menu_items_in(shell: &UiNode, name: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    for node in part_of(shell, name) {
+        items.extend(node.of_kind("ui.MenuItem"));
+    }
+    items
+        .into_iter()
+        .filter_map(|item| item.props.get("label").map(display))
+        .collect()
+}
+
 /// The text a prop of the shell reads.
 fn prop(shell: &UiNode, name: &str) -> Option<String> {
     shell.props.get(name).map(display)
@@ -333,17 +345,18 @@ fn a_notebook_is_its_tree_with_the_chosen_note_beside_it_naming_the_window() {
     );
     let shell_tree = composed(&mut session);
     assert_eq!(prop(&shell_tree, "sidebar_title").as_deref(), Some("Notes"));
-    // The notebook's own head commands stand over the tree — its File menu, and the sub-note it
-    // makes inside the note open — and the window's primary action is not among them: the bar
-    // offers that once.
+    // The notebook's own commands stand in the menu over the tree — its File commands, and the
+    // sub-note it makes inside the note open — and the window's primary action is not among
+    // them: the bar offers that once.
     let head = buttons_in(&shell_tree, "sidebar_actions");
     assert!(
         !head.contains(&"New note".to_owned()),
         "the sidebar's header offers no button of the window's: {head:?}"
     );
+    let commands = menu_items_in(&shell_tree, "sidebar_actions");
     assert!(
-        head.contains(&"New sub-note".to_owned()),
-        "the notebook's own command stands where its head does: {head:?}"
+        commands.contains(&"New sub-note".to_owned()),
+        "the notebook's own command stands where its head does: {commands:?}"
     );
     assert!(
         buttons_in(&shell_tree, "actions").contains(&"New note".to_owned()),
