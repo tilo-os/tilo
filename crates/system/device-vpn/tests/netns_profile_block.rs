@@ -295,13 +295,7 @@ fn a_foreign_caller_is_refused(state: &Path) {
 
 fn crashing(role: &str, test: &str, state: &Path) {
     let status = Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            test,
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
+        .args(["--exact", test, "--nocapture", "--test-threads=1"])
         .env(ROLE, role)
         .env(STATE, state)
         .stdin(Stdio::null())
@@ -411,9 +405,9 @@ fn a_crashed_controllers_block_is_taken_over(state: &Path) {
 }
 
 /// The session's part: the profile comes up and drops, the block holds,
-/// and the process dies without lifting it.
+/// and the process dies without lifting it. The test binary re-execs itself
+/// with `ROLE` set inside the namespace; anywhere else this returns at once.
 #[test]
-#[ignore = "run by a_crashed_controllers_block_is_taken_over inside its namespace"]
 fn netns_profile_controller() {
     if std::env::var(ROLE).as_deref() != Ok("controller") {
         return;
@@ -439,7 +433,6 @@ fn netns_profile_controller() {
 }
 
 #[test]
-#[ignore = "run by a_crashed_helpers_block_is_kept_until_reset inside its namespace"]
 fn netns_profile_crasher() {
     if std::env::var(ROLE).as_deref() != Ok("crasher") {
         return;
@@ -456,8 +449,10 @@ fn netns_profile_crasher() {
     std::process::abort();
 }
 
+/// The namespace's half: one of the scenarios the tests below run, chosen by
+/// `ROLE`. The test binary re-execs itself inside the namespace; anywhere
+/// else this returns at once.
 #[test]
-#[ignore = "run by the tests below inside a namespace"]
 fn netns_profile_role() {
     let Ok(role) = std::env::var(ROLE) else {
         return;
@@ -492,7 +487,6 @@ fn in_namespace(role: &str) {
         .args([
             "--exact",
             "netns_profile_role",
-            "--ignored",
             "--nocapture",
             "--test-threads=1",
         ])

@@ -77,8 +77,10 @@ fn line(stream: &UnixStream) -> String {
     line.trim().to_owned()
 }
 
+/// One side of the test below: the exit or the client namespace, chosen by
+/// `ROLE`. The test binary re-execs itself inside the namespace; anywhere
+/// else this returns at once.
 #[test]
-#[ignore = "run by packets_cross_two_network_namespaces inside a namespace"]
 fn netns_role() {
     let Ok(role) = std::env::var(ROLE) else {
         return;
@@ -150,13 +152,7 @@ fn spawn_role(role: &str, socket: &Path, state: &Path) -> Child {
     Command::new("unshare")
         .args(["--user", "--map-root-user", "--net", "--"])
         .arg(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "netns_role",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
+        .args(["--exact", "netns_role", "--nocapture", "--test-threads=1"])
         .env(ROLE, role)
         .env(SOCKET, socket)
         .env(STATE, state)
