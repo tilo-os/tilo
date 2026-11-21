@@ -592,6 +592,21 @@ tilo_test_env::scenario! {
         assert_eq!(compiled.meta.migrations().count(), 1);
     }
 
+    phase only_a_migration_reads_what_an_earlier_build_kept_and_keeps_its_ids;
+    {
+        // A migration carries what a native app of the id kept: each item under the id it had.
+        let carries = "/// Shelves what the earlier build kept.\nmigration action carry(s: Store) {\n    for e in earlier(s).filter(e -> e.of == \"items\") {\n        s.items.insert(Item(title: e.texts.get(\"title\") ?? \"\", shelf: \"\"), id: e.id)\n    }\n}\n";
+        assert_eq!(
+            crate::common::codes(&format!("{MIGRATED}\n{carries}")),
+            Vec::<String>::new()
+        );
+        // Anything else neither reads it nor names the id what it inserts takes.
+        let reads = "action peek(s: Store) -> Int {\n    earlier(s).len()\n}\n";
+        assert_eq!(crate::common::codes(&format!("{MIGRATED}\n{reads}")), ["E022"]);
+        let names = "action add(s: Store) {\n    s.items.insert(Item(title: \"\", shelf: \"\"), id: \"x\")\n}\n";
+        assert_eq!(crate::common::codes(&format!("{MIGRATED}\n{names}")), ["E022"]);
+    }
+
     phase every_action_is_offered_and_no_word_hides_one;
     {
         // An action is a thing somebody does: a person from a menu, an agent from its choices, a

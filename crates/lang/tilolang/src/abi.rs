@@ -119,6 +119,7 @@ imports! {
     ResTextSet = "res_text_set" ([H, H, H] -> []);
 
     CollInsert = "coll_insert" ([H, H, H] -> [H]);
+    CollInsertAs = "coll_insert_as" ([H, H, H, H] -> [H]);
     CollRemove = "coll_remove" ([H, H, H] -> []);
     CollMove = "coll_move" ([H, H, H, H, I32] -> []);
     CollWhere = "coll_where" ([H, H] -> [H]);
@@ -248,6 +249,7 @@ imports! {
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
     Links = "links" ([H] -> [H]);
+    Earlier = "earlier" ([H] -> [H]);
     VersionEnd = "version_end" ([H, I32] -> [H]);
     FieldChanged = "field_changed" ([H, H] -> [H]);
     RunChanges = "run_changes" ([H] -> [H]);
@@ -275,6 +277,10 @@ imports! {
     // `r.markdown(links:, from:)`: the document as Markdown, each reference to one of `links` written as
     // the link to the page it stands at, from the folder the page is written in.
     RichMarkdown = "rich_markdown" ([H, H, H] -> [H]);
+    // `r.relinked(links:, sources:)`: the document with each link to a page of `links` the reference to
+    // it, as `from_markdown` reads one, and each picture whose source `sources` names showing the source
+    // it gives. The arguments are the document, the pages, the sources, and the app the references name.
+    RichRelinked = "rich_relinked" ([H, H, H, H] -> [H]);
     RichEmbed = "rich_embed" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);

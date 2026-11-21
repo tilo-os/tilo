@@ -280,6 +280,9 @@ pub(crate) struct Checker<'a> {
     at: Option<usize>,
     /// Where the declaration being checked starts: what a function it makes in passing is named by.
     outer_at: Option<usize>,
+    /// Whether the declaration being checked is a `migration action`: only a migration reads what
+    /// an earlier build kept (`earlier(r)`) and gives an item it inserts the id that build gave it.
+    migrating: bool,
     /// The string literals the module shows as words, by span.
     shown: std::collections::HashSet<Span>,
 }
@@ -337,6 +340,7 @@ fn lower(
         last_writes: Vec::new(),
         at: None,
         outer_at: None,
+        migrating: false,
         shown,
     };
     let mut funcs = Vec::new();
@@ -351,6 +355,10 @@ fn lower(
         if let Item::Action(a) = item {
             declaring.push((idx, a.name.span));
         }
+        c.migrating = matches!(
+            item,
+            Item::Action(a) if matches!(a.role, Some((ast::ActionRole::Migration, _)))
+        );
         let f = match item {
             Item::Action(a) => c.run_action(&callable, &a.requires, &a.applies, &a.body),
             Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
@@ -535,6 +543,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         last_writes: Vec::new(),
         at: None,
         outer_at: None,
+        migrating: false,
         shown: std::collections::HashSet::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
@@ -585,6 +594,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         last_writes: Vec::new(),
         at: None,
         outer_at: None,
+        migrating: false,
         shown: std::collections::HashSet::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");

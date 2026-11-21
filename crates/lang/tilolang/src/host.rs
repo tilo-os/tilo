@@ -248,6 +248,53 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "Earlier",
+        id: "host-earlier",
+        doc: "An item an earlier build of the app kept in documents of its own, as `earlier(r)` answers in a migration: a native app's record of the same id, read field by field.",
+        fields: &[
+            (
+                "id",
+                "Text",
+                "The id it was kept under: the item's id in its collection, or the document's id for the document's own fields.",
+            ),
+            (
+                "of",
+                "Text",
+                "The collection that kept it (`pages`); empty for a document's own fields.",
+            ),
+            (
+                "order",
+                "Text",
+                "Its order key in that collection: a collection's items read in the order of their keys.",
+            ),
+            (
+                "version",
+                "Int",
+                "The version of the layout the document holding it was stored at; `0` when the document does not say (a part of a chain).",
+            ),
+            (
+                "texts",
+                "Map<Text>",
+                "Each field that reads as words, by its name: text, a name, a number, a flag.",
+            ),
+            (
+                "lists",
+                "Map<List<Text>>",
+                "Each field that holds several, by its name: a set or a map as its keys, a list as its entries.",
+            ),
+            (
+                "rich",
+                "Map<RichText>",
+                "Each rich-text field, by its name.",
+            ),
+            (
+                "files",
+                "Map<Map<File>>",
+                "Each field that holds bytes by key, by its name: the file of each key's bytes, kept on this device (a native app's pictures, by their digest). A key whose bytes could not be kept is missing.",
+            ),
+        ],
+    },
+    ValueType {
         name: "Step",
         id: "host-step",
         doc: "A step of a resource's history as people read it: consecutive versions by the same person, or by the same run, folded into one.",

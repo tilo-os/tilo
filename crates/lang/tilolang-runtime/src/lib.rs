@@ -21,6 +21,7 @@ mod core;
 pub mod cost;
 pub mod delegate;
 pub mod did;
+pub mod earlier;
 mod embed;
 pub mod engine;
 mod entry;

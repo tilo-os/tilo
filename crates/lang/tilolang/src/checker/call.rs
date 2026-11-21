@@ -199,6 +199,7 @@ impl Checker<'_> {
             "changed" => return self.builtin_changed(args, span),
             "unseen" => return self.builtin_unseen(args, span),
             "linked" => return self.builtin_links(args, span),
+            "earlier" => return self.builtin_earlier(args, span),
             "proposal_note" => return self.builtin_proposal_note(args, span),
             "first_unseen" => return self.builtin_first_unseen(args, span),
             "seen_by" => return self.builtin_seen_by(args, span),
@@ -1725,6 +1726,19 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
+        // A value the host made (`host.Earlier`) is held whole, never a resource: its map or list is
+        // read as the value it is, and nothing writes through it.
+        if crate::host::is_value(key) {
+            let r = self.field_read(
+                b,
+                &ast::Ident {
+                    name: f.name.clone(),
+                    span: name.span,
+                    from_template_of: None,
+                },
+            );
+            return self.value_method(r, name, args, span);
+        }
         let m = name.name.as_str();
         if let (Ty::Map(t), "get" | "keys") = (&f.ty, m) {
             return self.map_read(b, f, t, name, args, span);
@@ -1797,10 +1811,26 @@ impl Checker<'_> {
         let fid = Ex::str(&f.id);
         match (&f.ty, m) {
             (Ty::Collection(t), "insert") => {
-                if !self.arity(name, args, 1, span) {
+                // A migration keeps the id an earlier build gave what it carries over:
+                // `.insert(item, id: e.id)`.
+                let kept = match args {
+                    [_, kept] if kept.name.as_ref().is_some_and(|n| n.name == "id") => {
+                        if !self.migrating {
+                            self.err(
+                                "E022",
+                                kept.value.span,
+                                "only a `migration action` gives an item the id it had: an item anything else inserts takes a fresh one",
+                            );
+                        }
+                        Some(self.expr_as(&kept.value, &Ty::Text))
+                    }
+                    _ => None,
+                };
+                let first = if kept.is_some() { &args[..1] } else { args };
+                if !self.arity(name, first, 1, span) {
                     return Ex::error();
                 }
-                let Some(a) = args.first() else {
+                let Some(a) = first.first() else {
                     return Ex::error();
                 };
                 let v = self.expr(&a.value, Some(t));
@@ -1812,7 +1842,10 @@ impl Checker<'_> {
                 let v = self.coerce(v, t, a.value.span);
                 let inserted = case.unwrap_or_else(|| (**t).clone());
                 self.inserted.extend(inserted.records());
-                Ex::host(Imp::CollInsert, vec![b, fid, v], inserted)
+                match kept {
+                    Some(id) => Ex::host(Imp::CollInsertAs, vec![b, fid, v, id], inserted),
+                    None => Ex::host(Imp::CollInsert, vec![b, fid, v], inserted),
+                }
             }
             (Ty::Collection(t), "remove") => {
                 if !self.arity(name, args, 1, span) {
@@ -2691,6 +2724,26 @@ impl Checker<'_> {
                 let links = self.expr_as(&named[0].value, &Ty::Map(Box::new(Ty::Text)));
                 let from = self.expr_as(&named[1].value, &Ty::Text);
                 Ex::host(Imp::RichMarkdown, vec![r, links, from], Ty::Text)
+            }
+            // `r.relinked(links: pages, sources: sources)`: the document with each link to a page
+            // of `links` the reference to it, as `RichText.from_markdown` reads one, and each
+            // picture whose source `sources` names showing the source it gives.
+            (Ty::RichText, "relinked") => {
+                let form = "relinked(links: pages, sources: sources)`: the document with each link \
+                            to a page of `links` (a resource by the address it stands at) the \
+                            reference to it, and each picture of a source `sources` names showing \
+                            the source it gives";
+                let Some(named) = self.named_args(args, &["links", "sources"], form, span) else {
+                    return Ex::error();
+                };
+                let links = self.expr_as(&named[0].value, &Ty::Map(Box::new(Ty::Text)));
+                let sources = self.expr_as(&named[1].value, &Ty::Map(Box::new(Ty::Text)));
+                let app = Ex::str(&self.env.app);
+                Ex::host(
+                    Imp::RichRelinked,
+                    vec![r, links, sources, app],
+                    Ty::RichText,
+                )
             }
             // The body of a response, and bytes, read as their text; bytes counted.
             (Ty::Response | Ty::Bytes, "text") if args.is_empty() => {

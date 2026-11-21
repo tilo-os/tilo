@@ -863,7 +863,15 @@ impl Core {
         Ok(id)
     }
 
-    fn coll_insert(&self, rh: i32, fh: i32, init: i32) -> HResult<Option<Wasm>> {
+    /// Insert the record under construction into the collection field of the resource the call
+    /// names, under the id it gives (`coll_insert_as`: a migration keeping the id an earlier build
+    /// gave the item), else under a fresh one.
+    fn coll_insert(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let kept = match imp {
+            Imp::CollInsertAs => Some(self.text(a.h(3)?)?),
+            _ => None,
+        };
+        let (rh, fh, init) = (a.h(0)?, a.h(1)?, a.h(2)?);
         let ctx = self.mut_ctx(rh, fh)?;
         let item_tys = self.coll_field(&ctx)?;
         let Value::Rec(rec) = self.val(init)? else {
@@ -885,11 +893,15 @@ impl Core {
         };
         // The id it is given is a read like any other: a run that is run again after it waited
         // gives the item the id it gave it before.
-        let id =
-            match self.journaled_read(|| Ok(Value::Text(self.store.borrow_mut().fresh_id("i"))))? {
+        let id = match kept {
+            Some(id) => id,
+            None => match self
+                .journaled_read(|| Ok(Value::Text(self.store.borrow_mut().fresh_id("i"))))?
+            {
                 Value::Text(id) => id,
                 other => return trap(format!("expected an id, got {}", other.kind_name())),
-            };
+            },
+        };
         let applied = self.apply_mut(
             &ctx,
             &Mutation::CollInsert {
@@ -1074,7 +1086,8 @@ impl Core {
             }
             Imp::ResAddI => self.res_add(a.h(0)?, a.h(1)?, Ok(a.long(2)?)),
             Imp::ResAddF => self.res_add(a.h(0)?, a.h(1)?, Err(a.float(2)?)),
-            Imp::CollInsert => self.coll_insert(a.h(0)?, a.h(1)?, a.h(2)?),
+            Imp::CollInsert | Imp::CollInsertAs => self.coll_insert(imp, a),
+            Imp::Earlier => self.ret_h(self.earlier_import(a)?),
             Imp::CollRemove => {
                 let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
                 self.coll_field(&ctx)?;
