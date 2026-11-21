@@ -128,7 +128,6 @@ fn hold(content: &AppContentIndex, workspace: &str) {
         vec![IndexEntry {
             kind: Some(IndexKind::Agent),
             people: vec![ada],
-            keeper: Some(person("", "", "Ada", false)),
             icon: Some("sparkles".into()),
             ..entry("chat.agent/agents/a_ada", "Ada", None)
         }],

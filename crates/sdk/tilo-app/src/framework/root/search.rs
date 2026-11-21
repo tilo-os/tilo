@@ -393,7 +393,6 @@ pub(crate) fn index_entry(
         icon,
         kind: entry.kind,
         people: entry.people.clone(),
-        keeper: entry.keeper.clone(),
         place: entry.place.clone(),
         when: entry.when,
         boost: entry.boost,

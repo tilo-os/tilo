@@ -40,8 +40,6 @@ pub struct SearchEntry {
     /// Who the row shows, in the order people read them: the first is its
     /// avatar, the rest its faces.
     pub people: Vec<IndexPerson>,
-    /// Who keeps it, for an agent.
-    pub keeper: Option<IndexPerson>,
     /// Where it is, for a message: the conversation it sits in.
     pub place: Option<IndexPerson>,
     /// When it happened, in seconds since the Unix epoch.
@@ -76,7 +74,6 @@ impl Clone for SearchEntry {
             icon: self.icon.clone(),
             kind: self.kind,
             people: self.people.clone(),
-            keeper: self.keeper.clone(),
             place: self.place.clone(),
             when: self.when,
             preview: self.preview.clone(),
@@ -102,7 +99,6 @@ impl PartialEq for SearchEntry {
             && self.icon == other.icon
             && self.kind == other.kind
             && self.people == other.people
-            && self.keeper == other.keeper
             && self.place == other.place
             && self.when == other.when
             && self.preview == other.preview
@@ -316,14 +312,6 @@ impl SearchEntry {
     #[must_use]
     pub fn showing(mut self, people: Vec<IndexPerson>) -> Self {
         self.people = people;
-        self
-    }
-
-    /// Who keeps it, for an agent: the row says so, and "you" when it is the
-    /// person searching.
-    #[must_use]
-    pub fn kept_by(mut self, keeper: IndexPerson) -> Self {
-        self.keeper = Some(keeper);
         self
     }
 

@@ -455,19 +455,10 @@ impl IndexedContent {
             .cloned()
     }
 
-    /// What the entry says under its name when its app left it unsaid: who
-    /// keeps an agent, and who a message is from, where, and how long ago.
+    /// What the entry says under its name when its app left it unsaid: who is
+    /// in a conversation, and who a message is from, where, and how long ago.
     fn under_name(&self, slot: &IndexKey, entry: &IndexEntry) -> Option<String> {
         match entry.kind {
-            Some(IndexKind::Agent) => {
-                let keeper = entry.keeper.as_ref()?;
-                if !self.person.is_empty() && keeper.identity == self.person {
-                    return Some(crate::i18n::t("search-row-agent-yours"));
-                }
-                self.named(slot, keeper).map(|name| {
-                    crate::i18n::t_args("search-row-agent-kept-by", &[("keeper", name.into())])
-                })
-            }
             Some(IndexKind::Conversation) => {
                 let names: Vec<String> = entry
                     .people
@@ -622,14 +613,7 @@ impl IndexedContent {
         let recipient = match entry.kind? {
             IndexKind::Agent => {
                 let agent = who?.identity.strip_prefix("agent:")?;
-                let kept = entry.keeper.as_ref().map_or_else(String::new, |keeper| {
-                    if keeper.identity == self.person {
-                        crate::i18n::t("search-kept-by-you")
-                    } else {
-                        keeper.name.clone()
-                    }
-                });
-                Recipient::found(RecipientKind::Agent, agent, &entry.title).with_detail(kept)
+                Recipient::found(RecipientKind::Agent, agent, &entry.title)
             }
             IndexKind::Person => {
                 let person = who?;
@@ -942,7 +926,7 @@ mod tests {
             );
         }
 
-        phase an_agent_reads_as_the_person_it_is_kept_by;
+        phase an_agent_reads_as_itself;
         {
             let index = Arc::new(AppContentIndex::in_memory());
             let mut agent = shaped(
@@ -956,12 +940,14 @@ mod tests {
                 )],
             );
             agent.icon = Some("sparkles".into());
-            agent.keeper = Some(person("", "u_me", "", false));
             publish(&index, "so.tilo.chat", None, vec![agent]);
             let content = IndexedContent::new(index, str::to_owned, "u_me");
             let hits = content.query("ada");
             assert_eq!(hits.len(), 1);
-            assert_eq!(hits[0].subtitle.as_deref(), Some("Kept by you"));
+            assert_eq!(
+                hits[0].subtitle, None,
+                "an agent is the workspace's: its row names no member it is kept by"
+            );
             let Some(ui::search::SearchRow::Command(row)) = &hits[0].row else {
                 panic!("an agent is drawn with its own face: {:?}", hits[0].row);
             };
@@ -969,20 +955,6 @@ mod tests {
                 row.avatar,
                 Some(ui::search::RowFace::of_member("Ada", "agent:a_ada", true))
             );
-
-            let other =
-                IndexedContent::new(Arc::clone(content.index()), str::to_owned, "u_someone_else");
-            // The keeper `u_me` is not this person: the row says who keeps it.
-            let mut kept = shaped(
-                note("chat.agent/agents/a_ada", "Ada", false),
-                IndexKind::Agent,
-                vec![person("Ada", "agent:a_ada", "", true)],
-            );
-            kept.keeper = Some(person("Sam", "u_me", "", false));
-            publish(content.index(), "so.tilo.chat", None, vec![kept]);
-            let hits = other.query("ada");
-            assert_eq!(hits.len(), 1);
-            assert_eq!(hits[0].subtitle.as_deref(), Some("Kept by Sam"));
         }
 
         phase a_conversation_lists_the_people_in_it;
@@ -1033,7 +1005,6 @@ mod tests {
                     true,
                 )],
             );
-            agent.keeper = Some(person("Me", "u_me", "", false));
             agent.when = Some(20);
             let mut conversation = shaped(
                 note("chat.workspace/channels/c_ada", "Ada", false),
@@ -1094,11 +1065,6 @@ mod tests {
                     (RecipientKind::Person, "u_ada"),
                 ],
                 "the direct conversation with the agent is the agent, listed once"
-            );
-            assert_eq!(
-                found[0].detail.as_deref(),
-                Some("you"),
-                "the agent says this person keeps it"
             );
 
             // Before anything is typed, what the workspace holds, most recent

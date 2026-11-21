@@ -114,9 +114,5 @@ search-open-beside = Opens a window beside
 search-kind-agents = Agents
 search-kind-conversations = Conversations
 search-kind-messages = Messages
-search-row-agent-kept-by = Kept by { $keeper }
-search-row-agent-yours = Kept by you
 search-row-message = { $sender } in { $conversation }, { $age }
 search-row-message-unnamed = In { $conversation }, { $age }
-# Who keeps an agent, on a row of a box that sends it a message.
-search-kept-by-you = you

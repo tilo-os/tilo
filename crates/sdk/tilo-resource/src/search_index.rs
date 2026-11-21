@@ -126,10 +126,6 @@ pub struct IndexEntry {
     /// conversation, the agent itself.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub people: Vec<IndexPerson>,
-    /// Who keeps it, for an agent: the row says so, and "you" when it is the
-    /// person searching.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub keeper: Option<IndexPerson>,
     /// Where it is, for a message: the conversation it sits in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place: Option<IndexPerson>,
@@ -275,7 +271,6 @@ impl IndexEntry {
                 .filter_map(person)
                 .take(MAX_FIELDS)
                 .collect(),
-            keeper: self.keeper.and_then(person),
             place: self.place.and_then(person),
             fields: self
                 .fields
