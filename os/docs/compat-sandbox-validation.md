@@ -173,21 +173,9 @@ descriptor regression passed with both its tested filter configurations:
 `getent` resolved the synthetic UID/GID, writes to either file failed, and no
 shadow database was visible.
 
-Two ignored `generated_arm_*_namespace_executes_windows_console` tests now
-exercise the Wine32 and Wine64 namespace plans. They require
-the fixed production artifact paths, a matching PE `cmd.exe` supplied through
-`TILO_ARM_CAPSULE_CMD_EXE`, writable `/run/user/<uid>`, Wine resource mountpoint
-directories, and a dummy render node inside a disposable container. They create
-a non-listening Unix socket only to satisfy the Wayland bind, so they do not
-establish graphics acceptance. Run each test separately with a 240-second outer
-timeout and container teardown.
-
-These diagnostic fixtures remove only the executable Landlock shim because
-the WSL kernel lacks the required ABI. Generated mounts, clean environment,
-offline network namespace, seccomp and descriptor transfer remain intact.
-Their results must never substitute for full Tilo-kernel capsule acceptance.
-The initial Wine64 run timed out during prefix initialization. The managed
-C-drive fix described below resolves that specific failure.
+Namespace-only ARM console probes of the generated Wine32 and Wine64 plans ran
+by hand in a disposable container; they and their fixtures are gone, and the
+results below are a record, not a command to run again.
 
 A generated Proton namespace probe passed on 2026-09-16 while ARM still had a
 Proton plan; that plan was withdrawn because it needed the Steam Runtime's own
@@ -215,9 +203,7 @@ passed on 2026-09-16 (18.45, 27.01 and 29.29 seconds respectively). Each
 required a Windows file marker; Wine retained the production JIT filter. The
 service suite passed 63 tests and strict Clippy. Logs are
 `capsule-wine32-c-drive-fixed.log`, `capsule-wine64-c-drive-fixed.log`, and
-`capsule-proton-c-drive-fixed.log` in the preparation tree. The test-only
-`TILO_ARM_CAPSULE_WINEDEBUG` override can enable diagnostic channels without
-changing production defaults.
+`capsule-proton-c-drive-fixed.log` in the preparation tree.
 
 These remain namespace-only console checks. Full Landlock, graphics, audio,
 IPC and final-image acceptance requirements above are unchanged.
