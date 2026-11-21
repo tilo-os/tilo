@@ -297,7 +297,10 @@ impl Drop for Replicas {
 
 /// Keep the content of every file the tree holds that this device has whole
 /// under the workspace's scope, whenever the tree changes: what lets this
-/// device answer a member that asks the workspace for it.
+/// device answer a member that asks the workspace for it. A file not kept yet
+/// (its bytes not here yet, or the store not taking them) is tried again
+/// after a wait that doubles up to [`KEEP_AGAIN_AT_MOST`], tree change or not:
+/// a tree that stops changing would otherwise leave it unanswered for good.
 async fn keep_content(
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
@@ -306,7 +309,9 @@ async fn keep_content(
 ) {
     let mut changes = namespace.lock_recover().subscribe_changes();
     let mut kept: HashSet<Hash> = HashSet::new();
+    let mut again = INTERVAL;
     loop {
+        let mut lacking = false;
         let held: Vec<Hash> = {
             let namespace = namespace.lock_recover();
             namespace
@@ -321,13 +326,25 @@ async fn keep_content(
             }
             if keep_one(&hydrator, &content, &route, file).await {
                 kept.insert(file);
+            } else {
+                lacking = true;
             }
         }
-        if changes.changed().await.is_err() {
-            return;
+        let waited = if lacking {
+            tokio::time::timeout(again, changes.changed()).await.ok()
+        } else {
+            Some(changes.changed().await)
+        };
+        match waited {
+            Some(Err(_)) => return,
+            Some(Ok(())) => again = INTERVAL,
+            None => again = again.saturating_mul(2).min(KEEP_AGAIN_AT_MOST),
         }
     }
 }
+
+/// The longest a file whose content was not kept waits to be tried again.
+const KEEP_AGAIN_AT_MOST: Duration = Duration::from_secs(60);
 
 /// Keep every blob of `file`'s content under `route`'s scope; whether all of
 /// it is local, and kept.
