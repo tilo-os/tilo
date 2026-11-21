@@ -42,6 +42,9 @@ pub struct Apps {
     pub readings: RefCell<HashMap<String, Json>>,
     /// The readings a program asked the API for, in order, by the app and resource it named.
     pub read_for: RefCell<Vec<(String, String)>>,
+    /// The workspace's content, by the hash its address carries: what a program's files read
+    /// and what one it makes is kept as.
+    pub content: RefCell<HashMap<String, Vec<u8>>>,
 }
 
 impl Apps {
@@ -99,6 +102,7 @@ impl Apps {
             lagging: RefCell::default(),
             readings: RefCell::default(),
             read_for: RefCell::default(),
+            content: RefCell::default(),
         }
     }
 
@@ -233,6 +237,16 @@ impl TaskApi for Apps {
             return Err((*why).to_owned());
         }
         self.replica(app).host.read_values(item)
+    }
+
+    fn content(&self, hash: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.content.borrow().get(hash).cloned())
+    }
+
+    fn keep(&self, bytes: &[u8]) -> Result<String, String> {
+        let hash = tilo_content::hash_bytes(bytes);
+        self.content.borrow_mut().insert(hash.clone(), bytes.to_vec());
+        Ok(hash)
     }
 
     fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
