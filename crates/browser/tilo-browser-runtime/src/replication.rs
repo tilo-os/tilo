@@ -1489,9 +1489,8 @@ impl Joined {
             let key = (route.app_id.clone(), route.document.clone());
             let held = self.read_heads.contains_key(&key);
             let replayed = !self.ready || !held;
-            if let Ok(
-                DocumentRead::Whole { heads, .. } | DocumentRead::Changes { heads, .. },
-            ) = &read
+            if let Ok(DocumentRead::Whole { heads, .. } | DocumentRead::Changes { heads, .. }) =
+                &read
             {
                 // It is here: what the workspace answered while it sent none of it stands no
                 // longer, and a mount whose reader named it answers that reader now.

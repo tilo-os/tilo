@@ -545,7 +545,11 @@ fn a_tree_lays_the_rows_under_a_row_out_below_it() {
     let mut pending = vec![&composition.root];
     while let Some(node) = pending.pop() {
         pending.extend(&node.children);
-        let Some(notes) = node.children.iter().find(|child| child.widget == "TreeNotes") else {
+        let Some(notes) = node
+            .children
+            .iter()
+            .find(|child| child.widget == "TreeNotes")
+        else {
             continue;
         };
         holding = holding.saturating_add(1);
@@ -577,7 +581,11 @@ fn a_tree_lays_the_rows_under_a_row_out_below_it() {
             node.rect,
             notes.rect
         );
-        for line in node.children.iter().filter(|child| child.path != notes.path) {
+        for line in node
+            .children
+            .iter()
+            .filter(|child| child.path != notes.path)
+        {
             assert!(
                 line.rect[1] + line.rect[3] <= ny + 0.5,
                 "{}: {} at {:?} stands above the rows under it at {:?}",

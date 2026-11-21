@@ -354,7 +354,11 @@ async fn a_password_her_mail_server_refuses_is_asked_for_again_by_the_server_its
     the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
     assert_eq!(signed_in.lock().unwrap().clone(), vec![ADDRESS.to_owned()]);
     assert_eq!(her_mail(&mut hosted).await.len(), 1);
-    assert_eq!(hosted.workspace_vault().await.len(), 1, "what she typed last");
+    assert_eq!(
+        hosted.workspace_vault().await.len(),
+        1,
+        "what she typed last"
+    );
     assert_eq!(
         hosted.model.asked().len(),
         3,
@@ -379,7 +383,10 @@ async fn declining_or_not_answering_signs_nothing_in_and_tells_the_assistant() {
     let told = the_assistant_is_told(&hosted, "Nothing was signed in.").await;
     assert!(told.contains("declined"), "{told}");
     let kept = hosted.workspace_vault().await;
-    assert!(kept.is_empty(), "the workspace's vault keeps nothing more: {kept:?}");
+    assert!(
+        kept.is_empty(),
+        "the workspace's vault keeps nothing more: {kept:?}"
+    );
     assert!(her_mail(&mut hosted).await.is_empty());
     assert!(signed_in.lock().unwrap().is_empty());
     nothing_asks_in_chat(&hosted).await;
@@ -523,7 +530,10 @@ async fn what_a_telling_is_refused_for_asks_nobody_for_a_password() {
     }
     assert!(her_mail(&mut hosted).await.is_empty());
     let kept = hosted.workspace_vault().await;
-    assert!(kept.is_empty(), "the workspace's vault keeps nothing more: {kept:?}");
+    assert!(
+        kept.is_empty(),
+        "the workspace's vault keeps nothing more: {kept:?}"
+    );
     assert!(signed_in.lock().unwrap().is_empty());
     hosted.page.peer.close();
 }

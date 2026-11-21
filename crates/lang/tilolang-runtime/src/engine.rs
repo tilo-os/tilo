@@ -215,7 +215,9 @@ impl EngineKind {
     pub const fn built_in(self) -> bool {
         match self {
             Self::Wasmi => true,
-            Self::Tiered | Self::Cranelift | Self::Winch => cfg!(all(feature = "wasmtime", not(target_arch = "wasm32"))),
+            Self::Tiered | Self::Cranelift | Self::Winch => {
+                cfg!(all(feature = "wasmtime", not(target_arch = "wasm32")))
+            }
         }
     }
 }

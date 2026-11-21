@@ -143,7 +143,11 @@ pub struct LiveState {
 /// The state speaks of one image, by its digest: a state an earlier update left says nothing
 /// of another staged since, which then waits for the live update or a restart.
 #[must_use]
-pub fn reading(deployments: Option<&Deployments>, staged: bool, live: Option<&LiveState>) -> Update {
+pub fn reading(
+    deployments: Option<&Deployments>,
+    staged: bool,
+    live: Option<&LiveState>,
+) -> Update {
     let live = live.filter(|state| !state.image.is_empty());
     let staged = match deployments {
         Some(deployments) => deployments.staged.clone(),

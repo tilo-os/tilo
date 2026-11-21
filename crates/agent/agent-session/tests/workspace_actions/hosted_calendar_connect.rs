@@ -350,7 +350,10 @@ async fn a_mail_address_alone_is_asked_for_at_the_server_of_its_name() {
     );
     assert!(her_accounts(&mut hosted).await.is_empty());
     let kept = hosted.workspace_vault().await;
-    assert!(kept.is_empty(), "the workspace's vault keeps nothing more: {kept:?}");
+    assert!(
+        kept.is_empty(),
+        "the workspace's vault keeps nothing more: {kept:?}"
+    );
     hosted.page.peer.close();
 }
 
@@ -417,6 +420,9 @@ async fn what_a_telling_is_refused_for_asks_nobody_and_connects_nothing() {
     }
     assert!(her_accounts(&mut hosted).await.is_empty());
     let kept = hosted.workspace_vault().await;
-    assert!(kept.is_empty(), "the workspace's vault keeps nothing more: {kept:?}");
+    assert!(
+        kept.is_empty(),
+        "the workspace's vault keeps nothing more: {kept:?}"
+    );
     hosted.page.peer.close();
 }

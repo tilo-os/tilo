@@ -53,7 +53,12 @@ impl Answering {
     /// or a stand-in is no device of the person's and answers nothing for them. A host already
     /// answered keeps its session. A host this device's person has nothing at refuses the session,
     /// which is tried again later. Called inside the runtime the session runs on.
-    pub(crate) fn answer(&self, endpoint: &Endpoint, host: EndpointAddr, identity: &DeviceIdentity) {
+    pub(crate) fn answer(
+        &self,
+        endpoint: &Endpoint,
+        host: EndpointAddr,
+        identity: &DeviceIdentity,
+    ) {
         let capabilities = &identity.device_cert.capabilities;
         if capabilities.agent.is_some() || capabilities.stand_in {
             return;

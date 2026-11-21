@@ -1,14 +1,14 @@
 use super::*;
 use crate::presence::PresenceCtx;
-use crate::widget::Widget;
-use winit::event::ElementState;
 use crate::testing::{Dispatch, dispatch};
 use crate::time::Duration;
+use crate::widget::Widget;
 use crate::widget::history::HistoryAuthor;
 use crate::widget::history_group::NamedRange;
 use collab_types::ArtifactKind;
 use std::cell::RefCell;
 use std::rc::Rc;
+use winit::event::ElementState;
 use winit::event::Modifiers;
 
 const NOW: u64 = 2_000_000;

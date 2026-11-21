@@ -3,7 +3,7 @@
 
 use super::{
     AclHandle, Arc, BackendArgs, Config, Heuristics, Hydrator, IdentityKey, KeptTree, MountOption,
-    Mutex, Namespace, PathBuf, QuickFS, Result, SessionACL, ServedSocket, StopSignals,
+    Mutex, Namespace, PathBuf, QuickFS, Result, ServedSocket, SessionACL, StopSignals,
     mount_point_owner, native_config, parse_owner, run_native, session_supervisor,
 };
 

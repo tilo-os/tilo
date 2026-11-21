@@ -66,7 +66,9 @@ impl System for OsSystem {
             .collect();
         Power {
             modes,
-            mode: os_actions::get_power_profile().ok().map(crate::model::power_mode),
+            mode: os_actions::get_power_profile()
+                .ok()
+                .map(crate::model::power_mode),
             user_switching: os_actions::user_switching_supported(),
             ..Power::default()
         }
@@ -109,7 +111,9 @@ impl System for OsSystem {
     fn change(&self, change: &Change) -> Result<(), String> {
         use os_actions::{SessionAction, perform_session_action};
         match change {
-            Change::PowerMode(mode) => os_actions::set_power_profile(crate::model::power_profile(*mode)),
+            Change::PowerMode(mode) => {
+                os_actions::set_power_profile(crate::model::power_profile(*mode))
+            }
             Change::Lock => perform_session_action(SessionAction::Lock),
             Change::SwitchUser => perform_session_action(SessionAction::SwitchUser),
             Change::Suspend => perform_session_action(SessionAction::Suspend),

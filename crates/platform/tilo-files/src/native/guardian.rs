@@ -32,9 +32,8 @@ impl Guardian {
     pub fn new(at: &Path) -> io::Result<Self> {
         // The mount that is up now, by the id the kernel gives it: a path can be mounted
         // again after this one goes, and that later mount is not this guardian's to remove.
-        let id = mount_id(at).ok_or_else(|| {
-            io::Error::other(format!("no mount at {} to guard", at.display()))
-        })?;
+        let id = mount_id(at)
+            .ok_or_else(|| io::Error::other(format!("no mount at {} to guard", at.display())))?;
         let mut process = Command::new("sh")
             .args([
                 "-c",

@@ -115,12 +115,8 @@ fn child_paths<'a>(widget: &'a dyn Widget, path: &str) -> Vec<(&'a dyn Widget, S
         .into_iter()
         .enumerate()
         .map(|(index, child)| {
-            let (_, path, _) = crate::widget::widget_path(
-                child,
-                path,
-                widget.child_path_name(index),
-                &mut counts,
-            );
+            let (_, path, _) =
+                crate::widget::widget_path(child, path, widget.child_path_name(index), &mut counts);
             (child, path)
         })
         .collect()

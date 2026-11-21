@@ -1,15 +1,15 @@
 use super::*;
 use crate::presence::PresenceCtx;
-use crate::widget::Widget;
-use winit::event::ElementState;
 use crate::synthetic_input::{cursor_moved, mouse_press};
 use crate::testing::dispatch;
 use crate::time::Duration;
+use crate::widget::Widget;
 use crate::widget::history::HistoryAuthor;
 use automerge::AutoCommit;
 use collab_types::ArtifactKind;
 use std::cell::RefCell;
 use std::rc::Rc;
+use winit::event::ElementState;
 
 #[allow(
     clippy::cast_possible_truncation,

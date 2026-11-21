@@ -25,7 +25,6 @@ use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
 use tilo_resource::{Id, Replica};
 use zeroize::Zeroizing;
 
-
 use super::Workspaces;
 #[cfg(any(feature = "agents", feature = "web"))]
 use super::person_settings::kept_sign_ins::HostSignIns;
@@ -552,7 +551,8 @@ fn open_entries(
                 let payload = keys
                     .open_private_field(&uses_field(id.as_str()), &sealed.0)
                     .map_err(|error| error.to_string())?;
-                serde_json::from_slice::<Vec<UseRecord>>(&payload).map_err(|error| error.to_string())
+                serde_json::from_slice::<Vec<UseRecord>>(&payload)
+                    .map_err(|error| error.to_string())
             })
             .transpose()
             .unwrap_or_else(|reason| {

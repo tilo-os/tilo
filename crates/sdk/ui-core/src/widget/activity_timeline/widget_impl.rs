@@ -12,9 +12,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{ModelPath, TaffyTreeExt, Widget};
 
-use super::{
-    ActivityTimeline, FILTER_STRIP_HEIGHT, FocusedRow, PADDING, VisualRow, row_time,
-};
+use super::{ActivityTimeline, FILTER_STRIP_HEIGHT, FocusedRow, PADDING, VisualRow, row_time};
 
 impl Widget for ActivityTimeline {
     /// The history as a page's own list: each day or band a heading, each change its author,

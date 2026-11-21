@@ -19,9 +19,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use install_profile_model::plan::Drive;
-use tilo_workspace_service::workspaces::{ResourceWrite, Workspaces};
 use tilo_workspace_service::workspaces::servers::machine::{self, Step};
 use tilo_workspace_service::workspaces::servers::{Servers, device, device_id};
+use tilo_workspace_service::workspaces::{ResourceWrite, Workspaces};
 
 use super::{SERVERS, admin_workspace_id, apply, read};
 

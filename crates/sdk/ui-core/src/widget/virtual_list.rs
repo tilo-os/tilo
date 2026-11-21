@@ -2640,5 +2640,7 @@ pub use component::{DescribedList, DescribedRows, ItemRow, ListItemProps, Virtua
 /// `key` as one part of a widget path: the characters that separate a path's parts (`/`, `#`) and
 /// the one that escapes them stand as escapes.
 fn path_safe(key: &str) -> String {
-    key.replace('%', "%25").replace('/', "%2F").replace('#', "%23")
+    key.replace('%', "%25")
+        .replace('/', "%2F")
+        .replace('#', "%23")
 }

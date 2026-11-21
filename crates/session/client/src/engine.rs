@@ -28,6 +28,7 @@ use tilo_action_policy::WorkspacePolicy;
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::Member;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::Role;
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,7 +36,6 @@ use tilo_peer_state::owner::Change;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_peer_state::owner::{FileHost, open_file_with, owner_file_of};
-use tilo_peer_state::Member;
 use tilo_user_identity::RevocationList;
 use tilo_workspace_keys::{KeyAccess, KeyProvider};
 

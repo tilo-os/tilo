@@ -136,8 +136,11 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
         doc.put(automerge::ROOT, "early-1", "first").unwrap();
     });
     assert!(
-        !holder(&early, &chat.cluster_id)
-            .is_some_and(|holder| holder.holds(&chat.cluster_id, &chat.app_id, &chat.document)),
+        !holder(&early, &chat.cluster_id).is_some_and(|holder| holder.holds(
+            &chat.cluster_id,
+            &chat.app_id,
+            &chat.document
+        )),
         "the early page holds no record before it is founded"
     );
     early.write(chat.clone(), &first).unwrap();

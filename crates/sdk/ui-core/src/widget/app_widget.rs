@@ -1351,7 +1351,8 @@ mod component_adapter {
                 .flatten()
         }
         fn child_path_name(&self, child_index: usize) -> Option<String> {
-            self.in_root(|root| root.child_path_name(child_index)).flatten()
+            self.in_root(|root| root.child_path_name(child_index))
+                .flatten()
         }
         fn perform_action(
             &mut self,

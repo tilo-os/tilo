@@ -112,9 +112,10 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
     );
     let read = || {
         crate::engine::page_holder(link.engine(), workspace_id)
-            .map_or(Ok(tilo_peer_state::workspace_documents::DocumentRead::Absent), |holder| {
-                holder.read(&workspace, APP, "", None)
-            })
+            .map_or(
+                Ok(tilo_peer_state::workspace_documents::DocumentRead::Absent),
+                |holder| holder.read(&workspace, APP, "", None),
+            )
             .map(|read| match read {
                 tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. } => {
                     Some(bytes)

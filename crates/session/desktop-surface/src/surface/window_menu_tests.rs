@@ -1533,7 +1533,10 @@ fn a_window_the_system_dismisses_closes_without_an_undo() {
         "the window closed"
     );
     assert!(said.borrow().get().is_none(), "and nothing was said of it");
-    assert!(!handle.dismiss_window(route.tab), "a window that is gone is not dismissed");
+    assert!(
+        !handle.dismiss_window(route.tab),
+        "a window that is gone is not dismissed"
+    );
 }
 
 /// A window running an app that controls the desktop offers to end that,
