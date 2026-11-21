@@ -675,7 +675,7 @@ impl Sync {
 
     /// Why changes made here wait, once they waited for longer than [`STUCK_AFTER`] for documents
     /// of the tree that do not read here; `None` while they go out or have not waited that long.
-    fn stuck(&self) -> Option<String> {
+    fn stuck(&self, opened: bool) -> Option<String> {
         self.dirty_since?;
         let waiting = self
             .again
@@ -683,10 +683,18 @@ impl Sync {
             .filter(|again| again.since.elapsed() >= STUCK_AFTER)
             .count();
         let lacking = self.lacking.len();
-        if waiting == 0 && lacking == 0 {
+        let unopened = !opened;
+        if waiting == 0 && lacking == 0 && !unopened {
             return None;
         }
         let mut why = Vec::new();
+        if unopened {
+            why.push(
+                "the workspace has not said what its file list holds, so nothing written here \
+                 goes out yet"
+                    .to_owned(),
+            );
+        }
         if waiting > 0 {
             why.push(format!(
                 "{waiting} part{} of the workspace's file list {} not arrived on this computer yet \
@@ -840,7 +848,17 @@ impl Sync {
                     readings.push((chunk, heads, bytes, digest));
                 }
                 Ok(ResourceReading::Unchanged(_)) => {
-                    self.documents.entry(chunk).or_default().read_at = digest;
+                    // The record stands at what this device holds of it, and the workspace holds
+                    // it: nothing is merged, and it is open all the same. A tree that only ever
+                    // reads unchanged (the one this computer wrote before it stopped) is open,
+                    // and its changes go out — nothing else would ever mark it.
+                    let held = self.documents.entry(chunk).or_default();
+                    held.read_at = digest;
+                    held.founded = true;
+                    if chunk == 0 {
+                        self.status.lock_recover().opened = true;
+                    }
+                    self.again.remove(&chunk);
                 }
                 Ok(ResourceReading::Pending) => self.not_read(chunk, None),
                 Err(error) => self.not_read(chunk, Some(&error)),
@@ -992,7 +1010,9 @@ impl Sync {
         let _doing = tilo_rt::stall::doing("a folder's tree going out");
         if !self.status.lock_recover().opened {
             // The host has not said what it holds: a tree written now could found a second
-            // one beside it.
+            // one beside it. What changed here waits for that answer, and [`Self::stuck`] says
+            // so rather than the folder going quiet with its changes held.
+            self.dirty_since.get_or_insert_with(Instant::now);
             return;
         }
         let (heads, listed) = {
@@ -1274,6 +1294,7 @@ impl Sync {
         let durable = !self.documents.keys().any(|chunk| self.holding(*chunk))
             && self.link.outgoing_pending() == 0;
         let mut status = self.status.lock_recover();
+        let opened = status.opened;
         if let Some((files, bytes, local)) = counted {
             status.files = files;
             status.bytes = bytes;
@@ -1282,7 +1303,7 @@ impl Sync {
         status.paused = self.paused.load(std::sync::atomic::Ordering::Relaxed);
         status.sent = sent;
         status.durable = durable;
-        status.stuck = self.stuck();
+        status.stuck = self.stuck(opened);
     }
 
     /// The files, bytes and local bytes as last counted, with the local bytes counted again when
