@@ -12,7 +12,6 @@
 //! ([`tilo_portal::file_chooser::FILE_CHOOSER_QUESTION`]): one sheet, one set of words, whether
 //! an app reached it through the portal or through the shell's socket.
 
-use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
 use tilo_dialogs::shell::{Choice, Session};
@@ -54,7 +53,9 @@ fn serve_at(path: PathBuf, questions: Questions) -> Result<Chooser, String> {
         // app and the app would wait on a peer that is gone.
         std::fs::remove_file(&path).map_err(|error| format!("remove {}: {error}", path.display()))?;
     }
-    let listener = UnixListener::bind(&path)
+    // The socket's path may be longer than the kernel's, which a session's runtime directory
+    // makes likely: the platform's bind reaches a path of any length.
+    let listener = tilo_files::native::socket::bind(&path)
         .map_err(|error| format!("bind the chooser socket {}: {error}", path.display()))?;
     let accepting = std::thread::Builder::new()
         .name("tilo-chooser".into())
