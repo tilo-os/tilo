@@ -1,6 +1,7 @@
-//! The person's accounts as a record of their own: the accounts they
-//! configured follow them to every device they sign in on, never to a
-//! member.
+//! The workspace's accounts as one record: the mail, calendar and messaging
+//! accounts configured in it, which every member and device of the
+//! workspace reads as the workspace's grants allow. Their secrets are never
+//! in it.
 
 use std::collections::BTreeMap;
 use std::path::Path;

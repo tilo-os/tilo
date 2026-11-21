@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.terminal@0294d320fd92b088";
+export const SURFACE = "so.tilo.terminal@fd731cc50209456e";
 
 export interface Command {
   command: string;
@@ -179,6 +179,11 @@ export interface Session extends tilo.Resource {
   stop(): Promise<void>;
   /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
+  openTerminal(args?: {
+    cols?: number;
+    rows?: number;
+    attach?: string;
+  }): Promise<unknown>;
   recordCommand(args: {
     command: string;
     cwd: string;
@@ -227,7 +232,7 @@ export interface Session extends tilo.Resource {
 
 /** The actions `Session` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SESSION_ACTIONS = ["run", "rerun", "rerunTest", "stop", "stopMany", "recordCommand", "recordCommandMany", "recordTarget", "recordTargetMany", "recordRelaySession", "recordRelaySessionMany", "claimPane", "claimPaneMany", "inspectSession", "readScreen", "inspectEditor", "copyVisible", "copySelection", "selectAll", "historyTop", "historyLive", "openLink"] as const;
+export const SESSION_ACTIONS = ["run", "rerun", "rerunTest", "stop", "stopMany", "openTerminal", "recordCommand", "recordCommandMany", "recordTarget", "recordTargetMany", "recordRelaySession", "recordRelaySessionMany", "claimPane", "claimPaneMany", "inspectSession", "readScreen", "inspectEditor", "copyVisible", "copySelection", "selectAll", "historyTop", "historyLive", "openLink"] as const;
 
 /** The `terminal.session` kind at `path`. */
 export function session(ws: tilo.Workspace, path: string): Session {

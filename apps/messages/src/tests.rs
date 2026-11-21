@@ -478,9 +478,11 @@ fn public_route_action_refuses_revoked_identity_until_a_new_association_is_revie
     );
 }
 
+/// Settings, which keeps the workspace's accounts: its own record is
+/// another one.
 pub(crate) struct AccountOwnerFixture;
 impl ui::framework::ResourceApp for AccountOwnerFixture {
-    type Resource = tilo_messaging::PersonAccounts;
+    type Resource = crate::Messages;
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Metadata owner fixture";
     fn view(cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {

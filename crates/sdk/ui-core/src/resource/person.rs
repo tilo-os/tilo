@@ -4,9 +4,11 @@
 //! derived from each member's identity. A migration can read those retained records through
 //! [`PersonResources::read_previous_member_resource`].
 //!
-//! The person's shared records — their accounts, their contacts — and the settings sections belong
-//! to the person, not to any workspace: they are kept in the person's own scope
-//! ([`PERSONAL_SCOPE`]), not in an id derived from their key. [`PersonResources`] is where they are
+//! The settings sections and the few records that are a person's alone — what the keyboard learned
+//! of their typing, the signature they sign with — belong to the person, not to any workspace: they
+//! are kept in the person's own scope ([`PERSONAL_SCOPE`]), not in an id derived from their key.
+//! What a workspace keeps for every member (its accounts, its contacts, its browsing) is the
+//! workspace's ([`super::workspace`]). [`PersonResources`] is where they are
 //! kept on this device for one app; [`StoredResource`] is one of them, opened, edited with
 //! attribution and undo, and sent on to the person's other devices
 //! ([`StoredResource::history_owner`]).

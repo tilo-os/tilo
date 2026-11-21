@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@f07f85ffa014aa4c";
+export const SURFACE = "so.tilo.calendar@633cec10992fb756";
 
 export interface Attendee {
   id: string;

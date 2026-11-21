@@ -1,5 +1,5 @@
-//! Portable messaging account metadata supplied by the person-record host, read
-//! through `ViewCx::shared_person` under the host's owner and editor permissions.
+//! Portable messaging account metadata the workspace keeps, read through
+//! `ViewCx::shared_person` under the workspace's grants on its keeper.
 //! It exposes neither credential storage nor a transport connection: selecting an
 //! account does not authorize sending.
 //!

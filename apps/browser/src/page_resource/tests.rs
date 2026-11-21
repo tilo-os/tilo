@@ -35,7 +35,7 @@ type App = TestApp<BrowserShell>;
 const WORKSPACE: &str = "00000000-0000-4000-8000-0000000000b7";
 const PAGE: &str = "https://shop.test/form";
 /// The resource as the window publishes it.
-const RESOURCE: &str = "person:browser.page-record";
+const RESOURCE: &str = "browser.page-record";
 
 /// Ada, by her root public key.
 fn ada() -> String {
@@ -815,9 +815,9 @@ fn history_steps_through_the_record_one_action_at_a_time() {
     }
 }
 
-/// Another device of the person's that holds the workspace reads the same
-/// record: same route, and after the workspace's sync the same actions by
-/// the same authors.
+/// Another device that holds the workspace reads the same record: the
+/// workspace's route, and after the workspace's sync the same actions by the
+/// same authors.
 #[test]
 fn another_device_of_the_person_reads_the_same_resource() {
     let engine = TestEngine::new();
@@ -827,11 +827,15 @@ fn another_device_of_the_person_reads_the_same_resource() {
     let (on_laptop, on_phone) = (record(&mut laptop), record(&mut phone));
     assert!(
         on_laptop.syncs(),
-        "the resource has a route in the person’s profile"
+        "the resource has a route in the workspace"
     );
     let route = on_laptop.record().route().expect("a route");
     assert_eq!(Some(&route), on_phone.record().route().as_ref());
-    assert_ne!(route.cluster_id.to_string(), WORKSPACE);
+    assert_eq!(
+        route.cluster_id.to_string(),
+        WORKSPACE,
+        "the workspace keeps it, not each person"
+    );
 
     let tab = only_tab(&on_laptop);
     assert!(held(&on_phone, &tab).is_empty(), "not synced yet");

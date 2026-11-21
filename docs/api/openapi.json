@@ -29711,6 +29711,42 @@
         "required": [],
         "description": ""
       },
+      "terminal.session.open-terminal.Arguments": {
+        "type": "object",
+        "properties": {
+          "cols": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rows": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attach": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "description": ""
+      },
+      "terminal.session.open-terminal.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
       "terminal.session.record-command.Arguments": {
         "type": "object",
         "properties": {
@@ -37215,6 +37251,12 @@
       "resource": "terminal.session",
       "action": "stop",
       "arguments": "#/components/schemas/terminal.session.stop.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "terminal.session",
+      "action": "open-terminal",
+      "arguments": "#/components/schemas/terminal.session.open-terminal.Arguments"
     },
     {
       "app": "so.tilo.terminal",

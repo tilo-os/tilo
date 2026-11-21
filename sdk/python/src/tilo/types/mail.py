@@ -450,7 +450,7 @@ ForgetCopiesArgs = TypedDict("ForgetCopiesArgs", {
 
 class Mailbox(Resource):
     """Mail — `mail.mailbox`."""
-    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
+    __surface__ = "so.tilo.mail@4e7f5468866339f4"
     folders: list[Entry[LocalFolder]]
     draft: DraftState
     drafts: list[Entry[DraftState]]
@@ -667,7 +667,7 @@ class Mailbox(Resource):
 
 class Messages(Resource):
     """Messages — `mail.messages`."""
-    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
+    __surface__ = "so.tilo.mail@4e7f5468866339f4"
     messages: list[Entry[MessageState]]
     @property
     def held(self) -> list[Entry[HeldMessage]]:
@@ -812,7 +812,7 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
+    __surface__ = "so.tilo.mail@4e7f5468866339f4"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -868,7 +868,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
+    __surface__ = "so.tilo.mail@4e7f5468866339f4"
     people: list[Entry[Person]]
 
     def project_contact(self,
@@ -1008,7 +1008,7 @@ class Identities(Resource):
 
 class TrustedSenders(Resource):
     """Trusted senders — `mail.trusted-senders`."""
-    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
+    __surface__ = "so.tilo.mail@4e7f5468866339f4"
     senders: list[str]
     @property
     def distrusted(self) -> list[str]:
@@ -1046,7 +1046,7 @@ class TrustedSenders(Resource):
 
 class Copies(Resource):
     """Workspace mail — `mail.copies`."""
-    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
+    __surface__ = "so.tilo.mail@4e7f5468866339f4"
     @property
     def copies(self) -> list[Entry[KeptCopy]]:
         """Read only."""

@@ -186,6 +186,10 @@ impl Hosted {
             .records
             .as_ref()
             .and_then(|(_, _, permissions)| permissions.clone());
+        // The person's records of the kinds the workspace keeps are opened in
+        // it, as the workspace's.
+        let records_of_workspace = self.workspace.as_ref().map(|(records, _)| records.clone());
+        let person_permissions = permissions.clone();
         let workspace = self.workspace.map(|(records, wake)| {
             let state = Rc::new(super::workspace::WorkspaceState::new(
                 records,
@@ -214,6 +218,7 @@ impl Hosted {
                         .ok()
                 });
                 super::person::PersonState::new(records, own, app_id, app_title, wake)
+                    .in_workspace(records_of_workspace, person_permissions)
             }),
             device: self.device,
             records: self.records.map(|(store, me, permissions)| {

@@ -1,4 +1,5 @@
-//! One person-owned directory shared by Contacts and its application consumers.
+//! One directory of the workspace's, kept by Contacts and read by the apps that
+//! address its people.
 //! Names are labels: only explicit, confirmed endpoint associations resolve
 //! identity, and conflicting confirmations refuse routing rather than choosing a
 //! winner. No credentials or histories live here.

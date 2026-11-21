@@ -383,11 +383,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         person: &str,
         held: &ui_core::resource::person::PersonResources,
     ) -> Result<Self, LaunchError> {
+        Self::for_person_with_role_shown_by(person, Role::Owner, held)
+    }
+
+    /// [`Self::for_person_shown_by`], with `role` in the workspace.
+    pub fn for_person_with_role_shown_by(
+        person: &str,
+        role: Role,
+        held: &ui_core::resource::person::PersonResources,
+    ) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let held = held.clone();
         Self::open(
             Profile::Temporary(profile, TEST_WORKSPACE.to_owned(), TEST_DEVICE.to_owned()),
-            Role::Owner,
+            role,
             person,
             &[],
             None,

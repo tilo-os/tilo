@@ -235,7 +235,7 @@ RemoveImportedNodeArgs = TypedDict("RemoveImportedNodeArgs", {
 
 class Application(Resource):
     """Browser — `browser.application`."""
-    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
+    __surface__ = "so.tilo.browser@7fefb06ff21d60fa"
     bookmarks: list[Entry[Bookmark]]
     preferences: Settings
     @property
@@ -333,7 +333,7 @@ class Application(Resource):
 
 class AddressBook(Resource):
     """Address book — `browser.address-book`."""
-    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
+    __surface__ = "so.tilo.browser@7fefb06ff21d60fa"
     enabled: bool
     profiles: list[Entry[AddressProfile]]
     @property
@@ -344,7 +344,7 @@ class AddressBook(Resource):
 
 class BrowsingHistory(Resource):
     """Browsing history — `browser.browsing-history`."""
-    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
+    __surface__ = "so.tilo.browser@7fefb06ff21d60fa"
     @property
     def visits(self) -> dict[str, Visit]:
         """Read only."""
@@ -422,7 +422,7 @@ class BrowsingHistory(Resource):
 
 class PageRecord(Resource):
     """Page resource — `browser.page-record`."""
-    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
+    __surface__ = "so.tilo.browser@7fefb06ff21d60fa"
     @property
     def actions(self) -> dict[str, PageAction]:
         """Read only."""
@@ -439,7 +439,7 @@ class PageRecord(Resource):
 
 class PersonalBookmarks(Resource):
     """Personal bookmarks — `browser.personal-bookmarks`."""
-    __surface__ = "so.tilo.browser@5ce4f84dae1cec11"
+    __surface__ = "so.tilo.browser@7fefb06ff21d60fa"
     @property
     def added(self) -> dict[str, Added]:
         """Read only."""

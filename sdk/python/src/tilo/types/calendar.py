@@ -329,7 +329,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Calendar(Resource):
     """Calendar — `calendar.calendar`."""
-    __surface__ = "so.tilo.calendar@f07f85ffa014aa4c"
+    __surface__ = "so.tilo.calendar@633cec10992fb756"
     projects: list[Entry[Project]]
     events: list[Entry[Event]]
     tasks: list[Entry[Task]]
@@ -489,7 +489,7 @@ class Calendar(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.calendar@f07f85ffa014aa4c"
+    __surface__ = "so.tilo.calendar@633cec10992fb756"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -545,7 +545,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.calendar@f07f85ffa014aa4c"
+    __surface__ = "so.tilo.calendar@633cec10992fb756"
     people: list[Entry[Person]]
 
     def project_contact(self,

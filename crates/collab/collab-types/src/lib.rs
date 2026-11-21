@@ -169,5 +169,6 @@ pub use validator::{
 };
 pub use workspace_document::{
     WORKSPACE_DOCUMENTS, WorkspaceDocument, workspace_document, workspace_document_id,
+    workspace_document_of_kind,
 };
 pub use workspace_id::WorkspaceId;

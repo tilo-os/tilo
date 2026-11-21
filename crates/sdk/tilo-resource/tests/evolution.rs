@@ -266,4 +266,33 @@ tilo_test_env::scenario! {
         assert_eq!(verb.action.action, "rename");
         assert_eq!(verb.action.kind, "test.contact");
     }
+
+    phase a_record_copied_into_another_store_reads_the_same_and_keeps_its_identity;
+    // A record moving to another store is copied into a record of the same
+    // kind made there: it then reads as the one it came from, its lists and
+    // texts whole, and stays the record it was made as.
+    {
+        let mut from = Replica::<Contact>::new();
+        from.apply(Contact::RENAME.with(("Ada".to_owned(), "Lovelace".to_owned())))
+            .unwrap();
+        from.apply_confirmed(Contact::INVITE.invoke()).unwrap();
+        let mut to = Replica::<Contact>::new();
+        to.doc_mut()
+            .put(automerge::ROOT, "tilo:home", "the other store")
+            .unwrap();
+        evolution::copy_into(from.doc(), to.doc_mut()).unwrap();
+        let copied = Contact::read(to.doc()).unwrap();
+        let original = from.state().unwrap();
+        assert_eq!((copied.given.as_str(), copied.family.as_str()), ("Ada", "Lovelace"));
+        assert_eq!(copied.outbox.len(), original.outbox.len());
+        assert_eq!(copied.notes, original.notes);
+        let home: String = tilo_resource::read_key(to.doc(), &automerge::ROOT, "tilo:home").unwrap();
+        assert_eq!(home, "the other store", "the record keeps its own identity");
+        // It goes on as a record of its own: actions apply to the copy.
+        let mut to = Replica::<Contact>::from_doc(to.doc_mut().fork());
+        to.apply(Contact::RENAME.with(("Grace".to_owned(), "Hopper".to_owned())))
+            .unwrap();
+        assert_eq!(to.state().unwrap().given, "Grace");
+        assert_eq!(from.state().unwrap().given, "Ada");
+    }
 }

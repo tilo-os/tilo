@@ -44,7 +44,45 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
         app: "tilo.host",
         kind: "tilolang.personal",
     },
+    // The workspace's accounts (mail, calendar, messaging), which Settings keeps
+    // and Mail, Calendar and Messages read; their secrets are the vault's
+    // (`accounts::person`).
+    WorkspaceDocument {
+        app: "so.tilo.settings",
+        kind: "tilo.accounts",
+    },
+    // The people the workspace knows, with the identities each is reached at,
+    // which Contacts keeps and Mail, Calendar and Messages address
+    // (`tilo-contact-directory`).
+    WorkspaceDocument {
+        app: "so.tilo.contacts",
+        kind: "tilo.contacts.identities",
+    },
+    // What the workspace browsed and kept: its history, its bookmarks, the
+    // addresses it fills in and what operated each tab's page (Browser).
+    WorkspaceDocument {
+        app: "so.tilo.browser",
+        kind: "browser.browsing-history",
+    },
+    WorkspaceDocument {
+        app: "so.tilo.browser",
+        kind: "browser.personal-bookmarks",
+    },
+    WorkspaceDocument {
+        app: "so.tilo.browser",
+        kind: "browser.address-book",
+    },
+    WorkspaceDocument {
+        app: "so.tilo.browser",
+        kind: "browser.page-record",
+    },
 ];
+
+/// The workspace document of `kind`, whichever app keeps it.
+#[must_use]
+pub fn workspace_document_of_kind(kind: &str) -> Option<&'static WorkspaceDocument> {
+    WORKSPACE_DOCUMENTS.iter().find(|known| known.kind == kind)
+}
 
 /// The id of the workspace document of `kind` in any workspace: one per kind, the
 /// same on every device, derived as the person's document of a kind is.

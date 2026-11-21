@@ -219,7 +219,7 @@ SentArgs = TypedDict("SentArgs", {
 
 class Messages(Resource):
     """Messages — `tilo.messages`."""
-    __surface__ = "so.tilo.messages@693ad7c3ef9da7d3"
+    __surface__ = "so.tilo.messages@cf59caf0cb3021eb"
     @property
     def conversations(self) -> list[Entry[Conversation]]:
         """Read only."""
@@ -325,7 +325,7 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.messages@693ad7c3ef9da7d3"
+    __surface__ = "so.tilo.messages@cf59caf0cb3021eb"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -381,7 +381,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.messages@693ad7c3ef9da7d3"
+    __surface__ = "so.tilo.messages@cf59caf0cb3021eb"
     people: list[Entry[Person]]
 
     def project_contact(self,
@@ -521,7 +521,7 @@ class Identities(Resource):
 
 class Drafts(Resource):
     """Message drafts — `messages.drafts`."""
-    __surface__ = "so.tilo.messages@693ad7c3ef9da7d3"
+    __surface__ = "so.tilo.messages@cf59caf0cb3021eb"
     drafts: dict[str, str]
     @property
     def handled(self) -> dict[str, bool]:

@@ -1,8 +1,10 @@
 //! Resources an app opens beside the one it shows: its own record of a kind
-//! (what was watched, the words taught to the keyboard, where reading
-//! stopped), kept with its other records in the workspace it is open in,
-//! and the person's shared records another app keeps for all of theirs
-//! (their accounts, their contacts), kept in the person's own scope.
+//! and the records another app keeps for every app. One the workspace keeps
+//! ([`collab_types::WORKSPACE_DOCUMENTS`]: its accounts, its contacts, what
+//! it browsed) is opened in the window's workspace, one record for every
+//! member, its changes decided by the workspace's grants; one that is the
+//! person's alone (the words taught to the keyboard, the signature they sign
+//! with) is kept in their own scope and carried to their devices only.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -62,12 +64,27 @@ struct Shared<P: Resource> {
     state: LocalState<Rc<P::State>>,
     /// The record as views and the API edit it.
     held: RefCell<Option<Rc<Held<P>>>>,
+    /// Edits asked for while the record's store was in use (a record the
+    /// workspace keeps shares the app's store, which a pass of the app's
+    /// view reads), applied in order once it is free.
+    waiting: RefCell<std::collections::VecDeque<(P::Action, ActionInvoker)>>,
+    /// What the state shown was read with while edits waited: the record's
+    /// heads and how many waited. The state then holds them, so what is
+    /// read after an edit holds it although the store has not taken it yet.
+    ahead: RefCell<Option<(Vec<ui_core::automerge::ChangeHash>, usize)>>,
+    /// What the person kept of the record in their own scope, before the
+    /// workspace kept it, until it is taken into the workspace's record
+    /// ([`PersonState::kept_to_take_in`]): it waits for the store as an
+    /// edit does.
+    taking_in: RefCell<Option<ui_core::automerge::AutoCommit>>,
 }
 
 impl<P: Resource> Shared<P> {
     /// Follow the record when it moved, reading only what changed. Whether
     /// it did.
     fn refresh(&self) -> bool {
+        self.take_in();
+        self.apply_waiting();
         let mut moved = match self.record.read(|doc| self.live.sync(doc)) {
             Some(Ok(moved)) => moved,
             Some(Err(error)) => {
@@ -89,10 +106,137 @@ impl<P: Resource> Shared<P> {
         }
         // Views of the record follow it whole: it is small.
         let _ = self.live.take_change();
-        if moved {
+        let waiting = self.waiting.borrow().len();
+        if waiting > 0 {
+            let heads = self.record.heads();
+            let read = (heads, waiting);
+            if self.ahead.borrow().as_ref() == Some(&read) {
+                return moved;
+            }
+            if let Some(state) = self.with_waiting() {
+                self.state.set(state);
+                *self.ahead.borrow_mut() = Some(read);
+                return true;
+            }
+        }
+        if self.ahead.borrow_mut().take().is_some() || moved {
             self.state.set(self.live.get());
+            return true;
         }
         moved
+    }
+
+    /// Take what the person kept before into the record, while it still
+    /// holds nothing but its genesis: once, when the store is free.
+    fn take_in(&self) {
+        let Some(kept) = self.taking_in.borrow_mut().take() else {
+            return;
+        };
+        if !self.record.read(only_genesis).unwrap_or(false) {
+            return;
+        }
+        let taken = self.record.try_edit(false, |doc| {
+            tilo_resource::evolution::copy_into(&kept, doc).map_err(|error| error.to_string())
+        });
+        let error = match taken {
+            Ok(Ok(())) => return,
+            Err(unavailable) if unavailable.is_momentary() => {
+                *self.taking_in.borrow_mut() = Some(kept);
+                return;
+            }
+            Err(unavailable) => unavailable.to_string(),
+            Ok(Err(error)) => error,
+        };
+        tracing::warn!(kind = P::KIND, %error, "what the person kept did not move into the workspace");
+    }
+
+    /// Refuse `action` now if, after the edits waiting for the store, it
+    /// would be refused once the store takes it.
+    fn admits_after_waiting(
+        &self,
+        action: &P::Action,
+        invoker: &ActionInvoker,
+    ) -> Result<(), ActionError> {
+        let Some(mut doc) = self.record.read(Clone::clone) else {
+            return Ok(());
+        };
+        for (waiting, by) in self.waiting.borrow().iter() {
+            let _ = self.apply_to(&mut doc, waiting, by);
+        }
+        self.apply_to(&mut doc, action, invoker)
+            .map_err(ActionError::Refused)
+    }
+
+    /// The state the record has once the edits waiting for the store are
+    /// made: read from a copy of it they are made in, which is then let go.
+    fn with_waiting(&self) -> Option<Rc<P::State>> {
+        let mut doc = self.record.read(Clone::clone)?;
+        for (action, invoker) in self.waiting.borrow().iter() {
+            if let Err(error) = self.apply_to(&mut doc, action, invoker) {
+                tracing::warn!(kind = P::KIND, %error, "a waiting edit does not apply");
+            }
+        }
+        match tilo_resource::Reader::<P>::read(&doc) {
+            Ok(reader) => Some(Rc::clone(reader.state())),
+            Err(error) => {
+                unreadable_person_resource(P::KIND, &error);
+                None
+            }
+        }
+    }
+
+    /// Apply the edits that waited for the store, in the order they were
+    /// asked for, while it is free.
+    fn apply_waiting(&self) {
+        loop {
+            let Some((action, invoker)) = self.waiting.borrow_mut().pop_front() else {
+                return;
+            };
+            match self.edit(&action, &invoker) {
+                Err(unavailable) if unavailable.is_momentary() => {
+                    self.waiting.borrow_mut().push_front((action, invoker));
+                    return;
+                }
+                Err(unavailable) => {
+                    tracing::warn!(kind = P::KIND, %unavailable, "a waiting edit was not made");
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(kind = P::KIND, %error, "a waiting edit was refused");
+                }
+                Ok(Ok(())) => {}
+            }
+        }
+    }
+
+    /// Make `action` one change of the record, as `invoker`; why not, when
+    /// the record cannot be changed now.
+    fn edit(
+        &self,
+        action: &P::Action,
+        invoker: &ActionInvoker,
+    ) -> Result<Result<(), String>, ui_core::resource::HistoryUnavailable> {
+        let content = action.change_kind() == ChangeKind::Content;
+        self.record
+            .try_edit(content, |doc| self.apply_to(doc, action, invoker))
+    }
+
+    /// Make `action` one change of `doc`, as `invoker`.
+    fn apply_to(
+        &self,
+        doc: &mut ui_core::automerge::AutoCommit,
+        action: &P::Action,
+        invoker: &ActionInvoker,
+    ) -> Result<(), String> {
+        let encoded = tilo_resource::encode::<P>(action).map_err(|error| error.to_string())?;
+        let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
+            .with_app(self.app_id, self.app_title)
+            .with_invoker(invoker.clone())
+            .with_change(action.change_kind());
+        let writer =
+            ui_core::history_source::authors::device_actor(&self.me.actor_bytes(), doc.get_actor());
+        tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -158,24 +302,29 @@ impl<P: Resource> PersonResource<P> {
                 P::LABEL.to_lowercase()
             )));
         }
-        let encoded = tilo_resource::encode::<P>(action)?;
-        let change = action.change_kind();
-        let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
-            .with_app(shared.app_id, shared.app_title)
-            .with_invoker(invoker.clone())
-            .with_change(change);
-        shared
-            .record
-            .edit(change == ChangeKind::Content, |doc| {
-                let writer = ui_core::history_source::authors::device_actor(
-                    &shared.me.actor_bytes(),
-                    doc.get_actor(),
-                );
-                tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            })
-            .map_err(ActionError::Refused)?;
+        tilo_resource::encode::<P>(action)?;
+        // What waited for the store goes first, so edits land in the order
+        // they were asked for.
+        shared.apply_waiting();
+        let waits = !shared.waiting.borrow().is_empty()
+            || match shared.edit(action, invoker) {
+                Ok(result) => {
+                    result.map_err(ActionError::Refused)?;
+                    false
+                }
+                // The store is read by whatever runs now (a pass of the
+                // app's view): the edit is made once it lets go, on the
+                // window's next refresh, and what is read until then holds it.
+                Err(unavailable) if unavailable.is_momentary() => true,
+                Err(unavailable) => return Err(ActionError::Refused(unavailable.to_string())),
+            };
+        if waits {
+            shared.admits_after_waiting(action, invoker)?;
+            shared
+                .waiting
+                .borrow_mut()
+                .push_back((action.clone(), invoker.clone()));
+        }
         shared.refresh();
         Ok(())
     }
@@ -266,6 +415,13 @@ pub(crate) struct PersonState {
     records: Option<PersonResources>,
     /// The app's earlier member records, held for migration.
     own: Option<PersonResources>,
+    /// The records of the window's workspace that every app of it opens
+    /// ([`collab_types::WORKSPACE_DOCUMENTS`]): where a record of a kind
+    /// the workspace keeps is opened, rather than in the person's own scope.
+    workspace: Option<ui_core::resource::workspace::WorkspaceResources>,
+    /// What the person may do in the window's workspace: whether it is their
+    /// own, which takes in the records they kept in their own scope before.
+    permissions: Option<ui_core::permissions::LivePermissions>,
     app_id: &'static str,
     app_title: &'static str,
     me: tilo_resource::MemberId,
@@ -328,22 +484,29 @@ struct HistoryRequest {
     steps: Option<i64>,
 }
 
-/// The address a person record of `kind` is published under. It is a record
-/// address, not a person's id: a person is their bare root key
+/// The address a record of `kind` is published under: its kind for one the
+/// workspace keeps, as every record of the workspace's is; a person record's
+/// is a record address, not a person's id: a person is their bare root key
 /// ([`tilo_resource::PersonId`]).
 #[must_use]
 pub(crate) fn resource_id(kind: &str) -> String {
-    format!("person:{kind}")
+    if collab_types::workspace_document_of_kind(kind).is_some() {
+        kind.to_owned()
+    } else {
+        format!("person:{kind}")
+    }
 }
 
-/// One of the person's own records an app keeps, declared with the app
+/// A record an app keeps beside the one it shows, declared with the app
 /// ([`ResourceApp::PERSON_RESOURCES`](super::ResourceApp::PERSON_RESOURCES)).
 ///
-/// It is the person's, not the workspace's: kept in their own scope, carried
-/// to their other devices by their personal store, and never reaching a
-/// member. The app's committed surface names it whether or not a view
-/// of it is showing, so the host admits the app's changes to it — and its
-/// reads of it — against the surface.
+/// One the workspace keeps ([`collab_types::WORKSPACE_DOCUMENTS`]) is opened
+/// in the window's workspace, the same record for every member. Any other is
+/// the person's: kept in their own scope, carried to their other devices by
+/// their personal store, and never reaching a member. The app's committed
+/// surface names it whether or not a view of it is showing, so the host
+/// admits the app's changes to it — and its reads of it — against the
+/// surface.
 #[derive(Clone, Copy)]
 pub struct PersonKind {
     kind: &'static str,
@@ -392,9 +555,10 @@ impl PersonKind {
     }
 }
 
+/// `P`'s surface, marked as the person's own unless the workspace keeps it.
 fn profile_surface<P: Resource>() -> tilo_resource::Surface {
     tilo_resource::Surface {
-        person: true,
+        person: collab_types::workspace_document_of_kind(P::KIND).is_none(),
         ..P::surface()
     }
 }
@@ -473,6 +637,18 @@ impl PersonState {
         Self::named(Some(records), own, me, Vec::new(), app_id, app_title, wake)
     }
 
+    /// The window's workspace, where the records of the kinds it keeps are
+    /// opened, and what the person may do there.
+    pub(crate) fn in_workspace(
+        mut self,
+        workspace: Option<ui_core::resource::workspace::WorkspaceResources>,
+        permissions: Option<ui_core::permissions::LivePermissions>,
+    ) -> Self {
+        self.workspace = workspace;
+        self.permissions = permissions;
+        self
+    }
+
     /// The person `me`, whose shared records this host does not hold: their
     /// undo and redo of the settings sections are published all the same,
     /// and read the sections' history in the settings document. `earlier`
@@ -499,6 +675,8 @@ impl PersonState {
         Self {
             records,
             own,
+            workspace: None,
+            permissions: None,
             app_id,
             app_title,
             me,
@@ -626,15 +804,6 @@ impl PersonState {
         self.open_of::<P>(P::OWNER, P::edited_by(self.app_id), true, true)
     }
 
-    /// The shared record `P`, opened on first use as [`Self::open_shared`]
-    /// but never published: a host holds it for its own edits, and the app
-    /// whose window shows it publishes its actions.
-    pub(crate) fn hold_shared<P: tilo_resource::SharedResource>(
-        &self,
-    ) -> Option<PersonResource<P>> {
-        self.open_of::<P>(P::OWNER, P::edited_by(self.app_id), false, true)
-    }
-
     /// The record of `P` that the app `owner` keeps, opened on first use,
     /// whether this app changes it, whether it is published when it is
     /// this app's own, and whether it is one of the person's shared records
@@ -647,7 +816,12 @@ impl PersonState {
         shared: bool,
     ) -> Option<PersonResource<P>> {
         let open = |record: StoredResource| -> Result<Opened, String> {
+            let kept = self.kept_to_take_in::<P>(owner, &record);
             let shared = self.shared_of::<P>(record, (!edits).then_some(owner))?;
+            if kept.is_some() {
+                *shared.taking_in.borrow_mut() = kept;
+                shared.refresh();
+            }
             let held = Rc::new(held::<P>(&shared, edits));
             *shared.held.borrow_mut() = Some(Rc::clone(&held));
             let weak = Rc::downgrade(&shared);
@@ -704,12 +878,24 @@ impl PersonState {
         if let Some(open) = self.opened.borrow().get(&key) {
             return Some(Rc::clone(open));
         }
-        let records = if shared {
-            self.resources_of(owner)?
+        let opened = if shared && workspace_keeps(owner, kind) {
+            // The workspace keeps it: one record for every member and app,
+            // its changes decided by the workspace's grants on its owner.
+            match &self.workspace {
+                Some(workspace) => workspace
+                    .open_resource(owner, kind, initialize)
+                    .map_err(|error| format!("{kind}'s record cannot be opened: {error}")),
+                None => Err(format!("{kind} is kept by a workspace, and none is open")),
+            }
         } else {
-            self.own.clone()?
+            let records = if shared {
+                self.resources_of(owner)?
+            } else {
+                self.own.clone()?
+            };
+            open_resource(&records, kind.to_owned(), kind, initialize)
         };
-        let record = match open_resource(&records, kind.to_owned(), kind, initialize) {
+        let record = match opened {
             Ok(record) => record,
             Err(reason) => return self.note_unavailable(owner, of, &reason, publish),
         };
@@ -780,6 +966,9 @@ impl PersonState {
             state: LocalState::new(live.get()),
             live,
             held: RefCell::new(None),
+            waiting: RefCell::default(),
+            ahead: RefCell::default(),
+            taking_in: RefCell::default(),
         });
         let weak = Rc::downgrade(&shared);
         self.refreshers.borrow_mut().push(Box::new(move || {
@@ -819,6 +1008,38 @@ impl PersonState {
             },
         );
         api
+    }
+
+    /// What the person kept of `P` in their own scope, before the workspace
+    /// kept it, to take into `record`, the workspace's: in their own
+    /// workspace (the one they own), while it holds nothing but its genesis.
+    /// A workspace they are only a member of takes in nothing of theirs.
+    fn kept_to_take_in<P: Resource>(
+        &self,
+        owner: &'static str,
+        record: &StoredResource,
+    ) -> Option<ui_core::automerge::AutoCommit> {
+        if !workspace_keeps(owner, P::KIND)
+            || !self.permissions.as_ref().is_some_and(|permissions| {
+                permissions.current().role() == Some(collab_types::Role::Owner)
+            })
+            || !record.read(only_genesis).unwrap_or(false)
+        {
+            return None;
+        }
+        let kept = self.resources_of(owner).and_then(|records| {
+            records
+                .open_existing_resource(ResourceType::new(P::KIND))
+                .ok()
+                .flatten()
+        })?;
+        match kept.read(kept_state::<P>)? {
+            Ok(kept) => Some(kept),
+            Err(error) => {
+                tracing::warn!(kind = P::KIND, %error, "what the person kept does not read");
+                None
+            }
+        }
     }
 
     /// The person's records `owner` keeps: this app's own, or another app's,
@@ -979,6 +1200,37 @@ impl PersonState {
     }
 }
 
+/// Whether the workspace keeps the record of `kind` that `owner` keeps,
+/// rather than each person in their own scope
+/// ([`collab_types::WORKSPACE_DOCUMENTS`]).
+fn workspace_keeps(owner: &str, kind: &str) -> bool {
+    collab_types::workspace_document(owner, &collab_types::workspace_document_id(kind)).is_some()
+}
+
+/// Whether `doc` holds nothing but its genesis: no change of anyone's yet.
+fn only_genesis(doc: &ui_core::automerge::AutoCommit) -> bool {
+    use ui_core::automerge::ReadDoc as _;
+    use ui_core::automerge::transaction::Transactable as _;
+    let genesis = ui_core::resource::genesis_actor(doc);
+    doc.base_heads().iter().all(|head| {
+        doc.get_change_by_hash(head).is_some_and(|change| {
+            change.deps().is_empty() && Some(change.actor_id()) == genesis.as_ref()
+        })
+    })
+}
+
+/// The person's own record of `P`, `doc`, as the workspace's takes it in:
+/// brought up to the app's storage version first, as opening it would.
+fn kept_state<P: Resource>(
+    doc: &ui_core::automerge::AutoCommit,
+) -> Result<ui_core::automerge::AutoCommit, String> {
+    let mut kept = doc.clone();
+    if tilo_resource::evolution::needs_migrate::<P>(&kept) {
+        tilo_resource::evolution::migrate::<P>(&mut kept).map_err(|error| error.to_string())?;
+    }
+    Ok(kept)
+}
+
 /// The record `kind` that `records` keeps, made by `initialize` where it
 /// does not exist yet.
 ///
@@ -1002,9 +1254,14 @@ fn held<P: Resource>(shared: &Rc<Shared<P>>, edits: bool) -> Held<P> {
     let following = Rc::downgrade(shared);
     let applying = Rc::downgrade(shared);
     let reading = Rc::downgrade(shared);
+    let label = if collab_types::workspace_document_of_kind(P::KIND).is_some() {
+        P::LABEL.to_owned()
+    } else {
+        format!("Your {}", P::LABEL.to_lowercase())
+    };
     Held::new(
         resource_id(P::KIND),
-        format!("Your {}", P::LABEL.to_lowercase()),
+        label,
         edits,
         shared.live.clone(),
         move |_: &Live<P>| {

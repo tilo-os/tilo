@@ -258,6 +258,108 @@ pub fn retype_variant_fields<T: crate::Model>(
     Ok(true)
 }
 
+/// Write what the record `from` holds into the record `to`, another record of
+/// the same kind and storage version kept elsewhere: what a record moving
+/// from one store to another takes along. Every field is copied as it is
+/// stored, scalars with their types, maps, lists and texts; the record's own
+/// identity (its `tilo:` keys other than [`VERSION_KEY`]) stays `to`'s. A
+/// map or text `to` already holds at a key is written into rather than
+/// replaced, so what another writer adds to it concurrently is kept.
+///
+/// # Errors
+/// Returns the document's read or write error.
+pub fn copy_into(from: &Doc, to: &mut Doc) -> Result<(), ModelError> {
+    for key in from.keys(&ROOT).collect::<Vec<_>>() {
+        if key.starts_with("tilo:") && key != VERSION_KEY {
+            continue;
+        }
+        if let Some((value, obj)) = from.get(&ROOT, key.as_str())? {
+            copy_value(from, &value, &obj, to, &ROOT, Place::Key(&key))?;
+        }
+    }
+    Ok(())
+}
+
+/// Where [`copy_value`] writes: under a key of a map, or at an index of a
+/// list.
+enum Place<'a> {
+    Key(&'a str),
+    Insert(usize),
+}
+
+fn copy_value(
+    from: &Doc,
+    value: &Value<'_>,
+    obj: &ObjId,
+    to: &mut Doc,
+    into: &ObjId,
+    place: Place<'_>,
+) -> Result<(), ModelError> {
+    use automerge::ObjType;
+    let Value::Object(kind) = value else {
+        let Value::Scalar(scalar) = value else {
+            return Ok(());
+        };
+        let scalar = scalar.as_ref().clone();
+        match place {
+            Place::Key(key) => to.put(into, key, scalar)?,
+            Place::Insert(index) => to.insert(into, index, scalar)?,
+        }
+        return Ok(());
+    };
+    let kind = match kind {
+        ObjType::Table => ObjType::Map,
+        other => *other,
+    };
+    let held = match place {
+        Place::Key(key) => match to.get(into, key)? {
+            Some((Value::Object(held), id)) if held == kind => Some(id),
+            _ => None,
+        },
+        Place::Insert(_) => None,
+    };
+    let target = match (held, place) {
+        (Some(id), _) => id,
+        (None, Place::Key(key)) => to.put_object(into, key, kind)?,
+        (None, Place::Insert(index)) => to.insert_object(into, index, kind)?,
+    };
+    match kind {
+        ObjType::Text => {
+            let text = from.text(obj)?;
+            let length = to.length(&target);
+            to.splice_text(
+                &target,
+                0,
+                isize::try_from(length).unwrap_or(isize::MAX),
+                &text,
+            )?;
+        }
+        ObjType::List => {
+            let start = to.length(&target);
+            for index in 0..from.length(obj) {
+                if let Some((item, item_obj)) = from.get(obj, index)? {
+                    copy_value(
+                        from,
+                        &item,
+                        &item_obj,
+                        to,
+                        &target,
+                        Place::Insert(start.saturating_add(index)),
+                    )?;
+                }
+            }
+        }
+        ObjType::Map | ObjType::Table => {
+            for key in from.keys(obj).collect::<Vec<_>>() {
+                if let Some((item, item_obj)) = from.get(obj, key.as_str())? {
+                    copy_value(from, &item, &item_obj, to, &target, Place::Key(&key))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Write the keys of the JSON object `shape` into the map `obj` as an older
 /// version of an app stored them: what a migration's test builds the
 /// document it migrates from. An object is a map, an array a list, a string,

@@ -522,31 +522,6 @@ impl SettingsResources {
     }
 
     /// The settings sections `declares` declare, of the app `app_id` (titled
-    /// `app_title`), as the app's window keeps them for the person whose
-    /// `records` hold their shared records: each change is stored in the
-    /// session's settings document with what made it and who, and is a step
-    /// of its invoker's, undone and redone like any of theirs.
-    #[must_use]
-    pub fn of_person(
-        app_id: &'static str,
-        app_title: &'static str,
-        declares: &[super::Declare],
-        records: ui_core::resource::person::PersonResources,
-    ) -> Self {
-        Self::declared(
-            super::resources::Sections {
-                app_id,
-                document: SettingsDocument::Session,
-                person: Some(Rc::new(super::person::PersonState::new(
-                    records, None, app_id, app_title, None,
-                ))),
-                apis: Vec::new(),
-            },
-            declares,
-        )
-    }
-
-    /// The settings sections `declares` declare, of the app `app_id` (titled
     /// `app_title`), changed by `person`: each change is stored in the
     /// session's settings document with what made it and who, and is a step
     /// of its invoker's, undone and redone like any of theirs. `earlier`
@@ -609,26 +584,6 @@ impl SettingsResources {
             apis: records.into_sections(),
             person,
         }
-    }
-
-    /// The person's shared records held beside the sections
-    /// ([`Self::shared`]), which the runtime holds for the person; none
-    /// where no person is.
-    #[must_use]
-    pub fn history_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
-        self.person
-            .as_ref()
-            .map(|person| person.owners())
-            .unwrap_or_default()
-    }
-
-    /// The person's shared record `P` (their accounts, their contacts),
-    /// kept in the person's own scope
-    /// ([`Self::history_owners`]), opened on first use; not published here.
-    /// `None` where no person is.
-    #[must_use]
-    pub fn shared<P: tilo_resource::SharedResource>(&self) -> Option<super::PersonResource<P>> {
-        self.person.as_ref()?.hold_shared::<P>()
     }
 
     /// Every section, published with its field edits and verbs, and with

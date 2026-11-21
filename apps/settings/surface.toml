@@ -1320,7 +1320,6 @@ params = [
 kind = "tilo.accounts"
 label = "Accounts"
 version = 2
-person = true
 fields = [
   { path = "accounts", type = { collection = { named = "PersonAccount" } }, stored = "collection" },
   { path = "accounts.*.type_id", type = "text" },

@@ -203,7 +203,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Book(Resource):
     """Contacts — `contacts.book`."""
-    __surface__ = "so.tilo.contacts@e4e007df47b75f0c"
+    __surface__ = "so.tilo.contacts@f062ea782f4bfd13"
     def export_vcard_content(self,
         *,
         contact: str | None = None,
@@ -224,7 +224,7 @@ class Book(Resource):
 
 class Contacts(Resource):
     """Contacts — `contacts.contacts`."""
-    __surface__ = "so.tilo.contacts@e4e007df47b75f0c"
+    __surface__ = "so.tilo.contacts@f062ea782f4bfd13"
     contacts: list[Entry[Contact]]
     @property
     def removed(self) -> list[str]:
@@ -282,7 +282,7 @@ class Contacts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.contacts@e4e007df47b75f0c"
+    __surface__ = "so.tilo.contacts@f062ea782f4bfd13"
     people: list[Entry[Person]]
 
     def project_contact(self,

@@ -130,7 +130,7 @@ fn report_surface(
             .iter_mut()
             .find(|resource| resource.kind == declared.kind())
         {
-            Some(resource) => resource.person = true,
+            Some(resource) => resource.person = declared.surface().person,
             None => resources.push(declared.surface()),
         }
     }
@@ -154,7 +154,7 @@ fn report_surface(
 /// Left out: what the framework publishes on every app (its undo, its
 /// `open`), save the link a scheme the app takes is opened with; what the
 /// shell publishes into the view (its search, its controls); the person's own
-/// documents; the items of a list, which a closed app has none of; what acts
+/// documents and those the workspace keeps for all its apps; the items of a list, which a closed app has none of; what acts
 /// on one document (`…@…`), whose address names the document a window opens, so
 /// an offer of it would hold that window's id; and Settings' pages and
 /// settings, save its link, which the shell's own search finds on every
@@ -174,6 +174,7 @@ fn offers_of(resources: &[tilo_actions::ResourceSpec]) -> Vec<serde_json::Value>
             || (reserved.iter().any(|framework| framework == id) && !opens_links)
             || resource.starts_with("tilo.")
             || resource.starts_with("person:")
+            || collab_types::workspace_document_of_kind(resource).is_some()
             || ((resource.starts_with("settings.") || resource.starts_with("settings:"))
                 && !opens_links)
             || resource.contains(['/', '@'])

@@ -116,7 +116,6 @@ fields = [
 kind = "browser.address-book"
 label = "Address book"
 version = 1
-person = true
 fields = [
   { path = "enabled", type = "bool" },
   { path = "profiles", type = { collection = { named = "AddressProfile" } }, stored = "keyed" },
@@ -152,7 +151,6 @@ fields = [
 kind = "browser.browsing-history"
 label = "Browsing history"
 version = 1
-person = true
 fields = [
   { path = "visits", type = { map = { named = "Visit" } }, readonly = true },
   { path = "imported", type = { map = { named = "ImportedVisit" } }, readonly = true },
@@ -217,7 +215,6 @@ fields = [
 kind = "browser.page-record"
 label = "Page resource"
 version = 1
-person = true
 fields = [
   { path = "actions", type = { map = { named = "PageAction" } }, readonly = true },
   { path = "tabs", type = { map = { named = "Tab" } }, readonly = true },
@@ -271,7 +268,6 @@ fields = [
 kind = "browser.personal-bookmarks"
 label = "Personal bookmarks"
 version = 2
-person = true
 fields = [
   { path = "added", type = { map = { named = "Added" } }, readonly = true },
   { path = "removed", type = { set = "text" }, readonly = true },

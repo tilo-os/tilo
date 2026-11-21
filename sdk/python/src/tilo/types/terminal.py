@@ -167,7 +167,7 @@ ImportRunArgs = TypedDict("ImportRunArgs", {
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@0294d320fd92b088"
+    __surface__ = "so.tilo.terminal@fd731cc50209456e"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -216,6 +216,22 @@ class Session(Resource):
     def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
         """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("stop", items)
+
+    def open_terminal(self,
+        *,
+        cols: int | None = None,
+        rows: int | None = None,
+        attach: str | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        if cols is not None:
+            args["cols"] = cols
+        if rows is not None:
+            args["rows"] = rows
+        if attach is not None:
+            args["attach"] = attach
+        return self.action("open-terminal", **args)
 
     def record_command(self,
         *,
@@ -338,12 +354,12 @@ class Session(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "inspect_session", "read_screen", "inspect_editor", "copy_visible", "copy_selection", "select_all", "history_top", "history_live", "open_link"})
+    __actions__ = frozenset({"run", "rerun", "rerun_test", "stop", "stop_many", "open_terminal", "record_command", "record_command_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "inspect_session", "read_screen", "inspect_editor", "copy_visible", "copy_selection", "select_all", "history_top", "history_live", "open_link"})
 
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@0294d320fd92b088"
+    __surface__ = "so.tilo.terminal@fd731cc50209456e"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""

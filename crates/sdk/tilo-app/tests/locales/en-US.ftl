@@ -281,6 +281,10 @@ test-watched-watch = Remember that a video was watched
 test-saved = Saved
 test-saved-save = Save a video for later
 
+## crates/sdk/tilo-app/tests/workspace_kept_records.rs
+browser-personal-bookmarks = Bookmarks
+browser-personal-bookmarks-keep = Keep a page
+
 ## crates/sdk/tilo-app/tests/private_windows.rs
 test-tabs = Tabs
 test-tabs-open = Open a tab

@@ -1,10 +1,14 @@
 //! Where a person's own records live: their personal store's cluster, and the
 //! ids of the records it holds.
 //!
-//! A person's own data — their accounts, their contacts, their Settings and
-//! each app's personal state — is kept in their personal store
+//! What is a person's own rather than a workspace's — their devices and their
+//! keys, the settings that are theirs everywhere, and the few records an app
+//! keeps of them alone (what the keyboard learned of their typing, the
+//! signature they sign with) — is kept in their personal store
 //! (`tilo_peer_state::PersonalStore`), which every device of theirs holds and
-//! no one else reaches. The store needs only one thing agreed on in advance:
+//! no one else reaches. Everything else, their accounts, contacts and
+//! browsing among it, is the workspace's
+//! ([`crate::WORKSPACE_DOCUMENTS`]). The store needs only one thing agreed on in advance:
 //! the cluster its documents are routed under. That cluster is derived from
 //! the person's root public key alone, so two of their devices agree on where
 //! a document lives without naming each other, and an app's route for one of
