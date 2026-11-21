@@ -286,6 +286,13 @@ async fn a_devices_own_service_holds_a_workspace_a_server_hosts_as_a_member_copy
 /// The notes app, whose records the tests below write and read.
 const NOTES: &str = "so.tilo.notes";
 
+/// Notes Ada's laptop wrote, by record, with the title each was last given.
+const NOTES_WRITTEN: [(&str, &str); 3] = [
+    ("groceries", "Groceries"),
+    ("ideas", "Ideas"),
+    ("trip", "Trip"),
+];
+
 fn note_route(note: &str) -> tilo_peer_state::document_frame::DocumentRoute {
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: NOTES.into(),
@@ -310,15 +317,10 @@ fn note_title(workspaces: &Workspaces, note: &str) -> Option<String> {
     }
 }
 
-/// Write the note `note` titled `title` on `workspaces`, sealed with the keys its device's key
-/// service holds for the note's group: a founding write, then edits after it, as a person typing
-/// writes a note.
-#[allow(dead_code)]
+/// Write the note `note` on `workspaces`, sealed with the keys its device's key service holds
+/// for the workspace's group, as someone typing it writes it: a founding write, then edits after
+/// it, the last of them titling it `title`.
 async fn write_note(workspaces: &Workspaces, note: &str, title: &str) {
-    write_note_edits(workspaces, note, title, 0).await;
-}
-
-async fn write_note_edits(workspaces: &Workspaces, note: &str, title: &str, extra: usize) {
     let sealed = tilo_test_env::within("the note's keys", async {
         loop {
             if let Some(Ok(keys)) = workspaces.own_route_keys(&note_route(note), true).await {
@@ -330,10 +332,7 @@ async fn write_note_edits(workspaces: &Workspaces, note: &str, title: &str, extr
     .await;
     let mut document = automerge::AutoCommit::new();
     let mut founding = true;
-    let mut typing = vec![title.to_owned(), format!("{title}: drafted")];
-    typing.extend((0..extra).map(|i| format!("{title}: {i}")));
-    typing.push(format!("{title}: kept"));
-    for typed in typing {
+    for typed in ["", "Untitled", title] {
         let heads = document.get_heads();
         automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "title", typed)
             .unwrap();
@@ -347,7 +346,9 @@ async fn write_note_edits(workspaces: &Workspaces, note: &str, title: &str, extr
                 &WORKSPACE.to_string(),
                 NOTES,
                 note,
+                None,
                 &changes,
+                founding,
                 founding,
                 Some(&sealed),
             )
@@ -357,20 +358,15 @@ async fn write_note_edits(workspaces: &Workspaces, note: &str, title: &str, extr
     }
 }
 
-/// Wait until `workspaces` reads every note of `notes` with its last title.
-async fn reads_notes(workspaces: &Workspaces, what: &str, notes: &[(&str, &str)]) {
-    let diag = workspaces.clone();
-    let names = notes.iter().map(|(n, _)| (*n).to_owned()).collect::<Vec<_>>();
-    let waited = tokio::time::timeout(Duration::from_secs(60), async {
+/// Wait until `workspaces` reads every note Ada's laptop wrote, each with its last title.
+async fn reads_every_note(workspaces: &Workspaces, what: &str) {
+    tilo_test_env::within(what, async {
         loop {
             let read = workspaces.clone();
-            let want = notes
-                .iter()
-                .map(|(note, title)| ((*note).to_owned(), format!("{title}: kept")))
-                .collect::<Vec<_>>();
             let all = tokio::task::spawn_blocking(move || {
-                want.iter()
-                    .all(|(note, title)| note_title(&read, note).as_deref() == Some(title))
+                NOTES_WRITTEN
+                    .iter()
+                    .all(|(note, title)| note_title(&read, note).as_deref() == Some(*title))
             })
             .await
             .unwrap();
@@ -381,26 +377,24 @@ async fn reads_notes(workspaces: &Workspaces, what: &str, notes: &[(&str, &str)]
         }
     })
     .await;
-    if waited.is_err() {
-        for note in names {
-            let read = ServiceDocuments::of(diag.clone()).read(&WORKSPACE.to_string(), NOTES, &note, None);
-            eprintln!("DIAG {note}: {:?}", read.map(|r| match r { DocumentRead::Whole { bytes, .. } => format!("whole {} bytes", bytes.len()), DocumentRead::Pending => "pending".to_owned(), DocumentRead::Absent => "absent".to_owned(), _ => "other".to_owned() }));
-        }
-        panic!("{what}: not read in 60 s");
-    }
 }
 
-const LONG_AGO_NOTES: [(&str, &str); 3] = [
-    ("groceries", "Groceries"),
-    ("ideas", "Ideas"),
-    ("trip", "Trip"),
-];
+/// The runtime a test that holds its process's wall clock runs its devices on, in the process
+/// of its own the hold needs.
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("the test's runtime")
+}
 
 /// A server holding the workspace, with notes Ada's laptop wrote there well before any other
-/// device arrived and nothing written since: the wall clock of the whole process is held 40
+/// device arrived, and nothing written since: the wall clock of the whole process is held 40
 /// minutes back while the server starts and the notes are written, and the laptop's service
-/// stops before it moves on, so by the time another device arrives every record is long past
-/// the window a live write is taken in. Answers the server, its device and where it is reached.
+/// stops before the clock moves on, so every record is long past the window a live write is
+/// taken in by the time another device arrives. Answers the server, its device and where it is
+/// reached.
 async fn notes_written_long_ago(
     ada: &TestUser,
     process: tilo_clock::testing::OwnProcess,
@@ -409,30 +403,16 @@ async fn notes_written_long_ago(
     TestDevice,
     tilo_peer_state::join::TransportHint,
 ) {
-    notes_written(ada, Some(process), 0).await
-}
-
-async fn notes_written(
-    ada: &TestUser,
-    process: Option<tilo_clock::testing::OwnProcess>,
-    extra: usize,
-) -> (
-    crate::common::TestServer,
-    TestDevice,
-    tilo_peer_state::join::TransportHint,
-) {
     let long_ago = tilo_clock::wall()
         .checked_sub(Duration::from_secs(40 * 60))
         .expect("a wall time 40 minutes back");
-    let held = process.map(|process| tilo_clock::testing::hold_wall_everywhere(process, long_ago));
+    let held = tilo_clock::testing::hold_wall_everywhere(process, long_ago);
     let server_device = ada.enrol("home-server", DeviceCapabilities::member());
     let issuer = TestDevice {
         sk: server_device.sk.clone(),
         cert: server_device.cert.clone(),
     };
     let laptop = ada.enrol("laptop", DeviceCapabilities::primary());
-    let hexs = |k: [u8; 32]| k[..4].iter().map(|b| format!("{b:02x}")).collect::<String>();
-    eprintln!("DIAG keys server={} laptop={}", hexs(issuer.device_pubkey()), hexs(laptop.device_pubkey()));
     let server = spawn_server(ada, server_device, &[WORKSPACE], &[&laptop.cert]).await;
     let hosted = server
         .server
@@ -456,40 +436,39 @@ async fn notes_written(
     )
     .await
     .expect("the server admits the laptop's membership");
-    for (note, title) in LONG_AGO_NOTES {
-        write_note_edits(&copies, note, title, if note == "trip" { extra } else { 0 }).await;
+    for (note, title) in NOTES_WRITTEN {
+        write_note(&copies, note, title).await;
     }
-    reads_notes(&hosted, "the server opens the laptop's notes", &LONG_AGO_NOTES).await;
+    reads_every_note(&hosted, "the server opens the laptop's notes").await;
     // The laptop's sync stops, and time passes.
     drop(copies);
     service.shutdown().await;
     drop(keys);
     drop(held);
-    let _ = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_env_filter("tilo_peer_state=debug,tilo_workspace_service=debug,tilo_workspace_keys=debug,key_group=debug,tilo_server=info,collaboration=info,warn")
-        .with_writer(std::io::stderr)
-        .try_init();
     (server, issuer, hint)
 }
 
 /// A further device of the person, such as a computer restored from their root, holds the
 /// workspace from the server that lists it for them and reads every note written there long
-/// before it arrived, though nothing was written since.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_further_device_reads_every_note_written_long_before_it_arrived() {
-    if !tilo_test_env::in_own_process_here(
+/// before it arrived, though nothing was written since: it only reads, and its key service
+/// takes part in the workspace's group as it holds the copy.
+#[test]
+fn a_further_device_reads_every_note_written_long_before_it_arrived() {
+    tilo_test_env::in_own_process(
         module_path!(),
         "a_further_device_reads_every_note_written_long_before_it_arrived",
-    ) {
-        return;
-    }
-    let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+        || {
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            runtime().block_on(a_further_device_reads(process));
+        },
+    );
+}
+
+async fn a_further_device_reads(process: tilo_clock::testing::OwnProcess) {
     let ada = TestUser::fresh("Ada");
     let (_server, _issuer, hint) = notes_written_long_ago(&ada, process).await;
 
     let restored = ada.enrol("restored computer", DeviceCapabilities::primary());
-    eprintln!("DIAG restored={:02x?}", &restored.device_pubkey()[..4]);
     let state = tempfile::tempdir().unwrap();
     let (service, keys) = own_service(state.path(), &restored).await;
     let copies = service.workspaces().clone();
@@ -499,10 +478,9 @@ async fn a_further_device_reads_every_note_written_long_before_it_arrived() {
     )
     .await
     .expect("the server admits a further device of the person");
-    reads_notes(
+    reads_every_note(
         &copies,
         "the restored computer reads every note written before it arrived",
-        &LONG_AGO_NOTES,
     )
     .await;
     drop(copies);
@@ -512,18 +490,25 @@ async fn a_further_device_reads_every_note_written_long_before_it_arrived() {
 
 /// Someone invited to the workspace reads every note written there long before they joined,
 /// though nothing was written since.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_invited_device_reads_every_note_written_long_before_it_joined() {
-    if !tilo_test_env::in_own_process_here(
+#[test]
+fn an_invited_device_reads_every_note_written_long_before_it_joined() {
+    tilo_test_env::in_own_process(
         module_path!(),
         "an_invited_device_reads_every_note_written_long_before_it_joined",
-    ) {
-        return;
-    }
-    let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+        || {
+            let process = tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process();
+            runtime().block_on(an_invited_device_reads(process));
+        },
+    );
+}
+
+async fn an_invited_device_reads(process: tilo_clock::testing::OwnProcess) {
     let ada = TestUser::fresh("Ada");
     let (server, issuer, _hint) = notes_written_long_ago(&ada, process).await;
-    let hosted = server.server.workspaces().expect("the server holds workspaces");
+    let hosted = server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
 
     let bob = TestUser::fresh("Bob");
     let desktop = bob.enrol("desktop", DeviceCapabilities::primary());
@@ -549,70 +534,12 @@ async fn an_invited_device_reads_every_note_written_long_before_it_joined() {
         .expect("the server admits the invitation"),
         WORKSPACE
     );
-    reads_notes(
+    reads_every_note(
         &copies,
         "the invited device reads every note written before it joined",
-        &LONG_AGO_NOTES,
     )
     .await;
     drop(copies);
     service.shutdown().await;
     drop(keys);
-}
-
-async fn diag_restored(process: Option<tilo_clock::testing::OwnProcess>, asks: bool, extra: usize) {
-    let ada = TestUser::fresh("Ada");
-    let (_server, _issuer, hint) = notes_written(&ada, process, extra).await;
-    let restored = ada.enrol("restored computer", DeviceCapabilities::primary());
-    let state = tempfile::tempdir().unwrap();
-    let (service, keys) = own_service(state.path(), &restored).await;
-    let copies = service.workspaces().clone();
-    tilo_test_env::within(
-        "the restored computer holds the workspace as a member copy",
-        copies.hold_as_member(WORKSPACE, &hint),
-    )
-    .await
-    .expect("the server admits a further device of the person");
-    let asking = asks.then(|| {
-        let provider = keys.keys();
-        tokio::spawn(async move {
-            loop {
-                if let Some(shared) = provider.get() {
-                    let _ = shared.access(WORKSPACE);
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-        })
-    });
-    reads_notes(&copies, "DIAG variant reads", &LONG_AGO_NOTES).await;
-    if let Some(asking) = asking {
-        asking.abort();
-    }
-    drop(copies);
-    service.shutdown().await;
-    drop(keys);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn diag_a_no_hold() {
-    if !tilo_test_env::in_own_process_here(module_path!(), "diag_a_no_hold") {
-        return;
-    }
-    diag_restored(None, false, 0).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn diag_b_hold_asks() {
-    if !tilo_test_env::in_own_process_here(module_path!(), "diag_b_hold_asks") {
-        return;
-    }
-    diag_restored(Some(tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process()), true, 0).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn diag_c_hold_asks_compacted() {
-    if !tilo_test_env::in_own_process_here(module_path!(), "diag_c_hold_asks_compacted") {
-        return;
-    }
-    diag_restored(Some(tilo_clock::testing::OwnProcess::of_a_test_in_its_own_process()), true, 80).await;
 }
