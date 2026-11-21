@@ -281,7 +281,6 @@ impl State {
 
     /// The size of the lock screen as the person sees it, in logical pixels: the rectangle every
     /// display makes, else `output` 's own mode before any display is placed.
-    #[allow(clippy::cast_sign_loss, reason = "output sizes are positive")]
     fn lock_screen_size(&self, output: &Output) -> Option<Size<u32, Logical>> {
         let size = match self.lock_bounds() {
             Some(bounds) => bounds.size,
@@ -292,7 +291,9 @@ impl State {
                 .to_logical(output.current_scale().fractional_scale())
                 .to_i32_round(),
         };
-        (size.w > 0 && size.h > 0).then(|| Size::from((size.w as u32, size.h as u32)))
+        let w = u32::try_from(size.w).ok()?;
+        let h = u32::try_from(size.h).ok()?;
+        (w > 0 && h > 0).then_some(Size::from((w, h)))
     }
 
     /// The lock screen an output shows, and where the screen's corner stands from the output's:
