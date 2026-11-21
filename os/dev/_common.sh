@@ -246,9 +246,12 @@ seal_image_for_install() {
   local image="$1" id store scratch want had
   id="$(podman image inspect --format '{{.Id}}' "$image")" || die "$image is not in local container storage"
   store="$(podman info --format '{{.Store.GraphRoot}}')" || die "podman names no container storage"
-  scratch="$(mktemp -d "${TMPDIR:-/var/tmp}/tilo-composefs-digest.XXXXXX")"
-  # The digest's scratch composefs repository needs a real filesystem: an object
-  # is written with O_TMPFILE, which a container's overlay root does not support.
+  # The digest's scratch composefs repository needs a filesystem that takes O_TMPFILE,
+  # which neither a container's overlay root nor a shared build directory (virtiofs, which
+  # a job's TMPDIR can be) does. It goes beside the container storage it reads, which is
+  # always on a local filesystem.
+  scratch="$(mktemp -d "$(dirname -- "$store")/tilo-composefs-digest.XXXXXX")" \
+    || die "could not make the composefs digest's scratch beside $store"
   want="$(podman run --rm --privileged --network=none --security-opt label=disable \
       -v "$store:/var/lib/containers/storage" -v "$scratch:/var/tmp" \
       --entrypoint /usr/bin/bootc "$id" container compute-composefs-digest-from-storage "$id")" \
