@@ -877,14 +877,22 @@ pub struct RouteContentService {
 /// The service answers its members' wants from the same store. A want that got no content is
 /// asked again by whoever holds the service ([`RouteContent::retry`]), once the patience of its
 /// last answer passed.
+///
+/// `device` is this device's own certificate key, which every want names: the device answering
+/// refuses an ask that names another ([`neighbour_wire::content::answer`]), and a member copy's
+/// serving certificate is the device it joined, not its own ([`Workspaces::serving_certificate`]).
 #[must_use]
 pub fn routes_content(
     workspaces: &Workspaces,
     shelf: Arc<dyn ContentShelf>,
+    device: [u8; 32],
 ) -> RouteContentService {
     let content = RouteContent::new(
         Arc::clone(&shelf),
-        Arc::new(MemberPeers(workspaces.clone())),
+        Arc::new(MemberPeers {
+            workspaces: workspaces.clone(),
+            device,
+        }),
     );
     workspaces.serve_content(Arc::new(ShelfContent(shelf)));
     let keeper: Arc<dyn ContentKeeper> = Arc::new(MemberContent::new(Arc::clone(&content)));
@@ -905,7 +913,12 @@ impl WorkspaceContent for ShelfContent {
 }
 
 /// The workspaces' links as the route of their records' content.
-struct MemberPeers(Workspaces);
+struct MemberPeers {
+    workspaces: Workspaces,
+    /// This device's own certificate key, which a want names: a serving certificate may be the
+    /// one a workspace was made with, which is the device serving a member copy rather than this.
+    device: [u8; 32],
+}
 
 impl MemberPeers {
     fn workspace(route: &CrdtRoute) -> Option<WorkspaceId> {
@@ -919,21 +932,21 @@ impl ContentPeers for MemberPeers {
             return;
         };
         let message = NeighbourMsg::DocumentContentWant {
-            requester: peer_handle(&self.0.serving_certificate().device_public_key),
+            requester: peer_handle(&self.device),
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
             hash: hash.to_owned(),
             have: have.to_vec(),
         };
-        if self.0.member_link(workspace).is_some() {
-            let _ = self.0.send_member(workspace, message);
+        if self.workspaces.member_link(workspace).is_some() {
+            let _ = self.workspaces.send_member(workspace, message);
             return;
         }
         // The workspace this device governs: its host asks the members.
         let Ok(body) = postcard::to_stdvec(&message) else {
             return;
         };
-        let copies = self.0.clone();
+        let copies = self.workspaces.clone();
         let cluster = route.cluster_id.clone();
         tokio::spawn(async move {
             if let Err(error) = copies.ask_members(&cluster, body).await {
@@ -954,7 +967,7 @@ impl ContentPeers for MemberPeers {
             return ContentSources::default();
         };
         let hosts = self
-            .0
+            .workspaces
             .member_material(workspace)
             .map(|material| peer_handle(&material.hint.host.device_public_key))
             .into_iter()

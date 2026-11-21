@@ -64,7 +64,11 @@ pub(super) fn record_content_on(
     workspaces: &Arc<ServiceWorkspaces>,
     shelf: Arc<dyn ContentShelf>,
 ) -> Arc<RouteContent> {
-    let served = routes_content(workspaces.copies(), shelf);
+    let served = routes_content(
+        workspaces.copies(),
+        shelf,
+        workspaces.device_cert().device_public_key,
+    );
     workspaces.install_content(&served.content);
     workspaces.install_keeper(Arc::clone(&served.keeper));
     // A want that got no content is asked again once the patience of its
