@@ -226,7 +226,9 @@ fn answer(app: &mut TestApp<App>, invocation: InvocationId, value: serde_json::V
                 correlation: None,
             },
         });
-    app.frame();
+    // What the answer changes is drawn by the components it wakes: settle them,
+    // as the window does once input stops, so the next look sees the row.
+    app.settle();
 }
 
 fn agent() -> wire::Author {
