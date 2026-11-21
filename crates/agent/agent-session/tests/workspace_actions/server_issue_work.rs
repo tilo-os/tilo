@@ -138,7 +138,7 @@ impl Given {
 
     /// A server that just started: it holds nothing but the workspace's documents.
     fn started(&self, model: Model) -> ServerAgents {
-        ServerAgents::new(self.workspaces.clone(), self.actions.clone(), Some(model))
+        ServerAgents::for_test(self.workspaces.clone(), self.actions.clone(), Some(model))
     }
 
     /// The one turn the workspace owes the agent at `now_ms`.
@@ -825,7 +825,7 @@ async fn a_server_with_an_agent_founds_the_tracker_of_a_workspace_nobody_opened_
     assert!(refused.is_err(), "nothing keeps a tracker yet: {refused:?}");
 
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::new(workspaces.clone(), actions.clone(), Some(slow(asked)));
+    let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), Some(slow(asked)));
     let owed = agents.turns_at(&workspace, now_ms()).await.unwrap();
     assert!(owed.is_empty(), "no issue is given yet: {owed:?}");
 

@@ -112,7 +112,7 @@ impl OnTheirServer {
                 )
                 .unwrap();
         }
-        let agents = HostAgents::new(workspaces.clone(), actions.clone(), servers_model);
+        let agents = HostAgents::for_test(workspaces.clone(), actions.clone(), servers_model);
         Self {
             _server: server,
             actions,

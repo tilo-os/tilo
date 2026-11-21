@@ -244,7 +244,7 @@ impl<'a> Served<'a> {
         asked: &Arc<Mutex<Vec<ModelRequest>>>,
     ) -> Self {
         Self {
-            agents: HostAgents::new(
+            agents: HostAgents::for_test(
                 workspaces.clone(),
                 actions.clone(),
                 Some(minded(Arc::clone(asked))),

@@ -108,7 +108,7 @@ impl Hosted {
                 true,
             )
             .unwrap();
-        let agents = HostAgents::new(workspaces.clone(), actions.clone(), None);
+        let agents = HostAgents::for_test(workspaces.clone(), actions.clone(), None);
         Self {
             _server: server,
             actions,
@@ -134,7 +134,7 @@ impl Hosted {
     /// The server stops and starts again: whatever ran its agents is gone, and what works them now
     /// knows only what the documents and the server's own store hold.
     fn restart(&mut self) {
-        self.agents = HostAgents::new(self.workspaces.clone(), self.actions.clone(), None);
+        self.agents = HostAgents::for_test(self.workspaces.clone(), self.actions.clone(), None);
     }
 
     /// The person writes `words` to their assistant, and the server answers the one turn that

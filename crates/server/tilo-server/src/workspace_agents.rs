@@ -723,12 +723,47 @@ pub struct HostAgents {
 }
 
 impl HostAgents {
+    /// Run the workspace roster through the host's approved signing sessions.
     #[must_use]
-    pub fn new(workspaces: Workspaces, actions: WorkspaceActions, model: Option<Model>) -> Self {
+    pub fn with_sessions(
+        workspaces: Workspaces,
+        actions: WorkspaceActions,
+        model: Option<Model>,
+        server: &crate::Server,
+        sessions: tilo_agent_session::AgentSessions,
+    ) -> Self {
+        Self::build(
+            workspaces,
+            actions,
+            model,
+            Some((server.agent_link(), sessions)),
+        )
+    }
+
+    /// Exercise turn machinery in fixtures that do not provision peer sessions.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn for_test(
+        workspaces: Workspaces,
+        actions: WorkspaceActions,
+        model: Option<Model>,
+    ) -> Self {
+        Self::build(workspaces, actions, model, None)
+    }
+
+    fn build(
+        workspaces: Workspaces,
+        actions: WorkspaceActions,
+        model: Option<Model>,
+        roster: Option<(
+            crate::agents::ServerAgentLink,
+            tilo_agent_session::AgentSessions,
+        )>,
+    ) -> Self {
         let agents = Self {
             workspaces,
             actions,
-            roster: None,
+            roster,
             model,
             going: Arc::default(),
             coding: None,
@@ -744,17 +779,6 @@ impl HostAgents {
         agents.ask_in_conversations();
         agents.carry_sends();
         agents
-    }
-
-    /// The existing peer sessions the server approved to sign for roster turns.
-    #[must_use]
-    pub fn with_roster_sessions(
-        mut self,
-        server: &crate::Server,
-        sessions: Option<tilo_agent_session::AgentSessions>,
-    ) -> Self {
-        self.roster = sessions.map(|sessions| (server.agent_link(), sessions));
-        self
     }
 
     async fn roster_device(

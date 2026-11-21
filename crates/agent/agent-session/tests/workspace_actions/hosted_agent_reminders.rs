@@ -8,7 +8,7 @@ use tilo_actions::remote::ReceiptStatus;
 use tilo_actions::remote::person_events::{self, Ended, EventView, Events, Sort};
 use tilo_server::{
     ServerConfig as Config,
-    agents::start_serving_documents_and_events,
+    agents::{AgentOptions, start_workspace_documents},
     daemon::{Server, ServerIdentity as Identity},
     workspace_bots::events::PersonEvents,
     workspaces::Workspaces,
@@ -22,6 +22,7 @@ type Agents = HostAgents;
 /// events kept going from its start.
 struct Up {
     server: Server,
+    host: tilo_agent_session::AgentHost,
     actions: Actions,
     events: PersonEvents,
     workspaces: Workspaces,
@@ -42,21 +43,28 @@ impl Up {
             device_cert: device.cert.clone(),
             revocations: RevocationList::new(),
         };
-        let (server, actions, events, _) = start_serving_documents_and_events(
+        let (server, host, roster) = start_workspace_documents(
             cfg,
             identity,
-            Some(Arc::new(crate::common::catalogue)),
-            None,
-            None,
-            None,
+            AgentOptions {
+                state_dir: state.join("agents"),
+                model: Arc::new(|| None),
+                catalogue: Some(Arc::new(crate::common::catalogue)),
+                feedback_reviewer: None,
+                shell: None,
+                browsers: None,
+            },
         )
         .await
         .unwrap();
         let workspaces = server.workspaces().unwrap().clone();
         Self {
             server,
-            actions,
-            events: events.expect("a server that keeps workspaces keeps their people's events"),
+            host,
+            actions: roster.actions,
+            events: roster
+                .events
+                .expect("a server that keeps workspaces keeps their people's events"),
             workspaces,
         }
     }
@@ -65,10 +73,12 @@ impl Up {
     async fn down(self) {
         let Self {
             server,
+            host,
             actions,
             events,
             workspaces,
         } = self;
+        host.shutdown();
         drop((actions, events, workspaces));
         server.shutdown().await;
     }
@@ -76,7 +86,7 @@ impl Up {
     /// The agents this server keeps working, with `model`: their tools reach its people's
     /// events.
     fn agents(&self, model: Option<Model>) -> Agents {
-        Agents::new(self.workspaces.clone(), self.actions.clone(), model)
+        Agents::for_test(self.workspaces.clone(), self.actions.clone(), model)
             .with_events(Some(self.events.clone()))
     }
 

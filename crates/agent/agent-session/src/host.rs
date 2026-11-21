@@ -113,6 +113,8 @@ struct Shared {
     agent_sessions: crate::control::AgentSessions,
     /// The wall clock the keeper judges grants by.
     clock: HostClock,
+    /// Standalone tasks and grants left dormant when only roster service is enabled.
+    dormant: OnceLock<SupervisorSnapshot>,
 }
 
 /// How the host reads the wall clock. The keeper runs on its own thread,
@@ -175,6 +177,7 @@ impl AgentHost {
             sessions: Mutex::new(BTreeMap::new()),
             agent_sessions: crate::control::AgentSessions::default(),
             clock,
+            dormant: OnceLock::new(),
         });
         let spawning = shared.clone();
         let supervisor = AgentSupervisor::new(
@@ -222,6 +225,27 @@ impl AgentHost {
         endpoint: HostEndpoint,
         link: Arc<dyn AgentHostLink>,
     ) -> Result<(), String> {
+        self.start_serving(endpoint, link, false)
+    }
+
+    /// Start the roster signing peers, keeping standalone task agents dormant.
+    ///
+    /// # Errors
+    /// The state file could not be read or the host could not start.
+    pub fn start_roster(
+        &mut self,
+        endpoint: HostEndpoint,
+        link: Arc<dyn AgentHostLink>,
+    ) -> Result<(), String> {
+        self.start_serving(endpoint, link, true)
+    }
+
+    fn start_serving(
+        &mut self,
+        endpoint: HostEndpoint,
+        link: Arc<dyn AgentHostLink>,
+        roster_only: bool,
+    ) -> Result<(), String> {
         std::fs::create_dir_all(&self.shared.state_dir)
             .map_err(|error| format!("create {}: {error}", self.shared.state_dir.display()))?;
         let _ = self.shared.endpoint.set(endpoint);
@@ -241,7 +265,18 @@ impl AgentHost {
         let _ = self.shared.runtime.set(runtime);
         let _ = self.shared.link.set(Arc::clone(&link));
         self.supervisor.set_link(link);
-        let snapshot = read_state(&self.state_file())?;
+        let mut snapshot = read_state(&self.state_file())?;
+        if roster_only {
+            let (roster, standalone) = snapshot
+                .grants
+                .into_iter()
+                .partition(|grant| grant.roster_created_at.is_some());
+            let _ = self.shared.dormant.set(SupervisorSnapshot {
+                grants: standalone,
+                agents: std::mem::take(&mut snapshot.agents),
+            });
+            snapshot.grants = roster;
+        }
         let resume = self.supervisor.restore(snapshot, (self.shared.clock)());
         for (identity, control) in resume {
             tracing::info!(agent = %crate::control::agent_id(&identity.delegation), "agent resumes after a host restart");
@@ -249,7 +284,7 @@ impl AgentHost {
                 control.fail(&error);
             }
         }
-        persist(&self.supervisor, &self.state_file(), &self.written);
+        persist(&self.supervisor, &self.shared, &self.written);
         self.keep()
     }
 
@@ -260,7 +295,6 @@ impl AgentHost {
         let supervisor = self.supervisor.clone();
         let shared = self.shared.clone();
         let written = self.written.clone();
-        let file = self.state_file();
         let clock = Arc::clone(&self.shared.clock);
         self.ticker = Some(
             std::thread::Builder::new()
@@ -274,7 +308,7 @@ impl AgentHost {
                         for expired in supervisor.expire((clock)()) {
                             tracing::info!(grant = %expired, "agent grant expired");
                         }
-                        persist(&supervisor, &file, &written);
+                        persist(&supervisor, &shared, &written);
                         let wrote = Instant::now();
                         if shared.stopping.load(Ordering::Acquire) {
                             break;
@@ -332,7 +366,7 @@ impl AgentHost {
 
     /// Write the state now.
     pub fn flush(&self) {
-        persist(&self.supervisor, &self.state_file(), &self.written);
+        persist(&self.supervisor, &self.shared, &self.written);
     }
 
     /// Stop every agent thread, leaving each agent's status as it was so
@@ -350,7 +384,7 @@ impl AgentHost {
         for (thread, _) in threads {
             let _ = thread.join();
         }
-        persist(&self.supervisor, &self.state_file(), &self.written);
+        persist(&self.supervisor, &self.shared, &self.written);
         if let Some(runtime) = self.owned_runtime.take() {
             runtime.shutdown_background();
         }
@@ -608,15 +642,21 @@ fn read_state(file: &Path) -> Result<SupervisorSnapshot, String> {
 
 /// Write the snapshot if it changed since the last write: a private file
 /// replaced whole, so a reader never sees half of it.
-fn persist(supervisor: &AgentSupervisor, file: &Path, written: &Mutex<String>) {
+fn persist(supervisor: &AgentSupervisor, shared: &Shared, written: &Mutex<String>) {
     let mut last = written.lock_recover();
-    let Ok(text) = serde_json::to_string_pretty(&supervisor.snapshot()) else {
+    let mut snapshot = supervisor.snapshot();
+    if let Some(dormant) = shared.dormant.get() {
+        snapshot.grants.extend_from_slice(&dormant.grants);
+        snapshot.agents.clone_from(&dormant.agents);
+    }
+    let Ok(text) = serde_json::to_string_pretty(&snapshot) else {
         return;
     };
     if *last == text {
         return;
     }
-    match tilo_files::native::atomic::write_with_mode(file, text.as_bytes(), 0o600) {
+    let file = shared.state_dir.join(STATE_FILE);
+    match tilo_files::native::atomic::write_with_mode(&file, text.as_bytes(), 0o600) {
         Ok(()) => *last = text,
         Err(error) => tracing::warn!(%error, file = %file.display(), "agent state not written"),
     }

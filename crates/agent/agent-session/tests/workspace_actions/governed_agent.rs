@@ -586,7 +586,7 @@ async fn a_hosted_roster_turn() {
     let state = crate::support::scratch_dir();
     tilo_server::surfaces::decide_receipt(&state.path().join("server/surfaces"));
     let options = || crate::harness::hosted::Options {
-        roster: true,
+        roster_only: true,
         ..crate::harness::hosted::Options::offering(
             crate::common::catalogue,
             tilo_agent_session::ModelChoice::Scripted,
@@ -634,8 +634,26 @@ async fn a_hosted_roster_turn() {
             })),
         )
     };
+    assert!(matches!(
+        guest.invoke(ask()).await.status,
+        ReceiptStatus::Rejected {
+            error: tilo_actions::remote::ActionCallError::Refused { reason },
+        } if reason.contains("guest keepers are not eligible")
+    ));
+    let standalone = page
+        .invoke(request(
+            AGENTS_PROVIDER,
+            ActionAddress::new(SUPERVISOR_RESOURCE, REQUEST_GRANT_ACTION),
+            json(&serde_json::json!({"label": "Standalone", "workspaces": [workspace.workspace]})),
+        ))
+        .await;
+    assert!(matches!(
+        standalone.status,
+        ReceiptStatus::Rejected {
+            error: tilo_actions::remote::ActionCallError::Refused { reason },
+        } if reason.contains("standalone task agents are disabled")
+    ));
     for receipt in [
-        guest.invoke(ask()).await,
         wrong.invoke(ask()).await,
         wrong
             .invoke(request(
@@ -727,6 +745,7 @@ async fn a_hosted_roster_turn() {
     let device = pending.request.device_public_key;
     assert_ne!(first_device, device);
     assert_ne!(page_device.cert.device_public_key, device);
+    assert!(sessions.link(&device).is_none());
     assert_eq!(
         approver
             .decide(
@@ -881,8 +900,13 @@ async fn a_hosted_roster_turn() {
         "I worked on the sheet.",
         Arc::clone(&requests),
     );
-    let runner = HostAgents::new(workspaces.clone(), roster.actions.clone(), Some(model))
-        .with_roster_sessions(&hosted.server, roster.sessions.clone());
+    let runner = HostAgents::with_sessions(
+        workspaces.clone(),
+        roster.actions.clone(),
+        Some(model),
+        &hosted.server,
+        roster.sessions.clone(),
+    );
     let turns = runner.turns(&workspace.workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     let ended = runner.answer(&workspace.workspace, &turns[0]).await;

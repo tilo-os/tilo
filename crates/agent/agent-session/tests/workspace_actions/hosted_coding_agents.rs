@@ -95,8 +95,8 @@ fn coding_on(
     machine.repository(REPOSITORY);
     let (harnesses, starts) = machine.stand_in();
     let machines: Arc<dyn Machines> = machine.clone();
-    let agents =
-        Agents::new(workspaces.clone(), actions.clone(), None).with_coding_by(machines, harnesses);
+    let agents = Agents::for_test(workspaces.clone(), actions.clone(), None)
+        .with_coding_by(machines, harnesses);
     (agents, starts)
 }
 

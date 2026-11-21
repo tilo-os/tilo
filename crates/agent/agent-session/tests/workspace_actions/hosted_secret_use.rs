@@ -200,7 +200,7 @@ impl Hosted {
                 .push(format!("{account} with {password}"));
             Ok("signed in".into())
         });
-        let agents = Agents::new(workspaces.clone(), actions.clone(), None).placing(browsers);
+        let agents = Agents::for_test(workspaces.clone(), actions.clone(), None).placing(browsers);
         Self {
             server: Box::new(server),
             actions,

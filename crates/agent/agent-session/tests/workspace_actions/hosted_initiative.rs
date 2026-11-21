@@ -191,7 +191,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         "What could you do for me?",
     )
     .await;
-    let agents = ServerAgents::new(workspaces.clone(), actions.clone(), None);
+    let agents = ServerAgents::for_test(workspaces.clone(), actions.clone(), None);
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     let me = Caller::authenticated(
@@ -358,7 +358,7 @@ async fn the_model_of_a_hosted_turn_proposes_through_the_tools_its_turn_has() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::new(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(does_then_answers(
@@ -460,7 +460,7 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     )
     .await;
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::new(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(does_then_answers(
@@ -711,7 +711,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     // The server owes the assistant the turn the look started and carries it out with its
     // person's own model, whose first call spends the look-round's day: it is asked nothing more.
     let unasked = Arc::new(Mutex::new(Vec::new()));
-    let agents = ServerAgents::new(
+    let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(never_asked(Arc::clone(&unasked))),

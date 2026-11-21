@@ -562,7 +562,7 @@ async fn answered_knowing(
     model: Model,
     placed: Option<tilo_server::environment::EnvironmentRegistry>,
 ) {
-    let agents = HostAgents::new(
+    let agents = HostAgents::for_test(
         served.workspaces.clone(),
         served.actions.clone(),
         Some(model),

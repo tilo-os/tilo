@@ -33,10 +33,6 @@ impl RosterProvisioning {
         }
     }
 
-    pub(super) fn sessions(&self) -> AgentSessions {
-        self.sessions.clone()
-    }
-
     pub(super) fn start(&self, link: &Arc<ServerAgentLink>) {
         let _ = self.link.set(Arc::downgrade(link));
     }
@@ -127,10 +123,23 @@ fn keeper_required() -> ActionCallError {
     }
 }
 
-fn is_keeper_session(link: &ServerAgentLink, caller: &Caller, cert: &DeviceCert) -> bool {
-    caller.acting().is_person()
-        && caller.user_public_key() == Some(&link.user_public_key)
-        && caller.device_public_key() == Some(&cert.device_public_key)
+fn check_keeper_session(
+    link: &ServerAgentLink,
+    caller: &Caller,
+    cert: &DeviceCert,
+) -> Result<(), ActionCallError> {
+    if !caller.acting().is_person()
+        || caller.user_public_key() != Some(&cert.user_public_key)
+        || caller.device_public_key() != Some(&cert.device_public_key)
+    {
+        return Err(keeper_required());
+    }
+    if cert.user_public_key != link.user_public_key {
+        return Err(ActionCallError::Refused {
+            reason: "this host can only provision roster signing sessions for its own account; guest keepers are not eligible".into(),
+        });
+    }
+    Ok(())
 }
 
 async fn revoke_grant(
@@ -143,10 +152,10 @@ async fn revoke_grant(
     id: &str,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
     let workspaces = link.workspaces.as_ref().ok_or_else(keeper_required)?;
-    if !is_keeper_session(link, caller, cert)
-        || !workspaces
-            .roster_keeper_device(workspace, &link.user_public_key, cert)
-            .await
+    check_keeper_session(link, caller, cert)?;
+    if !workspaces
+        .roster_keeper_device(workspace, &link.user_public_key, cert)
+        .await
     {
         return Err(keeper_required());
     }
@@ -170,8 +179,8 @@ async fn provision(
                 reason: error.to_string(),
             }
         })?;
-    if !is_keeper_session(link, caller, cert)
-        || asked.workspaces.as_slice() != [workspace.to_string()]
+    check_keeper_session(link, caller, cert)?;
+    if asked.workspaces.as_slice() != [workspace.to_string()]
         || asked.agent_id.is_empty()
         || asked.agent_id.len() > tilo_server_protocol::delegation::MAX_DELEGATE_TEXT_BYTES
     {

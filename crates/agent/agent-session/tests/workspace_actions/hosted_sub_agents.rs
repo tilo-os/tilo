@@ -60,7 +60,7 @@ fn worked(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
     model: Model,
 ) -> HostAgents {
-    HostAgents::new(workspaces.clone(), actions.clone(), Some(model))
+    HostAgents::for_test(workspaces.clone(), actions.clone(), Some(model))
 }
 
 /// What Chat's `post` is given for `text` in `conversation`, and its `ask-agent` with a `cause`.

@@ -610,7 +610,7 @@ async fn only_her_own_answer_lets_it_leave_once(
 
     // The server restarts: whatever worked its agents is gone, and no turn starts before she
     // answers.
-    hosted.agents = ServerAgents::new(hosted.workspaces.clone(), hosted.actions.clone(), None);
+    hosted.agents = ServerAgents::for_test(hosted.workspaces.clone(), hosted.actions.clone(), None);
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert!(servers.asked("send").is_empty(), "a restart sends nothing");
 
@@ -623,7 +623,7 @@ async fn only_her_own_answer_lets_it_leave_once(
     assert_eq!(servers.asked("send"), [left.as_str()], "what she was shown");
 
     hosted.agents.look(&hosted.workspace).await.unwrap();
-    hosted.agents = ServerAgents::new(hosted.workspaces.clone(), hosted.actions.clone(), None);
+    hosted.agents = ServerAgents::for_test(hosted.workspaces.clone(), hosted.actions.clone(), None);
     hosted.agents.look(&hosted.workspace).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(

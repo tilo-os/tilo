@@ -39,7 +39,7 @@ macro_rules! team {
 /// Answer the one turn the workspace owes, with the model `$model`.
 macro_rules! answer_the_turn {
     ($workspaces:ident, $actions:ident, $workspace:ident, $model:expr) => {
-        let agents = HostAgents::new($workspaces.clone(), $actions.clone(), Some($model));
+        let agents = HostAgents::for_test($workspaces.clone(), $actions.clone(), Some($model));
         let turns = agents.turns(&$workspace).await.unwrap();
         assert_eq!(turns.len(), 1, "the message is the agent's turn: {turns:?}");
         tokio::time::timeout(

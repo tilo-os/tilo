@@ -61,6 +61,8 @@ pub struct Options {
     pub plain: bool,
     /// Start the services shared with the workspace roster runner.
     pub roster: bool,
+    /// Serve roster grants with standalone task agents disabled.
+    pub roster_only: bool,
 }
 
 impl Default for Options {
@@ -75,6 +77,7 @@ impl Default for Options {
             browsers: None,
             plain: false,
             roster: false,
+            roster_only: false,
         }
     }
 }
@@ -124,11 +127,13 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
         shell: options.shell,
         browsers: options.browsers,
     };
-    let (server, agents, roster) = if options.roster {
-        let (server, agents, roster) =
-            tilo_server::agents::start_with_roster(cfg, identity, agents)
-                .await
-                .unwrap();
+    let (server, agents, roster) = if options.roster || options.roster_only {
+        let (server, agents, roster) = if options.roster_only {
+            tilo_server::agents::start_workspace_documents(cfg, identity, agents).await
+        } else {
+            tilo_server::agents::start_with_roster(cfg, identity, agents).await
+        }
+        .unwrap();
         assert!(roster.events.is_some());
         assert!(roster.initiative.is_some());
         (server, agents, Some(roster))
@@ -207,8 +212,7 @@ pub fn on_this_machine(state: &Path) -> tilo_server::ServerConfig {
     }
 }
 
-/// Start a host for `root`'s person on `host`'s device as tilo.sh's server
-/// runs (`--workspace-documents`): no agents, its workspaces' records served to
+/// Start a host for `root`'s person on `host`'s device, with its records served to
 /// their devices, each action run in the record's own app worker here,
 /// whether or not a page of the person's is open. Its apps are
 /// `catalogue`'s.

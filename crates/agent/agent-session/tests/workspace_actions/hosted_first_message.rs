@@ -173,7 +173,7 @@ async fn the_servers_own_endpoint_answers_until_the_person_links_a_model() {
         tilo_agent_session::ApiKey::None,
     )
     .expect("the endpoint is a model");
-    hosted.agents = Agents::new(
+    hosted.agents = Agents::for_test(
         hosted.workspaces.clone(),
         hosted.actions.clone(),
         Some(tilo_server::workspace_agents::model_of(servers_own)),

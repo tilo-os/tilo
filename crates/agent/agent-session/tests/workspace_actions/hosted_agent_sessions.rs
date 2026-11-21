@@ -61,7 +61,7 @@ async fn a_turn_on_the_server_is_an_agent_session_the_page_reads() {
     .await;
     page.follow_chain(TASKS, tasks::issue_list::chain().chain_head().as_str());
 
-    let agents = HostAgents::new(
+    let agents = HostAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(looks_then_answers(1_000, Arc::default())),

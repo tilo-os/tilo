@@ -252,32 +252,39 @@ impl AgentArgs {
         &self,
         state_dir: PathBuf,
     ) -> anyhow::Result<Option<tilo_server::agents::AgentOptions>> {
-        if !self.agents {
+        if !self.agents && !self.workspace_documents {
             return Ok(None);
         }
-        let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-        let spec = self
-            .model
-            .clone()
-            .or_else(|| env("TILO_AGENT_MODEL"))
-            .unwrap_or_else(|| "settings".into());
-        let name = self
-            .model_name
-            .clone()
-            .or_else(|| env("TILO_AGENT_MODEL_NAME"));
-        let model = tilo_agent_session::ModelChoice::parse(
-            &spec,
-            name.as_deref(),
-            tilo_agent_session::ApiKey::from_env(
-                env("TILO_AGENT_API_KEY"),
-                env("TILO_AGENT_API_KEY_FILE"),
-            ),
-        )
-        .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?;
-        tracing::info!(model = %model.describe(), state = %state_dir.display(), "agents on this host");
+        let model: tilo_agent_session::MakeTurns = if self.agents {
+            let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+            let spec = self
+                .model
+                .clone()
+                .or_else(|| env("TILO_AGENT_MODEL"))
+                .unwrap_or_else(|| "settings".into());
+            let name = self
+                .model_name
+                .clone()
+                .or_else(|| env("TILO_AGENT_MODEL_NAME"));
+            let model = tilo_agent_session::ModelChoice::parse(
+                &spec,
+                name.as_deref(),
+                tilo_agent_session::ApiKey::from_env(
+                    env("TILO_AGENT_API_KEY"),
+                    env("TILO_AGENT_API_KEY_FILE"),
+                ),
+            )
+            .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?;
+            tracing::info!(model = %model.describe(), state = %state_dir.display(), "agents on this host");
+            model.make_turns()
+        } else {
+            // Only approved signing peers are restored under --workspace-documents.
+            // The roster runner selects its model separately, as it does with both flags.
+            std::sync::Arc::new(|| None)
+        };
         Ok(Some(tilo_server::agents::AgentOptions {
             state_dir,
-            model: model.make_turns(),
+            model,
             catalogue: None,
             feedback_reviewer: None,
             shell: None,
@@ -343,7 +350,7 @@ fn announce_web_entry(cfg: &mut tilo_server::ServerConfig, args: &WebArgs) {
 
 /// Start the server; with `--agents`, with its agent supervisor as the
 /// app action server and the agents kept under `state_root/agents`; with
-/// `--workspace-documents` alone, serving the workspaces' records without agents.
+/// `--workspace-documents` alone, serving records, events and roster agents.
 ///
 /// # Errors
 /// The server did not start, or the agent state could not be read.
@@ -403,10 +410,13 @@ pub async fn start_server_lending(
         options.shell = Some(std::sync::Arc::clone(&shells));
         if args.agents.workspace_documents {
             let browsers = options.browsers.clone();
+            let start = if args.agents.agents {
+                tilo_server::agents::start_with_roster(cfg, identity, options).await
+            } else {
+                tilo_server::agents::start_workspace_documents(cfg, identity, options).await
+            };
             let (server, agents, roster) =
-                tilo_server::agents::start_with_roster(cfg, identity, options)
-                    .await
-                    .context("start the server with agents and workspace documents")?;
+                start.context("start the server with workspace documents and roster agents")?;
             let (draining, host_agents) =
                 start_roster(&server, &args.agents, roster, shells, browsers);
             return Ok(HostedServer {
@@ -425,39 +435,6 @@ pub async fn start_server_lending(
             agents: Some(agents),
             host_agents: None,
             draining: None,
-            _lock: lock,
-        });
-    }
-    #[cfg(feature = "agents")]
-    if args.agents.workspace_documents {
-        let browsers = tilo_server::hosted_browser::HostedBrowsers::from_env()
-            .map_err(anyhow::Error::msg)?
-            .map(std::sync::Arc::new);
-        let shells = tilo_server::agents::host_shells(state_root.join("shells"))
-            .map_err(anyhow::Error::msg)?;
-        let (server, actions, events, initiative) =
-            tilo_server::agents::start_serving_documents_and_events(
-                cfg,
-                identity,
-                None,
-                lent.feedback_reviewer,
-                Some(std::sync::Arc::clone(&shells)),
-                browsers.clone(),
-            )
-            .await
-            .context("start the server serving its workspaces' records")?;
-        let roster = tilo_server::agents::RosterServices {
-            sessions: None,
-            actions,
-            events,
-            initiative,
-        };
-        let (draining, host_agents) = start_roster(&server, &args.agents, roster, shells, browsers);
-        return Ok(HostedServer {
-            server,
-            agents: None,
-            host_agents,
-            draining,
             _lock: lock,
         });
     }
@@ -499,14 +476,15 @@ fn start_roster(
             model = %model.as_ref().map_or_else(|| "none".to_owned(), tilo_agent_session::ModelChoice::describe),
             "the workspaces' agents run on this host"
         );
-        let agents = tilo_server::workspace_agents::HostAgents::new(
+        let agents = tilo_server::workspace_agents::HostAgents::with_sessions(
             workspaces,
             roster.actions,
             model.map(tilo_server::workspace_agents::model_of),
+            server,
+            roster.sessions,
         )
         // A coding agent among them is worked by its harness in its workspace's
         // machine, where the shells are.
-        .with_roster_sessions(server, roster.sessions)
         .with_coding(shells)
         .with_events(roster.events)
         .with_initiative(roster.initiative)
@@ -886,7 +864,11 @@ const APPROVER_SETTLED: Duration = Duration::from_secs(30);
 /// that fails (the network changed under it, a path closed, the host was
 /// slow to answer) is logged and reopened with `connect` after a backoff;
 /// it never ends the host.
-async fn approve_forever<C, F>(mut connect: C, root: &SigningKey) -> std::convert::Infallible
+async fn approve_forever<C, F>(
+    mut connect: C,
+    root: &SigningKey,
+    approve_agents: bool,
+) -> std::convert::Infallible
 where
     C: FnMut() -> F,
     F: std::future::Future<Output = anyhow::Result<tilo_server_client::Approver>>,
@@ -895,7 +877,7 @@ where
     loop {
         let opened = tokio::time::Instant::now();
         let error = match connect().await {
-            Ok(approver) => match approve_every_browser(approver, root).await {
+            Ok(approver) => match approve_every_browser(approver, root, approve_agents).await {
                 Err(error) => error,
                 Ok(never) => match never {},
             },
@@ -927,11 +909,12 @@ fn loopback_addr(server: &Server) -> iroh::EndpointAddr {
 }
 
 /// Certify every browser device that asks, as the dev user root, approve
-/// every agent grant a page asks for with its delegation, and allow once
-/// each action an agent asks its person about, until the session fails.
+/// standalone agent grants when workspace documents are disabled, and allow
+/// once each action an agent asks its person about, until the session fails.
 async fn approve_every_browser(
     mut approver: tilo_server_client::Approver,
     root: &SigningKey,
+    approve_agents: bool,
 ) -> anyhow::Result<std::convert::Infallible> {
     loop {
         for asked in approver
@@ -948,19 +931,22 @@ async fn approve_every_browser(
                 .await
                 .context("answer an agent's question")?;
         }
+        let pending = approver
+            .list_pending()
+            .await
+            .context("list certification requests")?;
         let agents = approver
             .list_agent_proposals()
             .await
             .context("list agent proposals")?;
-        for pending in approver
-            .list_pending()
-            .await
-            .context("list certification requests")?
-        {
+        for pending in pending {
             if let Some(agent) = agents
                 .iter()
                 .find(|agent| agent.request_digest == pending.request_digest)
             {
+                if !approve_agents {
+                    continue;
+                }
                 let now = tilo_clock::unix_now_ns();
                 let decision = issue_device_cert(
                     &pending.request,
@@ -1157,8 +1143,12 @@ pub async fn dev(
             .await?)
         }
     };
+    #[cfg(feature = "agents")]
+    let approve_agents = !args.web.agents.workspace_documents;
+    #[cfg(not(feature = "agents"))]
+    let approve_agents = false;
     tokio::select! {
-        never = approve_forever(connect, &root) => match never {},
+        never = approve_forever(connect, &root, approve_agents) => match never {},
         result = shutdown => result?,
     }
     drop(web);
@@ -1529,6 +1519,47 @@ mod tests {
         SigningKey::from_bytes(&rand::random())
     }
 
+    #[cfg(feature = "agents")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workspace_documents_starts_the_roster_with_the_deployed_flags() {
+        #[derive(clap::Parser)]
+        struct Command {
+            #[command(flatten)]
+            web: WebArgs,
+        }
+        let args = <Command as clap::Parser>::try_parse_from([
+            "workspace",
+            "--workspace-documents",
+            "--agent-model",
+            "scripted",
+        ])
+        .unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let (root, device) = (key(), key());
+        let device_cert = enrol(&root, &device, "host", DeviceCapabilities::member()).unwrap();
+        let hosted = start_server(
+            tilo_server::ServerConfig {
+                state_root: state.path().join("server"),
+                identity_root: state.path().join("identity"),
+                packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+                ..Default::default()
+            },
+            ServerIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_signing_key: device,
+                device_cert,
+                revocations: RevocationList::new(),
+            },
+            &args.web,
+            state.path(),
+        )
+        .await
+        .unwrap();
+        assert!(hosted.host_agents.is_some());
+        assert!(hosted.agents.as_ref().unwrap().state_file().is_file());
+        hosted.shutdown().await;
+    }
+
     #[test]
     fn a_web_entry_flag_is_what_the_catalogue_announces() {
         #[derive(clap::Parser)]
@@ -1704,7 +1735,7 @@ mod tests {
                     .await?)
                 }
             };
-            approve_forever(connect, &root).await
+            approve_forever(connect, &root, false).await
         });
 
         let first = sessions.recv().await.unwrap();
