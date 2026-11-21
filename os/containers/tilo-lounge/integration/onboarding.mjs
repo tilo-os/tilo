@@ -304,11 +304,22 @@ const pressName = async (tab, name, timeout = stepLimit(3)) => {
     const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
     const root = globalThis.tiloMount?.state()?.semantics?.root;
     if (root) walk(root);
+    // A page the server renders has no mount: a control is the element that
+    // carries the name, in the window's own coordinates.
+    if (!root) {
+      const page = document.getElementById('tilo-page');
+      for (const el of page?.querySelectorAll('[aria-label], button, a') ?? []) {
+        const box = el.getBoundingClientRect();
+        if (!box.width || !box.height) continue;
+        found.push({name: el.getAttribute('aria-label') ?? (el.innerText || '').trim().split('\n')[0],
+          bounds: {x0: box.x, y0: box.y, x1: box.right, y1: box.bottom}});
+      }
+    }
     const hit = found.find(n => n.name === ${JSON.stringify(name)} && n.bounds);
     if (!hit) return '';
     const b = Array.isArray(hit.bounds) ? hit.bounds : [hit.bounds.x0 ?? hit.bounds.x, hit.bounds.y0 ?? hit.bounds.y,
       hit.bounds.x1 ?? hit.bounds.x + hit.bounds.width, hit.bounds.y1 ?? hit.bounds.y + hit.bounds.height];
-    const corner = globalThis.tiloMount.canvas.getBoundingClientRect();
+    const corner = globalThis.tiloMount?.canvas?.getBoundingClientRect() ?? {left: 0, top: 0};
     return JSON.stringify({x: Math.round(corner.left + (b[0] + b[2]) / 2), y: Math.round(corner.top + (b[1] + b[3]) / 2)});
   })()`, timeout);
   if (!shown) return false;
@@ -583,13 +594,14 @@ try {
   await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
     'the stranger joining through the invitation', stepLimit(8));
   await until(stranger.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)
-    && !!globalThis.tiloMount?.state?.()?.phase`, 'the workspace the stranger joined', stepLimit(8));
+    && !!document.querySelector('#tilo-page [data-p]')`, 'the workspace the stranger joined', stepLimit(8));
   const overWorkspace = await stranger.tab.evaluate(`document.documentElement.dataset.firstScreen ?? null`);
   if (overWorkspace !== null) await fail(`the first screen came over the workspace the stranger joined (${overWorkspace})`);
   report.joined = JSON.parse(await until(stranger.tab, `(() => {
-    const state = globalThis.tiloMount?.state?.() ?? null;
-    return state?.phase === 'presented' && state.workspaceName
-      ? JSON.stringify({workspace: state.workspaceName, title: document.title}) : '';
+    const root = document.documentElement;
+    const name = root.dataset.workspace ?? '';
+    return root.dataset.arrival === 'done' && document.querySelector('#tilo-page [data-p]') && name
+      ? JSON.stringify({workspace: name, title: document.title}) : '';
   })()`, 'the workspace the stranger joined, drawn', stepLimit(8)));
   await dump(stranger.tab, '4-joined-workspace');
   mark('the invitation brought the stranger into a workspace of their own, with no first screen over it');
@@ -642,9 +654,10 @@ try {
   console.log('ok: tilo login ran and added Tilo’s MCP server to the agent');
   await until(stranger.tab, `!${firstScreenShown}`, 'the first screen leaving', stepLimit(4));
   const still = JSON.parse(await until(stranger.tab, `(() => {
-    const state = globalThis.tiloMount?.state?.() ?? null;
-    return state?.phase === 'presented' && state.workspaceName
-      ? JSON.stringify({workspace: state.workspaceName, title: document.title}) : '';
+    const root = document.documentElement;
+    const name = root.dataset.workspace ?? '';
+    return root.dataset.arrival === 'done' && document.querySelector('#tilo-page [data-p]') && name
+      ? JSON.stringify({workspace: name, title: document.title}) : '';
   })()`, 'the workspace drawn again once the setup left', stepLimit(3)));
   if (still.workspace !== report.joined.workspace) {
     await fail(`the setup moved the person out of the workspace they joined: ${still.workspace}, not ${report.joined.workspace}`);
