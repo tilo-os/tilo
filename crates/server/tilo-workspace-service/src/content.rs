@@ -64,7 +64,9 @@ use std::sync::{Arc, Mutex};
 
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::content::{Span, WANT_TTL_MS, answer_pieces, patience_ms};
-use tilo_broker_core::route::CrdtRoute;
+/// The route of a record whose content is asked for: its app and workspace name the scope the
+/// content lives under.
+pub use tilo_broker_core::route::CrdtRoute;
 pub use tilo_content::ContentState;
 use tilo_content::{hash_bytes, valid_hash};
 use tilo_peer_state::peer_handle;
