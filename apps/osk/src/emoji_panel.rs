@@ -128,9 +128,7 @@ impl EmojiPanel {
             group: 0,
             scroll: 0.0,
             // The on-screen keyboard has no window bar.
-            search: ui::window_toolbar::exempt!(Service, {
-                SearchField::new().with_placeholder(&i18n::t("osk-emoji-search"))
-            }),
+            search: SearchField::new().with_placeholder(&i18n::t("osk-emoji-search")),
             tones: None,
             bands: PanelBands::default(),
             search_rect: Rect::ZERO,

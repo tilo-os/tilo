@@ -1363,41 +1363,6 @@ pub fn is_hosted() -> bool {
     }
 }
 
-/// Why a control of the app's own stays where it is although the bar has a part for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Exemption {
-    Picker,
-    Form,
-    Service,
-    Fullscreen,
-    /// Drawn only when no window bar hosts the window.
-    Fallback,
-    Wizard,
-    ListNew,
-}
-
-/// `body` with the reason it keeps a control of its own although the bar has
-/// a part for it ([`Exemption`]).
-///
-/// A reason outside [`Exemption`] does not compile. Wrap the expression that
-/// draws the control, not a statement that binds it: the body is a block.
-///
-/// ```
-/// use tilo_ui::window_toolbar::exempt;
-///
-/// let field = exempt!(Picker, { "type-ahead" });
-/// assert_eq!(field, "type-ahead");
-/// ```
-#[macro_export]
-macro_rules! window_bar_exempt {
-    ($reason:ident, $body:block) => {{
-        const _: $crate::window_toolbar::Exemption = $crate::window_toolbar::Exemption::$reason;
-        $body
-    }};
-}
-
-pub use crate::window_bar_exempt as exempt;
-
 /// Ask the bar to turn the window's editable location into a field, as a click on it
 /// does: the app's Ctrl+L (or F6) while the bar hosts its parts.
 pub fn edit_location() {
