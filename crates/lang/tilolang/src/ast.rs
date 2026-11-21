@@ -39,6 +39,12 @@ pub struct AppHeader {
     pub title: String,
     pub icon: Option<String>,
     pub category: Option<String>,
+    /// `(tagline: "...")`: what the app does, in one plain phrase, as the Store and search show it
+    /// under its name.
+    pub tagline: Option<String>,
+    /// `(keywords: ["note", "memo"])`: the other words people know the app by, which search
+    /// matches.
+    pub keywords: Vec<String>,
     /// `(previously: so.tilo.old)`: the ids the app was published under before; its resources,
     /// grants and windows under them are the app's, when the same publisher signed both.
     pub previously: Vec<String>,

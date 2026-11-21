@@ -90,6 +90,14 @@ pub struct PackageMeta {
     pub icon: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// What the app does, in one plain phrase (`tagline:`), as the Store and search show it under
+    /// its name; empty when it declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tagline: Option<String>,
+    /// The other words people know the app by (`keywords:`), which search matches whatever
+    /// language the desktop speaks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
     /// The ids the app was published under before (`previously: so.tilo.old`): the platform reads
     /// its records, grants and windows under them as the app's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

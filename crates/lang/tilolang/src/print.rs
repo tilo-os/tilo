@@ -40,6 +40,13 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
         if let Some(category) = &app.category {
             options.push(format!("category: .{category}"));
         }
+        if let Some(tagline) = &app.tagline {
+            options.push(format!("tagline: {}", quote(tagline)));
+        }
+        if !app.keywords.is_empty() {
+            let words: Vec<String> = app.keywords.iter().map(|word| quote(word)).collect();
+            options.push(format!("keywords: [{}]", words.join(", ")));
+        }
         match app.previously.as_slice() {
             [] => {}
             [one] => options.push(format!("previously: {one}")),

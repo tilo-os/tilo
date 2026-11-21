@@ -50,9 +50,13 @@ usage:
       than one root. The counts are the same
       on any machine at any load; --times adds what each step took in the framework's named
       scopes, which depends on the machine.
-  tilolang describe [DIR] [--search DIR]...
+  tilolang describe [DIR] [--search DIR]... [--fleet]
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
+      --fleet prints it as the catalogue fleet reads it instead (JSON): the id, name, category,
+      tag line, other-language names and keywords, the kinds of record it declares, the actions
+      it offers while closed and the surface.toml it ships, or null for a package that declares
+      no app
   tilolang repl [--workspace NAME] [--key-file FILE] [--api URL] [--color always|never]
   tilolang repl --session [SESSION] [--workspace NAME] [--color always|never]
       tilolang typed in one of your workspaces, as you: the one this computer's Tilo login is
@@ -314,15 +318,25 @@ fn layout_check_command(args: &[String]) -> ExitCode {
 fn describe_command(args: &[String]) -> Result<(), String> {
     let mut dir = PathBuf::from(".");
     let mut search = Vec::new();
+    let mut fleet = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--search" | "--path" => search.push(value(&mut iter, arg)?.into()),
+            "--fleet" => fleet = true,
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n{USAGE}")),
             other => dir = other.into(),
         }
     }
-    print!("{}", tilolang_cli::describe::describe(&dir, &search)?);
+    if fleet {
+        let entry = tilolang_cli::describe::fleet(&dir, &search)?;
+        println!(
+            "{}",
+            serde_json::to_string(&entry).map_err(|error| error.to_string())?
+        );
+    } else {
+        print!("{}", tilolang_cli::describe::describe(&dir, &search)?);
+    }
     Ok(())
 }
 

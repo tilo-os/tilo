@@ -503,6 +503,8 @@ fn build_meta(
         title: module.app.title.clone(),
         icon: module.app.icon.clone(),
         category: module.app.category.clone(),
+        tagline: module.app.tagline.clone(),
+        keywords: module.app.keywords.clone(),
         previously: module.app.previously.clone(),
         own_resources: module.app.own_resources,
         profile_resources: module.app.profile_resources,

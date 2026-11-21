@@ -198,6 +198,8 @@ struct Parser<'a> {
 struct AppOptions {
     icon: Option<String>,
     category: Option<String>,
+    tagline: Option<String>,
+    keywords: Vec<String>,
     previously: Vec<String>,
     own_resources: bool,
     profile_resources: bool,
@@ -432,9 +434,43 @@ impl<'a> Parser<'a> {
             if self.eat(&Tok::RParen) {
                 break;
             }
-            let key = self.ident("`icon`, `category`, `previously`, `resources` or `web`")?;
+            let key = self.ident(
+                "`icon`, `category`, `tagline`, `keywords`, `previously`, `resources` or `web`",
+            )?;
             self.expect(&Tok::Colon)?;
-            if key.name == "web" {
+            if key.name == "tagline" {
+                if out.tagline.is_some() {
+                    return self.fail(key.span, "`tagline:` is given twice".to_owned());
+                }
+                out.tagline = Some(self.plain_string(
+                    "the app's tag line in quotes, such as \"Notes you write together\"",
+                )?);
+            } else if key.name == "keywords" {
+                if !out.keywords.is_empty() {
+                    return self.fail(key.span, "`keywords:` is given twice".to_owned());
+                }
+                if self.eat(&Tok::LBracket) {
+                    loop {
+                        self.skip_nl();
+                        if self.eat(&Tok::RBracket) {
+                            break;
+                        }
+                        out.keywords.push(self.plain_string(
+                            "a word people know the app by, in quotes, such as \"note\"",
+                        )?);
+                        self.skip_nl();
+                        if !self.eat(&Tok::Comma) {
+                            self.skip_nl();
+                            self.expect(&Tok::RBracket)?;
+                            break;
+                        }
+                    }
+                } else {
+                    out.keywords.push(self.plain_string(
+                        "a word people know the app by, in quotes, such as \"note\"",
+                    )?);
+                }
+            } else if key.name == "web" {
                 if std::mem::replace(&mut seen_web, true) {
                     return self.fail(key.span, "`web:` is given twice".to_owned());
                 }
@@ -483,8 +519,8 @@ impl<'a> Parser<'a> {
                     return self.fail(
                         key.span,
                         format!(
-                            "an app has an `icon:`, a `category:`, `previously:`, `resources:` \
-                             and `web:`, not `{}:`",
+                            "an app has an `icon:`, a `category:`, a `tagline:`, `keywords:`, \
+                             `previously:`, `resources:` and `web:`, not `{}:`",
                             key.name
                         ),
                     );
@@ -527,8 +563,8 @@ impl<'a> Parser<'a> {
                         return self.fail(
                             key.span,
                             format!(
-                                "an app has an `icon:`, a `category:`, `previously:`, `resources:` \
-                                 and `web:`, not `{other}:`"
+                                "an app has an `icon:`, a `category:`, a `tagline:`, `keywords:`, \
+                                 `previously:`, `resources:` and `web:`, not `{other}:`"
                             ),
                         );
                     }
@@ -751,6 +787,8 @@ impl<'a> Parser<'a> {
                 title,
                 icon: options.icon,
                 category: options.category,
+                tagline: options.tagline,
+                keywords: options.keywords,
                 previously: options.previously,
                 own_resources: options.own_resources,
                 profile_resources: options.profile_resources,
@@ -799,6 +837,8 @@ impl<'a> Parser<'a> {
                         title,
                         icon: options.icon,
                         category: options.category,
+                        tagline: options.tagline,
+                        keywords: options.keywords,
                         previously: options.previously,
                         own_resources: options.own_resources,
                         profile_resources: options.profile_resources,

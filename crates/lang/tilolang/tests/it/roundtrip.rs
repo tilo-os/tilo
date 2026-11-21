@@ -247,6 +247,31 @@ tilo_test_env::scenario! {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }
+
+    phase the_app_header_names_its_tag_line_and_keywords_and_they_reach_the_metadata;
+    {
+        let src = "app so.tilo.lang.notes \"Notes\" (tagline: \"Notes you write together\", keywords: [\"note\", \"memo\"])\n\ntype N {\n    a: Int\n}\n";
+        let module = parse(src).expect("parses");
+        assert_eq!(module.app.tagline.as_deref(), Some("Notes you write together"));
+        assert_eq!(module.app.keywords, vec!["note".to_owned(), "memo".to_owned()]);
+        assert_eq!(print_module(&module), src, "the canonical form keeps them");
+        let compiled = crate::common::compile_with(src, &[]).expect("compiles");
+        assert_eq!(
+            compiled.meta.tagline.as_deref(),
+            Some("Notes you write together")
+        );
+        assert_eq!(compiled.meta.keywords, vec!["note".to_owned(), "memo".to_owned()]);
+        let plain = crate::common::compile_with("app t.x \"X\"\ntype N {\n    a: Int\n}\n", &[])
+            .expect("compiles");
+        assert_eq!((plain.meta.tagline, plain.meta.keywords), (None, Vec::new()));
+        for bad in [
+            "app t.x \"X\" (tagline: \"a\", tagline: \"b\")\n",
+            "app t.x \"X\" (keywords: [\"a\"], keywords: [\"b\"])\n",
+            "app t.x \"X\" (tagline: .a)\n",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
 }
 
 /// Every construct of the native vocabulary, in canonical form.
