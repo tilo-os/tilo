@@ -748,9 +748,10 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
 /// into a book ten times the size costs the same bytes into a part the same
 /// size.
 #[test]
-#[ignore = "writes ten thousand contacts, minutes in a debug build; run it with --ignored in a release build"]
 fn a_change_costs_the_same_in_a_book_ten_times_the_size() {
-    use ui::framework::PART_ITEMS as PART_CONTACTS;
+    /// Contacts a part holds here, a twentieth of the framework's own: a few
+    /// hundred contacts show what thousands would.
+    const PART_CONTACTS: usize = 40;
 
     /// Fill the book up to `count` contacts, a part at a time: written
     /// straight into the parts, as a sync brings them.

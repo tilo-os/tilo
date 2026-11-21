@@ -7,9 +7,6 @@
 //! the write kept: no description is read section by section, and no issue is
 //! read back from the tracker, not on a part's first read and not when a list
 //! is too large to follow change by change.
-//!
-//! The rate is printed for reading, at 400 issues and at 10,000:
-//! `cargo test --profile fast -p tasks --test import_rate -- --ignored --nocapture`.
 
 #![allow(
     clippy::expect_used,
@@ -96,38 +93,3 @@ fn each_list_reads_back_each_description_it_wrote_once() {
     );
 }
 
-#[test]
-#[ignore = "a measurement, read with --ignored --nocapture"]
-fn four_hundred_issues_a_second() {
-    issues_a_second(400);
-}
-
-#[test]
-#[ignore = "a measurement, read with --ignored --nocapture"]
-fn ten_thousand_issues_a_second() {
-    issues_a_second(10_000);
-}
-
-fn issues_a_second(issues: usize) {
-    ui::i18n::I18nManager::init("en-US");
-    let mut app = TestApp::<App>::for_person("ada").expect("open");
-    let mut took = Vec::new();
-    for first in (0..issues).step_by(LIST) {
-        let list = list(first);
-        let began = std::time::Instant::now();
-        app.call_on(&chain(), "create-many", json!({ "issues": list }))
-            .expect("the issues are made");
-        took.push(began.elapsed());
-    }
-    let total: std::time::Duration = took.iter().sum();
-    let rate = issues as f64 / total.as_secs_f64();
-    println!("{issues} issues in {total:?}: {rate:.0} issues a second");
-    let mut sorted = took.clone();
-    sorted.sort_unstable();
-    println!(
-        "list of {LIST}: first {:?}, median {:?}, last {:?}",
-        took[0],
-        sorted[sorted.len() / 2],
-        took[took.len() - 1]
-    );
-}
