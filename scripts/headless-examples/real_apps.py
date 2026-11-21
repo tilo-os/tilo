@@ -373,12 +373,33 @@ class Agent:
     program of the login asking to act as an agent, served once the person
     answers the sheet the MCP server puts up."""
 
+    # The agent's own program: it connects to the MCP server and carries its lines both ways.
+    # An agent is a program of its own on the person's computer, and the server judges the
+    # program at the other end of the socket; the walk's own process can't stand in for it,
+    # since a walk that gave up root but kept it to take back is hidden from the person's
+    # programs by the kernel.
+    PROGRAM = (
+        "import os, select, socket, sys\n"
+        "s = socket.socket(socket.AF_UNIX)\n"
+        "s.connect(sys.argv[1])\n"
+        "ends = {0: s.fileno(), s.fileno(): 1}\n"
+        "while ends:\n"
+        "    for fd in select.select(list(ends), [], [])[0]:\n"
+        "        data = os.read(fd, 65536)\n"
+        "        if not data:\n"
+        "            sys.exit(0)\n"
+        "        os.write(ends[fd], data)\n"
+    )
+
     def __init__(self, path: Path, name: str) -> None:
         self.name = name
-        self.sock = socket.socket(socket.AF_UNIX)
-        self.sock.settimeout(120)
-        self.sock.connect(str(path))
-        self.file = self.sock.makefile("rwb")
+        self.program = subprocess.Popen(
+            [sys.executable, "-I", "-c", self.PROGRAM, str(path)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
+        )
+        self.input = self.program.stdin
+        self.output = self.program.stdout
+        self.timeout: float | None = 120.0
         self.next_id = 1
         self.served = None
         self.send("initialize", {
@@ -390,18 +411,33 @@ class Agent:
     def send(self, method: str, params: dict) -> int:
         request = {"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params}
         self.next_id += 1
-        self.file.write(json.dumps(request).encode() + b"\n")
-        self.file.flush()
+        self.input.write(json.dumps(request).encode() + b"\n")
         return request["id"]
 
     def notify(self, method: str) -> None:
-        self.file.write(json.dumps({"jsonrpc": "2.0", "method": method}).encode() + b"\n")
-        self.file.flush()
+        self.input.write(json.dumps({"jsonrpc": "2.0", "method": method}).encode() + b"\n")
+
+    def line(self) -> bytes:
+        """The server's next line, or b"" at the connection's end; TimeoutError past the wait."""
+        held = getattr(self, "held", b"")
+        until = None if self.timeout is None else time.monotonic() + self.timeout
+        while b"\n" not in held:
+            left = None if until is None else max(0.0, until - time.monotonic())
+            if not select.select([self.output], [], [], left)[0]:
+                self.held = held
+                raise TimeoutError("the MCP server answered nothing")
+            data = os.read(self.output.fileno(), 65536)
+            if not data:
+                self.held = b""
+                return held
+            held += data
+        line, _, self.held = held.partition(b"\n")
+        return line + b"\n"
 
     def reply(self):
         """The answer to the request in flight, or None at the connection's end."""
         while True:
-            line = self.file.readline()
+            line = self.line()
             if not line:
                 return None
             try:
@@ -413,14 +449,16 @@ class Agent:
 
     def hears(self, timeout: float = 0.0) -> bool:
         """Whether the MCP server has sent anything back on this connection yet."""
-        ready, _, _ = select.select([self.sock], [], [], timeout)
+        if b"\n" in getattr(self, "held", b""):
+            return True
+        ready, _, _ = select.select([self.output], [], [], timeout)
         return bool(ready)
 
     def answered(self, timeout: float = 120.0) -> bool:
         """Whether the MCP server answered its `initialize`, waiting up to `timeout`."""
         if self.served is not None:
             return "error" not in self.served
-        self.sock.settimeout(timeout)
+        self.timeout = timeout
         self.served = self.reply()
         return self.served is not None and "error" not in self.served
 
@@ -447,10 +485,13 @@ class Agent:
         return text, bool(result.get("isError"))
 
     def close(self) -> None:
-        try:
-            self.sock.close()
-        except OSError:
-            pass
+        for end in (self.input, self.output):
+            try:
+                end.close()
+            except OSError:
+                pass
+        self.program.terminate()
+        self.program.wait(5)
 
 
 class Session:
