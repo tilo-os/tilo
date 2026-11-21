@@ -823,7 +823,9 @@ if [[ ! -d /run/tilo ]] || [[ ! -w /run/tilo ]]; then
     export TILO_AUTHORITY_SOCKET_DIR=/tmp/tilo-files-$(id -u)
     mkdir -p -m 700 "$TILO_AUTHORITY_SOCKET_DIR"
 fi
-setsid "$bin/fs" serve --mount-point "$files_state/mount" --cache-dir "$files_state/cache" \
+# One person's session: the mount is theirs alone, as the process harness takes it, so no
+# desktop's /etc/fuse.conf has to allow other users in.
+TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_state/mount" --cache-dir "$files_state/cache" \
     --storage-sock "$runtime/tilo/files-storage/storage.sock" \
     --blob-sock "$files_runtime/fs-blobs.sock" \
     --session-link "$files_runtime/fs-session-link" \
