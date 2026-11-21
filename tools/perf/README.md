@@ -40,7 +40,7 @@ TILO_STARTUP_METRICS_PATH=~/session-startup.json tilo-session
 tools/perf/startup_marks.py ~/session-startup.json --device opi3b --json opi3b-startup.json
 
 # The web shell: build a bundle, then load it in headless Chrome.
-crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/bundle" --bundle desktop
+crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/bundle" --bundle runtime
 node tools/perf/web_startup.mjs --bundle "$PWD/bundle" --device web-desktop --json web.json
 # The page names the graphics step it waits on (`device`, `pipelines`,
 # `surface`), printed with its time: a slow first frame on a browser without

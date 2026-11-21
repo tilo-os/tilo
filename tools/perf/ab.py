@@ -455,7 +455,7 @@ BROWSER_BUILD = ("bash", "-c",
                  f'rm -rf "$PWD/{BROWSER_BUNDLE}" && env -u CARGO_PROFILE_RELEASE_LTO '
                  "-u CARGO_PROFILE_RELEASE_CODEGEN_UNITS GIT_CONFIG_COUNT=1 "
                  "GIT_CONFIG_KEY_0=status.showUntrackedFiles GIT_CONFIG_VALUE_0=no "
-                 f'crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/{BROWSER_BUNDLE}" --bundle desktop')
+                 f'crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/{BROWSER_BUNDLE}" --bundle runtime')
 
 # The groups of tools/ci/perf-scheduled.sh that measure a build of the repository.
 # `footprint` measures published artifacts, so it has no A/B.

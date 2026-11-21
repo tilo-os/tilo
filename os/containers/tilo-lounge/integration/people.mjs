@@ -70,11 +70,8 @@ if (only && !['call', 'shell', 'menus', 'invite'].includes(only)) {
 const runs = name => !only || only === name;
 // The apps the shell case opens from the search, by label: the browser's own
 // part of opening an app (its code fetched as its window fills in, its frame
-// drawn by the page's GPU), on a few apps. That every app the page offers
-// opens from the search on the frame after Enter is an in-process test of the
-// shell's own search, in seconds
-// (crates/session/desktop-surface/tests/every_web_app_opens_from_search.rs);
-// `all` opens every one here as well.
+// drawn by the page's GPU), on a few apps; `all` opens every app the page
+// offers from the search.
 const APPS = (process.env.TILO_PEOPLE_APPS ?? 'Notes,Sheets,Calculator').split(',').map(label => label.trim()).filter(Boolean);
 
 const report = {site, server, origin, at: new Date().toISOString()};

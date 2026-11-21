@@ -143,20 +143,20 @@ class SelectorTests(unittest.TestCase):
         source = directory / "src/lib.rs"
         source.write_text('//! Browser exports.\n#![cfg(target_arch = "wasm32")]\n')
         package = {
-            "name": "tilo-web-desktop", "manifest_path": str(directory / "Cargo.toml"),
-            "targets": [{"name": "tilo-web-desktop", "kind": ["lib"], "test": True,
+            "name": "tilo-web-page", "manifest_path": str(directory / "Cargo.toml"),
+            "targets": [{"name": "tilo-web-page", "kind": ["lib"], "test": True,
                          "src_path": str(source)}],
             "dependencies": [{"name": "base", "path": str(self.root / "base")},
                              {"name": "wasm-bindgen", "kind": None}],
         }
         self.metadata["packages"].append(package)
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
-        self.assertIn("tilo-web-desktop", plan["selected"])
-        self.assertIn("tilo-web-desktop", plan["wasm"])
-        self.assertNotIn("tilo-web-desktop", plan["tested"])
-        self.assertTrue(any("-p tilo-web-desktop" in row["packages"]
+        self.assertIn("tilo-web-page", plan["selected"])
+        self.assertIn("tilo-web-page", plan["wasm"])
+        self.assertNotIn("tilo-web-page", plan["tested"])
+        self.assertTrue(any("-p tilo-web-page" in row["packages"]
                             for row in plan["clippy_matrix"]["include"]))
-        self.assertFalse(any("-p tilo-web-desktop" in row["test_packages"]
+        self.assertFalse(any("-p tilo-web-page" in row["test_packages"]
                              for row in plan["matrix"]["include"]))
         # An actual native integration target must restore test execution,
         # even while the library remains guarded to wasm.
@@ -166,8 +166,8 @@ class SelectorTests(unittest.TestCase):
         package["targets"].append({"name": "native", "kind": ["test"], "test": True,
                                    "src_path": str(native)})
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
-        self.assertIn("tilo-web-desktop", plan["tested"])
-        self.assertTrue(any("-p tilo-web-desktop" in row["test_packages"]
+        self.assertIn("tilo-web-page", plan["tested"])
+        self.assertTrue(any("-p tilo-web-page" in row["test_packages"]
                             for row in plan["matrix"]["include"]))
 
     def test_near_is_the_change_its_direct_dependants_and_what_is_tested(self):
@@ -1835,11 +1835,11 @@ class DependencyKindTests(unittest.TestCase):
             "tilo-agent-session": [("tilo-session-host", None), ("agent", None)],
             "tilo-sync-load": [("tilo-session-host", None)],
             "tilo-browser-runtime": [("tilo-session-host", None)],
-            "tilo-web-desktop": [("tilo-browser-runtime", None)],
+            "tilo-web-page": [("tilo-browser-runtime", None)],
             "tilo-server-shell": [("tilo-server", "dev")],
             "discord-worker": [("tilo-server", "dev")],
         }
-        metadata = self.metadata(graph, wasm=frozenset({"tilo-browser-runtime", "tilo-web-desktop"}))
+        metadata = self.metadata(graph, wasm=frozenset({"tilo-browser-runtime", "tilo-web-page"}))
         packages, _ = ci_select.package_maps(metadata, self.root)
         every_edge = ci_select.closure({"tilo-owner-commit"}, ci_select.reverse_dependencies(packages, self.root))
         self.assertEqual(len(every_edge | set(self.contracts)), 18, "the selection before dev edges stopped")
@@ -1855,9 +1855,9 @@ class DependencyKindTests(unittest.TestCase):
                              set(plan["tested"]))
         # A change to browser-peer itself still reaches relay and the wasm crates.
         plan = ci_select.make_plan(metadata, self.root, ["tilo-session-host/src/lib.rs"], 2)
-        self.assertLessEqual({"tilo-server", "tilo-server-shell", "discord-worker", "tilo-web-desktop"},
+        self.assertLessEqual({"tilo-server", "tilo-server-shell", "discord-worker", "tilo-web-page"},
                              set(plan["selected"]))
-        self.assertEqual(plan["wasm"], ["tilo-browser-runtime", "tilo-web-desktop"])
+        self.assertEqual(plan["wasm"], ["tilo-browser-runtime", "tilo-web-page"])
 
 
 class ManifestAttributionTests(unittest.TestCase):

@@ -1459,9 +1459,8 @@ strip = "symbols"
 [profile.release.package.tilo-boot-signin]
 strip = "symbols"
 
-# The browser bundles' release build (`build.sh --profile release`), measured
-# in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO and one codegen unit
-# come from `release`. `panic = "abort"` is the only panic
+# The browser bundles' release build (`build.sh --profile release`). Fat LTO
+# and one codegen unit come from `release`. `panic = "abort"` is the only panic
 # strategy wasm32-unknown-unknown has on stable: the runtime's panic hook
 # reports the message, then the module traps and the page must reload.
 # No debug info or symbol table: the bundle size is what matters in a browser.
@@ -1485,16 +1484,16 @@ panic = "abort"
 debug = false
 strip = "symbols"
 
-# `wasm-release` with the symbol table kept: the desktop bundle is split into
-# a start module and per-app modules loaded on demand, and the splitter reads
-# function names and relocations from the linked module. The modules it
-# writes are stripped.
+# `wasm-release` with the symbol table kept: a bundle that splits its apps is
+# split into a start module and per-app modules loaded on demand, and the
+# splitter reads function names and relocations from the linked module. The
+# modules it writes are stripped.
 [profile.wasm-split]
 inherits = "wasm-release"
 strip = "none"
 
 # `wasm-split` without its whole-program link, as `lounge-check` is `release`
-# without it: the local tilo.sh stack's and its checks' desktop bundle, which a
+# without it: the local tilo.sh stack's and its checks' bundle, which a
 # change to one app relinks in a minute instead of fat LTO's single
 # codegen unit over every app. Same opt-level, same split, same wasm-opt; the
 # module is larger before wasm-opt and the shipped bundle stays `wasm-split`'s.
@@ -1503,7 +1502,7 @@ inherits = "wasm-split"
 lto = false
 codegen-units = 16
 
-# `wasm-split-check` compiled incrementally: the local stack's desktop bundle
+# `wasm-split-check` compiled incrementally: the local stack's bundle
 # (build.sh --profile local), built in a build directory that stays, as
 # `lounge-local` is to `lounge-check`, in as many codegen units.
 [profile.wasm-split-local]
@@ -1524,9 +1523,9 @@ debug-assertions = true
 overflow-checks = true
 
 # `wasm-assert` with the symbol table kept, for the same reason `wasm-split`
-# keeps it: the desktop bundle is split into a start module and per-app
-# modules, and the splitter reads the linked module's function names and
-# relocations. The modules it writes are stripped.
+# keeps it: a bundle that splits its apps is split into a start module and
+# per-app modules, and the splitter reads the linked module's function names
+# and relocations. The modules it writes are stripped.
 [profile.wasm-assert-split]
 inherits = "wasm-assert"
 strip = "none"

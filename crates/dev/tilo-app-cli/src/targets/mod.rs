@@ -60,7 +60,7 @@ impl TargetRequest {
             release: false,
             assertions: false,
             allow_planned: false,
-            bundle: WebBundle::Auto,
+            bundle: WebBundle::App,
             features: Vec::new(),
             no_default_features: false,
         }
@@ -69,11 +69,18 @@ impl TargetRequest {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum WebBundle {
-    /// The desktop bundle for Tilo's own web apps, otherwise the app alone.
-    Auto,
     /// The page runtime with only this app.
     App,
-    Desktop,
+}
+
+impl WebBundle {
+    /// The name `build.sh --bundle` and `build.json` carry.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::App => "app",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -560,10 +567,6 @@ pub fn package(start: &Path, request: &TargetPackageRequest) -> Result<PathBuf> 
     let project = Project::load(start)?;
     let mut build_request = request.build.clone();
     build_request.release = true;
-    // A package is this app's artifact, never the shared desktop bundle.
-    if build_request.bundle == WebBundle::Auto {
-        build_request.bundle = WebBundle::App;
-    }
     match build_request.target {
         Target::Linux => {
             for note in check_target(&project, Target::Linux, build_request.allow_planned)? {

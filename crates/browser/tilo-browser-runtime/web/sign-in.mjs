@@ -31,8 +31,8 @@
  * `decision=deny`.
  *
  * The page holds no peer and reads no runtime until the person agrees: a
- * sign-in link is not a workspace, and the desktop's bundle has no part in
- * answering one. What it can say of the card it reads without either: the
+ * sign-in link is not a workspace, and the bundle's runtime code has no part
+ * in answering one. What it can say of the card it reads without either: the
  * workspaces this browser entered by name, and the site's own home workspace
  * from `entry.json`. A grant that reaches a workspace neither names is said
  * in plain words, never by its id; so is where the service is when its

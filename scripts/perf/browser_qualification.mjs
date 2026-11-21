@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The browser runtime's performance qualification: one release desktop bundle
-// (crates/browser/tilo-browser-runtime/scripts/build.sh OUT --bundle desktop)
+// (crates/browser/tilo-browser-runtime/scripts/build.sh OUT --bundle runtime)
 // in headless Chrome, measured the way a person uses it, and checked against
 // the runtime's documented goals. It writes one report; `tools/perf/adapters.py
 // browser-qualification` turns that into the `browser` KPI group's records
@@ -71,8 +71,7 @@
 //   demo minimum   30 fps: p95 frame interval <= 33.3 ms
 //   demo goal      120 fps: p50 frame interval and p95 frame work <= 8.33 ms
 //   activation     p99 <= 50 ms
-//   open           p99 <= 250 ms (crates/browser/tilo-web-desktop/scripts/open-times.mjs),
-//                  the app's own code drawn within 1 s
+//   open           p99 <= 250 ms, the app's own code drawn within 1 s
 //   load           p99 <= 2.5 s (the web's "good" Largest Contentful Paint)
 //   idle           <= 2 presented frames per second
 //   typing         key to presented frame p95 <= 50 ms (a key that reaches the

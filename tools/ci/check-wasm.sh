@@ -59,8 +59,6 @@ verify() {
 if [ "$#" -gt 0 ]; then
   verify "browser crates" "$@"
 fi
-# scripts/build.sh desktop: the page runtime with every web app registered.
-verify "web desktop" --lib -p tilo-web-desktop
 # scripts/build.sh runtime: the page runtime an app bundle links.
 verify "page runtime" --lib -p tilo-browser-runtime
 # Private image-only worker kernel.

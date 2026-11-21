@@ -10,9 +10,8 @@ node apps/model-providers/web/run.mjs "$PWD/target/tilo-app/web/model-providers/
 
 This builds the SDK's production **single-app** bundle for
 `apps/model-providers`, linking its actual `definition()` and the shared
-provider settings UI into `tilo-browser-runtime`. It does not build all desktop
-applications. `generate_web_desktop.py --check` separately checks that the
-production desktop registration is current.
+provider settings UI into `tilo-browser-runtime`. It does not build any other
+application.
 
 `run.mjs` starts an HTTPS administration fixture and an owned Chromium instance,
 mounts through production `host.mjs`, and explicitly supplies a

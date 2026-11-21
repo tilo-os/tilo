@@ -1,8 +1,6 @@
 //! Code a program fetches the first time it is used, or links: one
 //! declaration ([`lazy_code!`](crate::lazy_code)) serves both builds of a
-//! crate, so its callers ask [`LazyCode::get`] either way. The browser
-//! desktop splits each such piece of code into a module of its own
-//! (`crates/browser/tilo-web-desktop/src/lazy.rs`).
+//! crate, so its callers ask [`LazyCode::get`] either way.
 
 use crate::deferred::Deferred;
 

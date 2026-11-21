@@ -663,7 +663,7 @@ struct TargetOptions {
     #[arg(long, requires = "release")]
     assertions: bool,
     /// Web only: which bundle to build.
-    #[arg(long, value_enum, default_value = "auto")]
+    #[arg(long, value_enum, default_value = "app")]
     bundle: tilo_app_cli::targets::WebBundle,
     /// Build even when a required capability's backend is only planned.
     #[arg(long)]

@@ -143,7 +143,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 | Mail (wait-list confirmations, invitations) | Resend | a sink that keeps each mail as a file at `127.0.0.1:24123`; `stack.sh mail` lists them with their links |
 | A mail account's servers | the person's mail provider | with `TILO_SH_MAIL_STAND_IN=1`, an IMAP and an SMTP server with real sockets at `127.0.0.1:24124` and `127.0.0.1:24125` that take one made-up login, show an empty inbox and send nothing; its certificate is in this stack's trust bundle alone, and `stack.sh mail-account` prints the settings to type |
 | API server (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `api` | `tilo-api` at `http://localhost:24110` |
-| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy at `http://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command, signed with the stack's own key, which the site's installer downloads and trusts instead of Tilo's release key |
+| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's entry bundle, laid out and precompressed as the image does it, on `127.0.0.1:24121` behind the same Caddy at `http://tilo.localhost:24120`; `/releases/latest` serves this checkout's `tilo` command, signed with the stack's own key, which the site's installer downloads and trusts instead of Tilo's release key |
 | Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | the image as root through `sudo` where the machine has `/dev/kvm`: with `--images`, or natively when `TILO_SH_VM_HOST=1` names its images; otherwise skipped with the reason |
 | Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the server places it there ([hosted Browser](hosted-browser.md)) |
 | Discord | discord.com | `stack.sh up --discord` starts `crates/dev/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
@@ -281,7 +281,7 @@ runs a program on its builder and brings files of its target dir back
 there; with any other (`cargo`), the bundle's build script
 binds and splits here and needs wasm-bindgen.
 
-`TILO_SH_BUNDLE` names a desktop bundle built elsewhere (`build.sh OUT --bundle
+`TILO_SH_BUNDLE` names a bundle built elsewhere (`build.sh OUT --bundle
 desktop`) for the native stack to serve. `TILO_SH_PROGRAMS`, `TILO_SH_LOUNGE`,
 `TILO_SH_SITE`, `TILO_SH_CADDY` and `TILO_SH_CLI_DIR` name what a check built
 already, so the stack compiles and lays out nothing. With `--images`,

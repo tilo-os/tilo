@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The web entry image's build context (crates/browser/tilo-browser-runtime/container): the
-# desktop bundle (web-entry-bundle.sh, the web-desktop-bundle check's output) laid out under
+# web entry's bundle (web-entry-bundle.sh, the web-entry-bundle check's output) laid out under
 # its content version, the developer docs (tools/docs/build-site.sh, the docs-site check's output)
 # under docs/, and the server's files.
 # usage: web-entry-context.sh OUT BUNDLE DOCS
@@ -11,7 +11,7 @@ out=${1:?$usage}
 bundle=${2:?$usage}
 docs=${3:?$usage}
 cd "$repo_root"
-[[ -f $bundle/build.json ]] || die "no desktop bundle at $bundle"
+[[ -f $bundle/build.json ]] || die "no web entry bundle at $bundle"
 [[ -f $docs/index.html && -f $docs/llms.txt ]] || die "no developer docs at $docs"
 rm -rf "$out"
 mkdir -p "$out"

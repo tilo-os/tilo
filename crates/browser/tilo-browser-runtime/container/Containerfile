@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # The Tilo app on the web: the browser runtime's
-# desktop bundle, laid out by layout.py in CI (context: site/), served as
+# entry bundle, laid out by layout.py in CI (context: site/), served as
 # static files. Nothing here compiles; the image only compresses and serves.
 # Pinned on registry.fedoraproject.org, which keeps superseded digests;
 # quay.io prunes them, so a digest pinned there stops resolving.

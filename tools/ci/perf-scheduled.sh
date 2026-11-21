@@ -38,12 +38,12 @@ commit_checkout() {
   git reset -q "$T_COMMIT"
 }
 
-# The browser desktop bundle the web entry serves, which the run's
-# web-desktop-bundle check built for this commit (the bundle records it): the same release
-# build, made once for every consumer instead of again for each measurement.
+# The web entry's bundle, which the run's web-entry-bundle check built for this
+# commit (the bundle records it): the same release build, made once for every
+# consumer instead of again for each measurement.
 desktop_bundle() {
   local bundle=${TILO_PERF_DESKTOP_BUNDLE:-/target/publish/web-entry/bundle}
-  [[ -f $bundle/index.html ]] || { echo "$group measures the web-desktop-bundle check's bundle, not found at $bundle" >&2; exit 2; }
+  [[ -f $bundle/index.html ]] || { echo "$group measures the web-entry-bundle check's bundle, not found at $bundle" >&2; exit 2; }
   printf '%s\n' "$bundle"
 }
 

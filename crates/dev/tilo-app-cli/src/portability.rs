@@ -1575,7 +1575,7 @@ const NOT_WEB_FEATURES: &[&str] = &["tilo-os", "linux", "macos"];
 
 /// The app's features its web build leaves off: its
 /// `[package.metadata.tilo] web-features` lists the features the page build
-/// selects, on top of no defaults (`tools/web/generate_web_desktop.py`), so
+/// selects, on top of no defaults, so
 /// every other feature of the package is that build's absence. An app that
 /// declares none builds its page from the defaults it always uses.
 fn web_absent(manifest: &toml::Table) -> Vec<String> {

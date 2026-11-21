@@ -217,8 +217,8 @@ fetched once. The
 server and the API server trust the local Caddy's CA through the fixed bundle path
 Tilo's programs read, which bwrap (bubblewrap) puts in front of this machine's
 own for those processes alone. No process sees this session's D-Bus or runtime
-directory. TILO_SH_BUNDLE names a built desktop bundle
-(build.sh --bundle desktop) instead of building one, built from this
+directory. TILO_SH_BUNDLE names a built bundle
+(build.sh --bundle runtime) instead of building one, built from this
 checkout's commit (TILO_SH_BUNDLE_ANY_COMMIT=1 serves one from another);
 TILO_SH_BUNDLE_NAMES=1
 builds it with its function names kept, for profiling the page
@@ -1740,7 +1740,7 @@ lay_out_lounge() {
   if [[ -w $lounge/bin ]]; then ln -sfn ../fonts "$lounge/bin/fonts"; fi
 }
 
-# The desktop bundle the web entry serves (build.sh --bundle desktop);
+# The bundle the web entry serves (build.sh --bundle runtime);
 # TILO_SH_BUNDLE names a built one instead. By default build.sh's local
 # profile, compiled, bound and split on the build server and brought up to
 # date in place (--update): a module that did not change is neither bound nor
@@ -1753,7 +1753,7 @@ build_bundle() {
   if [[ -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_SITE:-} ]]; then return; fi
   local began=$SECONDS names=() out=$native/bundle-local
   if from_t && [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]]; then
-    t_build 'the desktop bundle' web-entry-bundle
+    t_build "the web entry's bundle" web-entry-bundle
     t_bundle
     say "bundle built ($((SECONDS - began))s)"
     return
@@ -1763,14 +1763,14 @@ build_bundle() {
   if on_builder; then
     builder_build bundle
     from=(--wasm-from "$repo/target/$(bundle_stage)")
-    say 'laying out the desktop bundle around the module the build server made (build.sh --wasm-from)'
+    say "laying out the web entry's bundle around the module the build server made (build.sh --wasm-from)"
   else
-    say "building the desktop bundle (build.sh --bundle desktop --profile local --update ${names[*]}, compiled by $cargo)"
+    say "building the web entry's bundle (build.sh --bundle runtime --profile local --update ${names[*]}, compiled by $cargo)"
   fi
   mkdir -p "$out"
   CARGO=$here/cargo.sh TILO_SH_CARGO=$cargo TILO_SOURCE_REVISION=$commit \
     "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$out" \
-    --bundle desktop --profile local --update "${names[@]}" "${from[@]}" >&2 \
+    --bundle runtime --profile local --update "${names[@]}" "${from[@]}" >&2 \
     || die 'the desktop bundle did not build (above)'
   [[ -L $native/bundle ]] || rm -rf "${native:?}/bundle"
   ln -sfn "${out##*/}" "$native/bundle"

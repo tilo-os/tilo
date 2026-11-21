@@ -1,6 +1,5 @@
 //! The fetch proxy for development: [`tilo_net::proxy::host`] on loopback,
-//! with nobody to authenticate, behind
-//! `crates/browser/tilo-web-desktop/scripts/serve.mjs --fetch-proxy`.
+//! with nobody to authenticate.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;

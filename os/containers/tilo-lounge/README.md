@@ -162,8 +162,8 @@ still refused), and the chat read back after
 the server restarts. Each flow runs alone too:
 
 ```
-bash os/containers/tilo-lounge/test-e2e.sh out/web-desktop/bundle /tmp/e2e people-call
-bash os/containers/tilo-lounge/test-onboarding.sh out/web-desktop/bundle /tmp/onboarding
+bash os/containers/tilo-lounge/test-e2e.sh out/web-entry/bundle /tmp/e2e people-call
+bash os/containers/tilo-lounge/test-onboarding.sh out/web-entry/bundle /tmp/onboarding
 ```
 
 It needs node, a headless Chrome (`CHROME`, else Playwright's cache), curl,
@@ -176,7 +176,4 @@ bwrap, `TILO_SH_PROGRAMS`, `TILO_SH_LOUNGE`, `TILO_SH_SITE` and
 run. Every wait in the page drivers is a
 number of steps of `TILO_STEP_SECONDS` (5 s by default; `test-e2e.sh` sets
 20 s for a node that draws every page in software), so a hang fails within its
-few steps and names its step. That every app the page offers opens from the
-search on the next frame is an in-process test of the shell's search
-(`crates/session/desktop-surface/tests/every_web_app_opens_from_search.rs`),
-not a browser's walk.
+few steps and names its step.

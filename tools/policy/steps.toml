@@ -392,8 +392,3 @@ run = "python3 tools/policy/check_repository_layout.py"
 name = "codemap"
 label = "Code map is current"
 run = "python3 tools/docs/codemap.py --check"
-
-[[step]]
-name = "web-desktop-registry"
-label = "Browser desktop registry matches app manifests"
-run = "python3 tools/web/generate_web_desktop.py --check"

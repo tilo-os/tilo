@@ -1,25 +1,25 @@
 # Web runtime
 
 `tilo-browser-runtime` is the Tilo UI runtime in the browser: one
-WebAssembly module holding the toolkit, the page host and every application
-it was built with. `wasm32` has no dynamic linking, so apps are compiled in,
-not loaded at run time. `web/host.mjs` owns the DOM (input and IME,
-clipboard, the accessibility projection, font fetching, `IndexedDB`); the
-crate owns the components, their records and the GPU.
+WebAssembly module holding the toolkit and the page host, and the one
+application an app's own bundle links into it. `wasm32` has no dynamic
+linking, so apps are compiled in, not loaded at run time. `web/host.mjs`
+owns the DOM (input and IME, clipboard, the accessibility projection, font
+fetching, `IndexedDB`); the crate owns the components, their records and
+the GPU.
 
 ## Building
 
 ```sh
 crates/browser/tilo-browser-runtime/scripts/build.sh /abs/out \
-  [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop]
+  [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|app]
 python3 -m http.server -d /abs/out   # then open it in a browser with WebGPU
 ```
 
-`--bundle runtime` (the default) builds this crate; `--bundle desktop` builds
-`crates/browser/tilo-web-desktop`, the same runtime with every web-capable
-app registered from its manifest, under the same module name, plus
-`apps.json`. `--bundle app` builds an app's own bundle instead: the crate
-`tilo-app build --platform web` generates for it (`--manifest-path`, built
+`--bundle runtime` (the default) builds this crate: the web entry's pages and
+the module that gets a browser into a workspace. `--bundle app` builds an
+app's own bundle instead: the crate `tilo-app build --platform web`
+generates for it (`--manifest-path`, built
 with the target directory in `$CARGO_TARGET_DIR`) and its one-application
 `apps.json` (`--apps-json`, which also names the app `build.json` records).
 The output holds `pkg/` (wasm-bindgen `--target web`), the page
@@ -137,81 +137,6 @@ mount barrier; everything else (CJK, emoji, math, symbols, other scripts)
 is fetched only when text demands it, or during idle prewarm within its
 budget.
 
-## Collaboration end to end
-
-`crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs` puts native macOS
-apps, headless Chrome pages and a host agent in one workspace of a local
-`tilo-server dev` host on spare ports, and checks what a person would see: the
-same record on every side; edits native to browser, browser to native and
-browser to browser, with the time until the other side shows them; named
-cursors and carets both ways; a page that joins late; an agent's edit and
-cursor on native and in the pages; and a reloaded page that keeps its device
-and workspace membership. Per app it runs the native shell with `TILO_COLLAB_HOST`
-under a throwaway runtime profile that carries the dev host's user root, two
-pages, then a third, and (with `--agents --agent-model scripted`) an agent
-spawned from a page. It writes `summary.json` and `summary.md` (a check-by-app
-table) under `--out` and stops everything it started.
-
-```sh
-cargo build --release -p tilo-server --features web,agents
-cargo build -p tilo-runtime --bin tilo-runtime-mcp -p notes -p sheets -p scratchpad
-crates/browser/tilo-browser-runtime/scripts/build.sh /abs/bundle --bundle desktop
-node crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs --bundle /abs/bundle \
-  --apps notes,sheets,scratchpad --out /abs/e2e
-```
-
-`--build` runs those builds itself (the bundle with `--profile dev` into
-`OUT/bundle` when `--bundle` is not given); `--no-agent` leaves the agent out
-for a server without `agents`. The native window is read and edited from
-outside the process through the macOS accessibility API
-(`collab-e2e-ax.swift`, compiled with `swiftc` on first use), so the terminal
-running the script needs Accessibility permission; the native pointer moves
-through a `TILO_NATIVE_SCENARIO` timeline. Native presence from the pages is
-read from the runtime daemon's log. The screen must stay unlocked for the whole
-run: a locked screen presents no native window, so the script refuses to start
-on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
-`*-channels.txt`. macOS only.
-
-## The first visit, with a real agent
-
-`crates/browser/tilo-web-desktop/scripts/agent-shell.mjs` walks the first
-visit a person makes on a hosted Tilo, on this machine: a `tilo-server workspace`
-host with a workspace of its own for each person, the site in front of it (the
-desktop bundle with a deployment's `entry.json`), and a first visit in headless
-Chrome. It presses "Set up with your agent", reads the code out of the prompt
-the tab copied, and logs in with the real CLI (`tilo login <code> --site
-<origin>`, on a scratch HOME, so this computer becomes a device of the person),
-then drives `tilo mcp` over stdio as an agent does: it lists the apps, makes a
-note and writes in it, sets a sheet cell, and runs a command in the Terminal
-where the workspace has one. It shoots the person's workspace just after the
-agent connected (the agent followed, its card open), who is here with the agent
-pinned on screen, and the follow while an edit lands, at a laptop's and a
-phone's width in light and dark, and records the follow through a few of the
-agent's actions. Each shot's tone says which theme the shell drew: a first
-visit has chosen none, so it is the light or dark its browser is in, and the
-run flips the emulated scheme to see the shell follow it. Everything lands
-under `--out` (`shots/`, `video/`, and the run's log), and it exits non-zero
-naming the step that broke.
-
-```sh
-# on a build machine; fetch the run's `--out` directory back after
-CHROME=/usr/lib64/chromium-browser/chromium-browser \
-  node crates/browser/tilo-web-desktop/scripts/agent-shell.mjs --build
-```
-
-On a machine with a GPU, headless Chrome still draws WebGPU with SwiftShader
-unless told otherwise: `TILO_CHROME_ARGS="--enable-gpu --use-angle=vulkan
---enable-features=Vulkan --ignore-gpu-blocklist"` gives it the GPU (on a laptop
-with two, `VK_DRIVER_FILES` picks the one Vulkan sees). A server built on another
-machine finds no font catalog of its own; `TILO_FONT_CATALOG` names one
-(`python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope
-fixtures` prints it).
-
-`--build` builds the server (features `web,agents`), the CLI and the bundle;
-the shots then arrive in `target/look/agent-shell`. A recording needs ffmpeg or
-gst-launch-1.0 (the build container has the latter); without either, the
-screencast's frames are kept instead.
-
 ## Tests
 
 ```sh
@@ -220,20 +145,6 @@ node --test crates/browser/tilo-browser-runtime/web/*.test.mjs
 # the wasm32 clippy CI runs for every change these builds depend on
 # (CARGO=<any cargo drop-in> runs it through a remote builder or container)
 tools/ci/check-wasm.sh
-```
-
-A built desktop bundle is driven in headless Chrome by the scripts in
-`crates/browser/tilo-web-desktop/scripts/`, each taking the bundle's
-directory and exiting non-zero on the first thing a person would not have
-seen: `window-focus.mjs` (choosing and closing windows), `context-menu.mjs`
-(a secondary click, a Mac's Control-click, the Menu key and Shift+F10 open
-the text's menu in the word processor, and never the browser's own) and
-`app-link.mjs` (Mail's link to Settings goes to the Settings window that is
-open, and opens one only when none is).
-
-```sh
-node crates/browser/tilo-web-desktop/scripts/context-menu.mjs /abs/bundle
-node crates/browser/tilo-web-desktop/scripts/app-link.mjs /abs/bundle
 ```
 
 The page reaches the module as `import * as runtime from

@@ -47,9 +47,8 @@ agent = { path = "../../../apps/agent" }
 tilo-agent-turn = { path = "../agent-turn" }
 # The MCP tools a member's turn works through, held in its own process.
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
-# The apps an agent can open in a browser session: the browser desktop's
-# registry, generated from the app manifests.
-# generated apps: begin (tools/web/generate_web_desktop.py)
+# The apps an agent can open in a browser session: those whose manifests declare
+# the web platform.
 activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
 assistant = { path = "../../../apps/assistant" }
@@ -94,7 +93,6 @@ video-editor = { path = "../../../apps/video-editor", default-features = false, 
 video-player = { path = "../../../apps/video-player", default-features = false, features = [] }
 weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
-# generated apps: end
 # The member's client: the certified relay session (iroh for a host-side agent) with its live
 # live session, the same code a browser page runs, and the board of who is here and the agent's own word
 # on it.

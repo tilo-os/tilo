@@ -8,7 +8,6 @@
 
 mod support;
 
-mod every_web_app_opens_from_search;
 mod keyboard;
 mod peer_page;
 mod peer_view;

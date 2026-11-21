@@ -6,7 +6,7 @@
 # and iPhone visitor, which is what this check is for.
 #
 # usage: tools/web/html-renderer/boot.sh BUNDLE [--browser webkit|firefox|chromium] [--app ID] [--out DIR]
-#   BUNDLE is the desktop bundle (tools/web/html-renderer/build-desktop-web.sh).
+#   BUNDLE is a web bundle to boot (build-tilolang-web.sh's output, or `tilo-app build --target web`).
 #   Results land in $CARGO_TARGET_DIR/htmlrenderer/boot.
 #
 # WebKit is the browser to run: it is the one Safari shares, and the one whose

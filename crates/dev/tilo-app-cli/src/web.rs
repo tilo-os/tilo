@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest as _, Sha256};
 
-use crate::targets::{ServeOptions, Target, TargetRequest, WebBundle};
+use crate::targets::{ServeOptions, Target, TargetRequest};
 use crate::{DevRequest, PackageOutcome, PackageRequest, resolve_app_dir};
 
 /// The runtime module inside a bundle's `pkg/`.
@@ -108,7 +108,6 @@ pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
 
 fn app_bundle(release: bool, assertions: bool) -> TargetRequest {
     let mut request = TargetRequest::new(Target::Web);
-    request.bundle = WebBundle::App;
     request.release = release;
     request.assertions = assertions;
     request
@@ -191,13 +190,12 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_web_build_asks_for_the_app_bundle_and_replaces_its_output;
+        fn a_web_build_carries_the_profile_it_was_asked_for_and_replaces_its_output;
 
-        phase the_web_build_is_the_app_bundle;
+        phase the_profile_is_the_one_asked_for;
         {
             let request = app_bundle(true, false);
             assert_eq!(request.target, Target::Web);
-            assert_eq!(request.bundle, WebBundle::App);
             assert!(request.release);
             assert!(!request.assertions);
             // A qualification build asks for the asserting release profile; the

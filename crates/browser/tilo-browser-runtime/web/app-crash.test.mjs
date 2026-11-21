@@ -122,7 +122,7 @@ test('a page with nowhere to put the screen reports no error of its own', () => 
 
 test('a Wasm trap no panic preceded starts the page over, and says when memory ran out', () => {
   const trap=(message,stack)=>{const error=new WebAssembly.RuntimeError(message);Object.defineProperty(error,'stack',{value:stack});return error;};
-  const oom=trap('unreachable','RuntimeError: unreachable\n    at tilo_web_desktop.wasm._RNvNtCsdl5sGgnNXvY_3std5alloc8rust_oom (x.wasm)');
+  const oom=trap('unreachable','RuntimeError: unreachable\n    at tilo_browser_runtime.wasm._RNvNtCsdl5sGgnNXvY_3std5alloc8rust_oom (x.wasm)');
   assert.deepEqual(trapCrash(oom,{panicked:false}),{tab:null,message:'the page ran out of memory'});
   assert.deepEqual(trapCrash(trap('call stack exhausted',''),{panicked:false}),
     {tab:null,message:'the runtime stopped: call stack exhausted'});

@@ -1378,8 +1378,8 @@ p50 = 0.001
 enforce = true
 source = "KPI: Server cost per active member-hour"
 
-# Browser runtime (scripts/perf/browser_qualification.mjs): the release
-# desktop bundle (build.sh --bundle desktop, the bytes t's image-web-entry
+# Browser runtime (scripts/perf/browser_qualification.mjs): the release web
+# entry bundle (build.sh --bundle runtime, the bytes t's image-web-entry
 # publishes) in headless Chrome for Testing on the shared `runner` class, one
 # fresh-context round at 960x540. The runner has no GPU, and Chrome offers
 # WebGPU no CPU driver but its own SwiftShader (it renders its page on
@@ -1393,8 +1393,7 @@ source = "KPI: Server cost per active member-hour"
 # small round. The demo workload is left out (--demo-seconds 0), so its frame
 # rate and the 30 and 120 fps goals are judged where a GPU draws (a hardware qualification: --renderer gpu --enforce-goals,
 # docs/measurements/performance.md). The ceilings are the runtime's goals: a
-# window activated within 50 ms and first opened within 250 ms
-# (crates/browser/tilo-web-desktop/scripts/open-times.mjs), its own code
+# window activated within 50 ms and first opened within 250 ms, its own code
 # drawing within a second (the limit of an uninterrupted flow of thought); the
 # desktop's first frame within 2.5 s of navigation (the web's "good" Largest
 # Contentful Paint), which SwiftShader's pipeline compiles alone exceed; an
@@ -1445,14 +1444,8 @@ source = "resource entries that started before the desktop's first presented fra
 # module 28,535,482 B raw), the ceiling is that plus the 1% headroom the
 # build-time budget keeps, rounded up to 64 KiB.
 #
-# It is the only budget on the bytes the page serves: tools/web/wasm-size-budget
-# holds the raw bytes of the desktop bundle the app-sdk job builds
-# (`tilo-app build --target web`), a different and smaller program than the
-# runtime's own `build.sh --bundle desktop` output that ships (19.4 MB of
-# start-module function bodies against 26.4 MB: the SDK job's desktop mount
-# carries no peer, MoQ transport or shader translation). Both are optimized
-# with the same arguments (tools/web/wasm-opt-flags). A cut that moves either
-# one lowers this ceiling too.
+# It is the only budget on the bytes the page serves: the runtime's own
+# `build.sh --bundle runtime` output that ships.
 [kpi."browser.load.start_module_bytes"]
 unit = "bytes"
 max = 8847360.0

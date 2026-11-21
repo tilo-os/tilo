@@ -104,7 +104,7 @@ names are stable even when directories move.
 | Automerge (vendored fork) | `vendor/automerge`, used through `crates/doc/tilo-automerge` |
 | Files and storage | `crates/system/fs`, `crates/system/fs-native` |
 | Compositor and shell | `crates/session/session` |
-| Web runtime and web desktop | `crates/browser/tilo-browser-runtime`, `crates/browser/tilo-web-desktop` |
+| Web runtime (the page a browser enters a workspace with) | `crates/browser/tilo-browser-runtime` |
 | Platform services with one API on Linux, macOS and the web | `crates/platform/` |
 | Packages, sandboxed launch, the registry | `crates/packaging/` |
 | The `tilo-app` command | `crates/dev/tilo-app-cli` |

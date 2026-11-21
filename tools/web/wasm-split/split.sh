@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
-# Split the browser desktop bundle's module into a start module and the
-# modules its apps load on demand (crates/browser/tilo-web-desktop/src/split.rs).
+# Split a browser bundle's module into a start module and the modules it loads
+# on demand.
 #
 # usage: split.sh ORIGINAL PKG_DIR
 #        split.sh --unsplit PKG_DIR
 #
-# ORIGINAL is the linked tilo_web_desktop.wasm, built with its symbol table
+# ORIGINAL is the linked module, built with its symbol table
 # (Cargo profile `wasm-split`, `dev` or `wasm-dev`) and `--emit-relocs` (the
 # crate's build.rs). PKG_DIR holds wasm-bindgen's output for it, made with
 # `--keep-lld-exports --no-demangle` under the runtime's module name; its
 # tilo_browser_runtime_bg.wasm is replaced by the start module, beside which
 # the app modules, `__wasm_split.js` and `split.json` are written. Both
-# scripts/build.sh and `tilo-app build --bundle desktop` run this, so the
-# page and the SDK's bundle are split the same way.
 #
 # `--unsplit` leaves the module whole and writes only a `__wasm_split.js`
 # that answers each split point from it: the quick development bundle

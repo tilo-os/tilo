@@ -8,19 +8,14 @@
 //! and `apps.json`. This target prepares what that build compiles and is
 //! given, and packages what it writes; the module, the pages, the fonts and
 //! the compute module are the one script's, so an app's bundle and the site's
-//! are one build. Two bundles exist:
+//! are one build.
 //!
-//! - **desktop**: `crates/browser/tilo-web-desktop`, every web-capable Tilo
-//!   app, opened at `app/#/me/<id>`. Used for Tilo's own apps, so they
-//!   share one build. Its module is split as the page's is
-//!   (`tools/web/wasm-split/split.sh`): a start module, and one module per
-//!   app fetched when the app first opens.
-//! - **app**: the runtime with only this app registered. `wasm32` has no
-//!   dynamic linking, so the runtime and the app are one module: a small
-//!   generated crate under the target directory links both and registers the
-//!   app at start. It is its own Cargo workspace (so it can live anywhere)
-//!   with the app workspace's `[patch]`, profiles and lock file, and builds
-//!   into the app workspace's target directory.
+//! The bundle is the runtime with only this app registered. `wasm32` has no
+//! dynamic linking, so the runtime and the app are one module: a small
+//! generated crate under the target directory links both and registers the
+//! app at start. It is its own Cargo workspace (so it can live anywhere)
+//! with the app workspace's `[patch]`, profiles and lock file, and builds
+//! into the app workspace's target directory.
 //!
 //! [`package`] writes the immutable `versions/<digest>/` layout Cloud
 //! serves, where the digest covers exactly the files Cloud checks.
@@ -33,44 +28,32 @@ use anyhow::{Context as _, Result, bail};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    BuildOutcome, Project, Target, TargetPackageRequest, TargetRequest, WebBundle, cargo_program,
-    read_toml,
+    BuildOutcome, Project, Target, TargetPackageRequest, TargetRequest, cargo_program, read_toml,
 };
 
 const RUNTIME: &str = "crates/browser/tilo-browser-runtime";
-const DESKTOP: &str = "crates/browser/tilo-web-desktop";
 const BUNDLE_BUILD: &str = "crates/browser/tilo-browser-runtime/scripts/build.sh";
 
 pub(super) fn build(project: &Project, request: &TargetRequest) -> Result<BuildOutcome> {
-    let bundle_kind = resolve_bundle(project, request.bundle)?;
     let output = project.output_dir(Target::Web);
     std::fs::create_dir_all(&output).with_context(|| format!("creating {}", output.display()))?;
     let bundle = output.join("bundle");
     let profile = bundle_profile(request);
+    // The crate that links this app into the page runtime, and the one
+    // application the bundle carries beside it.
+    let manifest = app_crate(project)?;
+    let apps = output.join("apps.json");
+    write_if_changed(&apps, &single_app_apps_json(project)?)?;
     let mut args: Vec<String> = vec![
         "--bundle".into(),
-        if bundle_kind == WebBundle::Desktop {
-            "desktop"
-        } else {
-            "app"
-        }
-        .into(),
+        request.bundle.as_str().into(),
         "--profile".into(),
         profile.into(),
+        "--manifest-path".into(),
+        manifest.display().to_string(),
+        "--apps-json".into(),
+        apps.display().to_string(),
     ];
-    if bundle_kind != WebBundle::Desktop {
-        // The crate that links this app into the page runtime, and the one
-        // application the bundle carries beside it.
-        let manifest = app_crate(project)?;
-        let apps = output.join("apps.json");
-        write_if_changed(&apps, &single_app_apps_json(project)?)?;
-        args.extend([
-            "--manifest-path".into(),
-            manifest.display().to_string(),
-            "--apps-json".into(),
-            apps.display().to_string(),
-        ]);
-    }
     // A development bundle is brought up to date in place; a release bundle is
     // built whole, as it ships.
     if request.release || !bundle.join("build.json").is_file() {
@@ -251,33 +234,6 @@ fn wasm_name<'a>(bytes: &mut &'a [u8]) -> Result<&'a str> {
     Ok(name)
 }
 
-fn resolve_bundle(project: &Project, requested: WebBundle) -> Result<WebBundle> {
-    let listed = project.in_sdk_checkout() && desktop_links(project)?;
-    match requested {
-        WebBundle::Desktop if !project.in_sdk_checkout() => bail!(
-            "the desktop bundle links Tilo's own apps; build it inside a Tilo checkout\n  help: use `--bundle app` for this app alone"
-        ),
-        WebBundle::Desktop if !listed => bail!(
-            "{} is not linked into the desktop bundle\n  help: run `python3 tools/web/generate_web_desktop.py` after declaring \"web\" in its platforms, or use `--bundle app`",
-            project.package
-        ),
-        WebBundle::Auto if listed => Ok(WebBundle::Desktop),
-        WebBundle::Auto => Ok(WebBundle::App),
-        other => Ok(other),
-    }
-}
-
-fn desktop_links(project: &Project) -> Result<bool> {
-    let manifest = read_toml(&project.sdk_root.join(DESKTOP).join("Cargo.toml"))?;
-    Ok(manifest
-        .get("target")
-        .and_then(toml::Value::as_table)
-        .into_iter()
-        .flat_map(|targets| targets.values())
-        .filter_map(|target| target.get("dependencies"))
-        .any(|dependencies| dependencies.get(&project.package).is_some()))
-}
-
 /// Generate the single-app bundle crate for `project`, and answer its
 /// manifest: the crate the bundle build compiles.
 fn app_crate(project: &Project) -> Result<PathBuf> {
@@ -295,8 +251,7 @@ fn app_crate(project: &Project) -> Result<PathBuf> {
     Ok(crate_dir.join("Cargo.toml"))
 }
 
-/// The `apps.json` of a bundle that carries one app: the same shape the
-/// desktop bundle lists every app in.
+/// The `apps.json` of the bundle, which carries one app.
 fn single_app_apps_json(project: &Project) -> Result<String> {
     let package = &project.manifest.package;
     let apps = serde_json::json!({
@@ -359,7 +314,7 @@ fn app_crate_manifest(project: &Project) -> Result<String> {
     app.insert("package".into(), project.package.clone().into());
     app.insert("path".into(), project.app_dir.display().to_string().into());
     // The page build compiles the features the app declares for it, never its
-    // desktop defaults (tools/web/generate_web_desktop.py).
+    // desktop defaults.
     if let Some(features) = app_manifest
         .get("package")
         .and_then(|package| package.get("metadata"))
@@ -844,7 +799,7 @@ pub(super) fn package(
     let package = &project.manifest.package;
     let build = serde_json::json!({
         "digest": digest,
-        "bundle": if request.build.bundle == WebBundle::Desktop { "desktop" } else { "app" },
+        "bundle": request.build.bundle.as_str(),
         "app": {"id": package.id, "name": project.display_name(), "version": package.version},
         "platforms": package.platforms().iter().map(|platform| platform.as_str()).collect::<Vec<_>>(),
         "capabilities": {

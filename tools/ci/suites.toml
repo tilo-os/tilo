@@ -623,7 +623,7 @@ name = "browser-runtime-web"
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue. bundle-update runs the split modules' loader that wasm-split's
 # main.rs writes.
-inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/browser/tilo-web-desktop/src/lazy.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
+inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/app-bar.test.mjs",
   "crates/browser/tilo-browser-runtime/web/person.test.mjs",
@@ -699,11 +699,6 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/agent-questions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/web-push.test.mjs",
 ]
-
-[[group]]
-name = "desktop-open-times"
-inputs = ["crates/browser/tilo-web-desktop/scripts/"]
-suites = ["crates/browser/tilo-web-desktop/scripts/open-times-summary.test.mjs"]
 
 [[group]]
 name = "browser-benchmark-scripts"
@@ -1655,18 +1650,12 @@ scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrom
 
 [[cargo]]
 package = "tilo-desktop-surface"
-# The pages the peer page test's engine shows: snapshots the paint stream's own tests keep. The
-# search test opens every app the web page offers, taking its list from the page's shipped
-# catalogue.
+# The pages the peer page test's engine shows: snapshots the paint stream's own tests keep.
 inputs = [
   "crates/browser/paint-stream/tests/fixtures/layers.top.json",
   "crates/browser/paint-stream/tests/fixtures/controls.json",
-  "crates/browser/tilo-web-desktop/apps.json",
 ]
-readers = [
-  "crates/session/desktop-surface/tests/peer_page.rs",
-  "crates/session/desktop-surface/tests/every_web_app_opens_from_search.rs",
-]
+readers = ["crates/session/desktop-surface/tests/peer_page.rs"]
 
 [[cargo]]
 package = "ui-examples"

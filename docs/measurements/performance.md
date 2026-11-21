@@ -61,7 +61,7 @@ numbers, compared only with each other and never quoted as hardware figures.
 `scripts/vm-acceptance/README.md` ("Performance records") lists the KPIs.
 
 The `browser` group qualifies the browser runtime: the release desktop bundle
-(`build.sh --bundle desktop`, the bytes the web entry serves) in headless
+(`build.sh --bundle runtime`, the bytes the web entry serves) in headless
 Chrome through `scripts/perf/browser_qualification.mjs`, which first proves the
 page ran exactly that commit's clean bundle on the WebGPU adapter the records
 name, then measures load, first opens, window activation, the demo workload's
@@ -86,7 +86,7 @@ A hardware qualification is the same harness on the machine under test, quiet
 and with the goals enforced:
 
 ```bash
-crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/target/qualify" --bundle desktop
+crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/target/qualify" --bundle runtime
 node scripts/perf/browser_qualification.mjs target/qualify --out qualify.json \
   --renderer gpu --typing-keys 60 --expect-revision "$(git rev-parse HEAD)" \
   --max-load 0.25 --enforce-goals

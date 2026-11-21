@@ -1,4 +1,4 @@
-"""Lay out the web entry from a desktop bundle.
+"""Lay out the web entry from its bundle.
 
 usage: layout.py BUNDLE_DIR SITE_DIR
 

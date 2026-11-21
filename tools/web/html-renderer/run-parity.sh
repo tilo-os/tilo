@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs parity.mjs over the desktop bundle the runtime's build.sh made, in
+# Runs parity.mjs over a web bundle (default: build-tilolang-web.sh's), in
 # headless Chrome for Testing, or in Playwright's Firefox and WebKit
 # (`--browser firefox --against <a Chromium run's directory>`). Screenshots,
 # diffs and parity.json land in $CARGO_TARGET_DIR/htmlrenderer/parity, with
@@ -14,7 +14,7 @@ if [[ ! -x ${CHROME:-} ]]; then
   npx --yes @puppeteer/browsers@2 install chrome@stable --path "$CARGO_TARGET_DIR/htmlrenderer/chrome" > "$CARGO_TARGET_DIR/htmlrenderer/chrome.txt"
   export CHROME=$(awk '{print $2}' "$CARGO_TARGET_DIR/htmlrenderer/chrome.txt" | tail -n 1)
 fi
-bundle=$CARGO_TARGET_DIR/htmlrenderer/desktop
+bundle=${BUNDLE:-$CARGO_TARGET_DIR/htmlrenderer/tilolang}
 cp tools/web/html-renderer/app.html tools/web/html-renderer/baseline.html crates/browser/tilo-browser-runtime/web/*.mjs "$bundle/"
 rm -f "$bundle/"*.test.mjs
 if [[ ${1:-} != --fields ]]; then rm -rf "$CARGO_TARGET_DIR/htmlrenderer/parity"; fi

@@ -63,7 +63,6 @@ SHARDS = {
     "test_font_catalog.py": 2,
     "test_chrome_process_cleanup.py": 2,
     "test_copy_language.py": 2,
-    "test_browser_cleanup_lifecycle.py": 2,
     "test_thin_app_compiler_cache.py": 2,
 }
 # unittest's header of a failed test: `FAIL: test_x (module.Class.test_x)`, before Python 3.11

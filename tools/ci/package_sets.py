@@ -72,8 +72,9 @@ WASM_ALSO = {
 }
 
 
-# The crate the web build compiles into the module a browser loads: the page.
-PAGE_ENTRY = "tilo-web-desktop"
+# The crate the web build compiles into the module a browser loads: the page's
+# runtime (`build.sh --bundle runtime`).
+PAGE_ENTRY = "tilo-browser-runtime"
 
 
 def page_closure(packages: dict[str, dict]) -> set[str]:

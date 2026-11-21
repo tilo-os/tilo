@@ -165,7 +165,7 @@ fn pass_to_stack(stack: &Path, args: &[String]) -> Result<ExitCode, String> {
     })
 }
 
-/// Build the desktop bundle into the target directory: the development profile updated in place
+/// Build the web entry's bundle into the target directory: the development profile updated in place
 /// (only what changed is redone), or the shipped profile from scratch.
 fn build_bundle(repo: &Path, release: bool) -> Result<PathBuf, String> {
     let out = target_dir(repo).join(if release {
@@ -173,7 +173,7 @@ fn build_bundle(repo: &Path, release: bool) -> Result<PathBuf, String> {
     } else {
         "tilo-local/web-bundle"
     });
-    let mut args: Vec<String> = vec!["--bundle".into(), "desktop".into()];
+    let mut args: Vec<String> = vec!["--bundle".into(), "runtime".into()];
     let updating = !release && out.join("build.json").is_file();
     if release {
         let _ = std::fs::remove_dir_all(&out);
@@ -187,7 +187,7 @@ fn build_bundle(repo: &Path, release: bool) -> Result<PathBuf, String> {
     }
     std::fs::create_dir_all(&out).map_err(|error| format!("{}: {error}", out.display()))?;
     eprintln!(
-        "==> building the desktop bundle (build.sh {}{})",
+        "==> building the web entry's bundle (build.sh {}{})",
         args.join(" "),
         if updating { ", in place" } else { "" }
     );
@@ -201,7 +201,7 @@ fn build_bundle(repo: &Path, release: bool) -> Result<PathBuf, String> {
         .status()
         .map_err(|error| error.to_string())?;
     if !status.success() {
-        return Err("the desktop bundle did not build (above)".into());
+        return Err("the web entry's bundle did not build (above)".into());
     }
     if !out.join("build.json").is_file() {
         return Err(format!(

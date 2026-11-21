@@ -204,7 +204,7 @@ class PrePushLintTests(unittest.TestCase):
                                    "path": str(root / "native")}]})
         if self.page_entry:
             packages.append(
-                {"name": "tilo-web-desktop", "manifest_path": str(root / "page/Cargo.toml"),
+                {"name": "tilo-browser-runtime", "manifest_path": str(root / "page/Cargo.toml"),
                  "dependencies": [{"name": "fixture-web", "kind": None, "path": "web"},
                                   {"name": "fixture-native", "kind": None, "path": "native"}]})
         return json.dumps({"packages": packages})
@@ -433,7 +433,7 @@ class PrePushLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sorted(self.calls()), sorted([
             NATIVE_CLIPPY,
-            "clippy --locked --target wasm32-unknown-unknown -p tilo-web-desktop -- -D warnings",
+            "clippy --locked --target wasm32-unknown-unknown -p tilo-browser-runtime -- -D warnings",
         ]))
 
     def test_a_page_build_that_cannot_run_refuses_the_push(self):

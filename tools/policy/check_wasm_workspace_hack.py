@@ -26,12 +26,10 @@ ROOT = Path(__file__).resolve().parents[2]
 WASM = "wasm32-unknown-unknown"
 HACK = "workspace-hack"
 
-# What the browser builds for wasm32: the desktop bundle, which links the
-# browser runtime and every web app, and the image compute worker; and every
-# app's model module, linked together in one build before it is split. Each
-# with the manifest a finding about it names.
+# What the browser builds for wasm32: the page runtime, the image compute
+# worker, and every app's model module, linked together in one build before it
+# is split. Each with the manifest a finding about it names.
 ROOTS = (
-    ("tilo-web-desktop", (), "crates/browser/tilo-web-desktop/Cargo.toml"),
     ("tilo-browser-runtime", (), "crates/browser/tilo-browser-runtime/Cargo.toml"),
     ("tilo-browser-compute", (), "crates/browser/tilo-browser-compute/Cargo.toml"),
     ("tilo-models-wasm", (), "crates/sdk/tilo-models-wasm/Cargo.toml"),

@@ -102,8 +102,8 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
  * server peer). Shares the lease with mounts of the same profile/device;
  * `flush()` resolves when writes are durable; call `release()` once. */
 /** The certified peer's code — its crypto, transport and the workspaces'
- * replication — is a module of its own in the desktop bundle (`lazy_exports!`
- * in tilo-web-desktop), which nothing before a workspace's entry needs. It is
+ * replication — is a module of its own when a bundle splits it (`lazy_exports!`),
+ * which nothing before a workspace's entry needs. It is
  * fetched and compiled as soon as this module runs, beside the start
  * module's compile, and every entry waits for it.
  * The bindgen glue of a split bundle imports `__wasm_split.js` itself, so it
@@ -143,8 +143,8 @@ function decodeImage(bytes,maxDimension){
  * show does not wait for its first open. App code is not fetched beside the
  * runtime: on a link the downloads saturate, the runtime then arrives late,
  * and admission, which needs it, runs only after both instead of while the
- * app's code downloads. A bundle that splits its apps (the desktop bundle)
- * names each app's module in `apps.json`; any other bundle, an unknown app
+ * app's code downloads. A bundle that splits its apps names each app's module
+ * in `apps.json`; any other bundle, an unknown app
  * or a failed fetch leaves it to the app's first open, as without this.
  *
  * `apps.json` is a few kilobytes and needs nothing from the runtime, so it
@@ -169,9 +169,8 @@ export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import(
   })().catch(()=>{});
 }
 /** The modules split off the start module that every desktop's first layout
- * asks for (tilo-web-desktop's `lazy.rs` says which, at each module): the
- * action palette, which the first window to lay out asks for, and desktop
- * search, which the desktop asks for as it first lays out. */
+ * asks for: the action palette, which the first window to lay out asks for,
+ * and desktop search, which the desktop asks for as it first lays out. */
 export const FIRST_LAYOUT_MODULES=Object.freeze(['action_palette','desktop_search']);
 /** Get a desktop's first frame ready while the page is let in: the app
  * listing (`apps.json`, a few kilobytes) now, and once the code the entry
