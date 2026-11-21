@@ -502,6 +502,7 @@ members = [
     "crates/runtime/ush",
     "crates/runtime/ush-shell",
     "crates/runtime/ush-tilo",
+    "crates/runtime/ush-wasi",
     "crates/runtime/env-tools",
 
     # Session

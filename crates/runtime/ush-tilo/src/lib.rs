@@ -19,6 +19,10 @@
 //!   [`MAX_TEXT_BYTES`](tilo_environment::files::MAX_TEXT_BYTES), what the
 //!   command writes is streamed into the environment's content store
 //!   ([`Environment::keep`]) and the action names it by reference.
+//! - **A WebAssembly tool** of the environment's ([`Tools`], tier 2) runs here,
+//!   in this host, with no Linux underneath ([`ush_wasi`]): its reads are this
+//!   host's reads under the grants, and the files it writes, makes, removes or
+//!   renames are the environment's actions, of the command line's run.
 //! - **A program** that is none of the shell's own goes to [`Programs`]: the
 //!   place that can run it (a Linux guest for the session, tier 3). This host
 //!   never starts a process itself. As part of one of the shell's jobs, the
@@ -146,6 +150,51 @@ pub trait Programs: Send + Sync {
     }
 }
 
+/// The environment's WebAssembly tools (tier 2): WASI programs this host runs itself.
+pub trait Tools: Send + Sync {
+    /// The module of the tool called `name`, if the environment has one.
+    fn module(&self, name: &str) -> Option<Arc<[u8]>>;
+
+    /// The tools there are, by name: what Tab completes in a command's place.
+    fn names(&self) -> Vec<String>;
+}
+
+/// Tools kept as files: `<name>.wasm` in any of the directories (a materialised tool package's
+/// `bin`), the first that has it.
+#[derive(Debug, Clone, Default)]
+pub struct ToolDirs(pub Vec<PathBuf>);
+
+/// What a tool module's file is called.
+const WASM: &str = "wasm";
+
+impl Tools for ToolDirs {
+    fn module(&self, name: &str) -> Option<Arc<[u8]>> {
+        if name.is_empty() || name.contains('/') || name.starts_with('.') {
+            return None;
+        }
+        self.0
+            .iter()
+            .find_map(|dir| std::fs::read(dir.join(name).with_extension(WASM)).ok())
+            .map(Arc::from)
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .0
+            .iter()
+            .filter_map(|dir| std::fs::read_dir(dir).ok())
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == WASM))
+            .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoPrograms;
 
@@ -248,6 +297,7 @@ struct Inner {
     /// Where a redirect that could not be written says so: the session's
     /// standard error.
     notices: Output,
+    tools: std::sync::OnceLock<Arc<dyn Tools>>,
 }
 
 #[derive(Clone)]
@@ -270,7 +320,16 @@ impl TiloHost {
             programs,
             place,
             notices,
+            tools: std::sync::OnceLock::new(),
         }))
+    }
+
+    /// The same host, running the environment's WebAssembly `tools` itself (tier 2), before any
+    /// program goes to its [`Programs`]. Set once.
+    #[must_use]
+    pub fn with_tools(self, tools: Arc<dyn Tools>) -> Self {
+        let _ = self.0.tools.set(tools);
+        self
     }
 
     fn now(&self) -> Option<u64> {
@@ -402,6 +461,26 @@ impl Host for TiloHost {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tool(&self, call: &ush_shell::ToolCall<'_>) -> Option<Program> {
+        let name = call.argv.first()?;
+        let module = self.0.tools.get()?.module(name)?;
+        let place = Arc::clone(&self.0.place);
+        let stop = || (call.stop)() || place.interrupted();
+        Some(ush_wasi::run(
+            &module,
+            Arc::new(self.clone()),
+            &ush_wasi::Invocation {
+                argv: call.argv,
+                env: call.env,
+                cwd: call.cwd,
+                io: call.io,
+                run: call.run,
+                stop: &stop,
+            },
+        ))
+    }
+
     fn program(
         &self,
         argv: &[String],
@@ -496,7 +575,13 @@ impl Host for TiloHost {
     }
 
     fn programs(&self, path: &str) -> Vec<String> {
-        self.0.programs.names(path)
+        let mut names = self.0.programs.names(path);
+        if let Some(tools) = self.0.tools.get() {
+            names.extend(tools.names());
+            names.sort();
+            names.dedup();
+        }
+        names
     }
 
     fn field(&self) -> Option<Arc<dyn ush_shell::field::Field>> {

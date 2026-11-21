@@ -91,6 +91,22 @@ pub struct FileCall<'a> {
     pub run: Option<&'a Run>,
 }
 
+/// A program the shell hands on, as a host that runs tools itself (a WebAssembly tool of the
+/// environment's, tier 2) is asked it: with the run its writes are part of.
+#[derive(Clone, Copy)]
+pub struct ToolCall<'a> {
+    pub argv: &'a [String],
+    /// Its whole environment.
+    pub env: &'a [(String, String)],
+    pub cwd: &'a Path,
+    pub io: &'a Stdio,
+    /// The run it is part of, if the shell is running one: every file it changes is a change of
+    /// that run's.
+    pub run: Option<&'a Run>,
+    /// Whether to stop it: Ctrl-C, `timeout`, or its job ended.
+    pub stop: &'a dyn Fn() -> bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Program {
     /// It ran, and ended with this status.
@@ -141,6 +157,14 @@ pub trait Host: Send + Sync {
     /// One of the environment's file actions, as the command line that asked
     /// for it. Answers the status.
     fn file_action(&self, call: &FileCall<'_>) -> i32;
+
+    /// A program that is none of the shell's own, run by this host itself without a Linux place
+    /// (tier 2: one of the environment's WebAssembly tools); `None` when it has no such tool and
+    /// the program goes to [`Self::program`].
+    fn tool(&self, call: &ToolCall<'_>) -> Option<Program> {
+        let _ = call;
+        None
+    }
 
     /// A program that is none of the shell's own, with `env` its whole
     /// environment.

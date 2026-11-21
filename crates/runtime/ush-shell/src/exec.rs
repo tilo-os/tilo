@@ -720,7 +720,20 @@ impl Shell {
         };
         let io = self.stdio();
         let env = self.program_env();
-        match self.host.program(argv, &env, &self.cwd, &io) {
+        let stop = || self.host.interrupted();
+        let tool = crate::host::ToolCall {
+            argv,
+            env: &env,
+            cwd: &self.cwd,
+            io: &io,
+            run: self.run.as_deref(),
+            stop: &stop,
+        };
+        let ran = self
+            .host
+            .tool(&tool)
+            .unwrap_or_else(|| self.host.program(argv, &env, &self.cwd, &io));
+        match ran {
             Program::Exited(status) => {
                 if status == 130 {
                     self.host.clear_interrupt();

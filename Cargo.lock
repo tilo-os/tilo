@@ -25886,6 +25886,20 @@ dependencies = [
  "tempfile",
  "tilo-environment",
  "ush-shell",
+ "ush-wasi",
+ "wat",
+ "workspace-hack",
+]
+
+[[package]]
+name = "ush-wasi"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "tilo-wasm-host",
+ "ush-shell",
+ "wasmi",
+ "wat",
  "workspace-hack",
 ]
 

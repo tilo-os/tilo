@@ -176,6 +176,13 @@ impl Host for Deadline {
     fn file_action(&self, call: &crate::host::FileCall<'_>) -> i32 {
         self.inner.file_action(call)
     }
+    fn tool(&self, call: &crate::host::ToolCall<'_>) -> Option<Program> {
+        let stop = || self.passed() || (call.stop)();
+        self.inner.tool(&crate::host::ToolCall {
+            stop: &stop,
+            ..*call
+        })
+    }
     fn program(
         &self,
         argv: &[String],

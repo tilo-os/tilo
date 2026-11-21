@@ -157,7 +157,13 @@ agents and History see one model whichever tier ran a command.
    first program a session runs, which then serves the session's programs
    one command at a time ([`ush.md`](ush.md), "The session's shell").
 2. Tier 2: a WASI runner over Tilo's mount, with a few signed tool packages,
-   on devices and hosts (wasmi) and in the browser (its own engine).
+   on devices and hosts (wasmi) and in the browser (its own engine). The
+   runner is built for devices and hosts (`crates/runtime/ush-wasi`): the
+   shell's host runs a WASI preview 1 program a command names, with no
+   Linux. The program reads only what the grants cover, each file it writes
+   is one of the run's actions (one entry in History, undone together), and
+   Ctrl-C or a timeout stops it between slices of fuel. Still to build: the
+   signed tool packages it runs, and the browser's runner.
 3. Tier 3 on the existing compute and placement system: one command as one
    job, writes as actions, guests scoped to the session, and a quota for
    compute on Tilo's own host.

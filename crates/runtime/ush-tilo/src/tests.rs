@@ -405,3 +405,139 @@ fn the_prompt_recalls_the_places_history_and_completes_its_programs() {
     assert!(out.contains("from the record\n"), "{out:?}");
     assert!(out.contains("ran frobnicate --now\n"), "{out:?}");
 }
+
+/// A WASI program, as WAT: it opens `input` (under its working directory, preopened as fd 3)
+/// and prints it, makes `out.txt` holding `made by wasm`, and ends with status 3. Where a step is
+/// refused it ends with 100 (reading) or 200 (making) plus WASI's error number.
+fn copier(input: &str) -> Vec<u8> {
+    let wat = format!(
+        r#"(module
+  (import "wasi_snapshot_preview1" "path_open"
+    (func $open (param i32 i32 i32 i32 i32 i64 i64 i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "fd_read" (func $read (param i32 i32 i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "fd_write" (func $write (param i32 i32 i32 i32) (result i32)))
+  (import "wasi_snapshot_preview1" "fd_close" (func $close (param i32) (result i32)))
+  (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
+  (memory (export "memory") 1)
+  (data (i32.const 100) "{input}")
+  (data (i32.const 400) "out.txt")
+  (data (i32.const 420) "made by wasm\n")
+  (func (export "_start") (local $e i32)
+    (local.set $e (call $open (i32.const 3) (i32.const 1) (i32.const 100) (i32.const {len})
+      (i32.const 0) (i64.const 2) (i64.const 0) (i32.const 0) (i32.const 304)))
+    (if (local.get $e) (then (call $exit (i32.add (i32.const 100) (local.get $e)))))
+    (i32.store (i32.const 500) (i32.const 1024))
+    (i32.store (i32.const 504) (i32.const 4096))
+    (drop (call $read (i32.load (i32.const 304)) (i32.const 500) (i32.const 1) (i32.const 300)))
+    (drop (call $close (i32.load (i32.const 304))))
+    (i32.store (i32.const 504) (i32.load (i32.const 300)))
+    (drop (call $write (i32.const 1) (i32.const 500) (i32.const 1) (i32.const 308)))
+    (local.set $e (call $open (i32.const 3) (i32.const 1) (i32.const 400) (i32.const 7)
+      (i32.const 9) (i64.const 64) (i64.const 0) (i32.const 0) (i32.const 304)))
+    (if (local.get $e) (then (call $exit (i32.add (i32.const 200) (local.get $e)))))
+    (i32.store (i32.const 500) (i32.const 420))
+    (i32.store (i32.const 504) (i32.const 13))
+    (drop (call $write (i32.load (i32.const 304)) (i32.const 500) (i32.const 1) (i32.const 308)))
+    (drop (call $close (i32.load (i32.const 304))))
+    (call $exit (i32.const 3))))"#,
+        len = input.len()
+    );
+    wat::parse_str(wat).unwrap()
+}
+
+/// A shell whose environment has the WebAssembly tools in `tools`.
+fn shell_with_tools(
+    environment: Arc<Granting>,
+    cwd: &Path,
+    tools: &Path,
+) -> (Shell, Captured, Captured) {
+    let (stdout, out) = Output::buffer();
+    let (stderr, err) = Output::buffer();
+    let host = TiloHost::new(
+        environment,
+        Arc::new(NativeFiles),
+        Arc::new(NoPrograms),
+        Arc::new(Nowhere),
+        stderr.clone(),
+    )
+    .with_tools(Arc::new(ToolDirs(vec![tools.to_path_buf()])));
+    let io = Stdio {
+        stdin: Input::null(),
+        stdout,
+        stderr,
+    };
+    (
+        Shell::new(Arc::new(host), [], cwd.to_path_buf(), io),
+        out,
+        err,
+    )
+}
+
+#[test]
+fn a_webassembly_tool_runs_here_reading_the_grants_and_writing_through_the_runs_actions() {
+    let (tmp, granted, _) = fixture();
+    let tools = tmp.path().join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::write(tools.join("copier.wasm"), copier("notes/a.md")).unwrap();
+    let environment = Granting::new(&granted);
+    let (mut sh, out, err) = shell_with_tools(Arc::clone(&environment), &granted, &tools);
+    let line = Run {
+        id: "ush-1-2".into(),
+        label: "copier | grep pe".into(),
+    };
+    sh.set_run(Some(line.clone()));
+
+    // No Linux place at all: the tool is tier 2, run by the shell's own host, and its output
+    // pipes into Tilo's own `grep` (tier 1).
+    let ran = run(&mut sh, &out, &err, &line.label);
+    assert_eq!(ran.out, "pears\n", "{}", ran.err);
+    assert_eq!(ran.status, 0, "{}", ran.err);
+    assert!(
+        !granted.join("out.txt").exists(),
+        "the tool writes nothing itself: the environment carries it out"
+    );
+    assert_eq!(
+        environment.acted(),
+        vec![(
+            FileAction::Write(WriteOp::of(
+                vec![granted.join("out.txt")],
+                b"made by wasm\n".to_vec(),
+                false
+            )),
+            Some(line),
+        )],
+        "what it wrote is one write of the command line's run"
+    );
+
+    // Its own status is the command's.
+    sh.set_run(None);
+    let ran = run(&mut sh, &out, &err, "copier > /dev/null; echo $?");
+    assert!(ran.out.ends_with("3\n"), "{} {}", ran.out, ran.err);
+}
+
+#[test]
+fn a_webassembly_tool_reads_nothing_the_grants_do_not_cover() {
+    let (tmp, granted, _) = fixture();
+    let tools = tmp.path().join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::write(tools.join("peek.wasm"), copier("../outside/secret.txt")).unwrap();
+    let environment = Granting::new(&granted);
+    let (mut sh, out, err) = shell_with_tools(Arc::clone(&environment), &granted, &tools);
+    let ran = run(&mut sh, &out, &err, "peek; echo $?");
+    assert!(!ran.out.contains("secret"), "{}", ran.out);
+    // 100 + WASI's EACCES: its open was refused, before anything was read.
+    assert_eq!(ran.out, "102\n", "{}", ran.err);
+    assert!(environment.acted().is_empty());
+}
+
+#[test]
+fn a_program_that_is_no_tool_still_says_which_tier_it_needs() {
+    let (tmp, granted, _) = fixture();
+    let tools = tmp.path().join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    let environment = Granting::new(&granted);
+    let (mut sh, out, err) = shell_with_tools(environment, &granted, &tools);
+    let ran = run(&mut sh, &out, &err, "cargo build");
+    assert_eq!(ran.status, 127);
+    assert!(ran.err.contains("tier 3"), "{}", ran.err);
+}

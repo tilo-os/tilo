@@ -392,6 +392,17 @@ impl Host for JobHost {
         }
         self.inner.file_action(call)
     }
+    fn tool(&self, call: &crate::host::ToolCall<'_>) -> Option<Program> {
+        self.job.checkpoint(self.inner.as_ref());
+        if self.job.killed() {
+            return Some(Program::Exited(143));
+        }
+        let stop = || (call.stop)() || self.ended();
+        self.inner.tool(&crate::host::ToolCall {
+            stop: &stop,
+            ..*call
+        })
+    }
     fn program(
         &self,
         argv: &[String],

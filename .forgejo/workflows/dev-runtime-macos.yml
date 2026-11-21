@@ -129,6 +129,7 @@ on:
       - "crates/runtime/ush/**"
       - "crates/runtime/ush-shell/**"
       - "crates/runtime/ush-tilo/**"
+      - "crates/runtime/ush-wasi/**"
       - "crates/sdk/font-catalog/**"
       - "crates/sdk/search/**"
       - "crates/sdk/theme-painter-wasm/**"

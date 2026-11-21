@@ -18,10 +18,13 @@ collab-types = { path = "../../collab/collab-types" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
+# Tier 2 on devices and hosts. The browser runs a tool in its own engine, never wasmi.
+ush-wasi = { path = "../ush-wasi" }
 
 [dev-dependencies]
 tempfile.workspace = true
 blake3.workspace = true
+wat = "1"
 
 [lints]
 workspace = true

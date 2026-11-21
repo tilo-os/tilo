@@ -379,6 +379,16 @@ The host reaches nothing but the environment:
   environment's content store as it is written, and the action names it by
   reference (`tilo.content:<hash>`). They go through the session's broker, the same action API a guest's
   `cp` uses.
+- **A WebAssembly tool** (tier 2) runs in the host itself when the session
+  has one by the command's name: a WASI preview 1 module, run under wasmi
+  ([`ush-wasi`](../../crates/runtime/ush-wasi/src/lib.rs)) with the limits
+  every guest in Tilo has. Its files are the grants (fd 3 is the working
+  directory, fd 4 is `/`), and each file it writes is one action of the
+  command line's run, so `jq . a.json > b.json` is one undoable run
+  without Linux. It pipes like any command, and Ctrl-C or a timeout stops
+  it between slices of fuel. The tools come from the session's tool
+  directories (`<name>.wasm`); signed tool packages to fill them are still
+  to come.
 - **Anything else** is a program, and runs in the session's Linux guest
   (tier 3), exactly that command, on the shell's own streams: the terminal
   itself where the command's stream is the terminal (and the terminal's

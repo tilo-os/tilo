@@ -32,7 +32,9 @@ mod shell;
 mod test;
 mod vars;
 
-pub use host::{DirEntry, FileCall, HistoryQuery, Host, Kind, Metadata, Program, Run, WriteMode};
+pub use host::{
+    DirEntry, FileCall, HistoryQuery, Host, Kind, Metadata, Program, Run, ToolCall, WriteMode,
+};
 pub use io::{Input, Output, Std, Stdio};
 pub use memory::MemoryHost;
 pub use repl::{Session, incomplete};
