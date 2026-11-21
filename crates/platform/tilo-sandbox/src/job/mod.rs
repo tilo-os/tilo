@@ -189,7 +189,7 @@ impl<'a> Launch<'a> {
     /// failed. # Errors See [`SpawnError`].
     #[cfg(target_os = "linux")]
     pub fn spawn(mut self) -> Result<Job, SpawnError> {
-        let mut plan = linux::plan::Plan::new(self.spec)?;
+        let mut plan = linux::plan::Plan::new(self.spec, self.mount_ns.is_some())?;
         plan.init.own_net = self.netns.is_none();
         let fds = linux::runner::Fds {
             stdin: self.stdin,
