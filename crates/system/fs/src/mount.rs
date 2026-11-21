@@ -222,7 +222,14 @@ pub(super) async fn run_mount(
         .zip(storage_authority)
         .and_then(|(sock, authority)| {
             let _ = std::fs::remove_file(&sock);
-            match tokio::net::UnixListener::bind(&sock) {
+            // Through the shared helper: a socket is reached whatever the path's length.
+            match tilo_files::native::socket::bind(&sock)
+                .and_then(|listener| {
+                    listener.set_nonblocking(true)?;
+                    Ok(listener)
+                })
+                .and_then(tokio::net::UnixListener::from_std)
+            {
                 Ok(listener) => {
                     use std::os::unix::fs::PermissionsExt;
                     let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o660));
