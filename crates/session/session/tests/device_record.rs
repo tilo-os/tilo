@@ -166,7 +166,16 @@ fn a_paired_device_reaches_the_record_without_the_workspace_list_moving() {
     assert_eq!(
         desktop.held(),
         workspaces,
-        "the workspaces of the person's list did not move"
+        "the workspaces of the person's list did not move\n\
+         the laptop holds {:?} and shows {:?}\n\
+         the desktop shows {:?}\n\
+         the desktop's join flow:\n{}\n\
+         the laptop's join flow:\n{}",
+        laptop.held(),
+        laptop.on_shell(),
+        desktop.on_shell(),
+        desktop.join_flow(),
+        laptop.join_flow(),
     );
     assert!(
         !fleet_of(&laptop, ada.public)

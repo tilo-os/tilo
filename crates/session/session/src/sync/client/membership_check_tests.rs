@@ -478,7 +478,7 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
 
     // Before the host answered, nothing says what the person has: the workspace waits, unlisted.
     let held = restore.restored.engine.workspaces();
-    assert!(!personal.settle_seed(&session, &held, None));
+    assert!(!personal.settle_seed(&session, &held, None, &std::collections::BTreeSet::new()));
     assert_eq!(personal.seed(), Some(seed), "it waits for the host's list");
     personal.publish_local(&session);
     let listed: Vec<String> = personal
@@ -499,7 +499,7 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
     restore.follow();
     let (from_hosts, everywhere) = restore.listed();
     assert!(personal.take_hosted(from_hosts));
-    assert!(personal.settle_seed(&session, &held, Some(&everywhere)));
+    assert!(personal.settle_seed(&session, &held, Some(&everywhere), &std::collections::BTreeSet::new()));
     assert_eq!(personal.seed(), None);
     assert_eq!(
         on_shell(&session),
@@ -539,7 +539,12 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
         None,
     );
     new.hold_seed(first);
-    assert!(new.settle_seed(&alone, &[], Some(&std::collections::BTreeSet::new())));
+    assert!(new.settle_seed(
+        &alone,
+        &[],
+        Some(&std::collections::BTreeSet::new()),
+        &std::collections::BTreeSet::new(),
+    ));
     assert_eq!(new.seed(), None);
     assert_eq!(on_shell(&alone), [first], "it stays on the shell");
     assert!(new.made_here(first), "and is founded here, as theirs");
@@ -554,6 +559,48 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
         .map(|entry| entry.workspace)
         .collect();
     assert_eq!(listed, [first.to_string()], "and listed as theirs");
+}
+
+/// The shell's first workspace goes when the person has a workspace of their own, and one their
+/// governance names them the owner of is theirs however it came to this device: a computer restored
+/// from their words that joined their own site's workspace does not found a first workspace beside
+/// it, and needs no host's list to say so.
+#[test]
+fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
+    let session = fresh_session();
+    let [seed] = on_shell(&session)
+        .try_into()
+        .expect("a fresh shell shows one workspace");
+    let key = test_server::fresh_signing_key("A restored computer");
+    let cert = test_server::certified(
+        &SigningKey::from_bytes(&[0x5a; 32]),
+        &key,
+        "A restored computer",
+        DeviceCapabilities::member(),
+    );
+    let mut personal = crate::workspaces::Personal::open(
+        tilo_network_actor::DeviceIdentity::kept(cert, key),
+        None,
+    );
+    personal.hold_seed(seed);
+    let site =
+        WorkspaceId::parse("0b7a5f4e-2c1d-4e8a-9f3b-6d5c4b3a2918").expect("a workspace id");
+    personal.joined(site);
+    let mut tree = session.read(Clone::clone);
+    tree.workspaces
+        .push(tilo_desktop_model::Workspace::new(site, "Lounge"));
+    session.replace_tree(tree);
+
+    // No host has answered a list, and the workspace's governance names the person its owner: they
+    // have a workspace of their own, so the one this shell started with goes.
+    let owned = std::collections::BTreeSet::from([site]);
+    assert!(personal.settle_seed(&session, &[site], None, &owned));
+    assert_eq!(personal.seed(), None);
+    assert_eq!(
+        on_shell(&session),
+        [site],
+        "the workspace the shell started with is taken off it, unfounded"
+    );
 }
 
 /// A workspace the restored computer takes from its host's list is not claimed as the person's

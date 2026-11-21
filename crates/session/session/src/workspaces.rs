@@ -414,21 +414,26 @@ impl Personal {
 
     /// Settle the workspace the shell started with ([`Self::seed`]) once what the person has is
     /// known. A person with a workspace of their own anywhere — on their list, held on this device
-    /// (`held`), or on what their hosts list (`listed`) — has it taken off `handle`'s shell once
-    /// another workspace stands there, never founded nor listed; a person with none has it as their
-    /// first, founded and listed from then on. `listed` is `None` while a host has not answered,
-    /// which leaves it waiting when nothing else says the person has one. Whether it settled.
+    /// (`held`), on what their hosts list (`listed`), or one their governance names them the owner
+    /// of (`owned`, which a workspace they joined is not otherwise) — has it taken off `handle`'s
+    /// shell once another workspace stands there, never founded nor listed; a person with none has
+    /// it as their first, founded and listed from then on. `listed` is `None` while a host has not
+    /// answered, which leaves it waiting when nothing else says the person has one. Whether it
+    /// settled.
     pub(crate) fn settle_seed(
         &mut self,
         handle: &DesktopHandle,
         held: &[WorkspaceId],
         listed: Option<&BTreeSet<WorkspaceId>>,
+        owned: &BTreeSet<WorkspaceId>,
     ) -> bool {
         let Some(seed) = self.seed else {
             return false;
         };
-        let theirs =
-            |workspace: &WorkspaceId| *workspace != seed && !self.borrowed.contains(workspace);
+        let theirs = |workspace: &WorkspaceId| {
+            *workspace != seed
+                && (!self.borrowed.contains(workspace) || owned.contains(workspace))
+        };
         let has = self.names_besides(seed)
             || held.iter().any(theirs)
             || match listed {
@@ -1782,7 +1787,24 @@ impl crate::Shared {
                 crate::hosted_workspaces::HostedWorkspaces::listed_everywhere,
             )
         };
-        personal.settle_seed(&self.handle, &held, listed.as_ref());
+        // A workspace whose governance names the person its owner is theirs, however it came to
+        // this device: a computer restored from their words that joins their own workspace — their
+        // site's — has a workspace already, and the shell's own is taken off rather than founded
+        // beside it.
+        let owned: BTreeSet<WorkspaceId> =
+            self.engine
+                .as_ref()
+                .map_or_else(BTreeSet::new, |engine| {
+                    held.iter()
+                        .copied()
+                        .filter(|workspace| {
+                            engine.owner_of(&workspace.to_string()).is_ok_and(|owner| {
+                                owner == self.person || self.earlier.contains(&owner)
+                            })
+                        })
+                        .collect()
+                });
+        personal.settle_seed(&self.handle, &held, listed.as_ref(), &owned);
     }
 
     /// The part the person takes in each workspace on the shell ([`governed_roles`]).
