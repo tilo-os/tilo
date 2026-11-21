@@ -9,8 +9,10 @@
 //! replica and keys are.
 
 pub(crate) mod device_keys;
+pub mod held;
 pub(crate) mod sealed;
 
+pub use held::HeldDocuments;
 
 use std::sync::Arc;
 
@@ -36,9 +38,6 @@ pub(crate) type OpenedWith = ([u8; 32], Option<u64>);
 
 /// One resource as this device last opened it; `None` until a read opened it.
 pub(crate) type Kept = Option<(OpenedWith, KeptDocument)>;
-
-/// How many resources a holder keeps opened at most.
-const OPENED: usize = 64;
 
 /// One resource as this device last opened it; `None` until a read opened it.
 type KeptSlot = Arc<std::sync::Mutex<Kept>>;
@@ -618,4 +617,60 @@ pub(crate) async fn revision(
     Ok(Some(tilo_peer_state::committed_document_revision(
         &document.get_heads(),
     )))
+}
+
+#[cfg(test)]
+mod opened_tests {
+    use std::sync::Arc;
+
+    use super::{OWN_OPENED_BYTES, Opened};
+
+    /// Each reader of a tracker's parts after a restart (its own copy, a caller's, the search
+    /// index) reads every part in turn: what the first opened stays opened for the next however
+    /// many parts there are. A bound by count below a tracker's parts let each pass push out the
+    /// parts the next was about to read.
+    #[test]
+    fn a_trackers_parts_stay_opened_from_one_reader_to_the_next() {
+        let opened = Opened::default();
+        let parts: Vec<String> = (0..120).map(|at| format!("part.{at}")).collect();
+        let first: Vec<_> = parts
+            .iter()
+            .map(|part| {
+                let kept = opened.of("workspace", "tasks", part);
+                opened.kept(("workspace", "tasks", part), 1024 * 1024);
+                kept
+            })
+            .collect();
+        for (part, kept) in parts.iter().zip(&first) {
+            assert!(
+                Arc::ptr_eq(&opened.of("workspace", "tasks", part), kept),
+                "{part} was let go and is opened again"
+            );
+        }
+    }
+
+    /// Past its bytes, what was read least recently is let go first.
+    #[test]
+    fn past_its_bytes_the_least_recently_read_is_let_go() {
+        let opened = Opened::default();
+        let third = OWN_OPENED_BYTES / 3;
+        let a = opened.of("workspace", "app", "a");
+        opened.kept(("workspace", "app", "a"), third);
+        let b = opened.of("workspace", "app", "b");
+        opened.kept(("workspace", "app", "b"), third);
+        // Read again: now the more recent of the two.
+        assert!(Arc::ptr_eq(&opened.of("workspace", "app", "a"), &a));
+        opened.of("workspace", "app", "c");
+        opened.kept(("workspace", "app", "c"), third);
+        opened.of("workspace", "app", "d");
+        opened.kept(("workspace", "app", "d"), third);
+        assert!(
+            Arc::ptr_eq(&opened.of("workspace", "app", "a"), &a),
+            "the one read again stays"
+        );
+        assert!(
+            !Arc::ptr_eq(&opened.of("workspace", "app", "b"), &b),
+            "the one read least recently went"
+        );
+    }
 }
