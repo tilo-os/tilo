@@ -10,9 +10,7 @@
 
 use std::fmt::Write as _;
 
-/// What opens the part of a turn's instruction that recalls the conversation: the summary and
-/// the last stretch follow it.
-pub use crate::{INSTRUCTION_CONVERSATION, INSTRUCTION_LEARNED};
+pub use crate::{INSTRUCTION_LEARNED, TurnSaid};
 
 /// The most an instruction a turn carries may hold, in bytes: the agent refuses a longer one.
 pub const INSTRUCTION_BYTES: usize = 32 * 1024;

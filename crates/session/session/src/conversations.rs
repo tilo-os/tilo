@@ -1170,6 +1170,7 @@ fn turns(
                 instruction,
             );
             let instruction = told.instruction;
+            let history = told.history;
             let fold = told.fold;
             let agent_instruction = agent_instructions.get(&summons.agent).cloned();
             Some(AgentTurn {
@@ -1189,6 +1190,7 @@ fn turns(
                         members,
                     ),
                     instruction,
+                    history,
                     agent_instruction,
                     fold,
                     subject,
@@ -1558,13 +1560,13 @@ mod tests {
             let [entry] = entries.as_slice() else {
                 panic!("one turn, not {entries:?}");
             };
+            assert_eq!(entry.request.instruction, "what did I ask you before?");
             assert_eq!(
-                entry.request.instruction,
-                format!(
-                    "what did I ask you before?{}\nPerson: remind me to call mum\nYou: Added \
-                     \"Call mum\" for tomorrow.",
-                    runtime_collab::INSTRUCTION_CONVERSATION
-                )
+                entry.request.history,
+                vec![
+                    runtime_collab::TurnSaid::said("remind me to call mum"),
+                    runtime_collab::TurnSaid::answered("Added \"Call mum\" for tomorrow."),
+                ]
             );
             assert_eq!(entry.request.request(), "what did I ask you before?");
         }

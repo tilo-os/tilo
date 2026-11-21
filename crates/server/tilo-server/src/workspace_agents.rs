@@ -626,6 +626,9 @@ pub struct Turn {
     pub cause: String,
     /// What the person asked, in words.
     pub request: String,
+    /// The conversation before the ask, oldest first, as the model is told it: what stands in
+    /// for messages it is no longer shown, then the last stretch, each in its own role.
+    pub history: Vec<runtime_collab::TurnSaid>,
     /// What they asked, as a person reads it: what the agent's session is labelled by.
     pub asked: String,
     /// What the turn asks its agent to take into its conversation's summary while it answers
@@ -1182,6 +1185,7 @@ impl HostAgents {
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
                     request: told.instruction,
+                    history: told.history,
                     asked: chat::summons::asked_words(message),
                     fold: told.fold,
                     typed: summons.typed,
@@ -1203,6 +1207,7 @@ impl HostAgents {
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
                     request: String::new(),
+                    history: Vec::new(),
                     asked: String::new(),
                     fold: None,
                     typed: summons.typed,
@@ -1281,6 +1286,7 @@ impl HostAgents {
                 conversation: tasks_model::issue_resource(&ask.issue),
                 cause: ask.cause.clone(),
                 request,
+                history: Vec::new(),
                 asked: issue.title.clone(),
                 fold: None,
                 typed: true,

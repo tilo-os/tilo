@@ -502,6 +502,7 @@ impl Team {
                     conversation: chat::summons::conversation_address(said_in),
                     cause: id.to_string(),
                     request: told.instruction,
+                    history: told.history,
                     asked: chat::summons::asked_words(message),
                     fold: told.fold,
                     typed: true,

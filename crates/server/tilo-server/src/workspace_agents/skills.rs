@@ -323,7 +323,6 @@ fn told(kept: &Skills, request: &str, reads: impl Fn(&str) -> bool) -> String {
 fn own_words(request: &str) -> &str {
     [
         runtime_collab::INSTRUCTION_CONTEXT,
-        runtime_collab::INSTRUCTION_CONVERSATION,
         runtime_collab::INSTRUCTION_LEARNED,
     ]
     .iter()
@@ -968,11 +967,10 @@ mod tests {
         );
         // No skill is of this kind of work: the names, and nothing in full.
         assert_eq!(told_for("Book a table for two."), format!("{TOLD}{names}"));
-        // What came before in the conversation is no part of the job.
-        let recalled = format!(
-            "Book a table for two.{}\nAda: the weekly report is due",
-            runtime_collab::INSTRUCTION_CONVERSATION
-        );
+        // What came before in the conversation is no part of the job: it is not in the request
+        // at all, and what was learned after the words is cut.
+        let recalled =
+            format!("Book a table for two.{INSTRUCTION_LEARNED}\n- Prefers the window seat");
         assert_eq!(told_for(&recalled), format!("{TOLD}{names}"));
         assert_eq!(own_words(&recalled), "Book a table for two.");
         // Nothing is told while nothing is kept.
@@ -1057,6 +1055,7 @@ mod tests {
             conversation: chat::summons::conversation_address(conversation),
             cause: "m1".to_owned(),
             request: "Do the job.".to_owned(),
+            history: Vec::new(),
             asked: "Do the job.".to_owned(),
             fold: None,
             typed: false,
