@@ -1,7 +1,6 @@
 //! Stable, versioned wire records for collaborative files.
 
-use serde::de::{self, MapAccess, SeqAccess, Visitor, value::MapAccessDeserializer};
-use serde::ser::SerializeStruct;
+use serde::de;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
@@ -10,7 +9,6 @@ use uuid::Uuid;
 use collab_types::Ed25519PublicKey;
 
 pub const FILE_METADATA_VERSION: u16 = 2;
-pub const FILE_METADATA_LEGACY_VERSION: u16 = 1;
 pub const FILE_PROPERTIES_VERSION: u16 = 1;
 pub const FILE_BINDING_VERSION: u16 = 1;
 pub const MAX_MIME_BYTES: usize = 255;
@@ -318,7 +316,8 @@ impl FilePropertiesV1 {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileMetadataV1 {
     pub schema_version: u16,
     pub document_id: FileDocumentId,
@@ -329,118 +328,14 @@ pub struct FileMetadataV1 {
     pub latest_actor: Option<FileActor>,
     pub observed_at_ms: u64,
     pub index_status: IndexStatus,
+    #[serde(default)]
     pub properties: Option<FilePropertiesV1>,
-}
-
-impl Serialize for FileMetadataV1 {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let legacy = self.schema_version == FILE_METADATA_LEGACY_VERSION;
-        let mut state =
-            serializer.serialize_struct("FileMetadataV1", if legacy { 9 } else { 10 })?;
-        state.serialize_field("schema_version", &self.schema_version)?;
-        state.serialize_field("document_id", &self.document_id)?;
-        state.serialize_field("content_hash", &self.content_hash)?;
-        state.serialize_field("byte_len", &self.byte_len)?;
-        state.serialize_field("mime", &self.mime)?;
-        state.serialize_field("previews", &self.previews)?;
-        state.serialize_field("latest_actor", &self.latest_actor)?;
-        state.serialize_field("observed_at_ms", &self.observed_at_ms)?;
-        state.serialize_field("index_status", &self.index_status)?;
-        if !legacy {
-            state.serialize_field("properties", &self.properties)?;
-        }
-        state.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for FileMetadataV1 {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct MetadataVisitor;
-        impl<'de> Visitor<'de> for MetadataVisitor {
-            type Value = FileMetadataV1;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("versioned file metadata")
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                macro_rules! next {
-                    ($name:literal) => {
-                        seq.next_element()?
-                            .ok_or_else(|| de::Error::missing_field($name))?
-                    };
-                }
-                let schema_version: u16 = next!("schema_version");
-                Ok(FileMetadataV1 {
-                    schema_version,
-                    document_id: next!("document_id"),
-                    content_hash: next!("content_hash"),
-                    byte_len: next!("byte_len"),
-                    mime: next!("mime"),
-                    previews: next!("previews"),
-                    latest_actor: next!("latest_actor"),
-                    observed_at_ms: next!("observed_at_ms"),
-                    index_status: next!("index_status"),
-                    properties: if schema_version == FILE_METADATA_LEGACY_VERSION {
-                        None
-                    } else {
-                        next!("properties")
-                    },
-                })
-            }
-
-            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-                #[derive(Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct NamedMetadata {
-                    schema_version: u16,
-                    document_id: FileDocumentId,
-                    content_hash: Option<ContentHash>,
-                    byte_len: u64,
-                    mime: Option<String>,
-                    previews: Vec<PreviewVariant>,
-                    latest_actor: Option<FileActor>,
-                    observed_at_ms: u64,
-                    index_status: IndexStatus,
-                    #[serde(default)]
-                    properties: Option<FilePropertiesV1>,
-                }
-                let value = NamedMetadata::deserialize(MapAccessDeserializer::new(map))?;
-                Ok(FileMetadataV1 {
-                    schema_version: value.schema_version,
-                    document_id: value.document_id,
-                    content_hash: value.content_hash,
-                    byte_len: value.byte_len,
-                    mime: value.mime,
-                    previews: value.previews,
-                    latest_actor: value.latest_actor,
-                    observed_at_ms: value.observed_at_ms,
-                    index_status: value.index_status,
-                    properties: value.properties,
-                })
-            }
-        }
-        const FIELDS: &[&str] = &[
-            "schema_version",
-            "document_id",
-            "content_hash",
-            "byte_len",
-            "mime",
-            "previews",
-            "latest_actor",
-            "observed_at_ms",
-            "index_status",
-            "properties",
-        ];
-        deserializer.deserialize_struct("FileMetadataV1", FIELDS, MetadataVisitor)
-    }
 }
 
 impl FileMetadataV1 {
     /// Validate the metadata schema and every bounded nested value.
     pub fn validate(&self) -> Result<(), FileDocumentError> {
-        if !matches!(
-            self.schema_version,
-            FILE_METADATA_LEGACY_VERSION | FILE_METADATA_VERSION
-        ) {
+        if self.schema_version != FILE_METADATA_VERSION {
             return Err(FileDocumentError::UnsupportedVersion(self.schema_version));
         }
         if self.mime.as_ref().is_some_and(|s| s.len() > MAX_MIME_BYTES) {
@@ -448,9 +343,6 @@ impl FileMetadataV1 {
         }
         if self.previews.len() > MAX_PREVIEW_VARIANTS {
             return Err(FileDocumentError::TooManyPreviews);
-        }
-        if self.schema_version == FILE_METADATA_LEGACY_VERSION && self.properties.is_some() {
-            return Err(FileDocumentError::UnsupportedVersion(self.schema_version));
         }
         if let Some(properties) = &self.properties {
             properties.validate()?;
@@ -561,13 +453,13 @@ mod tests {
     use super::*;
     use collab_types::canonical_bytes;
 
-    /// Metadata v2 round-trips rich properties and migrates v1; rich properties enforce strict
-    /// bounds; metadata is versioned, bounded and canonical.
+    /// Metadata round-trips rich properties; rich properties enforce strict bounds; metadata is
+    /// versioned, bounded and canonical.
     #[test]
     fn file_metadata_is_versioned_bounded_and_canonical() {
-        // Phase: metadata_v2_round_trips_rich_properties_and_v1_migrates.
+        // Phase: metadata_v2_round_trips_rich_properties.
         {
-            let mut metadata = FileMetadataV1 {
+            let metadata = FileMetadataV1 {
                 schema_version: FILE_METADATA_VERSION,
                 document_id: FileDocumentId::new(),
                 content_hash: None,
@@ -597,14 +489,6 @@ mod tests {
                 serde_json::from_slice::<FileMetadataV1>(&json).unwrap(),
                 metadata
             );
-
-            metadata.schema_version = FILE_METADATA_LEGACY_VERSION;
-            metadata.properties = None;
-            let legacy = postcard::to_allocvec(&metadata).unwrap();
-            let migrated: FileMetadataV1 = postcard::from_bytes(&legacy).unwrap();
-            assert_eq!(migrated.schema_version, FILE_METADATA_LEGACY_VERSION);
-            assert_eq!(migrated.properties, None);
-            migrated.validate().unwrap();
         }
 
         // Phase: rich_properties_enforce_strict_bounds.
