@@ -345,11 +345,6 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
         why: "an equal size changes nothing a frame reads; another invalidates before it lays out.",
     },
     QuietEntry {
-        file: "headless/composition.rs",
-        entry: "scroll_composed",
-        why: "moves only where a view stands, as a wheel's pan does; a frame places what came into view.",
-    },
-    QuietEntry {
         file: "headless.rs",
         entry: "send",
         why: "judged once dispatched, as the live App judges input: all but a wheel that only panned and inert input that moved nothing.",
@@ -408,11 +403,6 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
         file: "headless/capture.rs",
         entry: "write_shot",
         why: "settles the capture first, which invalidates, and writes it; it runs no frame of the app's own.",
-    },
-    QuietEntry {
-        file: "headless/composition.rs",
-        entry: "compose_frame",
-        why: "composes what the last frame laid out and clears the paint marks that frame left for it, as a drawing frame's paint clears them; nothing a frame reads.",
     },
     QuietEntry {
         file: "headless/controls.rs",

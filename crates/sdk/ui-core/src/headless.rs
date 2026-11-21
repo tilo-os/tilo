@@ -670,8 +670,6 @@ pub struct FrameHarness {
     placed_focus: Option<NodeId>,
     /// Completed relayout frames since construction.
     relayout_frames: u64,
-    /// What a page was last handed of the frame ([`Self::compose_frame`]).
-    presented: composition::Presented,
     /// Layout nodes built since construction: every node of each rebuilt tree, and those a change
     /// carried out in place mounted.
     layout_nodes_built: u64,
@@ -1570,7 +1568,6 @@ impl FrameHarness {
             placed_all: false,
             placed_focus: None,
             relayout_frames: 0,
-            presented: composition::Presented::default(),
             layout_nodes_built: 0,
             retained_frames: 0,
             retained_geometry_check_every: 0,
@@ -3764,7 +3761,6 @@ impl FrameHarness {
         self.last_layout_scale = Some(self.input_scale);
         stats.placed_partly = !placed_all_widgets;
         self.last_relayout = stats;
-        self.presented.note_layout(&stats, viewport_changed);
         if stats.rebuilt
             || stats.remounted
             || viewport_changed
@@ -4040,9 +4036,7 @@ impl FrameHarness {
                     &self.presence,
                 );
             }
-            if self.presented.clears_marks(paint) {
-                self.root.mark_drawn();
-            }
+            self.root.mark_drawn();
         }
         self.drawn_input = crate::input_generation::generation();
         self.drawn_outside = crate::outside_paint::on_screen();

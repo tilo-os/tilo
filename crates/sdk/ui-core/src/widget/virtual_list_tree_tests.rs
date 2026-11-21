@@ -1541,43 +1541,6 @@ fn a_tree_composes_as_nested_elements_with_a_disclosure() {
     );
 }
 
-/// A frame that composes the tree again because one row changed what it paints (the pointer over
-/// it) keeps the other rows as the last frame composed them, and the tree hands each its
-/// disclosure and its notes once: what the page is handed is what composing it all gives.
-#[test]
-fn a_tree_a_frame_keeps_rows_of_composes_each_row_once() {
-    use crate::headless::FrameHarness;
-
-    let mut harness = FrameHarness::for_root(
-        crate::State::new(),
-        listed_tree(),
-        (400, 500),
-        Theme::dark(),
-    );
-    harness.set_scene_drawn(false);
-    for _ in 0..3 {
-        let _ = harness.poll_frame();
-        let _ = harness.compose_frame();
-    }
-    let shown = harness
-        .presented_composition()
-        .cloned()
-        .expect("a frame was handed over");
-    let rows: Vec<[f64; 4]> = composed_at(&shown.root, "ListRow")
-        .into_iter()
-        .map(|row| row.rect)
-        .collect();
-    assert!(rows.len() >= 3, "the tree shows its rows: {rows:?}");
-    for [x, y, width, height] in rows {
-        harness.hover_at(x + width / 2.0, y + height / 2.0);
-        let _ = harness.poll_frame();
-        let whole = harness.composition();
-        if let Some(handed) = harness.compose_frame() {
-            assert_eq!(*handed, whole, "the pointer over the row at {y}");
-        }
-    }
-}
-
 /// [`Nested`] whose first row is still on its way until `ready` says it arrived.
 struct ArrivingNested {
     rows: Nested,

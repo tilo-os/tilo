@@ -53,31 +53,6 @@ impl VirtualRows {
         }
     }
 
-    /// A row the last frame composed and this one keeps as it was holds what the tree gave it
-    /// then (its own line apart from its notes, the notes, the disclosure): it is taken out, so
-    /// the row is as it composed itself, stands at its own box, and each row is given its parts
-    /// once, from the rows this frame holds.
-    pub(super) fn take_tree_parts(&self, rows: &mut [Composed]) {
-        if self.tree.is_none() {
-            return;
-        }
-        for row in rows {
-            let line = line_path(&row.path);
-            if let Some(at) = row.children.iter().position(|child| child.path == line) {
-                let line = row.children.swap_remove(at);
-                row.rect = line.rect;
-                row.layout = line.layout;
-                row.flows = line.flows;
-                row.ground = line.ground;
-                row.own = line.own;
-                row.children = line.children;
-            }
-            let (disclosure, notes) = (disclosure_path(&row.path), notes_path(&row.path));
-            row.children
-                .retain(|child| child.path != disclosure && child.path != notes);
-        }
-    }
-
     /// The list's rows as elements: a flat list where the list is not a tree, and otherwise
     /// each row's notes nested in a `<ul>` inside the row's own element, under the row's own
     /// line, with a branch row's disclosure where its chevron does.

@@ -1531,7 +1531,6 @@ impl Widget for VirtualRows {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("ul");
         cx.children();
-        self.take_tree_parts(&mut cx.composed.children);
         // The rows stand in from the list's edges exactly as far as the list laid them out, so a
         // press lands on the row drawn under it. A chosen row's tint keeps inside its own row:
         // each row insets its ground as painted.
