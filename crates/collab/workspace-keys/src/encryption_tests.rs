@@ -2666,3 +2666,48 @@ fn a_genesis_its_readers_do_not_back_never_becomes_their_group() {
         "the refused genesis's key opens nothing the readers seal"
     );
 }
+
+/// A reader that asks for a document's keys before the workspace's governance names who reads it
+/// is answered Unavailable, and its route is told once the governance arrives: asked again then,
+/// the document's group opens. Left untold, the route never asked again.
+#[test]
+fn a_document_asked_for_before_its_readers_are_known_is_told_when_they_are() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let scope = neighbour_wire::KeyScope::Document {
+        workspace: workspace_id,
+        app: "so.tilo.passwords".into(),
+        document: "vault".into(),
+        readers: None,
+    };
+    // The governance naming the document's readers has not reached this device yet.
+    let policy = Policy::readers([1]);
+    let dir = tempfile::tempdir().unwrap();
+    let mut reader = device(&workspace, workspace_id, 0, 1, &policy, dir.path());
+    let mut now = Instant::now();
+    assert!(matches!(
+        reader.service.access_scope(scope.clone(), now),
+        KeyAccess::Unavailable
+    ));
+    let group = scope.group();
+    let told = reader.service.workspace_change(group);
+    drive(&mut [&mut reader], &mut now, 2);
+    assert_eq!(
+        reader.service.workspace_change(group),
+        told,
+        "nothing changed while no one names the readers"
+    );
+    policy.document_readers.lock().unwrap().insert(public(1));
+    drive(&mut [&mut reader], &mut now, 2);
+    assert_ne!(
+        reader.service.workspace_change(group),
+        told,
+        "the route is told once the governance names the document's readers"
+    );
+    reader.service.access_scope(scope.clone(), now);
+    drive(&mut [&mut reader], &mut now, 8);
+    assert!(
+        matches!(reader.service.access_scope(scope, now), KeyAccess::Ready(_)),
+        "asked again, the document's group opens"
+    );
+}

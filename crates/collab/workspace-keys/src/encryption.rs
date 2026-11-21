@@ -860,6 +860,9 @@ impl WorkspaceKeys {
     pub fn access(&mut self, workspace: WorkspaceId, now: Instant) -> KeyAccess {
         let document_readers = if neighbour_wire::KeyScope::requires_document(workspace) {
             let Some(readers) = self.current_document_readers(workspace) else {
+                // The governance that names the document's readers may not
+                // have reached this device yet: its route hears when it does.
+                self.note_unopened(workspace, Unopened::unnamed(workspace));
                 return KeyAccess::Unavailable;
             };
             Some(readers)
