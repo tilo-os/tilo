@@ -1,6 +1,6 @@
 //! Document scanners: one page at a time, as PNG.
 //!
-//! Linux reaches scanners through SANE; macOS and the web report none. The controls
+//! Linux reaches scanners through SANE; macOS reports none. The controls
 //! are a small typed set, so no caller can pass scanner options through a string.
 
 #[derive(Clone, Debug, PartialEq, Eq)]

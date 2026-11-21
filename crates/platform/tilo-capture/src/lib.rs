@@ -1,37 +1,34 @@
 //! `tilo-capture`: cameras, microphones, the screen and document scanners, with
-//! one API on Linux, macOS and the web.
+//! one API on Linux and macOS.
 //!
-//! | Capability | Linux | macOS | Web |
-//! |---|---|---|---|
-//! | camera (`camera`) | `GStreamer` `v4l2src` | `AVFoundation` | `getUserMedia` |
-//! | microphone (`microphone`) | `GStreamer` `autoaudiosrc` | `AVFoundation` | `getUserMedia` + an audio worklet |
-//! | screen (`screen`) | `ScreenCast` portal + `pipewiresrc` | `AVFoundation` | `getDisplayMedia` |
-//! | scanner (`scanner`) | `SANE` | `Unsupported` | `Unsupported` |
+//! | Capability | Linux | macOS |
+//! |---|---|---|
+//! | camera (`camera`) | `GStreamer` `v4l2src` | `AVFoundation` |
+//! | microphone (`microphone`) | `GStreamer` `autoaudiosrc` | `AVFoundation` |
+//! | screen (`screen`) | `ScreenCast` portal + `pipewiresrc` | `AVFoundation` |
+//! | scanner (`scanner`) | `SANE` | `Unsupported` |
 //!
-//! Every capture is request based and poll driven, because the browser and macOS
-//! ask the user first: `open_*` returns at once in [`CaptureState::Starting`], and
+//! Every capture is request based and poll driven, because macOS and the
+//! `ScreenCast` portal ask the user first: `open_*` returns at once in [`CaptureState::Starting`], and
 //! the state moves to [`CaptureState::Live`] or [`CaptureState::Failed`]. The UI
 //! drains [`VideoCapture::take_latest`] (the newest picture only, never a queue) or
 //! [`AudioCapture::read`] once per frame, and [`VideoCapture::notify`] wakes it when
 //! the state moves.
 //!
 //! A native build without a capability's feature answers [`CaptureError::Unsupported`]
-//! for it; the web serves every capability. An app its sandbox confines is served by
+//! for it. An app its sandbox confines is served by
 //! the process that launched it ([`broker`]).
 
 pub mod scanner;
 
-#[cfg(all(unix, not(web_page)))]
 #[cfg(avf)]
 mod avf_backend;
-#[cfg(all(unix, not(web_page)))]
+#[cfg(unix)]
 pub mod broker;
 #[cfg(gst)]
 mod gst_backend;
 #[cfg(portal_screen)]
 mod portal;
-#[cfg(web_page)]
-mod web;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
@@ -59,9 +56,9 @@ impl tilo_platform_caps::Feature for Feature {
 
     fn availability(self) -> Availability {
         let built = match self {
-            Self::Camera => cfg!(any(native_camera, web_page)),
-            Self::Microphone => cfg!(any(native_microphone, web_page)),
-            Self::Screen => cfg!(any(native_screen, web_page)),
+            Self::Camera => cfg!(native_camera),
+            Self::Microphone => cfg!(native_microphone),
+            Self::Screen => cfg!(native_screen),
             Self::Scanner => cfg!(sane_scanner) || tilo_platform_caps::COLUMN != 0,
         };
         if built {
@@ -71,20 +68,6 @@ impl tilo_platform_caps::Feature for Feature {
         }
     }
 }
-
-/// Who answers a capture permission prompt where this runs, and so where a person
-/// undoes a refusal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AccessGrantor {
-    Browser,
-    System,
-}
-
-pub const ACCESS_GRANTOR: AccessGrantor = if cfg!(target_family = "wasm") {
-    AccessGrantor::Browser
-} else {
-    AccessGrantor::System
-};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CaptureError {
@@ -117,16 +100,14 @@ pub enum DeviceKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Device {
     /// What `open_*` takes: a `/dev/video*` node on Linux, an `AVFoundation` unique id
-    /// on macOS, a page-scoped device id on the web.
+    /// on macOS.
     pub id: String,
-    /// For people. Empty on the web until the user has granted access once.
+    /// For people.
     pub label: String,
     pub kind: DeviceKind,
 }
 
-/// The devices of `kind` known now. On the web enumeration is asynchronous: this
-/// answers from the last one and starts a fresh one, so ask again on a later
-/// frame.
+/// The devices of `kind` known now.
 #[must_use]
 pub fn devices(kind: DeviceKind) -> Vec<Device> {
     backend::devices(kind)
@@ -279,16 +260,11 @@ impl AudioCapture {
 }
 
 mod backend {
-    #[cfg(not(web_page))]
     use super::{
         AudioSource, CameraRequest, CaptureError, Device, DeviceKind, MicrophoneRequest,
         ScreenRequest, VideoSource,
     };
 
-    #[cfg(web_page)]
-    pub(super) use super::web::{devices, open_camera, open_microphone, open_screen};
-
-    #[cfg(not(web_page))]
     pub(super) fn devices(kind: DeviceKind) -> Vec<Device> {
         #[cfg(gst)]
         return super::gst_backend::devices(kind);
@@ -301,7 +277,6 @@ mod backend {
         }
     }
 
-    #[cfg(not(web_page))]
     pub(super) fn open_camera(
         request: &CameraRequest,
     ) -> Result<Box<dyn VideoSource>, CaptureError> {
@@ -322,7 +297,6 @@ mod backend {
         }
     }
 
-    #[cfg(not(web_page))]
     pub(super) fn open_screen(
         request: ScreenRequest,
     ) -> Result<Box<dyn VideoSource>, CaptureError> {
@@ -339,7 +313,6 @@ mod backend {
         }
     }
 
-    #[cfg(not(web_page))]
     pub(super) fn open_microphone(
         request: &MicrophoneRequest,
     ) -> Result<Box<dyn AudioSource>, CaptureError> {

@@ -146,20 +146,11 @@ enum CameraIssue {
     StartFailed,
 }
 
-const IN_BROWSER: bool = matches!(
-    tilo_capture::ACCESS_GRANTOR,
-    tilo_capture::AccessGrantor::Browser
-);
-
-fn no_feed_copy(issue: Option<CameraIssue>, in_browser: bool) -> (&'static str, &'static str) {
+fn no_feed_copy(issue: Option<CameraIssue>) -> (&'static str, &'static str) {
     match issue {
         Some(CameraIssue::NoDevice) | None => (
             "No camera connected",
             "Connect a camera to start the viewfinder.",
-        ),
-        Some(CameraIssue::PermissionDenied) if in_browser => (
-            "Camera access needed",
-            "Allow camera access for this page in your browser, then refresh.",
         ),
         Some(CameraIssue::PermissionDenied) => (
             "Camera access needed",
@@ -784,7 +775,7 @@ impl CameraApp {
     }
 
     fn no_feed_copy(&self) -> (&'static str, &'static str) {
-        no_feed_copy(self.camera_issue, IN_BROWSER)
+        no_feed_copy(self.camera_issue)
     }
 
     /// Why there is no picture, as the start of a sentence a screen
@@ -3507,16 +3498,12 @@ mod tests {
             Some(CameraIssue::PermissionDenied),
             Some(CameraIssue::StartFailed),
         ];
-        for browser in [false, true] {
-            for issue in issues {
-                let (_, message) = no_feed_copy(issue, browser);
-                assert!(message.ends_with('.'), "{message}");
-                assert!(!message.contains("connected camera"), "{message}");
-            }
+        for issue in issues {
+            let (_, message) = no_feed_copy(issue);
+            assert!(message.ends_with('.'), "{message}");
+            assert!(!message.contains("connected camera"), "{message}");
         }
-        let (_, page) = no_feed_copy(Some(CameraIssue::PermissionDenied), true);
-        assert!(page.contains("browser"), "{page}");
-        let (_, desktop) = no_feed_copy(Some(CameraIssue::PermissionDenied), false);
+        let (_, desktop) = no_feed_copy(Some(CameraIssue::PermissionDenied));
         assert!(desktop.contains("system settings"), "{desktop}");
     }
 

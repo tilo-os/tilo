@@ -327,7 +327,7 @@ args = ["--locked", "--target", "wasm32-unknown-unknown"]
 wrapper = ["bash", "tools/ci/page-clippy.sh"]
 trailing = ["-D", "warnings"]
 packages = [
-    "key-group", "tilo-browser-runtime", "tilo-capture",
+    "key-group", "tilo-browser-runtime",
     "tilo-clipboard", "tilo-clock", "tilo-dialogs", "tilo-files", "tilo-image-codec",
     "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-peer-state", "tilo-rt",
     "tilo-secrets", "tilo-session-client", "tilo-workspace-service", "tilolang-app",

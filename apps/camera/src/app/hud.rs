@@ -638,9 +638,7 @@ impl CameraApp {
     }
 
     pub(super) fn recovery_action(&self) -> (&'static str, Action) {
-        // A page's camera permission lives in the browser, which no
-        // `settings://` link reaches: there the person allows it and refreshes.
-        if self.camera_issue == Some(CameraIssue::PermissionDenied) && !super::IN_BROWSER {
+        if self.camera_issue == Some(CameraIssue::PermissionDenied) {
             ("Open privacy settings", Action::OpenCameraPrivacySettings)
         } else if self.camera_issue == Some(CameraIssue::StartFailed)
             && self.available_camera_devices().len() > 1

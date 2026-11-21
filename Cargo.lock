@@ -18533,7 +18533,6 @@ dependencies = [
  "tilo-platform-caps",
  "tilo-rt",
  "tilo-test-env",
- "wasm-bindgen",
  "workspace-hack",
 ]
 

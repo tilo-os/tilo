@@ -24,8 +24,7 @@ thin = ["dep:runtime-dylib"]
 # Live camera capture uses GStreamer's v4l2src. Sample storage used by shots and
 # tests does not enumerate or open a device.
 default = ["live-capture", "native-capture"]
-# Live capture through tilo-capture (GStreamer on the desktop, getUserMedia
-# on the web). See `src/capture.rs`.
+# Live capture through tilo-capture. See `src/capture.rs`.
 live-capture = []
 # The desktop's capture stack. Without it the app still opens and reports the
 # camera as unsupported in this build.
