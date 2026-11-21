@@ -51,6 +51,15 @@ impl Drop for ReplayScope {
     }
 }
 
+/// Call `work` with [`is_replaying`] saying `replaying`: an app's model module
+/// applies its verb as the device that called it does, reproducing or
+/// admitting.
+pub fn replaying_as<T>(replaying: bool, work: impl FnOnce() -> T) -> T {
+    let outer = REPLAYING.with(|current| current.replace(replaying));
+    let _restore = ReplayScope(outer);
+    work()
+}
+
 /// Open the undo step the changes committed on this thread join until the
 /// next one opens: every action applied meanwhile records it as its
 /// [`gesture`](ActionContext::gesture), so the document's history takes them
@@ -230,6 +239,46 @@ fn envelope_for(
     context: Option<ActionContext>,
     before: Before,
 ) -> Result<ActionEnvelope, ActionError> {
+    let pinned = (ActionId::new(), tilo_clock::unix_now_i64());
+    envelope_pinned(doc, action, encoded, actor, context, before, pinned)
+}
+
+/// The envelope [`apply_local_with_context`] writes for `action` at the
+/// doc's current heads, under the invocation id and origin time (seconds
+/// since the Unix epoch) the caller pins rather than fresh ones: a device
+/// applying an app's verb from its package mints both from the request, so
+/// every holder given the same request writes the same change.
+///
+/// # Errors
+///
+/// See [`apply_local`].
+pub fn envelope_at(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    (actor, context): (&[u8], ActionContext),
+    pinned: (ActionId, i64),
+) -> Result<ActionEnvelope, ActionError> {
+    envelope_pinned(
+        doc,
+        action,
+        encoded,
+        Some(actor),
+        Some(context),
+        Before::Doc,
+        pinned,
+    )
+}
+
+fn envelope_pinned(
+    doc: &mut Doc,
+    action: &dyn Action,
+    encoded: EncodedAction,
+    actor: Option<&[u8]>,
+    context: Option<ActionContext>,
+    before: Before,
+    (id, timestamp): (ActionId, i64),
+) -> Result<ActionEnvelope, ActionError> {
     let base = match before {
         Before::Doc => doc.get_heads(),
         Before::Written(_) => doc.committed_heads(),
@@ -237,7 +286,6 @@ fn envelope_for(
     // The action declares what it is; a context may only say a content
     // action is nobody's step this time (a record's first-run seed).
     let change = action.change_kind();
-    let id = ActionId::new();
     let mut context = context.unwrap_or_default();
     if change != ChangeKind::Content {
         context.change = change;
@@ -291,7 +339,6 @@ fn envelope_for(
     } else {
         inverse_as(doc, action, committing)
     };
-    let timestamp = tilo_clock::unix_now_i64();
     // A person setting the same item again with the same verb, right after
     // they last did, continues that run: undo takes it back and History
     // lists it as one ([`crate::run`]).
@@ -429,46 +476,6 @@ fn commit_pinned(doc: &mut Doc, env: &ActionEnvelope) {
     doc.commit_with(options);
 }
 
-/// The committed changes of a document, as reading their entries asks for
-/// them: a document, or the committed part of one still being written, whose
-/// device keeps it when the reader is an app's model module.
-pub trait Changes {
-    /// The metadata of the committed change `hash`.
-    fn change_meta(&self, hash: &automerge::ChangeHash) -> Option<automerge::ChangeMetadata<'_>>;
-    /// The committed change number `seq` of `actor`.
-    fn change_of(&self, actor: &ActorId, seq: u64) -> Option<automerge::ChangeHash>;
-    /// How many changes of `actor` are committed.
-    fn last_seq(&self, actor: &ActorId) -> u64;
-}
-
-impl Changes for automerge::Automerge {
-    fn change_meta(&self, hash: &automerge::ChangeHash) -> Option<automerge::ChangeMetadata<'_>> {
-        self.get_change_meta_by_hash(hash)
-    }
-
-    fn change_of(&self, actor: &ActorId, seq: u64) -> Option<automerge::ChangeHash> {
-        self.hash_of_actor_seq(actor, seq)
-    }
-
-    fn last_seq(&self, actor: &ActorId) -> u64 {
-        self.applied_seq(actor)
-    }
-}
-
-impl Changes for Doc {
-    fn change_meta(&self, hash: &automerge::ChangeHash) -> Option<automerge::ChangeMetadata<'_>> {
-        self.committed_change_meta(hash)
-    }
-
-    fn change_of(&self, actor: &ActorId, seq: u64) -> Option<automerge::ChangeHash> {
-        self.committed_hash_of_actor_seq(actor, seq)
-    }
-
-    fn last_seq(&self, actor: &ActorId) -> u64 {
-        self.committed_applied_seq(actor)
-    }
-}
-
 /// The message `context` is written with by `actor` on `doc`: as the
 /// continuation of the actor's last whole entry when the change differs from
 /// it only in its gesture and action payload, else whole. Changes of others
@@ -477,9 +484,10 @@ impl Changes for Doc {
 #[must_use]
 pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Option<String> {
     if context.gesture.is_some() && context.compensation.is_none() {
-        let continuation = doc
-            .change_of(actor, doc.last_seq(actor))
-            .and_then(|last| context.continuation_of(&opening_entry(doc, last)?));
+        let document = doc.committed_document();
+        let continuation = document
+            .hash_of_actor_seq(actor, document.applied_seq(actor))
+            .and_then(|last| context.continuation_of(&opening_entry(document, last)?));
         if continuation.is_some() {
             return continuation;
         }
@@ -516,12 +524,9 @@ thread_local! {
 /// writer's last whole entry with the continuation's gesture and action
 /// (found by following its writer's earlier changes).
 #[must_use]
-pub fn entry_of<D: Changes + ?Sized>(
-    doc: &D,
-    hash: automerge::ChangeHash,
-) -> Option<ActionContext> {
+pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
     let entry = opening_entry(doc, hash)?;
-    match doc.change_meta(&hash)?.message.as_deref() {
+    match doc.get_change_meta_by_hash(&hash)?.message.as_deref() {
         Some(message) if message.starts_with(CONTINUATION_PREFIX) => {
             ActionContext::continued(message, &entry)
         }
@@ -532,11 +537,8 @@ pub fn entry_of<D: Changes + ?Sized>(
 /// The whole entry of the change `hash`: its own, or for a continuation its
 /// writer's last whole entry, which a continuation is written and read
 /// against.
-fn opening_entry<D: Changes + ?Sized>(
-    doc: &D,
-    hash: automerge::ChangeHash,
-) -> Option<ActionContext> {
-    let meta = doc.change_meta(&hash)?;
+fn opening_entry(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
+    let meta = doc.get_change_meta_by_hash(&hash)?;
     let message = meta.message.as_deref()?;
     if let Some(entry) = ActionContext::from_change_message(message) {
         return Some(entry);
@@ -559,15 +561,15 @@ fn opening_entry<D: Changes + ?Sized>(
 /// The whole entry the continuation `meta` continues, and how many of its
 /// writer's changes back it is: none when it is more than
 /// [`MAX_CONTINUATIONS`] back.
-fn first_entry<D: Changes + ?Sized>(
-    doc: &D,
+fn first_entry(
+    doc: &automerge::Automerge,
     meta: &automerge::ChangeMetadata<'_>,
 ) -> Option<(ActionContext, usize)> {
     for depth in 1..=MAX_CONTINUATIONS {
         #[cfg(test)]
         STEPS_BACK.with(|steps| steps.set(steps.get().saturating_add(1)));
         let seq = meta.seq.checked_sub(u64::try_from(depth).ok()?)?;
-        let earlier = doc.change_meta(&doc.change_of(&meta.actor, seq)?)?;
+        let earlier = doc.get_change_meta_by_hash(&doc.hash_of_actor_seq(&meta.actor, seq)?)?;
         let text = earlier.message.as_deref()?;
         if let Some(first) = ActionContext::from_change_message(text) {
             return Some((first, depth));
@@ -748,12 +750,28 @@ pub fn replay(
     env: &ActionEnvelope,
     registry: &ActionRegistry,
 ) -> Result<(), ActionError> {
-    let _replaying = ReplayScope::enter();
     let action = registry.decode(&env.action)?;
+    replay_decoded(doc, env, action.as_ref(), registry.content())
+}
+
+/// [`replay`] of `action`, the envelope's action already decoded: what a
+/// device replays an app's verb with when the app's own code is the model
+/// module its package carries rather than a type in this process.
+///
+/// # Errors
+///
+/// See [`replay`].
+pub fn replay_decoded(
+    doc: &mut Doc,
+    env: &ActionEnvelope,
+    action: &dyn Action,
+    content: Option<&tilo_content::ContentStore>,
+) -> Result<(), ActionError> {
+    let _replaying = ReplayScope::enter();
     let base_heads = env.base_change_hashes();
     if doc.get_heads() == base_heads {
-        validate_compensation(doc, action.as_ref(), env)?;
-        return apply_under_envelope(doc, action.as_ref(), env, registry.content());
+        validate_compensation(doc, action, env)?;
+        return apply_under_envelope(doc, action, env, content);
     }
 
     // The live replica may already contain concurrent work made after the
@@ -765,8 +783,8 @@ pub fn replay(
     // `fork_at` fails closed when the dependencies have not arrived yet; the
     // transport can retry once it has the missing base changes.
     let mut replay_base = doc.fork_at(&base_heads)?;
-    validate_compensation(&mut replay_base, action.as_ref(), env)?;
-    apply_under_envelope(&mut replay_base, action.as_ref(), env, registry.content())?;
+    validate_compensation(&mut replay_base, action, env)?;
+    apply_under_envelope(&mut replay_base, action, env, content)?;
     doc.merge_incoming(&mut replay_base)?;
     Ok(())
 }
@@ -827,7 +845,7 @@ pub fn verify_change(
         .get_change_meta_by_hash(&hash)
         .ok_or_else(|| ActionError::Refused("the change is not in the document".into()))?
         .into_owned();
-    let Some(context) = entry_of(doc, hash) else {
+    let Some(context) = entry_of(doc.committed_document(), hash) else {
         return Ok(Verified::NothingRecorded);
     };
     let Some(recorded) = context.action.as_ref() else {
@@ -868,7 +886,7 @@ pub fn verified_compensation(
 ) -> Result<Option<Box<dyn Action>>, ActionError> {
     doc.get_change_meta_by_hash(&hash)
         .ok_or_else(|| ActionError::Refused("history change is unavailable".into()))?;
-    let inverse = entry_of(doc, hash).and_then(|context| context.compensation);
+    let inverse = entry_of(doc.committed_document(), hash).and_then(|context| context.compensation);
     let Some(inverse) = inverse else {
         return Ok(None);
     };

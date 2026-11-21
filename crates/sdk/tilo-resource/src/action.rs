@@ -1653,6 +1653,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
         self.compensation(doc)
     }
 
+    fn compensates(&self) -> bool {
+        self.compensated()
+    }
+
     /// A field edit with the value before and after, or a verb with its
     /// plain arguments, and the item either addressed.
     fn describe(&self, doc: &Doc) -> Option<tilo_actions::Described> {
