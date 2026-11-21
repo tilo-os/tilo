@@ -1431,9 +1431,9 @@ impl Core {
                     if holds(&row.0) {
                         return trap("an item cannot go inside itself");
                     }
-                    let chosen = self.beside(ctx, read, &row.0, &row.1, ours)?;
-                    let at = after(&chosen)?;
-                    (Some(chosen), at)
+                    let row = row.clone();
+                    let at = after(&row)?;
+                    (Some(row), at)
                 }
             },
             // `before: y` and `after: y`: beside the row named.

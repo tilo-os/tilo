@@ -609,6 +609,15 @@ mod cases {
             ["Notes", "Meetings", "Q3 plan"],
             "the tree keeps the order the store does"
         );
+
+        // Dropped on a row that stands under another, it is a note of that row itself, never of
+        // the row over it.
+        move_on(&view, "into", &notes, Some(&plan));
+        assert_eq!(
+            n.parent_of(&notes),
+            Some(plan),
+            "a note dropped on a row of a branch is that row's own"
+        );
     }
 
     /// The tree verbs a person reaches from a row's menu and an agent invokes: a note goes under
