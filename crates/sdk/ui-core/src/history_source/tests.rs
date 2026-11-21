@@ -809,7 +809,7 @@ tilo_test_env::scenario! {
             last.summary,
             crate::history_source::sentence::sentence(&context)
         );
-        assert_eq!(last.summary, "Finalize in Report");
+        assert_eq!(last.summary, "Ran “Finalize” in Report");
         assert!(!last.summary.contains("title"), "{}", last.summary);
     }
 

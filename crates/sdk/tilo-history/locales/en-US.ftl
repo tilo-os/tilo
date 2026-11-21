@@ -42,9 +42,12 @@ history-edit-unreact-unnamed = Took back a { $new } reaction
 history-edit = Changed { $field } of { $item }
 history-edit-unnamed = Changed { $field }
 
-history-verb = { $action }: { $item }
-history-verb-unnamed = { $action }
-history-verb-in = { $action } in { $item }
+## A verb an app has no message of its own for. The action's label is a name the
+## app wrote ("Append to note"), not a sentence: quoting it keeps the row a
+## past-tense sentence without making up words the app does not use.
+history-verb = Ran “{ $action }” on { $item }
+history-verb-unnamed = Ran “{ $action }”
+history-verb-in = Ran “{ $action }” in { $item }
 history-verb-create = Created { $item }
 history-verb-create-unnamed = Created
 

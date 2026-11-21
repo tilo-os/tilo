@@ -51,7 +51,8 @@ notes-notebook-tags = { $op ->
     [insert] Added a tag
    *[other] Removed a tag
 }
-notes-new-note = Created “{ $now }”
+notes-new-note = Created the note “{ $now }”
+notes-create-page = Created the note “{ $title }”
 notes-deleted = { $inside ->
     [0] Deleted { $title }
     [one] Deleted { $title } and 1 note inside
@@ -73,7 +74,7 @@ notes-delete-tag = Deleted the tag { $item }
 notes-keep-image = Kept a picture with the notebook
 notes-place-image = Added a picture to { $item }
 notes-import-markdown = Imported { $title }
-notes-append-to-note = Added to { $title }
+notes-append-to-note = Added to the note “{ $item }”
 notes-write-note = Edited “{ $item }”
 
 ## Keyboard shortcuts sheet

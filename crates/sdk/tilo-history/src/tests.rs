@@ -89,7 +89,10 @@ fn without_app_messages_the_framework_names_fields_by_their_labels() {
         english.sentence(&starred),
         "Turned on Favorite for Deploy script"
     );
-    assert_eq!(english.sentence(&created()), "New snippet in Snippets");
+    assert_eq!(
+        english.sentence(&created()),
+        "Ran “New snippet” in Snippets"
+    );
 
     let german = Reader::new("de-DE").with_labels(&Published);
     assert_eq!(
@@ -133,11 +136,48 @@ fn sentences_never_show_raw_ids_or_paths() {
         ActionKey::new("org.tilo.Snippets", "snippets.library", "empty_trash"),
         [],
     ));
-    assert_eq!(Reader::new("en-US").sentence(&bare), "Empty trash");
+    assert_eq!(Reader::new("en-US").sentence(&bare), "Ran “Empty trash”");
     assert_eq!(
         Reader::new("en-US").sentence(&ActionContext::default()),
         "Changed the document"
     );
+}
+
+/// A verb with no app message reads as a past-tense sentence, in the reader's language: the
+/// app's label quoted as the name it is, and what the change was about.
+#[test]
+fn a_verb_with_no_app_message_reads_as_a_sentence() {
+    let on_item = entry(Did::verb(
+        ActionKey::new("org.tilo.Snippets", "snippets.library", "empty_trash"),
+        [],
+    ));
+    let within = ActionContext::for_resource("lib", "snippets.library", "Snippets").with_described(
+        Described::new(Did::verb(
+            ActionKey::new("org.tilo.Snippets", "snippets.library", "new-snippet"),
+            [],
+        )),
+    );
+    let unnamed = ActionContext::default().with_described(Described::new(Did::verb(
+        ActionKey::new("org.tilo.Snippets", "snippets.library", "empty_trash"),
+        [],
+    )));
+    let english = Reader::new("en-US");
+    assert_eq!(
+        english.sentence(&on_item),
+        "Ran “Empty trash” on Deploy script"
+    );
+    assert_eq!(english.sentence(&within), "Ran “New snippet” in Snippets");
+    assert_eq!(english.sentence(&unnamed), "Ran “Empty trash”");
+    let german = Reader::new("de-DE");
+    assert_eq!(
+        german.sentence(&on_item),
+        "„Empty trash“ auf Deploy script ausgeführt"
+    );
+    assert_eq!(
+        german.sentence(&within),
+        "„New snippet“ in Snippets ausgeführt"
+    );
+    assert_eq!(german.sentence(&unnamed), "„Empty trash“ ausgeführt");
 }
 
 #[test]
@@ -502,7 +542,7 @@ fn an_empty_value_leaves_the_message_that_needs_it_to_the_action() {
         )));
     let reader = Reader::new("en-US").with_app(&en);
     assert_eq!(reader.sentence(&created()), "Created Deploy script");
-    assert_eq!(reader.sentence(&untitled), "New snippet in Snippets");
+    assert_eq!(reader.sentence(&untitled), "Ran “New snippet” in Snippets");
 }
 
 /// A step names its item, and an id it carried, by the name the reader's app gives it now: a
@@ -549,7 +589,7 @@ fn a_step_names_its_item_as_the_app_calls_it_now() {
     let reader = Reader::new("en-US").with_app(&notes).with_labels(&Now);
     assert_eq!(reader.sentence(&typed), "Edited “Garden plan”");
     assert_eq!(reader.sentence(&made(NOTE)), "Created “Garden plan”");
-    assert_eq!(reader.sentence(&made(GONE)), "New note in Notes");
+    assert_eq!(reader.sentence(&made(GONE)), "Ran “New note” in Notes");
 }
 
 /// A change that made an item, though its caller named none (an agent asking for a note by its

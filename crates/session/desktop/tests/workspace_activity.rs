@@ -292,7 +292,7 @@ tilo_test_env::scenario! {
             .collect::<Vec<_>>();
         assert_eq!(
             labels,
-            ["Post message in general", "Post message in general"],
+            ["Ran “Post message” in general", "Ran “Post message” in general"],
             "no read marker, nothing that came from outside"
         );
         assert!(
@@ -355,8 +355,8 @@ tilo_test_env::scenario! {
             assert!(
                 matches!(
                     summaries.as_slice(),
-                    [appended, made] if appended.starts_with("Append to note")
-                        && made.starts_with("New note")
+                    [appended, made] if appended.starts_with("Ran “Append to note”")
+                        && made.starts_with("Ran “New note”")
                 ),
                 "newest first, the append above the note it appended to: {summaries:?}"
             );

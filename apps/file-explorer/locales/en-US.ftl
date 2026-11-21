@@ -446,7 +446,9 @@ file-explorer-trash = Moved files to Trash
 file-explorer-move = Moved files to { $to }
 file-explorer-copy = Copied files to { $to }
 file-explorer-revert = Undid a change to files
-file-explorer-write-file = Wrote the file { $name }
+file-explorer-write-file = Wrote { $name }
+file-explorer-write-file-here = Wrote { $name }
+file-explorer-new-file = Created { $name }
 file-explorer-compress = Compressed files into an archive
 
 files-native-trash-delete-unavailable = These items can be restored. Permanent deletion is unavailable here.

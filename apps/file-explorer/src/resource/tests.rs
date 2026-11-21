@@ -1632,6 +1632,15 @@ tilo_test_env::scenario! {
                     "name": "final.txt",
                 }),
             ),
+            (
+                "write-file",
+                serde_json::json!({
+                    "device": "laptop",
+                    "folder": folder,
+                    "name": "agent-notes.md",
+                    "text": "# Notes from your agent\n",
+                }),
+            ),
         ] {
             app.call_by(agent.clone(), kind, verb, args)
                 .unwrap_or_else(|error| panic!("{verb}: {error:?}"));
@@ -1659,6 +1668,7 @@ tilo_test_env::scenario! {
                 "Added ~/Projects to Favorites",
                 "Created the folder Inbox",
                 "Renamed draft.txt to final.txt",
+                "Wrote agent-notes.md",
             ]
         );
     }

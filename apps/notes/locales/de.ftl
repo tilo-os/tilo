@@ -48,7 +48,8 @@ notes-notebook-tags = { $op ->
     [insert] Schlagwort hinzugefügt
    *[other] Schlagwort entfernt
 }
-notes-new-note = „{ $now }“ erstellt
+notes-new-note = Die Notiz „{ $now }“ erstellt
+notes-create-page = Die Notiz „{ $title }“ erstellt
 notes-deleted = { $inside ->
     [0] { $title } gelöscht
     [one] { $title } und 1 Notiz darin gelöscht
@@ -70,7 +71,7 @@ notes-delete-tag = Schlagwort { $item } gelöscht
 notes-keep-image = Ein Bild im Notizbuch abgelegt
 notes-place-image = Bild zu { $item } hinzugefügt
 notes-import-markdown = { $title } importiert
-notes-append-to-note = Zu { $title } hinzugefügt
+notes-append-to-note = Zur Notiz „{ $item }“ hinzugefügt
 notes-write-note = „{ $item }“ bearbeitet
 
 ## Keyboard shortcuts sheet

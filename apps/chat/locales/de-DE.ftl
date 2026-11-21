@@ -235,8 +235,10 @@ chat-archive-channel = { $archived ->
    *[false] Hat #{ $item } wiederhergestellt
 }
 chat-start-draft = Hat einen Entwurf begonnen
-chat-post = Hat geschrieben: { $text }
+## Verlauf: ein Beitrag wird mit der einen Zeile zitiert, die sein Element festhält.
+chat-post = „{ $item }“ geschrieben
 chat-post-file = Hat die Datei { $name } geteilt
+chat-post-view = Die Ansicht „{ $item }“ gepostet
 chat-share-resource = Hat einen Link in #{ $item } geteilt
 chat-deliver-message = Hat eine Nachricht von { $author } zugestellt
 chat-edit-message = Hat eine Nachricht bearbeitet: { $text }

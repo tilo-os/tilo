@@ -444,7 +444,7 @@ mod tests {
                 .iter()
                 .find(|entry| entry.id == HistoryEntryId::from_bytes(*invocation.0.as_bytes()))
                 .expect("receipt is visible after restart");
-            assert_eq!(entry.summary, "Export in Release brief");
+            assert_eq!(entry.summary, "Ran “Export” in Release brief");
             assert!(!entry.is_revertible());
         }
 
@@ -529,7 +529,7 @@ mod tests {
             );
             assert_eq!(pane.agent_name(task), "Quill");
             assert_eq!(pane.issuer_name(task), "Ada");
-            assert_eq!(task.steps[0].sentence(), "Rewrite the launch story");
+            assert_eq!(task.steps[0].sentence(), "Ran “Rewrite the launch story”");
             assert!(
                 pane.lens_candidates().iter().any(
                     |(lens, label)| *lens == LensSelection::AgentTasks && label == "Agent tasks  1"
@@ -573,7 +573,7 @@ mod tests {
                 .selected_agent_session()
                 .map(|indexed| &indexed.session)
                 .expect("the run's receipt");
-            assert_eq!(task.steps[0].sentence(), "Rewrite the launch story");
+            assert_eq!(task.steps[0].sentence(), "Ran “Rewrite the launch story”");
             assert!(pane.can_undo_agent_run());
             let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree);
             assert!(
@@ -763,7 +763,7 @@ mod tests {
         );
         assert_eq!(run.actions.len(), 1, "one record changed, one action");
         let action = &run.actions[0];
-        assert_eq!(action.summary, "Rewrite the launch story");
+        assert_eq!(action.summary, "Ran “Rewrite the launch story”");
         assert_eq!(
             (action.app_id.as_str(), action.record.as_str()),
             ("org.tilo.Writer", record.as_str())

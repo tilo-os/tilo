@@ -445,7 +445,9 @@ file-explorer-trash = Dateien in den Papierkorb verschoben
 file-explorer-move = Dateien nach { $to } verschoben
 file-explorer-copy = Dateien nach { $to } kopiert
 file-explorer-revert = Eine Änderung an Dateien rückgängig gemacht
-file-explorer-write-file = Datei { $name } geschrieben
+file-explorer-write-file = { $name } geschrieben
+file-explorer-write-file-here = { $name } geschrieben
+file-explorer-new-file = { $name } erstellt
 file-explorer-compress = Dateien in ein Archiv gepackt
 
 files-native-trash-delete-unavailable = Diese Objekte können wiederhergestellt werden. Dauerhaftes Löschen ist hier nicht verfügbar.

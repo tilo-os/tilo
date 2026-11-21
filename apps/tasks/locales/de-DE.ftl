@@ -110,8 +110,8 @@ tasks-message-step = Ausgeführt
 
 ## Verlauf
 
-tasks-create = { $title } angelegt
-tasks-create-many = Aufgaben angelegt
+tasks-create = Die Aufgabe „{ $title }“ angelegt
+tasks-create-many = Die Aufgaben angelegt
 tasks-move-under = { $item } verschoben
 tasks-assign = { $item } zugewiesen
 tasks-place = { $item } auf dem Board verschoben

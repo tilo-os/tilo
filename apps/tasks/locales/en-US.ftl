@@ -106,8 +106,8 @@ tasks-message-answer = Answered with a view
 tasks-message-step = Ran
 ## History
 
-tasks-create = Created { $title }
-tasks-create-many = Created issues
+tasks-create = Created the task “{ $title }”
+tasks-create-many = Created the tasks
 tasks-move-under = Moved { $item }
 tasks-assign = Assigned { $item }
 tasks-place = Moved { $item } on the board

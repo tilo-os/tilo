@@ -236,8 +236,10 @@ chat-archive-channel = { $archived ->
    *[false] Restored #{ $item }
 }
 chat-start-draft = Started a draft
-chat-post = Posted: { $text }
+## History: a post is quoted by the one line its item records, never its whole body.
+chat-post = Posted “{ $item }”
 chat-post-file = Posted the file { $name }
+chat-post-view = Posted the view “{ $item }”
 chat-share-resource = Shared a link in #{ $item }
 chat-deliver-message = Delivered a message from { $author }
 chat-edit-message = Edited a message: { $text }

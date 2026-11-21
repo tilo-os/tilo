@@ -21,3 +21,11 @@ chat-learned = Was deine Agenten gelernt haben
 chat-learned-learn = Fakt festhalten
 chat-learned-correct = Fakt korrigieren
 chat-learned-forget = Fakt vergessen
+
+## Verlauf
+## A change names the app it was applied under, and an action on the agent record is
+## applied under two: the action API's inferred app (org.tilo.Tilo) and the app that
+## keeps the record (so.tilo.assistant). Both keys say the one sentence.
+
+tilo-create-agent = Den Agenten „{ $item }“ hinzugefügt
+assistant-create-agent = Den Agenten „{ $item }“ hinzugefügt
