@@ -78,6 +78,13 @@ impl WorkspaceService {
         if self.workspaces().summary(workspace).await.is_ok() {
             return Ok(());
         }
+        // The person's Servers workspace has one founder: a device whose
+        // person's list says another of theirs keeps it is handed it instead.
+        if workspace == tilo_server_protocol::servers::admin_workspace_id(&caller.user_public_key)
+        {
+            crate::workspaces::servers::may_found(self.workspaces(), &caller.user_public_key)
+                .await?;
+        }
         let mut arguments = Map::new();
         arguments.insert("name".into(), name.into());
         arguments.insert("workspace".into(), workspace.into());

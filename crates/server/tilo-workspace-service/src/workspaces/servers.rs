@@ -1145,8 +1145,22 @@ pub async fn founded(workspaces: &Workspaces) -> Result<String, String> {
     if holds_admin(workspaces).await {
         return Ok(admin);
     }
+    may_found(workspaces, &person).await?;
+    workspaces
+        .create_workspace(ADMIN_WORKSPACE_NAME, Some(&admin))
+        .await?;
+    Ok(admin)
+}
+
+/// Whether this device may found `person`'s Servers workspace: not when their
+/// list says another of their devices keeps it, which hands it to this one.
+///
+/// # Errors
+/// Another device of the person keeps the workspace.
+pub async fn may_found(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(), String> {
+    let admin = admin_workspace_id(person);
     if workspaces
-        .kept_elsewhere(&person)
+        .kept_elsewhere(person)
         .await
         .iter()
         .any(|(workspace, _)| *workspace == admin)
@@ -1157,10 +1171,7 @@ pub async fn founded(workspaces: &Workspaces) -> Result<String, String> {
                 .into(),
         );
     }
-    workspaces
-        .create_workspace(ADMIN_WORKSPACE_NAME, Some(&admin))
-        .await?;
-    Ok(admin)
+    Ok(())
 }
 
 /// Apply `action` to the Servers workspace's [`SERVERS`] document as this device,
