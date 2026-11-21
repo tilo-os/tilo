@@ -8,9 +8,9 @@
 #
 # The base is what publish-server-plan-base built from one commit of main and pushed as one
 # image: the installer medium's bundle with a development server image as its target, the test
-# Imager that names that bundle, and the owner's dev disk. Its pointer (T_POINTER_SERVER_PLAN_BASE,
-# base.env: COMMIT=, IMAGE=) names the commit and the image by digest, so the base moves only when
-# someone dispatches it again, never with main.
+# Imager that names that bundle, and the owner's dev disk. tools/ci/server-plan-base.env names
+# its commit and the image by digest, so the base moves only when someone dispatches it again
+# and commits that file, never with main; the retry reads it from the tree under test.
 #
 # What differs from that commit (tools/ci/server-plan-retry.py select) is built as tilo-vm
 # layers, the ones `tilo-vm swap` installs (os/components.toml), with the compiler cache and
@@ -51,20 +51,19 @@ table() {
 }
 trap table EXIT
 
-base_pointer() {
-  [[ -n ${T_POINTER_SERVER_PLAN_BASE:-} ]] \
-    || die 'no base pointer. Pointers reach trusted runs only: push the branch and dispatch the retry (t dispatch --repo tilo --ref BRANCH server-plan-install-retry --publish). If main has no base yet, dispatch publish-server-plan-base on main first.'
-  base_commit=$(sed -n 's/^COMMIT=//p' <<<"$T_POINTER_SERVER_PLAN_BASE")
-  base_image=$(sed -n 's/^IMAGE=//p' <<<"$T_POINTER_SERVER_PLAN_BASE")
-  [[ $base_commit =~ ^[0-9a-f]{40}$ ]] || die "the base pointer names no commit: $T_POINTER_SERVER_PLAN_BASE"
+base=$repo/tools/ci/server-plan-base.env
+read_base() {
+  [[ -s $base ]] || die "no base: dispatch publish-server-plan-base on main (t dispatch --repo tilo --ref main publish-server-plan-base --publish) and commit the COMMIT= and IMAGE= lines its log ends with as ${base#"$repo"/}"
+  base_commit=$(sed -n 's/^COMMIT=//p' "$base") base_image=$(sed -n 's/^IMAGE=//p' "$base")
+  [[ $base_commit =~ ^[0-9a-f]{40}$ ]] || die "${base#"$repo"/} names no commit"
   [[ $base_image =~ ^registry\.tilo\.so/[a-z0-9/_-]+@sha256:[0-9a-f]{64}$ ]] \
-    || die "the base pointer names no image by digest: $T_POINTER_SERVER_PLAN_BASE"
+    || die "${base#"$repo"/} names no image by digest"
   printf 'base: %s (%s)\n' "$base_commit" "$base_image"
 }
 
 if [[ $mode == layers ]]; then
   step base
-  base_pointer
+  read_base
   git -C "$repo" cat-file -e "$base_commit^{commit}" 2>/dev/null \
     || git -C "$repo" fetch -q --depth=1 --no-tags "$forge" "$base_commit" \
     || die "the base commit $base_commit is not on the forge"
@@ -91,9 +90,9 @@ if [[ $mode == layers ]]; then
 fi
 
 step base
-base_pointer
+read_base
 [[ $(jq -r .base "$built/selection.json") == "$base_commit" ]] \
-  || die "the layers were selected against $(jq -r .base "$built/selection.json"), the base is now $base_commit"
+  || die "the layers were selected against $(jq -r .base "$built/selection.json"), not the base $base_commit"
 step fetch
 base_dir=$out/base
 mkdir -p "$base_dir"

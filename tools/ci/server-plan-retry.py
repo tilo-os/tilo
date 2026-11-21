@@ -50,6 +50,7 @@ DIRECT = (
     "os/dev/vm.sh",
     "tools/ci/server-plan-retry.sh",
     "tools/ci/server-plan-retry.py",
+    "tools/ci/server-plan-base.env",
     "tools/ci/install-packages.sh",
     "tools/ci/packages/",
 )

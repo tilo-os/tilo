@@ -4955,8 +4955,9 @@ on = ["dispatch"]
 # The base a retry of the server install proof starts from, built once from a commit of main and
 # kept by digest: the installer medium's bundle with the development server image as its target,
 # the test Imager that names that bundle, and the owner's dev disk, as one image
-# (tools/ci/publish/server-plan-base.py). Its pointer names the commit and the image, so the base
-# moves only when this is dispatched again, never with main.
+# (tools/ci/publish/server-plan-base.py). Its log ends with the base's commit and image by digest,
+# which tools/ci/server-plan-base.env takes in a commit of its own, so the base moves only when
+# someone dispatches this and commits that file, never with main.
 [[check]]
 name = "publish-server-plan-base"
 # Takes an identity token from t (at its deployment's own address) to the registry: no fixed host list.
@@ -4981,7 +4982,6 @@ name = "server-plan-retry-layers"
 egress = { to = ["code.tilo.so:443"] }
 run = "bash tools/ci/server-plan-retry.sh layers /target/server-plan-retry-layers"
 needs = ["tilo-vm-binary-x86_64"]
-reads_pointers = ["main:server-plan-base"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm", CARGO_BUILD_JOBS = "32", CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/server-plan-retry-layers/**"]
@@ -4990,18 +4990,15 @@ timeout_secs = 3600
 default = false
 
 # The retry itself: main's base fetched by digest, and the proof run with this tree's layers in
-# the installed server and the owner's device (tools/ci/server-plan-retry.sh proof). Pointers
-# reach trusted runs only, so a retry is a dispatch of a pushed branch:
-#   t dispatch --repo tilo --ref BRANCH server-plan-install-retry --publish
+# the installed server and the owner's device (tools/ci/server-plan-retry.sh proof), from a
+# working tree: `t test server-plan-install-retry`.
 [[check]]
 name = "server-plan-install-retry"
-on = ["dispatch"]
 # The base comes from the registry by digest; dnf in the guests installs from Fedora's mirrors, and
 # the enrolment and unlock cross the public iroh relay; no fixed host list names them all.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && bash tools/ci/server-plan-retry.sh proof /target/server-plan-retry-layers /target/server-plan-install-retry"
 needs = ["server-plan-retry-layers", "tilo-vm-binary-x86_64"]
-reads_pointers = ["main:server-plan-base"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
