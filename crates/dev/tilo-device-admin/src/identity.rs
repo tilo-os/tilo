@@ -9,7 +9,7 @@ use std::path::Path;
 use anyhow::{Context as _, bail};
 use ed25519_dalek::SigningKey;
 use tilo_device_identity::{IdentityPaths, persist};
-use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert};
+use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// The device's identity root.
 pub const SYSTEM_ROOT: &str = "/var/lib/tilo";
@@ -90,24 +90,16 @@ pub fn ensure_key(root: &Path) -> anyhow::Result<[u8; 32]> {
 /// key, verify, and grant administration.
 pub fn install_cert(root: &Path, cert_path: &Path) -> anyhow::Result<DeviceCert> {
     let paths = IdentityPaths::under(root);
-    let key = persist::read_device_key(&paths.device_privkey).with_context(|| {
-        format!(
-            "this machine has no device key under {}; make one first",
-            root.display()
-        )
-    })?;
-    let cert = read_cert_for(cert_path, &key)?;
-    verify_device_cert(&cert)
-        .with_context(|| format!("{} does not verify", cert_path.display()))?;
+    let cert = persist::read_device_cert(cert_path)
+        .with_context(|| format!("read the device certificate {}", cert_path.display()))?;
     if !cert.capabilities.can_administer_devices {
         bail!(
             "{} does not grant administration; certify this machine with `--capability admin`",
             cert_path.display()
         );
     }
-    paths.ensure_directories()?;
-    persist::write_device_cert(&paths.device_cert, &cert)?;
-    persist::write_public_key(&paths.user_pubkey, &cert.user_public_key)?;
+    tilo_device_identity::install_device_cert(&paths, &cert, tilo_clock::unix_now_ns())
+        .with_context(|| format!("install the device certificate {}", cert_path.display()))?;
     Ok(cert)
 }
 
@@ -169,9 +161,24 @@ mod tests {
             let path = write("admin.cert", &admin);
             assert_eq!(install_cert(dir.path(), &path).unwrap(), admin);
             let identity = Identity::load(dir.path()).unwrap();
-            assert_eq!(identity.cert, Some(admin));
+            assert_eq!(identity.cert.as_ref(), Some(&admin));
             assert_eq!(identity.device_id(), device);
             assert!(identity.revocations().unwrap().is_empty());
+            assert_eq!(
+                persist::read_device_cert(
+                    &identity.paths.device_cert_for_user(&admin.user_public_key)
+                )
+                .unwrap(),
+                admin
+            );
+
+            let other_root = SigningKey::from_bytes(&[23; 32]);
+            let reassigned = write(
+                "reassigned.cert",
+                &certify(&other_root, device, DeviceCapabilities::administrator()),
+            );
+            assert!(install_cert(dir.path(), &reassigned).is_err());
+            assert_eq!(Identity::load(dir.path()).unwrap().cert, Some(admin));
         }
 
         phase the_admin_endpoint_is_not_the_device_endpoint;
