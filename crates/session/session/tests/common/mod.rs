@@ -718,22 +718,23 @@ pub fn last_step(session: &mut Session, verb: &str) -> ui::tilo_actions::Actor {
 }
 
 /// The state directory of a device that holds its workspaces: a home of its own, the throwaway
-/// identity `dist/dev/nested-session.sh` mints, and a secret store. Made once for the test's
-/// process, and kept there: the home lives as long as the test does.
+/// identity `dist/dev/nested-session.sh` mints, and a secret store. Made once for the test, and
+/// kept as long as the test's thread lives: the home goes with that thread, and with it the
+/// environment lock it holds, so the next test of the same process takes the environment in turn.
+/// A home leaked for the process kept that lock past its test, and every later test that needed
+/// the environment waited for it forever.
 ///
 /// # Panics
 /// The home, the identity or their directories cannot be made.
 pub fn device_state() -> std::path::PathBuf {
     thread_local! {
-        static STATE: std::path::PathBuf = state();
+        static STATE: (tilo_test_env::TestHome, std::path::PathBuf) = {
+            let mut home = tilo_test_env::TestHome::new().expect("a home");
+            let state = device_in(&mut home);
+            (home, state)
+        };
     }
-    STATE.with(Clone::clone)
-}
-
-fn state() -> std::path::PathBuf {
-    device_in(Box::leak(Box::new(
-        tilo_test_env::TestHome::new().expect("a home"),
-    )))
+    STATE.with(|(_, state)| state.clone())
 }
 
 /// Sets up a device in `home`: the throwaway identity `dist/dev/nested-session.sh` mints, and a
