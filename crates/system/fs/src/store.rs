@@ -131,6 +131,7 @@ pub enum StoreEvictionError {
 
 /// A file stored as a version: its content id and length (`None` for an empty file), and whether
 /// the file itself became the stored entry.
+#[cfg(feature = "filesystem")]
 pub(crate) type Published = (Option<(iroh_blobs::Hash, u64)>, bool);
 
 pub struct ContentStore {

@@ -151,6 +151,7 @@ impl ContentStore {
     /// # Errors
     ///
     /// The file could not be read or linked into the store.
+    #[cfg(feature = "filesystem")]
     pub(crate) fn adopt_staged_inline(
         &self,
         path: &Path,
