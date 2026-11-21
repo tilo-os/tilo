@@ -173,7 +173,7 @@ discord = { path = "../../../apps/discord" }
 [dev-dependencies]
 # The page holder a test reads a peer's workspace through: the workspace service's document
 # core over the replica the peer's session admits into, as a page reads it.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "session-pages"] }
 # The crate's own test support, for its integration tests.
 tilo-agent-session = { path = ".", features = ["test-support"] }
 tilo-session-actions = { path = "../../session/session-actions" }
