@@ -30,19 +30,25 @@ impl Guardian {
     ///
     /// The helper process could not be started.
     pub fn new(at: &Path) -> io::Result<Self> {
+        // The mount that is up now, by the id the kernel gives it: a path can be mounted
+        // again after this one goes, and that later mount is not this guardian's to remove.
+        let id = mount_id(at).ok_or_else(|| {
+            io::Error::other(format!("no mount at {} to guard", at.display()))
+        })?;
         let mut process = Command::new("sh")
             .args([
                 "-c",
                 // The read ends with the pipe, so with the process that holds its other end,
-                // and the helper then unmounts what is still mounted there: lazily, so a
+                // and the helper then unmounts this mount and only this one — lazily, so a
                 // folder an app that outlived its session still holds open is detached rather
-                // than left behind, and only while the mount is up, so a session that already
-                // unmounted its own mount does not take down another one made since here.
-                "read -r _; grep -qF \" $1 \" /proc/self/mountinfo \
+                // than left behind.
+                "read -r _; awk -v id=\"$2\" -v p=\"$1\" \
+                 '$1 == id && $5 == p { up = 1 } END { exit !up }' /proc/self/mountinfo \
                  && exec fusermount3 -u -q -z -- \"$1\"",
                 "tilo-mount-guardian",
             ])
             .arg(at)
+            .arg(id.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -69,4 +75,18 @@ impl Guardian {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// The kernel's id for the mount at `at`, from the mount table.
+fn mount_id(at: &Path) -> Option<u64> {
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let wanted = at.to_string_lossy().replace(' ', "\\040");
+    mounts.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let id = fields.next()?.parse().ok()?;
+        let _parent = fields.next()?;
+        let _major_minor = fields.next()?;
+        let _root = fields.next()?;
+        (fields.next()? == wanted).then_some(id)
+    })
 }
