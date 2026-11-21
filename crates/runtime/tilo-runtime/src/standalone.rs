@@ -24,9 +24,6 @@ mod confirm;
 mod content;
 mod files;
 mod host_runs;
-mod media_import;
-#[cfg(test)]
-mod media_import_tests;
 mod service;
 pub mod take_work;
 mod workspace;
@@ -128,12 +125,6 @@ impl Drop for Standalone {
 
 impl Standalone {
     #[cfg(test)]
-    fn media_host(&self) -> &profile::MediaHost {
-        let Self { _media: media, .. } = self;
-        media
-    }
-
-    #[cfg(test)]
     fn personal(&self) -> &PeerPersonal {
         let Self {
             _personal: personal,
@@ -233,7 +224,6 @@ impl Standalone {
                 workspace_id: &workspace_id,
                 workspace: &workspace,
                 apps: &apps,
-                media: &media,
                 workspaces: &workspaces,
                 keys: &group_keys.keys(),
                 creation: Arc::clone(&creation),
@@ -348,14 +338,13 @@ fn take_work_action_service(
     take_work::action_service(root, workspaces, server, Some(Arc::clone(replicas)), None).map(Some)
 }
 
-/// What the broker's services are opened from: this profile's workspace, apps
-/// and media, the workspaces this device joined, and the person's own store.
+/// What the broker's services are opened from: this profile's workspace,
+/// apps, the workspaces this device joined, and the person's own store.
 struct BrokerParts<'a> {
     root: &'a Path,
     workspace_id: &'a str,
     workspace: &'a Arc<ProfileWorkspace>,
     apps: &'a Arc<apps::Apps>,
-    media: &'a profile::MediaHost,
     workspaces: &'a Arc<ServiceWorkspaces>,
     keys: &'a tilo_workspace_service::apps::workspace_keys::KeyProvider,
     creation: Arc<RecordCreation>,
@@ -383,7 +372,7 @@ fn start_broker(
                 as Arc<dyn OwnerCommitService>,
         ),
         None,
-        broker_services(parts, policy_time)?,
+        broker_services(parts, policy_time),
         channels,
         fanout,
     )?;
@@ -396,7 +385,7 @@ fn start_broker(
 fn broker_services(
     parts: BrokerParts<'_>,
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
-) -> io::Result<ProcessServices> {
+) -> ProcessServices {
     let document_content =
         content::document_content(parts.workspaces, &parts.root.join(BLOB_SOCKET));
     // Where this workspace's offloadable actions may run instead of here: the
@@ -415,7 +404,7 @@ fn broker_services(
                     Arc::clone(&document_content),
                 )
             });
-    Ok(ProcessServices {
+    ProcessServices {
         native_certificates: Some(Arc::new(Certificates {
             workspace: parts.workspace_id.to_owned(),
             device: parts.device,
@@ -431,7 +420,6 @@ fn broker_services(
             apps: Arc::clone(parts.apps),
         })),
         legacy_workspace: Some(Arc::clone(parts.workspace) as Arc<dyn LegacyWorkspaceProjection>),
-        workspace_governance: Some(media_import::service(parts.workspace, parts.media)?),
         document_content: Some(document_content),
         // The service the identity service answers key requests from:
         // endpoints ask again when it says a channel changed.
@@ -439,7 +427,7 @@ fn broker_services(
         action_offload,
         personal: Some(parts.personal),
         ..ProcessServices::default()
-    })
+    }
 }
 
 fn execution_policy_clock() -> io::Result<(
