@@ -447,7 +447,7 @@ fn write(reply: &Answer) -> i32 {
 #[unsafe(no_mangle)]
 // getrandom's custom backend calls this signature; it can only answer with an
 // error it never makes, and no module build can change that contract.
-#[allow(clippy::unnecessary_wraps, reason = "getrandom's custom backend ABI")]
+#[allow(clippy::unnecessary_wraps, reason = "getrandom's ABI requires a `Result`, which this backend never errs in")]
 unsafe extern "Rust" fn __getrandom_v03_custom(
     dest: *mut u8,
     len: usize,
