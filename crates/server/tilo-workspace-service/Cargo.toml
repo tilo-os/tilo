@@ -26,6 +26,9 @@ device-keys = ["dep:tilo-workspace-keys"]
 # Content a record references, reaching the devices that may read it: what a host serves
 # for its workspaces' records, with or without apps on top.
 content = ["dep:tilo-broker-core"]
+# A session client's pages, read through the document core over the replica its engine admits
+# into: what a session's tests read their workspace through.
+session-pages = ["device-keys", "dep:tilo-session-client"]
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
 apps = ["dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
@@ -68,6 +71,7 @@ tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 thiserror.workspace = true
 tracing.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
+tilo-session-client = { path = "../../session/client", optional = true }
 # The toolkit-free Fluent catalogue the name it gives a workspace is read from.
 tilo-history = { path = "../../sdk/tilo-history" }
 collab-types = { path = "../../collab/collab-types" }

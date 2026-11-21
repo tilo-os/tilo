@@ -707,33 +707,9 @@ pub fn holder(
     }) {
         return Some(Arc::clone(holder));
     }
-    let reader = engine
-        .owner()
-        .with_current(id, |view| Ok(view.device().device_public_key))
-        .ok()?;
-    let handed = Arc::downgrade(engine);
-    let behind = Arc::downgrade(engine);
-    let keys = tilo_workspace_service::own_device::key_groups(
-        engine.keys(),
-        Some(Box::new(move |workspace| {
-            tilo_desktop_model::WorkspaceId::parse(workspace)
-                .and_then(|id| handed.upgrade()?.handed_keys(id))
-        })),
-        None,
-        Some(Arc::new(move |group, held| {
-            if let Some(link) = behind.upgrade().and_then(|engine| engine.link()) {
-                link.want_frames(group, held);
-            }
-        })),
-    )
-    .keys;
-    let holder = Arc::new(tilo_workspace_service::documents::HeldDocuments::over(
-        workspace,
-        replica,
-        reader,
-        None,
-        Some(keys),
-    ));
+    let holder = Arc::new(tilo_workspace_service::documents::session_page::page_holder(
+        engine, id,
+    )?);
     holders.push((Arc::downgrade(engine), Arc::clone(&holder)));
     Some(holder)
 }

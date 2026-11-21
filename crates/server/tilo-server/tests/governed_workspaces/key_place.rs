@@ -354,11 +354,13 @@ fn front(doc: &AutoCommit) -> Option<String> {
 /// The layout as `device`'s session reads it: what only a session the workspace's group
 /// admitted opens.
 fn read_front(device: &Device) -> Option<String> {
-    let read = device
-        .session()
-        .documents()
-        .read(&WORKSPACE.to_string(), DESKTOP_APP, DESKTOP_DOCUMENT, None)
-        .ok()?;
+    let workspace = WORKSPACE.to_string();
+    let read = tilo_workspace_service::documents::session_page::page_holder(
+        device.session().engine(),
+        tilo_desktop_model::WorkspaceId::parse(&workspace)?,
+    )?
+    .read(&workspace, DESKTOP_APP, DESKTOP_DOCUMENT, None)
+    .ok()?;
     let DocumentRead::Whole { bytes, .. } = read else {
         return None;
     };

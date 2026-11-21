@@ -321,7 +321,7 @@ rcgen.workspace = true
 # (`author_workspace_record`), which the `agents` feature carries: asking for it here
 # keeps them building on their own, rather than only when another crate in the
 # same build turns it on.
-tilo-workspace-service = { path = "../tilo-workspace-service", features = ["test-support", "agents"] }
+tilo-workspace-service = { path = "../tilo-workspace-service", features = ["test-support", "agents", "session-pages"] }
 install-plan = { path = "../../session/install-plan" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }

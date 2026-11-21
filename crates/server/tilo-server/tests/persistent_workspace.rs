@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
-use tilo_peer_state::workspace_documents::DocumentRead;
+use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
 use tilo_session_client::{Cmd, Outbox};
@@ -747,12 +747,22 @@ async fn assert_page_reads_the_chat(
                     }
                     // The workspace's other records land too; only the chat is read.
                     Event::Landed { route: landed, .. } if landed == route => {
-                        if let Ok(DocumentRead::Whole { bytes, .. }) = visiting.documents().read(
-                            &route.cluster_id,
-                            &route.app_id,
-                            &route.document,
-                            None,
-                        ) {
+                        let read = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
+                            .and_then(|id| {
+                                tilo_workspace_service::documents::session_page::page_holder(
+                                    visiting.engine(),
+                                    id,
+                                )
+                            })
+                            .map(|holder| {
+                                holder.read(
+                                    &route.cluster_id,
+                                    &route.app_id,
+                                    &route.document,
+                                    None,
+                                )
+                            });
+                        if let Some(Ok(DocumentRead::Whole { bytes, .. })) = read {
                             doc = automerge::AutoCommit::load(&bytes).unwrap();
                         }
                     }

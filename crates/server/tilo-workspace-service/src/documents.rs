@@ -12,6 +12,8 @@
 pub mod device_keys;
 pub mod held;
 pub(crate) mod sealed;
+#[cfg(all(feature = "session-pages", not(target_arch = "wasm32")))]
+pub mod session_page;
 
 pub use device_keys::{
     DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeysChangedFuture,
