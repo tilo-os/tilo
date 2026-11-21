@@ -443,11 +443,6 @@ filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions:
 success-output = "final"
 
 [[profile.default.overrides]]
-filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::)))'
-threads-required = 16
-priority = 100
-
-[[profile.default.overrides]]
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
 

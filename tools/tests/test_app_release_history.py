@@ -319,22 +319,22 @@ class AppReleaseHistory(unittest.TestCase):
                 encoding="utf-8",
             )
             (self.source / "Cargo.lock").write_text(
-                'version = 4\n\n[[package]]\nname = "tilo-app-notes"\nversion = "1.0.0"\n',
+                'version = 4\n\n[[package]]\nname = "tilo-app-settings"\nversion = "1.0.0"\n',
                 encoding="utf-8",
             )
             (self.source / "apps/settings/Cargo.toml").write_text(
-                '[package]\nname = "tilo-app-notes"\nversion = "1.0.0"\n'
-                'edition = "2024"\n\n[[bin]]\nname = "tilo-notes"\n'
+                '[package]\nname = "tilo-app-settings"\nversion = "1.0.0"\n'
+                'edition = "2024"\n\n[[bin]]\nname = "tilo-settings"\n'
                 'path = "src/main.rs"\n',
                 encoding="utf-8",
             )
             (self.source / "apps/settings/tilo-app.toml").write_text(
-                '[package]\nid = "org.tilo.notes"\nversion = "1.0.0"\n'
-                'runtime = "1"\n\n[entrypoint]\nbin = "tilo-notes"\n',
+                '[package]\nid = "org.tilo.settings"\nversion = "1.0.0"\n'
+                'runtime = "1"\n\n[entrypoint]\nbin = "tilo-settings"\n',
                 encoding="utf-8",
             )
             (self.source / "dist/apps/app-collections.toml").write_text(
-                '[collections.default]\ninclude = ["notes"]\n', encoding="utf-8"
+                '[collections.default]\ninclude = ["settings"]\n', encoding="utf-8"
             )
             (self.source / "apps/settings/src/main.rs").write_text(
                 'fn main() {}\n', encoding="utf-8"
@@ -365,7 +365,7 @@ class AppReleaseHistory(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(result["apps"], ["notes"])
+            self.assertEqual(result["apps"], ["settings"])
             self.assertEqual(result["reason"], "release inputs changed: binary")
             self.assertEqual(
                 self.git(clone, "rev-parse", "HEAD"),

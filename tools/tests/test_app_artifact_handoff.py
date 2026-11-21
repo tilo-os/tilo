@@ -45,6 +45,9 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "tools/apps/dev_app_versions.py", "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
+        # The fixture tree holds no tilolang packages, so the collections name only its native apps.
+        collections = self.root / "dist/apps/app-collections.toml"
+        collections.write_text(re.sub(r', "tl-[a-z-]+"', "", collections.read_text()))
         self.write("bin/cargo", """#!/usr/bin/env -S python3 -S
 import json, os, pathlib, sys, tomllib
 arch = os.environ['FIXTURE_ARCH']
