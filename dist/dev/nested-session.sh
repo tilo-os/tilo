@@ -814,6 +814,17 @@ files_state=$XDG_STATE_HOME/tilo/files
 files_runtime=$runtime/tilo/files-workspace
 mkdir -p "$files_state/mount" "$files_state/cache" "$files_runtime" "$runtime/tilo/files-storage"
 chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
+# The workspace mounts where the system says a workspace mounts (/var/workspace,
+# tilo_paths::WORKSPACE_MOUNT) whenever this session may mount there: the session's own
+# grants and the sandbox each app is given are written in that path's terms, so only a mount
+# at that path is the workspace to the apps. A session that may not mount there keeps its
+# own folder and says so: its apps then see no workspace.
+files_mount=$files_state/mount
+if [[ -d /var/workspace ]] && { [[ $(id -u) == 0 ]] || [[ -w /var/workspace ]]; } \
+    && ! mountpoint -q /var/workspace; then
+    files_mount=/var/workspace
+    chmod 700 "$files_mount" 2>/dev/null || true
+fi
 # This build's daemon, mounting this session's workspace: no capability list yet (the session
 # publishes the person's own as its apps are granted), so the device acts as itself. Its
 # authority and content sockets live in /run/tilo on a Tilo machine, which the image's tmpfiles
@@ -825,7 +836,7 @@ if [[ ! -d /run/tilo ]] || [[ ! -w /run/tilo ]]; then
 fi
 # One person's session: the mount is theirs alone, as the process harness takes it, so no
 # desktop's /etc/fuse.conf has to allow other users in.
-TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_state/mount" --cache-dir "$files_state/cache" \
+TILO_FS_FUSE_OWNER_ONLY=1 setsid "$bin/fs" serve --mount-point "$files_mount" --cache-dir "$files_state/cache" \
     --storage-sock "$runtime/tilo/files-storage/storage.sock" \
     --blob-sock "$files_runtime/fs-blobs.sock" \
     --session-link "$files_runtime/fs-session-link" \
@@ -836,7 +847,7 @@ children+=("$files_pid")
 # gives it), keeps document media at this session's socket, and records the daemon as its
 # endpoint, as it records the login's unit.
 if wait_for_socket "$files_runtime/fs-blobs.sock" "$files_pid"; then
-    export TILO_WORKSPACE_ROOTS=$files_state/mount
+    export TILO_WORKSPACE_ROOTS=$files_mount
     export TILO_FS_BLOB_SOCKET=$files_runtime/fs-blobs.sock
     export TILO_FILES_ENDPOINT_PID=$files_pid
 else
