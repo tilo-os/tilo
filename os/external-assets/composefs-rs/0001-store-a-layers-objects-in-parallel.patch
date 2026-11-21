@@ -1,0 +1,377 @@
+From: Tilo <noreply@tilo.so>
+Subject: [PATCH] oci: store a layer's objects in parallel
+
+Draining a layer stored its objects one at a time: each a copy into the
+repository and an fs-verity enable, which first writes the file out. A
+repo-to-repo copy across filesystems (`cfsctl oci copy`, an install from the
+booted repository) spent most of its time waiting on those writes in turn.
+A few worker threads now store objects while the stream is read on, and the
+splitstream is still written in stream order, each reference once its object
+is stored.
+---
+--- a/crates/composefs-oci/src/layer_sync.rs
++++ b/crates/composefs-oci/src/layer_sync.rs
+@@ -126,133 +126,256 @@
+     Ok((verity, stats, ctx))
+ }
+ 
++/// How many objects one layer's drain stores at once. Storing an object is a
++/// copy and an fs-verity enable, and enabling fs-verity first writes the file
++/// out, so stored one at a time a layer of many files waits on each write in
++/// turn.
++fn object_store_workers() -> usize {
++    std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8)
++}
++
++/// What the drain owes the splitstream, in stream order, while objects ahead
++/// of it are still being stored.
++enum Pending<ObjectID> {
++    Inline(Vec<u8>),
++    Object {
++        size: u64,
++        name: String,
++        stored: std::sync::mpsc::Receiver<Result<(ObjectID, ObjectStoreMethod)>>,
++    },
++}
++
++/// One object for a store worker, and where its result goes.
++type StoreJob<ObjectID> = (
++    std::fs::File,
++    u64,
++    bool,
++    std::sync::mpsc::SyncSender<Result<(ObjectID, ObjectStoreMethod)>>,
++);
++
++/// The splitstream's next bytes: written now when nothing is pending ahead of
++/// them, queued behind the pending objects otherwise.
++fn emit_inline<ObjectID>(
++    writer: &mut SplitStreamWriter<ObjectID>,
++    pending: &mut std::collections::VecDeque<Pending<ObjectID>>,
++    data: &[u8],
++) where
++    ObjectID: FsVerityHashValue,
++{
++    if pending.is_empty() {
++        writer.write_inline(data);
++    } else {
++        pending.push_back(Pending::Inline(data.to_vec()));
++    }
++}
++
++/// Write the oldest pending entry into the splitstream, waiting for its object
++/// to be stored if it is one.
++fn write_oldest<ObjectID: FsVerityHashValue>(
++    writer: &mut SplitStreamWriter<ObjectID>,
++    pending: &mut std::collections::VecDeque<Pending<ObjectID>>,
++    stats: &mut ImportStats,
++) -> Result<()> {
++    match pending.pop_front() {
++        None => Ok(()),
++        Some(Pending::Inline(data)) => {
++            writer.write_inline(&data);
++            Ok(())
++        }
++        Some(Pending::Object { size, name, stored }) => {
++            let (object_id, method) = stored
++                .recv()
++                .context("an object store worker stopped")?
++                .with_context(|| format!("Failed to store object for {name}"))?;
++            record_stored(stats, method, size);
++            writer.add_external_size(size);
++            writer.write_reference(object_id)
++        }
++    }
++}
++
++fn record_stored(stats: &mut ImportStats, method: ObjectStoreMethod, size: u64) {
++    match method {
++        ObjectStoreMethod::Reflinked => {
++            stats.objects_reflinked += 1;
++            stats.bytes_reflinked += size;
++        }
++        ObjectStoreMethod::Hardlinked => {
++            stats.objects_hardlinked += 1;
++            stats.bytes_hardlinked += size;
++        }
++        ObjectStoreMethod::Copied => {
++            stats.objects_copied += 1;
++            stats.bytes_copied += size;
++        }
++        ObjectStoreMethod::AlreadyPresent => {
++            stats.objects_already_present += 1;
++        }
++    }
++}
++
++/// Drain the stream into `writer`. Objects too large to inline are stored by a
++/// few worker threads at once while the stream is read on; the splitstream is
++/// still written in stream order, each reference once its object is stored.
+ #[allow(clippy::too_many_arguments)]
+-fn drain_splitdirfdstream_inner<ObjectID: FsVerityHashValue>(
++fn drain_splitdirfdstream_inner<ObjectID>(
+     repo: &Arc<Repository<ObjectID>>,
+     writer: &mut SplitStreamWriter<ObjectID>,
+     reader: &mut SplitdirfdstreamReader<std::fs::File>,
+     overlay_dirs: &[cap_std::fs::Dir],
+     zerocopy: bool,
+     stats: &mut ImportStats,
+-    ctx: &mut ImportContext,
++    _ctx: &mut ImportContext,
+     inline_buf: &mut Vec<u8>,
+     mut hasher: Option<&mut Sha256>,
+-) -> Result<()> {
+-    while let Some(chunk) = reader.next_chunk().context("splitdirfdstream read error")? {
+-        match chunk {
+-            Chunk::Metadata(data) => {
+-                if let Some(ref mut h) = hasher {
+-                    h.update(data);
++) -> Result<()>
++where
++    ObjectID: FsVerityHashValue,
++{
++    let workers = object_store_workers();
++    let (jobs, job_queue) = std::sync::mpsc::sync_channel::<StoreJob<ObjectID>>(workers);
++    let job_queue = std::sync::Mutex::new(job_queue);
++    std::thread::scope(|scope| -> Result<()> {
++        // Owned here, so it is dropped as this closure returns, before the scope
++        // joins the workers: that ends their loops.
++        let jobs = jobs;
++        for _ in 0..workers {
++            let job_queue = &job_queue;
++            scope.spawn(move || {
++                // Each worker keeps its own record of which filesystems refuse reflinks.
++                let mut ctx = ImportContext::default();
++                loop {
++                    let job = job_queue.lock().map_err(|_| ()).and_then(|q| q.recv().map_err(|_| ()));
++                    let Ok((file, size, zerocopy, done)) = job else {
++                        return;
++                    };
++                    let stored = if zerocopy {
++                        repo.ensure_object_from_file_zerocopy(&file, size, &mut ctx)
++                    } else {
++                        repo.ensure_object_from_file(&file, size, &mut ctx)
++                    };
++                    let _ = done.send(stored);
+                 }
+-                stats.bytes_inlined += data.len() as u64;
+-                writer.write_inline(data);
++            });
++        }
++
++        // Enough objects in flight to keep every worker busy while the oldest is
++        // waited for.
++        let window = workers * 4;
++        let mut pending: std::collections::VecDeque<Pending<ObjectID>> =
++            std::collections::VecDeque::new();
++        let store = |pending: &mut std::collections::VecDeque<Pending<ObjectID>>,
++                         writer: &mut SplitStreamWriter<ObjectID>,
++                         stats: &mut ImportStats,
++                         file: std::fs::File,
++                         size: u64,
++                         name: &str,
++                         zerocopy: bool|
++         -> Result<()> {
++            let (done, stored) = std::sync::mpsc::sync_channel(1);
++            jobs.send((file, size, zerocopy, done))
++                .map_err(|_| anyhow::anyhow!("the object store workers stopped"))?;
++            pending.push_back(Pending::Object { size, name: name.to_owned(), stored });
++            while pending.len() > window {
++                write_oldest(writer, pending, stats)?;
+             }
+-            Chunk::InlineData(data) => {
+-                // Non-world-readable file transported inline by the producer.
+-                // We already have the bytes — no fd needed for the small case.
+-                if let Some(ref mut h) = hasher {
+-                    h.update(data);
+-                }
+-                let length = data.len() as u64;
+-                if should_inline(length) {
+-                    stats.bytes_inlined += length;
+-                    writer.write_inline(data);
+-                } else {
+-                    // Large payload received as Chunk::InlineData (producer
+-                    // determined the consumer can't safely open this file by
+-                    // name — see consumer_has_cap_dac_override in
+-                    // GetLayerParams), so unlike Chunk::FileBackedData below,
+-                    // there's no real on-disk file backing this data. We
+-                    // materialise it into a memfd purely to hand
+-                    // process_file_content an fd; that memfd can never be
+-                    // zero-copyable (reflink/hardlink), regardless of the
+-                    // caller's `zerocopy` flag, so always pass `false` here.
+-                    process_file_content(
+-                        repo,
+-                        writer,
+-                        stats,
+-                        ctx,
+-                        file_content_to_memfd(data)?,
+-                        length,
+-                        "<file-content>",
+-                        false,
+-                        inline_buf,
+-                    )?;
++            Ok(())
++        };
++
++        while let Some(chunk) = reader.next_chunk().context("splitdirfdstream read error")? {
++            match chunk {
++                Chunk::Metadata(data) => {
++                    if let Some(ref mut h) = hasher {
++                        h.update(data);
++                    }
++                    stats.bytes_inlined += data.len() as u64;
++                    emit_inline(writer, &mut pending, data);
+                 }
+-            }
+-            Chunk::FileBackedData {
+-                dirfd_index,
+-                length,
+-                filename,
+-            } => {
+-                let name = std::str::from_utf8(filename).with_context(|| {
+-                    format!("non-utf8 filename in splitdirfdstream: {filename:?}")
+-                })?;
+-                let dir = overlay_dirs.get(dirfd_index as usize).with_context(|| {
+-                    format!(
+-                        "dirfd_index {dirfd_index} out of range (dir_fds.len={})",
+-                        overlay_dirs.len()
+-                    )
+-                })?;
+-                assert_is_dir(dir, dirfd_index, name)?;
+-                let fd = dir
+-                    .open(name)
+-                    .map(OwnedFd::from)
+-                    .with_context(|| format!("open {name:?} in overlay dir[{dirfd_index}]"))?;
+-
+-                use rustix::fs::FileType;
+-                let st = fstat(&fd).with_context(|| format!("fstat {name:?}"))?;
+-                let ft = FileType::from_raw_mode(st.st_mode);
+-                if ft != FileType::RegularFile {
+-                    anyhow::bail!(
+-                        "object {name:?} in overlay dir[{dirfd_index}] is not a regular file (file type: {ft:?}, mode={:#o})",
+-                        st.st_mode
+-                    );
++                Chunk::InlineData(data) => {
++                    // Non-world-readable file transported inline by the producer.
++                    if let Some(ref mut h) = hasher {
++                        h.update(data);
++                    }
++                    let length = data.len() as u64;
++                    if should_inline(length) {
++                        stats.bytes_inlined += length;
++                        emit_inline(writer, &mut pending, data);
++                    } else {
++                        // A large payload with no file backing it (the consumer can't
++                        // open it by name): a memfd stands in, which can never be
++                        // reflinked or hardlinked, so zerocopy is off for it.
++                        let file = std::fs::File::from(file_content_to_memfd(data)?);
++                        store(&mut pending, writer, stats, file, length, "<file-content>", false)?;
++                    }
+                 }
++                Chunk::FileBackedData {
++                    dirfd_index,
++                    length,
++                    filename,
++                } => {
++                    let name = std::str::from_utf8(filename).with_context(|| {
++                        format!("non-utf8 filename in splitdirfdstream: {filename:?}")
++                    })?;
++                    let dir = overlay_dirs.get(dirfd_index as usize).with_context(|| {
++                        format!(
++                            "dirfd_index {dirfd_index} out of range (dir_fds.len={})",
++                            overlay_dirs.len()
++                        )
++                    })?;
++                    assert_is_dir(dir, dirfd_index, name)?;
++                    let fd = dir
++                        .open(name)
++                        .map(OwnedFd::from)
++                        .with_context(|| format!("open {name:?} in overlay dir[{dirfd_index}]"))?;
+ 
+-                let fd_to_process = if let Some(ref mut h) = hasher {
+-                    // Defend against a producer that declares a `length` that
+-                    // disagrees with the actual object size.  The reflink store
+-                    // path already rejects a mismatch, but the copy fallback would
+-                    // store the whole file while we only hashed `length` bytes,
+-                    // so the committed object could differ from the verified
+-                    // bytes.  Pin the two together by requiring length == size.
+-                    let obj_file = std::fs::File::from(fd);
+-                    let actual_size = st.st_size as u64;
+-                    if actual_size != length {
++                    use rustix::fs::FileType;
++                    let st = fstat(&fd).with_context(|| format!("fstat {name:?}"))?;
++                    let ft = FileType::from_raw_mode(st.st_mode);
++                    if ft != FileType::RegularFile {
+                         anyhow::bail!(
+-                            "object {name}: declared length {length} != actual size {actual_size}"
++                            "object {name:?} in overlay dir[{dirfd_index}] is not a regular file (file type: {ft:?}, mode={:#o})",
++                            st.st_mode
+                         );
+                     }
++                    let file = std::fs::File::from(fd);
+ 
+-                    // Hash the object file content using positioned reads.  This
+-                    // does not disturb the fd cursor, so process_file_content can
+-                    // independently read/reflink the same fd afterwards.
+-                    hash_fd_contents(&obj_file, length, h)
+-                        .with_context(|| format!("hashing object {name}"))?;
+-
+-                    obj_file.into()
+-                } else {
+-                    fd
+-                };
+-
+-                process_file_content(
+-                    repo,
+-                    writer,
+-                    stats,
+-                    ctx,
+-                    fd_to_process,
+-                    length,
+-                    name,
+-                    zerocopy,
+-                    inline_buf,
+-                )?;
+-                // NOTE: padding after the file content is already emitted by the
+-                // producer as a following Inline chunk; do NOT add extra padding here.
++                    if let Some(ref mut h) = hasher {
++                        // Defend against a producer that declares a `length` that
++                        // disagrees with the actual object size.  The reflink store
++                        // path already rejects a mismatch, but the copy fallback would
++                        // store the whole file while we only hashed `length` bytes,
++                        // so the committed object could differ from the verified
++                        // bytes.  Pin the two together by requiring length == size.
++                        let actual_size = st.st_size as u64;
++                        if actual_size != length {
++                            anyhow::bail!(
++                                "object {name}: declared length {length} != actual size {actual_size}"
++                            );
++                        }
++                        // Positioned reads leave the fd's cursor where it was, so
++                        // the store can read or reflink the same fd afterwards.
++                        hash_fd_contents(&file, length, h)
++                            .with_context(|| format!("hashing object {name}"))?;
++                    }
++
++                    if should_inline(length) {
++                        inline_buf.resize(length as usize, 0);
++                        file.read_exact_at(inline_buf, 0)?;
++                        stats.bytes_inlined += length;
++                        emit_inline(writer, &mut pending, inline_buf);
++                    } else {
++                        store(&mut pending, writer, stats, file, length, name, zerocopy)?;
++                    }
++                    // NOTE: padding after the file content is already emitted by the
++                    // producer as a following Inline chunk; do NOT add extra padding here.
++                }
+             }
+         }
+-    }
+-    Ok(())
++        while !pending.is_empty() {
++            write_oldest(writer, &mut pending, stats)?;
++        }
++        Ok(())
++    })
+ }
+ 
+ /// Materialise `data` into an anonymous `memfd` for use with

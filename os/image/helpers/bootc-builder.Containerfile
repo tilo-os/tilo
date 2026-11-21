@@ -41,6 +41,9 @@ COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
     os/external-assets/bootc-runtime/0005-export-uncompressed-layers.patch \
     os/external-assets/bootc-runtime/0006-merge-etc-at-every-finalize.patch \
     os/external-assets/bootc-runtime/0007-install-the-booted-image.patch /patches/
+# composefs-rs's own patches: a layer's objects are stored in parallel (0001), which
+# an install from the booted repository spends nearly all its time on.
+COPY os/external-assets/composefs-rs/0001-store-a-layers-objects-in-parallel.patch /composefs-patches/
 # zlink-macros with its generated enum variants in a fixed order (0002 patches
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.
@@ -56,6 +59,7 @@ RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-
     && echo "${COMPOSEFS_SHA256}  /tilo-assets/${COMPOSEFS_SOURCE}" | sha256sum -c - \
     && mkdir /composefs-rs \
     && tar -xzf "/tilo-assets/${COMPOSEFS_SOURCE}" --strip-components=1 -C /composefs-rs \
+    && for p in /composefs-patches/*.patch; do patch -d /composefs-rs -p1 < "$p"; done \
     && mkdir "/bootc-${BOOTC_VERSION}" \
     && tar -xzf "/tilo-assets/${BOOTC_SOURCE}" --strip-components=1 -C "/bootc-${BOOTC_VERSION}" \
     && cd "/bootc-${BOOTC_VERSION}" \
@@ -66,7 +70,7 @@ RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-
        cargo build --locked --release -p bootc \
     && install -D -m 0755 target/release/bootc /out/usr/bin/bootc \
     && install -D -m 0644 -t /out/usr/share/licenses/tilo-bootc/ \
-       LICENSE-APACHE LICENSE-MIT /patches/*.patch \
+       LICENSE-APACHE LICENSE-MIT /patches/*.patch /composefs-patches/*.patch \
     && printf '%s\n' \
       'bootc - boot and upgrade via container images' \
       'License: Apache-2.0 OR MIT (see LICENSE-APACHE, LICENSE-MIT)' \
