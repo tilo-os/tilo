@@ -38,11 +38,6 @@ impl ViewTabs {
     }
 
     #[must_use]
-    pub fn on_change<F: FnMut(usize) + 'static>(self, f: F) -> Self {
-        self.map(|strip| strip.on_change(f))
-    }
-
-    #[must_use]
     pub fn on_view<F: FnMut(usize) + 'static>(self, id: &str, f: F) -> Self {
         self.map(|strip| strip.on_view(id, f))
     }

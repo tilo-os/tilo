@@ -323,7 +323,8 @@ pub struct ToggleGroup {
     /// chooses one itself.
     presses: Vec<Press>,
     cursor: usize,
-    on_change: Option<ChangeCallback>,
+    /// What a selection made through the strip's own view action runs.
+    viewed: Option<ChangeCallback>,
     action: Option<ActionEmitter<usize>>,
     chosen_action: Option<ActionEmitter<Vec<usize>>>,
     chosen_state: Option<Chosen>,
@@ -395,7 +396,7 @@ impl ToggleGroup {
             chosen: None,
             presses: Vec::new(),
             cursor: 0,
-            on_change: None,
+            viewed: None,
             action: None,
             chosen_action: None,
             chosen_state: None,
@@ -603,12 +604,6 @@ impl ToggleGroup {
     }
 
     #[must_use]
-    pub fn on_change<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
-        self.on_change = Some(Box::new(f));
-        self
-    }
-
-    #[must_use]
     pub fn on_chosen_action(
         mut self,
         binding: crate::tilo_actions::ActionBinding<Vec<usize>>,
@@ -651,7 +646,7 @@ impl ToggleGroup {
     pub fn on_action(mut self, binding: crate::tilo_actions::ActionBinding<usize>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.native_resource = None;
-        self.on_change = None;
+        self.viewed = None;
         self
     }
 
@@ -712,7 +707,7 @@ impl ToggleGroup {
         .expect("segment index matches the generated integer parameter");
         self.action = Some(ActionEmitter::new(binding));
         self.native_resource = Some(resource);
-        self.on_change = Some(f);
+        self.viewed = Some(f);
         self
     }
 
@@ -754,7 +749,7 @@ impl ToggleGroup {
         if let Some(choice) = self.choice.as_mut() {
             (choice.push)(index);
         }
-        if let Some(callback) = self.on_change.as_mut() {
+        if let Some(callback) = self.viewed.as_mut() {
             callback(index);
         }
     }
@@ -814,7 +809,7 @@ impl ToggleGroup {
         self.chosen.as_deref()
     }
 
-    /// Does **not** fire `on_change`, which is for user-driven changes. [`NONE_CHOSEN`] clears
+    /// Does **not** run the view action, which is for user-driven changes. [`NONE_CHOSEN`] clears
     /// the choice.
     pub fn set_selected(&mut self, selected: usize) {
         let clamped = if selected == NONE_CHOSEN {

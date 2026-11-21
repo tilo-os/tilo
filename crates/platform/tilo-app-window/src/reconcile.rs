@@ -1530,16 +1530,19 @@ impl Reconciler {
                 .map(|case| Segment::new(case.label.clone()))
                 .collect();
             Box::new(
-                ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_change(move |index| {
-                    if let Some(case) = names.get(index) {
-                        sink.push(UiEvent::Fire(
-                            key.clone(),
-                            format!("pick.{case}"),
-                            None,
-                            None,
-                        ));
-                    }
-                }),
+                ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_view(
+                    &node.key,
+                    move |index| {
+                        if let Some(case) = names.get(index) {
+                            sink.push(UiEvent::Fire(
+                                key.clone(),
+                                format!("pick.{case}"),
+                                None,
+                                None,
+                            ));
+                        }
+                    },
+                ),
             )
         } else {
             let labels: Vec<String> = cases.iter().map(|case| case.label.clone()).collect();
