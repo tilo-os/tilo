@@ -236,3 +236,9 @@ d-3u3bevec-t = T
 d-4s5iqnfo-image = Bild
 
 d-h3zczsen-file = Datei
+
+d-zfjavdpr = Bild behalten
+    .doc = Behält ein Bild, das der Editor dort in eine Notiz geschrieben hat, wo die Person es eingefügt oder abgelegt hat: die Notiz hält die Adresse seiner Bytes und den Namen, mit dem es kam, den ein Export daneben schreibt.
+    .did = hat ein Bild hinzugefügt
+
+d-zfjavdpr-picture = Bild
