@@ -465,7 +465,7 @@ for name, digest in json.load(sys.stdin)["files"].items():
 verify_version "$version"
 # The arrival screen's lines, which arrival.mjs fetches beside itself.
 for locale in en-US de-DE; do
-  grep -q '^arrival-label-tip = ' <<<"$(get "/v/$version/locales/$locale.ftl")" \
+  grep -q '^arrival-slow-loading = ' <<<"$(get "/v/$version/locales/$locale.ftl")" \
     || fail "the bundle carries no locales/$locale.ftl"
 done
 
