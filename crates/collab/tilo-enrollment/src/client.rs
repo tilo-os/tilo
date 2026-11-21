@@ -40,6 +40,7 @@ pub fn pair_device_command(
 }
 
 /// The role and selection already authorized by the calling device.
+#[derive(Clone, Copy)]
 pub enum NearbyApproval<'a> {
     HomePeer {
         workspaces: &'a [WorkspaceId],
@@ -222,10 +223,11 @@ impl PairingStatus {
     #[must_use]
     pub fn read(path: &Path) -> Option<Self> {
         const LIMIT: usize = 64 * 1024;
+        const READ_LIMIT: u64 = LIMIT as u64 + 1;
         let mut bytes = Vec::new();
         std::fs::File::open(path)
             .ok()?
-            .take(1 + LIMIT as u64)
+            .take(READ_LIMIT)
             .read_to_end(&mut bytes)
             .ok()?;
         if bytes.len() > LIMIT {
