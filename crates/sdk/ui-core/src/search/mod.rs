@@ -50,8 +50,8 @@ pub use body::{BodyPiece, SearchBody, SearchBodySource};
 pub use button_component::{SearchButton, SearchButtonProps};
 pub use preview::{PREVIEW_BODY_LINES, PREVIEW_LINES, SearchPreview};
 pub use provider::{
-    CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
-    DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, PagePoll,
+    CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT,
+    MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, PagePoll,
     PendingToken, SearchCatalog, SearchCatalogError, SearchCatalogStats, SearchCursor, SearchItem,
     SearchPage, SearchProvider, SearchResult, normalize_search_text,
 };

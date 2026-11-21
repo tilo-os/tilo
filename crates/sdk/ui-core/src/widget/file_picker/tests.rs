@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
             settle(&mut picker);
             dispatch(&mut picker, &mouse_press());
             settle(&mut picker);
-            assert_eq!(picker.selection(), Some(1));
+            assert_eq!(picker.selected_indices(), vec![1]);
         }
 
         fn click_cancel_button_resolves_cancelled() {
@@ -297,7 +297,7 @@ tilo_test_env::scenario! {
                 &key_named(winit::keyboard::NamedKey::ArrowDown),
             );
             settle(&mut picker);
-            assert_eq!(picker.selection(), Some(1), "second row is alpha.txt");
+            assert_eq!(picker.selected_indices(), vec![1], "second row is alpha.txt");
             dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Enter));
             settle(&mut picker);
             assert_eq!(
@@ -315,7 +315,7 @@ tilo_test_env::scenario! {
                 &key_named(winit::keyboard::NamedKey::ArrowDown),
             );
             settle(&mut picker);
-            assert_eq!(picker.selection(), Some(0));
+            assert_eq!(picker.selected_indices(), vec![0]);
             dispatch(&mut picker, &key_named(winit::keyboard::NamedKey::Enter));
             settle(&mut picker);
             assert_eq!(picker.current_dir(), root.join("nested").as_path());
@@ -331,7 +331,7 @@ tilo_test_env::scenario! {
             picker.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
             dispatch(&mut picker, &key_char("c")); // jump to cherry.txt
             settle(&mut picker);
-            let sel = picker.selection().unwrap();
+            let sel = picker.selected_indices()[0];
             assert_eq!(picker.entries()[sel].name, "cherry.txt");
         }
 
@@ -973,7 +973,7 @@ tilo_test_env::scenario! {
             dispatch(&mut picker, &mouse_press());
             settle(&mut picker);
             assert_eq!(picker.current_dir(), root.as_path());
-            assert_eq!(picker.selection(), Some(0));
+            assert_eq!(picker.selected_indices(), vec![0]);
 
             dispatch(&mut picker, &mouse_press());
             settle(&mut picker);

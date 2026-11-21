@@ -343,10 +343,10 @@ fn reaching_into_the_app_leaves_the_structure_alone() {
     let _ = Widget::take_structure_dirty(&mut host);
     assert!(host.app_mut().is_some());
     assert!(!Widget::take_structure_dirty(&mut host));
-    let _ = host.content_mut();
+    host.replace_content(TileContent::Arriving);
     assert!(
         Widget::take_structure_dirty(&mut host),
-        "content handed out to replace is a new structure"
+        "replaced content is a new structure"
     );
 }
 

@@ -1226,24 +1226,6 @@ impl TileHost {
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
         }
     }
-    /// Mutable legacy content access. Canonical components use checked replacement.
-    ///
-    /// Tests only: input and per-frame paths reach the app through
-    /// [`Self::app_mut`] and replace it through [`Self::replace_content`] or
-    /// [`Self::replace_component`]. A window's edge drag once went through
-    /// here and turned an ordinary resize into this panic.
-    /// # Panics
-    /// Refuses extraction of a canonical component through the legacy content API.
-    #[cfg(test)]
-    pub(crate) fn content_mut(&mut self) -> &mut TileContent {
-        assert!(
-            self.callback_binding().is_none(),
-            "canonical content requires checked replacement"
-        );
-        self.renew_history_lifetime();
-        self.structure_dirty = true;
-        &mut self.content
-    }
     #[must_use]
     pub fn replace_component(
         &mut self,

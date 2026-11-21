@@ -18,9 +18,6 @@ use tilo_search::{Document, Page, SearchIndex};
 /// library.
 pub const DEFAULT_SEARCH_RESULT_LIMIT: usize = 256;
 
-/// Legacy snapshot-size constant. A durable namespace must never use it to truncate
-/// discovery.
-pub const DEFAULT_SEARCH_INDEX_LIMIT: usize = 4_096;
 /// Default maximum number of hits an indexed provider materialises for one interactive
 /// query page.
 pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;

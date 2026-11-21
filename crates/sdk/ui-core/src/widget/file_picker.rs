@@ -746,13 +746,6 @@ impl FilePicker {
         &self.entries
     }
 
-    /// Back-compat accessor alongside [`Self::selected_indices`].
-    pub fn selection(&self) -> Option<usize> {
-        self.selection
-            .primary()
-            .filter(|&i| self.selection.is_selected(i))
-    }
-
     pub fn selected_indices(&self) -> Vec<usize> {
         self.selection.selected()
     }

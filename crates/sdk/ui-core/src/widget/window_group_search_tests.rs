@@ -80,10 +80,10 @@ impl crate::widget::app_widget::AppWidget for Draft {
 }
 
 fn draft(group: &mut WindowGroup) -> &mut Draft {
-    let Some(TileContent::App(app)) = group.active_host_mut().map(TileHost::content_mut) else {
+    let Some(app) = group.active_host_mut().and_then(TileHost::app_mut) else {
         panic!("the window shows the draft");
     };
-    (app.as_mut() as &mut dyn Widget)
+    (app as &mut dyn Widget)
         .as_any_mut()
         .and_then(|any| any.downcast_mut::<Draft>())
         .expect("the draft")
