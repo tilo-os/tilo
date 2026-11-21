@@ -301,7 +301,17 @@ def invite_link(one: Person) -> str:
         one.press("Invite", f"Invite in {one.name}'s top bar")
 
     def said() -> list[str]:
-        return [n for n in one.names() if n.startswith("No link") or "can't invite" in n]
+        shown = [n for n in one.names() if n.startswith("No link") or "can't invite" in n]
+        if shown:
+            return shown
+        # The sheet's refusal is a line of text, no control: the session logs the same reason.
+        try:
+            log = one.session.log()
+        except OSError:
+            return []
+        return ["No link was made: " + line.split("reason=", 1)[1].strip().strip('"')
+                for line in log.splitlines()
+                if "the invitation was not handed over" in line and "reason=" in line][-1:]
 
     def clipboard() -> str:
         return ((one.session.state_dump() or {}).get("clipboard") or "").strip()
@@ -332,7 +342,7 @@ def invite_link(one: Person) -> str:
         got = said()
     if isinstance(got, list) or not got:
         raise Failed(f"{one.name}'s invite sheet made no link to copy"
-                     + (f": it says {got}" if got else ""))
+                     + (f": it says “{got[0]}”" if got else ""))
     return got
 
 
