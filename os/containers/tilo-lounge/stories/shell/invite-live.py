@@ -110,23 +110,33 @@ def name_self(one: Person, name: str) -> None:
     """Give `one` the name `name` as a person does: their own face in the top bar opens their
     profile card, whose field asks for the name. Read back off the top bar and the identity record
     the card keeps it in."""
-    one.press(PROFILE, f"{one.name}'s own face in their top bar", exact=False)
-    field = until(f"the name field on {one.name}'s profile card", lambda: next(
-        (label for label in ("Add your name", "Your name") if one.target(label)), None), 15, 0.2)
-    # A person types once the caret is in the field: a shell just started may still be showing
-    # its first hint, which takes the first press.
-    def caret_in_field():
-        one.press(field)
-        return until(f"the caret in {one.name}'s name field", lambda: (
-            ((one.session.state_dump() or {}).get("chrome") or {}).get("caret")), 3, 0.1)
+    def open_card():
+        one.press(PROFILE, f"{one.name}'s own face in their top bar", exact=False)
+        return until(f"the name field on {one.name}'s profile card", lambda: next(
+            (label for label in ("Add your name", "Your name") if one.target(label)), None), 15, 0.2)
 
+    # A person types once the caret is in the field. A shell just started may still be showing
+    # its first hint, which takes the first press, and the card closes with it: the person opens
+    # the card again, as anyone whose click was taken would. Each time is kept beside the story.
+    field = open_card()
+    taken = []
     for attempt in range(3):
+        one.press(field, f"the name field on {one.name}'s profile card")
         try:
-            caret_in_field()
+            until(f"the caret in {one.name}'s name field", lambda: (
+                ((one.session.state_dump() or {}).get("chrome") or {}).get("caret")), 3, 0.1)
             break
         except Failed:
+            shot = one.snapshot(one.story.out / "evidence" / f"{one.key}-name-press-{attempt + 1}.png")
+            taken.append({"press": attempt + 1, "card_open": bool(one.target(field)),
+                          "shot": shot and shot.name, "controls": one.names()})
+            one.story.note(f"{one.key}-name-presses-taken", taken)
             if attempt == 2:
-                raise
+                raise Failed(f"three presses of the name field on {one.name}'s profile card put no "
+                             f"caret in it (card open after each: "
+                             f"{[t['card_open'] for t in taken]})") from None
+            if not one.target(field):
+                field = open_card()
     one.session.chord("Control", "a")
     one.session.type(name)
     one.session.key("Enter")

@@ -225,7 +225,9 @@ def steps(story: Story) -> None:
         def feed() -> list[dict]:
             answer = ada.session.invoke(ACTIVITY_PROVIDER, f"{ACTIVITY_RESOURCE}\u001ffeed",
                                         {"scope": "this-workspace", "limit": 0})
-            value = ((answer.get("receipt") or {}).get("update") or {}).get("output", {}).get("value")
+            # A read answers its value as the item it streams.
+            update = (answer.get("receipt") or {}).get("update") or {}
+            value = update.get("value") or (update.get("output") or {}).get("value")
             if not isinstance(value, dict) or "entries" not in value:
                 story.note("history-feed-answer", answer)
                 raise Failed(f"the workspace's history answered no feed: {json.dumps(answer)[:600]}")
