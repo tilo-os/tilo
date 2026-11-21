@@ -112,6 +112,10 @@ struct Io {
 
 impl Io {
     #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "elsewhere the kernel does not count it"
+    )]
     fn now() -> Option<Self> {
         let counted = std::fs::read_to_string("/proc/self/io").unwrap();
         let field = |name: &str| {
