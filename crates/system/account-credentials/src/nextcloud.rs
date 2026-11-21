@@ -86,17 +86,7 @@ pub fn server_url(input: &str) -> Result<Url, NextcloudError> {
 }
 
 fn secure(url: &Url) -> bool {
-    match url.scheme() {
-        "https" => url.host().is_some(),
-        "http" => {
-            matches!(
-                url.host(),
-                Some(url::Host::Ipv4(ip)) if ip.is_loopback()
-            ) || matches!(url.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback())
-                || url.host_str() == Some("localhost")
-        }
-        _ => false,
-    }
+    accounts::is_secure_endpoint(url.as_str())
 }
 
 fn same_host(a: &Url, b: &Url) -> bool {

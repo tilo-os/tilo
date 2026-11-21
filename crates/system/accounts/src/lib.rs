@@ -382,6 +382,13 @@ impl AccountStore {
     }
 }
 
+/// Whether an account's sign-in may be sent to `endpoint`: over HTTPS, or
+/// over plain HTTP only to this machine's loopback (`localhost`, `127.0.0.1`,
+/// `[::1]`), which never leaves it. The one rule for every account server:
+/// signing in, discovering calendars, showing an account and mounting its
+/// files all ask it.
+pub use cloud_source::is_secure_endpoint;
+
 /// The per-user account config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
 /// Like Settings, ignore empty or relative XDG paths.
 pub fn config_root() -> Option<PathBuf> {
@@ -427,6 +434,30 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("tilo-accounts-store-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn a_sign_in_goes_over_https_or_to_this_machine_alone() {
+        for allowed in [
+            "https://cloud.example/remote.php/dav",
+            "http://127.0.0.1:8080/",
+            "http://127.1.2.3/",
+            "http://[::1]:8080/",
+            "http://localhost:8080/",
+        ] {
+            assert!(super::is_secure_endpoint(allowed), "{allowed}");
+        }
+        for refused in [
+            "http://cloud.example/",
+            "http://10.0.0.1/",
+            "http://192.168.1.2:8080/",
+            "http://localhost.example/",
+            "http://127.0.0.1.example/",
+            "ftp://127.0.0.1/",
+            "not a server",
+        ] {
+            assert!(!super::is_secure_endpoint(refused), "{refused}");
+        }
     }
 
     #[test]

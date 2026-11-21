@@ -2394,9 +2394,9 @@ impl AccountsPane {
         }
         if kind != AccountKind::Mail {
             let parsed = tilo_dav::Url::parse(server).map_err(|_| "enter a valid server URL")?;
-            if parsed.scheme() != "https" && !crate::account_probe::local_http_allowed(&parsed) {
+            if !accounts::is_secure_endpoint(parsed.as_str()) {
                 return Err(
-                    "use an HTTPS server URL (localhost HTTP is allowed in development)".into(),
+                    "use an HTTPS server URL (HTTP only to a server on this computer)".into(),
                 );
             }
             if !parsed.username().is_empty() || parsed.password().is_some() {

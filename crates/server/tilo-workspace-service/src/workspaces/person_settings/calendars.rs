@@ -61,7 +61,7 @@ use calendar_model::spans::{FreeAsked, SpanAsked};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_account_probe::imap::Reach;
-use tilo_account_probe::{AccountTester as _, FindingAccountTester, local_http_allowed};
+use tilo_account_probe::{AccountTester as _, FindingAccountTester};
 use tilo_actions::remote::person_accounts;
 use tilo_actions::remote::person_asking::{ActionName, Asked, Thing};
 use tilo_actions::remote::person_vault::ItemRef;
@@ -497,12 +497,12 @@ fn view(root: &Path, account: &Account) -> AccountView {
 }
 
 /// The server's address, held to the one rule every calendar sign-in is
-/// under: encrypted, or this machine itself in a development build, and
-/// carrying no sign-in of its own.
+/// under ([`accounts::is_secure_endpoint`]): encrypted, or this machine
+/// itself, and carrying no sign-in of its own.
 fn server_of(server_url: &str) -> Result<Url, String> {
     let url = Url::parse(server_url.trim())
         .map_err(|_| "The calendar server's address does not read".to_owned())?;
-    if url.scheme() != "https" && !local_http_allowed(&url) {
+    if !accounts::is_secure_endpoint(url.as_str()) {
         return Err("refusing to send a credential without HTTPS".into());
     }
     if !url.username().is_empty() || url.password().is_some() {

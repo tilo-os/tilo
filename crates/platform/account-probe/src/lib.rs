@@ -248,7 +248,7 @@ impl LiveAccountTester {
             .and_then(|value| value.as_str())
             .ok_or_else(|| "account has no server URL".to_string())?;
         let parsed = tilo_dav::Url::parse(url).map_err(|_| "account has an invalid server URL")?;
-        if parsed.scheme() != "https" && !local_http_allowed(&parsed) {
+        if !accounts::is_secure_endpoint(parsed.as_str()) {
             return Err("refusing to send a credential without HTTPS".into());
         }
         if !parsed.username().is_empty() || parsed.password().is_some() {
@@ -323,7 +323,7 @@ impl LiveAccountTester {
             .and_then(serde_json::Value::as_str)
             .ok_or("account has no server URL")?;
         let url = tilo_dav::Url::parse(url).map_err(|_| "invalid server URL")?;
-        if url.scheme() != "https" && !local_http_allowed(&url) {
+        if !accounts::is_secure_endpoint(url.as_str()) {
             return Err("refusing to send a credential without HTTPS".into());
         }
         let username = account
@@ -445,21 +445,6 @@ impl AccountTester for FindingAccountTester {
     ) -> Result<String, String> {
         LiveAccountTester::tested(Some(&self.0), account, secret)
     }
-}
-
-/// Whether plain HTTP to `url` is allowed: only in a development build, and
-/// only to this machine, named `localhost` or by a loopback address. A
-/// loopback address reaches exactly the listener bound there, where the
-/// name may resolve to `[::1]` first.
-pub fn local_http_allowed(url: &tilo_dav::Url) -> bool {
-    let local = url.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .trim_matches(['[', ']'])
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
-    });
-    cfg!(debug_assertions) && url.scheme() == "http" && local
 }
 
 #[cfg(test)]
