@@ -55,7 +55,6 @@ use tilo_identity::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
-use tilo_peer_state::actions::ActionService;
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
 use tilo_workspace_service::apps::{
@@ -339,7 +338,7 @@ fn take_work_action_service(
     server: Option<take_work::Server>,
     replicas: &files::ReplicaSlot,
     stage: &mut dyn FnMut(&str),
-) -> io::Result<Option<ActionService>> {
+) -> io::Result<Option<take_work::TakesWork>> {
     let Some(server) = server else {
         return Ok(None);
     };
@@ -1066,7 +1065,7 @@ struct PersonalServing<'a> {
     fanout: Arc<FanoutState>,
     /// The device action service this profile answers its server's work on, when it
     /// takes work at all.
-    take_work: Option<ActionService>,
+    take_work: Option<take_work::TakesWork>,
     /// The workspace host this device runs, when it governs the profile's
     /// workspace: the person's keys open their sessions with it here.
     host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
@@ -1128,8 +1127,8 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         {
             router = router.accept(alpn, handler);
         }
-        if let Some(action_service) = take_work {
-            router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, action_service);
+        for (alpn, handler) in take_work.map(take_work::TakesWork::protocols).into_iter().flatten() {
+            router = router.accept(alpn, handler);
         }
         router.spawn()
     };

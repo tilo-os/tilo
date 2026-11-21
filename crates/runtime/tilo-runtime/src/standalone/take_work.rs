@@ -25,6 +25,10 @@
 //! own member's write and renewing it while the VM is there: the server reads
 //! the lease to know which machine keeps the VM.
 //!
+//! A Terminal session's shell opened on a terminal here is carried to the server on a stream
+//! of its own ([`ush::environment_terminals::ALPN`]), which only the server that asked for it
+//! takes ([`TakesWork`]).
+//!
 //! The member's endpoint listens on [`PORT`], where the server's members file
 //! reaches it. It serves only the workspaces it holds; the first request for
 //! one it does not hold yet makes it ask the server to enter it (the
@@ -185,8 +189,48 @@ fn named(workspace: &str) -> String {
         .collect()
 }
 
+/// What a member that takes work answers its server on: the device action service, and the
+/// terminal streams of the shells it opened for the server there.
+pub struct TakesWork {
+    actions: ActionService,
+    terminals: Box<dyn iroh::protocol::DynProtocolHandler>,
+}
+
+impl TakesWork {
+    /// Each protocol this member answers its server on, and what answers it.
+    #[must_use]
+    pub fn protocols(self) -> [(&'static [u8], Box<dyn iroh::protocol::DynProtocolHandler>); 2] {
+        [
+            (ACTIONS_ALPN, self.actions.into()),
+            (ush_alpn(), self.terminals),
+        ]
+    }
+}
+
+/// The protocol the terminal streams are dialled on.
+#[cfg(target_os = "linux")]
+const fn ush_alpn() -> &'static [u8] {
+    ush::environment_terminals::ALPN
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn ush_alpn() -> &'static [u8] {
+    b"tilo-environment-terminal/1"
+}
+
+/// What a member's shells answer with: its runs on the device action service, and what
+/// serves the terminal streams they hand out, once that service maps the endpoints that
+/// dial it to their devices.
+struct Shells {
+    runs: Arc<dyn ActionProvider + Send + Sync>,
+    terminals: TerminalsOf,
+}
+
+type TerminalsOf = Box<dyn FnOnce(ActionService) -> Box<dyn iroh::protocol::DynProtocolHandler>>;
+
 /// The device action service that serves the work of the workspaces `joined` holds,
-/// entering the ones `server` places here that this member does not hold yet.
+/// entering the ones `server` places here that this member does not hold yet, and the
+/// terminal streams of its shells.
 ///
 /// # Errors
 ///
@@ -197,10 +241,10 @@ pub(in crate::standalone) fn action_service(
     server: Server,
     replicas: Option<super::files::ReplicaSlot>,
     browsers: Option<PathBuf>,
-) -> std::io::Result<ActionService> {
+) -> std::io::Result<TakesWork> {
     #[cfg(target_os = "linux")]
     keep_hosted_vms(workspaces, browsers.clone());
-    let dispatcher = shell_runs(profile, workspaces, replicas, browsers).ok_or_else(|| {
+    let shells = shell_runs(profile, workspaces, replicas, browsers).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "a member that takes work runs the workspace's shell on Linux",
@@ -214,12 +258,15 @@ pub(in crate::standalone) fn action_service(
     });
     let action_service = {
         let _entered = tilo_rt::app().handle().enter();
-        ActionService::over(workspaces.signer(), dispatcher, reads)
+        ActionService::over(workspaces.signer(), shells.runs, reads)
     };
     // The server asks from its endpoint, which a Tilo server keys apart from
     // the device it signs its runs as.
     action_service.reach_device_at(device, endpoint);
-    Ok(action_service)
+    Ok(TakesWork {
+        terminals: (shells.terminals)(action_service.clone()),
+        actions: action_service,
+    })
 }
 
 /// Claim the leases of the VMs the hosted-VM service named by `browsers`
@@ -288,7 +335,7 @@ fn shell_runs(
     workspaces: &Arc<ServiceWorkspaces>,
     replicas: Option<super::files::ReplicaSlot>,
     browsers: Option<PathBuf>,
-) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
+) -> Option<Shells> {
     use ush::environment_commands::EnvironmentCommands;
     use ush::workspace_shell::WorkspaceShells;
     let member = profile.to_path_buf();
@@ -317,10 +364,23 @@ fn shell_runs(
         .with_browsers_on(
             browsers.or_else(|| std::env::var_os(ush::hosted_vm::SOCKET_ENV).map(PathBuf::from)),
         );
-    Some(Arc::new(EnvironmentCommands::new(
-        shells,
-        workspaces.operator(),
-    )))
+    let commands = Arc::new(EnvironmentCommands::new(shells, workspaces.operator()));
+    let streams = Arc::clone(&commands);
+    let terminals: TerminalsOf = Box::new(move |actions: ActionService| {
+        // A stream is taken by the device that asked for it, as the endpoint that dials asks
+        // on the action service: the server's endpoint is the server's device.
+        Box::new(ush::environment_terminals::quic::Route::new(
+            move |endpoint, from, to| {
+                if let Err(error) = streams.serve_terminal(actions.device_of(endpoint), from, to) {
+                    tracing::debug!(%error, "a terminal stream was refused");
+                }
+            },
+        )) as Box<dyn iroh::protocol::DynProtocolHandler>
+    });
+    Some(Shells {
+        runs: commands,
+        terminals,
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -333,7 +393,7 @@ fn shell_runs(
     _workspaces: &Arc<ServiceWorkspaces>,
     _replicas: Option<super::files::ReplicaSlot>,
     _browsers: Option<PathBuf>,
-) -> Option<Arc<dyn ActionProvider + Send + Sync>> {
+) -> Option<Shells> {
     None
 }
 
@@ -369,12 +429,14 @@ impl Member {
     ) -> std::io::Result<Self> {
         let identity = tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key);
         let workspaces = super::open_member_service(profile, &cert, identity, endpoint.clone())?;
-        let action_service = action_service(profile, &workspaces, server, None, browsers)?;
+        let takes_work = action_service(profile, &workspaces, server, None, browsers)?;
         let router = {
             let _entered = tilo_rt::app().handle().enter();
-            iroh::protocol::Router::builder(endpoint)
-                .accept(ACTIONS_ALPN, action_service)
-                .spawn()
+            let mut router = iroh::protocol::Router::builder(endpoint);
+            for (alpn, handler) in takes_work.protocols() {
+                router = router.accept(alpn, handler);
+            }
+            router.spawn()
         };
         Ok(Self {
             _router: router,

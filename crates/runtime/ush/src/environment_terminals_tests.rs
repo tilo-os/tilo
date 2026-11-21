@@ -38,11 +38,20 @@ impl Host {
     }
 
     fn open(&self) -> TerminalStream {
-        self.open_as(None)
+        self.open_with(None, None)
     }
 
     /// A stream on the session as `person` (nobody, when `None`).
     fn open_as(&self, person: Option<&Person>) -> TerminalStream {
+        self.open_with(person, None)
+    }
+
+    /// [`Self::open`], its runs told to `ran`.
+    fn open_telling(&self, ran: Option<RanTo>) -> TerminalStream {
+        self.open_with(None, ran)
+    }
+
+    fn open_with(&self, person: Option<&Person>, ran: Option<RanTo>) -> TerminalStream {
         self.terminals
             .open(
                 "ws1",
@@ -54,6 +63,7 @@ impl Host {
                     rows: 30,
                 },
                 Some(KEY.into()),
+                ran,
             )
             .unwrap()
     }
@@ -211,7 +221,7 @@ tilo_test_env::scenario! {
         assert_eq!(screen.ending(), FromTerminal::Exited(7));
         assert!(!screen.stream.tell(&ToTerminal::In(b"echo late\r".to_vec())));
         wait_until("forgot the session", || host.terminals.kept().is_empty());
-        assert!(host.terminals.attach(screen.stream.id()).is_none());
+        assert!(host.terminals.attach("ws1", "s1", screen.stream.id()).is_none());
     }
 
     phase a_stream_that_comes_back_in_time_finds_the_shell_where_it_was;
@@ -226,7 +236,7 @@ tilo_test_env::scenario! {
         // The next prompt is drawn to this stream, so the one coming back types at it.
         first.until(&format!("\x1b]133;A;k={KEY}"));
         drop(first);
-        let mut back = screen(host.terminals.attach(&id).unwrap());
+        let mut back = screen(host.terminals.attach("ws1", "s1", &id).unwrap());
         back.type_now("echo \"at:$PWD\"\r");
         let here = host.files().join("sub");
         back.until(&format!("at:{}", here.display()));
@@ -242,7 +252,7 @@ tilo_test_env::scenario! {
         drop(screen);
         // The program on the terminal ends with the hangup, and the shell with it.
         wait_until("hung up the session", || host.terminals.kept().is_empty());
-        assert!(host.terminals.attach(&id).is_none());
+        assert!(host.terminals.attach("ws1", "s1", &id).is_none());
         let next = host.terminals.shells().run("ws1", "s1", "pwd", false).unwrap();
         assert_eq!(
             String::from_utf8_lossy(&next.output).trim(),
@@ -255,7 +265,7 @@ tilo_test_env::scenario! {
     {
         let host = Host::start(LEFT_AFTER);
         let first = host.open();
-        let mut second = screen(host.terminals.attach(first.id()).unwrap());
+        let mut second = screen(host.terminals.attach("ws1", "s1", first.id()).unwrap());
         assert_eq!(first.hear(Duration::ZERO), Some(FromTerminal::Superseded));
         assert!(!first.tell(&ToTerminal::In(b"echo no\r".to_vec())));
         second.type_at_prompt("echo o\"\"ne\r");
@@ -291,5 +301,120 @@ tilo_test_env::scenario! {
         assert_eq!(ended, FromTerminal::Exited(3));
         assert!(String::from_utf8_lossy(&drawn).contains("20 90"), "{drawn:?}");
         assert_eq!(serving.join().unwrap(), Ended::Exited(3));
+    }
+
+    phase a_handed_stream_is_the_devices_it_was_handed_to_alone;
+    {
+        let host = Arc::new(Host::start(LEFT_AFTER));
+        let stream = host.open();
+        let session = stream.id().to_owned();
+        assert!(
+            host.terminals.attach("ws1", "s2", &session).is_none(),
+            "a session's id takes no other session"
+        );
+        let handed = host.terminals.hand_out([1; 32], stream).unwrap();
+        let mut hello = Vec::new();
+        wire::write_hello(&mut hello, &wire::Hello { stream: handed.clone() }).unwrap();
+
+        // Another device presenting the id is refused, and the id stays the device's.
+        let mut refused = Vec::new();
+        let error = host
+            .terminals
+            .serve_handed([2; 32], std::io::Cursor::new(hello.clone()), &mut refused)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            wire::read_welcome(&mut refused.as_slice()).unwrap(),
+            Some(wire::Welcome::Refused {
+                reason: NOT_HANDED.into()
+            })
+        );
+
+        let (mut device, served) = std::os::unix::net::UnixStream::pair().unwrap();
+        let from = served.try_clone().unwrap();
+        let serving = {
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || host.terminals.serve_handed([1; 32], from, served))
+        };
+        wire::write_hello(&mut device, &wire::Hello { stream: handed }).unwrap();
+        assert_eq!(
+            wire::read_welcome(&mut device).unwrap(),
+            Some(wire::Welcome::Opened { session })
+        );
+        wire::write_to(&mut device, &ToTerminal::In(b"exit 4\r".to_vec())).unwrap();
+        let ended = loop {
+            match wire::read_from(&mut device).unwrap().unwrap() {
+                FromTerminal::Out(_) => {}
+                other => break other,
+            }
+        };
+        assert_eq!(ended, FromTerminal::Exited(4));
+        assert_eq!(serving.join().unwrap().unwrap(), Ended::Exited(4));
+
+        // Taken once: the id hands nothing more.
+        let mut again = Vec::new();
+        assert!(
+            host.terminals
+                .serve_handed([1; 32], std::io::Cursor::new(hello), &mut again)
+                .is_err()
+        );
+    }
+
+    phase each_command_line_is_told_as_it_ends_with_what_it_printed_attached_or_not;
+    {
+        let host = Host::start(LEFT_AFTER);
+        let queue = RanQueue::new();
+        let stream = host.open_telling(Some(queue.to()));
+        queue.of(stream.id());
+        let mut first = screen(stream);
+        first.type_at_prompt("mkdir sub; cd sub; echo he\"\"llo; false\r");
+        let ran = queue.next().unwrap();
+        assert_eq!(ran.command, "mkdir sub; cd sub; echo he\"\"llo; false");
+        assert!(ran.cwd.ends_with("/files"), "where the session starts: {ran:?}");
+        assert_eq!(ran.exit, 1);
+        let printed = String::from_utf8_lossy(&ran.output).into_owned();
+        assert!(printed.contains("hello"), "{printed:?}");
+        assert!(!printed.contains("he\"\"llo"), "the line as typed is not its output: {printed:?}");
+        assert!(ran.started_ms <= ran.ended_ms && !ran.truncated, "{ran:?}");
+
+        // Nobody attached: the run is told all the same, once.
+        first.type_at_prompt("sleep 1; echo lat\"\"er\r");
+        first.until("sleep 1");
+        let session = first.stream.id().to_owned();
+        drop(first);
+        let ran = queue.next().unwrap();
+        assert_eq!(ran.command, "sleep 1; echo lat\"\"er");
+        assert!(ran.cwd.ends_with("sub"), "{ran:?}");
+        assert!(String::from_utf8_lossy(&ran.output).contains("later"), "{ran:?}");
+
+        // Its stream of runs carries the same, and ends with the session.
+        let mut back = screen(host.terminals.attach("ws1", "s1", &session).unwrap());
+        let (mut device, served) = std::os::unix::net::UnixStream::pair().unwrap();
+        let handed = host.terminals.hand_runs([1; 32], queue).unwrap();
+        wire::write_hello(&mut device, &wire::Hello { stream: handed }).unwrap();
+        let from = served.try_clone().unwrap();
+        let serving = std::thread::spawn({
+            let terminals = Arc::new(host);
+            move || {
+                let served = terminals.terminals.serve_handed([1; 32], from, served);
+                (terminals, served)
+            }
+        });
+        assert_eq!(
+            wire::read_welcome(&mut device).unwrap(),
+            Some(wire::Welcome::Opened {
+                session
+            })
+        );
+        back.type_at_prompt("echo th\"\"ird\r");
+        let ran = wire::read_ran(&mut device).unwrap().unwrap();
+        assert_eq!(ran.command, "echo th\"\"ird");
+        assert!(String::from_utf8_lossy(&ran.output).contains("third"), "{ran:?}");
+        back.type_at_prompt("exit 2\r");
+        assert_eq!(back.ending(), FromTerminal::Exited(2));
+        drop(back);
+        assert_eq!(wire::read_ran(&mut device).unwrap(), None, "exit is no run");
+        let (_host, served) = serving.join().unwrap();
+        assert_eq!(served.unwrap(), Ended::Left);
     }
 }

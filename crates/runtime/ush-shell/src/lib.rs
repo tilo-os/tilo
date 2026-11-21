@@ -37,5 +37,5 @@ pub use host::{
 };
 pub use io::{Input, Output, Std, Stdio};
 pub use memory::MemoryHost;
-pub use repl::{Session, incomplete};
+pub use repl::{Runs, Session, incomplete};
 pub use shell::Shell;

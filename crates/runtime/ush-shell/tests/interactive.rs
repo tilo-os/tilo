@@ -97,9 +97,7 @@ fn typed_on(host: &MemoryHost, keys: &str) -> Ran {
         ("PS1".to_string(), "$ ".to_string()),
     ];
     let mut shell = Shell::new(Arc::new(host.clone()), env, PathBuf::from("/home/me"), io);
-    shell.interactive(&Session {
-        runs_key: Some(KEY.into()),
-    });
+    shell.interactive(&Session::marked(Some(KEY.into())));
     drop(shell);
     Ran {
         out: String::from_utf8_lossy(&out.take()).into_owned(),
@@ -259,9 +257,7 @@ tilo_test_env::scenario! {
                 PathBuf::from("/home/me"),
                 io,
             );
-            shell.interactive(&Session {
-                runs_key: Some(KEY.into()),
-            });
+            shell.interactive(&Session::marked(Some(KEY.into())));
         });
         keys_tx.send(b"\x1b[A\x1b[A\x1b[A\r".to_vec()).unwrap();
         keys_tx.send(b"\x12b\r".to_vec()).unwrap();

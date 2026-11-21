@@ -33,7 +33,7 @@ use tilo_actions::remote::{ActionCallError, Caller, Pending};
 mod roster;
 use roster::RosterProvisioning;
 use tilo_agent_session::workspace_actions::{
-    HostDevice, PackagedCall, ShellRan, Watching, WorkspaceShell,
+    HostDevice, Opened, Opening, PackagedCall, Recorder, ShellRan, Watching, WorkspaceShell,
 };
 use tilo_agent_session::{
     AdmissionDone, AgentHostLink, AgentService, AppCatalogue, ApprovalDone, CatalogueFactory,
@@ -288,7 +288,8 @@ pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
     )));
     let shells = ush::workspace_shell::WorkspaceShells::from_env(state)
         .serving_agents(Arc::clone(&agents) as Arc<dyn ush::hosted_vm::MachineAgents>);
-    Ok(Arc::new(HostShells::Here(shells, agents)))
+    let terminals = ush::environment_terminals::EnvironmentTerminals::new(Arc::new(shells));
+    Ok(Arc::new(HostShells::Here(terminals, agents)))
 }
 
 /// What a host lends its workspaces' records service: a model that looks
@@ -300,12 +301,12 @@ type Lent = (
     Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 );
 
-/// Where the workspace actions run a session's commands.
+/// Where the workspace actions run a session's commands and open its terminal.
 pub enum HostShells {
-    /// Here: ush's workspace shells, in this process, and who serves the agents their
-    /// programs in the workspaces' machines start.
+    /// Here: ush's workspace shells, in this process, with their terminals, and who serves
+    /// the agents their programs in the workspaces' machines start.
     Here(
-        ush::workspace_shell::WorkspaceShells,
+        ush::environment_terminals::EnvironmentTerminals,
         Arc<crate::machine_agents::MachineAgentsServer>,
     ),
     /// On the member device holding the workspace's VM.
@@ -324,11 +325,13 @@ impl HostShells {
     }
 
     /// Ask VM hosts' members, if any, as `server`'s own device, reading which
-    /// keeps each workspace's VM from the workspaces' VM leases, and have the
-    /// workspaces' machines branched and deleted with them.
-    fn serve_from(&self, server: &Server, actions: &WorkspaceActions) {
+    /// keeps each workspace's VM from the workspaces' VM leases, have the
+    /// workspaces' machines branched and deleted with them, and serve the
+    /// terminal streams handed out on `server`'s endpoint.
+    fn serve_from(self: &Arc<Self>, server: &Server, actions: &WorkspaceActions) {
+        server.terminal_shells().serve_for(Arc::clone(self));
         if let (Self::Here(_, agents), Some(workspaces), Ok(runtime)) = (
-            self,
+            self.as_ref(),
             server.workspaces(),
             tokio::runtime::Handle::try_current(),
         ) {
@@ -339,7 +342,7 @@ impl HostShells {
                 runtime,
             );
         }
-        if let (Self::Placed(placed), Some(workspaces)) = (self, server.workspaces()) {
+        if let (Self::Placed(placed), Some(workspaces)) = (self.as_ref(), server.workspaces()) {
             placed.ask_from(workspaces.action_service(), server.endpoint());
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 placed.read_leases(workspaces.clone(), runtime);
@@ -358,7 +361,7 @@ impl HostShells {
             Self::Placed(placed) => Some(Arc::new(crate::placed_machines::PlacedMachines::new(
                 Arc::clone(placed),
             ))),
-            Self::Here(shells, _) => shells.hosted().map(|target| {
+            Self::Here(terminals, _) => terminals.shells().hosted().map(|target| {
                 Arc::new(crate::placed_machines::LocalMachines::new(target.clone()))
                     as Arc<dyn crate::workspaces::WorkspaceMachines>
             }),
@@ -376,13 +379,14 @@ impl WorkspaceShell for HostShells {
         person: Option<&tilo_actions::remote::environment_commands::Person>,
         watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
-        let shells = match self {
-            Self::Here(shells, _) => shells,
+        let terminals = match self {
+            Self::Here(terminals, _) => terminals,
             Self::Placed(placed) => {
                 return placed.run(workspace, session, command, agent, person, watching);
             }
         };
-        let ran = shells
+        let ran = terminals
+            .shells()
             .run_for(
                 workspace,
                 session,
@@ -413,6 +417,32 @@ impl WorkspaceShell for HostShells {
         if let Self::Here(_, agents) = self {
             agents.started(workspace, session, caller);
         }
+    }
+
+    fn open(&self, opening: &Opening, record: Recorder) -> Result<Opened, String> {
+        let terminals = match self {
+            Self::Here(terminals, _) => terminals,
+            Self::Placed(placed) => return placed.open_terminal(opening, record),
+        };
+        let opened = terminals.open_for(
+            opening.device,
+            &ush::environment_terminals::TerminalAsk {
+                workspace: &opening.workspace,
+                session: &opening.session,
+                payer: None,
+                person: opening.person.as_ref(),
+                cols: opening.cols,
+                rows: opening.rows,
+                ran: Some(Arc::new(move |ran| {
+                    record(crate::placed_terminals::shell_ran(ran));
+                })),
+                attach: opening.attach.as_deref(),
+            },
+        )?;
+        Ok(Opened {
+            stream: opened.stream,
+            session: opened.session,
+        })
     }
 }
 

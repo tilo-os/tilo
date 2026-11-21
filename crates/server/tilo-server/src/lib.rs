@@ -107,6 +107,8 @@ pub mod placed_machines;
 pub mod placed_programs;
 #[cfg(feature = "agents")]
 pub mod placed_shells;
+#[cfg(feature = "agents")]
+pub mod placed_terminals;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]

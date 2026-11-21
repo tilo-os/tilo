@@ -33,6 +33,29 @@ pub struct Session {
     /// The key Terminal marks this session's runs with, if it asked for
     /// marks.
     pub runs_key: Option<String>,
+    /// What hears each command line's run, from the shell's own tracking of it: marked or
+    /// not, every line that runs something is told of as it starts and ends.
+    pub runs: Option<std::sync::Arc<dyn Runs>>,
+}
+
+impl Session {
+    /// A session whose runs are marked for Terminal with `runs_key`, if given.
+    #[must_use]
+    pub fn marked(runs_key: Option<String>) -> Self {
+        Self {
+            runs_key,
+            runs: None,
+        }
+    }
+}
+
+/// What hears an interactive session's command lines run: each is numbered as it starts, and
+/// told of again with that number as it ends. Both are called on the shell's own thread, the
+/// start before the line runs and the end once its last output was written, so all it wrote
+/// in between is the run's.
+pub trait Runs: std::fmt::Debug + Send + Sync {
+    fn started(&self, number: u64, command: &str, cwd: &std::path::Path);
+    fn ended(&self, number: u64, status: i32);
 }
 
 impl Shell {
@@ -45,11 +68,16 @@ impl Shell {
             editor.runs_key.clone_from(&session.runs_key);
             editor.terminal = self.input(0).zip(self.output(2));
         }
-        self.marks = session
-            .runs_key
-            .clone()
-            .zip(self.output(1))
-            .map(|(key, out)| std::sync::Arc::new(crate::jobs::Marks::new(key, out)));
+        self.marks = self
+            .output(1)
+            .filter(|_| session.runs_key.is_some() || session.runs.is_some())
+            .map(|out| {
+                std::sync::Arc::new(crate::jobs::Marks::new(
+                    session.runs_key.clone(),
+                    session.runs.clone(),
+                    out,
+                ))
+            });
         // Only a shell that edits its lines reads Terminal's marks on its
         // input; one reading lines as they come takes them as typed.
         let edits = self.host.edit_mode(true);

@@ -16,18 +16,59 @@
 //! hex characters). A second stream on a session supersedes the first
 //! ([`FromTerminal::Superseded`]). A session nobody came back to hangs up: the shell and the
 //! program on its terminal end, as when a device's terminal window closes.
+//!
+//! A host hands a stream to one device ([`EnvironmentTerminals::hand_out`]): the device dials
+//! the host's [`ALPN`], says which stream it takes ([`wire::Hello`]), and is answered
+//! ([`wire::Welcome`]) before the frames; another device presenting the same id is refused
+//! ([`EnvironmentTerminals::serve_handed`]). A stream nobody took within [`HANDED_FOR`] is
+//! dropped, which leaves its session kept as any dropped stream does.
+//!
+//! Every command line the session's shell runs is told of as it ends ([`Ran`]), from the
+//! shell's own tracking of its runs ([`ush_shell::Runs`]), with what it printed meanwhile: to
+//! what the session was opened with ([`TerminalAsk::ran`]), whether a stream is attached or
+//! not. A host that runs the shell for another hands those runs out as a stream of their own
+//! ([`EnvironmentTerminals::hand_runs`], [`wire::read_ran`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use linux_vm_protocol::TerminalSize;
 use tilo_actions::remote::environment_commands::Person;
 
 pub use crate::environment_programs::LEFT_AFTER;
+
+/// The protocol a device dials a host's terminal streams on.
+pub const ALPN: &[u8] = b"tilo-environment-terminal/1";
+
+/// How long a stream handed out waits for its device to take it.
+pub const HANDED_FOR: Duration = Duration::from_secs(60);
+
+/// The most of what a run printed that is kept with it ([`Ran::output`]).
+pub const RAN_OUTPUT: usize = 512 * 1024;
+
 use crate::workspace_shell::{Interactive, Payer, WorkspaceShells};
+
+/// A command line a session's shell ran: what it was, where, when, how it ended, and what it
+/// printed on the terminal while it ran.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Ran {
+    pub command: String,
+    pub cwd: String,
+    pub started_ms: i64,
+    pub ended_ms: i64,
+    pub exit: i32,
+    /// What it printed, at most [`RAN_OUTPUT`] of it.
+    #[serde(skip)]
+    pub output: Vec<u8>,
+    /// It printed more than was kept.
+    pub truncated: bool,
+}
+
+/// What a session's runs go to, each as it ends.
+pub type RanTo = Arc<dyn Fn(Ran) + Send + Sync>;
 
 /// What a stream sends a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +105,68 @@ pub struct EnvironmentTerminals {
     shells: Arc<WorkspaceShells>,
     left_after: Duration,
     kept: Arc<Table>,
+    handed: Handed<Hold>,
+}
+
+/// What a host hands a device: a stream on a session, or the runs of one.
+enum Hold {
+    Stream(TerminalStream),
+    Runs(RanQueue),
+}
+
+/// What a host handed out for one device each to take, by a one-use id (32 hex characters):
+/// taken by that device alone, once, and dropped when nobody took it within its time.
+pub struct Handed<T> {
+    waiting: Arc<Waiting<T>>,
+    waits: Duration,
+}
+
+/// What waits for its device, by its id: the device, and what it takes.
+type Waiting<T> = Mutex<HashMap<String, ([u8; 32], T)>>;
+
+impl<T: Send + 'static> Handed<T> {
+    #[must_use]
+    pub fn new(waits: Duration) -> Self {
+        Self {
+            waiting: Arc::default(),
+            waits,
+        }
+    }
+
+    /// Hand `value` to `device`: the id it takes it by.
+    ///
+    /// # Errors
+    ///
+    /// No id could be drawn, or nothing could drop it once its time passed.
+    pub fn hand(&self, device: [u8; 32], value: T) -> io::Result<String> {
+        let mut id = [0_u8; 16];
+        getrandom::fill(&mut id).map_err(io::Error::other)?;
+        let id = hex::encode(id);
+        lock(&self.waiting).insert(id.clone(), (device, value));
+        let waiting = Arc::downgrade(&self.waiting);
+        let (forgotten, waits) = (id.clone(), self.waits);
+        std::thread::Builder::new()
+            .name("terminal-handed".into())
+            .spawn(move || {
+                std::thread::sleep(waits);
+                if let Some(waiting) = waiting.upgrade() {
+                    let dropped = lock(&waiting).remove(&forgotten);
+                    drop(dropped);
+                }
+            })?;
+        Ok(id)
+    }
+
+    /// What `id` hands `device`; `None` when it hands it nothing: no such id, its time
+    /// passed, it was taken, or it is another device's, which keeps it.
+    #[must_use]
+    pub fn take(&self, id: &str, device: &[u8; 32]) -> Option<T> {
+        let mut waiting = lock(&self.waiting);
+        if waiting.get(id).is_some_and(|(owner, _)| owner == device) {
+            return waiting.remove(id).map(|(_, value)| value);
+        }
+        None
+    }
 }
 
 type Table = Mutex<HashMap<String, Arc<Kept>>>;
@@ -72,6 +175,8 @@ struct Kept {
     id: String,
     workspace: String,
     session: String,
+    /// What the shell's runs are told to, and what reads the master while one runs.
+    runs: Option<Arc<SessionRuns>>,
     /// Where typed bytes and sizes go; taken when the session hangs up.
     master: Mutex<Option<std::fs::File>>,
     shell: Mutex<Option<Interactive>>,
@@ -94,6 +199,34 @@ struct State {
     ended: bool,
 }
 
+/// A session's shell asked for on a terminal ([`EnvironmentTerminals::open_for`]).
+pub struct TerminalAsk<'a> {
+    pub workspace: &'a str,
+    pub session: &'a str,
+    /// Who pays for the VM its programs run in, when not the host's own account.
+    pub payer: Option<&'a Payer>,
+    /// Who the shell runs as: the person or agent who opened it, whom what it makes records.
+    pub person: Option<&'a Person>,
+    /// The window's size.
+    pub cols: u16,
+    pub rows: u16,
+    /// What each command line the session runs goes to as it ends, attached or not; kept
+    /// only by the open that starts the session's shell.
+    pub ran: Option<RanTo>,
+    /// The kept session to come back to instead, by its id.
+    pub attach: Option<&'a str>,
+}
+
+/// A stream handed to a device: the one-use id it takes it by, and its session's id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandedOut {
+    pub stream: String,
+    pub session: String,
+    /// This open started the session's shell, rather than coming back to it: its
+    /// [`TerminalAsk::ran`] hears the session's runs.
+    pub started: bool,
+}
+
 /// One stream's hold on a session.
 pub struct TerminalStream {
     kept: Arc<Kept>,
@@ -109,6 +242,7 @@ impl EnvironmentTerminals {
             shells,
             left_after: LEFT_AFTER,
             kept: Arc::default(),
+            handed: Handed::new(HANDED_FOR),
         }
     }
 
@@ -126,8 +260,9 @@ impl EnvironmentTerminals {
 
     /// A stream on `workspace`'s Terminal session `session` running interactively, its window
     /// `size`: the session's shell started on a new terminal, paid for by `payer`, as `person`,
-    /// its runs marked with `runs_key`; or, when that session is already kept on a terminal, a
-    /// new stream on it, superseding the one it had.
+    /// its runs marked with `runs_key`, each told to `ran` as it ends; or, when that session is
+    /// already kept on a terminal, a new stream on it, superseding the one it had (and `ran`
+    /// dropped).
     ///
     /// # Errors
     ///
@@ -140,6 +275,7 @@ impl EnvironmentTerminals {
         person: Option<&Person>,
         size: TerminalSize,
         runs_key: Option<String>,
+        ran: Option<RanTo>,
     ) -> io::Result<TerminalStream> {
         let running = lock(&self.kept)
             .values()
@@ -150,9 +286,21 @@ impl EnvironmentTerminals {
             return Ok(self.stream_on(running));
         }
         let (master, slave) = pty(size)?;
+        let runs = match ran {
+            Some(to) => Some(Arc::new(SessionRuns {
+                master: std::fs::File::from(master.try_clone()?),
+                to: Mutex::new(Some(to)),
+                running: Mutex::new(None),
+                kept: OnceLock::new(),
+            })),
+            None => None,
+        };
+        let heard = runs
+            .clone()
+            .map(|runs| runs as Arc<dyn ush_shell::Runs>);
         let shell = self
             .shells
-            .interactive(workspace, session, payer, person, slave, runs_key)?;
+            .interactive(workspace, session, payer, person, slave, runs_key, heard)?;
         let reading = master.try_clone()?;
         let mut id = [0_u8; 16];
         getrandom::fill(&mut id).map_err(io::Error::other)?;
@@ -160,11 +308,15 @@ impl EnvironmentTerminals {
             id: hex::encode(id),
             workspace: workspace.to_owned(),
             session: session.to_owned(),
+            runs: runs.clone(),
             master: Mutex::new(Some(std::fs::File::from(master))),
             shell: Mutex::new(Some(shell)),
             state: Mutex::default(),
             changed: Condvar::new(),
         });
+        if let Some(runs) = &runs {
+            let _ = runs.kept.set(Arc::downgrade(&running));
+        }
         lock(&self.kept).insert(running.id.clone(), Arc::clone(&running));
         let pumped = Arc::clone(&running);
         let table = Arc::downgrade(&self.kept);
@@ -174,12 +326,107 @@ impl EnvironmentTerminals {
         Ok(self.stream_on(running))
     }
 
-    /// A new stream on the kept session `id`, superseding the one it had; `None` when no
-    /// session by that id is kept (it ended, or nobody came back to it in time).
+    /// A new stream on the kept session `id` of `workspace`'s Terminal session `session`,
+    /// superseding the one it had; `None` when no session by that id is kept for it (it
+    /// ended, nobody came back to it in time, or it is another session's).
     #[must_use]
-    pub fn attach(&self, id: &str) -> Option<TerminalStream> {
-        let running = lock(&self.kept).get(id).cloned()?;
+    pub fn attach(&self, workspace: &str, session: &str, id: &str) -> Option<TerminalStream> {
+        let running = lock(&self.kept)
+            .get(id)
+            .filter(|kept| kept.workspace == workspace && kept.session == session)
+            .cloned()?;
         running.live().then(|| self.stream_on(running))
+    }
+
+    /// Open `asked` on a terminal, or come back to the session it names, and hand its stream
+    /// to `device` ([`Self::hand_out`]).
+    ///
+    /// # Errors
+    ///
+    /// The session to come back to is gone, or the shell could not start: in words.
+    pub fn open_for(&self, device: [u8; 32], asked: &TerminalAsk<'_>) -> Result<HandedOut, String> {
+        let stream = match asked.attach {
+            Some(id) => self
+                .attach(asked.workspace, asked.session, id)
+                .ok_or_else(|| "the terminal session ended".to_owned())?,
+            None => self
+                .open(
+                    asked.workspace,
+                    asked.session,
+                    asked.payer,
+                    asked.person,
+                    TerminalSize {
+                        cols: asked.cols,
+                        rows: asked.rows,
+                    },
+                    None,
+                    asked.ran.clone(),
+                )
+                .map_err(|error| format!("the session's shell did not start: {error}"))?,
+        };
+        let session = stream.id().to_owned();
+        // The first stream on a session is the one its shell started with.
+        let started = asked.attach.is_none() && stream.stream == 1;
+        let stream = self
+            .hand_out(device, stream)
+            .map_err(|error| error.to_string())?;
+        Ok(HandedOut {
+            stream,
+            session,
+            started,
+        })
+    }
+
+    /// Hand `stream` to `device`, to take on a stream of its own ([`Self::serve_handed`]): the
+    /// one-use id it presents.
+    ///
+    /// # Errors
+    ///
+    /// No id could be drawn.
+    pub fn hand_out(&self, device: [u8; 32], stream: TerminalStream) -> io::Result<String> {
+        self.handed.hand(device, Hold::Stream(stream))
+    }
+
+    /// Hand the runs `runs` keeps of session `session` to `device`, to follow on a stream of
+    /// its own ([`Self::serve_handed`]): the one-use id it presents.
+    ///
+    /// # Errors
+    ///
+    /// No id could be drawn.
+    pub fn hand_runs(&self, device: [u8; 32], runs: RanQueue) -> io::Result<String> {
+        self.handed.hand(device, Hold::Runs(runs))
+    }
+
+    /// Carry, for the device `device` that dialled, the stream it names in its
+    /// [`wire::Hello`] on `from`, answering on `to` first ([`wire::Welcome`]); a stream not
+    /// handed to it is refused there. Runs handed out ([`Self::hand_runs`]) are carried as
+    /// [`wire::write_ran`] frames until their session ends.
+    ///
+    /// # Errors
+    ///
+    /// The hello could not be read or answered, or it named no stream handed to `device`.
+    pub fn serve_handed(
+        &self,
+        device: [u8; 32],
+        mut from: impl Read + Send + 'static,
+        mut to: impl Write,
+    ) -> io::Result<Ended> {
+        let Some(hello) = wire::read_hello(&mut from)? else {
+            return Ok(Ended::Left);
+        };
+        let stream = match self.handed.take(&hello.stream, &device) {
+            None => return Err(wire::refuse(&mut to, NOT_HANDED)),
+            Some(Hold::Runs(runs)) => return serve_runs(&runs, to),
+            Some(Hold::Stream(stream)) => stream,
+        };
+        wire::write_welcome(
+            &mut to,
+            &wire::Welcome::Opened {
+                session: stream.id().to_owned(),
+            },
+        )?;
+        to.flush()?;
+        serve(stream, from, to)
     }
 
     /// The ids of the sessions kept now, attached or not.
@@ -401,6 +648,236 @@ impl Kept {
     fn hung_up(&self) -> bool {
         lock(&self.state).hung_up
     }
+
+    /// Read what the terminal drew from `master` and say it: `None` when a run's end took it
+    /// first ([`SessionRuns`]), else how much was read (0 at its end). What a run's command
+    /// drew is kept with the run, read under the same hold a run's end reads the rest under.
+    fn read_out(&self, master: &std::fs::File, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        let mut running = self.runs.as_ref().map(|runs| lock(&runs.running));
+        if running.is_some() && !readable(master) {
+            return Ok(None);
+        }
+        let read = (&*master).read(buffer)?;
+        let bytes = buffer.get(..read).unwrap_or_default();
+        if !bytes.is_empty() {
+            if let Some(Some(run)) = running.as_deref_mut() {
+                run.keep(bytes);
+            }
+            self.say(FromTerminal::Out(bytes.to_vec()));
+        }
+        drop(running);
+        Ok(Some(read))
+    }
+}
+
+/// Whether `master` has something to read now.
+fn readable(master: &std::fs::File) -> bool {
+    let mut poll = libc::pollfd {
+        fd: master.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: poll reads and writes only the one pollfd owned here.
+    let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
+    ready > 0 && poll.revents & libc::POLLIN != 0
+}
+
+/// What hears a session's shell run its command lines ([`ush_shell::Runs`]), keeping what
+/// each drew on the terminal and telling the run to [`TerminalAsk::ran`] as it ends.
+///
+/// The shell writes a run's output to the terminal before it says the run ended, so at the end
+/// all of it is drawn: what the pump did not read yet is read here, under the hold the pump
+/// reads under, in the order it was drawn. At a start, what was drawn before (the prompt, the
+/// line as typed) is read off the same way, so it is not the run's.
+struct SessionRuns {
+    master: std::fs::File,
+    /// Let go once the shell exited.
+    to: Mutex<Option<RanTo>>,
+    running: Mutex<Option<Running>>,
+    kept: OnceLock<Weak<Kept>>,
+}
+
+/// A run going on: what [`Ran`] it is so far.
+struct Running {
+    number: u64,
+    ran: Ran,
+}
+
+impl Running {
+    fn keep(&mut self, bytes: &[u8]) {
+        let room = RAN_OUTPUT.saturating_sub(self.ran.output.len());
+        if bytes.len() > room {
+            self.ran.truncated = true;
+        }
+        self.ran
+            .output
+            .extend_from_slice(bytes.get(..room.min(bytes.len())).unwrap_or_default());
+    }
+}
+
+impl std::fmt::Debug for SessionRuns {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SessionRuns")
+    }
+}
+
+impl SessionRuns {
+    /// Read and say what the terminal drew that the pump did not read yet, keeping it with
+    /// `running` when a run goes on.
+    fn drain(&self, running: &mut Option<Running>) {
+        let Some(kept) = self.kept.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        let mut buffer = vec![0_u8; OUT_FRAME];
+        while readable(&self.master) {
+            let read = match (&self.master).read(&mut buffer) {
+                Ok(0) | Err(_) => return,
+                Ok(read) => read,
+            };
+            let bytes = buffer.get(..read).unwrap_or_default();
+            if let Some(run) = running.as_mut() {
+                run.keep(bytes);
+            }
+            kept.say(FromTerminal::Out(bytes.to_vec()));
+        }
+    }
+}
+
+impl ush_shell::Runs for SessionRuns {
+    fn started(&self, number: u64, command: &str, cwd: &std::path::Path) {
+        let mut running = lock(&self.running);
+        let mut none = None;
+        self.drain(&mut none);
+        *running = Some(Running {
+            number,
+            ran: Ran {
+                command: command.to_owned(),
+                cwd: cwd.to_string_lossy().into_owned(),
+                started_ms: now_ms(),
+                ..Ran::default()
+            },
+        });
+    }
+
+    fn ended(&self, number: u64, status: i32) {
+        let mut running = lock(&self.running);
+        self.drain(&mut running);
+        let Some(Running { mut ran, .. }) = running.take().filter(|run| run.number == number)
+        else {
+            return;
+        };
+        drop(running);
+        ran.exit = status;
+        ran.ended_ms = now_ms();
+        let to = lock(&self.to).clone();
+        if let Some(to) = to {
+            to(ran);
+        }
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// The runs of one session, kept for the one stream that follows them
+/// ([`EnvironmentTerminals::hand_runs`]): what [`Self::to`] is told, in order, until the
+/// session ends, when every [`RanTo`] it handed out is dropped.
+#[derive(Clone)]
+pub struct RanQueue {
+    session: Arc<OnceLock<String>>,
+    queue: Arc<(Mutex<Queued>, Condvar)>,
+}
+
+#[derive(Default)]
+struct Queued {
+    ran: VecDeque<Ran>,
+    /// Every [`RanTo`] it handed out is gone: nothing more is told.
+    over: bool,
+}
+
+/// What a [`RanTo`] of a [`RanQueue`] holds: dropped with it, the queue is over.
+struct Telling(Arc<(Mutex<Queued>, Condvar)>);
+
+impl Drop for Telling {
+    fn drop(&mut self) {
+        lock(&self.0.0).over = true;
+        self.0.1.notify_all();
+    }
+}
+
+/// The most runs a queue keeps that nobody follows; past it, the oldest go.
+const QUEUED_RUNS: usize = 1024;
+
+impl Default for RanQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RanQueue {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            session: Arc::default(),
+            queue: Arc::default(),
+        }
+    }
+
+    /// What the session's runs go to, for [`TerminalAsk::ran`].
+    #[must_use]
+    pub fn to(&self) -> RanTo {
+        let telling = Telling(Arc::clone(&self.queue));
+        Arc::new(move |ran: Ran| {
+            let (queue, changed) = &*telling.0;
+            let mut queued = lock(queue);
+            if queued.ran.len() >= QUEUED_RUNS {
+                queued.ran.pop_front();
+            }
+            queued.ran.push_back(ran);
+            drop(queued);
+            changed.notify_all();
+        })
+    }
+
+    /// Name the session the runs are of, for the stream that follows them.
+    pub fn of(&self, session: &str) {
+        let _ = self.session.set(session.to_owned());
+    }
+
+    /// The next run; `None` once the session ended and every run was taken.
+    fn next(&self) -> Option<Ran> {
+        let (queue, changed) = &*self.queue;
+        let mut queued = lock(queue);
+        loop {
+            if let Some(ran) = queued.ran.pop_front() {
+                return Some(ran);
+            }
+            if queued.over {
+                return None;
+            }
+            queued = changed.wait(queued).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+/// Carry `runs` to `to`, as [`wire::write_ran`] frames after a welcome, until their session
+/// ended or the far end went away.
+fn serve_runs(runs: &RanQueue, mut to: impl Write) -> io::Result<Ended> {
+    let session = runs.session.get().cloned().unwrap_or_default();
+    wire::write_welcome(&mut to, &wire::Welcome::Opened { session })?;
+    to.flush()?;
+    while let Some(ran) = runs.next() {
+        if wire::write_ran(&mut to, &ran)
+            .and_then(|()| to.flush())
+            .is_err()
+        {
+            return Ok(Ended::Left);
+        }
+    }
+    Ok(Ended::Left)
 }
 
 /// The key that interrupts on `master`'s terminal while it turns keys into signals (a
@@ -437,11 +914,9 @@ fn pump(kept: &Arc<Kept>, master: std::fs::File, table: &Weak<Table>) {
             // POLLHUP: every slave closed, the shell is done with the terminal.
             break;
         }
-        match (&master).read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => kept.say(FromTerminal::Out(
-                buffer.get(..read).unwrap_or_default().to_vec(),
-            )),
+        match kept.read_out(&master, &mut buffer) {
+            Ok(Some(0)) => break,
+            Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             // A master reads EIO once the last slave is closed.
             Err(_) => break,
@@ -451,8 +926,12 @@ fn pump(kept: &Arc<Kept>, master: std::fs::File, table: &Weak<Table>) {
     drop(master);
     let shell = lock(&kept.shell).take();
     let status = shell.map_or(1, Interactive::wait);
-    // The shell is gone: take the master so nothing types into a closed session.
+    // The shell is gone: take the master so nothing types into a closed session, and let go
+    // of what its runs went to, which hears no more.
     lock(&kept.master).take();
+    if let Some(runs) = &kept.runs {
+        lock(&runs.to).take();
+    }
     kept.say(FromTerminal::Exited(status));
     let mut state = lock(&kept.state);
     state.ended = true;
@@ -507,6 +986,9 @@ fn pty(size: TerminalSize) -> io::Result<(OwnedFd, OwnedFd)> {
     }
     Ok((master, slave))
 }
+
+/// What a device presenting a stream not handed to it is told.
+pub const NOT_HANDED: &str = "no such terminal stream for this device";
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -581,11 +1063,33 @@ pub fn serve(
 /// 3 Out         the bytes drawn
 /// 4 Exited      status: i32
 /// 5 Superseded  (empty)
+/// 6 Hello       JSON: the stream a device takes, first on the stream
+/// 7 Welcome     JSON: the answer to it, before every other frame
+/// 8 Ran         a run's JSON, a newline, then what it printed
 /// ```
 pub mod wire {
     use std::io::{self, Read, Write};
 
-    use super::{FromTerminal, ToTerminal};
+    use serde::{Deserialize, Serialize};
+
+    use super::{FromTerminal, Ran, ToTerminal};
+
+    /// What a device says first on a terminal stream: the stream it takes.
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Hello {
+        /// The one-use id the host handed it.
+        pub stream: String,
+    }
+
+    /// The host's answer to a [`Hello`].
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(tag = "answer", rename_all = "snake_case")]
+    pub enum Welcome {
+        /// The stream is the device's: the frames of the session `session` follow.
+        Opened { session: String },
+        /// It is not; nothing follows.
+        Refused { reason: String },
+    }
 
     /// The most one frame's payload holds.
     pub const MAX_FRAME: usize = 1 << 20;
@@ -595,6 +1099,101 @@ pub mod wire {
     const OUT: u8 = 3;
     const EXITED: u8 = 4;
     const SUPERSEDED: u8 = 5;
+    const HELLO: u8 = 6;
+    const WELCOME: u8 = 7;
+    const RAN: u8 = 8;
+
+    /// # Errors
+    ///
+    /// The write failed, or the run is over [`MAX_FRAME`].
+    pub fn write_ran(to: &mut impl Write, ran: &Ran) -> io::Result<()> {
+        let mut payload = serde_json::to_vec(ran).map_err(io::Error::other)?;
+        payload.push(b'\n');
+        payload.extend_from_slice(&ran.output);
+        write(to, RAN, &payload)
+    }
+
+    /// The next run on a stream of runs; `None` when it ended between frames.
+    ///
+    /// # Errors
+    ///
+    /// The read failed, or the frame is no run.
+    pub fn read_ran(from: &mut impl Read) -> io::Result<Option<Ran>> {
+        let Some((tag, payload)) = read(from)? else {
+            return Ok(None);
+        };
+        if tag != RAN {
+            return Err(invalid(tag));
+        }
+        let at = payload
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or_else(|| invalid(tag))?;
+        let (head, output) = payload.split_at(at);
+        let mut ran: Ran = serde_json::from_slice(head)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        ran.output = output.get(1..).unwrap_or_default().to_vec();
+        Ok(Some(ran))
+    }
+
+    /// # Errors
+    ///
+    /// The write failed.
+    pub fn write_hello(to: &mut impl Write, hello: &Hello) -> io::Result<()> {
+        write(to, HELLO, &serde_json::to_vec(hello).map_err(io::Error::other)?)
+    }
+
+    /// The hello a stream starts with; `None` when it ended before one.
+    ///
+    /// # Errors
+    ///
+    /// The read failed, or the first frame is no hello.
+    pub fn read_hello(from: &mut impl Read) -> io::Result<Option<Hello>> {
+        read_json(from, HELLO)
+    }
+
+    /// # Errors
+    ///
+    /// The write failed.
+    pub fn write_welcome(to: &mut impl Write, welcome: &Welcome) -> io::Result<()> {
+        write(to, WELCOME, &serde_json::to_vec(welcome).map_err(io::Error::other)?)
+    }
+
+    /// The answer to a hello; `None` when the stream ended before one.
+    ///
+    /// # Errors
+    ///
+    /// The read failed, or the frame is no answer to a hello.
+    pub fn read_welcome(from: &mut impl Read) -> io::Result<Option<Welcome>> {
+        read_json(from, WELCOME)
+    }
+
+    /// Tell `to` it is refused for `reason`: the error the refusal is.
+    pub fn refuse(to: &mut impl Write, reason: &str) -> io::Error {
+        let _ = write_welcome(
+            to,
+            &Welcome::Refused {
+                reason: reason.to_owned(),
+            },
+        )
+        .and_then(|()| to.flush());
+        io::Error::new(io::ErrorKind::PermissionDenied, reason.to_owned())
+    }
+
+    fn read_json<T: serde::de::DeserializeOwned>(
+        from: &mut impl Read,
+        tag: u8,
+    ) -> io::Result<Option<T>> {
+        let Some((read, payload)) = read(from)? else {
+            return Ok(None);
+        };
+        if read != tag {
+            return Err(invalid(read));
+        }
+        serde_json::from_slice(&payload)
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
 
     /// # Errors
     ///
@@ -693,6 +1292,145 @@ pub mod wire {
         let mut payload = vec![0_u8; len];
         from.read_exact(&mut payload)?;
         Ok(Some((tag, payload)))
+    }
+}
+
+/// A terminal stream carried over an iroh connection: a host's route on [`ALPN`], and the dial
+/// of another host's.
+#[cfg(feature = "quic")]
+pub mod quic {
+    use std::io::{self, Read, Write};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use iroh::endpoint::{Connection, RecvStream, SendStream};
+    use iroh::protocol::{AcceptError, ProtocolHandler};
+    use iroh::{Endpoint, EndpointAddr};
+    use tokio::runtime::Handle;
+
+    /// How long a stream that ended waits for the far end to close the connection, so what
+    /// was written last reaches it.
+    const CLOSE_PATIENCE: Duration = Duration::from_secs(10);
+
+    /// What a stream reads from the far end, read on a thread of its own.
+    pub struct Receiving {
+        stream: RecvStream,
+        runtime: Handle,
+    }
+
+    impl Read for Receiving {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            match self.runtime.block_on(self.stream.read(buffer)) {
+                Ok(read) => Ok(read.unwrap_or(0)),
+                Err(error) => Err(io::Error::new(io::ErrorKind::ConnectionReset, error)),
+            }
+        }
+    }
+
+    /// What a stream writes to the far end, written from a thread of its own.
+    pub struct Sending {
+        stream: SendStream,
+        runtime: Handle,
+    }
+
+    impl Write for Sending {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.runtime
+                .block_on(self.stream.write(bytes))
+                .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Sending {
+        /// Say nothing more follows.
+        pub fn finish(&mut self) {
+            let _ = self.stream.finish();
+        }
+    }
+
+    type Serve = dyn Fn([u8; 32], Receiving, &mut Sending) + Send + Sync;
+
+    /// A host's terminal streams on [`ALPN`](super::ALPN): each connection's first stream is
+    /// handed, with the endpoint that dialled, to what serves it, on a thread of its own.
+    #[derive(Clone)]
+    pub struct Route(Arc<Serve>);
+
+    impl Route {
+        pub fn new(serve: impl Fn([u8; 32], Receiving, &mut Sending) + Send + Sync + 'static) -> Self {
+            Self(Arc::new(serve))
+        }
+    }
+
+    impl std::fmt::Debug for Route {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("terminal streams")
+        }
+    }
+
+    impl ProtocolHandler for Route {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            let peer = *connection.remote_id().as_bytes();
+            let (send, recv) = connection.accept_bi().await.map_err(AcceptError::from_err)?;
+            let runtime = Handle::current();
+            let serve = Arc::clone(&self.0);
+            let served = tokio::task::spawn_blocking(move || {
+                let mut sending = Sending {
+                    stream: send,
+                    runtime: runtime.clone(),
+                };
+                serve(
+                    peer,
+                    Receiving {
+                        stream: recv,
+                        runtime,
+                    },
+                    &mut sending,
+                );
+                sending.finish();
+            })
+            .await;
+            let _ = tokio::time::timeout(CLOSE_PATIENCE, connection.closed()).await;
+            served.map_err(AcceptError::from_err)
+        }
+    }
+
+    /// Dial the terminal streams of the host at `address` from `endpoint`, on `runtime`, from a
+    /// thread that is none of its own: the connection, which the stream lasts as long as, and
+    /// the stream.
+    ///
+    /// # Errors
+    ///
+    /// The host could not be reached.
+    pub fn dial(
+        endpoint: &Endpoint,
+        address: EndpointAddr,
+        runtime: &Handle,
+    ) -> io::Result<(Connection, Sending, Receiving)> {
+        runtime.block_on(async {
+            let connection = endpoint
+                .connect(address, super::ALPN)
+                .await
+                .map_err(|error| io::Error::new(io::ErrorKind::ConnectionRefused, error))?;
+            let (send, recv) = connection
+                .open_bi()
+                .await
+                .map_err(|error| io::Error::new(io::ErrorKind::ConnectionRefused, error))?;
+            Ok((
+                connection,
+                Sending {
+                    stream: send,
+                    runtime: runtime.clone(),
+                },
+                Receiving {
+                    stream: recv,
+                    runtime: runtime.clone(),
+                },
+            ))
+        })
     }
 }
 

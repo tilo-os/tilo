@@ -132,7 +132,7 @@ impl std::fmt::Debug for PlacedMachines {
 
 /// Ask `device` to do `asked` at `target`, and follow it until it ends: what it
 /// answered, or the words it failed with.
-fn follow(
+pub(crate) fn follow(
     device: &RemoteDevice,
     target: RemoteActionTarget,
     asked: &impl serde::Serialize,

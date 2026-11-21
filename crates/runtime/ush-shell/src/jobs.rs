@@ -545,15 +545,23 @@ impl Write for JobWriter {
 /// Terminal's run marks, shared by the shell and its jobs: each run, a
 /// job's included, takes the next number.
 pub(crate) struct Marks {
-    pub(crate) key: String,
+    /// The key Terminal reads the marks by; without one, no marks are written.
+    pub(crate) key: Option<String>,
+    /// What hears each command line's run as it starts and ends.
+    runs: Option<std::sync::Arc<dyn crate::repl::Runs>>,
     count: std::sync::atomic::AtomicU64,
     out: crate::io::Output,
 }
 
 impl Marks {
-    pub(crate) fn new(key: String, out: crate::io::Output) -> Self {
+    pub(crate) fn new(
+        key: Option<String>,
+        runs: Option<std::sync::Arc<dyn crate::repl::Runs>>,
+        out: crate::io::Output,
+    ) -> Self {
         Self {
             key,
+            runs,
             count: std::sync::atomic::AtomicU64::new(0),
             out,
         }
@@ -567,33 +575,43 @@ impl Marks {
         let _ = self.out.write_str(mark);
     }
 
+    /// Run `number` started: marked for Terminal, and, for a command line (no `job`), told
+    /// to what hears the session's runs.
     pub(crate) fn started(&self, number: u64, command: &str, cwd: &Path, job: Option<u32>) {
         use base64::Engine as _;
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let job = job.map(|n| format!(";j={n}")).unwrap_or_default();
-        self.write(&format!(
-            "\x1b]133;C;k={};cmd={};cwd={};t={number}{job}\x07",
-            self.key,
-            b64.encode(command),
-            b64.encode(cwd.to_string_lossy().as_bytes()),
-        ));
+        if let Some(key) = &self.key {
+            let b64 = base64::engine::general_purpose::STANDARD;
+            let job = job.map(|n| format!(";j={n}")).unwrap_or_default();
+            self.write(&format!(
+                "\x1b]133;C;k={key};cmd={};cwd={};t={number}{job}\x07",
+                b64.encode(command),
+                b64.encode(cwd.to_string_lossy().as_bytes()),
+            ));
+        }
+        if let (Some(runs), None) = (&self.runs, job) {
+            runs.started(number, command, cwd);
+        }
     }
 
+    /// Run `number` ended with `status`, as [`Self::started`] told of it.
     pub(crate) fn ended(&self, number: u64, status: i32, job: Option<u32>) {
-        let job = job.map(|n| format!(";j={n}")).unwrap_or_default();
-        self.write(&format!(
-            "\x1b]133;D;{status};k={};t={number}{job}\x07",
-            self.key
-        ));
+        if let Some(key) = &self.key {
+            let job = job.map(|n| format!(";j={n}")).unwrap_or_default();
+            self.write(&format!("\x1b]133;D;{status};k={key};t={number}{job}\x07"));
+        }
+        if let (Some(runs), None) = (&self.runs, job) {
+            runs.ended(number, status);
+        }
     }
 
     /// What goes around each write of job run `number`: `J` opens it, `E`
-    /// closes it, so Terminal keeps it with that run.
-    pub(crate) fn brackets(&self, number: u64) -> (String, String) {
-        (
-            format!("\x1b]133;J;k={};t={number}\x07", self.key),
-            format!("\x1b]133;E;k={};t={number}\x07", self.key),
-        )
+    /// closes it, so Terminal keeps it with that run; nothing when unmarked.
+    pub(crate) fn brackets(&self, number: u64) -> Option<(String, String)> {
+        let key = self.key.as_ref()?;
+        Some((
+            format!("\x1b]133;J;k={key};t={number}\x07"),
+            format!("\x1b]133;E;k={key};t={number}\x07"),
+        ))
     }
 }
 
@@ -648,7 +666,7 @@ impl crate::shell::Shell {
         }
         let marks = self.marks.clone();
         let run_number = marks.as_ref().map(|m| m.next());
-        let brackets = marks.as_ref().zip(run_number).map(|(m, n)| m.brackets(n));
+        let brackets = marks.as_ref().zip(run_number).and_then(|(m, n)| m.brackets(n));
         sub.wrap_outputs(&job, brackets.as_ref());
         // Its own run: what its file actions are stamped with, and the run
         // Terminal records for it.

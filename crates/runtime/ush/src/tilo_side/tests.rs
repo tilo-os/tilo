@@ -720,9 +720,7 @@ fn prompt_with(history: &[&str], field: Option<&Arc<SessionField>>) -> Prompt {
     let shell_host: Arc<dyn ush_shell::Host> = Arc::new(host.clone());
     let session = std::thread::spawn(move || {
         let mut shell = Shell::new(shell_host, env, allowed, io);
-        shell.interactive(&ush_shell::Session {
-            runs_key: Some(KEY.into()),
-        })
+        shell.interactive(&ush_shell::Session::marked(Some(KEY.into())))
     });
     let screen = Arc::new(Mutex::new(String::new()));
     let asked = Arc::new(Mutex::new(Vec::new()));

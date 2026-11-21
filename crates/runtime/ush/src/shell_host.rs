@@ -685,7 +685,7 @@ pub fn main(args: &[String]) -> i32 {
                 let _ = shell.run_script(&text);
             }
         }
-        return shell.interactive(&ush_shell::Session { runs_key });
+        return shell.interactive(&ush_shell::Session::marked(runs_key));
     }
     let mut text = String::new();
     if std::io::stdin().read_to_string(&mut text).is_err() {

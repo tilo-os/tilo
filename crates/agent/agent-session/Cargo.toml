@@ -210,6 +210,8 @@ tilo-api = { path = "../../server/tilo-api", features = ["test-support"] }
 tilo-mail-parts = { path = "../../platform/mail-parts", features = ["fixture"] }
 # A device's endpoint on this machine's loopback relay, as a person's device dials.
 test-server = { path = "../../dev/test-server" }
+# A hosted Terminal session's stream, dialled as a device dials it.
+ush = { path = "../../runtime/ush", features = ["quic"] }
 test-http = { path = "../../dev/test-http" }
 # Opens an invitation's link as a page does, from the site's shelf.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }

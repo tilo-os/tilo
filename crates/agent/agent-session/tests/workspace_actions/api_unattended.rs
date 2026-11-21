@@ -527,3 +527,100 @@ async fn branch_runs_unasked_and_goes_on_apart() {
     beside(&mut page, tokio::time::sleep(Duration::from_millis(200))).await;
     host.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_keys_terminal_open_is_asked_once_and_its_stream_is_its_device_alone() {
+    Box::pin(terminal_open_is_asked_once()).await;
+}
+
+/// A key opening the workspace's Terminal on a terminal is asked about as its commands are:
+/// once for the open, the stream it answers carrying the keys without asking again. The stream
+/// is the key's device's: another device presenting it at the server is refused there.
+async fn terminal_open_is_asked_once() {
+    let on_server = Box::pin(api_on_server_shelled(ISSUER)).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, token) = backend(&on_server).await;
+    let backend = Key { api: &api, token };
+    let ws = workspace(&backend, "Applicant: Jane Doe").await;
+    let agent = Key {
+        api: &api,
+        token: backend.mint(&ws, "Jane Doe's agent").await,
+    };
+    let host = MemberApprover::new(on_server.server_host());
+    let (answers, mut answered) = mpsc::unbounded_channel();
+    let person = Person {
+        asked: Arc::default(),
+        answers,
+    };
+    let mut sheet = Sheet {
+        asked: Arc::clone(&person.asked),
+    };
+    let mut questions = MemberQuestions {
+        server: &host,
+        root: &ada,
+        device: None,
+    };
+    let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
+        tokio::time::sleep(Duration::from_millis(50))
+    });
+    tokio::pin!(page);
+    let (path, body) = (
+        format!("/v1/workspaces/{ws}/resources/terminal/actions/open-terminal"),
+        json!({"cols": 100, "rows": 30}),
+    );
+    let open = || agent.post(&path, &body);
+
+    // Asked first, as a command of the key's is; allowed, it opens.
+    let (status, asking) = beside(&mut page, open()).await;
+    let opening = waiting(status, &asking).unwrap_or_else(|| panic!("asked: {status} {asking}"));
+    asked(&mut page, &person, 1).await;
+    person.answer(ConfirmationAnswer::AllowOnce);
+    let (status, opened) = beside(&mut page, agent.follow(&ws, &opening)).await;
+    assert_eq!(status, 200, "{opened}");
+    let is_id = |id: &Value| {
+        id.as_str()
+            .is_some_and(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
+    assert!(
+        is_id(&opened["result"]["stream"]) && is_id(&opened["result"]["session"]),
+        "a stream and a session: {opened}"
+    );
+
+    // The server serves the stream to the key's device alone.
+    let (grace, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+    let phone = enrol(&grace, "phone", DeviceCapabilities::member());
+    let endpoint =
+        test_server::endpoint(iroh::SecretKey::from_bytes(&phone.key.to_bytes())).await;
+    let server = on_server.hosted.server.node_addr();
+    let stream = opened["result"]["stream"].as_str().unwrap().to_owned();
+    let welcome = beside(
+        &mut page,
+        tokio::task::spawn_blocking(move || {
+            use ush::environment_terminals::{quic, wire};
+            let runtime = tokio::runtime::Handle::current();
+            let (_connection, mut to, mut from) = quic::dial(&endpoint, server, &runtime).unwrap();
+            wire::write_hello(&mut to, &wire::Hello { stream }).unwrap();
+            wire::read_welcome(&mut from).unwrap()
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        welcome,
+        Some(ush::environment_terminals::wire::Welcome::Refused {
+            reason: ush::environment_terminals::NOT_HANDED.into()
+        }),
+        "another device is refused the key's stream"
+    );
+
+    // Each open is asked about: the allowed one let only itself through.
+    let (status, again) = beside(&mut page, open()).await;
+    assert!(
+        waiting(status, &again).is_some(),
+        "the next open is asked: {status} {again}"
+    );
+    asked(&mut page, &person, 2).await;
+    person.answer(ConfirmationAnswer::Deny);
+    beside(&mut page, tokio::time::sleep(Duration::from_millis(200))).await;
+    host.close().await;
+}

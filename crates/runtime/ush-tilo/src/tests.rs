@@ -393,9 +393,7 @@ fn the_prompt_recalls_the_places_history_and_completes_its_programs() {
         stderr,
     };
     let mut shell = Shell::new(Arc::new(host), [], granted, io);
-    shell.interactive(&ush_shell::Session {
-        runs_key: Some("0123456789abcdef0123456789abcdef".into()),
-    });
+    shell.interactive(&ush_shell::Session::marked(Some("0123456789abcdef0123456789abcdef".into())));
     drop(shell);
     let out = String::from_utf8_lossy(&out.take()).into_owned();
     assert!(

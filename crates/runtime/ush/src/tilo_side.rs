@@ -1028,9 +1028,7 @@ impl Session {
                 shell.set_interactive(true);
                 let _ = shell.run_script(&text);
             }
-            shell.interactive(&ush_shell::Session {
-                runs_key: self.opts.marks_key.clone(),
-            })
+            shell.interactive(&ush_shell::Session::marked(self.opts.marks_key.clone()))
         };
         drop(shell);
         drop(broker);

@@ -320,7 +320,8 @@ impl WorkspaceShells {
     /// Run `workspace`'s Terminal session `session` interactively on the pseudo-terminal whose
     /// slave is `terminal`, until the shell exits or the terminal hangs up (its master closed).
     /// It is the shell [`Self::run_for`] runs commands in, kept by the same session, paid for
-    /// by `payer` the same way; `runs_key` marks its runs for Terminal ([`ush_shell::Session`]).
+    /// by `payer` the same way; `runs_key` marks its runs for Terminal, and `runs` hears each
+    /// ([`ush_shell::Session`]).
     /// The session ends with the shell: a later run starts a new one.
     ///
     /// `person` is who the shell runs as for as long as it is on this terminal: whoever asks
@@ -337,6 +338,7 @@ impl WorkspaceShells {
         person: Option<&Person>,
         terminal: OwnedFd,
         runs_key: Option<String>,
+        runs: Option<Arc<dyn ush_shell::Runs>>,
     ) -> io::Result<Interactive> {
         let person = person.cloned();
         let key = (workspace.to_owned(), session.to_owned());
@@ -364,7 +366,8 @@ impl WorkspaceShells {
             .spawn(move || {
                 let status = {
                     let mut session = shared.lock().unwrap_or_else(PoisonError::into_inner);
-                    session.interactive(terminal, io, runs_key, person.as_ref())
+                    let marked = ush_shell::Session { runs_key, runs };
+                    session.interactive(terminal, io, &marked, person.as_ref())
                 };
                 let mut sessions = sessions.lock().unwrap_or_else(PoisonError::into_inner);
                 if sessions
@@ -527,7 +530,7 @@ impl Session {
         &mut self,
         terminal: OwnedFd,
         io: Stdio,
-        runs_key: Option<String>,
+        session: &ush_shell::Session,
         person: Option<&Person>,
     ) -> i32 {
         let held = || self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
@@ -541,7 +544,7 @@ impl Session {
         // typed at the prompt, and every program it starts, records them as an author, and
         // nobody once the terminal is gone.
         *self.identity.lock().unwrap_or_else(PoisonError::into_inner) = person.cloned();
-        let status = self.shell.interactive(&ush_shell::Session { runs_key });
+        let status = self.shell.interactive(session);
         *self.identity.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.shell.set_stdio(Stdio::null());
         *held() = None;

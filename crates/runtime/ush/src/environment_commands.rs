@@ -10,7 +10,9 @@
 //! deletes one ([`tilo_actions::remote::environment_machines`]), on the hosted-VM service's own
 //! socket. And it starts a program in a workspace's machine that the workspace's server serves
 //! from afar, and holds it for that server ([`tilo_actions::remote::environment_programs`],
-//! [`crate::environment_programs`]).
+//! [`crate::environment_programs`]). And it opens a Terminal session's shell on a terminal
+//! ([`tilo_actions::remote::environment_terminals`]), whose stream it hands the server that
+//! asked, to take on [`crate::environment_terminals::ALPN`] ([`EnvironmentCommands::serve_terminal`]).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +23,7 @@ use tilo_actions::remote::browser::{self, OpenBrowser};
 use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
 use tilo_actions::remote::environment_machines::{self, BranchMachine, MachineBranched};
 use tilo_actions::remote::environment_programs::{self, ServeProgram, TellProgram};
+use tilo_actions::remote::environment_terminals::{self, OpenTerminal, TerminalOpened};
 use tilo_actions::remote::linux_apps::{self, OpenApp};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
@@ -30,6 +33,7 @@ use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 
 use crate::environment_browsers::{AppRefused, BrowserHost};
 use crate::environment_programs::{Held, LEFT_AFTER, Starts};
+use crate::environment_terminals::{Ended, EnvironmentTerminals, RanQueue, TerminalAsk};
 use crate::workspace_shell::{Payer, RunWith, ShellRun, WorkspaceShells};
 
 const PROFILE_STORE: &str = ".tilo/browser";
@@ -48,7 +52,9 @@ const MACHINE_RETRY: Duration = Duration::from_secs(2);
 pub struct EnvironmentCommands(Arc<Inner>);
 
 struct Inner {
-    shells: WorkspaceShells,
+    shells: Arc<WorkspaceShells>,
+    /// The sessions' shells on terminals: the same shells.
+    terminals: EnvironmentTerminals,
     browsers: Option<BrowserHost>,
     operator: [u8; 32],
     log: Mutex<InvocationLog<Run>>,
@@ -89,7 +95,9 @@ impl EnvironmentCommands {
         let browsers = shells
             .hosted_socket()
             .map(|socket| BrowserHost::new(socket, size));
+        let shells = Arc::new(shells);
         Self(Arc::new(Inner {
+            terminals: EnvironmentTerminals::new(Arc::clone(&shells)),
             shells,
             browsers,
             operator,
@@ -119,6 +127,23 @@ impl EnvironmentCommands {
             inner.left_after = after;
         }
         self
+    }
+}
+
+impl EnvironmentCommands {
+    /// Carry the terminal stream this member handed `device` (the device the endpoint that
+    /// dialled asks as) over `from` and `to`.
+    ///
+    /// # Errors
+    ///
+    /// The stream named none handed to `device`, or its hello could not be read.
+    pub fn serve_terminal(
+        &self,
+        device: [u8; 32],
+        from: impl std::io::Read + Send + 'static,
+        to: impl std::io::Write,
+    ) -> std::io::Result<Ended> {
+        self.0.terminals.serve_handed(device, from, to)
     }
 }
 
@@ -267,6 +292,66 @@ impl Inner {
             };
             inner.set(&run, update);
         });
+    }
+
+    /// Open `asked` on a terminal, or come back to the session it names, and hand its stream
+    /// to `device`, the server's device that asked.
+    fn start_terminal(&self, run: &Run, workspace: &str, asked: &OpenTerminal, device: [u8; 32]) {
+        let invocation = run.state().invocation();
+        let payer = Payer {
+            account: asked.account.clone(),
+            size: linux_vm::hosted::size::VmSize::parse(&asked.size).unwrap_or_default(),
+        };
+        // The session's runs are kept for the server, which records them, to follow.
+        let runs = RanQueue::new();
+        let opened = self
+            .terminals
+            .open_for(
+                device,
+                &TerminalAsk {
+                    workspace,
+                    session: &asked.session,
+                    payer: Some(&payer),
+                    person: asked.person.as_ref(),
+                    cols: asked.cols,
+                    rows: asked.rows,
+                    ran: Some(runs.to()),
+                    attach: asked.attach.as_deref(),
+                },
+            )
+            .and_then(|opened| {
+                runs.of(&opened.session);
+                let runs = opened
+                    .started
+                    .then(|| self.terminals.hand_runs(device, runs))
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
+                Ok((opened, runs))
+            });
+        let update = match opened {
+            Ok((opened, runs)) => InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput {
+                    value: serde_json::to_value(TerminalOpened {
+                        stream: opened.stream,
+                        session: opened.session,
+                        runs,
+                    })
+                    .ok(),
+                    resources: Vec::new(),
+                },
+            },
+            Err(message) => InvocationUpdate::Failed {
+                invocation,
+                error: ActionFailure {
+                    code: "unavailable".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            },
+        };
+        self.set(run, update);
     }
 
     fn start(self: &Arc<Self>, run: Run, workspace: String, asked: CommandRequest) {
@@ -625,6 +710,12 @@ impl EnvironmentCommands {
         }
         let asked = match action {
             environment_commands::RUN => Asked::Command(argument(request)?),
+            environment_terminals::OPEN => {
+                let device = *caller
+                    .device_public_key()
+                    .ok_or(ActionCallError::NotPermitted)?;
+                Asked::Terminal(program_argument(request, "a terminal to open")?, device)
+            }
             environment_programs::SERVE => {
                 Asked::Program(program_argument(request, "a program to serve")?)
             }
@@ -666,6 +757,9 @@ impl EnvironmentCommands {
                     }
                     Asked::Machine(asked) => self.0.start_machine(run, workspace, asked),
                     Asked::Program(asked) => self.0.start_program(run, workspace, asked),
+                    Asked::Terminal(asked, device) => {
+                        self.0.start_terminal(&run, &workspace, &asked, device);
+                    }
                 }
                 Ok(receipt)
             }
@@ -708,6 +802,8 @@ enum Asked {
     Machine(Option<BranchMachine>),
     /// A program to start in the workspace's machine and hold for the workspace's server.
     Program(ServeProgram),
+    /// A session's shell to open on a terminal, for the server's device that asked.
+    Terminal(OpenTerminal, [u8; 32]),
 }
 
 fn branch_argument(request: &InvokeRequest) -> Result<BranchMachine, ActionCallError> {

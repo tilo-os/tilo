@@ -36,6 +36,10 @@ pub(super) enum Job {
     },
     /// A Terminal session's command that ended in the server's shell, to keep.
     Ran(Box<terminal::Ended>),
+    /// A Terminal session's open that the server's shell answered, to settle.
+    Opened(Box<terminal::OpenEnded>),
+    /// A command line typed into a terminal a Terminal session's open started, to record.
+    Typed(Box<terminal::Ended>),
     /// A step of an upload into a workspace whose store the service has not
     /// found yet.
     Content {
@@ -133,6 +137,8 @@ impl Job {
             Self::Catalogue { .. } => "catalogue",
             Self::Invoke { .. } => "invoke",
             Self::Ran(_) => "ran",
+            Self::Opened(_) => "opened",
+            Self::Typed(_) => "typed",
             Self::Arrived { .. } => "arrived",
             Self::Content { .. } => "content",
             Self::ContentGet { .. } => "content-get",
@@ -200,9 +206,12 @@ impl Job {
             | Self::Called(_)
             | Self::Loaded(_)
             | Self::Page(_) => Urgency::Read,
-            Self::Invoke { .. } | Self::Ran(_) | Self::Arrived { .. } | Self::Forget(_) => {
-                Urgency::Write
-            }
+            Self::Invoke { .. }
+            | Self::Ran(_)
+            | Self::Opened(_)
+            | Self::Typed(_)
+            | Self::Arrived { .. }
+            | Self::Forget(_) => Urgency::Write,
             Self::Rename(..) => Urgency::Background,
         }
     }
@@ -225,6 +234,8 @@ impl Job {
             Self::Page(job) => job.caller(),
             Self::Invoke { .. }
             | Self::Ran(_)
+            | Self::Opened(_)
+            | Self::Typed(_)
             | Self::Joined(_)
             | Self::Called(_)
             | Self::Loaded(_)
@@ -252,6 +263,8 @@ impl Job {
             Self::Page(job) => Some(job.workspace()),
             Self::Feedback { .. }
             | Self::Ran(_)
+            | Self::Opened(_)
+            | Self::Typed(_)
             | Self::Joined(_)
             | Self::Called(_)
             | Self::Forget(_) => None,
@@ -274,6 +287,8 @@ impl Job {
             Self::Feedback { .. }
             | Self::Invoke { .. }
             | Self::Ran(_)
+            | Self::Opened(_)
+            | Self::Typed(_)
             | Self::Content { .. }
             | Self::ContentGet { .. }
             | Self::ContentLink { .. }

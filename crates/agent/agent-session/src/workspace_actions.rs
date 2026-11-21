@@ -113,7 +113,9 @@ pub use link::{
     AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, PackagedCall, ViewDocument,
     ViewReadPolicy, WorkspaceDocumentsLink,
 };
-pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell, person_of};
+pub use terminal::{
+    Opened, Opening, Recorder, ShellRan, TERMINAL_APP, Watching, WorkspaceShell, person_of,
+};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::Ordering;
@@ -1933,6 +1935,8 @@ impl Worker {
                     ),
                 },
                 Job::Ran(ended) => self.ran(&ended),
+                Job::Opened(ended) => self.settle_open(&ended),
+                Job::Typed(ended) => self.typed(&ended),
                 Job::Arrived {
                     workspace_id,
                     caller,

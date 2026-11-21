@@ -344,6 +344,26 @@ impl Terminal {
         Ok(())
     }
 
+    /// Open the session's shell on a terminal for the caller's device, where the workspace's
+    /// host runs its sessions: it answers the stream that device alone takes, and the
+    /// session's id, to come back to it. It runs the session's commands as `run` does, and the
+    /// host records each command line typed into it on the session, as `run` records its own.
+    #[action(keywords = "open terminal, interactive shell, attach")]
+    pub fn open_terminal(
+        &mut self,
+        requests: &mut Outbox<CommandRequest, CommandAnswer>,
+        #[param("The window's width, in columns")] cols: Option<u16>,
+        #[param("The window's height, in rows")] rows: Option<u16>,
+        #[param("The session to come back to, by the id an open answered")] attach: Option<
+            String,
+        >,
+    ) -> Result<(), Refusal> {
+        let _ = (requests, cols, rows, attach);
+        Err(Refusal::new(
+            "a session opens on a terminal only where the workspace's host runs it",
+        ))
+    }
+
     #[action(external)]
     pub fn record_command(
         &mut self,

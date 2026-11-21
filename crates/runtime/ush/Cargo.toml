@@ -19,9 +19,14 @@ path = "src/main.rs"
 # `hosted_vm::test_host`: a host selling Linux VMs, with no hypervisor and
 # no payment provider, for other crates' tests.
 test-host = []
+# `environment_terminals::quic`: a terminal stream carried over an iroh
+# connection, for the hosts that serve it.
+quic = ["dep:iroh", "dep:tokio"]
 
 [dependencies]
 getrandom.workspace = true
+iroh = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "time"], optional = true }
 tilo-clock = { path = "../../platform/tilo-clock" }
 bounded-command = { path = "../../system/bounded-command" }
 sha2.workspace = true

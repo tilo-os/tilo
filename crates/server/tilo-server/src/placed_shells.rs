@@ -82,9 +82,14 @@ pub struct PlacedShells {
     size: VmSize,
     /// This host's device action service and endpoint, once the host runs.
     asking: OnceLock<(ActionService, Endpoint)>,
+    /// The runtime this host dials its members on, once it asks them.
+    runtime: OnceLock<tokio::runtime::Handle>,
     /// The workspaces this host holds, whose VM leases name the machine each
     /// VM is kept on, and the runtime they are read on.
     leases: OnceLock<(crate::workspaces::Workspaces, tokio::runtime::Handle)>,
+    /// The terminal streams the members handed this host, handed on to the devices that
+    /// opened them.
+    terminals: crate::placed_terminals::MemberStreams,
 }
 
 impl PlacedShells {
@@ -146,13 +151,26 @@ impl PlacedShells {
             account,
             size,
             asking: OnceLock::new(),
+            runtime: OnceLock::new(),
             leases: OnceLock::new(),
+            terminals: crate::placed_terminals::member_streams(),
         }
     }
 
     /// Ask as `action_service`'s device, from `endpoint`: this host's own.
+    /// Called on the runtime it dials them on.
     pub fn ask_from(&self, action_service: ActionService, endpoint: Endpoint) {
         let _ = self.asking.set((action_service, endpoint));
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let _ = self.runtime.set(runtime);
+        }
+    }
+
+    /// The runtime this host dials its members on.
+    pub(crate) fn runtime(&self) -> Result<&tokio::runtime::Handle, String> {
+        self.runtime
+            .get()
+            .ok_or_else(|| "the host is not running yet".to_owned())
     }
 
     /// Read which machine keeps each VM from the VM leases of `workspaces`,
@@ -193,6 +211,11 @@ impl PlacedShells {
         self.asking
             .get()
             .ok_or_else(|| "the host is not running yet".to_owned())
+    }
+
+    /// The terminal streams the members handed this host.
+    pub(crate) const fn terminals(&self) -> &crate::placed_terminals::MemberStreams {
+        &self.terminals
     }
 
     /// Who pays for the VMs placed from here.

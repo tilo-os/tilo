@@ -534,9 +534,7 @@ fn a_tilo_side_session_records_its_runs() {
         };
         let env = [("PS1".to_string(), "$ ".to_string())];
         let mut shell = Shell::new(Arc::new(host), env, cwd, io);
-        shell.interactive(&Session {
-            runs_key: Some(KEY.into()),
-        });
+        shell.interactive(&Session::marked(Some(KEY.into())));
     });
     let mut parts = Some((printed, typed_tx));
     let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {
@@ -678,9 +676,7 @@ fn a_ush_session_records_the_run_of_a_pipeline() {
         };
         let env = [("PS1".to_string(), "$ ".to_string())];
         let mut shell = Shell::new(Arc::new(host), env, "/src/demo".into(), io);
-        shell.interactive(&Session {
-            runs_key: Some(KEY.into()),
-        });
+        shell.interactive(&Session::marked(Some(KEY.into())));
     });
     let mut parts = Some((printed, typed_tx));
     let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {
@@ -745,9 +741,7 @@ fn ush_shell(app: &mut App, host: ush_shell::MemoryHost) {
         };
         let env = [("PS1".to_string(), "$ ".to_string())];
         let mut shell = Shell::new(Arc::new(host), env, "/src/demo".into(), io);
-        shell.interactive(&Session {
-            runs_key: Some(KEY.into()),
-        });
+        shell.interactive(&Session::marked(Some(KEY.into())));
     });
     let mut parts = Some((printed, typed_tx));
     let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {

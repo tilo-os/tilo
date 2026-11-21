@@ -216,9 +216,7 @@ tilo_test_env::scenario! {
         host.file("/home/me/a", "").file("/home/me/b", "");
         let (mut shell, out, _err) = shell_on(&host, "ls | wc -l\n\nexit\n");
         let key = "k3y0fth1ss3ss10n";
-        let status = shell.interactive(&Session {
-            runs_key: Some(key.into()),
-        });
+        let status = shell.interactive(&Session::marked(Some(key.into())));
         drop(shell);
         assert_eq!(status, 0);
         let out = String::from_utf8_lossy(&out.take()).into_owned();

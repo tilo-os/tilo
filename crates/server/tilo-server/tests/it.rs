@@ -77,6 +77,9 @@ mod placed_machine;
 #[cfg(feature = "agents")]
 #[path = "placed_shell.rs"]
 mod placed_shell;
+#[cfg(feature = "agents")]
+#[path = "placed_terminal.rs"]
+mod placed_terminal;
 #[path = "presence_batching.rs"]
 mod presence_batching;
 #[path = "record_content_routing.rs"]

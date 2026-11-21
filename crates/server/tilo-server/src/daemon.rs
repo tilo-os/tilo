@@ -215,6 +215,9 @@ pub struct Server {
     /// The packet relay this host runs for the pages it serves, when it runs
     /// one ([`ServerConfig::packet_relay`]).
     iroh_packet_relay: Option<iroh_relay::server::Server>,
+    /// The shells whose terminal streams this host's devices dial it for, once they run.
+    #[cfg(feature = "agents")]
+    terminal_shells: crate::placed_terminals::TerminalShells,
 }
 
 /// The server state the page's pre-session routes answer with.
@@ -750,6 +753,17 @@ impl Server {
         for (alpn, handler) in additional_protocols {
             router = router.accept(alpn, handler);
         }
+        // A person's device takes the terminal of a hosted workspace's session here, once
+        // the host's shells are told where they run.
+        #[cfg(feature = "agents")]
+        let terminal_shells = crate::placed_terminals::TerminalShells::default();
+        #[cfg(feature = "agents")]
+        {
+            router = router.accept(
+                ush::environment_terminals::ALPN,
+                terminal_shells.route(),
+            );
+        }
         #[cfg(feature = "web")]
         if let Some(origin) = live_origin.as_ref() {
             let (alpn, handler) = origin.protocol();
@@ -928,7 +942,15 @@ impl Server {
             _workspace_keys: workspace_keys,
             _asks_people: asks_people,
             iroh_packet_relay: packet_relay,
+            #[cfg(feature = "agents")]
+            terminal_shells,
         })
+    }
+
+    /// The shells whose terminal streams this host serves, once they run.
+    #[cfg(feature = "agents")]
+    pub(crate) const fn terminal_shells(&self) -> &crate::placed_terminals::TerminalShells {
+        &self.terminal_shells
     }
 
     /// Whether this server currently counts `device` as subscribed to

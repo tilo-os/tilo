@@ -69,7 +69,7 @@ fn placer() -> (String, Arc<AtomicUsize>) {
 
 /// The `host:port` an endpoint of this process listens on, as a server's
 /// members file names a member.
-fn address_of(endpoint: &iroh::Endpoint) -> String {
+pub(super) fn address_of(endpoint: &iroh::Endpoint) -> String {
     let socket = endpoint
         .bound_sockets()
         .into_iter()
@@ -84,7 +84,7 @@ fn host_address(hosted: &Hosted) -> String {
 }
 
 /// `device`'s address, as the server reaches the member it asks.
-fn member_at(device: [u8; 32], address: &str) -> EndpointAddr {
+pub(super) fn member_at(device: [u8; 32], address: &str) -> EndpointAddr {
     let id = EndpointId::from_bytes(&device).unwrap();
     EndpointAddr::from_parts(
         id,
@@ -124,9 +124,9 @@ fn run_request(session: &str, command: &str) -> InvokeRequest {
 
 /// A workspace whose VM host is a member device that takes its work, with the
 /// server's placed shells asking it.
-struct Placed {
-    workspace: String,
-    shells: Arc<PlacedShells>,
+pub(super) struct Placed {
+    pub(super) workspace: String,
+    pub(super) shells: Arc<PlacedShells>,
     /// The member device that runs the workspace's shells.
     member: take_work::Member,
     /// That member's device key.
@@ -142,7 +142,7 @@ struct Placed {
 
 /// Arrange a workspace with a VM host that takes its work, as the operator's
 /// fleet does.
-async fn placed() -> Arc<Placed> {
+pub(super) async fn placed() -> Arc<Placed> {
     let operator = TestUser::fresh("operator");
     let shell = operator.enrol("host", DeviceCapabilities::primary());
     let vm_host = operator.enrol(VM_HOST, DeviceCapabilities::member());
@@ -222,7 +222,7 @@ async fn run(placed: &Arc<Placed>, session: &str, command: &str) -> Result<Shell
 }
 
 /// Stop the host, once nothing else holds the layout.
-async fn stop(placed: Arc<Placed>) {
+pub(super) async fn stop(placed: Arc<Placed>) {
     let Ok(placed) = Arc::try_unwrap(placed) else {
         panic!("nothing else holds the layout");
     };

@@ -34,6 +34,18 @@
 //! cancel of its invocation, ends the command in the host's shell
 //! ([`Watching::stop`]), records the command like any other, and settles the
 //! invocation as cancelled.
+//!
+//! A person typing in the session needs its shell on a terminal, as on a device: the
+//! session's `open-terminal` has the host start that shell on a terminal
+//! ([`WorkspaceShell::open`]) and hand its stream to the device that asked, once the same
+//! admission `run` passes let it through (a person whose open is asked about is asked once,
+//! never per key). It succeeds with the stream's one-use id, which that device alone presents
+//! when it dials the host's terminal streams, and the session's id, which a later
+//! `open-terminal` names (`attach`) to come back to it.
+//! Each command line the shell runs there is recorded on the session as `run`'s commands are
+//! (one record path, [`Worker::record_ended`]), under the open's invocation, whether a device
+//! is attached or not: the host is the one that records them, so the terminal's stream marks
+//! no runs for a device to record again.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,6 +70,12 @@ pub use ui::apps::TERMINAL as TERMINAL_APP;
 const RUN: &str = "run";
 /// The session record's action that stops the command line it is running.
 const STOP: &str = "stop";
+/// The session record's action that opens its shell on a terminal for the caller's device.
+const OPEN: &str = "open-terminal";
+/// The window a terminal opens at when the caller names none.
+const DEFAULT_SIZE: (u16, u16) = (80, 24);
+/// The widest and tallest window a terminal opens at.
+const MAX_SIDE: u16 = 1000;
 /// The session record's action that records a command that ended.
 const RECORD_COMMAND: &str = "record-command";
 /// The longest command line a session runs, as Terminal takes it.
@@ -103,6 +121,22 @@ pub trait WorkspaceShell: Send + Sync {
         let _ = (workspace, session, caller);
     }
 
+    /// Start `opening`'s session shell on a terminal and hand its stream to the device it
+    /// names.
+    ///
+    /// # Errors
+    ///
+    /// This host opens no terminals, the session it names to come back to is gone, or the
+    /// shell could not start.
+    ///
+    /// Each command line the shell runs from then on goes to `record` as it ends, attached or
+    /// not, when this open started the shell; an open that came back to it records nothing
+    /// more, its runs already going to the first.
+    fn open(&self, opening: &Opening, record: Recorder) -> Result<Opened, String> {
+        let _ = (opening, record);
+        Err("this host opens no terminals".into())
+    }
+
     /// Keep `output`, a command's output, where the workspace's devices fetch
     /// its content, answering the reference that opens it, or `None` when
     /// this host keeps none.
@@ -146,6 +180,33 @@ pub fn person_of(
     Some(Person::of(name, person, host))
 }
 
+/// A Terminal session's shell to open on a terminal, for one device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Opening {
+    pub workspace: String,
+    /// The session whose shell it is: the one its commands run in.
+    pub session: String,
+    /// The device that takes its stream: the caller's own.
+    pub device: [u8; 32],
+    pub cols: u16,
+    pub rows: u16,
+    /// Who the shell runs as: the person or agent who opened it, as the workspace names them.
+    pub person: Option<Person>,
+    /// The session to come back to, by the id an earlier open answered.
+    pub attach: Option<String>,
+}
+
+/// What records each command line a terminal's shell ran, as it ends.
+pub type Recorder = Arc<dyn Fn(ShellRan) + Send + Sync>;
+
+/// An opened terminal: the stream's one-use id, for the device that asked, and the session's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Opened {
+    pub stream: String,
+    /// 32 hex characters.
+    pub session: String,
+}
+
 /// How a command line went in a host's shell.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ShellRan {
@@ -172,6 +233,22 @@ pub(super) struct Ended {
     /// Who asked for it: the invocation its record's change is part of.
     pub(super) caller: Caller,
     pub(super) ran: Result<ShellRan, String>,
+}
+
+/// A terminal open that ended, for the worker to answer.
+pub(super) struct OpenEnded {
+    pub(super) workspace_id: WorkspaceId,
+    pub(super) request: InvokeRequest,
+    pub(super) caller: Caller,
+    pub(super) opened: Result<Opened, String>,
+}
+
+/// A Terminal session the host runs that the caller was let act on, with what they asked.
+struct Hosted<T> {
+    shell: Arc<dyn WorkspaceShell>,
+    workspace: String,
+    route: DocumentRoute,
+    asked: T,
 }
 
 /// One command asked of the host's shell, ready to start on a thread of its own.
@@ -248,16 +325,23 @@ impl Started {
 }
 
 impl Worker {
-    /// Start `request` when it is a `run` of a Terminal session this host
-    /// runs, answering it accepted; `None` for any other request.
-    pub(super) fn start_terminal_run(
+    /// `request`, when it is `action` on a Terminal session this host runs that `caller` may
+    /// take, with its arguments as `read` takes them; `None` for any other request, and the
+    /// receipt that answers it when it is refused or waits for the person.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the refusal is the receipt the invocation is answered with"
+    )]
+    fn hosted_session<T>(
         &mut self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Option<InvocationReceipt> {
+        action: &str,
+        read: impl FnOnce(&Map<String, Value>) -> Result<T, String>,
+    ) -> Option<Result<Hosted<T>, InvocationReceipt>> {
         let invocation = request.invocation;
-        if request.target.address.action != RUN {
+        if request.target.address.action != action {
             return None;
         }
         let route = resource_of(&request.target.provider, "")
@@ -267,28 +351,19 @@ impl Worker {
         }
         let shell = self.shared.link.get()?.shell()?;
         let refused = |reason: String| {
-            Some(InvocationReceipt {
+            Err(InvocationReceipt {
                 invocation,
                 status: tilo_actions::remote::ReceiptStatus::Rejected {
                     error: tilo_actions::remote::ActionCallError::Refused { reason },
                 },
             })
         };
-        let arguments = invoke_arguments(&request.argument);
-        let command = arguments
-            .get("command")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
-        if command.is_empty() || command.len() > MAX_COMMAND_BYTES {
-            return refused("a command line of 1 to 4096 bytes".into());
-        }
-        if command.chars().any(char::is_control) {
-            return refused("one command line, without control characters".into());
-        }
+        let asked = match read(&invoke_arguments(&request.argument)) {
+            Ok(asked) => asked,
+            Err(reason) => return Some(refused(reason)),
+        };
         // The session is a record of this workspace: its keys are here to
-        // record the command once it ended.
+        // record what it ran.
         let state = match self.refresh(
             workspace_id,
             Needs::Act {
@@ -297,10 +372,10 @@ impl Worker {
             },
         ) {
             Ok(state) => state,
-            Err(error) => return refused(error.to_string()),
+            Err(error) => return Some(refused(error.to_string())),
         };
         let Some(workspace) = state.workspace.clone() else {
-            return refused("this host does not hold the workspace".into());
+            return Some(refused("this host does not hold the workspace".into()));
         };
         let route = DocumentRoute {
             cluster_id: workspace.clone(),
@@ -308,18 +383,61 @@ impl Worker {
         };
         if let Err(receipt) = self.terminal_admitted(workspace_id, caller, request, &route, &state)
         {
-            return Some(receipt);
+            return Some(Err(receipt));
         }
+        Some(Ok(Hosted {
+            shell,
+            workspace,
+            route,
+            asked,
+        }))
+    }
+
+    /// Start `request` when it is a `run` of a Terminal session this host
+    /// runs, answering it accepted; `None` for any other request.
+    pub(super) fn start_terminal_run(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<InvocationReceipt> {
+        let invocation = request.invocation;
+        let hosted = self.hosted_session(workspace_id, caller, request, RUN, |arguments| {
+            let command = arguments
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            if command.is_empty() || command.len() > MAX_COMMAND_BYTES {
+                return Err("a command line of 1 to 4096 bytes".to_owned());
+            }
+            if command.chars().any(char::is_control) {
+                return Err("one command line, without control characters".to_owned());
+            }
+            Ok(command)
+        })?;
+        let Hosted {
+            shell,
+            workspace,
+            route,
+            asked: command,
+        } = match hosted {
+            Ok(hosted) => hosted,
+            Err(receipt) => return Some(receipt),
+        };
+        let refused = |reason: String| {
+            Some(InvocationReceipt {
+                invocation,
+                status: tilo_actions::remote::ReceiptStatus::Rejected {
+                    error: tilo_actions::remote::ActionCallError::Refused { reason },
+                },
+            })
+        };
         let session_of = caller.agent_session();
         let agent = session_of.is_some();
         let jobs = self.shared.jobs.lock_recover().clone()?;
-        // An agent's command has a shell of its own, wherever its commands are
-        // recorded: two agents in one workspace never share a directory
-        // or variables. A person's commands share the session's shell.
-        let session = session_of.map_or_else(
-            || route.document.clone(),
-            |agent_session| format!("run:{}", agent_session.id),
-        );
+        let session = shell_session(caller, &route);
         // What a cancel of this invocation, or a Ctrl+C in the session it
         // runs in, stops.
         let stop = Arc::new(AtomicBool::new(false));
@@ -360,6 +478,130 @@ impl Worker {
             return refused(format!("the session's shell did not start: {error}"));
         }
         Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
+    }
+
+    /// Start `request` when it is an `open-terminal` of a Terminal session this host runs, answering
+    /// it accepted: the shell starts on a terminal (or the session it names to come back to
+    /// is found) off this thread, and the invocation succeeds with the stream handed to the
+    /// caller's device. `None` for any other request.
+    pub(super) fn start_terminal_open(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<InvocationReceipt> {
+        let invocation = request.invocation;
+        let device = caller.device_public_key().copied();
+        let hosted = self.hosted_session(workspace_id, caller, request, OPEN, |arguments| {
+            let device = device
+                .ok_or_else(|| "a terminal opens for a device, and this caller has none".to_owned())?;
+            opening_of(arguments, device)
+        })?;
+        let Hosted {
+            shell,
+            workspace,
+            route,
+            asked: mut opening,
+        } = match hosted {
+            Ok(hosted) => hosted,
+            Err(receipt) => return Some(receipt),
+        };
+        // Whoever opened it is who the shell runs as, as `run` does for its commands.
+        opening.person = self
+            .shared
+            .link
+            .get()
+            .and_then(|link| link.person(&workspace, caller));
+        opening.workspace = workspace;
+        opening.session = shell_session(caller, &route);
+        // The opener was let run commands in the session: a program they start there asks
+        // them whether it may work in the workspace as their agent, as `run`'s do.
+        shell.started(&opening.workspace, &opening.session, caller);
+        let jobs = self.shared.jobs.lock_recover().clone()?;
+        let (request, caller) = (request.clone(), caller.clone());
+        // Each command line the shell runs is recorded as `run`'s are, under this open.
+        let record: Recorder = {
+            let (jobs, request, caller) = (jobs.clone(), request.clone(), caller.clone());
+            Arc::new(move |ran: ShellRan| {
+                let ended = Ended {
+                    workspace_id,
+                    invocation,
+                    route: route.clone(),
+                    request: request.clone(),
+                    caller: caller.clone(),
+                    ran: Ok(ran),
+                };
+                let _ = jobs.send((Instant::now(), Job::Typed(Box::new(ended))));
+            })
+        };
+        let spawned = std::thread::Builder::new()
+            .name("workspace-terminal-open".into())
+            .spawn(move || {
+                let opened = shell.open(&opening, record);
+                let ended = OpenEnded {
+                    workspace_id,
+                    request,
+                    caller,
+                    opened,
+                };
+                let _ = jobs.send((Instant::now(), Job::Opened(Box::new(ended))));
+            });
+        if let Err(error) = spawned {
+            return Some(InvocationReceipt {
+                invocation,
+                status: tilo_actions::remote::ReceiptStatus::Rejected {
+                    error: tilo_actions::remote::ActionCallError::Refused {
+                        reason: format!("the session's shell did not start: {error}"),
+                    },
+                },
+            });
+        }
+        Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
+    }
+
+    /// Record `ended`, a command line typed into a terminal an open started, on its session:
+    /// its open was answered long before, so nothing else is.
+    pub(super) fn typed(&mut self, ended: &Ended) {
+        if let Err(error) = self.record_ended(ended) {
+            tracing::warn!(error = %error.message, "a command typed on a terminal was not recorded");
+        }
+    }
+
+    /// Settle the open `ended` with the stream and session it opened.
+    pub(super) fn settle_open(&mut self, ended: &OpenEnded) {
+        let invocation = ended.request.invocation;
+        let update = match &ended.opened {
+            Ok(opened) => InvocationUpdate::Succeeded {
+                invocation,
+                output: ActionOutput {
+                    value: Some(json!({"stream": opened.stream, "session": opened.session})),
+                    resources: Vec::new(),
+                },
+            },
+            Err(message) => InvocationUpdate::Failed {
+                invocation,
+                error: ActionFailure {
+                    code: "terminal_open".into(),
+                    message: message.clone(),
+                    details: None,
+                    retryable: false,
+                },
+            },
+        };
+        let phase = match &update {
+            InvocationUpdate::Failed { error, .. } => tilo_actions::InteractionPhase::Failed {
+                code: Some(error.code.clone()),
+                message: error.message.clone(),
+            },
+            _ => tilo_actions::InteractionPhase::Committed,
+        };
+        self.voice(
+            ended.workspace_id,
+            &ended.caller,
+            &ended.request,
+            (&phase, None),
+        );
+        self.log().answered(invocation, &update, None);
     }
 
     /// Whether `caller` may take the Terminal action `request` names on the
@@ -481,7 +723,7 @@ impl Worker {
         }
     }
 
-    /// A Terminal `run` request starts, or the commands it stops, answered
+    /// A Terminal `run` or `open-terminal` request starts, or the commands it stops, answered
     /// here: `None` for any other request.
     pub(super) fn terminal(
         &mut self,
@@ -491,6 +733,7 @@ impl Worker {
     ) -> Option<InvocationReceipt> {
         let receipt = self
             .start_terminal_run(workspace_id, caller, request)
+            .or_else(|| self.start_terminal_open(workspace_id, caller, request))
             .or_else(|| self.stop_terminal_commands(workspace_id, caller, request))?;
         let mut log = self.log();
         log.running.remove(&request.invocation);
@@ -702,6 +945,50 @@ impl Worker {
     }
 }
 
+/// The shell a caller's commands and terminal run in: an agent's has a shell of its own,
+/// wherever its commands are recorded, so two agents in one workspace never share a directory
+/// or variables. A person's share the session's shell.
+fn shell_session(caller: &Caller, route: &DocumentRoute) -> String {
+    caller.agent_session().map_or_else(
+        || route.document.clone(),
+        |agent_session| format!("run:{}", agent_session.id),
+    )
+}
+
+/// The terminal `arguments` ask for, opened for `device`: its window (80 by 24 unless named),
+/// and the session to come back to.
+fn opening_of(arguments: &Map<String, Value>, device: [u8; 32]) -> Result<Opening, String> {
+    let side = |name: &str, default: u16| match arguments.get(name) {
+        None | Some(Value::Null) => Ok(default),
+        Some(value) => value
+            .as_u64()
+            .and_then(|side| u16::try_from(side).ok())
+            .filter(|side| (1..=MAX_SIDE).contains(side))
+            .ok_or_else(|| format!("{name} is a whole number from 1 to {MAX_SIDE}")),
+    };
+    let text = |name: &str, fits: fn(&str) -> bool, what: &str| match arguments.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .filter(|text| fits(text))
+            .map(|text| Some(text.to_owned()))
+            .ok_or_else(|| format!("{name} is {what}")),
+    };
+    Ok(Opening {
+        workspace: String::new(),
+        session: String::new(),
+        device,
+        cols: side("cols", DEFAULT_SIZE.0)?,
+        rows: side("rows", DEFAULT_SIZE.1)?,
+        person: None,
+        attach: text(
+            "attach",
+            |id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "a session's id, 32 hex characters",
+        )?,
+    })
+}
+
 /// What `run` answers: Terminal's answer (the command's id, its exit status, the
 /// host's refusal), with the command line, where it ran and the end of what
 /// it printed.
@@ -752,6 +1039,27 @@ fn parsed(command: &str, output: &[u8]) -> (String, Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_reads_its_window_and_session_and_refuses_what_is_none() {
+        let read = |arguments: Value| {
+            let Value::Object(arguments) = arguments else {
+                panic!("arguments are an object");
+            };
+            opening_of(&arguments, [7; 32])
+        };
+        let opening = read(json!({})).unwrap();
+        assert_eq!((opening.cols, opening.rows, opening.device), (80, 24, [7; 32]));
+        assert_eq!(opening.attach, None);
+        let session = "0123456789abcdef0123456789abcdef";
+        let opening = read(json!({"cols": 120, "rows": 40, "attach": session}));
+        let opening = opening.unwrap();
+        assert_eq!((opening.cols, opening.rows), (120, 40));
+        assert_eq!(opening.attach.as_deref(), Some(session));
+        assert!(read(json!({"cols": 0})).is_err());
+        assert!(read(json!({"rows": 70_000})).is_err());
+        assert!(read(json!({"attach": "not-a-session"})).is_err());
+    }
 
     #[test]
     fn an_answer_keeps_the_end_of_a_long_output_from_a_whole_line() {

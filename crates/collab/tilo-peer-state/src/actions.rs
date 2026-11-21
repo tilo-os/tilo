@@ -367,8 +367,10 @@ impl ActionService {
         }
     }
 
-    /// The device a connection from `endpoint` asks as.
-    fn device_of(&self, endpoint: [u8; 32]) -> [u8; 32] {
+    /// The device a connection from `endpoint` asks as: on this device's other protocols
+    /// too, for whoever serves them beside its actions.
+    #[must_use]
+    pub fn device_of(&self, endpoint: [u8; 32]) -> [u8; 32] {
         self.0
             .endpoints
             .lock_recover()
