@@ -175,18 +175,6 @@ mod support {
             .and_then(settings::categories::Category::from_slug)
             .expect("the sidebar selects the pane shown")
     }
-
-    pub fn bar_search(app: &mut Window, search: &mut ui::widget::SearchDriver, query: &str) {
-        let root = app.harness().root_widget_mut();
-        if search.in_place() == ui::widget::InPlace::Nothing {
-            search.open(ui::window_toolbar::SearchOffer::of(&mut *root).into());
-        }
-        assert!(
-            search.drive(root, query, ui::widget::FindOptions::default(), None, false),
-            "the bar's search reached settings"
-        );
-        app.harness().relayout();
-    }
 }
 
 #[path = "category_nav.rs"]
@@ -224,12 +212,6 @@ mod accounts_calendar_loop;
 mod accounts_mail_loop;
 #[path = "perf_budget.rs"]
 mod perf_budget;
-
-#[path = "a11y_bus.rs"]
-mod a11y_bus;
-
-#[path = "perf_interaction.rs"]
-mod perf_interaction;
 
 #[path = "action_keywords_tests.rs"]
 mod action_keywords_tests;

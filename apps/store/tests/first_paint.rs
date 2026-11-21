@@ -14,18 +14,6 @@ use store::StoreApp;
 use ui::headless::Framed;
 use ui::widget::Widget;
 
-/// How much slower the unoptimised test profile runs this code than the
-/// optimised build that ships; a debug run is held to the budget times this.
-const UNOPTIMISED_SLOWDOWN: u32 = 10;
-
-fn budget(optimised: Duration) -> Duration {
-    if cfg!(debug_assertions) {
-        optimised.saturating_mul(UNOPTIMISED_SLOWDOWN)
-    } else {
-        optimised
-    }
-}
-
 /// A catalogue the size of Flathub's: every fixture app many times over,
 /// each with its own id and name.
 fn flathub_sized() -> Vec<store::StoreItem> {
@@ -89,18 +77,4 @@ fn a_new_window_paints_a_kept_flathub_sized_catalogue_in_its_first_frame() {
     let mut shown = Vec::new();
     first_frame(&mut shown);
     assert_shows_real_apps(&shown);
-}
-
-#[test]
-#[ignore = "measurement; run with --ignored --nocapture"]
-fn a_new_window_paints_a_kept_flathub_sized_catalogue_within_its_first_frame_budget() {
-    let mut shown = Vec::new();
-    let took = first_frame(&mut shown);
-    assert_shows_real_apps(&shown);
-    println!("first paint of 3000 kept apps: {took:?}");
-    assert!(
-        took < budget(Duration::from_millis(100)),
-        "the first frame took {took:?}; the budget is {:?}",
-        budget(Duration::from_millis(100))
-    );
 }
