@@ -264,7 +264,6 @@ pub fn apply_setup_handoff(
     Ok(())
 }
 
-#[cfg(unix)]
 fn enroll_local_identity(
     root: &Path,
     profile: &InstallProfile,
@@ -275,8 +274,8 @@ fn enroll_local_identity(
         || PathBuf::from("/var/lib/tilo/peers/personal-workspaces.json"),
         |state| state.join("tilo/personal-workspaces.json"),
     );
-    tilo_enrollment::install::install_from_local_identity(
-        &tilo_enrollment::install::OfflineInstall {
+    imager_backend::local_enrollment::enroll(
+        &imager_backend::local_enrollment::LocalEnrollment {
             target_root: root,
             username: profile.user.username.trim(),
             local_identity_dir: local.identity_dir,
@@ -287,18 +286,6 @@ fn enroll_local_identity(
         &profile.user.full_name,
         label,
     )
-    .map_err(|error| format!("{error:#}"))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn enroll_local_identity(
-    _root: &Path,
-    _profile: &InstallProfile,
-    _local: &LocalIdentity<'_>,
-    _label: &str,
-) -> Result<(), String> {
-    Err("local identity enrollment is unavailable on this machine".into())
 }
 
 fn write_install_purpose(root: &Path, profile: &InstallProfile) -> Result<(), String> {

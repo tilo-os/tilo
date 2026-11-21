@@ -246,12 +246,18 @@ pub fn prefer_power(power: wgpu::PowerPreference) {
 /// elsewhere leaves OpenGL out whenever it could not be chosen anyway
 /// (`native::gpu_backends`).
 fn default_backends() -> BackendChoice {
+    platform_backends(native_backends)
+}
+
+/// Windows' and Android's fixed choice ([`default_backends`]), and `native`'s
+/// on every other platform.
+fn platform_backends(native: fn() -> BackendChoice) -> BackendChoice {
     if cfg!(target_os = "windows") {
         BackendChoice::only(wgpu::Backends::DX12)
     } else if cfg!(target_os = "android") {
         BackendChoice::only(wgpu::Backends::VULKAN)
     } else {
-        native_backends()
+        native()
     }
 }
 
@@ -267,18 +273,18 @@ fn native_backends() -> BackendChoice {
 
 /// The backends of the process that drives the display, when `WGPU_BACKEND` names none
 /// (`native::gpu_backends::beside_the_display`).
-#[cfg(feature = "native")]
 fn display_backends() -> BackendChoice {
-    if cfg!(any(target_os = "windows", target_os = "android")) {
-        default_backends()
-    } else {
-        crate::native::gpu_backends::beside_the_display()
-    }
+    platform_backends(native_display_backends)
+}
+
+#[cfg(feature = "native")]
+fn native_display_backends() -> BackendChoice {
+    crate::native::gpu_backends::beside_the_display()
 }
 
 #[cfg(not(feature = "native"))]
-fn display_backends() -> BackendChoice {
-    default_backends()
+fn native_display_backends() -> BackendChoice {
+    native_backends()
 }
 
 #[cfg(feature = "native")]
