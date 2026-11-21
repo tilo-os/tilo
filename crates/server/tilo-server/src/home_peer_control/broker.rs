@@ -492,14 +492,14 @@ fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow
 fn approve_enrollment(
     identity_root: &Path,
     identity_dir: Option<&Path>,
-    workspace_ids: Vec<tilo_server_protocol::WorkspaceId>,
-    expected_device: Option<String>,
-    expected_service: Option<String>,
+    workspace_ids: &[tilo_server_protocol::WorkspaceId],
+    expected_device: Option<&str>,
+    expected_service: Option<&str>,
 ) -> anyhow::Result<()> {
     if workspace_ids.len() > 4096 {
         bail!("too many workspaces");
     }
-    let expected = match (expected_device.as_deref(), expected_service.as_deref()) {
+    let expected = match (expected_device, expected_service) {
         (Some(device), Some(service)) => {
             validate_peer_ids(device, service).context("invalid nearby home-server identity")?;
             Some((device, service))
@@ -512,7 +512,7 @@ fn approve_enrollment(
         identity_root,
         identity_dir,
         NearbyApproval::HomePeer {
-            workspaces: &workspace_ids,
+            workspaces: workspace_ids,
             expected,
         },
         Duration::from_secs(90),
@@ -611,9 +611,9 @@ fn run() -> anyhow::Result<()> {
         } => approve_enrollment(
             &identity_root,
             identity_dir.as_deref(),
-            workspace_ids,
-            expected_device,
-            expected_service,
+            &workspace_ids,
+            expected_device.as_deref(),
+            expected_service.as_deref(),
         ),
         BrokerCommand::ApproveDevice {
             identity_root,

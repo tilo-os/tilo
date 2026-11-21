@@ -250,7 +250,9 @@ impl MachineAgentsServer {
             let mut instances = self.instances.lock_recover();
             let number = instances.entry(from.workspace.clone()).or_default();
             *number = number.saturating_add(1);
-            *number
+            let next = *number;
+            drop(instances);
+            next
         };
         let agent = format!(
             "{}@{}#{number}",

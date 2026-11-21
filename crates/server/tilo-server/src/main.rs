@@ -166,12 +166,10 @@ fn run() -> anyhow::Result<()> {
 /// does it ([`tilo_rt::stall::doing`]), and a piece of work or a whole runtime that goes
 /// [`STALL`] without an answer logs it, with every thread's stack, rather than leaving a
 /// person waiting with nothing said.
-fn watched<F: std::future::Future>(work: F) -> impl std::future::Future<Output = F::Output> {
-    async move {
-        tilo_rt::stall::watch(STALL);
-        tilo_rt::stall::heartbeat(&tokio::runtime::Handle::current());
-        work.await
-    }
+async fn watched<F: std::future::Future>(work: F) -> F::Output {
+    tilo_rt::stall::watch(STALL);
+    tilo_rt::stall::heartbeat(&tokio::runtime::Handle::current());
+    work.await
 }
 
 fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
