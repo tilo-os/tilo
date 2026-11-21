@@ -1849,6 +1849,18 @@ impl Workspaces {
         Ok(())
     }
 
+    /// Make `person`, the one the workspace of their own `workspace` is kept for here, its
+    /// administrator as a device of theirs joins it before any of theirs has entered it: the
+    /// person a workspace of this host's own belongs to administers it from their first device on.
+    pub(super) async fn own_person_administers(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        person: [u8; 32],
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        self.make_administrator(workspace, person, now).await
+    }
+
     /// Make the admitted `person` an administrator of `workspace`, held: an
     /// Editor with every governance and moderation action, and the person
     /// the workspace is kept for, who makes and unmakes its administrators

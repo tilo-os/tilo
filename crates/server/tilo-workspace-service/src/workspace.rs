@@ -397,11 +397,15 @@ impl WorkspaceRuntime {
     }
 
     /// Whether the person whose root is `user` is admitted to this workspace as
-    /// a member its governance names. What [`crate::workspace_access`] admits
-    /// their devices by.
+    /// a member its governance names, or as the one a workspace of this host's
+    /// own is kept for. What [`crate::workspace_access`] admits their devices by.
     #[must_use]
     pub fn admits_person(&self, user: &[u8; 32]) -> bool {
         self.governed_user_roots.contains(user)
+            || self
+                .workspace_authority
+                .as_ref()
+                .is_some_and(|authority| authority.keeps_for(user))
     }
 
     /// Build a runtime for a bound workspace. Loads the snapshot

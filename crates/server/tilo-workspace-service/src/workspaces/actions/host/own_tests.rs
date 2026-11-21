@@ -1940,6 +1940,100 @@ async fn subscribe(
     .unwrap()
 }
 
+/// A person's key makes a workspace of their own, and a device of theirs joins it before any
+/// of theirs has entered it: the host keeps the workspace for them, so it names them a member
+/// and its administrator as their first device comes in, which the stranger's device below is
+/// still not.
+#[tokio::test]
+async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let host = ServiceWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let home = open(workspaces).await;
+    let root = SigningKey::from_bytes(&rand::random());
+    let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
+
+    // The person's key makes the workspace: no device of theirs has entered it.
+    let first = tab_of(&root, "Firefox on Linux");
+    let created = create_own(&host, &first, json!({})).await.unwrap();
+    let workspace = created.workspace.workspace.clone();
+    let computer = tab_of(&root, "Ada's laptop");
+    assert_eq!(
+        subscribe(workspaces, &workspace, &computer).await,
+        Ok(()),
+        "a device of the person joins a workspace of their own before any of theirs entered"
+    );
+    assert_eq!(
+        access(workspaces, &workspace, root.verifying_key().to_bytes()).await,
+        Some((Role::Editor, true)),
+        "the person administers the workspace kept for them"
+    );
+    let (_, stranger) = guest_device();
+    assert_eq!(
+        subscribe(workspaces, &workspace, &stranger).await,
+        Err(crate::workspace_access::DenyReason::NotAMember),
+        "a stranger's device is still no member"
+    );
+    server.shutdown().await;
+}
+
+/// A workspace this host records as the person's own is listed as this host's, whatever a
+/// device's kept list said of where it is: a key of theirs asks it here, never at a device
+/// that may be gone, and a workspace not open right now is no other device's.
+#[tokio::test]
+async fn a_kept_own_workspace_lists_as_this_hosts_whatever_a_devices_list_said() {
+    use tilo_server_session::workspaces::{PersonalList, PersonalWorkspace};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let host = ServiceWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    let home = open(workspaces).await;
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let_in(workspaces, &home, person).await;
+    let device = tab_of(&root, "Firefox on Linux");
+    // A workspace of theirs this host records, kept closed here as it is when its runtime
+    // was let go; a device of theirs kept a list naming its own address for it.
+    let workspace = uuid::Uuid::new_v4().to_string();
+    workspaces.own().unwrap().record(&person, &workspace).unwrap();
+    let named = PersonalList {
+        workspaces: vec![PersonalWorkspace {
+            workspace: workspace.clone(),
+            name: "Company".into(),
+            host: Some(tilo_server_session::workspaces::KeepingDeviceAddress {
+                name: "Ada's laptop".into(),
+                hint: Some("00".into()),
+            }),
+            role: None,
+            labels: tilo_server_session::workspaces::WorkspaceLabels::default(),
+            made_at_ms: None,
+            unattended: false,
+            enter_at: None,
+        }],
+        devices: Vec::new(),
+    };
+    workspaces.keep_personal(&device, named).unwrap();
+
+    let listed = workspaces.personal_of(&device).await;
+    let entry = listed
+        .workspaces
+        .iter()
+        .find(|one| one.workspace == workspace)
+        .expect("the workspace is listed");
+    let addressed = entry.host.as_ref().expect("it names its host");
+    assert!(
+        addressed.hint.is_none(),
+        "a workspace this host keeps for the person is reached here: {}",
+        addressed.name
+    );
+    server.shutdown().await;
+}
+
 /// A person's browser keeps one device key per tab: the tab that set them up
 /// redeemed the invitation into their own workspace, and a tab that comes
 /// later on another key (a second tab, the same tab after its key slot was

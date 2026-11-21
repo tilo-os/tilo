@@ -1175,6 +1175,18 @@ impl WorkspaceAuthority {
         &self.workspace
     }
 
+    /// Whether `person` is the one this workspace is kept for on this host: a
+    /// workspace of their own, which they made here.
+    #[must_use]
+    pub fn keeps_for(&self, person: &[u8; 32]) -> bool {
+        self.workspaces().is_some_and(|workspaces| {
+            workspaces
+                .own()
+                .and_then(|own| own.owner_of(&self.workspace))
+                == Some(*person)
+        })
+    }
+
     /// An authority over `workspace`, for a test of the decision.
     #[cfg(test)]
     pub(crate) fn governed_by(workspace: &str) -> Self {

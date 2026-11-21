@@ -431,16 +431,27 @@ impl<'a> WorkspaceFacts<'a> {
     /// Whether a subscribe enrols `peer`'s device here (step 5): this server
     /// governs the workspace, its governance has the device's person as a
     /// member, the device is one of theirs, and no pending replacement keeps
-    /// it out.
+    /// it out. A workspace of a person's own admits a device of theirs by
+    /// their root alone, before any of theirs has entered it: the host knows
+    /// whose it is, and names them its member as the device joins.
     fn enrols_member_device(&self, peer: &AuthenticatedPeer) -> bool {
         self.runtime.admission == AdmissionMode::Governed
             && self.runtime.workspace_authority.is_some()
             && person_device(&peer.cert)
-            && self
+            && (self
                 .runtime
                 .governed_user_roots
                 .contains(&peer.user_public_key)
+                || self.keeps_for(&peer.user_public_key))
             && self.within_ceiling(&peer.device_public_key)
+    }
+
+    /// Whether this host keeps the workspace for `person`, one of their own.
+    fn keeps_for(&self, person: &[u8; 32]) -> bool {
+        self.runtime
+            .workspace_authority
+            .as_ref()
+            .is_some_and(|authority| authority.keeps_for(person))
     }
 
     fn lists(&self, device: &[u8; 32]) -> bool {

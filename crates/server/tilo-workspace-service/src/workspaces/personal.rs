@@ -768,9 +768,28 @@ impl Workspaces {
             {
                 continue;
             }
-            match local.iter().position(|one| one.workspace == kept.workspace) {
-                Some(at) => workspaces.push(local.remove(at)),
-                None => workspaces.push(kept),
+            if let Some(at) = local.iter().position(|one| one.workspace == kept.workspace) {
+                workspaces.push(local.remove(at));
+            } else {
+                // A workspace this host records as the person's own is kept here, whatever a
+                // device's list said of where it is: a key's session asks it here, not at a
+                // device that may be gone.
+                let own = self
+                    .own()
+                    .and_then(|own| own.owner_of(&kept.workspace))
+                    == Some(device.user_public_key);
+                let kept = if own {
+                    PersonalWorkspace {
+                        host: Some(KeepingDeviceAddress {
+                            name: name.clone(),
+                            hint: None,
+                        }),
+                        ..kept
+                    }
+                } else {
+                    kept
+                };
+                workspaces.push(kept);
             }
         }
         workspaces.extend(local);
