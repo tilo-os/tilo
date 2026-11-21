@@ -19,7 +19,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use super::proto::{FRAMING, Mode, PROTOCOL_VERSION, Reply, Request, Slot};
-use super::{ARG, ENV};
+use super::ENV;
 use tilo_lock::MutexRecover as _;
 
 /// How long a worker may take to start, load what it needs and confine
@@ -104,7 +104,7 @@ impl Process {
         let (ours, theirs) = UnixStream::pair().map_err(|error| error.to_string())?;
         let mut command = Command::new(executable());
         command
-            .args([ARG, "--nocapture", "--test-threads=1", "--quiet"])
+            .args(super::worker_args())
             .env_clear()
             .env(ENV, mode.as_str())
             // The parent the worker watches for: the host may be its process

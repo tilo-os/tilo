@@ -316,11 +316,32 @@ pub fn verified_hashes(bytes: &[u8]) -> Result<Vec<automerge::ChangeHash>, Rejec
 /// ```
 #[must_use]
 pub fn dispatch_early() -> Option<u8> {
+    let _ = SERVES_FROM_MAIN.set(());
+    serve_if_requested()
+}
+
+fn serve_if_requested() -> Option<u8> {
     #[cfg(target_os = "linux")]
     if let Some(config) = worker::requested() {
         return Some(u8::try_from(worker::serve(config)).unwrap_or(1));
     }
     None
+}
+
+/// Set once this executable's `main` called [`dispatch_early`]: its workers
+/// start with the worker argument alone. Otherwise the executable is a test
+/// harness serving them through [`test_worker!`], whose workers also carry the
+/// arguments that make libtest run that one test and nothing else.
+static SERVES_FROM_MAIN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "linux")]
+/// The arguments a worker of this executable starts with.
+pub(crate) fn worker_args() -> &'static [&'static str] {
+    if SERVES_FROM_MAIN.get().is_some() || WORKER_PROGRAM.get().is_some() {
+        &[worker::ARG]
+    } else {
+        &[worker::ARG, "--nocapture", "--test-threads=1", "--quiet"]
+    }
 }
 
 static WORKER_PROGRAM: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -344,7 +365,7 @@ macro_rules! test_worker {
 
 #[doc(hidden)]
 pub fn serve_test_worker() {
-    if let Some(code) = dispatch_early() {
+    if let Some(code) = serve_if_requested() {
         #[expect(
             clippy::exit,
             reason = "the worker's test must not return to the test harness"

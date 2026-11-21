@@ -425,7 +425,7 @@ fn command(limits: &Limits) -> Command {
         None => Command::new("/proc/self/exe"),
     };
     command
-        .args([worker::ARG, "--nocapture", "--test-threads=1", "--quiet"])
+        .args(crate::worker_args())
         .env(
             worker::ENV,
             worker::Config {

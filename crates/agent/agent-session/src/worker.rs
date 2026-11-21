@@ -96,6 +96,11 @@ pub(crate) const ENV: &str = "TILO_AGENT_APP_WORKER";
 /// ```
 #[must_use]
 pub fn dispatch_early() -> Option<u8> {
+    let _ = SERVES_FROM_MAIN.set(());
+    serve_if_requested()
+}
+
+fn serve_if_requested() -> Option<u8> {
     // The argument and the environment together, so a stray variable alone
     // never diverts a program.
     if !std::env::args_os().any(|arg| arg == ARG) {
@@ -103,6 +108,21 @@ pub fn dispatch_early() -> Option<u8> {
     }
     proto::Mode::parse(&std::env::var(ENV).ok()?)?;
     Some(u8::try_from(serve::serve()).unwrap_or(1))
+}
+
+/// Set once this executable's `main` called [`dispatch_early`]: its workers
+/// start with the worker argument alone. Otherwise the executable is a test
+/// harness serving them through [`app_worker!`], whose workers also carry the
+/// arguments that make libtest run that one test and nothing else.
+static SERVES_FROM_MAIN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// The arguments a worker of this executable starts with.
+pub(crate) fn worker_args() -> &'static [&'static str] {
+    if SERVES_FROM_MAIN.get().is_some() {
+        &[ARG]
+    } else {
+        &[ARG, "--nocapture", "--test-threads=1", "--quiet"]
+    }
 }
 
 /// Serve app workers from a test binary, whose `main` belongs to libtest:
@@ -133,7 +153,7 @@ pub fn serve_test_worker() {
     let served = std::thread::Builder::new()
         .name(ARG.into())
         .stack_size(WORKER_STACK)
-        .spawn(dispatch_early)
+        .spawn(serve_if_requested)
         .map_or(Some(1), |thread| thread.join().unwrap_or(Some(101)));
     if let Some(code) = served {
         #[expect(

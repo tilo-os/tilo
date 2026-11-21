@@ -9,3 +9,7 @@ mod admission_cost;
 mod deferred;
 #[path = "isolation.rs"]
 mod isolation;
+// Workers are processes only on Linux.
+#[cfg(target_os = "linux")]
+#[path = "program.rs"]
+mod program;
