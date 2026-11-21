@@ -311,3 +311,32 @@ build: `TILO_HANDOVER_FROM_PROGRAMS` names its programs (its own
 server context, laid out by its own `tools/ci/publish/lounge-context.sh` with
 its own font catalog. `TILO_SH_PROGRAMS` and `TILO_SH_FONTS` are this
 checkout's. Neither stack is reached through a relay of the web.
+
+## Releasing
+
+A commit on main that passes what this page describes is released with one command, run on the
+build server from a checkout of this repository:
+
+```
+tools/release/tilo-sh.sh --infra ~/work/infra
+```
+
+It has t publish main's head (`t dispatch release-tilo-sh`: the Lounge's server, the web entry
+and the API server built from that one commit, published as `dev-<commit>` once `e2e`,
+`onboarding` and `tilo-sh-admits-a-page` pass against the same build), writes the three digests
+into every pin of them in the tilo/infra checkout, and starts production's pods on this machine
+before pushing (`tools/release/tilo_sh_preflight.py`): the pins tilo/infra has committed on a
+scratch volume, then the release on that same volume, as Argo's rollout replaces them, with
+rootless podman and no network. The preflight refuses a manifest that sets a `TILO_*` variable
+no file of its image mentions (a setting the build renamed or dropped), a pod that does not
+answer its readiness, a web entry whose `TILO_WEB_HOME_HOST_INFO` is not in the form the new
+server prints, and a Lounge whose device key or workspace changed across the upgrade. With
+`--state DIR`, a read-only copy of the live relay's volume, the release starts on that instead,
+and the host the web entry names must be the one the state holds.
+
+Then it makes one commit on tilo/infra's main with the pins and whatever else the checkout
+changes for this release (a setting the new build reads under another name goes in the same
+commit as the image that reads it), pushes it, and waits until `https://eu1.tilo.sh/mode` and
+`https://tilo.sh/version.json` report the release's commit. Each step prints how long it took.
+`--no-push` stops before the commit; `--images LOUNGE WEB API` pins images an earlier run
+published instead of publishing again. Going back is reverting that commit.

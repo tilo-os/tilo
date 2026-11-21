@@ -1,0 +1,459 @@
+#!/usr/bin/env python3
+"""tilo.sh's pods, started on this machine from tilo/infra's manifests before a release pins them.
+
+A release changes two things at once: the images tilo/infra pins and, often, the environment its
+manifests give them. Either can stop a pod, and Argo only finds out once production runs it. This
+starts the pods here instead, with rootless podman and no network, so nothing reaches tilo.sh or
+anything else:
+
+  1. what production runs now: the pods of tilo/infra's committed tree (BASE, default HEAD) on a
+     scratch volume, until each answers as its readiness says;
+  2. the release: the pods of the working tree (the new pins and whatever else it changes) on the
+     same volume, as Argo's rollout replaces the first. Each must answer again, and the Lounge
+     must keep its identity (its device key and its workspace's id) across the upgrade.
+
+With --state DIR the volume starts as a copy of DIR (the live relay's state, read-only) instead of
+empty, and step 1 is skipped when --no-base says so.
+
+Before starting anything it checks every TILO_* variable a manifest sets against the image it is
+set for: a name no file in the image mentions is one the build no longer reads (a renamed or
+dropped setting), which a pod would otherwise ignore or refuse.
+
+Only the pods' own images run (registry.tilo.so/tilo/...); a sidecar of another image (Caddy, a
+Python helper) is left out and named. A container that serves (one with ports) is started with its
+image's entrypoint and the manifest's args: its command in the manifest is production's own wait
+for the certificate and the public names, which a machine with no network never sees. Init
+containers and the other containers of our images run as the manifest says.
+
+usage: tilo_sh_preflight.py --infra DIR --work DIR [--base REV] [--state DIR] [--no-base]
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import time
+
+import yaml
+
+APPS = ("apps/tilo-sh-relay", "apps/tilo-api", "apps/tilo-web")
+# The ConfigMaps the relay mounts from the VM hosts' app (members.json, plans.json).
+SHARED = ("apps/tilo-sh-vm-host",)
+# Each Secret the pods name, by the sops file that holds it: its keys are in clear there.
+SECRET_FILES = {
+    "tilo-sh-relay-secrets": "clusters/prod/apps/tilo-sh-vm-host/tilo-sh-relay-secrets.sops.yaml",
+}
+OURS = "registry.tilo.so/tilo/"
+# How a serving container with no readiness probe is known to serve: the Lounge's /mode.
+READY_WITHOUT_PROBE = {"room-service": ("http", "/mode")}
+READY_SECS = 180
+
+
+def say(message: str) -> None:
+    print(f"preflight: {message}", file=sys.stderr, flush=True)
+
+
+def die(message: str) -> None:
+    say(message)
+    sys.exit(1)
+
+
+def run(*args: str, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    kwargs.setdefault("text", True)
+    return subprocess.run(args, check=check, **kwargs)
+
+
+# A pod's cgroup under systemd's user manager fails to start on hosts whose user slice already
+# holds one by that unit name; plain cgroupfs works wherever rootless podman does.
+PODMAN = ("podman", "--cgroup-manager=cgroupfs")
+
+
+def podman(*args: str, check: bool = True, capture: bool = True) -> str:
+    result = run(*PODMAN, *args, check=False, capture_output=capture)
+    if check and result.returncode != 0:
+        die(f"podman {' '.join(args[:3])}… failed: {(result.stderr or '').strip()}")
+    return (result.stdout or "").strip()
+
+
+def render(tree: Path) -> dict[str, list[dict]]:
+    """Every Deployment and ConfigMap the apps make, by kind."""
+    docs: dict[str, list[dict]] = {"Deployment": [], "ConfigMap": []}
+    for app in APPS + SHARED:
+        out = run("kubectl", "kustomize", str(tree / app), capture_output=True).stdout
+        for doc in yaml.safe_load_all(out):
+            if doc and doc.get("kind") in docs:
+                docs[doc["kind"]].append(doc)
+    return docs
+
+
+def tree_at(infra: Path, rev: str, into: Path) -> Path:
+    """tilo/infra's files at REV, unpacked under INTO."""
+    shutil.rmtree(into, ignore_errors=True)
+    into.mkdir(parents=True)
+    archive = run("git", "-C", str(infra), "archive", rev, *APPS, *SHARED, *SECRET_FILES.values(),
+                  capture_output=True, text=False).stdout
+    run("tar", "-x", "-C", str(into), input=archive, text=False)
+    return into
+
+
+class Secrets:
+    """Stand-ins for the Secrets the pods mount: one file per key the sops file lists. A root is
+    64 hex characters, and the same one for both steps, as the operator's is."""
+
+    def __init__(self, infra: Path, work: Path):
+        self.dir = work / "secrets"
+        self.infra = infra
+
+    def path(self, name: str) -> Path:
+        source = SECRET_FILES.get(name)
+        if source is None:
+            die(f"a pod mounts the Secret {name}, which this script knows no sops file of")
+        out = self.dir / name
+        if out.exists():
+            return out
+        doc = yaml.safe_load((self.infra / source).read_text())
+        keys = list((doc.get("stringData") or {}) | (doc.get("data") or {}))
+        out.mkdir(parents=True)
+        for key in keys:
+            value = secrets.token_hex(32) if key.startswith("room-root") else "preflight"
+            (out / key).write_text(value)
+        return out
+
+    def value(self, name: str, key: str) -> str:
+        return (self.path(name) / key).read_text()
+
+
+def image_names(image: str) -> set[str]:
+    """Every run of TILO_* names any file of IMAGE holds. A program's string literals sit back to
+    back, so one run can hold several names: a name is read when it is part of one."""
+    podman("pull", "-q", image)
+    script = ('mnt=$(podman image mount "$1") && trap \'podman image unmount "$1" >/dev/null\' EXIT && '
+              'grep -rhoasE "TILO_[A-Z0-9_]+" "$mnt/usr" "$mnt/srv" "$mnt/etc" 2>/dev/null | sort -u')
+    out = run("podman", "unshare", "sh", "-c", script, "sh", image, capture_output=True, check=False).stdout
+    return set(out.split())
+
+
+def unread_settings(docs: dict[str, list[dict]]) -> list[str]:
+    problems = []
+    names_of: dict[str, set[str]] = {}
+    for deployment in docs["Deployment"]:
+        spec = deployment["spec"]["template"]["spec"]
+        for container in spec.get("initContainers", []) + spec["containers"]:
+            image = container["image"]
+            if not image.startswith(OURS):
+                continue
+            if image not in names_of:
+                names_of[image] = image_names(image)
+            for env in container.get("env", []):
+                name = env["name"]
+                if name.startswith("TILO_") and not any(name in run_ for run_ in names_of[image]):
+                    problems.append(f"{deployment['metadata']['name']}/{container['name']} sets {name}, "
+                                    f"which nothing in {image.split('@')[0]} reads")
+    return problems
+
+
+class Pod:
+    """One Deployment's pod as a podman pod with no network, its volumes under WORK."""
+
+    def __init__(self, deployment: dict, configmaps: dict[str, dict], secrets_: Secrets, work: Path, step: str):
+        self.name = deployment["metadata"]["name"]
+        self.spec = deployment["spec"]["template"]["spec"]
+        self.configmaps = configmaps
+        self.secrets = secrets_
+        self.work = work
+        self.step = step
+        self.pod = f"preflight-{step}-{self.name}"
+        self.logs = work / "logs"
+        self.logs.mkdir(parents=True, exist_ok=True)
+        self.started: list[str] = []
+        context = self.spec.get("securityContext", {})
+        self.uid = context.get("runAsUser", 0)
+        self.gid = context.get("runAsGroup", self.uid)
+
+    def volume(self, volume: dict) -> Path:
+        if "persistentVolumeClaim" in volume:
+            path = self.work / "volumes" / volume["persistentVolumeClaim"]["claimName"]
+        elif "secret" in volume:
+            return self.secrets.path(volume["secret"]["secretName"])
+        elif "configMap" in volume:
+            name = volume["configMap"]["name"]
+            map_ = self.configmaps.get(name)
+            if map_ is None:
+                die(f"{self.name} mounts the ConfigMap {name}, which no app makes")
+            path = self.work / self.step / "configmaps" / name
+            shutil.rmtree(path, ignore_errors=True)
+            path.mkdir(parents=True)
+            for key, value in (map_.get("data") or {}).items():
+                (path / key).write_text(value)
+            return path
+        elif "emptyDir" in volume:
+            path = self.work / self.step / "empty" / self.name / volume["name"]
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            die(f"{self.name}: no stand-in for the volume {volume['name']}: {sorted(volume)}")
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def args(self, container: dict, serving: bool) -> list[str]:
+        volumes = {v["name"]: v for v in self.spec.get("volumes", [])}
+        out = ["--pod", self.pod, "--name", f"{self.pod}-{container['name']}"]
+        security = container.get("securityContext", {})
+        if security.get("readOnlyRootFilesystem"):
+            out.append("--read-only")
+        out += ["--cap-drop", "all"]
+        for cap in security.get("capabilities", {}).get("add", []):
+            out += ["--cap-add", cap]
+        out += ["--user", f"{security.get('runAsUser', self.uid)}:{security.get('runAsGroup', self.gid)}"]
+        for env in container.get("env", []):
+            if "value" in env:
+                value = str(env["value"])
+            elif "fieldRef" in env.get("valueFrom", {}):
+                value = self.pod
+            elif "secretKeyRef" in env.get("valueFrom", {}):
+                ref = env["valueFrom"]["secretKeyRef"]
+                value = self.secrets.value(ref["name"], ref["key"])
+            else:
+                die(f"{self.name}/{container['name']}: no stand-in for {env['name']}")
+            out += ["--env", f"{env['name']}={value}"]
+        for mount in container.get("volumeMounts", []):
+            host = self.volume(volumes[mount["name"]])
+            if "subPath" in mount:
+                host = host / mount["subPath"]
+                host.mkdir(parents=True, exist_ok=True)
+            mode = "ro" if mount.get("readOnly") else "rw"
+            out += ["--volume", f"{host}:{mount['mountPath']}:{mode},z"]
+        if not serving and container.get("command"):
+            out += ["--entrypoint", json.dumps([str(c) for c in container["command"]])]
+        out.append(container["image"])
+        out += [str(a) for a in container.get("args", [])]
+        return out
+
+    def host_path(self, container: dict, path: str) -> Path | None:
+        """Where PATH inside CONTAINER is on this machine, if a volume holds it."""
+        volumes = {v["name"]: v for v in self.spec.get("volumes", [])}
+        for mount in sorted(container.get("volumeMounts", []), key=lambda m: -len(m["mountPath"])):
+            root = mount["mountPath"].rstrip("/") + "/"
+            if path.startswith(root):
+                host = self.volume(volumes[mount["name"]])
+                if "subPath" in mount:
+                    host = host / mount["subPath"]
+                return host / path[len(root):]
+        return None
+
+    def certificates(self, container: dict) -> None:
+        """A self-signed certificate where the manifest names one the volume lacks: production's
+        tls container fetches it from Let's Encrypt, which no machine without a network reaches."""
+        env = {e["name"]: e.get("value") for e in container.get("env", [])}
+        for name, cert in env.items():
+            if not name.endswith("_TLS_CERT") or not cert:
+                continue
+            key = env.get(name[: -len("CERT")] + "KEY")
+            host_cert, host_key = self.host_path(container, cert), key and self.host_path(container, key)
+            if not host_cert or not host_key or host_cert.exists():
+                continue
+            host_cert.parent.mkdir(parents=True, exist_ok=True)
+            host_key.parent.mkdir(parents=True, exist_ok=True)
+            run("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                "-days", "2", "-subj", "/CN=preflight", "-keyout", str(host_key), "-out", str(host_cert),
+                capture_output=True)
+            say(f"{self.name}/{container['name']}: a self-signed certificate stands in for {cert}")
+
+    def up(self) -> None:
+        self.down()
+        podman("pod", "create", "--name", self.pod, "--network", "none",
+               "--userns", f"keep-id:uid={self.uid},gid={self.gid}")
+        for container in self.spec.get("initContainers", []):
+            if not container["image"].startswith(OURS):
+                say(f"{self.name}: init container {container['name']} is not ours ({container['image']}): left out")
+                continue
+            say(f"{self.step} {self.name}: init {container['name']}")
+            log = self.logs / f"{self.step}-{self.name}-{container['name']}.log"
+            with log.open("w") as out:
+                result = run(*PODMAN, "run", "--rm", *self.args(container, serving=False),
+                             check=False, stdout=out, stderr=subprocess.STDOUT)
+            if result.returncode != 0:
+                die(f"{self.name}: init container {container['name']} exited {result.returncode}:\n{log.read_text()[-3000:]}")
+        for container in self.spec["containers"]:
+            if not container["image"].startswith(OURS):
+                say(f"{self.name}: {container['name']} is not ours ({container['image'].split('@')[0]}): left out")
+                continue
+            serving = bool(container.get("ports"))
+            self.certificates(container)
+            podman("run", "-d", *self.args(container, serving=serving))
+            self.started.append(container["name"])
+
+    def pid(self) -> str:
+        infra = podman("pod", "inspect", "-f", "{{.InfraContainerID}}", self.pod)
+        return podman("inspect", "-f", "{{.State.Pid}}", infra)
+
+    def get(self, port: int, path: str) -> tuple[int, str]:
+        result = run(*PODMAN, "unshare", "nsenter", f"--net=/proc/{self.pid()}/ns/net",
+                     "curl", "-s", "-m", "5", "-w", "\n%{http_code}", f"http://127.0.0.1:{port}{path}",
+                     capture_output=True, check=False)
+        body, _, code = result.stdout.rpartition("\n")
+        return (int(code) if code.isdigit() else 0), body
+
+    def ready(self) -> dict[str, str]:
+        """Each serving container's answer once it is ready; the pod's logs on a failure."""
+        answers = {}
+        for container in self.spec["containers"]:
+            if container["name"] not in self.started or not container.get("ports"):
+                continue
+            ports = {p.get("name"): p["containerPort"] for p in container["ports"]}
+            probe = container.get("readinessProbe", {}).get("httpGet")
+            if probe:
+                port, path = probe["port"], probe.get("path", "/")
+            elif container["name"] in READY_WITHOUT_PROBE:
+                port, path = READY_WITHOUT_PROBE[container["name"]]
+            else:
+                continue
+            port = ports.get(port, port)
+            deadline = time.monotonic() + READY_SECS
+            while True:
+                state = podman("inspect", "-f", "{{.State.Status}}", f"{self.pod}-{container['name']}", check=False)
+                if state != "running":
+                    self.keep_logs()
+                    log = self.logs / f"{self.step}-{self.name}-{container['name']}.log"
+                    die(f"{self.step} {self.name}/{container['name']} stopped ({state}):\n{log.read_text()[-4000:]}")
+                code, body = self.get(int(port), path)
+                if code == 200:
+                    answers[container["name"]] = body.strip()
+                    say(f"{self.step} {self.name}/{container['name']}: {path} answers {body.strip()[:200]}")
+                    break
+                if time.monotonic() > deadline:
+                    self.keep_logs()
+                    die(f"{self.step} {self.name}/{container['name']}: {path} did not answer 200 in {READY_SECS} s "
+                        f"(last {code}); its log is {self.logs}")
+                time.sleep(2)
+        # A container of ours that serves nothing still has to keep running: one that exits makes
+        # the pod unready in production.
+        for name in self.started:
+            state = podman("inspect", "-f", "{{.State.Status}}", f"{self.pod}-{name}", check=False)
+            if state != "running":
+                self.keep_logs()
+                log = self.logs / f"{self.step}-{self.name}-{name}.log"
+                die(f"{self.step} {self.name}/{name} is {state}, not running:\n{log.read_text()[-3000:]}")
+        return answers
+
+    def keep_logs(self) -> None:
+        for name in self.started:
+            result = run(*PODMAN, "logs", f"{self.pod}-{name}", check=False, capture_output=True)
+            if result.returncode == 0:
+                (self.logs / f"{self.step}-{self.name}-{name}.log").write_text(result.stdout + result.stderr)
+
+    def down(self) -> None:
+        self.keep_logs()
+        podman("pod", "rm", "-f", "-t", "20", self.pod, check=False)
+
+
+def identity(volumes: Path) -> dict[str, str]:
+    """The Lounge's identity on the volume: its device key's digest and its workspace's id,
+    wherever the build that wrote them keeps them."""
+    found = {}
+    for key in volumes.rglob("host-device.key"):
+        found["device key"] = hashlib.sha256(key.read_bytes()).hexdigest()[:16]
+    for id_file in volumes.rglob("workspace-id"):
+        found["workspace"] = id_file.read_text().strip()
+    return found
+
+
+def shape(value):
+    """VALUE's keys, nested, with what they hold left out: the form of a JSON document. A list is
+    only a list: the addresses a host reaches depend on the network it starts in."""
+    if isinstance(value, dict):
+        return {key: shape(item) for key, item in value.items()}
+    return [] if isinstance(value, list) else None
+
+
+def env_of(docs: dict[str, list[dict]], deployment: str, container: str, name: str) -> str | None:
+    for d in docs["Deployment"]:
+        if d["metadata"]["name"] != deployment:
+            continue
+        for c in d["spec"]["template"]["spec"]["containers"]:
+            if c["name"] == container:
+                return next((e.get("value") for e in c.get("env", []) if e["name"] == name), None)
+    return None
+
+
+def host_info(pod: Pod) -> dict:
+    """What the running Lounge's own server prints for the web entry's TILO_WEB_HOME_HOST_INFO."""
+    container = f"{pod.pod}-room-service"
+    for program in ("tilo-server", "tilo-relay"):
+        result = run(*PODMAN, "exec", container, f"/usr/local/bin/{program}", "page-host", "http://127.0.0.1:9780",
+                     capture_output=True, check=False)
+        if result.returncode == 0:
+            return json.loads(result.stdout.strip().splitlines()[-1])
+    die(f"the Lounge's server printed no page-host line: {result.stderr.strip()[-2000:]}")
+
+
+def step(name: str, docs: dict[str, list[dict]], secrets_: Secrets, work: Path, real_state: bool) -> None:
+    configmaps = {c["metadata"]["name"]: c for c in docs["ConfigMap"]}
+    pods = [Pod(d, configmaps, secrets_, work, name) for d in docs["Deployment"]
+            if any(c["image"].startswith(OURS) for c in d["spec"]["template"]["spec"]["containers"])
+            and d["metadata"]["name"].startswith(("tilo-sh-relay", "tilo-api", "tilo-web"))]
+    try:
+        for pod in pods:
+            pod.up()
+        for pod in pods:
+            pod.ready()
+        relay = next((p for p in pods if p.name == "tilo-sh-relay"), None)
+        pinned = env_of(docs, "tilo-web", "web-entry", "TILO_WEB_HOME_HOST_INFO")
+        if relay and pinned:
+            printed, pinned = host_info(relay), json.loads(pinned)
+            if shape(printed) != shape(pinned):
+                die(f"{name}: the web entry's TILO_WEB_HOME_HOST_INFO is not in the form this server prints:\n"
+                    f"  pinned  {json.dumps(shape(pinned))}\n  printed {json.dumps(shape(printed))}")
+            if real_state and printed != pinned:
+                die(f"{name}: on the relay's own state the server is not the host the web entry names:\n"
+                    f"  pinned  {json.dumps(pinned)}\n  printed {json.dumps(printed)}")
+            say(f"{name}: the web entry's host line has the form the server prints"
+                + (", and names this host" if real_state else ""))
+    finally:
+        for pod in pods:
+            pod.down()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--infra", type=Path, required=True, help="tilo/infra's working tree, the release in it")
+    parser.add_argument("--work", type=Path, required=True, help="where the volumes and logs are kept")
+    parser.add_argument("--base", default="HEAD", help="the tilo/infra revision production runs (HEAD)")
+    parser.add_argument("--state", type=Path, help="a copy of the relay's state volume to start on")
+    parser.add_argument("--no-base", action="store_true", help="with --state: start the release on it directly")
+    a = parser.parse_args()
+    infra, work = a.infra.resolve(), a.work.resolve()
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    secrets_ = Secrets(infra, work)
+
+    release = render(infra)
+    problems = unread_settings(release)
+    if problems:
+        die("the release's manifests set what its images do not read:\n  " + "\n  ".join(problems))
+    say("every TILO_* setting the manifests give is one its image reads")
+
+    volume = work / "volumes" / "tilo-sh-relay-state"
+    if a.state:
+        say(f"the relay's volume starts as a copy of {a.state}")
+        shutil.copytree(a.state, volume, symlinks=True)
+    if not a.no_base:
+        base = render(tree_at(infra, a.base, work / "base-tree"))
+        step("live", base, secrets_, work, bool(a.state))
+    before = identity(work / "volumes")
+    step("release", release, secrets_, work, bool(a.state))
+    after = identity(work / "volumes")
+    if before and before != after:
+        die(f"the Lounge's identity changed across the upgrade: before {before}, after {after}")
+    say(f"the release serves on the volume the live pods left, as itself ({after})")
+
+
+if __name__ == "__main__":
+    main()
