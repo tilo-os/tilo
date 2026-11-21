@@ -205,7 +205,7 @@ RecordCommandArgs = TypedDict("RecordCommandArgs", {
 
 class Project(Resource):
     """Code Editor — `code_editor.project`."""
-    __surface__ = "so.tilo.code-editor@d5aaa5f2add16f26"
+    __surface__ = "so.tilo.code-editor@f931f7ebd67f2fea"
     files: list[Entry[Entry]]
     buffers: dict[str, Any]
     @property
@@ -397,6 +397,22 @@ class Project(Resource):
         """Runs the app's action."""
         return self.action("run", command=command)
 
+    def open_terminal(self,
+        *,
+        cols: int | None = None,
+        rows: int | None = None,
+        attach: str | None = None,
+    ) -> Any:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        if cols is not None:
+            args["cols"] = cols
+        if rows is not None:
+            args["rows"] = rows
+        if attach is not None:
+            args["attach"] = attach
+        return self.action("open-terminal", **args)
+
     def rerun(self, *, run: str) -> Any:
         """Runs the app's action."""
         return self.action("rerun", run=run)
@@ -533,6 +549,6 @@ class Project(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_file", "new_file_many", "new_folder", "new_folder_many", "rename", "rename_many", "move_entry", "move_entry_many", "replace_text", "replace_text_many", "replace_range", "replace_range_many", "delete", "delete_many", "record_entry", "record_entry_many", "record_text", "record_text_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "show_symbol", "show_result", "reveal", "find", "search_project", "go_to_line", "toggle_bottom_panel", "next_theme", "go_to_problems", "go_to_search", "go_to_terminal", "toggle_sidebar", "toggle_language_servers", "toggle_format_on_save"})
+    __actions__ = frozenset({"new_file", "new_file_many", "new_folder", "new_folder_many", "rename", "rename_many", "move_entry", "move_entry_many", "replace_text", "replace_text_many", "replace_range", "replace_range_many", "delete", "delete_many", "record_entry", "record_entry_many", "record_text", "record_text_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "run", "open_terminal", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "show_symbol", "show_result", "reveal", "find", "search_project", "go_to_line", "toggle_bottom_panel", "next_theme", "go_to_problems", "go_to_search", "go_to_terminal", "toggle_sidebar", "toggle_language_servers", "toggle_format_on_save"})
 
 

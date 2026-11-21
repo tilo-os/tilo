@@ -27,8 +27,10 @@ __all__ = [
     "ItemKind",
     "Ran",
     "Remembered",
+    "MachineSecret",
     "Session",
     "History",
+    "MachineSecrets",
     "StopArgs",
     "RecordCommandArgs",
     "RecordTargetArgs",
@@ -36,6 +38,8 @@ __all__ = [
     "ClaimPaneArgs",
     "RememberArgs",
     "ImportRunArgs",
+    "AddSecretArgs",
+    "RemoveSecretArgs",
 ]
 
 class Command(TypedDict):
@@ -104,6 +108,10 @@ class Remembered(TypedDict):
     session: str
     run: str
 
+class MachineSecret(TypedDict):
+    variable: str
+    item: str
+
 StopArgs = TypedDict("StopArgs", {
 })
 """The arguments of `stop`."""
@@ -165,9 +173,20 @@ ImportRunArgs = TypedDict("ImportRunArgs", {
 })
 """The arguments of `import-run`."""
 
+AddSecretArgs = TypedDict("AddSecretArgs", {
+    "variable": "str",
+    "item": "str",
+})
+"""The arguments of `add-secret`."""
+
+RemoveSecretArgs = TypedDict("RemoveSecretArgs", {
+    "variable": "str",
+})
+"""The arguments of `remove-secret`."""
+
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@fd731cc50209456e"
+    __surface__ = "so.tilo.terminal@b5c03eeff22a35cf"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -359,7 +378,7 @@ class Session(Resource):
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@fd731cc50209456e"
+    __surface__ = "so.tilo.terminal@b5c03eeff22a35cf"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
@@ -426,5 +445,35 @@ class History(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"remember", "remember_many", "import_run", "import_run_many"})
+
+
+class MachineSecrets(Resource):
+    """Machine secrets — `terminal.machine-secrets`."""
+    __surface__ = "so.tilo.terminal@b5c03eeff22a35cf"
+    secrets: list[MachineSecret]
+
+    def add_secret(self,
+        *,
+        variable: str,
+        item: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("add-secret", variable=variable, item=item)
+
+    def add_secret_many(self, items: list[AddSecretArgs]) -> list[dict[str, Any]]:
+        """Runs `add-secret` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("add-secret", items)
+
+    def remove_secret(self, *, variable: str) -> None:
+        """Runs the app's action."""
+        return self.action("remove-secret", variable=variable)
+
+    def remove_secret_many(self, items: list[RemoveSecretArgs]) -> list[dict[str, Any]]:
+        """Runs `remove-secret` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove-secret", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_secret", "add_secret_many", "remove_secret", "remove_secret_many"})
 
 

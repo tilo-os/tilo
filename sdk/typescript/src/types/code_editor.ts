@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.code-editor@d5aaa5f2add16f26";
+export const SURFACE = "so.tilo.code-editor@f931f7ebd67f2fea";
 
 export interface Command {
   command: string;
@@ -273,6 +273,11 @@ export interface Project extends tilo.Resource {
   run(args: {
     command: string;
   }): Promise<unknown>;
+  openTerminal(args?: {
+    cols?: number;
+    rows?: number;
+    attach?: string;
+  }): Promise<unknown>;
   rerun(args: {
     run: string;
   }): Promise<unknown>;
@@ -329,7 +334,7 @@ export interface Project extends tilo.Resource {
 
 /** The actions `Project` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PROJECT_ACTIONS = ["newFile", "newFileMany", "newFolder", "newFolderMany", "rename", "renameMany", "moveEntry", "moveEntryMany", "replaceText", "replaceTextMany", "replaceRange", "replaceRangeMany", "delete", "deleteMany", "recordEntry", "recordEntryMany", "recordText", "recordTextMany", "recordTarget", "recordTargetMany", "recordRelaySession", "recordRelaySessionMany", "claimPane", "claimPaneMany", "run", "rerun", "rerunTest", "stop", "stopMany", "recordCommand", "recordCommandMany", "showSymbol", "showResult", "reveal", "find", "searchProject", "goToLine", "toggleBottomPanel", "nextTheme", "goToProblems", "goToSearch", "goToTerminal", "toggleSidebar", "toggleLanguageServers", "toggleFormatOnSave"] as const;
+export const PROJECT_ACTIONS = ["newFile", "newFileMany", "newFolder", "newFolderMany", "rename", "renameMany", "moveEntry", "moveEntryMany", "replaceText", "replaceTextMany", "replaceRange", "replaceRangeMany", "delete", "deleteMany", "recordEntry", "recordEntryMany", "recordText", "recordTextMany", "recordTarget", "recordTargetMany", "recordRelaySession", "recordRelaySessionMany", "claimPane", "claimPaneMany", "run", "openTerminal", "rerun", "rerunTest", "stop", "stopMany", "recordCommand", "recordCommandMany", "showSymbol", "showResult", "reveal", "find", "searchProject", "goToLine", "toggleBottomPanel", "nextTheme", "goToProblems", "goToSearch", "goToTerminal", "toggleSidebar", "toggleLanguageServers", "toggleFormatOnSave"] as const;
 
 /** The `code_editor.project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {

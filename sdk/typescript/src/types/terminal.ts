@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.terminal@fd731cc50209456e";
+export const SURFACE = "so.tilo.terminal@b5c03eeff22a35cf";
 
 export interface Command {
   command: string;
@@ -97,6 +97,11 @@ export interface Remembered {
   run: string;
 }
 
+export interface MachineSecret {
+  variable: string;
+  item: string;
+}
+
 /** The arguments of `stop`. */
 export interface StopArgs {
 }
@@ -156,6 +161,17 @@ export interface ImportRunArgs {
   run: string;
   environment?: string;
   actor?: unknown;
+}
+
+/** The arguments of `add-secret`. */
+export interface AddSecretArgs {
+  variable: string;
+  item: string;
+}
+
+/** The arguments of `remove-secret`. */
+export interface RemoveSecretArgs {
+  variable: string;
 }
 
 /** Terminal — `terminal.session`. */
@@ -275,5 +291,30 @@ export const HISTORY_ACTIONS = ["remember", "rememberMany", "importRun", "import
 /** The `terminal.history` kind at `path`. */
 export function terminalHistory(ws: tilo.Workspace, path: string): History {
   return resourceProxy(ws, path, SURFACE, HISTORY_ACTIONS) as unknown as History;
+}
+
+/** Machine secrets — `terminal.machine-secrets`. */
+export interface MachineSecrets extends tilo.Resource {
+  secrets: MachineSecret[];
+  addSecret(args: {
+    variable: string;
+    item: string;
+  }): Promise<void>;
+  /** Runs `add-secret` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  addSecretMany(items: AddSecretArgs[]): Promise<tilo.ActionAnswer[]>;
+  removeSecret(args: {
+    variable: string;
+  }): Promise<void>;
+  /** Runs `remove-secret` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  removeSecretMany(items: RemoveSecretArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `MachineSecrets` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MACHINESECRETS_ACTIONS = ["addSecret", "addSecretMany", "removeSecret", "removeSecretMany"] as const;
+
+/** The `terminal.machine-secrets` kind at `path`. */
+export function machineSecrets(ws: tilo.Workspace, path: string): MachineSecrets {
+  return resourceProxy(ws, path, SURFACE, MACHINESECRETS_ACTIONS) as unknown as MachineSecrets;
 }
 

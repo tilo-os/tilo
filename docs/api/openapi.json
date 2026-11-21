@@ -13361,6 +13361,42 @@
           "null"
         ]
       },
+      "code_editor.project.open-terminal.Arguments": {
+        "type": "object",
+        "properties": {
+          "cols": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rows": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attach": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [],
+        "description": ""
+      },
+      "code_editor.project.open-terminal.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
       "code_editor.project.rerun.Arguments": {
         "type": "object",
         "properties": {
@@ -30179,6 +30215,34 @@
         ],
         "description": ""
       },
+      "terminal.machine-secrets.add-secret.Arguments": {
+        "type": "object",
+        "properties": {
+          "variable": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "variable",
+          "item"
+        ],
+        "description": ""
+      },
+      "terminal.machine-secrets.remove-secret.Arguments": {
+        "type": "object",
+        "properties": {
+          "variable": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "variable"
+        ],
+        "description": ""
+      },
       "themes.studio.new-theme.Arguments": {
         "type": "object",
         "properties": {
@@ -33811,6 +33875,12 @@
     {
       "app": "so.tilo.code-editor",
       "resource": "code_editor.project",
+      "action": "open-terminal",
+      "arguments": "#/components/schemas/code_editor.project.open-terminal.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "code_editor.project",
       "action": "rerun",
       "arguments": "#/components/schemas/code_editor.project.rerun.Arguments"
     },
@@ -37347,6 +37417,18 @@
       "resource": "terminal.history",
       "action": "import-run",
       "arguments": "#/components/schemas/terminal.history.import-run.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "terminal.machine-secrets",
+      "action": "add-secret",
+      "arguments": "#/components/schemas/terminal.machine-secrets.add-secret.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
+      "resource": "terminal.machine-secrets",
+      "action": "remove-secret",
+      "arguments": "#/components/schemas/terminal.machine-secrets.remove-secret.Arguments"
     },
     {
       "app": "so.tilo.themes",
