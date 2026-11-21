@@ -149,7 +149,7 @@ impl Session {
             y,
         });
         let own = sync.own();
-        let (label, identity) = crate::people::own_face(&own, &self.shared.person);
+        let (label, identity) = crate::people::own_face(Some(&own), &self.shared.person);
         let (r, g, b) = crate::people::own_rgb(&identity);
         let carets = self.app_wire.as_ref().map(|app_wire| &app_wire.carets);
         let said = |app: &str| carets.and_then(|carets| carets.said_in(app));

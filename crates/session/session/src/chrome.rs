@@ -530,13 +530,11 @@ impl ChromeSource for SessionChrome {
     }
 
     fn own_chip(&self) -> OwnChip {
-        let own = self
-            .sync
-            .as_ref()
-            .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
+        let networked = self.sync.as_ref();
+        let own = networked.map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
         // The bar's own avatar is the same face their card shows: one name, one identity, one
         // colour, read where the card reads it.
-        let (name, identity) = crate::people::own_face(&own, &self.person);
+        let (name, identity) = crate::people::own_face(networked.map(|_| &own), &self.person);
         let (red, green, blue) = crate::people::own_live_rgb(self.sync.as_deref(), &identity);
         OwnChip {
             // The name they go by, and the root key the picture they chose hangs on: the id is

@@ -190,12 +190,10 @@ impl crate::Session {
         // Whose session it is, as their own avatar on the bar names them: read while the lock is up,
         // since it is shown nowhere else.
         let (person, hue) = if locked {
-            let own = self
-                .shared
-                .sync
-                .as_ref()
-                .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
-            let (name, identity) = crate::people::own_face(&own, &self.shared.person);
+            let networked = self.shared.sync.as_ref();
+            let own = networked.map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
+            let (name, identity) =
+                crate::people::own_face(networked.map(|_| &own), &self.shared.person);
             (
                 ui::presence::person_label(&name),
                 Some(crate::people::own_hue(&identity)),

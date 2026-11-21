@@ -101,9 +101,24 @@ pub(crate) fn own_live_rgb(sync: Option<&crate::sync::Client>, identity: &str) -
 }
 
 /// The name and identity of this person's face, shared by their own surfaces and their presence.
-/// The name stays empty until one is known so each surface can localize the unnamed label.
+/// In a live session the name is the one they gave, and stays empty until one is known so each
+/// surface localizes the unnamed label. With no peer network here (`own` is `None`) nothing
+/// publishes a name, so the person goes by the name this host knows whoever is at it by, as
+/// [`crate::platform::person::person_name`] reads it: their own, else the account's.
 /// The identity is the root key they are here by, else the id this device sits as.
-pub(crate) fn own_face(own: &crate::sync::OwnPresence, device_person: &str) -> (String, String) {
+pub(crate) fn own_face(
+    own: Option<&crate::sync::OwnPresence>,
+    device_person: &str,
+) -> (String, String) {
+    let Some(own) = own else {
+        return (
+            crate::platform::person::person_name(
+                ui::local_identity::load().map(|identity| identity.display_name),
+                "",
+            ),
+            device_person.to_owned(),
+        );
+    };
     let identity = own
         .user
         .as_deref()
@@ -880,11 +895,9 @@ impl Panel {
     /// themselves, the devices they are here on, and what they can do about their identity. The
     /// same card as anyone else's, with the rows only their own host offers.
     fn own_model(&self) -> ProfileModel {
-        let own = self
-            .sync
-            .as_ref()
-            .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
-        let (name, identity) = own_face(&own, &self.device_person);
+        let networked = self.sync.as_ref();
+        let own = networked.map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
+        let (name, identity) = own_face(networked.map(|_| &own), &self.device_person);
         // The field is theirs to fill: what their identity carries until they name themselves is
         // nobody's yet, so it asks rather than holding words to type over.
         let given_name = crate::platform::person::given_name(

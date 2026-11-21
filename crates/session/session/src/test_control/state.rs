@@ -307,9 +307,17 @@ fn presence(session: &Session<'_>) -> Json {
 }
 
 /// One member as a surface here draws them: the row every surface's roster and pointer are drawn
-/// from.
+/// from, named by the one rule every surface names a member by — a person nobody named is
+/// someone without a name yet, never nothing and never their key.
 fn row(member: &collab_types::presence::Shown) -> Json {
-    serde_json::to_value(member).unwrap_or(Json::Null)
+    let mut row = serde_json::to_value(member).unwrap_or(Json::Null);
+    if let Some(row) = row.as_object_mut() {
+        row.insert(
+            "label".into(),
+            Json::String(ui::presence::person_label(&member.label)),
+        );
+    }
+    row
 }
 
 /// The row of `member` as a watcher is told about it: without where their pointer is, which moves
@@ -335,6 +343,39 @@ pub(super) fn presence_stamp(session: &Session<'_>, hash: &mut impl std::hash::H
         for member in sync.members(&workspace) {
             settled(&member).hash(hash);
         }
+    }
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+
+    /// A member's row is named as every surface names them: a person nobody named is someone
+    /// without a name yet, and nobody is named by their key.
+    #[test]
+    fn a_member_nobody_named_reads_as_someone_without_a_name() {
+        let unnamed = collab_types::presence::Shown {
+            label: String::new(),
+            ..collab_types::presence::Shown::default()
+        };
+        assert_eq!(
+            row(&unnamed)["label"],
+            serde_json::json!(ui::presence::unnamed_person_label())
+        );
+        let keyed = collab_types::presence::Shown {
+            label: "3f".repeat(32),
+            ..collab_types::presence::Shown::default()
+        };
+        assert_eq!(
+            row(&keyed)["label"],
+            serde_json::json!(ui::presence::unnamed_person_label()),
+            "a key is never read as the person's name"
+        );
+        let named = collab_types::presence::Shown {
+            label: "Ada".to_owned(),
+            ..collab_types::presence::Shown::default()
+        };
+        assert_eq!(row(&named)["label"], serde_json::json!("Ada"));
     }
 }
 
