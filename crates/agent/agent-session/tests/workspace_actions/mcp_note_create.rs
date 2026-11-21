@@ -15,7 +15,8 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::{Layer as _, filter::Targets};
 
 /// What the workspace actions of one workspace asked the workspace's action
-/// service for: the catalogue requests, each one job of kind `catalogue`, and
+/// service for: the catalogue requests, each one job of kind `catalogue` however
+/// often it is taken up again after waiting off the service's thread, and
 /// the pages among them that listed a resource's items (a job under a parent,
 /// naming nothing) rather than answering a name.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,6 +58,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CatalogueJobs {
         #[derive(Default)]
         struct Kind {
             catalogue: bool,
+            again: bool,
             workspace: String,
             parent: String,
             named: String,
@@ -71,11 +73,17 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CatalogueJobs {
                     _ => {}
                 }
             }
+            fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+                if field.name() == "again" {
+                    self.again = value;
+                }
+            }
             fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
         }
         let mut kind = Kind::default();
         event.record(&mut kind);
-        if kind.catalogue && !kind.workspace.is_empty() {
+        // A request applied again after it waited for parts or a call is the one it was.
+        if kind.catalogue && !kind.again && !kind.workspace.is_empty() {
             let counts = &mut *COUNTED.lock().unwrap();
             let counted = counts.entry(kind.workspace).or_default();
             counted.requests = counted.requests.saturating_add(1);

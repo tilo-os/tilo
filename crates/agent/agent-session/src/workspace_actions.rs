@@ -1804,6 +1804,9 @@ impl Worker {
                 _ => part_wait::Serving::Other,
             },
         );
+        // One applied again after waiting off this thread, for parts or for a call's answer,
+        // is the request it was, not one more.
+        let again = self.part_waits.again() || self.call_waits.taking_an_answer();
         self.call_waits.begin();
         self.take(queued, job);
         // What it ended, it ended now, as a listing of runs says.
@@ -1814,6 +1817,7 @@ impl Worker {
             workspace,
             parent,
             named,
+            again,
             waited_ms = waited.as_millis(),
             ran_ms = ran.as_millis(),
             "workspace actions: a request ran"
