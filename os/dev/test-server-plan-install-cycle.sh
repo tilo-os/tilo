@@ -82,7 +82,7 @@ done
 export TILO_VM_ARCH="${TILO_VM_ARCH:-$(uname -m)}"
 [ "$TILO_VM_ARCH" = x86_64 ] || die 'the server plan cycle uses the x86_64 Fedora Cloud Base image'
 
-required=(qemu-img sfdisk mkfs.vfat mcopy ssh ssh-keygen scp python3 sha256sum truncate jq curl)
+required=(qemu-img sfdisk mkfs.vfat mcopy ssh ssh-keygen tar python3 sha256sum truncate jq curl)
 for tool in "${required[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
 done
@@ -120,10 +120,6 @@ server() {
   ssh -i "$server_ssh_key" -p "$server_port" -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR \
     -o BatchMode=yes cycle@127.0.0.1 "$@"
-}
-server_cp() {
-  scp -q -i "$server_ssh_key" -P "$server_port" -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes "$1" "cycle@127.0.0.1:$2"
 }
 # The machine under installation, booted from the retained Fedora.
 # The machine and the owner device share this check's own VM, whose kernel
@@ -394,8 +390,37 @@ for i in $(seq 1 1200); do
 done
 server_vm stop >/dev/null 2>&1 || true
 
+# What the person would have downloaded onto the machine: the Imager, the
+# bundle, the plan and its token, as one tar the machine reads off a disk of
+# its own. Over the user-mode network, scp moved them at a few MB/s.
+transfer="$cycle_dir/transfer"
+rm -rf "$transfer"
+mkdir -p "$transfer/bundle"
+ln -s "$(realpath "$imager")" "$transfer/imager"
+for file in "$manifest" "$esp_image" "$root_image"; do
+  ln -s "$(realpath "$file")" "$transfer/bundle/$(basename "$file")"
+done
+ln -s "$storage/plan.json" "$transfer/plan.json"
+ln -s "$storage/machine.token" "$transfer/machine.token"
+if [ -n "$development_layers" ]; then
+  [ -d "$development_layers" ] \
+    || die "--development-layers must name a directory: $development_layers"
+  mkdir -p "$transfer/development-layers"
+  for layer in "$development_layers"/*; do
+    [ -f "$layer" ] && [ ! -L "$layer" ] || continue
+    ln -s "$(realpath "$layer")" "$transfer/development-layers/$(basename "$layer")"
+  done
+  layers_copied=$(ls -A "$transfer/development-layers" | wc -l)
+  [ "$layers_copied" -gt 0 ] \
+    || die "--development-layers holds no regular files: $development_layers"
+fi
+tar -C "$transfer" --dereference --sparse --owner=0 --group=0 -cf "$cycle_dir/transfer.tar" .
+qemu-img convert -f raw -O qcow2 "$cycle_dir/transfer.tar" "$cycle_dir/transfer.qcow2"
+rm -rf -- "$transfer" "$cycle_dir/transfer.tar"
+
 server_vm boot \
-  --disk "$retained" --serial tilo-retained-disk --attach "$target_disk" --2d --no-tpm \
+  --disk "$retained" --serial tilo-retained-disk --attach "$target_disk" \
+  --attach "$cycle_dir/transfer.qcow2" --2d --no-tpm \
   || die 'the retained Fedora did not start'
 wait_server_ssh 240 || {
   server_vm status >&2 2>&1 || true
@@ -430,35 +455,16 @@ mark_step 04-retained ok
 
 # --- copy the imager, bundle, plan and token into the machine ----------------
 phase=copy-in
-need=$(( $(stat -c %s "$imager") + $(stat -c %s "$esp_image") + $(stat -c %s "$root_image") + (1 << 30) ))
-if [ -n "$development_layers" ]; then
-  [ -d "$development_layers" ] \
-    || die "--development-layers must name a directory: $development_layers"
-  need=$(( need + $(du -sb "$development_layers" | cut -f1) ))
-fi
+need=$(( $(stat -c %s "$cycle_dir/transfer.qcow2") + (1 << 30) ))
 avail="$(server "df -B1 --output=avail /var/tmp | tail -n 1" | tr -d ' \t\n')"
 [ "$avail" -ge "$need" ] || die "the retained root has $avail bytes free, the bundle needs $need"
 guest_dir=/var/tmp/tilo-server-plan
-server "install -d -m 0755 $guest_dir/bundle"
-server_cp "$imager" "$guest_dir/imager"
-server_cp "$manifest" "$guest_dir/bundle/"
-server_cp "$esp_image" "$guest_dir/bundle/"
-server_cp "$root_image" "$guest_dir/bundle/"
-server_cp "$storage/plan.json" "$guest_dir/plan.json"
-server_cp "$storage/machine.token" "$guest_dir/machine.token"
+server "install -d -m 0755 $guest_dir && sudo cat /dev/disk/by-id/virtio-tilo-attach-1 | tar -C $guest_dir --no-same-owner -xSf -" \
+  || die 'the machine could not unpack the installer and its bundle'
 server "chmod 0600 $guest_dir/machine.token"
 layers_flag=""
 if [ -n "$development_layers" ]; then
-  server "install -d -m 0700 $guest_dir/development-layers"
-  layers_copied=0
-  for layer in "$development_layers"/*; do
-    [ -f "$layer" ] && [ ! -L "$layer" ] || continue
-    server_cp "$layer" "$guest_dir/development-layers/$(basename "$layer")"
-    server "chmod 0600 $guest_dir/development-layers/$(basename "$layer")"
-    layers_copied=$((layers_copied + 1))
-  done
-  [ "$layers_copied" -gt 0 ] \
-    || die "--development-layers holds no regular files: $development_layers"
+  server "chmod 0700 $guest_dir/development-layers && chmod 0600 $guest_dir/development-layers/*"
   layers_flag="--development-layers development-layers"
   note "the machine carries $layers_copied prebuilt development layer(s)"
 fi
