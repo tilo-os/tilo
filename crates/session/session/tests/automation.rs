@@ -145,30 +145,6 @@ fn take(owner: &NativeWorkspaceOwner, governor: &TestGovernor) {
     take_frames(owner, host, governor.changes());
 }
 
-/// Take what the device `from` holds of the workspace into `owner`, which is what the workspace's
-/// other devices do with a member's published changes.
-fn take_published(owner: &NativeWorkspaceOwner, from: &NativeWorkspaceOwner, device: [u8; 32]) {
-    let messages = from
-        .with_outgoing(workspace_id(), SystemTime::now(), |_, outgoing| {
-            let messages: Result<Vec<_>, String> = outgoing
-                .entries()
-                .map(|entry| postcard::from_bytes(entry.bytes()).map_err(|error| error.to_string()))
-                .collect();
-            messages
-        })
-        .expect("what this device published");
-    for message in messages {
-        owner
-            .receive(
-                workspace_id(),
-                TransportOrigin::ServerDelta(device),
-                message,
-                SystemTime::now(),
-            )
-            .expect("a member's change is admitted");
-    }
-}
-
 /// Admit `frames`, published by the device `publisher`, into `owner`'s workspace.
 fn take_frames<'a>(
     owner: &NativeWorkspaceOwner,
@@ -726,59 +702,87 @@ fn a_shortcut_saved_by_someone_elses_device_fires_nothing_here() {
     let person = person_of(&cert);
     let state = tempfile::tempdir().expect("a state directory");
     let socket = home.runtime().join("action.sock");
-    let owner = held(state.path());
-    let governor = found(&owner, &device, &cert);
+    let launches = Arc::new(Launches::default());
+    // The person's own workspace, founded through this device's workspace service as a person's
+    // is: the session that follows reads its resources from the service alone.
+    let workspace = made_here(
+        home.data(),
+        state.path(),
+        &socket,
+        &person,
+        Arc::clone(&launches),
+    );
+    launches.started(std::process::id(), PACKAGE, &workspace, true);
 
-    // Another person joined this workspace, and their own device saved a shortcut of theirs in it.
+    let trigger = TriggerSpec::ResourceChanged {
+        kind: KIND.to_owned(),
+        actions: Vec::new(),
+        fields: Vec::new(),
+        by: tilo_automation::ActorFilter::default(),
+    };
+    // Another person's own device saved a shortcut of theirs in this workspace: its save is signed
+    // by that device, as a person's save is, so the shortcut is theirs to fire, never this
+    // person's.
     let their_root = SigningKey::from_bytes(&[0x31; 32]);
     let their_device = SigningKey::from_bytes(&[0x32; 32]);
     let theirs = testing::certificate(&their_root, &their_device, "Their laptop");
-    let their_state = tempfile::tempdir().expect("their state directory");
-    let their_owner = held(their_state.path());
-    let governor = testing::enroll_into(governor, &their_owner, &their_device, &theirs)
-        .expect("the workspace admits their device");
-    // This device takes the admission of their device, as it takes every member's.
-    take(&owner, &governor);
-    let theirs_saved = save(
-        &their_owner,
-        &their_device,
+    let mut theirs_shortcut = tidy_with(&trigger);
+    theirs_shortcut.id = "theirs".to_owned();
+    tilo_peer_state::workspace::sign_saved_shortcut(
+        &workspace,
+        &mut theirs_shortcut,
         &theirs,
-        tidy_with(&TriggerSpec::ResourceChanged {
-            kind: KIND.to_owned(),
-            actions: Vec::new(),
-            fields: Vec::new(),
-            by: tilo_automation::ActorFilter::default(),
-        }),
+        &their_device,
+    )
+    .expect("their device saved it");
+    let theirs_saved = SavedShortcut::encode(&theirs_shortcut);
+    assert_eq!(
+        tilo_peer_state::workspace::proven_saver(
+            &workspace,
+            &theirs_shortcut,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        ),
+        Some(person_of(&theirs)),
+        "the save is the other person's device's, proven"
     );
-    take_published(
-        &owner,
-        &their_owner,
-        their_device.verifying_key().to_bytes(),
-    );
-    drop(their_owner);
-    drop(owner);
+    // The person's own device saved the same shortcut here, to show that what their own device
+    // saves does fire: the other one fires nothing beside it.
+    let mut mine = tidy_with(&trigger);
+    mine.id = "mine".to_owned();
+    tilo_peer_state::workspace::sign_saved_shortcut(&workspace, &mut mine, &cert, &device)
+        .expect("the person's own device saved it");
+    let mine_saved = SavedShortcut::encode(&mine);
 
-    let launches = Arc::new(Launches::default());
-    launches.started(std::process::id(), PACKAGE, WORKSPACE, true);
     let mut session = showing_launching(
         home.data(),
         state.path(),
         &socket,
         &person,
         Arc::clone(&launches),
-        kept(&person, &[]),
+        kept_in(&person, &workspace, &[]),
     );
-    let window = Window::open(&socket, WORKSPACE);
-    until_the_resource(&mut session, &window, WORKSPACE);
-    show(&session, kept(&person, std::slice::from_ref(&theirs_saved)));
+    let window = Window::open(&socket, &workspace);
+    until_the_resource(&mut session, &window, &workspace);
+    show(
+        &session,
+        kept_in(&person, &workspace, &[theirs_saved, mine_saved]),
+    );
     session.step(Duration::from_millis(2)).expect("a frame");
-    // The app's own change to the resource, on its wire, as the test above makes one.
+    // The app's own change to the resource, on its wire, as the test above makes one: both
+    // shortcuts name it, and only the shortcut this person's device saved may start.
     window.commit_edit();
-    for _ in 0..500 {
+    let runs = until_a_run(&mut session, 1);
+    for _ in 0..50 {
         session.step(Duration::from_millis(2)).expect("step");
     }
     assert!(
         session.take_finished_invocations().is_empty(),
+        "the same change started another run"
+    );
+    assert_eq!(
+        runs,
+        vec!["mine".to_owned()],
         "a shortcut fires on the behalf of the person who saved it, never someone else's"
     );
     window.finish().expect("the app's window wrote its edit");
