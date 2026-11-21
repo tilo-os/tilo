@@ -448,10 +448,9 @@ impl Worker {
         let Ok(record) = super::reads::document_id(&route.document) else {
             return Ok(state);
         };
-        let window_default = ui::resource::DocumentId::window_default_of_storage_key(
-            &record.storage_key(),
-        )
-        .is_some_and(|default| default == record);
+        let window_default =
+            ui::resource::DocumentId::window_default_of_storage_key(&record.storage_key())
+                .is_some_and(|default| default == record);
         if !window_default || state.document(route).is_ok() {
             return Ok(state);
         }
@@ -1286,4 +1285,3 @@ mod tests {
         );
     }
 }
-

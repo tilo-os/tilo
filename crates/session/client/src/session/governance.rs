@@ -163,7 +163,8 @@ mod tests {
         let request = asking(&scope);
         let governance = HostGovernance::default();
         assert!(tilo_workspace_keys::GovernanceTransport::publish(
-            &governance, request
+            &governance,
+            request
         ));
 
         // The page is not in the workspace yet: the request waits, and no other workspace's
@@ -192,7 +193,8 @@ mod tests {
         let request = asking(&scope);
         let governance = HostGovernance::default();
         assert!(tilo_workspace_keys::GovernanceTransport::publish(
-            &governance, request
+            &governance,
+            request
         ));
         assert!(governance.take_for(|_| false).is_empty());
         let sent = governance.take_for(|id| id == workspace);

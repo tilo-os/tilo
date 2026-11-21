@@ -303,9 +303,9 @@ impl WidgetLayer {
     /// little larger and its shadow deeper.
     #[must_use]
     pub fn lift(&self, id: WidgetId) -> f64 {
-        self.lifts
-            .get(&id)
-            .map_or(0.0, |lift| lift.get(ui::motion::frame_now()).clamp(0.0, 1.0))
+        self.lifts.get(&id).map_or(0.0, |lift| {
+            lift.get(ui::motion::frame_now()).clamp(0.0, 1.0)
+        })
     }
 
     /// Lift `id` under the hand, or set it down.

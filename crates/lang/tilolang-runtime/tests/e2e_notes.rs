@@ -722,9 +722,7 @@ mod cases {
             ["Q3 plan", "Untitled"],
             "a note is started under the one open, with no title of its own yet"
         );
-        let made = n
-            .rt
-            .project(&n.rt.read(&n.nb, "notes").unwrap())["count"]
+        let made = n.rt.project(&n.rt.read(&n.nb, "notes").unwrap())["count"]
             .as_i64()
             .unwrap();
         assert_eq!(made, 2, "the notebook holds the note the control made");

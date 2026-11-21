@@ -978,9 +978,11 @@ impl ConversationList {
     /// the origin, a paint where it paints, and the list may have moved since, as a scrolled
     /// page moves it without painting it.
     fn moved(&self) -> [f64; 2] {
-        self.kept().and_then(|cache| cache.placed.as_ref()).map_or([0.0, 0.0], |placed| {
-            [self.rect.x0 - placed.x0, self.rect.y0 - placed.y0]
-        })
+        self.kept()
+            .and_then(|cache| cache.placed.as_ref())
+            .map_or([0.0, 0.0], |placed| {
+                [self.rect.x0 - placed.x0, self.rect.y0 - placed.y0]
+            })
     }
 }
 

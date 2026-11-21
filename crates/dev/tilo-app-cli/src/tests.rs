@@ -116,7 +116,6 @@ fn minimal_generated_graph_app(root: &Path) {
     .unwrap();
 }
 
-
 tilo_test_env::scenario! {
     #[allow(
         clippy::too_many_lines,

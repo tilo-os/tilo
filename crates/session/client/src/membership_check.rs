@@ -706,10 +706,7 @@ mod tests {
         };
         let queued = || std::iter::once([4; 32]);
         sending.pass(queued(), std::iter::once(write(4)), count);
-        assert_eq!(
-            sending.answered(&[4; 16]).map(|(id, _)| id),
-            Some([4; 32])
-        );
+        assert_eq!(sending.answered(&[4; 16]).map(|(id, _)| id), Some([4; 32]));
         // Not ready: it waits, still held, and is not sent meanwhile.
         sending.send_once_ready([4; 32]);
         sending.pass(queued(), std::iter::once(write(4)), count);

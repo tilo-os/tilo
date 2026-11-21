@@ -512,7 +512,10 @@ impl BlockEditor {
         }
         let headings = self.headings();
         let texts: Vec<String> = headings.iter().map(|(_, text)| text.clone()).collect();
-        let levels: Vec<i64> = headings.iter().map(|(level, _)| i64::from(*level)).collect();
+        let levels: Vec<i64> = headings
+            .iter()
+            .map(|(level, _)| i64::from(*level))
+            .collect();
         let reported = (texts, levels);
         if self.references.reported.as_ref() == Some(&reported) {
             return;

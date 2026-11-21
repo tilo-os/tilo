@@ -203,7 +203,10 @@ impl HistoryGroup {
         };
         Some(widget_format(
             "history-group-targets",
-            &[("action", action.into()), ("things", things.as_str().into())],
+            &[
+                ("action", action.into()),
+                ("things", things.as_str().into()),
+            ],
         ))
     }
 

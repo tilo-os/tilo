@@ -115,7 +115,10 @@ mod tests {
 
     #[test]
     fn every_first_party_app_is_named_by_the_label_that_finds_it() {
-        assert_eq!(builtin_label_for_app_id(FILE_EXPLORER).as_deref(), Some("Files"));
+        assert_eq!(
+            builtin_label_for_app_id(FILE_EXPLORER).as_deref(),
+            Some("Files")
+        );
         assert_eq!(builtin_label_for_app_id("org.gimp.GIMP"), None);
         for package in FIRST_PARTY_PACKAGES {
             let label = builtin_label_for_app_id(package).expect("a first-party app has a label");

@@ -946,8 +946,15 @@ fn a_link_handed_to_a_window_still_building_its_page_opens_once_the_page_is_ther
     )
     .unwrap();
     app.settle();
-    assert!(WENT.with(|went| went.borrow().is_empty()), "no page to open it on yet");
-    assert_eq!(app.refused(), None, "it waits for the page rather than being refused");
+    assert!(
+        WENT.with(|went| went.borrow().is_empty()),
+        "no page to open it on yet"
+    );
+    assert_eq!(
+        app.refused(),
+        None,
+        "it waits for the page rather than being refused"
+    );
     PAGE_SHOWN.set(true);
     app.harness().relayout();
     app.settle();

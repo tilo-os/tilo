@@ -2031,4 +2031,3 @@ fn a_link_handed_to_the_window_loads_in_its_page() {
         "the search is searched for: {loaded:?}"
     );
 }
-

@@ -914,10 +914,12 @@ impl Task {
         op: [u8; 16],
         outcome: Result<u64, tilo_server_protocol::refusal::Refusal>,
     ) {
-        let Some((workspace, id, sent)) = self.sending.iter_mut().find_map(|(workspace, sending)| {
-            let (id, sent) = sending.answered(&op)?;
-            Some((*workspace, id, sent))
-        }) else {
+        let Some((workspace, id, sent)) =
+            self.sending.iter_mut().find_map(|(workspace, sending)| {
+                let (id, sent) = sending.answered(&op)?;
+                Some((*workspace, id, sent))
+            })
+        else {
             return;
         };
         // A host that was not ready for the write takes it once it says the workspace is ready:
@@ -1019,7 +1021,8 @@ impl Task {
                 .map(|(mut owed, mut refused, complete, scope, hearing)| {
                     // A barrier owed a write of another caller's waits no more for it, and
                     // its refusal is not this barrier's to answer with.
-                    if owed.remove(&id)                        && route
+                    if owed.remove(&id)
+                        && route
                             .as_ref()
                             .is_none_or(|route| hears(hearing.as_ref(), route))
                     {

@@ -339,7 +339,10 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     // The grant an earlier build wrote to name the person it kept a
     // workspace for while its host owned it, as it wrote it.
     let kept_for = Grant {
-        id: GrantId(format!("workspace-keeper-v1:{}", hex::encode(alice.user_pk))),
+        id: GrantId(format!(
+            "workspace-keeper-v1:{}",
+            hex::encode(alice.user_pk)
+        )),
         grantee: Grantee::person(hex::encode(alice.user_pk)),
         node: roles::administrators_node(&workspace.workspace),
         kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
@@ -429,10 +432,19 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     .await;
     within("the server it was made on stops", made_on.stop()).await;
 
-    let (old_key, main_key) = (hex::encode(old.device_pubkey()), hex::encode(main.device_pubkey()));
-    let listed = govern(&client, &main, &workspace, "server.list", serde_json::json!({}))
-        .await
-        .expect("the owner's key lists the workspace's servers");
+    let (old_key, main_key) = (
+        hex::encode(old.device_pubkey()),
+        hex::encode(main.device_pubkey()),
+    );
+    let listed = govern(
+        &client,
+        &main,
+        &workspace,
+        "server.list",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("the owner's key lists the workspace's servers");
     assert!(listed.to_string().contains(&old_key), "{listed}");
     let removed = govern(
         &client,

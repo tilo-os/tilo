@@ -75,7 +75,10 @@ fn member_key() -> [u8; 32] {
 fn note(session: &Session) -> String {
     let workspace = session
         .handle()
-        .read(|tree| tree.active_workspace().map(tilo_desktop_model::Workspace::id))
+        .read(|tree| {
+            tree.active_workspace()
+                .map(tilo_desktop_model::Workspace::id)
+        })
         .expect("a workspace in front");
     format!(
         "{}/{}/{workspace}/brief/plan.md",

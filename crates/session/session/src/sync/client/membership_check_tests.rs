@@ -504,7 +504,12 @@ fn a_restored_computer_founds_no_workspace_beside_the_persons() {
     restore.follow();
     let (from_hosts, everywhere) = restore.listed();
     assert!(personal.take_hosted(from_hosts));
-    assert!(personal.settle_seed(&session, &held, Some(&everywhere), &std::collections::BTreeSet::new()));
+    assert!(personal.settle_seed(
+        &session,
+        &held,
+        Some(&everywhere),
+        &std::collections::BTreeSet::new()
+    ));
     assert_eq!(personal.seed(), None);
     assert_eq!(
         on_shell(&session),
@@ -588,8 +593,7 @@ fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
         None,
     );
     personal.hold_seed(seed);
-    let site =
-        WorkspaceId::parse("0b7a5f4e-2c1d-4e8a-9f3b-6d5c4b3a2918").expect("a workspace id");
+    let site = WorkspaceId::parse("0b7a5f4e-2c1d-4e8a-9f3b-6d5c4b3a2918").expect("a workspace id");
     personal.joined(site);
     let mut tree = session.read(Clone::clone);
     tree.workspaces

@@ -431,8 +431,7 @@ impl Personal {
             return false;
         };
         let theirs = |workspace: &WorkspaceId| {
-            *workspace != seed
-                && (!self.borrowed.contains(workspace) || owned.contains(workspace))
+            *workspace != seed && (!self.borrowed.contains(workspace) || owned.contains(workspace))
         };
         let has = self.names_besides(seed)
             || held.iter().any(theirs)
@@ -1792,18 +1791,16 @@ impl crate::Shared {
         // site's — has a workspace already, and the shell's own is taken off rather than founded
         // beside it.
         let owned: BTreeSet<WorkspaceId> =
-            self.engine
-                .as_ref()
-                .map_or_else(BTreeSet::new, |engine| {
-                    held.iter()
-                        .copied()
-                        .filter(|workspace| {
-                            engine.owner_of(&workspace.to_string()).is_ok_and(|owner| {
-                                owner == self.person || self.earlier.contains(&owner)
-                            })
+            self.engine.as_ref().map_or_else(BTreeSet::new, |engine| {
+                held.iter()
+                    .copied()
+                    .filter(|workspace| {
+                        engine.owner_of(&workspace.to_string()).is_ok_and(|owner| {
+                            owner == self.person || self.earlier.contains(&owner)
                         })
-                        .collect()
-                });
+                    })
+                    .collect()
+            });
         personal.settle_seed(&self.handle, &held, listed.as_ref(), &owned);
     }
 

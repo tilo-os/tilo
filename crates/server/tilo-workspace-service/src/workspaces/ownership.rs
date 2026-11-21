@@ -199,9 +199,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = governor();
         let host_person = hex::encode(host.1.user_public_key);
-        let [ada, bo] = [[9; 32], [10; 32]].map(|seed| {
-            hex::encode(SigningKey::from_bytes(&seed).verifying_key().to_bytes())
-        });
+        let [ada, bo] = [[9; 32], [10; 32]]
+            .map(|seed| hex::encode(SigningKey::from_bytes(&seed).verifying_key().to_bytes()));
         let server = test_host(dir.path(), &host.0, &host.1).await;
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Kept").await.unwrap().workspace;
@@ -218,8 +217,14 @@ mod tests {
         let server = test_host(dir.path(), &host.0, &host.1).await;
         let workspaces = server.workspaces();
         let policy = workspaces.policy_of(&workspace).await.unwrap();
-        let owner = policy.owner().expect("the workspace has an owner").to_owned();
-        assert!(owner == ada || owner == bo, "{owner} is one it was kept for");
+        let owner = policy
+            .owner()
+            .expect("the workspace has an owner")
+            .to_owned();
+        assert!(
+            owner == ada || owner == bo,
+            "{owner} is one it was kept for"
+        );
         let other = if owner == ada { &bo } else { &ada };
         assert!(
             policy.is_administrator(other),

@@ -81,8 +81,7 @@ impl Surfaces {
     /// change decided against a surface that was not here may be decided again
     /// ([`Self::registered`] moves).
     pub fn arrived(&self) {
-        self.count
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     /// Name `json`, the JSON form `tilo_resource::committed_surface!` wrote of the committed
@@ -146,7 +145,10 @@ impl Surfaces {
     /// The hash of the surface `app_id`'s changes are decided against.
     #[must_use]
     pub fn hash_of(&self, app_id: &str) -> Option<[u8; 32]> {
-        self.named.lock_recover().get(app_id).map(|named| named.hash)
+        self.named
+            .lock_recover()
+            .get(app_id)
+            .map(|named| named.hash)
     }
 
     /// Every app's surface known here, parsed: a surface that does not parse carries none.
@@ -163,7 +165,10 @@ impl Surfaces {
     /// when known here.
     #[must_use]
     pub fn bytes_of(&self, app_id: &str) -> Option<&'static [u8]> {
-        self.named.lock_recover().get(app_id).map(|named| named.bytes)
+        self.named
+            .lock_recover()
+            .get(app_id)
+            .map(|named| named.bytes)
     }
 
     /// `app_id`'s surface as parsed, once when it was named.

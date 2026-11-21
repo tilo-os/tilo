@@ -5034,7 +5034,9 @@ impl Widget for BooksApp {
         // frames.
         !self.reduce_motion
             && (self.flaps_animating()
-                || self.page_turn.is_some_and(|pt| !pt.done(ui::motion::frame_now()))
+                || self
+                    .page_turn
+                    .is_some_and(|pt| !pt.done(ui::motion::frame_now()))
                 || (self.view != View::Reader && self.awaiting_arrival()))
     }
 

@@ -1075,12 +1075,21 @@ pub(crate) fn component_awaits_resource(
                 }
                 let presence = crate::invocation_scope::current_presence();
                 let mut published = Vec::new();
-                collect_published(widget, doc, Walk::Component, presence.as_ref(), &mut published);
+                collect_published(
+                    widget,
+                    doc,
+                    Walk::Component,
+                    presence.as_ref(),
+                    &mut published,
+                );
                 let permitted: Vec<_> = published
                     .into_iter()
                     .filter_map(|resource| filter_resource(current, resource))
                     .collect();
-                !permitted.is_empty() && !permitted.iter().any(|resource| holds_resource(resource, id))
+                !permitted.is_empty()
+                    && !permitted
+                        .iter()
+                        .any(|resource| holds_resource(resource, id))
             })
             .unwrap_or(false);
         None
@@ -1096,7 +1105,11 @@ pub(crate) fn component_awaits_resource(
 
 /// Whether `resource` or one of its children is resource `id`.
 fn holds_resource(resource: &ResourceSpec, id: &str) -> bool {
-    resource.id.as_str() == id || resource.children.iter().any(|child| holds_resource(child, id))
+    resource.id.as_str() == id
+        || resource
+            .children
+            .iter()
+            .any(|child| holds_resource(child, id))
 }
 
 /// Whether any widget of `widget`'s tree, whatever component it is part of, may resolve resource `id`

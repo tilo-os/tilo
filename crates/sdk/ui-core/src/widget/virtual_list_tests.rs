@@ -2197,7 +2197,10 @@ fn a_frames_rows_glide_on_the_frames_instant() {
             .expect("the row is still on its way");
         let offset = moved.offset(next);
         assert!(offset < 0.0 && offset > -40.0, "{offset}");
-        assert!(list.row_motion.is_moving(next), "and reaches the next frame");
+        assert!(
+            list.row_motion.is_moving(next),
+            "and reaches the next frame"
+        );
     }
     let landed = first + Duration::from_millis(600);
     assert!(!list.row_motion.is_moving(landed), "and lands");

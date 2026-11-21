@@ -488,7 +488,10 @@ impl GovernedWorkspace {
     /// The workspace's store, with the types and verbs of every app surface the device knows
     /// (`surfaces`) declared: what this device's writes and the members' are judged by.
     #[cfg(any(feature = "apps", feature = "agents"))]
-    fn store_with_surfaces(&mut self, surfaces: &collab_types::app_surface::Surfaces) -> &mut Store {
+    fn store_with_surfaces(
+        &mut self,
+        surfaces: &collab_types::app_surface::Surfaces,
+    ) -> &mut Store {
         let named = surfaces.registered();
         if self.resources.declared != named {
             self.resources.declared = named;
@@ -986,14 +989,9 @@ impl Workspaces {
             return Ok(false);
         }
         let admit = |_: &tilo_resource_store::Proposal<'_>| true;
-        let write = governed.store_with_surfaces(&self.inner.host.surfaces).draft_field_update(
-            (kind, id),
-            resource,
-            stamp,
-            device.device(),
-            None,
-            &admit,
-        )?;
+        let write = governed
+            .store_with_surfaces(&self.inner.host.surfaces)
+            .draft_field_update((kind, id), resource, stamp, device.device(), None, &admit)?;
         if let Some(write) = write {
             self.commit_resource_update(governed, device, app, &write, |_| true)
                 .await?;
@@ -1062,11 +1060,13 @@ impl Workspaces {
             return Ok(Reply::Written);
         }
 
-        let (writes, refusal) =
-            match tilo_resource_store::wire::draft(governed.store_with_surfaces(&self.inner.host.surfaces), command) {
-                Ok(writes) => (writes, None),
-                Err(refused) => (refused.written, Some(refused.error.to_string())),
-            };
+        let (writes, refusal) = match tilo_resource_store::wire::draft(
+            governed.store_with_surfaces(&self.inner.host.surfaces),
+            command,
+        ) {
+            Ok(writes) => (writes, None),
+            Err(refused) => (refused.written, Some(refused.error.to_string())),
+        };
         let app = app.to_owned();
         let mut candidate = governed.peer().clone();
         let mut documents = BTreeSet::new();
