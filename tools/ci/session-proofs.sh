@@ -5,10 +5,10 @@
 # here touches a desktop. Its verdict (summary.json), what it said (proof.log), its screenshots
 # and the sessions' logs land in $CARGO_TARGET_DIR/e2e/PROOF, the `e2e/PROOF` checks' outputs.
 #
-#   tools/ci/session-proofs.sh tilolang|two-people|mail-two-members|agent-sessions|session-lock
+#   tools/ci/session-proofs.sh tilolang|two-people|agent-sessions|session-lock
 set -euo pipefail
 
-proof=${1:?usage: $0 tilolang|two-people|mail-two-members|agent-sessions|session-lock}
+proof=${1:?usage: $0 tilolang|two-people|agent-sessions|session-lock}
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 cd "$repo_root"
 
@@ -39,7 +39,6 @@ status=0
 case $proof in
     tilolang) python3 "$scripts/tilolang-e2e.py" --no-build --out "$run" ;;
     two-people) python3 "$scripts/hosted-names-proof.py" --out "$run" ;;
-    mail-two-members) python3 "$scripts/mail-two-members-proof.py" --out "$run" ;;
     agent-sessions|session-lock) python3 "$scripts/$proof-proof.py" ;;
     *) echo "no proof named $proof" >&2; exit 2 ;;
 esac 2>&1 | tee "$out/proof.log" || status=$?

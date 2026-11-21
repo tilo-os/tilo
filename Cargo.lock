@@ -1912,7 +1912,6 @@ dependencies = [
  "fnv",
  "hex",
  "jiff",
- "mail",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9896,54 +9895,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
-name = "mail"
-version = "0.1.0"
-dependencies = [
- "account-credentials",
- "accounts",
- "base64 0.22.1",
- "fnv",
- "hex",
- "html5ever",
- "mail",
- "mail-builder",
- "mail-engine",
- "mail-parser",
- "markup5ever_rcdom",
- "pdf-viewer",
- "pim-lines",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings",
- "taffy",
- "tempfile",
- "test-http",
- "tilo-accounts-engine",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-contact-directory",
- "tilo-contact-directory-engine",
- "tilo-content",
- "tilo-doc-codecs",
- "tilo-document",
- "tilo-mail-engine",
- "tilo-mail-parts",
- "tilo-oauth",
- "tilo-rich-text",
- "tilo-sort",
- "tilo-test-env",
- "tilo-vello",
- "tilo-webview",
- "tilo-winit",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "mail-builder"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17718,7 +17669,6 @@ dependencies = [
  "jiff",
  "key-group",
  "libc",
- "mail",
  "maps",
  "messages",
  "model-providers",
@@ -29093,7 +29043,6 @@ dependencies = [
  "lsp-types",
  "lzma-rust2",
  "mac-addr",
- "mail",
  "mail-builder",
  "mail-engine",
  "mail-parser",

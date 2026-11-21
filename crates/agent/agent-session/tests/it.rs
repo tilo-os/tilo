@@ -58,8 +58,6 @@ mod host_agents;
 mod issue_listing;
 #[path = "issue_reads.rs"]
 mod issue_reads;
-#[path = "mail_for_agents.rs"]
-mod mail_for_agents;
 #[path = "messages_for_agents.rs"]
 mod messages_for_agents;
 #[path = "page_view.rs"]

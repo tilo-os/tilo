@@ -1691,29 +1691,13 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         assert_eq!(value["delivery"], "not_sent");
         assert_eq!(value["target"]["resource"], "mail.mailbox");
         assert_eq!(value["target"]["action"], "prepare-calendar-invitation");
-        let arguments = value["arguments"].as_object().unwrap().clone();
-
-        let mut mailbox = tilo_actions::ResourceSpec::new("mail.mailbox", "mail.mailbox", "Mail");
-        mailbox.actions = <mail::actions::MailEffect as ui::tilo_resource::Effect>::specs();
-        let mail_roots = vec![mailbox];
-        let encoded = tilo_actions::api::encode_json(
-            &mail_roots,
-            &mail::actions::MailEffect::PREPARE_CALENDAR_INVITATION.on("mail.mailbox"),
-            &arguments,
-        )
-        .expect("Mail accepts Calendar's exact typed arguments");
-        let effect = <mail::actions::MailEffect as ui::tilo_resource::Effect>::from_payload(
-            &encoded.payload,
-        )
-        .expect("Mail decodes the handoff");
-        assert!(matches!(
-            effect,
-            mail::actions::MailEffect::PrepareCalendarInvitation {
-                to,
-                calendar_ics,
-                ..
-            } if to == attendee_email && calendar_ics.contains("METHOD:REQUEST")
-        ));
+        let arguments = value["arguments"].as_object().unwrap();
+        assert_eq!(arguments["to"], attendee_email);
+        assert!(
+            arguments["calendar_ics"]
+                .as_str()
+                .is_some_and(|ics| ics.contains("METHOD:REQUEST"))
+        );
     }
     {
         use ui::widget::Widget;

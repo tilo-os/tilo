@@ -18,12 +18,6 @@ change = "removed"
 conversion = "crates/server/tilo-workspace-service/src/workspaces/agent_roster.rs:copy_agents"
 
 [[change]]
-kind = "mail.mailbox"
-app = "mail"
-change = "left-own"
-conversion = "apps/mail/src/mailbox_migration.rs:import"
-
-[[change]]
 kind = "browser.address-book"
 app = "browser"
 change = "left-own"
@@ -156,24 +150,6 @@ change = "removed"
 conversion = "apps/firewall/src/resource.rs:open"
 
 [[change]]
-kind = "mail.copies"
-app = "mail"
-change = "left-own"
-conversion = "apps/mail/src/copies.rs:convert_earlier"
-
-[[change]]
-kind = "mail.trusted-senders"
-app = "mail"
-change = "left-own"
-conversion = "apps/mail/src/trusted_senders.rs:import_legacy"
-
-[[change]]
-kind = "tilo.chain-unsent"
-app = "mail"
-change = "left-own"
-conversion = "crates/sdk/tilo-app/src/framework/chain/waiting.rs:apply_pending"
-
-[[change]]
 kind = "maps.offline-areas"
 app = "maps"
 change = "left-own"
@@ -256,3 +232,39 @@ kind = "video-player.recent"
 app = "video-player"
 change = "removed"
 conversion = "apps/video-player/src/preferences.rs:open"
+
+[[change]]
+kind = "mail.mailbox"
+app = "mail"
+change = "removed"
+lost = "The Rust Mail app is replaced by the tilolang Mail (apps/tl/mail). Messages and mailboxes are the mail server's, and the tilolang Mail reads them from the same accounts again; unsent drafts and waiting sends are carried into its drafts once by its carry_native_mail migration. Workspace-only labels on single messages and a change made offline but not yet sent to the server are not carried."
+
+[[change]]
+kind = "mail.messages"
+app = "mail"
+change = "removed"
+lost = "The per-message read, flag and folder states mirror the mail server, which the tilolang Mail reads again. Mail delivered into the workspace rather than to a server (held messages) is not carried: the tilolang Mail has no workspace delivery."
+
+[[change]]
+kind = "mail.copies"
+app = "mail"
+change = "removed"
+lost = "Copies of fetched mail kept on devices; the mail server holds the originals and the tilolang Mail fetches them again."
+
+[[change]]
+kind = "mail.trusted-senders"
+app = "mail"
+change = "removed"
+lost = "Which senders may load remote images. The tilolang Mail shows plain text and loads no remote images, so the list has nothing to govern."
+
+[[change]]
+kind = "tilo.accounts"
+app = "mail"
+change = "moved"
+lost = "Mail only read the workspace's accounts; Settings keeps them, and the tilolang Mail reads the same account store."
+
+[[change]]
+kind = "tilo.contacts.identities"
+app = "mail"
+change = "moved"
+lost = "Mail only read the contacts' identities; Contacts keeps them."

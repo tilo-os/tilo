@@ -79,20 +79,6 @@ text = "Tripwire"
 reason = "A sample label in the widget that trips on a replaced widget."
 
 [[allow]]
-file = "apps/mail/src/compose.rs"
-text = "Maya Chen <maya@northwind.example>"
-reason = "Sample mail the headless screenshot opens, never a person's own window."
-
-[[allow]]
-file = "apps/mail/src/compose.rs"
-text = "Re: Spring launch plan"
-reason = "Sample mail the headless screenshot opens, never a person's own window."
-
-# The Themes app draws a mock window to judge a theme by, and the words in it
-# are that sample's content — a person reads them as part of the picture, the
-# way they read a photograph's, not as this window's own copy.
-
-[[allow]]
 file = "apps/sheets/src/app/annotations.rs"
 text = "Ag"
 reason = "A sample word measured to lay out a card; never shown."
@@ -162,16 +148,6 @@ reason = "A measuring sample a list row lays out to find its height, never a wor
 
 [[allow]]
 file = "apps/feeds/src/list_pane.rs"
-text = "Ag"
-reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
-
-[[allow]]
-file = "apps/mail/src/app.rs"
-text = "Ag"
-reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
-
-[[allow]]
-file = "apps/mail/src/list.rs"
 text = "Ag"
 reason = "A measuring sample a list row lays out to find its height, never a word a person reads."
 

@@ -8,7 +8,6 @@ own-search 1 apps/maps/src/offline_panel.rs
 # bar's search opens, not a second one beside it.
 own-search 2 apps/launcher/src/surface.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
-toolbar-row 1 apps/mail/src/compose.rs
 # The browser's address row; the hairline under it is the page's edge.
 # Not a toolbar row, only the band's hairline borrowed: Writer's ruler wants
 # a divider of its own instead.

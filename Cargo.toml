@@ -176,7 +176,6 @@ members = [
     "apps/logs",
     "apps/logs-model",
     "apps/logs-model-wasm",
-    "apps/mail",
     "apps/maps",
     "apps/maps-model",
     "apps/maps-model-wasm",
