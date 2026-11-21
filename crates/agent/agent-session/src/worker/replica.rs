@@ -2283,10 +2283,16 @@ mod tests {
     /// goes on, and the next request is applied as usual.
     #[test]
     fn a_request_past_the_bound_reopens_the_document_and_the_next_applies() {
-        super::super::process::wait_in_this_thread(std::time::Duration::from_millis(500));
         let replica = begun();
         let worker = replica.worker_id();
         let mut inner = replica.lock();
+        // Only the request past the bound waits less: opening the record
+        // starts the app, which takes as long as it takes on a loaded machine.
+        inner
+            .process
+            .as_mut()
+            .expect("the begun record is held in a worker")
+            .wait_for(std::time::Duration::from_millis(500));
         let answer = replica.call(&mut inner, &Request::Stall { millis: 5_000 });
         drop(inner);
         assert!(
