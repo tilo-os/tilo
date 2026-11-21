@@ -510,17 +510,51 @@ fn files_opens_its_workspace_record_and_lists_no_tree_beside_it() {
     }
 }
 
+/// An app with no component, keeping a record per workspace or not.
+fn probe_app(workspace_resource: bool) -> ui::application::ApplicationDefinition {
+    fn no_component(
+        _: ui::application::ProcessContext,
+        _: ui::application::LaunchTarget,
+        _: ui::application::RestoreInput,
+    ) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
+        Err(ui::launch::LaunchError::Operation(
+            "the factory must not run".into(),
+        ))
+    }
+    ui::application::ApplicationDefinition {
+        app_id: "so.tilo.test".into(),
+        title: "Index probe".into(),
+        icon: ui::widget::IconDescriptor::Glyph("P"),
+        resource_type: ui::resource::ResourceType::new("probe"),
+        required: vec![],
+        optional: vec![],
+        opens: &[],
+        workspace_resource,
+        opens_before_resource: false,
+        create: no_component,
+    }
+}
+
+/// A part of a chain kept beside the workspace's record.
+fn chain_part() -> String {
+    let workspace = ui::resource::DocumentId::workspace_default();
+    ui::resource::DocumentId::derived("messages", &workspace)
+        .part(0)
+        .route()
+        .to_owned()
+}
+
 #[test]
 fn a_chain_beside_the_workspace_record_is_the_apps_own() {
-    let chat = chat::definition();
+    let app = probe_app(true);
     assert!(
-        super::opens_as_its_own(chat, ""),
-        "the workspace's own Chat record"
+        super::opens_as_its_own(&app, ""),
+        "the workspace's own record"
     );
-    let part = chat::parts::part(0).route().to_owned();
+    let part = chain_part();
     assert!(
-        super::opens_as_its_own(chat, &part),
-        "a part of the chat's messages is the chat's own record: {part}"
+        super::opens_as_its_own(&app, &part),
+        "a part of a chain beside it is the app's own record: {part}"
     );
 }
 
@@ -528,35 +562,12 @@ fn a_chain_beside_the_workspace_record_is_the_apps_own() {
 fn an_apps_index_is_not_one_of_its_records() {
     // An app that keeps no record per workspace keeps its index of the workspace's named
     // records at the empty route, where Files keeps its own record.
-    fn per_window(app: &'static str) -> ui::application::ApplicationDefinition {
-        fn no_component(
-            _: ui::application::ProcessContext,
-            _: ui::application::LaunchTarget,
-            _: ui::application::RestoreInput,
-        ) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
-            Err(ui::launch::LaunchError::Operation(
-                "the factory must not run".into(),
-            ))
-        }
-        ui::application::ApplicationDefinition {
-            app_id: app.into(),
-            title: "Index probe".into(),
-            icon: ui::widget::IconDescriptor::Glyph("P"),
-            resource_type: ui::resource::ResourceType::new("probe"),
-            required: vec![],
-            optional: vec![],
-            opens: &[],
-            workspace_resource: false,
-            opens_before_resource: false,
-            create: no_component,
-        }
-    }
-    let app = per_window("so.tilo.test");
+    let app = probe_app(false);
     assert!(
         !super::opens_as_its_own(&app, ""),
         "the index of the workspace's records is read where it is kept, never mounted as the app's"
     );
-    let named = chat::parts::part(0).route().to_owned();
+    let named = chain_part();
     assert!(
         super::opens_as_its_own(&app, &named),
         "a named record is the app's own: {named}"
