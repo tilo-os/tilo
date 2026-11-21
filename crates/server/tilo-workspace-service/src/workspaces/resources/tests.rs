@@ -985,6 +985,134 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
     owner.shutdown().await;
 }
 
+/// A device that joins a workspace reads the resources written there before it arrived, though
+/// their writes reach its copy before the group's keys reach the device: once the keys do, the
+/// copy opens what it kept, with nothing written since.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the write before the join, the join, and the keys that come after both"
+)]
+async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
+    use super::super::fixtures::{device_cert, signed_pre_admission};
+
+    let owner_dir = tempfile::tempdir().unwrap();
+    let member_dir = tempfile::tempdir().unwrap();
+    let owner_keys = Arc::new(TestGroupKeys::default());
+    let (owner_key, owner_cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let owner = test_host_holding(
+        owner_dir.path(),
+        &owner_key,
+        &owner_cert,
+        Arc::clone(&owner_keys),
+    )
+    .await;
+    owner
+        .workspaces()
+        .set_member_device(Arc::new(super::super::MemberDevice {
+            cert: owner_cert.clone(),
+            signer: Arc::new(owner_key.clone()),
+        }));
+    let created = owner.workspaces().create("Tasks").await.unwrap();
+    let workspace = created.workspace;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    owner
+        .workspaces()
+        .own_route_keys(&route, true)
+        .await
+        .unwrap()
+        .unwrap();
+    owner
+        .workspaces()
+        .resource_command(
+            &context(&workspace, &owner_cert),
+            put_signed_issue("Written before"),
+        )
+        .await
+        .unwrap();
+
+    let (key, cert) = device_cert(
+        &SigningKey::from_bytes(&[41; 32]),
+        "member",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    let invite = owner
+        .workspaces()
+        .pre_admit(
+            &owner_cert,
+            super::super::PreAdmitRequest {
+                request_id: [41; 32],
+                grant: signed_pre_admission(&workspace, b"joins-later"),
+                recipient_user_public_key: Some(cert.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    // The joining device holds none of the group's keys until the group lets it in.
+    let member_keys = Arc::new(TestGroupKeys::admitted_only());
+    let member = test_host_holding(member_dir.path(), &key, &cert, Arc::clone(&member_keys)).await;
+    member
+        .workspaces()
+        .set_member_device(Arc::new(super::super::MemberDevice {
+            cert,
+            signer: Arc::new(key),
+        }));
+    // What the device's apps are handed of it, from the start.
+    let mut shown = member.workspaces().admitted_writes();
+    let invite = tilo_peer_state::join::encode_invitation_text(&invite.signed_invitation);
+    member.workspaces().join_member(&invite).await.unwrap();
+    tilo_test_env::within("the copy keeps the issue it cannot open yet", async {
+        loop {
+            let retained = member
+                .workspace_documents()
+                .retained(created.workspace_id)
+                .await
+                .unwrap();
+            if retained.iter().any(|frame| {
+                matches!(NeighbourMsg::decode(&frame.body), Ok(NeighbourMsg::AppDocument {
+                    app_id, document_id, ..
+                }) if app_id == APP && collab_types::is_store_document(&document_id))
+            }) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        title(member.workspaces(), &workspace, "i-1").await,
+        None,
+        "the copy reads no sealed issue before the device holds the group's keys"
+    );
+
+    member_keys.hand_what_is_held_by(&owner_keys);
+    let expected = Some(Value::Text("Written before".into()));
+    tilo_test_env::within("the copy reads the issue once the keys are here", async {
+        while title(member.workspaces(), &workspace, "i-1").await != expected {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    // Written long before the apps here could see it, the issue reaches them as history, which
+    // no clock window applies to, never as a write made just now.
+    let mut handed = 0;
+    while let Ok(write) = shown.try_recv() {
+        if matches!(write.message.as_ref(), NeighbourMsg::AppDocument { app_id, .. } if app_id == APP)
+        {
+            assert!(write.history, "a write from before the device joined is history");
+            handed += 1;
+        }
+    }
+    assert!(handed > 0, "the apps here are handed the issue");
+    member.shutdown().await;
+    owner.shutdown().await;
+}
+
 #[tokio::test]
 async fn retained_store_checkpoint_restores_signed_history_on_open() {
     let dir = tempfile::tempdir().unwrap();

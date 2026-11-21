@@ -13,7 +13,9 @@ pub mod device_keys;
 pub mod held;
 pub(crate) mod sealed;
 
-pub use device_keys::{DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture};
+pub use device_keys::{
+    DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeysChangedFuture,
+};
 pub use held::HeldDocuments;
 
 use std::sync::Arc;

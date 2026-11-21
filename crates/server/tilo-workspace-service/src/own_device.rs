@@ -22,7 +22,9 @@ use tilo_user_identity::DeviceCert;
 use tilo_workspace_keys::KeyProvider;
 
 use crate::service::{ServiceConfig, ServiceError, ServiceIdentity, WorkspaceService};
-use crate::workspaces::{DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeySink, MemberDevice};
+use crate::workspaces::{
+    DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeySink, KeysChangedFuture, MemberDevice,
+};
 
 /// How long the service waits for the device's key service to open a group: far more than the
 /// wait before the device founds the group itself
@@ -162,6 +164,13 @@ impl GroupKeys for DeviceGroupKeys {
             self.keys
                 .group_keys(workspace, readers, create, OPEN_WAIT)
                 .await
+        })
+    }
+
+    fn keys_changed<'a>(&'a self, workspace: &'a str, after: u64) -> KeysChangedFuture<'a> {
+        Box::pin(async move {
+            let workspace = tilo_desktop_model::WorkspaceId::parse(workspace)?;
+            Some(self.keys.workspace_changed(workspace, after).await)
         })
     }
 }

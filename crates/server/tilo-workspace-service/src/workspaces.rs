@@ -171,6 +171,7 @@ pub enum Held {
 }
 pub use crate::documents::device_keys::{
     DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeySink,
+    KeysChangedFuture,
 };
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub use sealed_documents::fixtures as sealed_fixtures;
@@ -2431,7 +2432,7 @@ impl Workspaces {
         )?;
         // The write that starts a document is told like every write after
         // it: an agent a person's first message asks is woken by it.
-        self.tell_followers(&workspace, author, (app_id, document_id), &message)
+        self.tell_followers(&workspace, author, (app_id, document_id), &message, false)
             .await;
         self.settle(&mut workspace).await
     }
@@ -2756,7 +2757,7 @@ impl Workspaces {
         }
         #[cfg(not(any(feature = "agents", feature = "web")))]
         let _ = compact;
-        self.tell_followers(workspace, author, (app, record), &message)
+        self.tell_followers(workspace, author, (app, record), &message, false)
             .await;
     }
 

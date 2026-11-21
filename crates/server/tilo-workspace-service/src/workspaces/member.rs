@@ -68,11 +68,9 @@ impl LocalDocumentAdmission {
 pub(super) struct Members {
     /// The link of each member copy, while it is up.
     links: std::sync::Mutex<std::collections::HashMap<WorkspaceId, DirectSync>>,
-    /// What syncs each member copy now: its link's dialling and the reader of
-    /// what the serving device sends. A copy held again is synced by its new
+    /// What syncs each member copy now. A copy held again is synced by its new
     /// enrollment alone.
-    syncing:
-        std::sync::Mutex<std::collections::HashMap<WorkspaceId, [tokio::task::AbortHandle; 2]>>,
+    syncing: std::sync::Mutex<std::collections::HashMap<WorkspaceId, MemberSyncing>>,
     /// Held while a copy is taken in: a workspace joined while the session holds what it took
     /// part in before is kept once.
     holding: tokio::sync::Mutex<()>,
@@ -127,6 +125,31 @@ pub struct AdmittedWrite {
     /// The author's access in the workspace, as its governance gave it when
     /// the write was taken in.
     pub access: tilo_action_policy::MemberAccess,
+    /// Whether the write is history the workspace already held, which this
+    /// device catches up on (written before it arrived, or while it was
+    /// away), rather than a write made just now: history is old by nature,
+    /// so only a live write is held to the clock window.
+    pub history: bool,
+}
+
+/// The tasks that sync a member copy.
+struct MemberSyncing {
+    /// Its link's dialling.
+    dialling: tokio::task::AbortHandle,
+    /// The reader of what the serving device sends.
+    following: tokio::task::AbortHandle,
+    /// The wait for the group's keys, which takes in what the copy kept before it held them.
+    keying: Option<tokio::task::AbortHandle>,
+}
+
+impl MemberSyncing {
+    fn abort(&self) {
+        self.dialling.abort();
+        self.following.abort();
+        if let Some(keying) = &self.keying {
+            keying.abort();
+        }
+    }
 }
 
 impl Members {
@@ -1157,7 +1180,7 @@ impl Workspaces {
             .ok()
             .and_then(|all| {
                 all.get(&workspace)
-                    .map(|[dialling, _]| !dialling.is_finished())
+                    .map(|syncing| !syncing.dialling.is_finished())
             })
             .unwrap_or(false)
     }
@@ -1172,7 +1195,7 @@ impl Workspaces {
             .lock()
             .ok()?
             .get(&workspace)
-            .map(|tasks| tasks.each_ref().map(tokio::task::AbortHandle::id))
+            .map(|tasks| [tasks.dialling.id(), tasks.following.id()])
     }
 
     /// The address of the device serving `workspace`, as its member copy here holds it: what a
@@ -1383,7 +1406,7 @@ impl Workspaces {
         if let Ok(mut links) = self.inner.member.links.lock() {
             links.insert(workspace_id, link.clone());
         }
-        self.take_part_in_keys(&name);
+        let keying = self.take_part_in_keys(&name);
         let following = self.follow_member(&name, &link);
         let (up, waiting) = tokio::sync::watch::channel(false);
         drop(waiting);
@@ -1408,13 +1431,15 @@ impl Workspaces {
                 tokio::time::sleep(REDIAL).await;
             }
         });
-        let syncing = [dialing.abort_handle(), following];
+        let syncing = MemberSyncing {
+            dialling: dialing.abort_handle(),
+            following,
+            keying,
+        };
         if let Ok(mut all) = self.inner.member.syncing.lock()
             && let Some(before) = all.insert(workspace_id, syncing)
         {
-            for task in before {
-                task.abort();
-            }
+            before.abort();
         }
         Ok(())
     }
@@ -1425,12 +1450,15 @@ impl Workspaces {
     /// (it waits for keys the device is due, [`crate::documents::Sealing::Due`]): a device that
     /// joined a workspace and only reads what was written there before it arrived would
     /// otherwise hold every sealed record unopened, however long it waited.
-    fn take_part_in_keys(&self, workspace: &str) {
-        let Some(keys) = self.device_keys() else {
-            return;
-        };
+    ///
+    /// When the device comes to hold the group's keys, the copy takes in once what it kept but
+    /// could not open before ([`Self::take_in_what_keys_open`]). Answers the task that waits for
+    /// them, `None` when the device has no key service.
+    fn take_part_in_keys(&self, workspace: &str) -> Option<tokio::task::AbortHandle> {
+        let keys = self.device_keys()?;
         let workspace = workspace.to_owned();
-        tokio::spawn(async move {
+        let workspaces = self.downgrade();
+        let task = tokio::spawn(async move {
             // The first ask starts the device's part in the group; the key service keeps asking
             // on its own after the wait, so a wait that ends first leaves nothing undone.
             if let Some(Err(error)) = keys
@@ -1439,7 +1467,101 @@ impl Workspaces {
             {
                 tracing::debug!(%workspace, %error, "a member copy's group has not admitted this device yet");
             }
+            // Where the keys stood when last looked at: a change after that look ends the wait
+            // at once, so keys that arrive between a look and the wait are not missed.
+            let mut seen = 0;
+            loop {
+                match keys
+                    .group_keys(&workspace, collab_types::EVERY_MEMBER, false)
+                    .await
+                {
+                    Some(Ok(_)) => break,
+                    // The device takes part in no group of the workspace: nothing is sealed.
+                    None => return,
+                    Some(Err(_)) => {}
+                }
+                let Some(next) = keys.keys_changed(&workspace, seen).await else {
+                    return;
+                };
+                seen = next;
+            }
+            if let Some(workspaces) = workspaces.upgrade() {
+                workspaces.take_in_what_keys_open(&workspace).await;
+            }
         });
+        Some(task.abort_handle())
+    }
+
+    /// Take into the member copy `workspace` the writes the device serving it sent that the copy
+    /// kept but could not take in: a sealed record's writes that arrived before this device held
+    /// the keys that open them. The copy keeps every write it is sent
+    /// ([`Self::keep_member_write`]) and nothing sends those writes again, so without this the
+    /// copy would hold the record without them for good, and so would everything reading it
+    /// here. What it takes in reaches whoever follows the record as the history it is.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the copy stays held until every kept write is in, so a write that comes meanwhile is judged after them"
+    )]
+    async fn take_in_what_keys_open(&self, workspace: &str) {
+        let Ok(state) = self.workspace(workspace).await else {
+            return;
+        };
+        let mut governed = state.lock().await;
+        let retained = match self
+            .inner
+            .host
+            .records
+            .retained(governed.workspace_id())
+            .await
+        {
+            Ok(retained) => retained,
+            Err(error) => {
+                tracing::warn!(%workspace, %error, "a member copy did not read the writes it kept");
+                return;
+            }
+        };
+        let mut took = false;
+        for frame in retained {
+            let Ok(message) = NeighbourMsg::decode(&frame.body) else {
+                continue;
+            };
+            let NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                ..
+            } = &message
+            else {
+                continue;
+            };
+            // A resource's document is the store's, which takes it in as it does at the copy's
+            // start ([`Self::recall_member_resources`]).
+            if collab_types::is_store_document(document_id) {
+                self.follow_member_document(&mut governed, frame.author, &message);
+                took |= self
+                    .replay_resource_write(&mut governed, frame.author, &message)
+                    .await;
+                continue;
+            }
+            let taken = governed.take_served(frame.author, &message)
+                || governed
+                    .follow_kept(frame.author, message.clone())
+                    .await
+                    .changed;
+            if taken {
+                self.tell_followers(
+                    &governed,
+                    frame.author,
+                    (app_id.clone(), document_id.clone()),
+                    &message,
+                    true,
+                )
+                .await;
+                took = true;
+            }
+        }
+        if took {
+            self.keep_soon(&mut governed);
+        }
     }
 
     /// Project this copy's retained resource frames before starting its link.
@@ -1510,7 +1632,7 @@ impl Workspaces {
                 let governance = frame.message.governance_workspace().is_some();
                 if (governance || (frame.fresh && frame.report.is_ok()))
                     && let Err(error) = workspaces
-                        .keep_member_write(&name, frame.author, &frame.message, &body)
+                        .keep_member_write(&name, frame.author, &frame.message, &body, frame.retained)
                         .await
                 {
                     tracing::warn!(%name, %error, "a member copy did not keep what the serving device sent");
@@ -1546,13 +1668,15 @@ impl Workspaces {
     /// Take `message`, `author`'s frame the serving device sent this member
     /// copy, into
     /// it: a resource write into the copy's documents and the apps following
-    /// it, group governance into this device's key service.
+    /// it, group governance into this device's key service. `history` says
+    /// the frame came from the serving device's retained history.
     async fn keep_member_write(
         &self,
         workspace: &str,
         author: [u8; 32],
         message: &NeighbourMsg,
         body: &[u8],
+        history: bool,
     ) -> Result<(), String> {
         if message.governance_workspace().is_some() {
             if let Some(sink) = self
@@ -1589,21 +1713,24 @@ impl Workspaces {
                 author,
                 (app_id.clone(), document_id.clone()),
                 message,
+                history,
             )
             .await;
             self.keep_soon(&mut governed);
         } else {
             // A write the copy cannot take in yet (a sealed record whose keys have not reached the
             // service) is still the apps' to show, which may hold its keys.
-            self.hand_on(&governed, author, message);
+            self.hand_on(&governed, author, message, history);
         }
-        let workspace_id = governed.workspace_id();
-        drop(governed);
-        self.inner
+        // Kept before the copy is let go, so the copy taking in what it kept once its keys
+        // arrive ([`Self::take_in_what_keys_open`]) reads this write too, if this copy could not
+        // take it in.
+        let kept = self
+            .inner
             .host
             .records
             .carry(
-                workspace_id,
+                governed.workspace_id(),
                 author,
                 HostCommit {
                     body: body.to_vec(),
@@ -1611,9 +1738,9 @@ impl Workspaces {
                     checkpoint: retention == neighbour_wire::Retention::Checkpoint,
                 },
             )
-            .await?
-            .durable()
             .await?;
+        drop(governed);
+        kept.durable().await?;
         Ok(())
     }
 }

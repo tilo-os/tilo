@@ -55,7 +55,7 @@ impl RemoteDocument {
             cluster_id: write.workspace.to_string(),
             document_id: document_id.clone(),
             author: write.access.clone(),
-            replayed: false,
+            replayed: write.history,
             envelope: (**envelope).clone(),
             own: own.clone(),
         })

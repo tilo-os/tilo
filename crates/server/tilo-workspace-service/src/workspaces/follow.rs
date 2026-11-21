@@ -47,7 +47,8 @@ impl Workspaces {
     /// reads it only when it next looks at everything. Sent while the
     /// workspace is still locked, so whoever it wakes reads a copy that holds
     /// the write. Another device's write is also handed on whole
-    /// ([`Workspaces::admitted_writes`]), for this device's apps to show.
+    /// ([`Workspaces::admitted_writes`]), for this device's apps to show, as
+    /// `history` the workspace already held or as a write made just now.
     #[cfg_attr(
         not(feature = "agents"),
         expect(
@@ -61,8 +62,9 @@ impl Workspaces {
         author: [u8; 32],
         (app, document): (String, String),
         message: &neighbour_wire::NeighbourMsg,
+        history: bool,
     ) {
-        self.hand_on(workspace, author, message);
+        self.hand_on(workspace, author, message, history);
         // What the write carried, read here where it is at hand, so a document
         // whose repair keeps changes is read only for a write that could
         // release one of them.
@@ -86,11 +88,14 @@ impl Workspaces {
     /// Hand `message`, `author`'s write `workspace` took in, to the apps of
     /// this device that follow it: not a write of this device's own, which its
     /// apps wrote, and not one whose author the workspace grants nothing now.
+    /// `history` says it is a write the workspace already held, which this
+    /// device catches up on, rather than one made just now.
     pub(super) fn hand_on(
         &self,
         workspace: &GovernedWorkspace,
         author: [u8; 32],
         message: &neighbour_wire::NeighbourMsg,
+        history: bool,
     ) {
         if self.member_device_key() == Some(author)
             || !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. })
@@ -106,6 +111,7 @@ impl Workspaces {
             author,
             message: Arc::new(message.clone()),
             access,
+            history,
         });
     }
 }

@@ -16,7 +16,10 @@ use iroh::protocol::Router;
 use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use super::{DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, PreAdmitRequest, Workspaces};
+use super::{
+    DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeysChangedFuture, PreAdmitRequest,
+    Workspaces,
+};
 use crate::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
 /// What a test that stands in for the mail servers of the accounts people keep here is made
@@ -258,12 +261,45 @@ impl TestHost {
 /// it opens a channel's keys the first time something starts the channel's
 /// record, as the channel service of the device a page or a bot runs on does,
 /// and answers with the same keys every time after.
-#[derive(Default)]
 pub struct TestGroupKeys {
     held: Mutex<BTreeMap<String, ContentKeys>>,
+    /// Whether the device opens no group itself: it holds keys only once they are handed to it
+    /// ([`Self::hand`]), as a device a group has not let in yet.
+    admitted_only: bool,
+    /// How many times keys were handed to the device, for whoever waits for them.
+    handed: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for TestGroupKeys {
+    fn default() -> Self {
+        Self {
+            held: Mutex::default(),
+            admitted_only: false,
+            handed: tokio::sync::watch::Sender::new(0),
+        }
+    }
 }
 
 impl TestGroupKeys {
+    /// The keys of a device that opens no group itself: it reads a sealed record only once a
+    /// group's keys are handed to it ([`Self::hand`]), as a device that joined a workspace holds
+    /// none until the group lets it in.
+    #[must_use]
+    pub fn admitted_only() -> Self {
+        Self {
+            admitted_only: true,
+            ..Self::default()
+        }
+    }
+
+    /// Hand the fixture every group's keys `other` holds, as a group lets a device in after it
+    /// opened.
+    pub fn hand_what_is_held_by(&self, other: &Self) {
+        let held = other.held.lock().expect("the other fixture's keys").clone();
+        self.held.lock().expect("the fixture's keys").extend(held);
+        self.handed.send_modify(|handed| *handed = handed.wrapping_add(1));
+    }
+
     /// Hand the fixture `keys` as every member's keys of `workspace`: keys that reach a device
     /// after it opened.
     ///
@@ -281,6 +317,7 @@ impl TestGroupKeys {
             .lock()
             .expect("the fixture's keys")
             .insert(group, keys);
+        self.handed.send_modify(|handed| *handed = handed.wrapping_add(1));
     }
 }
 
@@ -307,7 +344,7 @@ impl GroupKeys for TestGroupKeys {
             if let Some(keys) = held {
                 return Some(Ok(keys));
             }
-            if !create {
+            if !create || self.admitted_only {
                 return Some(Err("this channel has no keys yet".into()));
             }
             let keys = KeyGroup::create(
@@ -322,6 +359,14 @@ impl GroupKeys for TestGroupKeys {
                 .expect("the fixture's keys")
                 .insert(workspace.to_owned(), keys.clone());
             Some(Ok(keys))
+        })
+    }
+
+    fn keys_changed<'a>(&'a self, _workspace: &'a str, after: u64) -> KeysChangedFuture<'a> {
+        let mut handed = self.handed.subscribe();
+        Box::pin(async move {
+            let handed = handed.wait_for(|handed| *handed != after).await.ok()?;
+            Some(*handed)
         })
     }
 }

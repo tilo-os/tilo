@@ -28,6 +28,15 @@ pub type GroupKeysAnswerFuture<'a> = Pin<Box<dyn Future<Output = GroupKeysAnswer
 #[cfg(target_family = "wasm")]
 pub type GroupKeysAnswerFuture<'a> = Pin<Box<dyn Future<Output = GroupKeysAnswer> + 'a>>;
 
+/// Where a device's keys of a workspace stand, waited on: the value to wait from next, or `None`
+/// when the device never says its keys changed.
+#[cfg(not(target_family = "wasm"))]
+pub type KeysChangedFuture<'a> = Pin<Box<dyn Future<Output = Option<u64>> + Send + 'a>>;
+/// Where a device's keys of a workspace stand, waited on: a page's key service answers on its one
+/// thread.
+#[cfg(target_family = "wasm")]
+pub type KeysChangedFuture<'a> = Pin<Box<dyn Future<Output = Option<u64>> + 'a>>;
+
 /// The group keys of the device a workspace service runs on, asked of it.
 pub trait GroupKeys: collab_types::signer::MaybeSendSync + 'static {
     /// The reader list bound to a document's registered key group, if held here.
@@ -50,6 +59,13 @@ pub trait GroupKeys: collab_types::signer::MaybeSendSync + 'static {
         readers: &'a str,
         create: bool,
     ) -> GroupKeysAnswerFuture<'a>;
+
+    /// Wait until the keys or access of `workspace`'s groups change after `after` (0 at first),
+    /// and answer the value to wait from next: at once when they changed since. `None` when this
+    /// device never says, so a wait for keys it does not hold yet would never end.
+    fn keys_changed<'a>(&'a self, _workspace: &'a str, _after: u64) -> KeysChangedFuture<'a> {
+        Box::pin(std::future::ready(None))
+    }
 }
 
 /// [`GroupKeys`] as the host's shared handle.
