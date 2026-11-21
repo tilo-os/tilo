@@ -369,6 +369,11 @@ pub struct ActivityTimeline {
     /// "Now" for the relative-timestamp paint. Tests + headless callers pin
     /// this so a snapshot stays stable.
     now_override: Option<SystemTime>,
+    /// The moment the times its rows say are read at, and when one of them next reads
+    /// differently: a frame reads them again then and never in between, so what it paints and
+    /// what it tells assistive technology say the same.
+    read_at: SystemTime,
+    times_change_at: Option<SystemTime>,
     newest_first: bool,
     /// The strip's chips, placed by the layout: what a press on one filters
     /// the pane by, and where it stands. Painting reads this and adds nothing
@@ -448,6 +453,8 @@ impl ActivityTimeline {
             on_undo_band: None,
             on_name_group: None,
             now_override: None,
+            read_at: crate::time::wall(),
+            times_change_at: None,
             newest_first: true,
             strip_chips: Vec::new(),
             author_pill_painted: Rect::ZERO,
@@ -1599,7 +1606,23 @@ impl ActivityTimeline {
     }
 
     fn now(&self) -> SystemTime {
-        self.now_override.unwrap_or_else(crate::time::wall)
+        self.now_override.unwrap_or(self.read_at)
+    }
+
+    /// Read the clock again when a time its rows say is due to read differently: whether it was.
+    pub(super) fn follow_clock(&mut self) -> bool {
+        let now = crate::time::wall();
+        if self.now_override.is_some() || self.times_change_at.is_none_or(|due| due > now) {
+            return false;
+        }
+        self.read_at = now;
+        self.rebuild_rows();
+        true
+    }
+
+    /// When the clock is next read, for the frame that shows what it then says.
+    pub(super) fn times_change_at(&self) -> Option<SystemTime> {
+        self.times_change_at.filter(|_| self.now_override.is_none())
     }
 
     fn passes(&self, e: &HistoryEntry, chip_ops: &[EntryKind], needle: &str) -> bool {
@@ -1822,6 +1845,15 @@ impl ActivityTimeline {
 
         self.rows = rows;
         self.row_groups = row_groups;
+        self.times_change_at = self
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                VisualRow::Entry(entry, _) => self.entries.get(*entry).map(|entry| entry.timestamp),
+                VisualRow::Group(group) => self.row_groups.get(*group).map(|group| group.last_time),
+            })
+            .filter_map(|at| crate::widget::history::relative_time_changes_at(at, now))
+            .min();
         self.row_tops = Vec::with_capacity(self.rows.len().saturating_add(1));
         let mut y = 0.0;
         for i in 0..self.rows.len() {

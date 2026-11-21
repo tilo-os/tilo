@@ -206,6 +206,26 @@ impl Widget for ActivityTimeline {
         }
     }
 
+    fn update(
+        &mut self,
+        _state: &crate::widget::AppModel,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        self.follow_clock()
+    }
+
+    fn serve_deadline(&mut self, _now: crate::time::Instant) -> bool {
+        self.follow_clock()
+    }
+
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let wait = self
+            .times_change_at()?
+            .duration_since(crate::time::wall())
+            .unwrap_or_default();
+        crate::time::now().checked_add(wait)
+    }
+
     fn name(&self) -> &'static str {
         "ActivityTimeline"
     }

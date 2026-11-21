@@ -387,6 +387,34 @@ pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
     crate::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
 }
 
+/// The first moment after `now` at which [`format_relative_time`] of `ts` reads differently, or
+/// `None` past a week, which a view's next change of its own reads again.
+#[must_use]
+pub fn relative_time_changes_at(ts: SystemTime, now: SystemTime) -> Option<SystemTime> {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    let shown = format_relative_time(ts, now);
+    let mut ago = now.duration_since(ts).ok()?.as_secs();
+    // Each band's count moves by its unit, and the next band starts at its own threshold.
+    while ago < 7 * DAY {
+        ago = match ago {
+            0..45 => 45,
+            45..90 => 90,
+            90..HOUR => (ago / MINUTE + 1) * MINUTE,
+            HOUR..5_400 => 5_400,
+            5_400..DAY => (ago / HOUR + 1) * HOUR,
+            DAY..172_800 => 172_800,
+            _ => (ago / DAY + 1) * DAY,
+        };
+        let at = ts.checked_add(crate::time::Duration::from_secs(ago))?;
+        if format_relative_time(ts, at) != shown {
+            return Some(at);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +651,33 @@ mod tests {
             format_relative_time_thresholds();
             hue_to_rgb_covers_every_sextant();
         }
+    }
+
+    /// A time read as how long ago it was is read again just when it says something else.
+    #[test]
+    fn a_relative_time_changes_when_its_words_do() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let ago = |secs| at + Duration::from_secs(secs);
+        for (now, next) in [
+            (10, 45),
+            (60, 120),
+            (130, 180),
+            (3_599, 3_600),
+            (4_000, 7_200),
+            (90_000, 172_800),
+        ] {
+            let due = relative_time_changes_at(at, ago(now));
+            assert_eq!(due, Some(ago(next)), "{now} s after it");
+            assert_ne!(
+                format_relative_time(at, ago(next)),
+                format_relative_time(at, ago(next - 1))
+            );
+        }
+        assert_eq!(
+            relative_time_changes_at(at, ago(8 * 86_400)),
+            None,
+            "a week on, nothing wakes for it"
+        );
     }
 }
 

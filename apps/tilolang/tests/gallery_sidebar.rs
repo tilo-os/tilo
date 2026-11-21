@@ -61,6 +61,28 @@ fn rest(app: &mut App) {
     }
 }
 
+/// The window's frames until `shows` reads what `waited` names. The instance reads its indexes
+/// on workers that wake the window when a read lands, as a real window waits for them: a loaded
+/// machine lands them after any fixed wait, so the test waits for what it reads, and fails
+/// saying so if it never comes.
+fn until(app: &mut App, waited: &str, shows: impl Fn(&App) -> bool) {
+    let began = std::time::Instant::now();
+    while !shows(app) {
+        assert!(began.elapsed().as_secs() < 60, "{waited}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        frame(app);
+    }
+}
+
+/// Whether the sidebar lists every place.
+fn lists_places(app: &App) -> bool {
+    PLACES.iter().all(|place| {
+        app.semantic_tree().iter().any(|node| {
+            node.role == ui::a11y::Role::TreeItem && node.name.as_deref() == Some(*place)
+        })
+    })
+}
+
 /// The middle of the sidebar's row for `place`.
 fn row(app: &App, place: &str) -> (f64, f64) {
     let bounds = app
@@ -115,7 +137,7 @@ fn press(app: &mut App, (x, y): (f64, f64)) {
 fn one_press_on_a_place_shows_its_page() {
     crate::support::installed("gallery");
     drive_live_window::<TlApp, _>(|app| {
-        rest(app);
+        until(app, "the sidebar lists its places", lists_places);
         for (turn, place) in PLACES.iter().rev().enumerate() {
             let framed = turn % 2 == 1;
             let (x, y) = row(app, place);
@@ -129,11 +151,9 @@ fn one_press_on_a_place_shows_its_page() {
             }
             mouse(app, ElementState::Released);
             rest(app);
-            assert_eq!(
-                shown(app).as_deref(),
-                Some(*place),
-                "one press shows {place}"
-            );
+            until(app, &format!("one press shows {place}"), |app| {
+                shown(app).as_deref() == Some(*place)
+            });
         }
         // A press on the next place before the page of the last one arrived.
         for (first, then) in [("Controls", "Data"), ("Media", "Backlog")] {
@@ -147,11 +167,9 @@ fn one_press_on_a_place_shows_its_page() {
             frame(app);
             mouse(app, ElementState::Released);
             rest(app);
-            assert_eq!(
-                shown(app).as_deref(),
-                Some(then),
-                "{then} pressed while {first} came"
-            );
+            until(app, &format!("{then} pressed while {first} came"), |app| {
+                shown(app).as_deref() == Some(then)
+            });
         }
     })
     .expect("the gallery's window opens");
@@ -162,20 +180,23 @@ fn a_phone_pushes_the_chosen_page_over_the_places() {
     crate::support::installed("gallery");
     SIZE.with(|size| size.set(ui::winit::dpi::PhysicalSize::new(390, 844)));
     drive_live_window::<TlApp, _>(|app| {
-        rest(app);
+        until(app, "the sidebar lists its places", lists_places);
         for place in PLACES {
             press(app, row(app, place));
-            assert_eq!(
-                shown(app).as_deref(),
-                Some(place),
-                "one press shows {place}"
+            until(
+                app,
+                &format!("one press shows {place}, over the places, with Back"),
+                |app| {
+                    shown(app).as_deref() == Some(place)
+                        && named(app, ui::a11y::Role::Button, "Back").is_some()
+                },
             );
-            let back = named(app, ui::a11y::Role::Button, "Back")
-                .unwrap_or_else(|| panic!("{place} stands over the places, with Back"));
+            let back = named(app, ui::a11y::Role::Button, "Back").expect("Back");
             press(app, back);
-            assert!(
-                named(app, ui::a11y::Role::Button, "Hide sidebar").is_some(),
-                "Back from {place} shows the places again"
+            until(
+                app,
+                &format!("Back from {place} shows the places again"),
+                |app| named(app, ui::a11y::Role::Button, "Hide sidebar").is_some(),
             );
         }
     })
