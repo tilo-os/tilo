@@ -433,14 +433,10 @@ mod tests {
         }
 
         app.set_role(Role::Viewer);
-        assert!(
-            app.effect_on(source, &MusicEffect::BrowseSpotify)
-                .is_err()
-        );
+        assert!(app.effect_on(source, &MusicEffect::BrowseSpotify).is_err());
         assert_eq!(app.state().catalogue, Catalogue::Unset);
         app.set_role(Role::Owner);
-        app.effect_on(source, &MusicEffect::BrowseSpotify)
-            .unwrap();
+        app.effect_on(source, &MusicEffect::BrowseSpotify).unwrap();
         assert_eq!(app.state().catalogue, Catalogue::Spotify);
 
         app.effect_on(source, &MusicEffect::BrowseYouTube).unwrap();
