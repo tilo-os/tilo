@@ -10,33 +10,6 @@ pub(crate) const IN_A_PAGE: bool = cfg!(target_family = "wasm");
 #[cfg(all(feature = "native", not(target_family = "wasm")))]
 pub use tilo_runner_native::{run, run_or_exit};
 
-#[cfg(target_family = "wasm")]
-pub use web::{run, run_or_exit};
-
-/// In the browser an app does not own an event loop: the page's runtime
-/// (`tilo-browser-runtime`) mounts registered application definitions in its
-/// desktop or as a single-app mount, so running an app registers it.
-#[cfg(target_family = "wasm")]
-mod web {
-    use ui_core::application::registry;
-    use ui_core::launch::{LaunchError, LaunchSpec};
-
-    /// Register the app `spec` describes for the page runtime to mount.
-    ///
-    /// # Errors
-    ///
-    /// Never fails; the signature matches the native runner's.
-    pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
-        registry::register(spec.definition());
-        Ok(())
-    }
-
-    /// [`run`]; registration cannot fail, so there is nothing to exit with.
-    pub fn run_or_exit(spec: &LaunchSpec) {
-        registry::register(spec.definition());
-    }
-}
-
 #[cfg(all(not(feature = "native"), not(target_family = "wasm")))]
 mod without_runner {
     use ui_core::launch::{LaunchError, LaunchSpec};

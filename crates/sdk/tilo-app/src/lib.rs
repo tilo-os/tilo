@@ -44,9 +44,10 @@ pub mod linked_accounts;
 mod runner;
 
 /// The toolkit's launch vocabulary, with `run` resolved to the runner this
-/// build targets: the native event loop on Linux and macOS, registration with
-/// the page runtime in the browser.
+/// build targets: the native event loop on Linux and macOS. A wasm build has
+/// no runner: what hosts it mounts the app's definition itself.
 pub mod launch {
+    #[cfg(not(target_family = "wasm"))]
     pub use crate::runner::{run, run_or_exit};
     pub use ui_core::launch::*;
 }
@@ -62,8 +63,8 @@ pub mod launch {
 /// ```
 ///
 /// On Linux and macOS it runs the native runner with the standard launch
-/// modes (`--shots`, `--headless`, …). In the browser it registers the app
-/// for the page runtime to mount.
+/// modes (`--shots`, `--headless`, …). A wasm build's binary is empty: what
+/// hosts it mounts the app's definition itself.
 #[macro_export]
 macro_rules! main {
     (definition = $definition:expr) => {
