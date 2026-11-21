@@ -35,6 +35,9 @@ type OpenStore = dyn Fn(&str) -> Result<ResourceStore, ResourceOpenError>;
 #[derive(Clone)]
 pub struct WorkspaceResources {
     open: Rc<OpenStore>,
+    /// Whether the record `owner` keeps, by id, is still on its way from the workspace
+    /// ([`Self::awaiting`]): it opens only once the workspace answered for it.
+    awaiting: Option<Rc<dyn Fn(&str, &str) -> bool>>,
     author: MemberId,
 }
 
@@ -58,7 +61,20 @@ impl WorkspaceResources {
     ) -> Self {
         Self {
             open: Rc::new(open),
+            awaiting: None,
             author,
+        }
+    }
+
+    /// Open a record only once the workspace answered for it: `awaiting` says
+    /// whether the record `owner` keeps, by id, is still on its way. Each record
+    /// waits for its own answer alone, so one the workspace answered opens while
+    /// another of the same app's is still awaited.
+    #[must_use]
+    pub fn awaiting(self, awaiting: impl Fn(&str, &str) -> bool + 'static) -> Self {
+        Self {
+            awaiting: Some(Rc::new(awaiting)),
+            ..self
         }
     }
 
@@ -176,6 +192,13 @@ impl WorkspaceResources {
         kind: &str,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredResource, ResourceOpenError> {
+        if self
+            .awaiting
+            .as_ref()
+            .is_some_and(|awaiting| awaiting(owner, id.as_str()))
+        {
+            return Err(ResourceOpenError::Arriving);
+        }
         let store = (self.open)(owner)?;
         let checkout = DocumentCheckout::new(id, ResourceType::new(kind));
         super::person::open_in(&store, &checkout, initialize)?;

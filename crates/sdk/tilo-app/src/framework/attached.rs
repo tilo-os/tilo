@@ -339,12 +339,12 @@ impl AttachedView {
 
     /// Give `context` what whoever holds the view lends it: the workspace's content, and its own
     /// `store` for the documents the view opens from its workspace, which for an app that keeps
-    /// documents for its whole workspace ([`collab_types::WORKSPACE_DOCUMENTS`]) opens only
-    /// once each was handed over or is known to be new; until then they are on their way, which
-    /// asks nothing and founds nothing. The rest of the app's own documents (the workspace's
-    /// folder, which a Files window opens) are opened from it as a window does. With those
-    /// still awaited, and whether the app keeps any. Another app's are not handed to this view
-    /// at all.
+    /// documents for its whole workspace ([`collab_types::WORKSPACE_DOCUMENTS`]) opens each
+    /// only once the workspace answered for that one: until then it is on its way, which asks
+    /// nothing and founds nothing. The rest of the app's own documents (the workspace's folder,
+    /// which a Files window opens) are opened from it as a window does. With those still
+    /// awaited, and whether the app keeps any. Another app's are not handed to this view at
+    /// all.
     fn lent(
         context: &mut ui_core::application::ProcessContext,
         lends: Option<tilo_content::ContentStore>,
@@ -372,14 +372,19 @@ impl AttachedView {
         // app that keeps none for the workspace, and whose store asks its workspace for what
         // its window opens, still opens the workspace's own documents beside its own.
         if keeps || asks_workspace {
-            let (waiting, own, store) = (Rc::clone(&awaited), definition.app_id(), store.clone());
+            let (asks, own, store) = (Rc::clone(&awaited), definition.app_id(), store.clone());
             context.provide_workspace_resources(
                 ui_core::resource::workspace::WorkspaceResources::new(me.clone(), move |owner| {
-                    if owner == own && waiting.borrow().is_empty() {
+                    if owner == own {
                         Ok(store.clone())
                     } else {
                         Err(ui_core::resource::ResourceOpenError::Arriving)
                     }
+                })
+                .awaiting(move |owner, id| {
+                    // Each record opens on the workspace's word about it alone: one answered
+                    // while another of the same app's is still on its way is already its own.
+                    owner == own && asks.borrow().iter().any(|asked| asked.as_str() == id)
                 }),
             );
         }
@@ -1491,15 +1496,12 @@ impl AttachedView {
         })
     }
 
-    /// Have the app open what it asked its workspace for, once the view was told of all of
-    /// it. Its declaration asked for each once, when the view opened and they were still
-    /// awaited, and a view no window shows is laid out and never refreshed, so nothing else
-    /// asks again. A document opened here is new to the view, which lays it out when next
+    /// Have the app open each document it asked its workspace for that the workspace has
+    /// answered for. Its declaration asked for each once, when the view opened and they were
+    /// still awaited, and a view no window shows is laid out and never refreshed, so nothing
+    /// else asks again. A document opened here is new to the view, which lays it out when next
     /// read; laying the view out here would do that for every change merged into a part.
     fn take_up_kept(&mut self) {
-        if self.keeps_for_workspace && !self.awaited.borrow().is_empty() {
-            return;
-        }
         let opened = self
             .frame
             .get_mut()
@@ -1702,9 +1704,11 @@ impl AttachedView {
         } else {
             sync.merge(&self.records, &checkout, mutation.clone())?
         };
-        // What the workspace holds of it is here now: nothing founds another.
+        // What the workspace holds of it is here now: nothing founds another. A document the
+        // view keeps for its workspace opened here is an arrival too: its declaration waited
+        // for it, and the record is not opened through the store's own open-arrived path.
         self.awaited.borrow_mut().remove(document);
-        if from_workspace {
+        if from_workspace || opened {
             // The window that asked its workspace for it opens it at its next frame, as it
             // does one the workspace delivered: what it waited for arrived.
             self.records.note_kept();
