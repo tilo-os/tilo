@@ -635,3 +635,42 @@ fn a_question_without_answers_is_refused_and_nothing_is_posted() {
         "nothing was posted"
     );
 }
+
+/// A part kept before a question was answered only with its choices: its answered question
+/// held what the person typed beside the choice. It migrates to the current version, reads, and
+/// keeps the answer.
+#[test]
+fn a_part_whose_answer_kept_typed_words_migrates_and_keeps_the_answer() {
+    use automerge::transaction::Transactable as _;
+    use automerge::{ROOT, ReadDoc as _};
+    use ui::tilo_resource::evolution;
+    let (mut part, id) = Part::asking(0);
+    part.apply(
+        By::Person(ME),
+        SECOND_MS,
+        ChatMessages::ANSWER_QUESTION.with(answer(&id, ALLOW, "Phone")),
+    )
+    .expect("its person answers it");
+    let answered_at = |doc: &AutoCommit| {
+        let message = evolution::collection_items(doc, &ROOT, "messages")
+            .unwrap()
+            .into_iter()
+            .find(|message| evolution::map_at(doc, message, "question").unwrap().is_some())
+            .expect("a message asks");
+        let question = evolution::map_at(doc, &message, "question").unwrap().unwrap();
+        evolution::map_at(doc, &question, "answered").unwrap().expect("it is answered")
+    };
+    let mut old = part.doc.clone();
+    let answered = answered_at(&old);
+    old.put(&answered, "detail", "and the drafts too").unwrap();
+    evolution::write_version(&mut old, 1).unwrap();
+
+    assert!(evolution::migrate::<ChatMessages>(&mut old).unwrap(), "version 1 migrates");
+    assert!(
+        old.get(&answered_at(&old), "detail").unwrap().is_none(),
+        "the typed words are gone"
+    );
+    let migrated = ChatMessages::read(&old).expect("the migrated part reads");
+    let before = ChatMessages::read(&part.doc).expect("the part reads");
+    assert_eq!(migrated.messages, before.messages, "every message reads as it was");
+}

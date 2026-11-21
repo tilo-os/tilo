@@ -333,11 +333,39 @@ pub struct NewMessage {
     pub origin: Option<ui::tilo_resource::Origin>,
 }
 
+/// Bring a part of version 1 up: an answered question kept what its person typed beside a
+/// choice (`question.answered.detail`), and a question is now answered only with one of its
+/// choices, so that field goes.
+fn upgrade(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ui::tilo_resource::ModelError> {
+    use automerge::transaction::Transactable as _;
+    use automerge::{ROOT, ReadDoc as _};
+    use ui::tilo_resource::evolution;
+    if from != 1 {
+        return Err(ui::tilo_resource::ModelError::invalid(format!(
+            "no chat messages migration from {from}"
+        )));
+    }
+    for message in evolution::collection_items(doc, &ROOT, "messages")? {
+        let Some(question) = evolution::map_at(doc, &message, "question")? else {
+            continue;
+        };
+        let Some(answered) = evolution::map_at(doc, &question, "answered")? else {
+            continue;
+        };
+        if doc.get(&answered, "detail")?.is_some() {
+            doc.delete(&answered, "detail")?;
+        }
+    }
+    Ok(())
+}
+
 // The window's effects on a message (reveal it, read it) are offered on
 // each message the chain publishes, as on the resource's other items.
 #[ui::tilo_resource::resource(
     kind = "chat.messages",
     params = chat_messages,
+    version = 2,
+    migrate = upgrade,
     search = ChatMessages::search,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,

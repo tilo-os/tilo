@@ -196,3 +196,4 @@ fields = [
   { name = "city", type = "text" },
   { name = "timezone", type = "text" },
 ]
+

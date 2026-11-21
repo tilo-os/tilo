@@ -7,3 +7,4 @@ kind = "disk-usage"
 label = "Disk Usage Analyzer"
 version = 1
 shows = ["home"]
+

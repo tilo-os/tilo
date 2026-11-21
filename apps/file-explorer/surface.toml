@@ -287,6 +287,65 @@ params = [
 ]
 
 [[resources]]
+kind = "tilo.accounts"
+label = "Accounts"
+version = 2
+fields = [
+  { path = "accounts", type = { collection = { named = "PersonAccount" } }, stored = "collection" },
+  { path = "accounts.*.type_id", type = "text" },
+  { path = "accounts.*.display_name", type = "text" },
+  { path = "accounts.*.config", type = "any" },
+  { path = "accounts.*.enabled", type = "bool" },
+  { path = "accounts.*.tint", type = "int" },
+  { path = "active", type = { map = "text" } },
+]
+
+[[resources.verbs]]
+id = "publish-browser-identity"
+kind = "undoable"
+params = [
+  { name = "root", type = "text", required = true, schema = { type = "string" } },
+  { name = "origin", type = "text", required = true, schema = { type = "string" } },
+  { name = "display_name", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "save-account"
+kind = "undoable"
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "type_id", type = "text", required = true, schema = { type = "string" } },
+  { name = "display_name", type = "text", required = true, schema = { type = "string" } },
+  { name = "config", required = true, schema = {} },
+  { name = "enabled", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "tint", type = "int", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "remove-account"
+kind = "undoable"
+params = [
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-active-account"
+kind = "undoable"
+params = [
+  { name = "account", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "PersonAccount"
+fields = [
+  { name = "type_id", type = "text" },
+  { name = "display_name", type = "text" },
+  { name = "config", type = "any" },
+  { name = "enabled", type = "bool" },
+  { name = "tint", type = "int" },
+]
+
+[[resources]]
 kind = "files.workspace"
 label = "Files window"
 version = 1

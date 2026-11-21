@@ -617,7 +617,7 @@ fields = [
 [[resources]]
 kind = "chat.messages"
 label = "Messages"
-version = 1
+version = 2
 fields = [
   { path = "messages", type = { collection = { named = "Message" } }, readonly = true, stored = "collection" },
   { path = "messages.*.channel", type = "text", readonly = true },
@@ -690,7 +690,6 @@ fields = [
   { path = "messages.*.question.answered.answer", type = "text" },
   { path = "messages.*.question.answered.device", type = "text" },
   { path = "messages.*.question.answered.at", type = "int" },
-  { path = "messages.*.question.answered.detail", type = "text" },
   { path = "messages.*.question.outcome", type = { option = { named = "Outcome" } }, stored = "record" },
   { path = "messages.*.question.outcome.outcome", type = "text" },
   { path = "messages.*.question.outcome.at", type = "int" },
@@ -887,7 +886,6 @@ params = [
   { name = "message", type = "text", required = true, schema = { type = "string" } },
   { name = "answer", type = "text", required = true, schema = { type = "string" } },
   { name = "device", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "detail", type = { option = "any" }, required = false, schema = {} },
 ]
 
 [[resources.verbs]]
@@ -1027,7 +1025,6 @@ fields = [
   { name = "answer", type = "text" },
   { name = "device", type = "text" },
   { name = "at", type = "int" },
-  { name = "detail", type = "text" },
 ]
 
 [[resources.types]]
