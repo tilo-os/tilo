@@ -135,6 +135,8 @@ pub mod person_asking;
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 mod person_vault;
+#[cfg(not(target_arch = "wasm32"))]
+pub use person_vault::LoginAsked;
 // A secret used by reference by a turn this server carries out itself.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted_use;

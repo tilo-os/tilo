@@ -1061,6 +1061,8 @@ fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
 fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: tilo_sheets::portal::AgentQuestion = serde_json::from_value(details).ok()?;
     let plan = match &asked.ask {
+        // What is typed stays in the sheet's own buffers, and the answer takes it from there.
+        Some(ask) if ask.secret => Plan::Password { identity: 0 },
         Some(ask) => Plan::Ask {
             choices: ask.choices.len(),
             typed: ask.typed,

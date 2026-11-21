@@ -83,8 +83,13 @@ impl Hers {
     /// about `ask`: her device keeps it in her vault as the question says,
     /// and answers with its reference.
     async fn types(&self, ask: &ConnectAsk, password: &str) -> String {
-        let mut keeping = ask.detail();
-        keeping["secret"] = json!(password);
+        let login = ask.login();
+        let keeping = json!({
+            "kind": "login",
+            "belongsTo": login.belongs_to,
+            "username": login.username,
+            "secret": password,
+        });
         let kept = self.of_vault(person_vault::ADD, keeping).await;
         kept["reference"].as_str().expect("a reference").to_owned()
     }
@@ -119,14 +124,13 @@ impl Hers {
         turn: &HostedTurn<'_>,
         ask: &ConnectAsk,
         typed: Option<&str>,
-        as_asked: bool,
     ) -> Result<Option<Connected>, String> {
         let claimed = self
             .workspaces
             .claim_connect(&ask.ask)
             .expect("her answer is claimed");
         self.workspaces
-            .carry_out_connect(turn, &claimed, typed, as_asked)
+            .carry_out_connect(turn, &claimed, typed)
             .await
     }
 }
@@ -166,9 +170,10 @@ async fn what_she_tells_is_asked_for_and_her_typing_connects_it_for_reading_only
         "and nothing to read yet"
     );
     let ask = hers.is_asked(&turn).await;
+    let login = ask.login();
     assert_eq!(
-        ask.detail(),
-        json!({"kind": "login", "belongsTo": [hers.place()], "username": ADDRESS}),
+        (login.belongs_to, login.username.as_str()),
+        (vec![hers.place()], ADDRESS),
         "she is asked for a login at her calendar server, under her user name"
     );
     let words = ask.words();
@@ -193,7 +198,7 @@ async fn what_she_tells_is_asked_for_and_her_typing_connects_it_for_reading_only
     );
     let connected = hers
         .workspaces
-        .carry_out_connect(&turn, &claimed, Some(&typed), true)
+        .carry_out_connect(&turn, &claimed, Some(&typed))
         .await
         .expect("her calendar server takes the sign-in")
         .expect("an account");
@@ -373,7 +378,7 @@ async fn a_calendar_server_that_refuses_the_password_keeps_no_item_and_no_accoun
         .to_owned();
     let ask = hers.is_asked(&turn).await;
     let why = hers
-        .answered(&turn, &ask, Some(&before), true)
+        .answered(&turn, &ask, Some(&before))
         .await
         .expect_err("her calendar server refuses it");
     assert!(
@@ -391,7 +396,7 @@ async fn a_calendar_server_that_refuses_the_password_keeps_no_item_and_no_accoun
     let typed = hers.types(&ask, MISTYPED).await;
     assert_eq!(hers.vault().await.len(), 2);
     let why = hers
-        .answered(&turn, &ask, Some(&typed), true)
+        .answered(&turn, &ask, Some(&typed))
         .await
         .expect_err("her calendar server refuses it");
     assert!(why.contains("rejected"), "{why}");
@@ -409,32 +414,17 @@ async fn a_calendar_server_that_refuses_the_password_keeps_no_item_and_no_accoun
     );
 }
 
-/// What she typed under a question that no longer says what her server
-/// asked connects nothing, asks her calendar server nothing, and is not
-/// kept. Where she declines, nothing is connected either.
+/// Where she declines, nothing is connected and her calendar server is asked
+/// nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_question_that_is_not_her_servers_connects_nothing_and_declining_does_neither() {
+async fn declining_connects_nothing() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
     let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
     let turn = hers.turn(&scout, &keeper, None);
 
     let ask = hers.is_asked(&turn).await;
-    let typed = hers.types(&ask, PASSWORD).await;
-    let why = hers
-        .answered(&turn, &ask, Some(&typed), false)
-        .await
-        .expect_err("a question that was reworded connects nothing");
-    assert!(why.contains("no longer says"), "{why}");
-    assert!(hers.vault().await.is_empty(), "what she typed is not kept");
-    assert!(hers.accounts().await.is_empty());
-    assert!(
-        hers.server.requests().is_empty(),
-        "her calendar server is asked nothing"
-    );
-
-    let ask = hers.is_asked(&turn).await;
-    let came = hers.answered(&turn, &ask, None, true).await;
+    let came = hers.answered(&turn, &ask, None).await;
     assert_eq!(came, Ok(None), "she declined");
     assert!(hers.accounts().await.is_empty());
     assert!(hers.workspaces.open_connects(&hers.workspace).is_empty());
@@ -457,7 +447,7 @@ async fn the_same_account_told_twice_asks_once_and_adds_nothing_once_connected()
     assert_eq!(hers.workspaces.open_connects(&hers.workspace).len(), 1);
 
     let typed = hers.types(&ask, PASSWORD).await;
-    hers.answered(&turn, &ask, Some(&typed), true)
+    hers.answered(&turn, &ask, Some(&typed))
         .await
         .expect("her calendar server takes the sign-in")
         .expect("an account");

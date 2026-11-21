@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Body, Dialog};
+use super::{Body, Dialog, Prompt, PromptField};
 use crate::{word, words};
 
 /// An agent's question, as the sheet shows it.
@@ -66,6 +66,11 @@ pub struct AgentAsk {
     /// Whether the person may type an answer of their own.
     #[serde(default)]
     pub typed: bool,
+    /// Whether what they type is a secret the host keeps in their vault: the sheet asks for it
+    /// in the system's protected field, whose buffer the sheet owns and wipes, and the question
+    /// is the host's words.
+    #[serde(default)]
+    pub secret: bool,
 }
 
 impl AgentAsk {
@@ -73,6 +78,9 @@ impl AgentAsk {
     /// typed, else a field to type in under the choices, and Send. Not now
     /// leaves it waiting, unanswered; Decline tells the agent no.
     fn dialog(&self, handle: &str, asked: &AgentQuestion) -> Dialog {
+        if self.secret {
+            return self.secret_dialog(handle, asked);
+        }
         let body = if self.typed {
             Body::Entry {
                 masked: false,
@@ -98,6 +106,32 @@ impl AgentAsk {
             defer_label: Some(word("agent-ask-not-now")),
             // Nothing is picked until the person picks it.
             selected: usize::MAX,
+            ..Dialog::default()
+        }
+    }
+
+    /// The sheet asking for a secret: who asks and for what, in the host's words, then the
+    /// protected field and Sign in. Decline tells the agent no.
+    fn secret_dialog(&self, handle: &str, asked: &AgentQuestion) -> Dialog {
+        let prompt = Prompt {
+            icon: Some(ui::icons::Icon::Shield),
+            resource: self.question.clone(),
+            fields: vec![PromptField {
+                label: word("agent-ask-password"),
+                masked: true,
+                required: true,
+                initial: String::new(),
+            }],
+            primary_label: word("agent-ask-sign-in"),
+            ..Prompt::default()
+        };
+        Dialog {
+            handle: handle.to_owned(),
+            title: words("agent-ask-secret-title", &[("agent", &asked.agent)]),
+            heading: asked.title.clone(),
+            body: Body::Secret(prompt),
+            confirm_label: word("agent-ask-sign-in"),
+            cancel_label: word("agent-ask-decline"),
             ..Dialog::default()
         }
     }

@@ -25,6 +25,7 @@ pub(super) const SCENARIOS: &[&str] = &[
     "allowed",
     "agent-question",
     "agent-question-long-run",
+    "agent-password",
 ];
 
 fn base(handle: &str, title: &str, heading: &str, detail: &str) -> Dialog {
@@ -323,6 +324,21 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
              with the travel insurance and hotel booking she sent",
             "agent-question-long-run",
         ),
+        Some("agent-password") => super::AgentQuestion {
+            agent: "Assistant".to_owned(),
+            workspace: "Ada’s workspace".to_owned(),
+            ask: Some(super::AgentAsk {
+                question: "Sign in to ada@example.com at imap.example.com and \
+                           smtp.example.com. The assistant never sees what you type: your \
+                           vault keeps it for those two servers alone."
+                    .to_owned(),
+                typed: true,
+                secret: true,
+                ..super::AgentAsk::default()
+            }),
+            ..super::AgentQuestion::default()
+        }
+        .dialog("agent-password"),
         Some("allowed") => Dialog {
             title: "Allowed for good".to_owned(),
             detail: "Meet may now use your screen without asking. \

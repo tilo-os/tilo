@@ -47,6 +47,8 @@ tilo-unlock-protocol = { version = "0.1.0", path = "../../collab/tilo-unlock-pro
 blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
+# A secret typed for a host's question is wiped once it is dropped.
+zeroize.workspace = true
 
 # Browser peers mint ids from JavaScript's entropy source.
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }

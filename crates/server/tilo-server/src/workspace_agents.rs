@@ -1447,13 +1447,11 @@ impl ServerAgents {
         // What connects a calendar its person tells it of: they are asked for its password
         // where no agent reads it.
         let connects =
-            calendar_connect::TurnConnects::for_turn(&self.workspaces, turn, &scope.reply(turn))
-                .await;
+            calendar_connect::TurnConnects::for_turn(self, turn, &scope.reply(turn)).await;
         scope.provider = scope.provider.answering(connects);
         // What signs a mail account in from its address alone: the same asking, for mail.
         let signs_in =
-            mail_connect::TurnMailConnects::for_turn(&self.workspaces, turn, &scope.reply(turn))
-                .await;
+            mail_connect::TurnMailConnects::for_turn(self, turn, &scope.reply(turn)).await;
         scope.provider = scope.provider.answering(signs_in);
         // Its open of Browser, whose window this server places where it has a machine for one.
         let browser =

@@ -10,77 +10,72 @@
 //! there, a name for the account) and nothing else.
 //!
 //! The password is its person's to type where no agent reads it. So the tool call ends at once,
-//! told that they are asked, and this puts the question to them: Chat's own, of the kind that
-//! shows a protected field, in the words the server's entry says. It goes into the person's own
-//! conversation with the agent, whatever conversation the turn works in, because it shows where
-//! their calendar is and under which name they sign in. What they type goes from their device
-//! to their vault, and the question is answered with the item's reference.
+//! told that they are asked, and this server asks them itself, on their own devices: the
+//! system's protected password field on the sheet their shell or their page draws, in the words
+//! the server's entry says ([`Workspaces::ask_for_login`]). What they type goes from that field
+//! to this server and into their vault; only the item's reference comes back here.
 //!
-//! The server reads that answer from the workspace's document at its next look
-//! (`settle_connects`), before the look reads which answers wake their askers: it claims the
-//! ask and says on the question that it started, so an answer is carried out at most once and
-//! wakes nobody by itself. Then, on a task of its own, the entry signs in to the calendar
-//! server, keeps the account for reading only and names the agent for it; the question is told
-//! how it ended, and the agent is woken once with what came of it: the calendars by their
-//! names, or the calendar server's refusal. Neither the password nor the item's reference
-//! passes a model on this way.
-//!
-//! A question that no longer says what the server asked (an agent may edit a message it wrote,
-//! and may ask questions of its own) connects nothing, and what was typed under it is not kept.
+//! The ask is claimed once they answered, so an answer is carried out at most once. Then the
+//! entry signs in to the calendar server, keeps the account for reading only and names the agent
+//! for it, and the agent is woken once, in its conversation with its person, with what came of
+//! it: the calendars by their names, or the calendar server's refusal. Neither the password nor
+//! the item's reference passes a model on this way. A server that restarts while its person is
+//! asked asks them again.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
-use chat::question::QuestionState::{Answered, Settled, Waiting, Withdrawn};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 use tilo_actions::policy::MemberId;
+use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
     Pending, RemoteActionTarget, person_accounts,
 };
 use tilo_actions::{ActionFailure, InvocationUpdate};
-use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_lock::MutexRecover as _;
+use tilo_server_protocol::certify::{AgentAsk, PendingConfirmation};
 use tilo_workspace_agent::Agent;
 
 use super::mail::narrowing;
 use super::turn_provider::{Ending, Rows};
-use super::vault_uses::settle;
-use super::{CHAT, Reply, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId, invoke_named};
-use crate::workspaces::Workspaces;
+use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::hosted_use::{
     CALENDAR_CONNECT, CALENDARS, ConnectAsk, Connected, HostedTurn, TurnConnect,
 };
+use crate::workspaces::{LoginAsked, Workspaces};
 
 /// What an agent is told when its person is asked for the password: nothing is connected yet,
 /// and it neither waits nor asks again.
-const ASKED: &str = "Your person is asked in your conversation with them for the password of \
-     this calendar account, in a protected field you cannot read. Nothing is connected yet. Tell \
-     them to type it there. Once they have, the account is connected for reading only and you \
-     are told which calendars it has: do not make this call again.";
+const ASKED: &str = "Your person is asked on their own device for the password of this \
+     calendar account, in a protected field you cannot read. Nothing is connected yet. Tell them \
+     in one line to type it there. Once they have, the account is connected for reading only and \
+     you are told which calendars it has: do not make this call again.";
 
 /// What an agent is told when its person was asked for this account's password before and has
 /// not answered.
 const WAITS: &str = "Your person was asked for the password of this calendar account before, in \
-     a protected field of your conversation with them, and has not typed it yet. Nothing is \
-     connected yet. Tell them it waits for them there, and do not make this call again.";
+     a protected field on their own device, and has not typed it yet. Nothing is connected yet. \
+     Tell them it waits for them there, and do not make this call again.";
 
 /// The failure code of a call that connected nothing because its person is asked first. It is
 /// not the code of an action that wants a confirmation: the agent's tools word that one
 /// themselves, and the words here are the ones the agent must read.
 pub(super) const ASKED_FIRST: &str = "asked_person_first";
 
-/// How long an ask whose question is not in the conversation is kept: its turn's server stopped
-/// between keeping it and asking.
-const UNASKED_FOR: Duration = Duration::from_secs(300);
+/// How long its person's devices ask for a password before the ask lapses, in nanoseconds.
+const PASSWORD_WAIT_NS: u64 = 30 * 60 * 1_000_000_000;
 
-/// What a question is told when this server stopped while it connected the calendar.
-const INTERRUPTED: &str = "The server restarted while this calendar was being connected. Tell \
-     your assistant again if it is still wanted.";
+/// What the agent is told when this server stopped while it connected the calendar.
+const INTERRUPTED: &str = "This server restarted while the account was being connected, so it \
+     may not be. Tell them so; they tell you again if it is still wanted.";
 
 /// What the agent is told its person did, where they typed, and where they declined.
 pub(super) const TYPED: &str = "they typed the password where you cannot read it";
 pub(super) const DECLINED: &str = "they declined to type the password";
+/// What the agent is told where nobody could be asked, or nobody answered in time.
+pub(super) const UNANSWERED: &str = "they were not asked, or did not answer in time";
 
 /// The most of the calendars' names a question's outcome and an agent's news carry, in bytes.
 const MOST_NAMES_BYTES: usize = 600;
@@ -117,15 +112,21 @@ pub(super) fn asked_in(caller: &Caller) -> Value {
 /// server put itself, and carries them out.
 pub(super) type Carrier = super::ServerAgents;
 
-/// What this server keeps of a question it put itself for a person's password: enough to put
-/// it, to find it again, and to tell whether it still says what was asked.
+/// What this server keeps of an ask for a person's password: enough to ask it, and to tell the
+/// agent that asked what came of it.
 pub(super) trait PutAsk: Sync {
+    /// The ask's own id.
+    fn id(&self) -> &str;
     /// The agent that asked, by its id.
     fn by_agent(&self) -> &str;
+    /// The name its person knows that agent under.
+    fn agent_name(&self) -> &str;
     /// The person asked: their root key, hex.
     fn of_person(&self) -> &str;
-    /// What the protected field is drawn from.
-    fn shown(&self) -> Value;
+    /// The workspace it was asked in.
+    fn in_workspace(&self) -> &str;
+    /// What the vault keeps the password as.
+    fn login(&self) -> LoginAsked;
     /// The question's words, as this server says them.
     fn said(&self) -> String;
     /// Where and for which turn it was asked.
@@ -133,16 +134,28 @@ pub(super) trait PutAsk: Sync {
 }
 
 impl PutAsk for ConnectAsk {
+    fn id(&self) -> &str {
+        &self.ask
+    }
+
     fn by_agent(&self) -> &str {
         &self.agent
+    }
+
+    fn agent_name(&self) -> &str {
+        &self.name
     }
 
     fn of_person(&self) -> &str {
         &self.person
     }
 
-    fn shown(&self) -> Value {
-        self.detail()
+    fn in_workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    fn login(&self) -> LoginAsked {
+        ConnectAsk::login(self)
     }
 
     fn said(&self) -> String {
@@ -154,59 +167,110 @@ impl PutAsk for ConnectAsk {
     }
 }
 
-/// Put the question `open` keeps to its person as `caller`, in their own conversation with the
-/// agent: what it shows of their account is theirs alone to read.
-pub(super) async fn put(
-    service: &WorkspaceActionProvider,
-    caller: &Caller,
-    workspace: &str,
-    open: &dyn PutAsk,
-) -> Result<(), String> {
-    let conversation = chat::Chat::direct_id([
-        MemberId::person(open.of_person().to_owned()),
-        MemberId::agent(open.by_agent().to_owned()),
-    ])
-    .to_string();
-    let mut arguments = Map::new();
-    arguments.insert("channel".into(), json!(conversation));
-    arguments.insert("text".into(), json!(open.said()));
-    arguments.insert("kind".into(), json!(chat::question::SECRET));
-    arguments.insert("detail".into(), open.shown());
-    let route = DocumentRoute {
-        app_id: CHAT.to_owned(),
-        cluster_id: workspace.to_owned(),
-        document: String::new(),
+/// The asks whose person is being asked by this process now: one asked again after a restart is
+/// not among them.
+static ASKING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// An ask this process asks about while it is held: let go of once the answer is carried out.
+pub(super) struct Asking(String);
+
+impl Asking {
+    /// Hold `ask` while its person is asked; `None` where this process asks about it already.
+    pub(super) fn hold(ask: &str) -> Option<Self> {
+        ASKING
+            .lock_recover()
+            .insert(ask.to_owned())
+            .then(|| Self(ask.to_owned()))
+    }
+}
+
+impl Drop for Asking {
+    fn drop(&mut self) {
+        ASKING.lock_recover().remove(&self.0);
+    }
+}
+
+/// Where the agent that asked `open` is told what came of it: its conversation with its person,
+/// under the ask's own key.
+pub(super) struct Told {
+    pub(super) key: String,
+    pub(super) conversation_id: String,
+}
+
+impl Told {
+    pub(super) fn of(open: &dyn PutAsk) -> Self {
+        Self {
+            key: open.id().to_owned(),
+            conversation_id: chat::Chat::direct_id([
+                MemberId::person(open.of_person().to_owned()),
+                MemberId::agent(open.by_agent().to_owned()),
+            ])
+            .to_string(),
+        }
+    }
+}
+
+/// How its person answered where they were asked for a password.
+pub(super) enum Typed {
+    /// They typed it, and the vault keeps it under this reference.
+    Kept(ItemRef),
+    /// They declined.
+    Declined,
+    /// Nobody could be asked, or nobody answered in time.
+    Unanswered(String),
+}
+
+/// Ask the person `open` names for its password on their own devices, in this server's words,
+/// and keep what they type in their vault. Waits for their answer.
+pub(super) async fn ask_for_password(workspaces: &Workspaces, open: &dyn PutAsk) -> Typed {
+    let mut person = [0; 32];
+    if hex::decode_to_slice(open.of_person(), &mut person).is_err() {
+        return Typed::Unanswered("the ask names no person".to_owned());
+    }
+    let workspace = match workspaces.summary(open.in_workspace()).await {
+        Ok(summary) => summary.name,
+        Err(_) => open.in_workspace().to_owned(),
     };
-    invoke_named(
-        service,
-        caller,
-        &route,
-        &collab_types::document::chain_resource_id(&chat::parts::chain()),
-        "ask",
-        arguments,
-    )
-    .await
-    .map(drop)
+    let question = PendingConfirmation {
+        id: *blake3::hash(format!("password ask\0{}", open.id()).as_bytes()).as_bytes(),
+        agent_id: open.by_agent().to_owned(),
+        agent_label: open.agent_name().to_owned(),
+        workspace,
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(PASSWORD_WAIT_NS),
+        ask: Some(AgentAsk {
+            question: open.said(),
+            choices: Vec::new(),
+            typed: true,
+            secret: true,
+        }),
+        ..PendingConfirmation::default()
+    };
+    match workspaces
+        .ask_for_login(person, question, open.login())
+        .await
+    {
+        Ok(Some(kept)) => Typed::Kept(kept),
+        Ok(None) => Typed::Declined,
+        Err(why) => Typed::Unanswered(why),
+    }
 }
 
 /// What one turn connects of its person's calendars. A turn's caller changes when its person
 /// writes again while it works, so each telling is taken as the caller of the tool call that
 /// made it.
 pub(super) struct TurnConnects {
-    workspaces: Workspaces,
+    carrier: Carrier,
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
     /// The connecting this turn is offered: none for a turn the entry refuses.
     offered: Vec<CatalogueRow>,
-    /// The workspace's own actions, through which the question is put.
-    service: WorkspaceActionProvider,
 }
 
 impl TurnConnects {
     /// What `turn` connects of its person's calendars, where `reply` holds what its tools begin
     /// as and act through.
-    pub(super) async fn for_turn(workspaces: &Workspaces, turn: &Turn, reply: &Reply) -> Arc<Self> {
+    pub(super) async fn for_turn(carrier: &Carrier, turn: &Turn, reply: &Reply) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
         let narrowed = narrowing(&turn.agent, &reply.workspace);
         let hosted = HostedTurn {
@@ -215,14 +279,13 @@ impl TurnConnects {
             keeper: &turn.agent.keeper,
             bound: narrowed.as_deref(),
         };
-        let offered = workspaces.calendar_connect_offered(&hosted).await;
+        let offered = carrier.workspaces.calendar_connect_offered(&hosted).await;
         Arc::new(Self {
-            workspaces: workspaces.clone(),
+            carrier: carrier.clone(),
             workspace: reply.workspace.clone(),
             workspace_id,
             agent: turn.agent.clone(),
             offered,
-            service: reply.provider.clone(),
         })
     }
 
@@ -240,30 +303,24 @@ impl TurnConnects {
             keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
-        let workspaces = &self.workspaces;
-        let taken = workspaces
+        let taken = self
+            .carrier
+            .workspaces
             .connect_calendar_for_turn(&hosted, request, asked_in(caller))
             .await?;
         let words = match taken {
-            TurnConnect::Waits => WAITS.to_owned(),
+            TurnConnect::Waits => WAITS,
             TurnConnect::Asks(open) => {
-                match put(&self.service, caller, &self.workspace, open.as_ref()).await {
-                    Ok(()) => ASKED.to_owned(),
-                    Err(why) => {
-                        workspaces.connect_not_asked(&open);
-                        format!(
-                            "Your person could not be asked for the password ({why}), so nothing was \
-                         connected."
-                        )
-                    }
-                }
+                let carrier = self.carrier.clone();
+                tokio::spawn(async move { carrier.ask_and_connect(*open).await });
+                ASKED
             }
         };
         Ok(InvocationUpdate::Failed {
             invocation: request.invocation,
             error: ActionFailure {
                 code: ASKED_FIRST.to_owned(),
-                message: words,
+                message: words.to_owned(),
                 details: None,
                 retryable: false,
             },
@@ -306,97 +363,6 @@ impl TurnProvider for TurnConnects {
     }
 }
 
-/// How the question about a calendar to connect stands, where it is not over.
-pub(super) enum Stands {
-    /// Its person has not answered.
-    Waiting,
-    /// Its person answered: the reference of what they typed, none where they declined.
-    Answered(Option<String>),
-    /// This server said it started on the answer.
-    Started,
-}
-
-/// The question this server put about an ask, where the workspace's chat holds it.
-pub(super) struct Found {
-    /// The part of the chat's messages that holds the question.
-    pub(super) document: String,
-    pub(super) message: String,
-    /// The conversation it stands in.
-    pub(super) conversation_id: String,
-    /// Whether it stands as this server asked it: it alone carries the ask, it says the
-    /// server's words, and it was never edited.
-    pub(super) as_asked: bool,
-    pub(super) stands: Stands,
-}
-
-/// The reference an answer's `detail` carries, as a person's device wrote it.
-fn reference_of(detail: &str) -> Option<String> {
-    serde_json::from_str::<Value>(detail)
-        .ok()?
-        .get("reference")?
-        .as_str()
-        .map(str::to_owned)
-}
-
-/// The question this server put about `ask`, where `parts` hold it and it is not over: the one
-/// its agent wrote for that person that asks for a login at the calendar server under the user
-/// name. A question that ended, by whoever, is not it.
-pub(super) fn question_about(
-    parts: &[(String, chat::parts::ChatMessages)],
-    ask: &dyn PutAsk,
-) -> Option<Found> {
-    let (agent, person) = (
-        MemberId::agent(ask.by_agent().to_owned()),
-        MemberId::person(ask.of_person().to_owned()),
-    );
-    let shown = ask.shown();
-    let mut open = parts
-        .iter()
-        .flat_map(|(document, part)| {
-            part.messages
-                .iter()
-                .map(move |(id, message)| (document, id, message))
-        })
-        .filter_map(|(document, id, message)| {
-            let question = message.question.as_ref()?;
-            let asks = message.author == agent
-                && question.kind.0 == chat::question::SECRET
-                && question.person == person
-                && question.kept().as_ref() == Some(&shown);
-            if !asks {
-                return None;
-            }
-            let stands = match question.state() {
-                Waiting => Stands::Waiting,
-                Answered(given) => Stands::Answered(
-                    (given.answer.0 == chat::question::FILLED)
-                        .then(|| reference_of(&given.detail.0))
-                        .flatten(),
-                ),
-                Settled(_, outcome) if outcome.outcome.0 == chat::question::STARTED => {
-                    Stands::Started
-                }
-                Settled(..) | Withdrawn(_) => return None,
-            };
-            Some((document, id, message, stands))
-        });
-    let (document, id, message, stands) = open.next()?;
-    // An agent may edit a message it wrote and may ask questions of its own: neither is what
-    // its person was asked.
-    let alone = open.next().is_none();
-    let as_asked = alone
-        && message.text.trim() == ask.said().trim()
-        && !message.edited
-        && message.history.is_empty();
-    Some(Found {
-        document: document.clone(),
-        message: id.to_string(),
-        conversation_id: message.channel.to_string(),
-        as_asked,
-        stands,
-    })
-}
-
 /// The calendars of `connected` by their names, as many as fit: `none` where the server lists
 /// none.
 fn names_of(connected: &Connected, none: &str) -> String {
@@ -422,195 +388,129 @@ fn names_of(connected: &Connected, none: &str) -> String {
     }
 }
 
-/// An answered question about a calendar to connect, claimed, and who asked it.
-struct Carrying {
-    workspace: String,
-    workspace_id: WorkspaceId,
-    agent: Agent,
-    claimed: ConnectAsk,
-    found: Found,
-    /// The reference of what its person typed; none where they declined.
-    typed: Option<String>,
-    /// The agent that asked, acting for its person now: as the turn that asked, and outside
-    /// any turn.
-    turn: Caller,
-    outside: Caller,
+/// The agent that asked, acting for its person now as the turn that asked.
+pub(super) struct Asker {
+    pub(super) workspace_id: WorkspaceId,
+    pub(super) agent: Agent,
+    pub(super) turn: Caller,
 }
 
 impl Carrier {
-    /// Carry out what the people of `workspace` answered where they were asked for the password
-    /// of a calendar to connect: each answer once, claimed and said on its question before
-    /// this returns, so what the look reads next finds no answer of these left to wake anybody
-    /// for. Signing in to a calendar server goes on a task of its own. Costs one look at what
-    /// this server keeps when nothing waits.
-    pub(super) async fn settle_connects(&self, workspace: &str) {
-        let open = self.workspaces.open_connects(workspace);
-        if open.is_empty() {
-            return;
-        }
-        let Some(workspace_id) = WorkspaceId::parse(workspace) else {
-            return;
-        };
-        let parts = self.chat_parts(workspace).await;
-        let agents = self.agents(workspace).await.unwrap_or_default();
-        for ask in open {
-            if ask.started && !ask.interrupted {
-                // Its answer is being carried out now.
-                continue;
-            }
-            let Some(found) = question_about(&parts, &ask) else {
-                // Its question is not in the conversation, or is over: one this server
-                // stopped on, or one that was never asked, connects nothing any more.
-                let old = Duration::from_millis(
-                    tilo_clock::unix_now_ms().saturating_sub(ask.asked_at_ms),
-                ) > UNASKED_FOR;
-                if ask.interrupted || old {
-                    self.workspaces.connect_not_asked(&ask);
-                }
-                continue;
-            };
-            let asker = match agents.get(&ask.agent) {
-                Some(agent) => self
-                    .connect_asker(workspace, workspace_id, &ask, agent)
-                    .await
-                    .map(|callers| (agent.clone(), callers)),
-                None => None,
-            };
-            let Some((agent, (turn, outside))) = asker else {
-                // The agent no longer works here, or its person is admitted here on no
-                // device: nobody acts on the answer.
-                self.workspaces.connect_not_asked(&ask);
-                continue;
-            };
-            let service = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
-            let at = (found.document.as_str(), found.message.as_str());
+    /// Ask again about every ask of `workspace` this process does not ask about, as after a
+    /// restart, and tell the agent of one this server stopped on while it was carried out. Costs
+    /// one look at what this server keeps when nothing waits.
+    pub(super) fn settle_connects(&self, workspace: &str) {
+        for ask in self.workspaces.open_connects(workspace) {
             if ask.interrupted {
-                // This server stopped while it connected the calendar: it is not connected a
-                // second time, and its person is told.
                 self.workspaces.connect_not_asked(&ask);
-                let told = Some(INTERRUPTED.to_owned());
-                let failed = chat::question::FAILED;
-                if let Err(error) = settle((&service, &outside), workspace, at, failed, told).await
-                {
-                    tracing::warn!(%workspace, %error, "an interrupted calendar's question did not take how it ended");
-                }
-                continue;
-            }
-            let typed = match &found.stands {
-                Stands::Waiting => continue,
-                Stands::Answered(typed) => typed.clone(),
-                // Said to have started, with nothing claimed here: no answer of it is left.
-                Stands::Started => {
-                    self.workspaces.connect_not_asked(&ask);
-                    continue;
-                }
-            };
-            // Claimed before anything is said or done. Claimed by another look already, it is
-            // that one's.
-            let Ok(claimed) = self.workspaces.claim_connect(&ask.ask) else {
-                continue;
-            };
-            // Only what they typed under the question as it was asked signs in anywhere: that
-            // takes a calendar server's time, so it is said to have started here and carried
-            // out on a task of its own.
-            let signs_in = typed.is_some() && found.as_asked;
-            if signs_in
-                && let Err(error) = settle(
-                    (&service, &outside),
-                    workspace,
-                    at,
-                    chat::question::STARTED,
-                    None,
-                )
-                .await
-            {
-                // It cannot be said to have started (the question was taken back meanwhile):
-                // nothing is connected, and the ask is spent.
-                tracing::warn!(%workspace, %error, "a calendar's question did not take that it started");
-                self.workspaces.connect_not_asked(&claimed);
-                continue;
-            }
-            let carrying = Carrying {
-                workspace: workspace.to_owned(),
-                workspace_id,
-                agent,
-                claimed,
-                found,
-                typed,
-                turn,
-                outside,
-            };
-            if signs_in {
                 let this = self.clone();
                 tokio::spawn(async move {
-                    this.carry_out_connect(carrying).await;
+                    this.tell_of_password(&ask, &ask.named(), (TYPED, INTERRUPTED))
+                        .await;
                 });
-            } else {
-                // Declined, or typed under a question that is not the server's: nothing is
-                // asked of any calendar server, and how it ended is said before this returns.
-                self.carry_out_connect(carrying).await;
+            } else if !ask.started {
+                let this = self.clone();
+                tokio::spawn(async move { this.ask_and_connect(ask).await });
             }
         }
     }
 
+    /// Ask the person `open` names for the password, then connect the calendar with what they
+    /// typed and tell the agent that asked, once.
+    async fn ask_and_connect(&self, open: ConnectAsk) {
+        let Some(_asking) = Asking::hold(&open.ask) else {
+            return;
+        };
+        let Some(asker) = self.connect_asker(&open).await else {
+            // The agent works here no more, or its person is admitted here on no device: nobody
+            // would act on the answer.
+            self.workspaces.connect_not_asked(&open);
+            return;
+        };
+        let typed = match ask_for_password(&self.workspaces, &open).await {
+            Typed::Kept(kept) => Some(kept.to_string()),
+            Typed::Declined => None,
+            Typed::Unanswered(why) => {
+                self.workspaces.connect_not_asked(&open);
+                let came = format!(
+                    "Nothing was connected: {why}. Tell them so; they tell you again when they \
+                     want to retry."
+                );
+                self.tell_of_password(&open, &open.named(), (UNANSWERED, &came))
+                    .await;
+                return;
+            }
+        };
+        // Claimed before anything is done. Claimed by another already, it is that one's.
+        let Ok(claimed) = self.workspaces.claim_connect(&open.ask) else {
+            return;
+        };
+        self.carry_out_connect(&asker, claimed, typed).await;
+    }
+
     /// The agent that asked `ask`, acting for its person now: as the turn that asked, which is
-    /// what the entry decides it by, and outside any turn, which is how it says what came of
-    /// the answer once that turn has ended. `None` when the workspace admits the person on no
-    /// device.
-    pub(super) async fn connect_asker(
-        &self,
-        workspace: &str,
-        workspace_id: WorkspaceId,
-        ask: &dyn PutAsk,
-        agent: &Agent,
-    ) -> Option<(Caller, Caller)> {
+    /// what the entry decides it by. `None` when the agent works here no more, or the workspace
+    /// admits the person on no device.
+    pub(super) async fn connect_asker(&self, ask: &dyn PutAsk) -> Option<Asker> {
+        let workspace = ask.in_workspace();
+        let workspace_id = WorkspaceId::parse(workspace)?;
+        let agent = self.agents(workspace).await.ok()?.remove(ask.by_agent())?;
         let mut person = [0; 32];
         hex::decode_to_slice(ask.of_person(), &mut person).ok()?;
         let device = self.workspaces.person_device(workspace_id, person).await?;
         let asked_in: AskedIn = serde_json::from_value(ask.put_in().clone()).ok()?;
-        let outside = Caller::authenticated(person, device)
+        let turn = Caller::authenticated(person, device)
             .in_workspace(workspace)
             .delegated_to(agent.id.0.clone())
             .named(&agent.name)
-            .in_agent_session(asked_in.session);
-        let turn = outside.clone().on_turn(
-            tilo_action_policy::turn::Turn::new(asked_in.conversation, asked_in.cause),
-            agent.bound_rules().unwrap_or_default(),
-        );
-        Some((turn, outside))
-    }
-
-    /// Carry `carrying` out: let the entry do what it kept for the ask, say on the question how
-    /// it ended, and tell the agent that asked, once.
-    async fn carry_out_connect(&self, carrying: Carrying) {
-        let Carrying {
-            workspace,
+            .in_agent_session(asked_in.session)
+            .on_turn(
+                tilo_action_policy::turn::Turn::new(asked_in.conversation, asked_in.cause),
+                agent.bound_rules().unwrap_or_default(),
+            );
+        Some(Asker {
             workspace_id,
             agent,
-            claimed,
-            found,
-            typed,
             turn,
-            outside,
-        } = carrying;
-        let narrowed = narrowing(&agent, &workspace);
+        })
+    }
+
+    /// Wake the agent that asked `open` once with how its person answered and what came of it.
+    pub(super) async fn tell_of_password(
+        &self,
+        open: &dyn PutAsk,
+        asked: &str,
+        (answered, came): (&str, &str),
+    ) {
+        let told = Told::of(open);
+        let news = super::answers::carried_out(
+            (&told.key, &told.conversation_id),
+            open.of_person(),
+            asked,
+            (answered, came),
+        );
+        let workspace = open.in_workspace();
+        if let Err(error) = self.wake(workspace, &news).await {
+            tracing::warn!(%workspace, %error, "an agent was not told how asking for a password ended");
+        }
+    }
+
+    /// Let the entry do what it kept for `claimed` with the reference its person's password is
+    /// kept under (`None` where they declined), and tell the agent that asked, once.
+    async fn carry_out_connect(&self, asker: &Asker, claimed: ConnectAsk, typed: Option<String>) {
+        let narrowed = narrowing(&asker.agent, &claimed.workspace);
         let hosted = HostedTurn {
-            workspace: workspace_id,
-            caller: &turn,
-            keeper: &agent.keeper,
+            workspace: asker.workspace_id,
+            caller: &asker.turn,
+            keeper: &asker.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let carried = self
             .workspaces
-            .carry_out_connect(&hosted, &claimed, typed.as_deref(), found.as_asked)
+            .carry_out_connect(&hosted, &claimed, typed.as_deref())
             .await;
-        let (outcome, told, answered, came) = match &carried {
+        let (answered, came) = match &carried {
             Ok(Some(connected)) => (
-                chat::question::DONE,
-                Some(format!(
-                    "Connected for reading only. Its calendars: {}.",
-                    names_of(connected, "none yet")
-                )),
                 TYPED,
                 format!(
                     "The account is connected for reading only: nothing is ever written to that \
@@ -619,17 +519,8 @@ impl Carrier {
                     names_of(connected, "none yet")
                 ),
             ),
-            Ok(None) => (
-                chat::question::DROPPED,
-                None,
-                DECLINED,
-                "Nothing was connected.".to_owned(),
-            ),
+            Ok(None) => (DECLINED, "Nothing was connected.".to_owned()),
             Err(why) => (
-                chat::question::FAILED,
-                Some(format!(
-                    "Your calendar was not connected: {why}. What you typed is not kept."
-                )),
                 TYPED,
                 format!(
                     "It was not connected: {why}. Nothing was kept, and what they typed is not \
@@ -637,19 +528,7 @@ impl Carrier {
                 ),
             ),
         };
-        let service = WorkspaceActionProvider::new(self.actions.clone(), workspace_id);
-        let at = (found.document.as_str(), found.message.as_str());
-        if let Err(error) = settle((&service, &outside), &workspace, at, outcome, told).await {
-            tracing::warn!(%workspace, %error, "a calendar's question did not take how it ended");
-        }
-        let news = super::answers::carried_out(
-            (&found.message, &found.conversation_id),
-            &claimed.person,
-            &claimed.named(),
-            (answered, &came),
-        );
-        if let Err(error) = self.wake(&workspace, &news).await {
-            tracing::warn!(%workspace, %error, "an agent was not told how connecting a calendar ended");
-        }
+        self.tell_of_password(&claimed, &claimed.named(), (answered, &came))
+            .await;
     }
 }

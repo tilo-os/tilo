@@ -224,6 +224,27 @@ impl Workspaces {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(Proving(prove));
     }
 
+    /// Sign in to mail servers and carry their mail trusting `extra` beside the system's own
+    /// authorities from now on: a test's mail server, whose certificate no authority signed,
+    /// answers over real sockets. Its connections go where they did before.
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+    pub fn trust_mail_servers(&self, extra: Vec<rustls::pki_types::CertificateDer<'static>>) {
+        let reach = self.inner.models.mail_reach();
+        *self
+            .inner
+            .vault_uses
+            .prover
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Arc::new(tilo_account_probe::TrustingMailTester {
+                reach: reach.clone(),
+                extra: extra.clone(),
+            });
+        self.carry_mail_through(Arc::new(
+            tilo_mail_session::LiveMailSession::also_trusting(extra).reaching(reach),
+        ));
+    }
+
     /// Work out where an address's mail lives through `find` from now on, which is told the
     /// address and may ask whether a server of a name may be asked anything. Sign-ins are
     /// proved by whatever proved them before: a test stands in for the network.

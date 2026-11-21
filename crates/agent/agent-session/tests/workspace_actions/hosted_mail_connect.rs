@@ -4,17 +4,20 @@
 //! The whole way through the server's own interfaces. She writes one sentence, "log in my mail
 //! account" and its address. Her assistant's one tool call hands the server that address and
 //! nothing else. The server works out the account's two servers, asks her for the password
-//! itself, in the protected field of her conversation, with a question that names both servers,
-//! signs in with what she typed, keeps the account, names her assistant for it and wakes the
+//! itself, on her own device in the system's protected field, with a question that names both
+//! servers, keeps what she typed in her vault, signs in with it, keeps the account, names her assistant for it and wakes the
 //! assistant once. Nobody is asked to allow a use. The password is in no request a model was
 //! sent, no message, no log line and no file of the server in the clear, and on this way the
 //! model never holds even the item's reference.
 //!
 //! The network is stood in for: what works an address's servers out and what proves a sign-in
 //! answer from this file. A password her mail server refuses is asked for again by the server
-//! itself, and no ask of the model is spent on it.
+//! itself, and no ask of the model is spent on it. One test signs in at a mail server with real
+//! sockets instead, reads her inbox there and sees a message she sends herself arrive.
+use super::Devices;
 use super::*;
 use tilo_server::workspaces::hosted_use::{MailFound, MailServer, MailServers};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation, TypedSecret};
 
 /// Her mail address, and the two servers her provider keeps it on.
 const ADDRESS: &str = "ada@example.test";
@@ -25,7 +28,7 @@ const PLACES: [&str; 2] = [
     "imap://imap.provider.test:993",
     "smtp://smtp.provider.test:465",
 ];
-/// What she types into the protected field. Made up for this file, and the sign-in of nothing
+/// What she types into the protected field her device shows. Made up for this file, and the sign-in of nothing
 /// but the stand-in below.
 const TYPED: &str = "only-her-mail-servers-may-read-this";
 /// What she types when she mistypes it.
@@ -86,15 +89,15 @@ fn tells(call: &str) -> Reply {
     does(call, CONNECT, &serde_json::json!({"address": ADDRESS}))
 }
 
-/// She writes the sentence, and her assistant makes its one tool call: the question that asks
-/// her for the password, with its id.
-async fn she_says_it_and_is_asked(hosted: &Hosted) -> (Id, chat::chat::Message) {
+/// She writes the sentence, and her assistant makes its one tool call: the question her device
+/// is asked for the password.
+async fn she_says_it_and_is_asked(hosted: &Hosted, devices: &Devices) -> PendingConfirmation {
     hosted
         .turn(
             SENTENCE,
             vec![
                 tells("call-1"),
-                Reply::text("I asked you for its password. Type it into the field in our chat."),
+                Reply::text("I asked you for its password. Type it where your device asks."),
             ],
         )
         .await;
@@ -104,77 +107,31 @@ async fn she_says_it_and_is_asked(hosted: &Hosted) -> (Id, chat::chat::Message) 
         "her assistant is told that she is asked, in a field it cannot read, and which servers \
          were found: {told}"
     );
-    let asked = hosted.questions(chat::question::SECRET).await;
+    let asked = devices.asked(1).await;
     assert_eq!(asked.len(), 1, "the telling asks for one password: {told}");
     asked.into_iter().next().expect("the one question")
 }
 
-/// What she types goes from her device to her vault on the server, bound to her two mail
-/// servers, and her device answers the question with the reference the vault gave: the
-/// protected path, as her Chat window walks it.
-async fn she_types(hosted: &mut Hosted, question: &Id, typed: &str) {
-    let kept = hosted
-        .on_device(
-            (
-                person_vault::PROVIDER,
-                person_vault::RESOURCE,
-                person_vault::ADD,
-            ),
-            serde_json::json!({
-                "kind": "login", "belongsTo": PLACES, "username": ADDRESS, "secret": typed,
-            }),
-        )
-        .await;
-    let reference = kept["reference"].as_str().expect("a reference").to_owned();
-    hosted
-        .answers(
-            question,
-            chat::question::FILLED,
-            serde_json::json!({"reference": reference}),
-        )
-        .await;
+/// She types `typed` into the protected field her device shows for the question at `place`.
+fn she_types(devices: &Devices, place: usize, typed: &str) {
+    devices.answer(
+        place,
+        ConfirmationAnswer::Secret(TypedSecret::new(typed.to_owned())),
+    );
 }
 
-/// The questions that ask for a password, once there are `many` of them.
-async fn asked_for_a_password(hosted: &Hosted, many: usize) -> Vec<(Id, chat::chat::Message)> {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let asked = hosted.questions(chat::question::SECRET).await;
-        if asked.len() >= many {
-            return asked;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "her server asked for a password {} times, not {many}",
-            asked.len()
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// What came of her answer to the question at `place` among those that ask for a password,
-/// once her server said so on it: the outcome's word and what she is told with it.
-async fn what_came_of(hosted: &Hosted, place: usize) -> (String, String) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let now = hosted.questions(chat::question::SECRET).await;
-        let outcome = now[place].1.question.as_ref().unwrap().outcome.clone();
-        if let Some(outcome) = outcome.as_ref().filter(|outcome| {
-            [
-                chat::question::DONE,
-                chat::question::FAILED,
-                chat::question::DROPPED,
-            ]
-            .contains(&outcome.outcome.0.as_str())
-        }) {
-            return (outcome.outcome.0.clone(), outcome.detail.clone());
-        }
-        assert!(
-            Instant::now() < deadline,
-            "her server never said what came of her answer: {outcome:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+/// What her device is asked is a password, in the server's words: the field takes nothing but
+/// a secret, and the words name her account and its servers.
+fn asks_for_her_password(asked: &PendingConfirmation, servers: &[&str]) -> String {
+    let ask = asked.ask.as_ref().expect("a question in words");
+    assert!(ask.secret && ask.typed && ask.choices.is_empty(), "{ask:?}");
+    assert!(asked.action_label.is_empty(), "it asks to allow no action");
+    assert!(
+        servers.iter().all(|part| ask.question.contains(part)),
+        "the question names her account and both servers: {}",
+        ask.question
+    );
+    ask.question.clone()
 }
 
 /// Her assistant is woken once with what came of it, and answers `says`: everything its model
@@ -282,58 +239,56 @@ async fn it_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines,
     );
 }
 
+/// Nothing she answers reaches her conversation: no question of Chat asks for a password.
+async fn nothing_asks_in_chat(hosted: &Hosted) {
+    assert!(hosted.questions(chat::question::SECRET).await.is_empty());
+    assert!(
+        hosted.questions(chat::question::ACTION).await.is_empty(),
+        "nothing asks her to allow a use"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
     let lines = logged();
     let (mut hosted, signed_in) = started().await;
+    let devices = hosted.her_devices();
     // The stand-in's servers answer under no name of the network. Its operator lets this server
     // ask what it would not find there: the one leave a web call with a key is made by.
     hosted.workspaces.call_private_model_addresses(true);
 
-    // She says it. One question asks her for the password, in the server's words, which name
+    // She says it. Her device asks her for the password, in the server's words, which name
     // both servers; nothing asks her to allow a use; nothing is signed in before she typed.
-    let (question, held) = she_says_it_and_is_asked(&hosted).await;
-    assert_eq!(held.author, MemberId::agent(SCOUT));
-    let asks = held.question.as_ref().unwrap();
-    assert_eq!(
-        asks.person,
-        MemberId::person(hosted.person()),
-        "only its own person is asked"
-    );
-    assert_eq!(
-        asks.kept(),
-        Some(serde_json::json!({
-            "kind": "login", "belongsTo": PLACES, "username": ADDRESS,
-        })),
-        "the field is for a login at her two mail servers, under her address"
-    );
-    assert!(
-        [ADDRESS, READS, SENDS, "Scout", "I never see it"]
-            .iter()
-            .all(|part| held.text.contains(part)),
-        "the question names her account, both servers and who reads there: {}",
-        held.text
-    );
-    assert!(
-        hosted.questions(chat::question::ACTION).await.is_empty(),
-        "one question, and none about a use"
-    );
+    let asked = she_says_it_and_is_asked(&hosted, &devices).await;
+    let words = asks_for_her_password(&asked, &[ADDRESS, READS, SENDS, "Scout"]);
+    assert!(words.contains("never sees"), "{words}");
+    assert_eq!(asked.agent_id, SCOUT, "who asks is her assistant");
+    nothing_asks_in_chat(&hosted).await;
     assert!(
         signed_in.lock().unwrap().is_empty(),
         "nothing is signed in before she typed"
     );
     assert!(her_mail(&mut hosted).await.is_empty(), "nothing yet");
 
-    // She types. Her server signs in, keeps the account and names her assistant for it.
-    she_types(&mut hosted, &question, TYPED).await;
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    let (came, told) = what_came_of(&hosted, 0).await;
-    assert_eq!(came, chat::question::DONE, "{told}");
-    assert!(told.contains(READS) && told.contains(SENDS), "{told}");
+    // She types. Her server keeps it in her vault, signs in, keeps the account and names her
+    // assistant for it, and her assistant is told once and says so in one line.
+    she_types(&devices, 0, TYPED);
+    let told = the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
+    assert!(
+        told.contains("signed in") && told.contains(READS) && told.contains(SENDS),
+        "{told}"
+    );
     assert_eq!(
         signed_in.lock().unwrap().clone(),
         vec![ADDRESS.to_owned()],
         "her account is signed in with what her vault keeps, once"
+    );
+    let vault = her_vault(&mut hosted).await;
+    assert_eq!(vault.len(), 1, "{vault:?}");
+    assert_eq!(
+        vault[0]["belongsTo"],
+        serde_json::json!(PLACES),
+        "what she typed is kept for her two mail servers alone"
     );
     let accounts = her_mail(&mut hosted).await;
     assert_eq!(accounts.len(), 1, "{accounts:?}");
@@ -356,13 +311,6 @@ async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
         )
         .await;
     assert_eq!(named["agents"], serde_json::json!([SCOUT]), "{named}");
-
-    // Her assistant is told once, and says so in one line.
-    let told = the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
-    assert!(
-        told.contains("signed in") && told.contains(READS) && told.contains(SENDS),
-        "{told}"
-    );
     // The sentence took three asks of the model: the call, its closing words, and the news.
     assert_eq!(
         hosted.model.asked().len(),
@@ -379,8 +327,9 @@ async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
         .await;
     let again = hosted.last_tool_result();
     assert!(again.contains("signed in already"), "{again}");
-    assert_eq!(hosted.questions(chat::question::SECRET).await.len(), 1);
+    assert_eq!(devices.count(), 1, "nobody is asked again");
     assert_eq!(her_mail(&mut hosted).await.len(), 1);
+    nothing_asks_in_chat(&hosted).await;
 
     it_is_nowhere_a_model_or_a_reader_looks(&hosted, &lines, TYPED).await;
     hosted.page.peer.close();
@@ -390,38 +339,19 @@ async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
 async fn a_password_her_mail_server_refuses_is_asked_for_again_by_the_server_itself() {
     let lines = logged();
     let (mut hosted, signed_in) = started().await;
+    let devices = hosted.her_devices();
     hosted.workspaces.call_private_model_addresses(true);
 
-    let (first, _) = she_says_it_and_is_asked(&hosted).await;
+    she_says_it_and_is_asked(&hosted, &devices).await;
     let asked_of_the_model = hosted.model.asked().len();
-    she_types(&mut hosted, &first, MISTYPED).await;
-    assert_eq!(her_vault(&mut hosted).await.len(), 1, "what she typed");
-    hosted.agents.look(&hosted.workspace).await.unwrap();
+    she_types(&devices, 0, MISTYPED);
 
-    // The first question says which server did not take it, and a second one asks again: the
-    // same field, waiting, saying what was refused.
-    let (came, told) = what_came_of(&hosted, 0).await;
-    assert_eq!(came, chat::question::FAILED, "{told}");
+    // Her device asks again, saying which server did not take it: the same field.
+    let asked = devices.asked(2).await;
+    let words = asks_for_her_password(&asked[1], &[ADDRESS, READS, SENDS]);
     assert!(
-        told.contains("not accepted") && told.contains(READS),
-        "she is told which server refused it: {told}"
-    );
-    let asked = asked_for_a_password(&hosted, 2).await;
-    assert_eq!(asked.len(), 2, "she is asked once more, and once only");
-    let (second, again) = &asked[1];
-    let asks = again.question.as_ref().unwrap();
-    assert!(asks.outcome.is_none(), "the second question waits for her");
-    assert_eq!(
-        asks.kept(),
-        Some(serde_json::json!({
-            "kind": "login", "belongsTo": PLACES, "username": ADDRESS,
-        })),
-        "the same field, for the same two servers"
-    );
-    assert!(
-        again.text.contains("not accepted") && again.text.contains(READS),
-        "the second question says what was refused: {}",
-        again.text
+        words.contains("not accepted") && words.contains(READS),
+        "the second question says what was refused: {words}"
     );
     assert!(
         her_vault(&mut hosted).await.is_empty(),
@@ -446,24 +376,41 @@ async fn a_password_her_mail_server_refuses_is_asked_for_again_by_the_server_its
         asked_of_the_model,
         "no ask of the model is spent on it"
     );
+    assert_eq!(devices.count(), 2, "a look asks nothing twice");
 
-    // She types it again under the second question, and her account is signed in.
-    she_types(&mut hosted, second, TYPED).await;
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    let (came, told) = what_came_of(&hosted, 1).await;
-    assert_eq!(came, chat::question::DONE, "{told}");
+    // She types it again, and her account is signed in.
+    she_types(&devices, 1, TYPED);
+    the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
     assert_eq!(signed_in.lock().unwrap().clone(), vec![ADDRESS.to_owned()]);
     assert_eq!(her_mail(&mut hosted).await.len(), 1);
     assert_eq!(her_vault(&mut hosted).await.len(), 1, "what she typed last");
-    the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
     assert_eq!(
         hosted.model.asked().len(),
         3,
         "three asks of the model in all, a mistyped password among her answers"
     );
+    nothing_asks_in_chat(&hosted).await;
 
     it_is_nowhere_a_model_or_a_reader_looks(&hosted, &lines, MISTYPED).await;
     it_is_nowhere_a_model_or_a_reader_looks(&hosted, &lines, TYPED).await;
+    hosted.page.peer.close();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn declining_or_not_answering_signs_nothing_in_and_tells_the_assistant() {
+    let (mut hosted, signed_in) = started().await;
+    let devices = hosted.her_devices();
+    hosted.workspaces.call_private_model_addresses(true);
+
+    // She declines on her device: nothing is kept, and her assistant hears it once.
+    she_says_it_and_is_asked(&hosted, &devices).await;
+    devices.answer(0, ConfirmationAnswer::Deny);
+    let told = the_assistant_is_told(&hosted, "Nothing was signed in.").await;
+    assert!(told.contains("declined"), "{told}");
+    assert!(her_vault(&mut hosted).await.is_empty());
+    assert!(her_mail(&mut hosted).await.is_empty());
+    assert!(signed_in.lock().unwrap().is_empty());
+    nothing_asks_in_chat(&hosted).await;
     hosted.page.peer.close();
 }
 
@@ -482,6 +429,7 @@ const OWN_PLACES: [&str; 2] = [
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_server_named_with_its_port_is_signed_in_to_at_that_port() {
     let (mut hosted, signed_in) = started().await;
+    let devices = hosted.her_devices();
     // Her own server answers under no name of the network: the operator's one leave, as above.
     hosted.workspaces.call_private_model_addresses(true);
 
@@ -502,51 +450,30 @@ async fn a_server_named_with_its_port_is_signed_in_to_at_that_port() {
                         "outgoingServer": OWN_SENDS,
                     }),
                 ),
-                Reply::text("I asked you for its password. Type it into the field in our chat."),
+                Reply::text("I asked you for its password. Type it where your device asks."),
             ],
         )
         .await;
     let told = hosted.last_tool_result();
-    let asked = hosted.questions(chat::question::SECRET).await;
+    assert!(told.contains(OWN_SERVER), "{told}");
+    let asked = devices.asked(1).await;
     assert_eq!(
         asked.len(),
         1,
         "a server named with its port is taken, and its person asked once: {told}"
     );
-    assert!(told.contains(OWN_SERVER), "{told}");
-    let (question, held) = asked.into_iter().next().expect("the one question");
-    assert_eq!(
-        held.question.as_ref().unwrap().kept(),
-        Some(serde_json::json!({
-            "kind": "login", "belongsTo": OWN_PLACES, "username": OWN_ADDRESS,
-        })),
-        "the field is for a login at her server's two ports"
-    );
+    asks_for_her_password(&asked[0], &[OWN_ADDRESS, OWN_SERVER]);
 
-    // She types. Her server signs in and keeps the account at the ports she named.
-    let kept = hosted
-        .on_device(
-            (
-                person_vault::PROVIDER,
-                person_vault::RESOURCE,
-                person_vault::ADD,
-            ),
-            serde_json::json!({
-                "kind": "login", "belongsTo": OWN_PLACES, "username": OWN_ADDRESS, "secret": TYPED,
-            }),
-        )
-        .await;
-    let reference = kept["reference"].as_str().expect("a reference").to_owned();
-    hosted
-        .answers(
-            &question,
-            chat::question::FILLED,
-            serde_json::json!({"reference": reference}),
-        )
-        .await;
-    hosted.agents.look(&hosted.workspace).await.unwrap();
-    let (came, said) = what_came_of(&hosted, 0).await;
-    assert_eq!(came, chat::question::DONE, "{said}");
+    // She types. Her server keeps it for exactly those two places, signs in and keeps the
+    // account at the ports she named.
+    she_types(&devices, 0, TYPED);
+    the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
+    let vault = her_vault(&mut hosted).await;
+    assert_eq!(
+        vault[0]["belongsTo"],
+        serde_json::json!(OWN_PLACES),
+        "{vault:?}"
+    );
     assert_eq!(
         signed_in.lock().unwrap().clone(),
         vec![OWN_ADDRESS.to_owned()]
@@ -567,6 +494,7 @@ async fn a_server_named_with_its_port_is_signed_in_to_at_that_port() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn what_a_telling_is_refused_for_asks_nobody_for_a_password() {
     let (mut hosted, signed_in) = started().await;
+    let devices = hosted.her_devices();
     // No leave here: this server asks public servers alone, as a server does by default.
     for (what, args, words) in [
         (
@@ -619,13 +547,142 @@ async fn what_a_telling_is_refused_for_asks_nobody_for_a_password() {
             .await;
         let told = hosted.last_tool_result();
         assert!(told.contains(words), "{what}: {told}");
-        assert!(
-            hosted.questions(chat::question::SECRET).await.is_empty(),
-            "{what}: nobody is asked for a password"
-        );
+        assert_eq!(devices.count(), 0, "{what}: nobody is asked for a password");
     }
     assert!(her_mail(&mut hosted).await.is_empty());
     assert!(her_vault(&mut hosted).await.is_empty());
     assert!(signed_in.lock().unwrap().is_empty());
+    hosted.page.peer.close();
+}
+
+/// The subjects of her inbox, as her own device reads it through the host's mail action.
+async fn her_inbox(hosted: &mut Hosted) -> Vec<String> {
+    let fetched = hosted
+        .on_device(
+            (
+                person_accounts::PROVIDER,
+                person_accounts::RESOURCE,
+                person_accounts::FETCH,
+            ),
+            serde_json::json!({"account": ADDRESS, "folder": "inbox"}),
+        )
+        .await;
+    fetched["messages"]
+        .as_array()
+        .unwrap_or_else(|| panic!("her inbox: {fetched}"))
+        .iter()
+        .map(|message| message["subject"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// With real mail servers: a stand-in with real sockets that takes [`TYPED`] alone, and holds
+/// made-up mail. What she types on her own device signs her in there, her inbox is read
+/// through the host's own mail action, and a message she sends herself arrives in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_she_types_on_her_device_signs_her_in_and_her_mail_arrives() {
+    use tilo_server::workspaces::hosted_use::mail_stand_in;
+    let lines = logged();
+    let up = mail_stand_in::started(mail_stand_in::Serving {
+        names: vec!["localhost".to_owned()],
+        login: ADDRESS.to_owned(),
+        password: TYPED.to_owned(),
+        oauth_token: None,
+        imap: "127.0.0.1:0".to_owned(),
+        smtp: "127.0.0.1:0".to_owned(),
+        imap_wrapped: true,
+        smtp_wrapped: false,
+    })
+    .expect("the stand-in mail server starts");
+    let (imap, smtp) = (up.imap.port(), up.smtp.port());
+    let mut hosted = Hosted::start().await;
+    let devices = hosted.her_devices();
+    // The stand-in answers on this machine: its operator lets this server call its own network,
+    // and trusts the stand-in's certificate, which no authority signed.
+    hosted.workspaces.call_private_model_addresses(true);
+    hosted
+        .workspaces
+        .trust_mail_servers(vec![up.certificate.clone()]);
+    hosted
+        .workspaces
+        .find_mail_servers_through(move |address, _| match address {
+            ADDRESS => Ok(MailServers {
+                incoming: MailServer::new("localhost", imap),
+                outgoing: MailServer::new("localhost", smtp),
+                found: MailFound::Published,
+                username: None,
+                own_sign_in: None,
+            }),
+            _ => Err("no mail servers are found for that address".to_owned()),
+        });
+
+    hosted
+        .turn(
+            SENTENCE,
+            vec![
+                tells("call-1"),
+                Reply::text("I asked you for its password. Type it where your device asks."),
+            ],
+        )
+        .await;
+    let asked = devices.asked(1).await;
+    asks_for_her_password(&asked[0], &[ADDRESS, "localhost", "Scout"]);
+    nothing_asks_in_chat(&hosted).await;
+    assert!(
+        her_mail(&mut hosted).await.is_empty(),
+        "nothing before she typed"
+    );
+
+    she_types(&devices, 0, TYPED);
+    let told = the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
+    assert!(told.contains("signed in"), "{told}");
+    let accounts = her_mail(&mut hosted).await;
+    assert_eq!(accounts.len(), 1, "{accounts:?}");
+    assert_eq!(accounts[0]["hasSecret"], true, "{}", accounts[0]);
+
+    let inbox = her_inbox(&mut hosted).await;
+    assert!(
+        inbox.iter().any(|subject| subject == "Welcome to the lab"),
+        "her server's mail is read with what she typed: {inbox:?}"
+    );
+
+    let begun = hosted
+        .on_device(
+            (
+                person_accounts::PROVIDER,
+                person_accounts::RESOURCE,
+                person_accounts::BEGIN_SEND,
+            ),
+            serde_json::json!({"message": {
+                "account": ADDRESS,
+                "fromAddress": ADDRESS,
+                "to": ADDRESS,
+                "subject": "A note to myself",
+                "body": "Sent through the account my assistant signed in.",
+            }}),
+        )
+        .await;
+    let send = begun["send"].as_str().unwrap_or_else(|| panic!("{begun}"));
+    let sent = hosted
+        .on_device(
+            (
+                person_accounts::PROVIDER,
+                person_accounts::RESOURCE,
+                person_accounts::SEND,
+            ),
+            serde_json::json!({"send": send}),
+        )
+        .await;
+    assert!(sent.get("error").is_none(), "it leaves: {sent}");
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let inbox = her_inbox(&mut hosted).await;
+        if inbox.iter().any(|subject| subject == "A note to myself") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "her message arrived: {inbox:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    it_is_nowhere_a_model_or_a_reader_looks(&hosted, &lines, TYPED).await;
     hosted.page.peer.close();
 }

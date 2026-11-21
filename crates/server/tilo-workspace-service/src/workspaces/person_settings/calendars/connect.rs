@@ -49,7 +49,7 @@ use std::sync::MutexGuard;
 
 use accounts::vault_items::{ItemId, ItemKind, Place, VaultItems};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tilo_actions::remote::person_accounts::{self, AssistantAccess};
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_actions::remote::{
@@ -95,8 +95,6 @@ const ALREADY: &str = "That calendar account is connected already. Nothing was a
 const TOO_MANY: &str = "Too many calendars already wait for this person's password";
 const NO_ITEM: &str = "the answer names no item of the vault";
 const NOT_THEIRS: &str = "the agent that asked no longer acts for this person here";
-/// What a question that no longer says what this server asked comes to.
-const NOT_AS_ASKED: &str = "the question no longer says what this server asked";
 
 /// What a turn hands over to connect a calendar: what its person said, and
 /// nothing that is a secret or that makes the account writable.
@@ -156,23 +154,24 @@ pub struct ConnectAsk {
 
 impl ConnectAsk {
     /// What the question says, in this server's own words: what is asked
-    /// for and what typing it does. A question that says anything else is
-    /// not this server's.
+    /// for and what typing it does.
     #[must_use]
     pub fn words(&self) -> String {
         format!(
-            "To connect your calendar at {} for reading only I need the password of {} there. \
-             Type it into the field below: I never see it. Nothing is ever written to that \
-             calendar server, and I, {}, read your calendars there from then on.",
-            self.place, self.username, self.name
+            "Connect {} at {} for reading only. {} never sees what you type: your vault keeps \
+             it for that server alone.",
+            self.username, self.place, self.name
         )
     }
 
-    /// What the protected field is drawn from: a login at the calendar
+    /// What the vault keeps the password as: a login at the calendar
     /// server's own origin, under the user name.
     #[must_use]
-    pub fn detail(&self) -> Value {
-        json!({"kind": "login", "belongsTo": [self.place], "username": self.username})
+    pub fn login(&self) -> crate::workspaces::LoginAsked {
+        crate::workspaces::LoginAsked {
+            belongs_to: vec![self.place.clone()],
+            username: self.username.clone(),
+        }
     }
 
     /// What was asked for, in a few words of this server's own.
@@ -649,11 +648,10 @@ impl Workspaces {
     /// Carry out what the person answered where they were asked for the
     /// password of the calendar `claimed` keeps ([`Self::claim_connect`]).
     /// `typed` is the reference their device answered with, `None` where
-    /// they declined, and `as_asked` whether the question still says what
-    /// this server asked. `turn` is the asking agent's turn as this server
+    /// they declined. `turn` is the asking agent's turn as this server
     /// reads it now.
     ///
-    /// The caller read the answer from what the person wrote themselves;
+    /// What the person typed is in their vault already, under `typed`;
     /// this server decides what comes of it. What is connected is the
     /// account kept under the ask, for reading only, signed in with what
     /// the vault item keeps, and the agent that asked is named for it.
@@ -663,8 +661,7 @@ impl Workspaces {
     /// the ask is spent.
     ///
     /// # Errors
-    /// The question no longer says what this server asked, the turn is not
-    /// the asker's or is refused now, the answer names no item the vault
+    /// The turn is not the asker's or is refused now, the answer names no item the vault
     /// hands to this calendar server, or the calendar server did not take
     /// the sign-in: in its own words.
     pub async fn carry_out_connect(
@@ -672,7 +669,6 @@ impl Workspaces {
         turn: &HostedTurn<'_>,
         claimed: &ConnectAsk,
         typed: Option<&str>,
-        as_asked: bool,
     ) -> Result<Option<Connected>, String> {
         let mut person = [0; 32];
         let root = hex::decode_to_slice(&claimed.person, &mut person)
@@ -686,7 +682,6 @@ impl Workspaces {
         let carried = match (root.as_ref(), typed) {
             (Err(why), _) => Err(why.clone()),
             (Ok(_), None) => Ok(None),
-            (Ok(_), Some(_)) if !as_asked => Err(NOT_AS_ASKED.to_owned()),
             (Ok(root), Some(_)) => self.connect(turn, claimed, root, item).await.map(Some),
         };
         if !matches!(carried, Ok(Some(_)))

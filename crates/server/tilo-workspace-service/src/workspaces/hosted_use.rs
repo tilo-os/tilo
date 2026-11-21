@@ -115,6 +115,9 @@ pub use super::person_settings::mail_connect::{
 };
 #[cfg(feature = "agents")]
 pub use tilo_account_probe::mail_servers::{Found as MailFound, MailServers, Server as MailServer};
+/// A mail server with real sockets and made-up mail, for a test to sign in to and read from.
+#[cfg(any(test, feature = "test-support"))]
+pub use tilo_account_probe::stand_in as mail_stand_in;
 
 /// The most asks that wait for one person at a time.
 const MAX_OPEN_ASKS: usize = 32;

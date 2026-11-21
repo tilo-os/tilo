@@ -381,6 +381,33 @@ impl LiveAccountTester {
     }
 }
 
+/// A server's proof of a mail account's sign-in, trusting `extra` beside the system's own
+/// authorities, with every connection going only where `reach` lets it: a test's mail
+/// server, whose certificate no authority signed ([`stand_in`]). It proves mail accounts
+/// alone.
+#[cfg(any(test, feature = "test-support"))]
+pub struct TrustingMailTester {
+    pub reach: imap::Reach,
+    pub extra: Vec<rustls::pki_types::CertificateDer<'static>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl AccountTester for TrustingMailTester {
+    fn test(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<String, String> {
+        let mut roots = tilo_net::system_roots();
+        for certificate in &self.extra {
+            roots
+                .add(certificate.clone())
+                .map_err(|error| format!("a trusted certificate is not readable: {error}"))?;
+        }
+        LiveAccountTester::proved(&self.reach, account, secret, roots)
+    }
+}
+
 /// What proves accounts on a server: [`LiveAccountTester`], with every
 /// connection it makes for an account, for mail, a calendar or files, going
 /// only where its reach lets it ([`imap::Reach::public_unless`]), and which

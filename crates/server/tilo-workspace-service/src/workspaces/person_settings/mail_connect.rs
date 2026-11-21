@@ -43,7 +43,7 @@ use std::sync::MutexGuard;
 
 use accounts::vault_items::{ItemId, ItemKind, Place, UsedFor, VaultItems};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tilo_account_probe::mail_servers::{Found, Server};
 use tilo_actions::remote::person_accounts::{self, AddMailWithItem, AssistantAccess};
 use tilo_actions::remote::person_vault::ItemRef;
@@ -92,8 +92,6 @@ const NOT_PUBLIC: &str = "is not on the public internet. A mail account is signe
 const NOT_LOOKED: &str = "the look for its mail servers did not finish";
 const NO_ITEM: &str = "the answer names no item of the vault";
 const NOT_THEIRS: &str = "the agent that asked no longer acts for this person here";
-/// What a question that no longer says what this server asked comes to.
-const NOT_AS_ASKED: &str = "the question no longer says what this server asked";
 /// What a mail server's refusal of a password holds, in the words of whatever
 /// proves a sign-in ([`tilo_account_probe`]).
 const REJECTED: &str = "rejected the saved credential";
@@ -151,13 +149,9 @@ pub struct MailAsk {
     /// ask follows such a refusal.
     #[serde(default)]
     pub refused_by: String,
-    /// Where whoever carries out the turn put the question: theirs to read,
-    /// kept here so it is found again after a restart.
+    /// Which turn asked: whoever carries out the turn reads it, kept here so
+    /// it is found again after a restart.
     pub asked_in: Value,
-    /// Whether the question reached its person's conversation: an ask whose
-    /// server stopped before that is asked by nobody.
-    #[serde(default)]
-    pub put: bool,
     /// Whether an answer is being carried out: said before it starts, so an
     /// answer is carried out at most once whatever interrupts this server.
     pub started: bool,
@@ -176,8 +170,7 @@ pub struct MailAsk {
 
 impl MailAsk {
     /// What the question says, in this server's own words: what is asked
-    /// for, where it goes and what typing it does. A question that says
-    /// anything else is not this server's.
+    /// for, where it goes and what typing it does.
     #[must_use]
     pub fn words(&self) -> String {
         let again = if self.refused_by.is_empty() {
@@ -186,19 +179,20 @@ impl MailAsk {
             format!("That password was not accepted by {}. ", self.refused_by)
         };
         format!(
-            "{again}To sign in to your mail account {} I need its password. I worked out its \
-             servers from the address, {}: its mail is read at {} and sent through {}. Type the \
-             password into the field below: I never see it. It is kept in your vault for those \
-             two servers alone, and I, {}, read, search and draft your mail there from then on.",
-            self.address, self.found, self.reads, self.sends, self.name
+            "{again}Sign in to {} at {} and {}. {} never sees what you type: your vault keeps \
+             it for those two servers alone.",
+            self.address, self.reads, self.sends, self.name
         )
     }
 
-    /// What the protected field is drawn from: a login that belongs to both
+    /// What the vault keeps the password as: a login that belongs to both
     /// servers, under the name the account signs in with.
     #[must_use]
-    pub fn detail(&self) -> Value {
-        json!({"kind": "login", "belongsTo": self.belongs_to, "username": self.username})
+    pub fn login(&self) -> crate::workspaces::LoginAsked {
+        crate::workspaces::LoginAsked {
+            belongs_to: self.belongs_to.to_vec(),
+            username: self.username.clone(),
+        }
     }
 
     /// What was asked for, in a few words of this server's own.
@@ -406,10 +400,6 @@ fn kept_under(people: &Path) -> Vec<MailAsk> {
         let Some(mut ask) = read_kept(&file.path()).filter(|ask| is_ask_id(&ask.ask)) else {
             continue;
         };
-        if !ask.put {
-            let _ = std::fs::remove_file(file.path());
-            continue;
-        }
         ask.interrupted = ask.started;
         asks.push(ask);
     }
@@ -573,11 +563,10 @@ impl Workspaces {
     /// Take what `request` says of a mail account to sign in, for `turn`.
     ///
     /// Nothing is signed in: the account's servers are worked out, the
-    /// server keeps what was asked, with `asked_in` (where the caller will
-    /// put the question, its own to read), and answers
-    /// [`TurnMailConnect::Asks`] with what to ask the person. A caller that
-    /// put the question says so ([`Self::mail_connect_put`]), and one that
-    /// cannot says that ([`Self::mail_connect_not_asked`]).
+    /// server keeps what was asked, with `asked_in` (which turn asked, the
+    /// caller's own to read), and answers [`TurnMailConnect::Asks`] with what
+    /// to ask the person. A caller that cannot ask says so
+    /// ([`Self::mail_connect_not_asked`]).
     ///
     /// # Errors
     /// The turn is none this server carries out for its agent's keeper
@@ -665,7 +654,6 @@ impl Workspaces {
             found: servers.found.to_owned(),
             refused_by: String::new(),
             asked_in,
-            put: false,
             started: false,
             interrupted: false,
             asked_at_ms,
@@ -683,26 +671,6 @@ impl Workspaces {
         keep(&root, &kept).map_err(refused)?;
         open.push(kept.clone());
         Ok(TurnMailConnect::Asks(Box::new(kept)))
-    }
-
-    /// The question about `ask` reached its person's conversation: from now
-    /// on it waits for their answer, over a restart of this server too.
-    pub fn mail_connect_put(&self, ask: &MailAsk) {
-        let marked = self.mail_connects().as_mut().and_then(|asks| {
-            let kept = asks.iter_mut().find(|kept| kept.ask == ask.ask)?;
-            kept.put = true;
-            Some(kept.clone())
-        });
-        let Some(kept) = marked else {
-            return;
-        };
-        let mut person = [0; 32];
-        let said = hex::decode_to_slice(&kept.person, &mut person)
-            .map_err(|error| error.to_string())
-            .and_then(|()| keep(&self.person_settings_root(&person), &kept));
-        if let Err(error) = said {
-            tracing::warn!(%error, "an ask to sign a mail account in is not kept as put: a restart forgets it");
-        }
     }
 
     /// The question about `ask` could not be put to its person, or it is
@@ -770,22 +738,20 @@ impl Workspaces {
     /// Carry out what the person answered where they were asked for the
     /// password of the mail account `claimed` keeps
     /// ([`Self::claim_mail_connect`]). `typed` is the reference their device
-    /// answered with, `None` where they declined, and `as_asked` whether
-    /// the question still says what this server asked. `turn` is the asking
+    /// answered with, `None` where they declined. `turn` is the asking
     /// agent's turn as this server reads it now.
     ///
-    /// The caller read the answer from what the person wrote themselves;
+    /// What the person typed is in their vault already, under `typed`;
     /// this server decides what comes of it. What is signed in is the
     /// account kept under the ask, at the servers kept under it, with what
     /// the vault item keeps, and the agent that asked is named for it.
     /// Where nothing is signed in the item typed for this question is taken
     /// out of their vault again. Whatever comes of it, the ask is spent; a
     /// server that did not take the password leaves a new one
-    /// ([`MailCarried::AsksAgain`]), for the caller to put.
+    /// ([`MailCarried::AsksAgain`]), for the caller to ask.
     ///
     /// # Errors
-    /// The question no longer says what this server asked, the turn is not
-    /// the asker's or is refused now, the answer names no item the vault
+    /// The turn is not the asker's or is refused now, the answer names no item the vault
     /// hands to these servers, or the sign-in failed for another reason
     /// than its password: in its own words.
     pub async fn carry_out_mail_connect(
@@ -793,7 +759,6 @@ impl Workspaces {
         turn: &HostedTurn<'_>,
         claimed: &MailAsk,
         typed: Option<&str>,
-        as_asked: bool,
     ) -> Result<MailCarried, String> {
         let mut person = [0; 32];
         let root = hex::decode_to_slice(&claimed.person, &mut person)
@@ -807,7 +772,6 @@ impl Workspaces {
         let carried = match (root.as_ref(), typed) {
             (Err(why), _) => Err(why.clone()),
             (Ok(_), None) => Ok(None),
-            (Ok(_), Some(_)) if !as_asked => Err(NOT_AS_ASKED.to_owned()),
             (Ok(root), Some(_)) => self.sign_in_mail(turn, claimed, root, item).await.map(Some),
         };
         if !matches!(carried, Ok(Some(_)))
@@ -842,7 +806,6 @@ impl Workspaces {
         let again = MailAsk {
             ask: ask_id(&spent.person, &spent.agent, &spent.ask, asked_at_ms),
             refused_by: server,
-            put: false,
             started: false,
             interrupted: false,
             asked_at_ms,
@@ -947,7 +910,6 @@ mod tests {
             found: how(Found::Published).to_owned(),
             refused_by: String::new(),
             asked_in: Value::Null,
-            put: true,
             started: false,
             interrupted: false,
             asked_at_ms: 1,
@@ -955,8 +917,8 @@ mod tests {
         }
     }
 
-    /// The question names the account, both servers and how they were found,
-    /// and its field is a login that belongs to both; asked again, it says
+    /// The question names the account and both servers in a few words that fit the
+    /// protected field's prompt, and its field is a login that belongs to both; asked again, it says
     /// first which server did not take the password.
     #[test]
     fn a_question_names_both_servers_and_after_a_refusal_which_one_refused() {
@@ -966,20 +928,20 @@ mod tests {
             "ada@example.test",
             "imap.provider.test",
             "smtp.provider.test",
-            "publishes",
             "Scout",
-            "I never see it",
+            "never sees what you type",
         ] {
             assert!(words.contains(part), "{part}: {words}");
         }
+        let login = ask.login();
         assert_eq!(
-            ask.detail(),
-            json!({
-                "kind": "login",
-                "belongsTo": ["imap://imap.provider.test:993", "smtp://smtp.provider.test:465"],
-                "username": "ada@example.test",
-            })
+            login.belongs_to,
+            [
+                "imap://imap.provider.test:993",
+                "smtp://smtp.provider.test:465"
+            ]
         );
+        assert_eq!(login.username, "ada@example.test");
         let again = MailAsk {
             refused_by: "imap.provider.test".to_owned(),
             ..ask
@@ -1007,7 +969,6 @@ mod tests {
             Some("smtp.provider.test")
         );
         assert_eq!(refused_by("connection refused", &ask), None);
-        assert_eq!(refused_by(NOT_AS_ASKED, &ask), None);
     }
 
     /// A server is asked only where every address its name answers with is

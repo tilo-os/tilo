@@ -563,7 +563,53 @@ pub struct AgentAsk {
     pub choices: Vec<String>,
     /// Whether the person may type an answer of their own.
     pub typed: bool,
+    /// Whether what they type is a secret, such as a password the host keeps in their vault:
+    /// the field hides it, and the answer is [`ConfirmationAnswer::Secret`], never a
+    /// [`ConfirmationAnswer::Reply`]. The question is then the host's own words, not the
+    /// agent's.
+    #[serde(default)]
+    pub secret: bool,
 }
+
+/// A secret a person typed for an [`AgentAsk`] that asks for one. It is wiped when dropped,
+/// and its debug output says nothing of it, so a logged answer never shows it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TypedSecret(zeroize::Zeroizing<String>);
+
+impl Serialize for TypedSecret {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for TypedSecret {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::new)
+    }
+}
+
+impl TypedSecret {
+    /// `typed`, kept as a secret.
+    #[must_use]
+    pub fn new(typed: String) -> Self {
+        Self(zeroize::Zeroizing::new(typed))
+    }
+
+    /// What was typed.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for TypedSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TypedSecret(..)")
+    }
+}
+
+/// The longest secret a person types for an [`AgentAsk`], in bytes.
+pub const MAX_SECRET_BYTES: usize = 4_096;
 
 impl PendingConfirmation {
     /// The question as the confirmation sheet puts it.
@@ -602,12 +648,15 @@ pub enum ConfirmationAnswer {
     Reply(String),
     /// Carry out this invocation and keep a workspace grant for its scope.
     AllowAlways,
+    /// What the person typed for an [`AgentAsk`] that asks for a secret.
+    Secret(TypedSecret),
 }
 
 impl ConfirmationAnswer {
     /// Whether it answers `question`: allowing or not for an action, a reply
     /// one of its choices is, or that it takes typed, for an [`AgentAsk`];
-    /// declining answers either.
+    /// declining answers either. A secret answers only a question that asks for one, and
+    /// such a question takes nothing else typed.
     #[must_use]
     pub fn answers(&self, question: &PendingConfirmation) -> bool {
         match (self, &question.ask) {
@@ -616,7 +665,11 @@ impl ConfirmationAnswer {
             (Self::AllowAlways, ask) => {
                 ask.is_none() && question.page.is_none() && question.allow_always
             }
-            (Self::Reply(_), None) => false,
+            (Self::Reply(_) | Self::Secret(_), None) => false,
+            (Self::Secret(typed), Some(ask)) => {
+                ask.secret && !typed.expose().is_empty() && typed.expose().len() <= MAX_SECRET_BYTES
+            }
+            (Self::Reply(_), Some(ask)) if ask.secret => false,
             (Self::Reply(reply), Some(ask)) => {
                 let reply = reply.trim();
                 ask.choices.iter().any(|choice| choice == reply)
@@ -781,6 +834,7 @@ mod tests {
                 question: "Which consulate?".into(),
                 choices: vec!["Berlin".into(), "Munich".into()],
                 typed,
+                secret: false,
             }),
             ..PendingConfirmation::default()
         };
@@ -809,6 +863,46 @@ mod tests {
             })
         );
         assert!(!reply("Munich").answers(&action));
+    }
+
+    /// A question for a secret takes the secret typed for it, or a decline: never a reply,
+    /// which would carry the password as an ordinary answer. A secret answers nothing else.
+    #[test]
+    fn a_secret_answers_only_the_question_that_asks_for_one() {
+        let password = PendingConfirmation {
+            ask: Some(AgentAsk {
+                question: "The password of ada@example.com".into(),
+                typed: true,
+                secret: true,
+                ..AgentAsk::default()
+            }),
+            ..PendingConfirmation::default()
+        };
+        let typed = |text: &str| ConfirmationAnswer::Secret(TypedSecret::new(text.into()));
+        assert!(typed(" hunter2 ").answers(&password));
+        assert!(
+            !typed("").answers(&password),
+            "nothing typed answers nothing"
+        );
+        assert!(!typed(&"x".repeat(MAX_SECRET_BYTES + 1)).answers(&password));
+        assert!(!ConfirmationAnswer::Reply("hunter2".into()).answers(&password));
+        assert!(ConfirmationAnswer::Deny.answers(&password));
+        assert!(!ConfirmationAnswer::AllowOnce.answers(&password));
+        let words = PendingConfirmation {
+            ask: Some(AgentAsk {
+                typed: true,
+                ..AgentAsk::default()
+            }),
+            ..PendingConfirmation::default()
+        };
+        assert!(!typed("hunter2").answers(&words));
+        assert!(!typed("hunter2").answers(&PendingConfirmation::default()));
+        assert_eq!(format!("{:?}", typed("hunter2")), "Secret(TypedSecret(..))");
+        let wire = postcard::to_allocvec(&typed("hunter2")).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<ConfirmationAnswer>(&wire).unwrap(),
+            typed("hunter2")
+        );
     }
 
     #[test]

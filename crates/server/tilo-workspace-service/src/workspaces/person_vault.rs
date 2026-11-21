@@ -52,7 +52,52 @@ use tilo_user_identity::DeviceCert;
 use super::person_asking::{ApprovalChange, is_scoped_approval};
 use super::{WorkspaceId, Workspaces};
 
+/// What the vault is asked to keep where a person is asked for a login's password: where it
+/// belongs and the name it signs in with. It holds no secret.
+#[derive(Clone, Debug)]
+pub struct LoginAsked {
+    pub belongs_to: Vec<String>,
+    pub username: String,
+}
+
 impl Workspaces {
+    /// Ask `person`, on their own devices, for the password `question` words, and keep what
+    /// they type in their vault as a login `asked` names: the reference of the item it is kept
+    /// as, `None` where they declined. The password goes from their device's protected field to
+    /// this host and into the vault; only the reference comes back.
+    ///
+    /// # Errors
+    /// No device of theirs could be asked, nobody answered in time, or the vault did not keep
+    /// what they typed.
+    pub async fn ask_for_login(
+        &self,
+        person: [u8; 32],
+        question: tilo_server_protocol::certify::PendingConfirmation,
+        asked: LoginAsked,
+    ) -> Result<Option<ItemRef>, String> {
+        use tilo_server_protocol::certify::ConfirmationAnswer;
+        if !question.ask.as_ref().is_some_and(|ask| ask.secret) {
+            return Err("only a question for a secret is answered into the vault".to_owned());
+        }
+        let typed = match self.ask_person_confirmation(person, question).await? {
+            ConfirmationAnswer::Secret(typed) => typed,
+            _ => return Ok(None),
+        };
+        let root = self.person_settings_root(&person);
+        let adding = AddItem {
+            kind: ItemKind::Login,
+            belongs_to: asked.belongs_to,
+            username: asked.username,
+            sent_in: String::new(),
+            secret: typed.expose().to_owned(),
+        };
+        let kept = tokio::task::spawn_blocking(move || add(&root, adding))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        Ok(Some(kept.reference))
+    }
+
     /// Answer a [`person_vault::PROVIDER`] request.
     pub(super) async fn person_vault_invoke(
         &self,

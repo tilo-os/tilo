@@ -1241,6 +1241,7 @@ fn agent_ask(questions: &Questions, handle: &str, choices: &[&str]) -> Asked {
             question: "Which consulate should I book?".into(),
             choices: choices.iter().map(|choice| (*choice).to_owned()).collect(),
             typed: false,
+            secret: false,
         }),
         ..tilo_sheets::portal::AgentQuestion::default()
     })

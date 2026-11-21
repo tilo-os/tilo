@@ -32,8 +32,8 @@ use tilo_server_client::frame::{read_frame, write_frame};
 use tilo_server_protocol::auth::{self, HandshakeTrust, ServerIdentity};
 use tilo_server_protocol::certify::CERTIFY_ALPN;
 use tilo_server_protocol::certify::{
-    ApproverReply, ApproverRequest, CertifyOpen, ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES,
-    PendingConfirmation,
+    AgentAsk, ApproverReply, ApproverRequest, CertifyOpen, ConfirmationAnswer,
+    MAX_CERTIFY_FRAME_BYTES, PendingConfirmation, TypedSecret,
 };
 use tilo_service::Questions;
 use tilo_session::Options;
@@ -128,6 +128,45 @@ fn question(id: u8, allow_always: bool) -> PendingConfirmation {
     }
 }
 
+/// The host asking for a mail account's password, in its own words, for the person to type into
+/// the system's protected field.
+fn password_question(id: u8) -> PendingConfirmation {
+    PendingConfirmation {
+        id: [id; 32],
+        agent_id: "scout".into(),
+        agent_label: "Scout".into(),
+        workspace: "Ada's workspace".into(),
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
+        ask: Some(AgentAsk {
+            // The words the server asks in for a mail account, which the prompt shows whole.
+            question: "Sign in to ada@example.test at imap.example.test and smtp.example.test. \
+                       Scout never sees what you type: your vault keeps it for those two servers \
+                       alone."
+                .into(),
+            choices: Vec::new(),
+            typed: true,
+            secret: true,
+        }),
+        ..PendingConfirmation::default()
+    }
+}
+
+/// What the person types into the protected field.
+const TYPED: &str = "only her mail servers read this";
+
+/// Where this test's captures are written: in the build's own directory, beside its binary.
+fn shots_dir() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("SHELL_UI_SHOTS_OUT") {
+        return dir.into();
+    }
+    let binary = std::env::current_exe().expect("the running test's path");
+    binary
+        .ancestors()
+        .nth(3)
+        .expect("the build's directory")
+        .join("shell-ui-shots")
+}
+
 #[test]
 fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     let mut person = person();
@@ -185,6 +224,10 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     for (index, (id, expected)) in [
         (0x21, ConfirmationAnswer::AllowOnce),
         (0x22, ConfirmationAnswer::AllowAlways),
+        (
+            0x23,
+            ConfirmationAnswer::Secret(TypedSecret::new(TYPED.to_owned())),
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -203,37 +246,101 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
                 .expect("the session steps");
             assert!(
                 Instant::now() < deadline,
-                "the agent's question reached the person"
+                "the agent's question {handle} reached the person"
             );
         };
-        assert_eq!(shown.label, "Careful");
-        let details = shown.details;
-        assert_eq!(details["agent"], "Careful");
-        assert_eq!(details["action"], "Clear the history");
-        assert_eq!(details["title"], "Tidy the shell");
-        assert_eq!(
-            details["arguments"],
-            serde_json::json!([["Entries", "All"]])
-        );
-        assert_eq!(details["resource"], "Calculator");
-        assert_eq!(details["workspace"], "The shell");
-        assert_eq!(details["risk"], "destructive");
-        assert_eq!(details["allow_always"], allow_always);
-        if allow_always {
-            session
-                .step(Duration::from_millis(20))
-                .expect("the session shows the sheet");
-            let sheet = session.portal().expect("the system approval sheet");
-            assert!(sheet.presentation().is_open());
-            sheet.press(tilo_sheets::portal::PortalEffect::Answer {
-                handle,
-                index: u32::try_from(tilo_sheets::portal::ALLOW_ALWAYS).unwrap(),
-            });
-        } else {
+        if let ConfirmationAnswer::Secret(_) = &expected {
+            // A password: the sheet is the system's protected field, in the host's words, and
+            // what is typed stays in the sheet's own buffers until Sign in.
+            assert_eq!(shown.label, "Scout");
+            assert_eq!(shown.details["ask"]["secret"], true);
+            let deadline = tilo_test_env::hang_deadline();
+            while !session
+                .portal()
+                .is_some_and(|sheet| sheet.presentation().is_open())
+            {
+                session
+                    .step(Duration::from_millis(20))
+                    .expect("the session shows the sheet");
+                assert!(Instant::now() < deadline, "the password sheet opened");
+            }
+            let dialog = session
+                .portal()
+                .and_then(|sheet| sheet.dialog())
+                .expect("the sheet asks");
+            let tilo_sheets::portal::Body::Secret(prompt) = &dialog.body else {
+                panic!(
+                    "a password is asked in the protected field: {:?}",
+                    dialog.body
+                );
+            };
+            assert!(prompt.fields.iter().all(|field| field.masked));
+            assert!(prompt.resource.contains("ada@example.test"), "{prompt:?}");
+            assert!(dialog.title.contains("Scout"), "{}", dialog.title);
+            for _ in 0..10 {
+                session
+                    .step(Duration::from_millis(20))
+                    .expect("the session draws the sheet");
+            }
+            let dir = shots_dir();
+            std::fs::create_dir_all(&dir).expect("the shots directory");
+            let shot = session
+                .compositor()
+                .screenshot("HEADLESS-1")
+                .expect("a frame of the sheet");
+            image::save_buffer(
+                dir.join("agent-password-ask.png"),
+                &shot.rgba,
+                shot.width,
+                shot.height,
+                image::ColorType::Rgba8,
+            )
+            .expect("the frame is written");
+            let labels = session.accessible_labels().join("\n");
             assert!(
-                questions.answer(&handle, tilo_service::Answer::default()),
-                "the person answered the question"
+                !labels.contains(TYPED),
+                "nothing typed is in the accessibility tree"
             );
+            let sheet = session.portal().expect("the sheet stays open");
+            sheet.give_answer(ui::widget::SecretAnswer {
+                username: None,
+                secret: zeroize::Zeroizing::new(TYPED.to_owned()),
+                new_pin: None,
+                values: vec![zeroize::Zeroizing::new(TYPED.to_owned())],
+                choice: None,
+                option: None,
+            });
+            sheet.press(tilo_sheets::portal::PortalEffect::Submit { handle });
+        } else {
+            assert_eq!(shown.label, "Careful");
+            let details = shown.details;
+            assert_eq!(details["agent"], "Careful");
+            assert_eq!(details["action"], "Clear the history");
+            assert_eq!(details["title"], "Tidy the shell");
+            assert_eq!(
+                details["arguments"],
+                serde_json::json!([["Entries", "All"]])
+            );
+            assert_eq!(details["resource"], "Calculator");
+            assert_eq!(details["workspace"], "The shell");
+            assert_eq!(details["risk"], "destructive");
+            assert_eq!(details["allow_always"], allow_always);
+            if allow_always {
+                session
+                    .step(Duration::from_millis(20))
+                    .expect("the session shows the sheet");
+                let sheet = session.portal().expect("the system approval sheet");
+                assert!(sheet.presentation().is_open());
+                sheet.press(tilo_sheets::portal::PortalEffect::Answer {
+                    handle,
+                    index: u32::try_from(tilo_sheets::portal::ALLOW_ALWAYS).unwrap(),
+                });
+            } else {
+                assert!(
+                    questions.answer(&handle, tilo_service::Answer::default()),
+                    "the person answered the question"
+                );
+            }
         }
 
         let deadline = tilo_test_env::hang_deadline();
@@ -285,7 +392,7 @@ impl ProtocolHandler for Asking {
 }
 
 /// Serve the approver side of the certification protocol for one connection,
-/// listing two questions in order and keeping each answer.
+/// listing its questions in order and keeping each answer.
 async fn serve_approver(
     connection: Connection,
     user: [u8; 32],
@@ -333,7 +440,11 @@ async fn serve_approver(
     if pending.finish(&ack2).is_err() {
         return;
     }
-    let questions = [question(0x21, false), question(0x22, true)];
+    let questions = [
+        question(0x21, false),
+        question(0x22, true),
+        password_question(0x23),
+    ];
     while let Ok(frame) = read_frame(&mut recv, MAX_CERTIFY_FRAME_BYTES).await {
         let Ok(request) = postcard::from_bytes::<ApproverRequest>(&frame) else {
             return;

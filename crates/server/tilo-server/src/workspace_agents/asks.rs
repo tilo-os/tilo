@@ -697,12 +697,10 @@ impl Agents {
     /// agents asked them: each answer once, started before it is done. Costs one
     /// look at what this server keeps when nothing waits.
     pub(super) async fn settle_asks(&self, workspace: &str) {
-        // What a person typed where they were asked for a calendar's password is carried out
-        // first: its question says how it stands before this look reads which answers wake
-        // their askers.
-        Box::pin(self.settle_connects(workspace)).await;
-        // The same for a mail account's password.
-        Box::pin(self.settle_mail_connects(workspace)).await;
+        // Where a person's password for a calendar or a mail account is wanted and this process
+        // does not ask them for it, as after a restart, they are asked again.
+        self.settle_connects(workspace);
+        self.settle_mail_connects(workspace);
         let open = self.workspaces.open_asks(workspace);
         if open.is_empty() {
             return;

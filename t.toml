@@ -3351,6 +3351,19 @@ outputs = ["/target/window-share-shots/**"]
 timeout_secs = 3600
 default = false
 
+# Pictures of the shell the session's own tests take (SHELL_UI_SHOTS_OUT): the protected sheet a
+# person types a password into for an agent's account sign-in
+# (crates/session/session/tests/network_agent_questions.rs). Only when named.
+[[check]]
+name = "shell-ui-shots"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "rm -rf /target/shell-ui-shots\nSHELL_UI_SHOTS_OUT=/target/shell-ui-shots bash tools/test-env.sh cargo test --locked -p tilo-session --test it -- network_agent_questions::\n"
+env = { TILO_TEST_NTFS_FIXTURES = "0" }
+requires = ["arch=x86_64"]
+outputs = ["/target/shell-ui-shots/**"]
+timeout_secs = 3600
+default = false
+
 [[check]]
 name = "tilo-vm-binary-x86_64"
 egress = { to = ["code.tilo.so:443"], pinned = true }

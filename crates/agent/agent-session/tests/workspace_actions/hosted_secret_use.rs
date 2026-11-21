@@ -119,7 +119,99 @@ pub(super) struct Hosted {
     pub(super) address: iroh::EndpointAddr,
 }
 
+/// The person at their own devices: every question the server puts to them there, each waiting
+/// for the answer the test gives it, as their shell's sheet waits for theirs.
+#[derive(Default)]
+pub(super) struct Devices {
+    asked: Mutex<Vec<AskedThere>>,
+}
+
+/// A question put to the person's devices, and where its answer goes.
+pub(super) struct AskedThere {
+    pub(super) question: tilo_server_protocol::certify::PendingConfirmation,
+    answer: Option<tokio::sync::oneshot::Sender<tilo_server_protocol::certify::ConfirmationAnswer>>,
+}
+
+impl tilo_server::workspaces::AsksPeople for Devices {
+    fn ask(
+        &self,
+        _person: [u8; 32],
+        question: tilo_server_protocol::certify::PendingConfirmation,
+    ) -> tilo_server::workspaces::PersonAnswer {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        self.asked.lock().unwrap().push(AskedThere {
+            question,
+            answer: Some(answer),
+        });
+        Box::pin(async move {
+            answered
+                .await
+                .map_err(|_| "nobody answered in time".to_owned())
+        })
+    }
+}
+
+impl Devices {
+    /// The questions put to the person's devices, once there are `many`, oldest first.
+    pub(super) async fn asked(
+        &self,
+        many: usize,
+    ) -> Vec<tilo_server_protocol::certify::PendingConfirmation> {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let asked: Vec<_> = self
+                .asked
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|asked| asked.question.clone())
+                .collect();
+            if asked.len() >= many {
+                return asked;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "her devices were asked {} times, not {many}",
+                asked.len()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// How many questions were put to the person's devices so far.
+    pub(super) fn count(&self) -> usize {
+        self.asked.lock().unwrap().len()
+    }
+
+    /// The person answers the question at `place` with `answer`, on the device that shows it.
+    pub(super) fn answer(
+        &self,
+        place: usize,
+        answer: tilo_server_protocol::certify::ConfirmationAnswer,
+    ) {
+        let sender = self.asked.lock().unwrap()[place]
+            .answer
+            .take()
+            .expect("a question is answered once");
+        sender
+            .send(answer)
+            .expect("the server waits for the answer");
+    }
+
+    /// Nobody answers the question at `place`: it lapses.
+    pub(super) fn lapse(&self, place: usize) {
+        drop(self.asked.lock().unwrap()[place].answer.take());
+    }
+}
+
 impl Hosted {
+    /// The person's devices from now on, where the server asks them: theirs to answer.
+    pub(super) fn her_devices(&self) -> Arc<Devices> {
+        let devices = Arc::new(Devices::default());
+        self.workspaces.ask_people(devices.clone());
+        devices
+    }
+
     pub(super) async fn start() -> Self {
         Self::start_placing(None).await
     }

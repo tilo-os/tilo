@@ -865,6 +865,8 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                     question: ask.question,
                     choices: ask.choices,
                     typed: ask.typed,
+                    // An agent's own question never asks for a secret: only this host words one.
+                    secret: false,
                 }),
         };
         let (completer, answer) = tilo_actions::remote::pending();
@@ -890,9 +892,11 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 Ok(ConfirmationAnswer::AllowOnce) => {
                     Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)
                 }
-                Ok(ConfirmationAnswer::Deny | ConfirmationAnswer::AllowAlways) => {
-                    Ok(tilo_actions::remote::ConfirmationReply::Deny)
-                }
+                Ok(
+                    ConfirmationAnswer::Deny
+                    | ConfirmationAnswer::AllowAlways
+                    | ConfirmationAnswer::Secret(_),
+                ) => Ok(tilo_actions::remote::ConfirmationReply::Deny),
                 Ok(ConfirmationAnswer::Reply(reply)) => {
                     Ok(tilo_actions::remote::ConfirmationReply::Replied(reply))
                 }

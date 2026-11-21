@@ -211,6 +211,7 @@ fn asked_words(question: &PendingConfirmation) -> Option<AgentAsk> {
         question: ask.question.clone(),
         choices: ask.choices.clone(),
         typed: ask.typed,
+        secret: ask.secret,
     })
 }
 
@@ -369,6 +370,25 @@ impl PageQuestions {
                     continue;
                 }
                 (PortalEffect::Cancel { .. }, _) => ConfirmationAnswer::Deny,
+                // What is typed for a secret stays in the sheet's own buffers until Sign in.
+                (PortalEffect::Submit { .. }, Some(ask)) if ask.secret => {
+                    let typed = self
+                        .state
+                        .take_answer()
+                        .and_then(|answer| answer.values.into_iter().next())
+                        .filter(|typed| !typed.is_empty());
+                    match typed {
+                        Some(typed) => ConfirmationAnswer::Secret(
+                            tilo_server_protocol::certify::TypedSecret::new(String::clone(&typed)),
+                        ),
+                        None => continue,
+                    }
+                }
+                (PortalEffect::Confirm { .. } | PortalEffect::Answer { .. }, Some(ask))
+                    if ask.secret =>
+                {
+                    continue;
+                }
                 (PortalEffect::Confirm { .. }, None) if !allow_always => {
                     ConfirmationAnswer::AllowOnce
                 }

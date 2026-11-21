@@ -13,7 +13,7 @@ path = "src/lib.rs"
 [features]
 # The fixtures the service's tests and its embedders' tests build on: a
 # certified test service and the devices around it, plus the store's test hooks.
-test-support = ["tilo-server-store/test-support", "dep:tilo-test-env"]
+test-support = ["tilo-server-store/test-support", "dep:tilo-test-env", "tilo-account-probe/test-support", "dep:rustls"]
 # Agents on the host: workspaces keep apps' confined replicas and hand their
 # records' channel keys to pages.
 agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboration", "dep:ui", "dep:calendar-model", "dep:tilo-model-gateway"]
@@ -120,6 +120,8 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-server-store = { path = "../tilo-server-store" }
 # A host's device runs the runtime its own tasks drive.
 tokio = { workspace = true, features = ["full"] }
+# The certificates a test's mail server presents, which `trust_mail_servers` trusts.
+rustls = { workspace = true, optional = true }
 # An installed app's model, run from the package's WebAssembly module.
 tilo-model-engine = { path = "../../lang/tilo-model-engine" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }

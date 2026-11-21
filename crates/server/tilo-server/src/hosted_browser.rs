@@ -2124,6 +2124,7 @@ impl Asked {
             Ok(
                 ConfirmationAnswer::Deny
                 | ConfirmationAnswer::Reply(_)
+                | ConfirmationAnswer::Secret(_)
                 | ConfirmationAnswer::AllowAlways,
             ) => Err(ActionCallError::NotPermitted),
             Err(error) => {

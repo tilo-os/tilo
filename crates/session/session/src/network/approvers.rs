@@ -14,7 +14,7 @@ use tilo_network_actor::DeviceIdentity;
 use tilo_network_actor::services::Approvers;
 use tilo_server_client::Approver;
 use tilo_server_client::questions::{Answered, QuestionSheet, answer_questions};
-use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation, TypedSecret};
 use tilo_service::{Question, Questions};
 use tilo_sheets::portal::{ALLOW_ALWAYS, AgentAsk, AgentQuestion};
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -122,6 +122,16 @@ async fn answer_host(
     }
 }
 
+/// What a host's question asks in words, as the sheet asks it.
+fn sheet_ask(ask: &tilo_server_protocol::certify::AgentAsk) -> AgentAsk {
+    AgentAsk {
+        question: ask.question.clone(),
+        choices: ask.choices.clone(),
+        typed: ask.typed,
+        secret: ask.secret,
+    }
+}
+
 /// The session's question sheet, as an approver session shows its questions on it.
 struct SessionSheet {
     questions: Questions,
@@ -150,24 +160,24 @@ impl QuestionSheet for SessionSheet {
                 workspace: question.workspace.clone(),
                 page: question.page_origin(),
                 picture: question.page.as_ref().and_then(|page| page.picture.clone()),
-                ask: question.ask.as_ref().map(|ask| AgentAsk {
-                    question: ask.question.clone(),
-                    choices: ask.choices.clone(),
-                    typed: ask.typed,
-                }),
+                ask: question.ask.as_ref().map(sheet_ask),
                 allow_always: question.allow_always,
             })
             .unwrap_or_default(),
         });
         let answered = self.answered.clone();
         let allow_always = question.allow_always;
-        let ask = question.ask.as_ref().map(|ask| AgentAsk {
-            question: ask.question.clone(),
-            choices: ask.choices.clone(),
-            typed: ask.typed,
-        });
+        let ask = question.ask.as_ref().map(sheet_ask);
         let task = tokio::spawn(async move {
             let answer = match (asked.await, ask) {
+                (Some(given), Some(ask)) if ask.secret => given
+                    .values
+                    .into_iter()
+                    .next()
+                    .filter(|typed| !typed.is_empty())
+                    .map_or(ConfirmationAnswer::Deny, |typed| {
+                        ConfirmationAnswer::Secret(TypedSecret::new(String::clone(&typed)))
+                    }),
                 (Some(given), Some(ask)) => {
                     let typed = given.values.first().map_or("", |typed| typed.as_str());
                     ask.reply(given.choice, typed)

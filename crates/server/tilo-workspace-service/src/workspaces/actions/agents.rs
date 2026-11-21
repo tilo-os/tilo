@@ -320,6 +320,7 @@ impl Workspaces {
             Ok(
                 ConfirmationAnswer::Deny
                 | ConfirmationAnswer::Reply(_)
+                | ConfirmationAnswer::Secret(_)
                 | ConfirmationAnswer::AllowAlways,
             ) => Err(ActionCallError::Refused {
                 reason: "the person did not allow it".into(),
