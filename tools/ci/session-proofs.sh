@@ -47,7 +47,9 @@ esac 2>&1 | tee "$out/proof.log" || status=$?
 if ((status)); then
     while IFS= read -r -d '' log; do
         printf '=== the end of %s\n' "${log#"$run"/}"
-        tail -n 40 -- "$log"
+        # Less the index's warning about records of apps this session does not carry, which
+        # repeats several times a second and would leave nothing else in view.
+        grep -v "a record's app reads none of it" -- "$log" | tail -n 80 || true
     done < <(find "$run" -maxdepth 3 -name 'session*.log' -print0)
 fi
 # A proof that writes no verdict of its own gets one: what it said is proof.log.

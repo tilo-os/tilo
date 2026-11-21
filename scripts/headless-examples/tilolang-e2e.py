@@ -623,7 +623,10 @@ def check_record_open(session: Session, out: Path) -> dict:
     def opened_beside() -> dict | None:
         new = [w for w in tasks_windows() if w["tab"] not in {b["tab"] for b in before}]
         return new[0] if len(new) == 1 and new[0].get("title") == title else None
-    beside = until(f"a window of its own named {title!r}", opened_beside, 30)
+    try:
+        beside = until(f"a window of its own named {title!r}", opened_beside, 30)
+    except Failed as error:
+        raise Failed(f"{error}; Tasks' windows were {before} and are {tasks_windows()}") from None
     if not beside.get("active"):
         raise Failed(f"the window opened for the task is not in front: {beside}")
     time.sleep(1.0)

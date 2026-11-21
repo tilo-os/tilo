@@ -109,11 +109,21 @@ def targets_of(session: Session) -> list[str]:
     return [target["name"] for target in session.targets()]
 
 
+def shown_on(session: Session) -> list:
+    """The controls `session`'s shell shows where it draws them, less the shell's own layers:
+    what a failed step says the person was looking at."""
+    return [(t["name"], t["rect"]) for t in session.targets()
+            if not t["name"].startswith(("BackgroundLayer", "DesktopChrome"))]
+
+
 def click_on(session: Session, name: str) -> None:
     """Click where `session`'s shell draws the control `name`, as a person points at it: the one
     window that shows it, whichever other windows are on the shell."""
-    target = until(f"{name!r} on {session.tag}'s shell", lambda: next(
-        (t for t in session.targets() if t["name"] == name), None), 60)
+    try:
+        target = until(f"{name!r} on {session.tag}'s shell", lambda: next(
+            (t for t in session.targets() if t["name"] == name), None), 60)
+    except Failed as error:
+        raise Failed(f"{error}; it shows {shown_on(session)}") from None
     x, y, width, height = target["rect"]
     session.click_at(x + width / 2, y + height / 2)
 
@@ -153,8 +163,12 @@ def main() -> int:
               lambda: f"Message #{CHANNEL}" in targets_of(ada), 60)
         until("Ada's channel listed in Bo's window", lambda: CHANNEL in targets_of(bo), 120)
         click_on(bo, CHANNEL)
-        until("the channel open in Bo's window",
-              lambda: f"Message #{CHANNEL}" in targets_of(bo), 60)
+        try:
+            until("the channel open in Bo's window",
+                  lambda: f"Message #{CHANNEL}" in targets_of(bo), 60)
+        except Failed as error:
+            raise Failed(f"{error}; Bo's windows are {bo.windows()} and his shell shows "
+                         f"{shown_on(bo)}") from None
         # Ada types, and Bo reads that she is typing, by her name.
         click_on(ada, f"Message #{CHANNEL}")
         ada.type(MESSAGE)
