@@ -154,7 +154,10 @@ impl Serving {
         actions: Arc<std::sync::OnceLock<DeviceActions>>,
         protocols: tilo_network_actor::own_service::Protocols,
         documents: Option<super::PeerDocuments>,
-        service: tilo_workspace_service::service::ServiceSlot,
+        (service, records): (
+            tilo_workspace_service::service::ServiceSlot,
+            crate::platform::records::Changes,
+        ),
     ) -> Self {
         Self {
             bound,
@@ -164,6 +167,7 @@ impl Serving {
                 protocols,
                 documents,
                 service,
+                records,
             },
         }
     }
@@ -185,6 +189,8 @@ pub(crate) struct Beside {
     /// Where this device's own workspace service is installed: what answers for it beside this
     /// thread, the session's reads of a workspace's resources included.
     pub(crate) service: tilo_workspace_service::service::ServiceSlot,
+    /// The session's stream of record changes, which what that service serves waits on.
+    pub(crate) records: crate::platform::records::Changes,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
@@ -606,6 +612,7 @@ async fn listening(
         protocols,
         documents,
         service,
+        records,
     }: Beside,
     bound: &Bound,
 ) -> Option<Listening> {
@@ -677,7 +684,13 @@ async fn listening(
     );
     let mut opened = false;
     if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
-        let opening = open_own_service(service, identity, engine, &endpoint, &reachability);
+        let opening = open_own_service(
+            service,
+            identity,
+            engine,
+            (&endpoint, &reachability),
+            records,
+        );
         opened = own_service_opened(Box::pin(opening), service, &actor, actions.get()).await;
     }
     // Other devices' writes reach this device's apps from its workspace service, which holds

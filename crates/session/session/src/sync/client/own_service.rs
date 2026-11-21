@@ -37,8 +37,8 @@ pub(super) async fn open(
     own: &OwnService,
     identity: &DeviceIdentity,
     engine: &Arc<Engine>,
-    endpoint: &iroh::Endpoint,
-    reachability: &Reachability,
+    (endpoint, reachability): (&iroh::Endpoint, &Reachability),
+    records: crate::platform::records::Changes,
 ) -> Result<Arc<workspace_service::WorkspaceService>, String> {
     let handed = Arc::downgrade(engine);
     // A record this device holds sealed under an epoch its group has moved past opens only when
@@ -60,7 +60,7 @@ pub(super) async fn open(
             }
         })),
     );
-    open_with_groups(own, identity, engine, endpoint, reachability, groups).await
+    open_with_groups(own, identity, engine, (endpoint, reachability), groups, records).await
 }
 
 /// [`open`] with `groups` keeping the workspaces' keys: keys a test makes itself, where the
@@ -69,9 +69,9 @@ pub(crate) async fn open_with_groups(
     own: &OwnService,
     identity: &DeviceIdentity,
     engine: &Arc<Engine>,
-    endpoint: &iroh::Endpoint,
-    reachability: &Reachability,
+    (endpoint, reachability): (&iroh::Endpoint, &Reachability),
     groups: DeviceKeyGroups,
+    records: crate::platform::records::Changes,
 ) -> Result<Arc<workspace_service::WorkspaceService>, String> {
     let root = engine
         .service_root()
@@ -110,7 +110,7 @@ pub(crate) async fn open_with_groups(
             identity.device_cert.device_public_key,
         );
         // The cloud service's file accounts, and their sign-ins, are the workspaces' too.
-        crate::account_sign_ins::serve(workspaces.clone(), by.clone());
+        crate::account_sign_ins::serve(workspaces.clone(), by.clone(), records);
         tokio::spawn(async move { crate::account_passwords::carry(&workspaces, &by).await });
     }
     Ok(service)
@@ -170,8 +170,9 @@ impl KeySink for DeviceKeySink {
 pub(crate) fn found_alone(
     engine: &Arc<Engine>,
     service: tilo_workspace_service::service::ServiceSlot,
+    records: crate::platform::records::Changes,
 ) {
-    serve_alone(engine, service, None, |founder| founder);
+    serve_alone(engine, (service, records), None, |founder| founder);
 }
 
 /// [`found_alone`] with the workspaces' keys kept by `groups`, where the session opens no key
@@ -179,7 +180,10 @@ pub(crate) fn found_alone(
 /// handed the founder before it serves, for a caller that founds elsewhere.
 pub(crate) fn serve_alone(
     engine: &Arc<Engine>,
-    service: tilo_workspace_service::service::ServiceSlot,
+    (service, records): (
+        tilo_workspace_service::service::ServiceSlot,
+        crate::platform::records::Changes,
+    ),
     groups: Option<DeviceKeyGroups>,
     wrap: impl FnOnce(Arc<dyn crate::engine::Founder>) -> Arc<dyn crate::engine::Founder>,
 ) {
@@ -206,14 +210,21 @@ pub(crate) fn serve_alone(
                     &own,
                     &identity,
                     engine,
-                    &endpoint,
-                    &Reachability::default(),
+                    (&endpoint, &Reachability::default()),
                     groups,
+                    records,
                 )
                 .await?;
             }
             None => {
-                open(&own, &identity, engine, &endpoint, &Reachability::default()).await?;
+                open(
+                    &own,
+                    &identity,
+                    engine,
+                    (&endpoint, &Reachability::default()),
+                    records,
+                )
+                .await?;
             }
         }
         Ok::<_, String>(endpoint)

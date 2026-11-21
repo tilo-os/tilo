@@ -734,7 +734,7 @@ impl Session {
             engine.clone(),
             (beside, &device_agents),
             Some(peer_documents.clone()),
-            workspace_service.clone(),
+            (workspace_service.clone(), &changes),
         );
         if let Some(personal) = sync.as_ref().and_then(|sync| sync.personal()) {
             conversations.use_personal_store(personal.sync().clone());

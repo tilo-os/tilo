@@ -248,6 +248,7 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// ([`crate::device_mcp`]).
 /// `service` is where this device's own workspace service is installed, from the session's start:
 /// the workspace it holds answers its reads, and a workspace it makes is founded there.
+/// `changes` is the session's one stream of record changes, which what the service serves follows.
 pub(crate) fn start_collaboration(
     options: &Options,
     continuity: crate::platform::fabric::Continuity,
@@ -257,7 +258,10 @@ pub(crate) fn start_collaboration(
         &std::sync::Arc<crate::device_mcp::DeviceAgents>,
     ),
     documents: Option<sync::PeerDocuments>,
-    service: tilo_workspace_service::service::ServiceSlot,
+    (service, changes): (
+        tilo_workspace_service::service::ServiceSlot,
+        &crate::platform::records::Changes,
+    ),
 ) -> (
     Option<Rc<sync::Client>>,
     crate::broker_services::HeldDocuments,
@@ -274,13 +278,13 @@ pub(crate) fn start_collaboration(
         engine,
         beside,
         documents,
-        service.clone(),
+        (service.clone(), changes),
     );
     // The workspaces this device makes are founded whether or not its peer network came up: one
     // that did opened this device's workspace service on its endpoint, and one that did not leaves
     // it to open here.
     if let Some(engine) = &founding {
-        sync::found_alone(engine, service);
+        sync::found_alone(engine, service, changes.clone());
     }
     (sync, reads, resources)
 }
@@ -295,7 +299,10 @@ fn collaborating(
         &std::sync::Arc<crate::device_mcp::DeviceAgents>,
     ),
     documents: Option<sync::PeerDocuments>,
-    service: tilo_workspace_service::service::ServiceSlot,
+    (service, changes): (
+        tilo_workspace_service::service::ServiceSlot,
+        &crate::platform::records::Changes,
+    ),
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -377,6 +384,7 @@ fn collaborating(
                 .relays
                 .clone()
                 .unwrap_or_else(tilo_endpoint_reachability::relays),
+            records: changes.clone(),
         },
         engine,
         options.questions.clone(),

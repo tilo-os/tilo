@@ -63,8 +63,11 @@ fn accounts_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentR
     }
 }
 
-/// The accounts record's document id: one per workspace, the same on every device.
-fn accounts_document() -> String {
+/// The accounts record's document id: one per workspace, the same on every device, kept by
+/// [`accounts::person::ACCOUNTS_OWNER`]. A follower of the workspace's record changes waits on it
+/// for the workspace's accounts.
+#[must_use]
+pub fn accounts_document() -> String {
     collab_types::workspace_document_id(PersonAccounts::KIND)
 }
 

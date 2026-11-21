@@ -63,6 +63,7 @@ impl Device {
                 personal: None,
                 relays: host.relays(),
                 lan: None,
+                records: crate::platform::records::Changes::default(),
             },
             Some(std::sync::Arc::clone(&engine)),
             Some(questions.clone()),

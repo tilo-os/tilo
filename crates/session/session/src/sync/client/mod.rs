@@ -1352,6 +1352,10 @@ pub struct Entry {
     /// ([`tilo_endpoint_reachability::Nearby`]): `None` discovers on the networks the endpoint is
     /// on, and a caller that knows which one its person's devices share says so.
     pub lan: Option<tilo_endpoint_reachability::Nearby>,
+    /// The session's stream of record changes ([`crate::platform::records::Changes`]): what
+    /// waits on a record of this device's workspace service, such as the cloud service's ask for
+    /// accounts that changed, is told by it.
+    pub records: crate::platform::records::Changes,
 }
 
 impl Client {
@@ -1372,7 +1376,7 @@ impl Client {
         documents: Option<PeerDocuments>,
         service: tilo_workspace_service::service::ServiceSlot,
     ) -> std::io::Result<Self> {
-        let (identity, wake) = (entry.identity, entry.wake);
+        let (identity, wake, records) = (entry.identity, entry.wake, entry.records);
         let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
         let (desktop_events, desktop_arrived) = std::sync::mpsc::channel();
@@ -1431,7 +1435,14 @@ impl Client {
                         ready,
                     },
                     wake,
-                    Serving::new(binding, network_link, serving, beside, documents, service),
+                    Serving::new(
+                        binding,
+                        network_link,
+                        serving,
+                        beside,
+                        documents,
+                        (service, records),
+                    ),
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;

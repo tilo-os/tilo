@@ -2353,6 +2353,7 @@ mod transfers_between_devices {
                 personal: None,
                 relays: test_server::loopback(),
                 lan: None,
+                records: crate::platform::records::Changes::default(),
             },
             None,
             None,

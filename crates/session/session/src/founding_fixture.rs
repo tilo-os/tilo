@@ -19,12 +19,23 @@ use crate::engine::{Engine, Founder, ServiceAnswer};
 /// state, the keys of the workspaces' groups the test makes, and the reads and writes the
 /// session's roles make through it.
 pub(crate) struct TestService {
+    service: tilo_workspace_service::service::ServiceSlot,
     reads: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     writes: Arc<dyn tilo_peer_state::workspace_documents::DeviceWrites>,
     keys: Arc<TestGroupKeys>,
 }
 
 impl TestService {
+    /// The workspaces the service holds, as this device's own roles reach them.
+    #[expect(clippy::expect_used, reason = "the fixture opened the service")]
+    pub(crate) fn workspaces(&self) -> tilo_workspace_service::workspaces::Workspaces {
+        self.service
+            .service()
+            .expect("the device's own workspace service")
+            .workspaces()
+            .clone()
+    }
+
     /// What reads the documents of the workspaces the service holds, as the session's roles read
     /// them.
     pub(crate) fn reads(&self) -> Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> {
@@ -83,7 +94,7 @@ pub(crate) fn serve(engine: &Arc<Engine>) -> TestService {
     let keys = Arc::new(TestGroupKeys::default());
     crate::sync::serve_alone(
         engine,
-        service.clone(),
+        (service.clone(), crate::platform::records::Changes::default()),
         Some(DeviceKeyGroups {
             keys: Arc::clone(&keys) as Arc<dyn tilo_workspace_service::workspaces::GroupKeys>,
             sink: None,
@@ -91,6 +102,7 @@ pub(crate) fn serve(engine: &Arc<Engine>) -> TestService {
         |founder| Arc::new(OnRuntime(founder)),
     );
     TestService {
+        service: service.clone(),
         reads: Arc::new(
             tilo_workspace_service::apps::service_reads::ServiceDocuments::on(service.clone()),
         ),

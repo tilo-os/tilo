@@ -99,6 +99,7 @@ fn device_with(
             personal: None,
             relays,
             lan,
+            records: tilo_session::platform::records::Changes::default(),
         },
         None,
         None,

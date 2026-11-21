@@ -415,6 +415,7 @@ pub(crate) mod testing {
     pub(crate) struct Device {
         service: crate::founding_fixture::TestService,
         records: EngineRecords,
+        changes: crate::platform::records::Changes,
         /// Search's records of this device, until a test takes them.
         found: std::cell::RefCell<Option<super::Records>>,
         _state: tempfile::TempDir,
@@ -456,6 +457,7 @@ pub(crate) mod testing {
             Self {
                 service,
                 records,
+                changes,
                 found: std::cell::RefCell::new(Some(found)),
                 _state: state,
             }
@@ -468,6 +470,31 @@ pub(crate) mod testing {
                 .borrow_mut()
                 .take()
                 .expect("search's records, taken once")
+        }
+
+        /// The session's one stream of record changes, which every write here notes.
+        pub(crate) fn changes(&self) -> crate::platform::records::Changes {
+            self.changes.clone()
+        }
+
+        /// The workspaces this device's service holds, as the session's roles reach them.
+        pub(crate) fn workspaces(&self) -> tilo_workspace_service::workspaces::Workspaces {
+            self.service.workspaces()
+        }
+
+        /// Keep `doc` as `app`'s `record` of `workspace`, written into the workspace as a service of
+        /// the session writes it, once the session's copies next replicate ([`Self::until`]).
+        pub(crate) fn keep(
+            &self,
+            workspace: &str,
+            (app, record): (&str, &str),
+            doc: automerge::AutoCommit,
+        ) {
+            self.records.keep_document(
+                workspace,
+                (app, record),
+                std::rc::Rc::new(std::cell::RefCell::new(doc)),
+            );
         }
 
         /// What reads the documents of the workspaces this device's service holds.
