@@ -328,7 +328,6 @@ mod native {
                     .args([
                         "--exact",
                         "setup::internal_cache::linux::tests::native::lock_probe",
-                        "--ignored",
                     ])
                     .env("TILO_CACHE_LOCK_PROBE", dir.path())
                     .output_locked()
@@ -577,9 +576,12 @@ mod native {
         );
     }
     #[test]
-    #[ignore = "subprocess fixture invoked with a held parent lease"]
     fn lock_probe() {
-        let dir = std::env::var_os("TILO_CACHE_LOCK_PROBE").expect("parent fixture path");
+        // The parent fixture re-executes this binary with the directory whose
+        // lease it holds; an ordinary run has no such directory and returns.
+        let Some(dir) = std::env::var_os("TILO_CACHE_LOCK_PROBE") else {
+            return;
+        };
         let result = fixture_acquire(std::path::Path::new(&dir), &selected());
         assert!(matches!(result,Err(e) if e=="Cache Busy"));
     }

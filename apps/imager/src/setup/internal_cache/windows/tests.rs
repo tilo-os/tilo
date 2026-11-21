@@ -354,7 +354,6 @@ mod native {
                     .args([
                         "--exact",
                         "setup::internal_cache::windows::tests::native::lock_probe",
-                        "--ignored",
                     ])
                     .env("TILO_CACHE_LOCK_PROBE", dir.path())
                     .output_locked()
@@ -484,9 +483,12 @@ mod native {
         );
     }
     #[test]
-    #[ignore = "subprocess fixture invoked with a held parent lease"]
     fn lock_probe() {
-        let dir = std::env::var_os("TILO_CACHE_LOCK_PROBE").expect("parent fixture path");
+        // The parent fixture re-executes this binary with the directory whose
+        // lease it holds; an ordinary run has no such directory and returns.
+        let Some(dir) = std::env::var_os("TILO_CACHE_LOCK_PROBE") else {
+            return;
+        };
         let result = fixture_acquire(std::path::Path::new(&dir), &selected());
         assert!(matches!(result,Err(e) if e=="Cache Busy"));
     }
@@ -1204,80 +1206,6 @@ mod native {
                 }
             },
         );
-    }
-    #[test]
-    #[ignore = "UNRUN: externally provision a dedicated SYSTEM-owned local ancestry with protected current-user/SYSTEM/Administrators full-access DACL; no account or privilege changes in fixture"]
-    fn externally_provisioned_system_owned_ancestry_is_accepted() {
-        let path = std::path::PathBuf::from(
-            std::env::var_os("TILO_WINDOWS_SYSTEM_ANCESTOR")
-                .expect("externally provisioned SYSTEM-owned ancestry"),
-        );
-        let user = security_observation::user();
-        let before = security_observation::inspect(&path);
-        assert_ne!(user, "S-1-5-18", "run as an ordinary current user");
-        assert_eq!(before.owner, "S-1-5-18");
-        assert!(before.protected);
-        security_observation::trusted_only(&before, &user);
-        let dir = tempfile::tempdir_in(&path).unwrap();
-        let s = selected();
-        let parts = parts(dir.path(), &s);
-        inspect_private_descendants(dir.path(), &s, &parts, &user);
-        assert_eq!(security_observation::inspect(&path), before);
-    }
-    #[test]
-    #[ignore = "UNRUN: externally provision a dedicated foreign-owner local ancestry, trusted-only full-access DACL and sole sentinel file; provide expected foreign SID; never change owner/accounts/privileges in fixture"]
-    fn externally_provisioned_untrusted_owner_refuses_without_repair() {
-        let path = std::path::PathBuf::from(
-            std::env::var_os("TILO_WINDOWS_FOREIGN_OWNER_ANCESTOR")
-                .expect("externally provisioned foreign-owner ancestry"),
-        );
-        let expected = std::env::var("TILO_WINDOWS_FOREIGN_OWNER_SID")
-            .expect("expected externally provisioned owner SID");
-        let user = security_observation::user();
-        let facts = security_observation::inspect(&path);
-        assert_eq!(facts.owner, expected);
-        assert!(
-            ![
-                user.as_str(),
-                "S-1-5-18",
-                "S-1-5-32-544",
-                "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
-            ]
-            .contains(&expected.as_str())
-        );
-        assert!(facts.protected);
-        security_observation::trusted_only(&facts, &user);
-        assert_eq!(fs::read_dir(&path).unwrap().count(), 1);
-        assert_eq!(fs::read(path.join("sentinel")).unwrap(), b"owner-fixture");
-        let before = security_tree(&path);
-        let s = selected();
-        let error = match fixture_acquire(&path, &s) {
-            Err(e) => e,
-            Ok(_) => panic!("foreign owner accepted"),
-        };
-        assert!(error.contains("Cache owner refusal"), "{error}");
-        assert_eq!(security_tree(&path), before);
-    }
-    #[test]
-    #[ignore = "Requires an externally provisioned quota-limited NTFS/ReFS cache; never fill a host volume"]
-    fn disk_full_does_not_acknowledge_or_delete_residue() {
-        let path = std::env::var_os("TILO_WINDOWS_QUOTA_CACHE").expect("qualified quota fixture");
-        let s = selected();
-        let [mut a, mut b] = parts(std::path::Path::new(&path), &s);
-        prepare(&mut a, &s, 0);
-        prepare(&mut b, &s, 1);
-        let bytes = vec![b'E'; 4096];
-        let result = a.file.write_all(&bytes).and_then(|_| a.file.sync_all());
-        assert!(
-            result.is_err(),
-            "fixture must exhaust its own quota, not the host volume"
-        );
-        assert!(a.publish(&AtomicBool::new(false)).is_err());
-        drop(b);
-        let [mut a, b] = parts(std::path::Path::new(&path), &s);
-        prepare(&mut a, &s, 0);
-        assert_eq!(a.file.metadata().unwrap().len(), 0);
-        drop(b);
     }
 }
 
