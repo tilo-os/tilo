@@ -71,6 +71,53 @@ pub(super) struct ContentSlot {
     /// The surfaces the host lacks and asks for until they arrive, by hash:
     /// the workspace and app each is of.
     pub(super) missing: Mutex<HashMap<[u8; 32], (String, String)>>,
+    /// The asks this device answered with word that it keeps none of the
+    /// content ([`Workspaces::content_answer`]): answered again once it keeps
+    /// it ([`Workspaces::content_kept`]).
+    pub(super) owed: Mutex<OwedAsks>,
+}
+
+/// Asks owed, at most this many contents at once; past it, the oldest go.
+/// A tree's whole content can be asked for at once, before the device that
+/// wrote it keeps the bytes where it serves them from.
+const MAX_OWED: usize = 16_384;
+
+/// The asks this device owes an answer, by workspace and content hash: each
+/// asking device, with the ask it sent.
+#[derive(Default)]
+pub(super) struct OwedAsks {
+    asks: BTreeMap<(String, String), (u64, BTreeMap<[u8; 32], Vec<u8>>)>,
+    made: u64,
+}
+
+impl OwedAsks {
+    fn owe(&mut self, workspace: &str, hash: String, asker: [u8; 32], ask: &[u8]) {
+        let key = (workspace.to_owned(), hash);
+        if !self.asks.contains_key(&key)
+            && self.asks.len() >= MAX_OWED
+            && let Some(oldest) = self
+                .asks
+                .iter()
+                .min_by_key(|(_, (order, _))| *order)
+                .map(|(key, _)| key.clone())
+        {
+            self.asks.remove(&oldest);
+        }
+        self.made = self.made.wrapping_add(1);
+        let made = self.made;
+        self.asks
+            .entry(key)
+            .or_insert_with(|| (made, BTreeMap::new()))
+            .1
+            .insert(asker, ask.to_vec());
+    }
+
+    fn take(&mut self, workspace: &str, hash: &str) -> BTreeMap<[u8; 32], Vec<u8>> {
+        self.asks
+            .remove(&(workspace.to_owned(), hash.to_ascii_lowercase()))
+            .map(|(_, asks)| asks)
+            .unwrap_or_default()
+    }
 }
 
 impl ContentSlot {
@@ -461,6 +508,10 @@ impl Workspaces {
     /// device alone ([`neighbour_wire::content::answer`]). Empty for any other
     /// presence, or a request naming another workspace. What it keeps of app
     /// surfaces is the workspace's content store, never a registry.
+    ///
+    /// An ask answered with word that this device keeps none of the content
+    /// is owed: answered again, on the same link, once this device keeps it
+    /// ([`Self::content_kept`]), so the asker need not ask again and again.
     pub fn content_answer(&self, workspace: &str, asker: &[u8; 32], body: &[u8]) -> Vec<Vec<u8>> {
         if !matches!(
             NeighbourMsg::decode(body),
@@ -468,6 +519,64 @@ impl Workspaces {
         ) {
             return Vec::new();
         }
+        let answers = self.answer_from_kept(workspace, asker, body);
+        if let [only] = answers.as_slice()
+            && let Ok(NeighbourMsg::DocumentContentLacks { hash, .. }) = NeighbourMsg::decode(only)
+        {
+            self.inner.content.owed.lock_recover().owe(
+                workspace,
+                hash.to_ascii_lowercase(),
+                *asker,
+                body,
+            );
+        }
+        answers
+    }
+
+    /// This device keeps `hash` for `workspace` now: answer the asks it said
+    /// it lacks it to, on the link they came by. A member copy calls this for
+    /// content written here; a host for what it keeps for its members, whose
+    /// asks it answers.
+    pub fn content_kept(&self, workspace: &str, hash: &str) {
+        let answers = self.owed_answers(workspace, hash);
+        if answers.is_empty() {
+            return;
+        }
+        let Some(link) = WorkspaceId::parse(workspace)
+            .and_then(|id| self.member_link(id).or_else(|| self.inner.direct.link(id)))
+        else {
+            return;
+        };
+        for answer in answers {
+            let Ok(message) = tilo_failure::ignored!(
+                "a content answer this device made itself does not decode",
+                NeighbourMsg::decode(&answer)
+            ) else {
+                continue;
+            };
+            if let Err(error) = link.send(message) {
+                tracing::debug!(%workspace, %error, "content owed to a device did not reach it");
+            }
+        }
+    }
+
+    /// The answers to the asks for `hash` this device owes in `workspace`, taken: owed again
+    /// when it still keeps none.
+    fn owed_answers(&self, workspace: &str, hash: &str) -> Vec<Vec<u8>> {
+        let owed = self.inner.content.owed.lock_recover().take(workspace, hash);
+        owed.into_iter()
+            .flat_map(|(asker, ask)| self.content_answer(workspace, &asker, &ask))
+            .collect()
+    }
+
+    /// This device keeps `hash` for `workspace` now, fetched from another
+    /// device: the devices it owed it to are answered by whoever had it,
+    /// not sent the bytes a second time from here.
+    pub fn content_fetched(&self, workspace: &str, hash: &str) {
+        self.inner.content.owed.lock_recover().take(workspace, hash);
+    }
+
+    fn answer_from_kept(&self, workspace: &str, asker: &[u8; 32], body: &[u8]) -> Vec<Vec<u8>> {
         let host = self.serving_certificate().device_public_key;
         neighbour_wire::content::answer(&host, asker, body, |app_id, _, hash| {
             self.app_file(workspace, hash)
@@ -572,6 +681,57 @@ mod tests {
             have: Vec::new(),
         })
         .unwrap()
+    }
+
+    /// An ask answered with word that the content is not kept here is answered again once it
+    /// is, by the device that wrote it: the asker need not ask again and again meanwhile. One
+    /// that fetched the content from elsewhere leaves that to whoever it came from.
+    #[tokio::test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the server stays live until its consuming shutdown"
+    )]
+    async fn content_a_device_said_it_lacks_follows_once_it_keeps_it() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (key, cert) = crate::workspaces::tests::governor();
+        let server = crate::workspaces::tests::test_host(scratch.path(), &key, &cert).await;
+        let workspaces = server.workspaces().clone();
+        let (written, fetched) = (vec![3_u8; 100], vec![4_u8; 100]);
+        let hash = |bytes: &[u8]| blake3::hash(bytes).to_hex().to_string();
+        for bytes in [&written, &fetched] {
+            let ask = want(WORKSPACE, &hash(bytes));
+            assert!(lacks(&workspaces.content_answer(WORKSPACE, &MEMBER, &ask)).is_some());
+        }
+        assert!(
+            lacks(&workspaces.owed_answers(WORKSPACE, &hash(&written))).is_some(),
+            "still kept nowhere: still owed"
+        );
+        workspaces.serve_content(Arc::new(One(written.clone())));
+        workspaces.serve_content(Arc::new(One(fetched.clone())));
+        workspaces.content_fetched(WORKSPACE, &hash(&fetched));
+        assert!(
+            workspaces
+                .owed_answers(WORKSPACE, &hash(&fetched))
+                .is_empty()
+        );
+        let answers = workspaces.owed_answers(WORKSPACE, &hash(&written));
+        let [answer] = answers.as_slice() else {
+            panic!("one piece: {} frames", answers.len());
+        };
+        let NeighbourMsg::DocumentContentPiece {
+            requester, bytes, ..
+        } = postcard::from_bytes(answer).unwrap()
+        else {
+            panic!("a piece");
+        };
+        assert_eq!((requester, bytes), (peer_handle(&MEMBER), written.clone()));
+        assert!(
+            workspaces
+                .owed_answers(WORKSPACE, &hash(&written))
+                .is_empty(),
+            "answered once"
+        );
+        server.shutdown().await;
     }
 
     #[tokio::test]

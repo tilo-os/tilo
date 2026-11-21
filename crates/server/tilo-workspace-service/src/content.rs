@@ -144,6 +144,13 @@ pub trait ContentPeers: Send + Sync {
     fn may_read(&self, route: &CrdtRoute, peer: ContentPeer) -> bool {
         self.sources(route).all().contains(&peer)
     }
+
+    /// This device keeps `hash` for `route` now: `written` by an app here,
+    /// rather than fetched from another device. Asks the route's devices made
+    /// while it kept none are answered then, by the device that wrote it.
+    fn kept(&self, route: &CrdtRoute, hash: &str, written: bool) {
+        let _ = (route, hash, written);
+    }
 }
 
 /// The devices connected now that could hand over a route's content.
@@ -349,6 +356,7 @@ impl RouteContent {
         self.settle(&scope, &hash);
         self.tell(&scope, &ContentNews::arrived(&hash, bytes));
         self.repay(&scope, &hash, bytes);
+        self.peers.kept(route, &hash, true);
         Ok(())
     }
 
@@ -783,6 +791,7 @@ impl RouteContent {
                 self.settle(&scope, &hash);
                 self.tell(&scope, &ContentNews::arrived(&hash, &bytes));
                 self.repay(&scope, &hash, &bytes);
+                self.peers.kept(route, &hash, false);
                 return;
             }
             Some(_) => {
@@ -963,6 +972,17 @@ impl ContentPeers for MemberPeers {
 
     /// The service answers what it keeps none of itself.
     fn lacks(&self, _route: &CrdtRoute, _peer: ContentPeer, _hash: &str) {}
+
+    /// What the service said it lacks is answered by the device that wrote
+    /// it ([`Workspaces::content_kept`]); one that fetched it leaves that to
+    /// whoever it came from.
+    fn kept(&self, route: &CrdtRoute, hash: &str, written: bool) {
+        if written {
+            self.workspaces.content_kept(&route.cluster_id, hash);
+        } else {
+            self.workspaces.content_fetched(&route.cluster_id, hash);
+        }
+    }
 
     fn sources(&self, route: &CrdtRoute) -> ContentSources {
         let Some(workspace) = Self::workspace(route) else {

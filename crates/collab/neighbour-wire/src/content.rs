@@ -41,6 +41,12 @@ pub const PIECE_PATIENCE_MS: u64 = 1_000;
 /// The longest a re-ask waits between attempts, however long a transfer
 /// keeps failing.
 const REASK_CAP_MS: u64 = 5_000;
+/// How long content a device said it lacks waits for that device to hand it
+/// over before it is asked again, at first; each silence doubles it up to
+/// [`LACKED_CAP_MS`]. Asking again finds a holder whose answer was lost.
+pub const LACKED_PATIENCE_MS: u64 = 2_000;
+/// The longest content a device said it lacks waits between asks.
+const LACKED_CAP_MS: u64 = 30_000;
 /// Pieces one answer carries: 64 pieces is 12 MiB, a quarter of the 256 frames
 /// a session's outbound queue holds, so a burst of content leaves room for
 /// the presence, deltas and answers travelling beside it.
@@ -127,6 +133,16 @@ struct Want<T> {
     reasks: u32,
     total: Option<u64>,
     pieces: BTreeMap<u64, Vec<u8>>,
+    /// A device asked said it keeps none of the content, and the asker
+    /// counts on what was lacking following once a device keeps it
+    /// ([`ContentWants::lacks`]): such a want is asked again at once on word
+    /// that a holder may have it ([`ContentWants::wake`]), and otherwise only
+    /// after a long silence ([`LACKED_PATIENCE_MS`]), in case the holder's
+    /// answer was lost.
+    lacked: bool,
+    /// Woken: asked again by the next [`ContentWants::reask`], however
+    /// recently it was asked.
+    woken: bool,
 }
 
 impl<T> Want<T> {
@@ -181,6 +197,25 @@ impl<T> Want<T> {
     fn patience_ms(&self) -> u64 {
         patience_ms(self.reasks)
     }
+
+    /// Whether the want waits for what was lacking to follow: a device said
+    /// it keeps none and nothing of it arrived.
+    fn waits_for_holder(&self) -> bool {
+        self.lacked && self.pieces.is_empty() && !self.woken
+    }
+
+    /// How long a silence lasts before this want is asked again: a want a
+    /// device said it lacks waits for that device to hand it over, so only a
+    /// holder's answer that was lost needs asking again, and that is rare.
+    fn silence_ms(&self) -> u64 {
+        if self.waits_for_holder() {
+            LACKED_PATIENCE_MS
+                .saturating_mul(1_u64 << self.reasks.min(4))
+                .min(LACKED_CAP_MS)
+        } else {
+            self.patience_ms()
+        }
+    }
 }
 
 /// Content whose whole, verified bytes arrived.
@@ -196,20 +231,33 @@ pub struct Arrived<T> {
 /// The content requests this device has open, by hash.
 pub struct ContentWants<T> {
     wants: BTreeMap<String, Want<T>>,
+    /// Requests open at once; past it, the oldest goes.
+    room: usize,
 }
 
 impl<T> Default for ContentWants<T> {
     fn default() -> Self {
-        Self {
-            wants: BTreeMap::new(),
-        }
+        Self::with_room(MAX_OPEN_WANTS)
     }
 }
 
 impl<T> ContentWants<T> {
+    /// Requests that keep at most `room` open at once: an asker that asks
+    /// for a whole tree's content at once keeps room for all of it, so an
+    /// answer that follows later still finds its request.
+    #[must_use]
+    pub fn with_room(room: usize) -> Self {
+        Self {
+            wants: BTreeMap::new(),
+            room: room.max(1),
+        }
+    }
+
     /// The request device `device` sends on the workspace's presence for content
     /// `hash` a record of `app_id` in workspace `cluster_id` references, named
-    /// `tag`; `None` when it was asked for within `WANT_TTL_MS`.
+    /// `tag`; `None` when it was asked for within `WANT_TTL_MS`, or when a
+    /// device said it lacks it and the asker waits for it to follow
+    /// ([`Self::lacks`]).
     pub fn ask(
         &mut self,
         device: &[u8; 32],
@@ -219,14 +267,12 @@ impl<T> ContentWants<T> {
         now_ms: u64,
     ) -> Option<Vec<u8>> {
         let hash = hash.to_ascii_lowercase();
-        if self
-            .wants
-            .get(&hash)
-            .is_some_and(|want| now_ms.saturating_sub(want.asked_ms) < WANT_TTL_MS)
-        {
+        if self.wants.get(&hash).is_some_and(|want| {
+            now_ms.saturating_sub(want.asked_ms) < WANT_TTL_MS || want.waits_for_holder()
+        }) {
             return None;
         }
-        if self.wants.len() >= MAX_OPEN_WANTS
+        if self.wants.len() >= self.room
             && !self.wants.contains_key(&hash)
             && let Some(oldest) = self
                 .wants
@@ -255,16 +301,69 @@ impl<T> ContentWants<T> {
                 reasks: 0,
                 total: None,
                 pieces: BTreeMap::new(),
+                lacked: false,
+                woken: false,
             },
         );
         Some(request)
     }
 
-    /// Forget the requests no piece answered yet, so the next [`Self::ask`]
-    /// for each goes out at once: a device that can answer them was just
-    /// reached.
-    pub fn forget_unanswered(&mut self) {
-        self.wants.retain(|_, want| !want.pieces.is_empty());
+    /// Take `frame` when it is word, addressed to device `device`, that the
+    /// responder keeps none of content this device asked for; whether it
+    /// was. The device that said so hands the content over once it keeps
+    /// it, so from here on the want is asked again at once only when
+    /// [`Self::wake`] says a holder may have it, and otherwise after a long
+    /// silence ([`LACKED_PATIENCE_MS`]). Only an asker whose responders hand
+    /// over what they lacked takes these.
+    pub fn lacks(&mut self, device: &[u8; 32], frame: &[u8]) -> bool {
+        let Some(hash) = self.lacking(device, frame) else {
+            return false;
+        };
+        if let Some(want) = self.wants.get_mut(&hash) {
+            want.lacked = true;
+        }
+        true
+    }
+
+    /// Whether `frame` is word, addressed to device `device`, that the
+    /// responder keeps none of content this device asked for
+    /// ([`Self::lacks`]).
+    #[must_use]
+    pub fn awaits(&self, device: &[u8; 32], frame: &[u8]) -> bool {
+        self.lacking(device, frame).is_some()
+    }
+
+    /// The hash of the want `frame`, word addressed to `device` that the
+    /// responder lacks it, is about.
+    fn lacking(&self, device: &[u8; 32], frame: &[u8]) -> Option<String> {
+        let Ok(crate::NeighbourMsg::DocumentContentLacks {
+            requester,
+            app_id,
+            cluster_id,
+            hash,
+            ..
+        }) = crate::NeighbourMsg::decode(frame)
+        else {
+            return None;
+        };
+        let hash = hash.to_ascii_lowercase();
+        (requester == crate::peer_handle(device)
+            && self
+                .wants
+                .get(&hash)
+                .is_some_and(|want| want.app_id == app_id && want.cluster_id == cluster_id))
+        .then_some(hash)
+    }
+
+    /// Ask again for what the devices of workspace `cluster_id` said they
+    /// lack, through the next [`Self::reask`]s: a device that may keep it
+    /// was reached, or joined. Each want is asked once more, not on a clock.
+    pub fn wake(&mut self, cluster_id: &str) {
+        for want in self.wants.values_mut() {
+            if want.cluster_id == cluster_id && want.lacked && want.pieces.is_empty() {
+                want.woken = true;
+            }
+        }
     }
 
     /// The requests device `device` sends the workspace again for the content
@@ -282,12 +381,36 @@ impl<T> ContentWants<T> {
     where
         T: Clone,
     {
-        self.wants
-            .retain(|_, want| now_ms.saturating_sub(want.asked_ms) < WANT_TTL_MS && !want.whole());
+        self.reask_at_most(device, now_ms, usize::MAX)
+    }
+
+    /// [`Self::reask`], `limit` asks at most: what is left is asked by the
+    /// next call, so a burst of wants woken at once ([`Self::wake`]) goes
+    /// out at a pace the links carry.
+    ///
+    /// A want a device said it lacks waits for that device to hand it over
+    /// ([`Self::lacks`]): it is not dropped by the clock, and asked again
+    /// only after a long silence, or once woken.
+    pub fn reask_at_most(
+        &mut self,
+        device: &[u8; 32],
+        now_ms: u64,
+        limit: usize,
+    ) -> Vec<(T, Vec<u8>)>
+    where
+        T: Clone,
+    {
+        self.wants.retain(|_, want| {
+            (want.lacked || want.woken || now_ms.saturating_sub(want.asked_ms) < WANT_TTL_MS)
+                && !want.whole()
+        });
         let mut asks = Vec::new();
         for (hash, want) in &mut self.wants {
+            if asks.len() >= limit {
+                break;
+            }
             let silent = now_ms.saturating_sub(want.last_piece_ms.max(want.asked_ms));
-            if silent < want.patience_ms() {
+            if !want.woken && silent < want.silence_ms() {
                 continue;
             }
             let Ok(request) = postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentWant {
@@ -299,7 +422,19 @@ impl<T> ContentWants<T> {
             }) else {
                 continue;
             };
-            want.reasks = want.reasks.saturating_add(1);
+            if want.woken {
+                // Asked afresh, of a holder that may have it now; the devices
+                // that said they lack it still owe it.
+                want.woken = false;
+                want.reasks = 0;
+                want.asked_ms = now_ms;
+                want.last_piece_ms = now_ms;
+            } else {
+                // The silence counts from this ask: without it, a want silent
+                // past its patience is asked again on every call.
+                want.reasks = want.reasks.saturating_add(1);
+                want.last_piece_ms = now_ms;
+            }
             asks.push((want.tag.clone(), request));
         }
         asks
@@ -357,6 +492,9 @@ impl<T> ContentWants<T> {
         if want.app_id != app_id || want.cluster_id != cluster_id {
             return None;
         }
+        // Pieces arriving say the transfer moves: it is asked again for its
+        // next window by the clock, whoever said they lack it.
+        want.lacked = false;
         if want.total.is_some_and(|known| known != total) {
             return None;
         }
@@ -503,6 +641,8 @@ mod tests {
                 .iter()
                 .map(|(at, bytes)| (*at, bytes.to_vec()))
                 .collect(),
+            lacked: false,
+            woken: false,
         }
     }
 
@@ -766,5 +906,122 @@ mod tests {
         }
         assert_eq!(answered, windows * PIECES_PER_ANSWER, "each piece once");
         assert_eq!(whole.map(|whole| whole.bytes), Some(bytes));
+    }
+
+    /// Asking again is spaced by the silence since the last ask, however long the content takes:
+    /// a host looking every 100 ms asks a want it got no word on every few seconds, and one a
+    /// device said it lacks (and owes it) every half minute at most, until word that a holder may
+    /// have it asks each once more, paced. What it lacks is held until it arrives, so the
+    /// device that owed it finds the request still open when it hands it over.
+    #[test]
+    fn content_is_asked_for_again_after_a_silence_not_on_every_look() {
+        let (host, member) = ([1; 32], [2; 32]);
+        let workspace = ("so.tilo.files", "workspace");
+        let mut wants = ContentWants::default();
+        let bytes = b"a file written a moment ago".to_vec();
+        let lacked = blake3::hash(&bytes).to_hex().to_string();
+        let silent = blake3::hash(b"nobody answered").to_hex().to_string();
+        let mut now_ms = 1_000;
+        let ask = wants.ask(&host, (), workspace, &lacked, now_ms).unwrap();
+        wants.ask(&host, (), workspace, &silent, now_ms).unwrap();
+        let lacking = answer(&member, &host, &ask, |_, _, _| None);
+        assert!(wants.lacks(&host, &lacking[0]));
+        assert!(
+            !wants.lacks(
+                &host,
+                &answer(
+                    &member,
+                    &[3; 32],
+                    &ask_frame(&[3; 32], workspace, &lacked),
+                    |_, _, _| None
+                )[0]
+            ),
+            "word addressed to another device is not this one's"
+        );
+        let mut asked: BTreeMap<String, usize> = BTreeMap::new();
+        let looks = 1_200;
+        for _ in 0..looks {
+            now_ms += 100;
+            for ((), again) in wants.reask(&host, now_ms) {
+                let Ok(crate::NeighbourMsg::DocumentContentWant { hash, .. }) =
+                    crate::NeighbourMsg::decode(&again)
+                else {
+                    panic!("an ask");
+                };
+                *asked.entry(hash).or_default() += 1;
+            }
+        }
+        let (lacked_asks, silent_asks) = (asked.get(&lacked).copied(), asked.get(&silent).copied());
+        assert!(
+            lacked_asks.is_some_and(|asks| (1..=8).contains(&asks)),
+            "in {looks} looks, content a device lacks was asked again {lacked_asks:?} times"
+        );
+        assert!(
+            silent_asks.is_some_and(|asks| (1..=(WANT_TTL_MS / REASK_CAP_MS) as usize + 4).contains(&asks)),
+            "in {looks} looks, content nobody answered was asked again {silent_asks:?} times"
+        );
+        assert!(
+            wants.ask(&host, (), workspace, &lacked, now_ms).is_none(),
+            "reading the record again asks nothing while the device owes it"
+        );
+        wants.wake("another workspace");
+        assert!(
+            wants.reask(&host, now_ms).is_empty(),
+            "word from another workspace wakes none"
+        );
+        wants.wake(workspace.1);
+        assert_eq!(
+            wants.reask(&host, now_ms).len(),
+            1,
+            "asked once more at once"
+        );
+        assert!(wants.reask(&host, now_ms).is_empty(), "and only once");
+        let repaid = answer(&member, &host, &ask, |_, _, _| Some(bytes.clone()));
+        let arrived = wants
+            .piece(&host, &repaid[0], now_ms)
+            .map(|arrived| arrived.bytes);
+        assert_eq!(
+            arrived,
+            Some(bytes),
+            "what was owed still finds its request"
+        );
+    }
+
+    fn ask_frame(device: &[u8; 32], (app_id, cluster_id): (&str, &str), hash: &str) -> Vec<u8> {
+        postcard::to_allocvec(&crate::NeighbourMsg::DocumentContentWant {
+            requester: crate::peer_handle(device),
+            app_id: app_id.into(),
+            cluster_id: cluster_id.into(),
+            hash: hash.into(),
+            have: Vec::new(),
+        })
+        .unwrap()
+    }
+
+    /// A holder reached wakes everything its workspace's devices said they lack at once, which
+    /// for a tree is thousands of blobs: each look asks at most its share, and every one is asked
+    /// by the looks that follow.
+    #[test]
+    fn woken_content_is_asked_for_at_a_pace() {
+        let (host, member) = ([1; 32], [2; 32]);
+        let workspace = ("so.tilo.files", "workspace");
+        let mut wants = ContentWants::default();
+        let now_ms = 1_000;
+        let blobs = 200_u32;
+        for blob in 0..blobs {
+            let hash = blake3::hash(&blob.to_le_bytes()).to_hex().to_string();
+            let ask = wants.ask(&host, (), workspace, &hash, now_ms).unwrap();
+            assert!(wants.lacks(&host, &answer(&member, &host, &ask, |_, _, _| None)[0]));
+        }
+        wants.wake(workspace.1);
+        let mut looks = Vec::new();
+        loop {
+            let asked = wants.reask_at_most(&host, now_ms, 64).len();
+            if asked == 0 {
+                break;
+            }
+            looks.push(asked);
+        }
+        assert_eq!(looks, [64, 64, 64, 8], "{blobs} woken blobs, 64 a look");
     }
 }

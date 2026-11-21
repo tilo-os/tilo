@@ -24,7 +24,18 @@
 //! so a page keeping it for that app answers. A file's content is its manifest
 //! and the chunks it lists, so a file over a megabyte arrives too. Each blob
 //! is kept only when its bytes hash to the address asked for
-//! ([`ContentWants`]). Sealed content is asked by its ciphertext's address,
+//! ([`ContentWants`]).
+//!
+//! Each blob is asked for once. A member that keeps none of it says so and
+//! hands it over once it keeps it ([`Workspaces::content_kept`]): a record
+//! names content a moment before its writer keeps the bytes where it serves
+//! them from, and asking it again brings no second word that it lacks it.
+//! So what members said they lack is asked for again at once only when a
+//! member that may hold it is reached or joins, at a pace the links carry
+//! ([`ASKS_PER_TICK`]), and otherwise after a long silence, in case a
+//! holder's answer was lost ([`neighbour_wire::content::LACKED_PATIENCE_MS`]).
+//!
+//! Sealed content is asked by its ciphertext's address,
 //! which the store keys it under: the host keeps and serves the ciphertext,
 //! and only a record's readers hold its key.
 //!
@@ -64,12 +75,17 @@ type Route = (String, String, String);
 /// How often the records written to since the last pass are read: a workspace
 /// takes many writes a second, and one pass sees their content.
 const READ_EVERY: Duration = Duration::from_secs(2);
-/// How long the host waits before it asks again for content nobody answered.
-const ASK_AGAIN: Duration = Duration::from_secs(90);
 /// How often the content being gathered is looked at for the pieces a lost
 /// one left missing, so a member's answer arrives whole without waiting for
 /// the next write to the record that named it.
 const MISSING_EVERY: Duration = Duration::from_millis(100);
+/// The most asks one look at the content being gathered sends: a holder
+/// reached asks again for all the members said they lack, which for a large
+/// tree is thousands of blobs, and each ask is answered by every member.
+const ASKS_PER_TICK: usize = 64;
+/// The content requests the host keeps open at once: a tree written at once
+/// is asked for at once, and an answer that follows later finds its request.
+const OPEN_WANTS: usize = 16_384;
 /// How long a record that could not be read waits before it is read again, at
 /// first: each failed read waits twice as long, up to [`RETRY_LONGEST`].
 const RETRY_FIRST: Duration = Duration::from_secs(1);
@@ -84,7 +100,6 @@ struct Retry {
 }
 
 /// What the host holds of the content its workspaces' records name.
-#[derive(Default)]
 struct State {
     /// Content asked for and not whole yet, named by the record that
     /// references it.
@@ -93,12 +108,8 @@ struct State {
     /// now rather than when the retry comes due.
     written: BTreeSet<Route>,
     /// Records whose content is to be looked over again: content arrived that
-    /// is itself made of more content (a file's manifest), and what a record
-    /// named was asked for a while ago and never answered.
+    /// is itself made of more content (a file's manifest).
     again: BTreeSet<Route>,
-    /// Records with content the host lacks and was not answered about: read
-    /// again in a while, so content nobody holds now is asked for again.
-    unanswered: BTreeSet<Route>,
     /// Records that did not open, and when to read them again: the keys of a
     /// record a workspace seals arrive after its host joins the channel that
     /// seals it.
@@ -106,6 +117,18 @@ struct State {
     /// The workspaces whose records were all read: a change of their members
     /// reads again only what did not open.
     read: BTreeSet<String>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            wants: ContentWants::with_room(OPEN_WANTS),
+            written: BTreeSet::new(),
+            again: BTreeSet::new(),
+            reopened: BTreeMap::new(),
+            read: BTreeSet::new(),
+        }
+    }
 }
 
 /// The content a governed workspace's records reference, kept by the host that
@@ -158,7 +181,6 @@ impl KeptContent {
         self.read_all().await;
         let mut read = ticker(READ_EVERY);
         let mut again = ticker(READ_EVERY);
-        let mut unanswered = ticker(ASK_AGAIN);
         let mut reopen = ticker(RETRY_FIRST);
         let mut missing = ticker(MISSING_EVERY);
         loop {
@@ -182,8 +204,9 @@ impl KeptContent {
                 reached = reached.recv() => match reached {
                     Ok(workspace) => self.holder_reached(&workspace).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        self.state.lock_recover().wants.forget_unanswered();
-                        self.read_all().await;
+                        for summary in self.workspaces.list().await {
+                            self.holder_reached(&summary.workspace).await;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
@@ -194,11 +217,6 @@ impl KeptContent {
                 }
                 _ = again.tick() => {
                     for route in self.again() {
-                        self.keep(&route).await;
-                    }
-                }
-                _ = unanswered.tick() => {
-                    for route in self.unanswered() {
                         self.keep(&route).await;
                     }
                 }
@@ -233,7 +251,9 @@ impl KeptContent {
     async fn ask_again_for_missing(&self) {
         let asks = {
             let mut state = self.state.lock_recover();
-            state.wants.reask(&self.device, now_ms())
+            state
+                .wants
+                .reask_at_most(&self.device, now_ms(), ASKS_PER_TICK)
         };
         for ((workspace, _, _), ask) in asks {
             if let Err(error) = self.workspaces.ask_members(&workspace, ask).await {
@@ -263,13 +283,6 @@ impl KeptContent {
             .collect()
     }
 
-    /// The records with content the host was not answered about, taken.
-    fn unanswered(&self) -> Vec<Route> {
-        std::mem::take(&mut self.state.lock_recover().unanswered)
-            .into_iter()
-            .collect()
-    }
-
     /// The records due to be read again, `now`.
     fn reopening(&self, now: Instant) -> Vec<Route> {
         self.state
@@ -282,12 +295,14 @@ impl KeptContent {
     }
 
     /// `workspace` appeared, or its membership moved. One this host has not
-    /// read yet is read whole. For one it has, a member who joins or leaves
+    /// read yet is read whole. A member who joined may hold what the others
+    /// said they lack: that is asked for again. For one it has, a member who joins or leaves
     /// changes no record, only which of them this host opens: each record that
     /// did not open is read again now, and one it cannot open yet is asked
     /// about before its members write to it. Reading every record again
     /// would make each admission cost the whole workspace.
     async fn membership_moved(&self, workspace: &str) {
+        self.state.lock_recover().wants.wake(workspace);
         let not_opened: Option<Vec<Route>> = {
             let state = self.state.lock_recover();
             state.read.contains(workspace).then(|| {
@@ -334,10 +349,11 @@ impl KeptContent {
         self.workspaces.lacks_content(workspace, blobs).await;
     }
 
-    /// Ask again at once for all `workspace` lacks: its copy turned current
-    /// with another holder, which may keep what nobody answered before.
+    /// Ask again for all `workspace` lacks: its copy turned current with
+    /// another holder, which may keep what the members said they lack. The
+    /// asks go out paced ([`ASKS_PER_TICK`]), not all at once.
     async fn holder_reached(&self, workspace: &str) {
-        self.state.lock_recover().wants.forget_unanswered();
+        self.state.lock_recover().wants.wake(workspace);
         self.keep_workspace(workspace).await;
     }
 
@@ -421,9 +437,6 @@ impl KeptContent {
                     }
                 }
             }
-            if missing > 0 {
-                state.unanswered.insert(route.clone());
-            }
             drop(state);
             (asks, missing)
         };
@@ -439,6 +452,9 @@ impl KeptContent {
 impl ContentKeeper for KeptContent {
     fn piece(&self, workspace: &str, _from: [u8; 32], frame: &[u8]) {
         let mut state = self.state.lock_recover();
+        if state.wants.lacks(&self.device, frame) {
+            return;
+        }
         let Some(arrived) = state.wants.piece(&self.device, frame, now_ms()) else {
             return;
         };
@@ -453,10 +469,14 @@ impl ContentKeeper for KeptContent {
         // A manifest says what the file is made of: the chunks it lists are
         // asked for when the record that named it is read again.
         state.again.insert(arrived.tag);
+        drop(state);
+        // The members that asked this host while it kept none of it.
+        self.workspaces.content_kept(workspace, &arrived.hash);
     }
 
     fn expects(&self, _workspace: &str, frame: &[u8]) -> bool {
-        self.state.lock_recover().wants.expects(&self.device, frame)
+        let state = self.state.lock_recover();
+        state.wants.expects(&self.device, frame) || state.wants.awaits(&self.device, frame)
     }
 }
 
