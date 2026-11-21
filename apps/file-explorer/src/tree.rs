@@ -95,6 +95,11 @@ impl ResourceApp for FilesTreeShell {
 /// lacks is what asks the workspace for it.
 type Reads = Rc<dyn Fn(&str) -> Option<Vec<u8>>>;
 
+/// The apps that open a kind of file, as the window asks the session for them: each app's
+/// manifest says which kinds it claims, and that is the only answer to which app opens a file.
+/// A test stands a catalogue of its own in.
+type Opens = Rc<dyn Fn(&str) -> Result<Vec<runtime_portal::tools::DocumentApp>, String>>;
+
 /// A file the person asked to open, waiting for the bytes that say which app
 /// opens it.
 struct Asked {
@@ -448,12 +453,27 @@ fn listing<'a>(tree: Option<&'a Tree>, folder: &str) -> Listing<'a> {
     }
 }
 
-/// The app that opens the file `name`, whose first bytes are `head`: the
-/// bytes decide, as they do wherever a workspace lands a file in an app, and
-/// the name only says which of them are text.
-fn opening_app(head: &[u8], name: &str) -> Option<String> {
-    let landing = ui::content::landing(head, name)?;
-    Some(format!("so.tilo.{}", landing.app))
+/// The app that opens the file `name`, whose first bytes are `head`.
+///
+/// What kind of file it is comes from the bytes, as it does wherever a workspace lands a file in an
+/// app: a picture called `.txt` is a picture. Which app opens that kind is what the installed apps'
+/// manifests say, as it is wherever a person opens a file — one path for every app, Rust or
+/// tilolang, and never a table of app names here. A file handed over by its content opens in a
+/// Tilo app alone: one of the machine's own apps reads the path it has not got.
+fn opening_app(
+    head: &[u8],
+    name: &str,
+    apps: &dyn Fn(&str) -> Result<Vec<runtime_portal::tools::DocumentApp>, String>,
+) -> Option<String> {
+    let extension = ui::content::opened_extension(head, name)?;
+    // A name no file can have, so the session reads its extension and the type that extension
+    // declares, and no name of the person's stands for it.
+    let kind = format!("file.{extension}");
+    apps(&kind)
+        .ok()?
+        .into_iter()
+        .find(|app| app.source == Some(runtime_portal::tools::AppKind::Tilo))
+        .map(|app| app.id)
 }
 
 /// The window: the folder it shows and the entries in it.
@@ -492,6 +512,9 @@ pub struct TreeBrowser {
     /// invokes as the bar does.
     actions: Actions<FilesWindow>,
     read: Option<Reads>,
+    /// The apps that open a kind of file, asked of the session: what a file's bytes and its name
+    /// make of it, and the installed apps' own manifests decide which of them opens it.
+    opens: Opens,
     /// Where the window keeps the content of files put into the workspace from here.
     content: Option<ui::content::ContentStore>,
     body: Column,
@@ -550,6 +573,7 @@ impl TreeBrowser {
             dispatch: cx.dispatcher(),
             actions: cx.actions(),
             read,
+            opens: Rc::new(runtime_portal::tools::list_document_apps),
             content: cx.content(),
             body: Column::new(),
             shown: None,
@@ -1338,7 +1362,7 @@ impl TreeBrowser {
         let head = bytes
             .get(..bytes.len().min(ui::content::HEAD_BYTES))
             .unwrap_or(bytes);
-        let Some(app) = opening_app(head, &ask.name) else {
+        let Some(app) = opening_app(head, &ask.name, &*self.opens) else {
             // Said plainly, with the file to take instead: nothing opening is never silent.
             *self.unopened.borrow_mut() = Some(Notice {
                 title: t_args("files-tree-no-app", &[arg("name", ask.name.clone())]),
@@ -1588,36 +1612,90 @@ mod tests {
         );
     }
 
+    /// The apps this device has, each an id and the kinds of file it claims: what the session
+    /// answers for a kind with, a Tilo app first as its own resolution puts one.
+    fn advertised<'a>(
+        apps: &'a [(&'a str, &'a str, Option<runtime_portal::tools::AppKind>)],
+    ) -> impl Fn(&str) -> Result<Vec<runtime_portal::tools::DocumentApp>, String> + 'a {
+        move |kind: &str| {
+            Ok(apps
+                .iter()
+                .filter(|(_, claims, _)| {
+                    claims
+                        .split(',')
+                        .any(|claim| format!("file.{claim}") == kind)
+                })
+                .map(|(id, _, source)| runtime_portal::tools::DocumentApp {
+                    id: (*id).to_owned(),
+                    name: (*id).to_owned(),
+                    is_default: false,
+                    icon: None,
+                    source: *source,
+                    artwork: None,
+                })
+                .collect())
+        }
+    }
+
     #[test]
-    fn a_files_bytes_say_which_app_opens_it() {
+    fn a_files_bytes_say_which_kind_it_is_and_the_installed_apps_which_opens_it() {
+        use runtime_portal::tools::AppKind;
+        let tilo = Some(AppKind::Tilo);
+        let catalogue = [
+            ("so.tilo.lang.notes", "md,markdown,txt", tilo),
+            ("so.tilo.pdf-viewer", "pdf", tilo),
+            ("so.tilo.lang.photos", "png", tilo),
+        ];
+        let apps = advertised(&catalogue);
         assert_eq!(
-            opening_app(b"%PDF-1.7\n", "scan.pdf").as_deref(),
+            opening_app(b"%PDF-1.7\n", "scan.pdf", &apps).as_deref(),
             Some("so.tilo.pdf-viewer")
         );
         assert_eq!(
-            opening_app(b"# Plan\n\n- one\n", "plan.md").as_deref(),
-            Some("so.tilo.notes")
+            opening_app(b"# Plan\n\n- one\n", "plan.md", &apps).as_deref(),
+            Some("so.tilo.lang.notes")
         );
         assert_eq!(
-            opening_app(b"plain words\n", "notes.txt").as_deref(),
-            Some("so.tilo.notes")
+            opening_app(b"plain words\n", "notes.txt", &apps).as_deref(),
+            Some("so.tilo.lang.notes")
         );
         assert_eq!(
-            opening_app(b"\x89PNG\r\n\x1a\n....", "shot.txt").as_deref(),
-            Some("so.tilo.photos")
+            opening_app(b"\x89PNG\r\n\x1a\n....", "shot.txt", &apps).as_deref(),
+            Some("so.tilo.lang.photos"),
+            "a picture called `.txt` is a picture"
         );
-        assert_eq!(opening_app(&[0_u8, 1, 2, 3], "blob.bin"), None);
+        assert_eq!(opening_app(&[0_u8, 1, 2, 3], "blob.bin", &apps), None);
+        // A file whose kind no Tilo app claims opens in none of them: one of the machine's own
+        // apps has no path here to read the file it was handed by its content.
+        assert_eq!(
+            opening_app(b"# Plan\n", "plan.md", &advertised(&[])),
+            None,
+            "nothing claims Markdown"
+        );
+        assert_eq!(
+            opening_app(
+                b"# Plan\n",
+                "plan.md",
+                &advertised(&[("org.gnome.TextEditor.desktop", "md", Some(AppKind::System))])
+            ),
+            None,
+            "the machine's own editor is no app to hand content to"
+        );
     }
 
     #[test]
     fn the_handoff_opens_the_app_the_bytes_name_with_the_files_content_and_name() {
-        let handoff = TreeBrowser::handoff("so.tilo.notes", "Open").expect("the handoff binds");
+        let handoff =
+            TreeBrowser::handoff("so.tilo.lang.notes", "Open").expect("the handoff binds");
         let hash = "ab".repeat(32);
         let invocation = handoff
             .binding()
             .invoke((hash.clone(), "plan.txt".to_owned()))
             .expect("the row's click is one invocation");
-        assert_eq!(invocation.address.resource.as_str(), "so.tilo.notes.app");
+        assert_eq!(
+            invocation.address.resource.as_str(),
+            "so.tilo.lang.notes.app"
+        );
         assert_eq!(invocation.address.action.as_str(), "open");
         let arguments = serde_json::Value::Object(invocation.arguments);
         assert_eq!(arguments["content_hash"].as_str(), Some(hash.as_str()));
@@ -1962,6 +2040,19 @@ mod window_tests {
             ),
             Some(WORKSPACE.into()),
         );
+        // The apps this device has, as the manifest of each declares the kinds it opens.
+        app.with_widget::<TreeBrowser, _>(|browser| {
+            browser.opens = Rc::new(|_: &str| {
+                Ok(vec![runtime_portal::tools::DocumentApp {
+                    id: "so.tilo.lang.notes".into(),
+                    name: "Notes".into(),
+                    is_default: true,
+                    icon: None,
+                    source: Some(runtime_portal::tools::AppKind::Tilo),
+                    artwork: None,
+                }])
+            });
+        });
         app.flush().unwrap();
         let bar = ui::window_toolbar::declared().expect("the window declares its bar");
         assert!(
@@ -2018,8 +2109,8 @@ mod window_tests {
         assert_eq!(asked.len(), 1, "the session is asked to open one app");
         assert_eq!(
             asked[0].target,
-            ui::tilo_actions::remote::application_open_target(WORKSPACE, "so.tilo.notes"),
-            "the new file is handed to Notes"
+            ui::tilo_actions::remote::application_open_target(WORKSPACE, "so.tilo.lang.notes"),
+            "the new file is handed to the app whose manifest claims text"
         );
         assert_eq!(
             ui::tilo_actions::remote::ApplicationLaunch::opened_content(&asked[0].argument)

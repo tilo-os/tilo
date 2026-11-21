@@ -201,7 +201,9 @@ fn candidate(app: &str, lists: &AppLists) -> DocumentApp {
                 .name()
                 .to_owned(),
         ),
-        source: None,
+        // Where this device got it, always: two rows for apps one name names apart by it, and a
+        // window handing a file over reads it to know a Tilo app from the machine's own.
+        source: source_of(app, lists),
         artwork: None,
         is_default: false,
     }

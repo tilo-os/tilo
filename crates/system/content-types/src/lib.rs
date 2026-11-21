@@ -42,6 +42,32 @@ pub fn opened_as(bytes: &[u8]) -> (&'static str, &'static str) {
     ("bin", "application/octet-stream")
 }
 
+/// The extension of the kind of file `name` is, whose first bytes are `head`: what an app's
+/// manifest claims to open, so the apps that declare it decide which one opens the file.
+///
+/// The bytes decide what a file is (a picture called `.txt` is a picture, a workbook called
+/// `report.md` a workbook), and text is what its name's extension says it is: bytes alone cannot
+/// tell a note from a table. Empty content is what its name says too, so a new text file opens as
+/// one. `None` when neither names a kind, as none opens it.
+#[must_use]
+pub fn opened_extension(head: &[u8], name: &str) -> Option<String> {
+    if !head.is_empty() {
+        let (extension, _) = opened_as(head);
+        match extension {
+            // Opaque bytes: no app opens what nothing here names.
+            "bin" => return None,
+            // Text: the name decides which kind of text it is.
+            "txt" => {}
+            known => return Some(known.to_owned()),
+        }
+    }
+    let extension = std::path::Path::new(name)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase();
+    (!extension.is_empty()).then_some(extension)
+}
+
 /// Whether `bytes` read as text: UTF-8, a leading byte-order mark allowed, with
 /// no control characters but tabs and line breaks. Empty content is not text.
 fn is_text(bytes: &[u8]) -> bool {
@@ -97,5 +123,39 @@ mod tests {
             ("bin", "application/octet-stream")
         );
         assert_eq!(opened_as(b""), ("bin", "application/octet-stream"));
+    }
+
+    #[test]
+    fn the_kind_of_a_file_is_what_its_bytes_say_and_the_name_of_its_text() {
+        assert_eq!(
+            opened_extension(b"\x89PNG\r\n\x1a\n....", "shot.txt").as_deref(),
+            Some("png"),
+            "a picture called `.txt` is a picture"
+        );
+        assert_eq!(
+            opened_extension(b"# Plan\n\n- one\n", "plan.md").as_deref(),
+            Some("md"),
+            "text is the kind the name says it is"
+        );
+        assert_eq!(
+            opened_extension(b"plain words\n", "notes.TXT").as_deref(),
+            Some("txt"),
+            "and the name is read whatever case it is written in"
+        );
+        assert_eq!(
+            opened_extension(b"%PDF-1.7\n", "plan.md").as_deref(),
+            Some("pdf")
+        );
+        assert_eq!(
+            opened_extension(b"", "New file.md").as_deref(),
+            Some("md"),
+            "an empty file is what its name says"
+        );
+        assert_eq!(opened_extension(b"", "README"), None);
+        assert_eq!(
+            opened_extension(&[0_u8, 1, 2, 3], "plan.md"),
+            None,
+            "opaque bytes are no kind the name makes one"
+        );
     }
 }

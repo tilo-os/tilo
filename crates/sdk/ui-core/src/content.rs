@@ -9,7 +9,7 @@ pub use tilo_content::{
     ContentStore, NoContent, content_address, is_sealed, opened_as, valid_hash, valid_reference,
 };
 pub use tilo_content_device::{PublicCopy, PublicState};
-pub use tilo_content_types::{HEAD_BYTES, Landing, Takes, landing};
+pub use tilo_content_types::{HEAD_BYTES, Landing, Takes, landing, opened_extension};
 
 /// A workspace file whose content is a manifest: the chunks it lists, each
 /// read by its own hash.
