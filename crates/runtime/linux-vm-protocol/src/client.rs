@@ -181,7 +181,7 @@ fn pump_frames<S: Duplex>(
                 program,
             } => match agents {
                 Some(agents) => {
-                    carry(connection, AgentCaller { program }, agents, writer, carried)?
+                    carry(connection, AgentCaller { program }, agents, writer, carried)?;
                 }
                 None => {
                     let _ = send(
