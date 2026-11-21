@@ -52,6 +52,15 @@ type Message {
     /// their own views, and its author is whoever sent the message. Empty for a message that
     /// sends none.
     sent_view: Text
+    /// Who wrote it in the native Chat, as that app named them, for a message carried over from
+    /// there: its own history names whoever carried it, when it was carried.
+    by: Text = ""
+    /// When it was written in the native Chat, in milliseconds since 1970; 0 for a message
+    /// written here.
+    written: Int = 0
+    /// The reactions it had in the native Chat, each emoji with how many reacted with it: who
+    /// reacted there is not carried, since this app names people only as its own members.
+    reacted: Text = ""
 
     search {
         filter pinned (icon: .pin)
@@ -121,6 +130,169 @@ action add_channel(c: Category, name: Text = std.say("new-channel")) -> TextChan
     label: "New channel",
 ) {
     c.channels.insert(TextChannel(name: name))
+}
+
+/// The conversations the native Chat kept before this app took its id over, carried into these
+/// once: its categories and channels in the sidebar's order, each with its name and topic, and
+/// every message of a channel with what it said, whether it was pinned and the id it had there.
+/// The replies in a message's thread are the messages of that message's thread, a reply quoting
+/// it answers it, and who wrote each message, when, and its reactions are kept with it. What this
+/// app has no place for is set aside in a category of its own instead of dropped: an archived
+/// channel, a voice channel, and each direct conversation, as a channel holding its messages.
+/// The native app's own documents are left as they are.
+migration action carry_native_chat(all: Conversations) {
+    let earlier = earlier(all)
+    // Oldest first: when each was written, the same time by id.
+    let messages = earlier
+        .filter(e -> e.of == "messages")
+        .sort_by(e -> e.id)
+        .sort_by(e -> e.texts.get("ts") ?? "")
+    let categories = earlier.filter(e -> e.of == "categories")
+    let known = categories.map(c -> c.id)
+    let channels = earlier.filter(e -> e.of == "channels")
+    let shown = channels.filter(e -> not set_aside(e))
+    // Each conversation carried, by the id it had in the native app.
+    let carried: Map<TextChannel> = Map<TextChannel>()
+    for ch in shown.filter(e -> not known.contains(e.texts.get("category") ?? "")) {
+        carried.put(ch.id, all.channels.insert(native_channel(ch), id: ch.id))
+    }
+    for cat in categories {
+        let c = all.channels.insert(Category(name: cat.texts.get("name") ?? ""), id: cat.id)
+        for ch in shown.filter(e -> (e.texts.get("category") ?? "") == cat.id) {
+            carried.put(ch.id, c.channels.insert(native_channel(ch), id: ch.id))
+        }
+    }
+    let aside = channels.filter(e -> set_aside(e))
+    // A direct conversation is named by the members it is with, and kept nowhere but in the ids
+    // of its messages' conversation.
+    let directs: Map<Text> = Map<Text>()
+    for m in messages {
+        let to = m.texts.get("channel") ?? ""
+        if to.starts_with("direct:") { directs.put(to, members_of(to)) }
+    }
+    if not aside.is_empty() or not directs.keys().is_empty() {
+        let c = all.channels.insert(Category(name: "Set aside"), id: "set-aside")
+        for ch in aside {
+            let kind = if (ch.texts.get("kind") ?? "").lower() == "voice" {
+                "A voice channel"
+            } else { "An archived channel" }
+            let topic = ch.texts.get("topic") ?? ""
+            let made = c.channels.insert(
+                TextChannel(
+                    name: ch.texts.get("name") ?? "",
+                    topic: if topic == "" { "{kind} of the native Chat" } else { "{kind} of the native Chat: {topic}" },
+                ),
+                id: ch.id,
+            )
+            carried.put(ch.id, made)
+        }
+        for to in directs.keys() {
+            let members = directs.get(to) ?? ""
+            let made = c.channels.insert(
+                TextChannel(
+                    name: members,
+                    topic: "A direct conversation of the native Chat, between {members}",
+                ),
+                id: to,
+            )
+            carried.put(to, made)
+        }
+    }
+    for to in carried.keys() {
+        if let ch = carried.get(to) {
+            let here = messages.filter(e -> (e.texts.get("channel") ?? "") == to)
+            let tops = here.filter(e -> (e.texts.get("parent") ?? "") == "")
+            let ids = tops.map(e -> e.id)
+            // A reply whose message is gone stands in the conversation where it was written.
+            let stays = here.filter(e -> not ids.contains(e.texts.get("parent") ?? ""))
+            let posted: Map<Message> = Map<Message>()
+            for e in stays {
+                posted.put(e.id, ch.messages.insert(native_message(e), id: e.id))
+            }
+            for e in tops {
+                let replies = here.filter(r -> (r.texts.get("parent") ?? "") == e.id)
+                if let m = posted.get(e.id), first = replies.first() {
+                    let t = ch.threads.insert(Thread(name: m.body.excerpt))
+                    m.thread = t
+                    for r in replies {
+                        let reply = t.messages.insert(native_message(r), id: r.id)
+                        if (r.lists.get("quoted") ?? []).len() > 0 { reply.reply_to = m }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Whether the native channel `e` has no place among this app's channels: an archived one, or a
+/// voice channel, which held a call and no messages.
+fn set_aside(e: host.Earlier) -> Bool {
+    (e.texts.get("archived") ?? "") == "true" or (e.texts.get("kind") ?? "").lower() == "voice"
+}
+
+/// The native channel `e` as a channel of this app: its name and its topic.
+fn native_channel(e: host.Earlier) -> TextChannel {
+    TextChannel(name: e.texts.get("name") ?? "", topic: e.texts.get("topic") ?? "")
+}
+
+/// The native message `e` as a message of this app: what it said, whether it was pinned, and
+/// who wrote it there, when, and its reactions.
+fn native_message(e: host.Earlier) -> Message {
+    Message(
+        body: RichText(e.texts.get("text") ?? ""),
+        pinned: (e.texts.get("pinned") ?? "") == "true",
+        by: e.texts.get("author_name") ?? member_named(e.texts.get("author") ?? ""),
+        written: (e.texts.get("ts") ?? "").to_int() ?? 0,
+        reacted: reactions_said(e.lists.get("reactions") ?? []),
+    )
+}
+
+/// The members a native direct conversation's id names, each as [`member_named`] says it.
+fn members_of(id: Text) -> Text {
+    member_named(id.replace("direct:", "").replace("[", "").replace("]", "")).replace(",", ", ")
+}
+
+/// A member as the native app stored one (`{"person":"<id>"}`): the id it names.
+fn member_named(stored: Text) -> Text {
+    stored
+        .replace("\{\"person\":\"", "")
+        .replace("\{\"agent\":\"", "")
+        .replace("\{\"bot\":\"", "")
+        .replace("\"\}", "")
+}
+
+/// The native reactions `keys` (each its emoji, then who reacted) as words: each emoji and how
+/// many reacted with it, in the order they were first used.
+fn reactions_said(keys: List<Text>) -> Text {
+    said_from(keys.map(k -> emoji_of(k)), 0, [])
+}
+
+/// [`reactions_said`] of `emoji` from the `at`th, past the emoji already `told`.
+fn said_from(emoji: List<Text>, at: Int, told: List<Text>) -> Text {
+    if let e = emoji.at(at) {
+        if told.contains(e) {
+            said_from(emoji, at + 1, told)
+        } else {
+            let here = "{e} {emoji.count(x -> x == e)}"
+            let rest = said_from(emoji, at + 1, [told, [e]].flat_map(x -> x))
+            if rest == "" { here } else { "{here}  {rest}" }
+        }
+    } else { "" }
+}
+
+/// The emoji a native reaction's key names: what stands before its first separator. The key
+/// ends in who reacted, written in hex, after the last one.
+fn emoji_of(key: Text) -> Text {
+    let unhexed = without_hex(key)
+    let separator = unhexed.slice(unhexed.len() - 1, unhexed.len())
+    key.split(separator).first() ?? key
+}
+
+/// `key` without the hex digits it ends in.
+fn without_hex(key: Text) -> Text {
+    if key.len() > 0 and "0123456789abcdef".contains(key.slice(key.len() - 1, key.len())) {
+        without_hex(key.slice(0, key.len() - 1))
+    } else { key }
 }
 
 /// Opens the direct message with `who`, in the sidebar, or the one already open with them: a
@@ -608,6 +780,9 @@ view message(
         std.quote(r)
     }
     std.origin(m)
+    if m.by != "" {
+        ui.Text("{m.by} wrote this in the native Chat", role: .caption, secondary: true)
+    }
     if m.pinned {
         ui.Text("Pinned", role: .caption, secondary: true)
     }
@@ -619,6 +794,9 @@ view message(
         }
     } else {
         said(m)
+    }
+    if m.reacted != "" {
+        ui.Text(m.reacted, role: .caption, secondary: true)
     }
     if not m.reactions.keys().is_empty() {
         ui.Reactions(reactions: m.reactions) {

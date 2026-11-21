@@ -67,6 +67,15 @@ d-ofad24rc = Reactions
 d-dh6346no = Sent view
     .doc = A view the message sends, as its sender had it among their views: a reader adds it to their own views, and its author is whoever sent the message.
 
+d-tz5yw5dt = By
+    .doc = Who wrote it in the native Chat, as that app named them, for a message carried over from there: its own history names whoever carried it, when it was carried.
+
+d-mmlcexsa = Written
+    .doc = When it was written in the native Chat, in milliseconds since 1970; 0 for a message written here.
+
+d-jcgolgdf = Reacted
+    .doc = The reactions it had in the native Chat, each emoji with how many reacted with it: who reacted there is not carried, since this app names people only as its own members.
+
 d-hk2t6bvk-filter-pinned = Pinned
 
 d-6qpql3pg = Thread
@@ -131,6 +140,9 @@ d-abono4ra = New channel
     .w-new-channel = new-channel
 
 d-abono4ra-name = Name
+
+d-aod7dups = Carry native chat
+    .doc = The conversations the native Chat kept before this app took its id over, carried into these once: its categories and channels in the sidebar's order, each with its name and topic, and every message of a channel with what it said, whether it was pinned and the id it had there.
 
 d-3cetzzm3 = Message
     .doc = Opens the direct message with `who`, in the sidebar, or the one already open with them: a person has one conversation, not a new empty one each time.
