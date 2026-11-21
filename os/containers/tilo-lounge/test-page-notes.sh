@@ -41,7 +41,9 @@ keep_pictures() {
 keep_page_lines() {
   [[ -s ${log:-} ]] || return 0
   echo '--- page acts, opens and refusals:'
-  grep -i "page's act\|found no page held\|found its record not ready\|a page was refused\|no page is open\|page was closed" "$log" | grep -vi 'acted=false' | tail -60
+  # A walk whose acts all went through leaves no such line, which is no failure.
+  { grep -i "page's act\|found no page held\|found its record not ready\|a page was refused\|no page is open\|page was closed" "$log" || true; } \
+    | { grep -vi 'acted=false' || true; } | tail -60
 }
 trap 'keep_pictures; keep_page_lines; stop_lounge' EXIT
 node "$here/integration/page-notes.mjs" "$site_origin" "$server_origin" "$workspace" "$work/page" \
