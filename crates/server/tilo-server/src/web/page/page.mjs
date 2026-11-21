@@ -352,6 +352,8 @@ function start() {
   const redone = [];
   const reopened = asked => {
     if (!link) return;
+    // Why the page is shown again, for whoever looks into it.
+    if (asked) page.dataset.reopened = 'asked again';
     // A page asked for again is asked for at most twice: one that keeps
     // reopening is not shown here.
     if (asked?.value?.open) {
@@ -527,11 +529,12 @@ function start() {
     unanswered = Math.max(0, unanswered - 1);
     const asked = sent.shift();
     caughtUp();
-    // Its document was opened again past a slow request, or the page it acted
-    // on is gone (the session under it restarted): nothing the ask did was
-    // applied, so the page is shown again where it is rather than answered
-    // with an error. What the person typed stays in its field.
-    if (answer.refused?.reopened || (answer.refused?.unavailable && page.querySelector('[data-p]'))) {
+    // Its document was opened again past a slow request: nothing the ask did
+    // was applied, so the page is shown again where it is and what the person
+    // did is asked again from there. Anything else the page refused is the
+    // page saying it cannot do this now, which the person is told rather than
+    // left with typing that was never kept.
+    if (answer.refused?.reopened) {
       reopened(asked);
       return;
     }
