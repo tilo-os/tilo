@@ -27,7 +27,10 @@ pub mod document;
 mod facts;
 pub mod form;
 pub mod memory;
+mod patches;
 mod person_state;
+pub use patches::spliced;
+use patches::{patch_in_place, show_content_rows, sort, virtual_list_paths};
 pub mod rows;
 mod shown;
 mod views;
@@ -40,7 +43,7 @@ pub(crate) use convert::{bound_values, convert_with, referenced_resource, rows_m
 pub mod wire;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -2665,225 +2668,6 @@ fn refusal(error: &crate::runtime::RuntimeError) -> String {
         }
         other => other.to_string(),
     }
-}
-
-/// `current` with `delete` bytes at `at` replaced by `insert`, each end moved back to the
-/// nearest character boundary.
-#[must_use]
-pub fn spliced(current: &str, at: usize, delete: usize, insert: &str) -> String {
-    let floor = |mut at: usize| {
-        at = at.min(current.len());
-        while !current.is_char_boundary(at) {
-            at = at.saturating_sub(1);
-        }
-        at
-    };
-    let start = floor(at);
-    let end = floor(at.saturating_add(delete)).max(start);
-    let mut text = String::with_capacity(current.len().saturating_add(insert.len()));
-    text.push_str(current.get(..start).unwrap_or_default());
-    text.push_str(insert);
-    text.push_str(current.get(end..).unwrap_or_default());
-    text
-}
-
-/// The virtual lists of a view's tree, by key, with their keys from the root.
-fn virtual_list_paths(tree: &UiNode) -> Vec<(String, Vec<String>)> {
-    fn walk(node: &UiNode, path: &mut Vec<String>, out: &mut Vec<(String, Vec<String>)>) {
-        path.push(node.key.clone());
-        if ui::is_virtual_list(&node.kind) {
-            out.push((node.key.clone(), path.clone()));
-        }
-        for child in &node.children {
-            walk(child, path, out);
-        }
-        path.pop();
-    }
-    let mut out = Vec::new();
-    walk(tree, &mut Vec::new(), &mut out);
-    out
-}
-
-/// Render every row of the lists of `view` that no virtual list renders as it shows them: a
-/// list inside content is drawn whole, one in a card as its preview (the rows the runtime built
-/// for it).
-fn show_content_rows(view: &mut ViewInstance) {
-    fn lists(node: &UiNode, out: &mut Vec<String>) {
-        if node.kind == "list" {
-            out.push(node.key.clone());
-        }
-        for child in &node.children {
-            lists(child, out);
-        }
-    }
-    let mut shown = HashSet::new();
-    loop {
-        let mut found = Vec::new();
-        lists(view.tree(), &mut found);
-        found.retain(|key| !shown.contains(key));
-        if found.is_empty() {
-            return;
-        }
-        for list in found {
-            for index in 0..view.list_len(&list).unwrap_or(0) {
-                if let Err(error) = view.row(&list, index) {
-                    tracing::warn!(%error, "a row of a list did not render");
-                }
-            }
-            shown.insert(list);
-        }
-    }
-}
-
-/// What a view changed of a virtual list it renders as the list shows it.
-#[derive(Default)]
-struct ListChanges {
-    /// Rows inserted, removed or moved, in order.
-    structure: Vec<Patch>,
-    /// The rows whose content changed.
-    rows: Vec<String>,
-    /// The list was replaced as a whole: its rows are read anew.
-    reread: bool,
-}
-
-/// The patches that bring `sent`, the tree the window holds, to the view's `tree` where the
-/// view's patches changed it (`changed`, paths of keys from the root), with `sent` brought there
-/// too: each changed node converted alone, not the whole tree. `None`, and `sent` untouched,
-/// when that cannot be done (a node not found, keys not unique): the tree is converted whole.
-fn patch_in_place(
-    sent: &mut ui::Node,
-    tree: &UiNode,
-    changed: &[Vec<String>],
-    convert: &Convert<'_>,
-) -> Option<Vec<ui::Patch>> {
-    let mut paths: Vec<&[String]> = changed.iter().map(Vec::as_slice).collect();
-    paths.sort_unstable();
-    paths.dedup();
-    // A change below one already converted is in it.
-    let mut tops: Vec<&[String]> = Vec::with_capacity(paths.len());
-    for path in paths {
-        if !tops.iter().any(|top| path.starts_with(top)) {
-            tops.push(path);
-        }
-    }
-    let mut out = Vec::new();
-    let mut fresh = Vec::with_capacity(tops.len());
-    for path in tops {
-        let (root, below) = path.split_first()?;
-        if *root != tree.key || sent.key != tree.key {
-            return None;
-        }
-        let node = below.iter().try_fold(tree, |node, key| {
-            let mut named = node.children.iter().filter(|child| child.key == *key);
-            let child = named.next()?;
-            named.next().is_none().then_some(child)
-        })?;
-        let new = convert.node(node);
-        if !wire::diff_at(wire::at(sent, below)?, &new, below, &mut out) {
-            return None;
-        }
-        fresh.push((below, new));
-    }
-    for (below, new) in fresh {
-        *wire::at_mut(sent, below)? = new;
-    }
-    Some(out)
-}
-
-/// What a view's patches changed, by where it shows.
-#[derive(Default)]
-struct Sorted {
-    /// The virtual lists' rows, by list key.
-    lists: BTreeMap<String, ListChanges>,
-    /// Something besides those rows changed.
-    content: bool,
-    /// Where it changed, each a path of keys from the root; `None` when the root itself was
-    /// replaced.
-    changed: Option<Vec<Vec<String>>>,
-}
-
-impl Sorted {
-    fn list(&mut self, key: &str) -> &mut ListChanges {
-        self.lists.entry(key.to_owned()).or_default()
-    }
-}
-
-/// Sort a view's `patches` against its virtual lists `lists` (each with its keys from the root):
-/// rows inserted, removed or moved, and rows changed, are their lists'; the rest is content.
-fn sort(patches: Vec<Patch>, lists: &[(String, Vec<String>)]) -> Sorted {
-    let mut sorted = Sorted {
-        changed: Some(Vec::new()),
-        ..Sorted::default()
-    };
-    for patch in patches {
-        let (path, structural) = match &patch {
-            Patch::SetRoot(_) => {
-                sorted.content = true;
-                sorted.changed = None;
-                for (list, _) in lists {
-                    sorted.list(list).reread = true;
-                }
-                continue;
-            }
-            // What a list holds beside its rows — the parts a host fills with rows of its own,
-            // such as the items someone removed that the person has not seen go — is no row of
-            // the list: its rows are the ones the steps name, and the part stands as content.
-            Patch::Insert { parent, node, .. } if node.kind == wire::PART => {
-                (parent.as_slice(), false)
-            }
-            // A row the steps take out says where it stood; one they do not is no row.
-            Patch::Remove {
-                parent, at: None, ..
-            } => (parent.as_slice(), false),
-            Patch::Insert { parent, .. }
-            | Patch::Remove { parent, .. }
-            | Patch::Move { parent, .. } => (parent.as_slice(), true),
-            Patch::SetProp { path, .. }
-            | Patch::SetBinding { path, .. }
-            | Patch::SetEvent { path, .. }
-            | Patch::SetAnchor { path, .. } => (path.as_slice(), false),
-        };
-        // The innermost list the patch is of: a list inside a row — the document of a row
-        // open can hold one — takes the changes of its own rows, and the list of that
-        // row the rest of the row.
-        let of_list = lists
-            .iter()
-            .filter(|(_, at)| {
-                (structural && path == at.as_slice())
-                    || (path.len() > at.len() && path.starts_with(at))
-            })
-            .max_by_key(|(_, at)| at.len());
-        // What holds a list changed: the list may be another now. A row inserted, removed or
-        // moved carries the lists inside it along.
-        if structural && of_list.is_none_or(|(_, at)| path != at.as_slice()) {
-            for (list, at) in lists {
-                if at.len() > path.len() && at.starts_with(path) {
-                    sorted.list(list).reread = true;
-                }
-            }
-        }
-        match of_list {
-            Some((list, at)) if path == at.as_slice() => {
-                sorted.list(list).structure.push(patch.clone());
-            }
-            Some((list, at)) => {
-                if let Some(row) = path.get(at.len()) {
-                    let changes = sorted.list(list);
-                    if !changes.rows.contains(row) {
-                        changes.rows.push(row.clone());
-                    }
-                }
-            }
-            None => {}
-        }
-        if of_list.is_none() {
-            sorted.content = true;
-            if let Some(changed) = &mut sorted.changed {
-                changed.push(path.to_vec());
-            }
-        }
-    }
-    sorted
 }
 
 /// The other packages of the workspace whose documents the package `app` holds references to.
