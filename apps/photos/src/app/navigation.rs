@@ -295,7 +295,7 @@ impl Photos {
         self.places_viewport = viewport;
         if !self.places_motion_reduced {
             let motion = ui::tokens::EffectiveMotion::default();
-            let now = ui::time::now();
+            let now = ui::motion::frame_now();
             let mut feedback = ui::motion::Feedback::default();
             feedback.set(true, motion, now);
             feedback.set(false, motion, now);
@@ -314,7 +314,7 @@ impl Photos {
         let Some(feedback) = self.places_camera_feedback else {
             return 0.0;
         };
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         if feedback.is_moving(now) {
             f64::from(feedback.level(now))
         } else {

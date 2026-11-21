@@ -5652,7 +5652,7 @@ impl Widget for InstallerPreview {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         if theme.reduce_motion || self.capture {
             self.pending_slide = None;
             self.slide = None;

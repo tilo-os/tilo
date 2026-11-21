@@ -1695,7 +1695,7 @@ impl CanvasSurface {
         let Some((motion, focal)) = self.zoom_motion else {
             return;
         };
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         self.viewport
             .zoom_at(motion.get(now).exp() / self.zoom(), focal);
         if !motion.is_moving(now) {
