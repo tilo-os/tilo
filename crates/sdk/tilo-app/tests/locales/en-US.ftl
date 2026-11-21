@@ -415,3 +415,5 @@ test-terminal-session = Terminal
 terminal-machine-secrets = Machine secrets
 terminal-machine-secrets-add-secret = Add secret
 terminal-machine-secrets-remove-secret = Remove secret
+
+tube-watch-history = Watch history

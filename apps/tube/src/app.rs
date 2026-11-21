@@ -465,7 +465,7 @@ impl Tube {
     fn edit_history(&mut self, edit: &Invoke<WatchHistory>) -> bool {
         let edited = if let Some(opener) = &self.history {
             opener
-                .open(crate::history::DOCUMENT)
+                .open_own()
                 .filter(WorkspaceResource::may_read)
                 .ok_or_else(|| "the workspace watch history is unavailable".to_owned())
                 .and_then(|record| {
@@ -526,7 +526,7 @@ impl Tube {
             return false;
         };
         let (stored, positions) = opener
-            .open(crate::history::DOCUMENT)
+            .open_own()
             .filter(WorkspaceResource::may_read)
             .map(|record| {
                 let history = record.get();
@@ -544,7 +544,7 @@ impl Tube {
     fn history_positions(&self) -> std::collections::BTreeMap<String, u64> {
         match (&self.history, &self.local_history) {
             (Some(opener), _) => opener
-                .open(crate::history::DOCUMENT)
+                .open_own()
                 .filter(WorkspaceResource::may_read)
                 .map(|record| record.get().positions())
                 .unwrap_or_default(),

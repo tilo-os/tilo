@@ -20,12 +20,28 @@ pub(crate) fn other_owner() -> (SigningKey, DeviceCert) {
 /// whose device the returned governor key is) and the fixture's person an
 /// Editor of it: a member whose grants a governor can narrow.
 pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
+    editor_with_devices(None)
+}
+
+/// Include the same member's second certified device in the initial workspace.
+pub(crate) fn seeded_editor_with_second_device()
+-> (StatePeer, SigningKey, SigningKey, DeviceCert, DeviceCert, SystemTime) {
+    let (_, other_device, _, _, _) = fixtures();
+    let (peer, owner, signer, device, now) = editor_with_devices(Some(other_device.clone()));
+    (peer, owner, signer, device, other_device, now)
+}
+
+fn editor_with_devices(
+    second: Option<DeviceCert>,
+) -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (_, _, b, bc, now) = fixtures();
     let (owner_key, owner) = other_owner();
     let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut certificates = vec![owner.clone(), bc.clone()];
+    certificates.extend(second);
     let mut doc = crate::workspace::candidate(
         None,
-        &seed_workspace(workspace, &owner, &[owner.clone(), bc.clone()]).unwrap(),
+        &seed_workspace(workspace, &owner, &certificates).unwrap(),
     )
     .unwrap();
     let person = hex::encode(bc.user_public_key);
@@ -45,7 +61,7 @@ pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert,
     let mut native = StatePeer::new(
         workspace,
         owner.clone(),
-        vec![owner, bc.clone()],
+        certificates,
         RevocationList::new(),
         now,
     )

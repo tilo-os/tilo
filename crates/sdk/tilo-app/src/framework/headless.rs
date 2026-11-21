@@ -450,6 +450,18 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
+    /// The member's private workspace record, as the app's views open it.
+    pub fn own_workspace_resource<P: Resource>(
+        &mut self,
+        owner: &'static str,
+    ) -> Option<super::WorkspaceResource<P>> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| {
+                root.storage.own_workspace_resource::<P>(owner)
+            })
+            .flatten()
+    }
+
     /// The app's profile record of `P`, as its views open it.
     pub fn profile_resource<P: Resource>(&mut self) -> Option<super::PersonResource<P>> {
         self.harness()

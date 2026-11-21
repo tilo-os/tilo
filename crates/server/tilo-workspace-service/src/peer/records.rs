@@ -9,6 +9,7 @@ use tilo_server_protocol::WorkspaceId;
 pub(super) struct DocumentRead {
     governed: bool,
     access: Option<tilo_action_policy::MemberAccess>,
+    reader: [u8; 32],
 }
 
 impl DocumentRead {
@@ -24,7 +25,11 @@ impl DocumentRead {
             .as_ref()
             .and_then(|access| access.get(&peer.device_public_key))
             .cloned();
-        Self { governed, access }
+        Self {
+            governed,
+            access,
+            reader: peer.user_public_key,
+        }
     }
 
     /// Governance and other non-document traffic use their own admission.
@@ -45,15 +50,13 @@ impl DocumentRead {
             readers,
         }) = key_scope(body)
         {
-            let now = tilo_clock::wall();
-            let node = collab_types::document_node(access.workspace(), &app, &document);
             return workspace.to_string() == access.workspace()
                 && readers.as_deref().is_none_or(|readers| {
                     access
                         .person_id()
                         .is_some_and(|person| readers.split(',').any(|reader| reader == person))
                 })
-                && access.allows(&node, tilo_action_policy::ActionKind::Read, now);
+                && self.allows_route(store, access, &app, &document, None);
         }
         let Some((route, _)) = store.payloads().open_document(body) else {
             return false;
@@ -61,17 +64,35 @@ impl DocumentRead {
         if route.cluster_id != access.workspace() {
             return false;
         }
-        let now = tilo_clock::wall();
-        let node =
-            collab_types::document_node(&route.cluster_id, &route.app_id, &route.document_id);
-        let mut context = tilo_action_policy::Context::at_time(now);
-        let owner = route
-            .own
-            .filter(|own| own.names(&route.document_id))
-            .map(|own| own.person());
-        if let Some(owner) = &owner {
-            context = context.with_own_resource(&route.document_id, owner);
+        self.allows_route(store, access, &route.app_id, &route.document_id, route.own)
+    }
+
+    fn allows_route(
+        &self,
+        store: &crate::store::WorkspaceStore,
+        access: &tilo_action_policy::MemberAccess,
+        app: &str,
+        document: &str,
+        declared: Option<collab_types::OwnResource>,
+    ) -> bool {
+        // Key frames do not carry the record's ownership descriptor. Consult retained
+        // metadata even if the original owner has since left the workspace.
+        let channel = neighbour_wire::app_document_group(app, document);
+        if !store.reaches_person(&channel, &self.reader) {
+            return false;
         }
+        let own = declared.filter(|own| own.names(document)).or_else(|| {
+            collab_types::OwnResource::recognise_in(app, document, &access.policy)
+        });
+        if own.as_ref().is_some_and(|own| own.owner != self.reader) {
+            return false;
+        }
+        let owner = own.map(|own| own.person());
+        let mut context = tilo_action_policy::Context::at_time(tilo_clock::wall());
+        if let Some(owner) = &owner {
+            context = context.with_own_resource(document, owner);
+        }
+        let node = collab_types::document_node(access.workspace(), app, document);
         access.answer(&node, tilo_action_policy::ActionKind::Read, &context)
             == tilo_action_policy::Answer::Allow
     }
@@ -297,4 +318,90 @@ async fn frames_of(
     let sent = u64::try_from(frames.len()).unwrap_or(u64::MAX);
     crate::timing::event("document.open.frames", reading, sent);
     Ok(frames)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::payloads::{NeighbourPayloads, Route, ShellPayloads as _};
+    use collab_types::{Ed25519PublicKey, OwnResource, SignedOp};
+    use tilo_action_policy::{Acting, Actor, MemberAccess, MemberId, Role, WorkspacePolicy};
+
+    #[test]
+    fn a_deleted_members_retained_record_keeps_its_private_key_replay() {
+        const APP: &str = "so.tilo.tube";
+        let root = tempfile::tempdir().unwrap();
+        let workspace = WorkspaceId::from_u128(1);
+        let store = crate::store::WorkspaceStore::open(root.path(), workspace, false).unwrap();
+        let reader = [1; 32];
+        let workspace_owner = [2; 32];
+        let own = OwnResource::new("tube.watch-history", reader).unwrap();
+        let record = own.document_id();
+        let route = Route {
+            app_id: APP.to_owned(),
+            cluster_id: workspace.to_string(),
+            document_id: record.clone(),
+            own: Some(own),
+            readers: None,
+        };
+        let device = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let source = device.verifying_key().to_bytes();
+        let checkpoint = |channel, body| Envelope::Delta {
+            workspace_id: workspace,
+            author_device_public_key: source,
+            authored_at_ns: 1,
+            delta: crate::coedit::CoeditPayload::Checkpoint { channel, body }
+                .encode()
+                .unwrap(),
+            signature: [0; 64],
+        };
+        let mut operation = SignedOp::new_unsigned(
+            Vec::new(),
+            collab_types::document_artifact_id(APP, &route.cluster_id, &record),
+            Ed25519PublicKey::from_bytes(source),
+            collab_types::document_attestation_id(APP, &route.cluster_id, &record),
+            collab_types::OpKind::Change,
+            tilo_clock::wall(),
+            1,
+        );
+        collab_types::sign_op(&mut operation, &device).unwrap();
+        let channel = neighbour_wire::app_document_group(APP, &record);
+        let document = checkpoint(
+            channel,
+            NeighbourPayloads.document_body(&source, &route, operation).unwrap(),
+        );
+        store
+            .retain_checkpoint(&channel, &crate::transport::encode(&document).unwrap())
+            .unwrap();
+        drop(store);
+
+        // The key message itself contains no record-owner descriptor.
+        let scope = neighbour_wire::KeyScope::document(workspace, APP, &record, None).unwrap();
+        let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
+            workspace: scope.to_string(),
+            request: Box::new(
+                collab_types::MlsAccessRequestV1::signed(scope.group(), vec![1], 1, &device)
+                    .unwrap(),
+            ),
+            delivery: 0,
+        };
+        let (key_channel, _) = neighbour_wire::retention(&message, false).unwrap();
+        let keys = checkpoint(key_channel, postcard::to_stdvec(&message).unwrap());
+        let store = crate::store::WorkspaceStore::open(root.path(), workspace, false).unwrap();
+        let mut policy = WorkspacePolicy::new(workspace.to_string(), hex::encode(workspace_owner));
+        policy.members.insert(hex::encode(reader), Role::Viewer);
+        let access = |policy, reader| {
+            let actor = Acting::from(Actor::Member(MemberId::person(hex::encode(reader))));
+            DocumentRead {
+                governed: true,
+                access: Some(MemberAccess::new(policy, actor)),
+                reader,
+            }
+        };
+        assert!(access(policy.clone(), reader).allows(&store, &keys));
+        policy.members.remove(&hex::encode(reader));
+        let keeper = access(policy, workspace_owner);
+        assert!(!keeper.allows(&store, &keys));
+        assert!(!keeper.allows(&store, &document));
+    }
 }

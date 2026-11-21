@@ -385,14 +385,11 @@ impl StatePeer {
         let member = self
             .permissions(reader, now)
             .map_err(PeerDocumentReadError::Membership)?;
-        let own = self.core.own_write(app, record, &reader);
-        if !super::backend::access::document_read(
-            &member.authority(),
-            &self.core.workspace,
-            (app, record),
-            own.as_ref(),
-            now,
-        ) {
+        let own = self.document_owner(app, record, &member.policy);
+        if self
+            .check_read_as(reader, &member, (app, record), own.as_ref(), now)
+            .is_err()
+        {
             return Err(PeerDocumentReadError::Denied);
         }
         let route = Route {

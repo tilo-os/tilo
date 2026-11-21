@@ -4,13 +4,13 @@
 
 use std::collections::BTreeSet;
 
+use super::written_under::Under;
 use super::{
     ActionKind, AutoCommit, DeviceCert, GovernedIdentity, MemberAccess, MembershipError, Role,
     Route, SignedOp, StatePeer, SystemTime, TreePath, WorkspacePolicy, backend, document_surface,
     err, held_units, now_ns, resource_type, workspace, workspace_host_actor,
 };
 use collab_types::signer::DeviceSigner;
-use super::written_under::Under;
 
 /// What a refused change made by a key adds: the workspace holds no grant
 /// its person approved for the key (or its grant was revoked), and the one
@@ -978,23 +978,31 @@ impl StatePeer {
     ) -> Result<(), String> {
         let member = self.membership(device, now)?;
         let own = self.document_owner(app, document, &member.policy);
-        self.check_read_as(&member, (app, document), own.as_ref(), now)
+        self.check_read_as(device, &member, (app, document), own.as_ref(), now)
     }
 
-    fn check_read_as(
+    pub(super) fn check_read_as(
         &self,
+        device: [u8; 32],
         member: &MemberAccess,
         (app, document): (&str, &str),
         own: Option<&collab_types::OwnResource>,
         now: SystemTime,
     ) -> Result<(), String> {
-        if backend::access::document_read(
-            &member.authority(),
-            &self.core.workspace,
-            (app, document),
-            own,
-            now,
-        ) {
+        let belongs = own.is_none_or(|own| {
+            self.core
+                .certificate_typed(&device, now)
+                .is_ok_and(|cert| cert.user_public_key == own.owner)
+        });
+        if belongs
+            && backend::access::document_read(
+                &member.authority(),
+                &self.core.workspace,
+                (app, document),
+                own,
+                now,
+            )
+        {
             Ok(())
         } else {
             Err(format!("document read forbidden: {app}/{document}"))
@@ -1006,21 +1014,22 @@ impl StatePeer {
     /// the content the keys seal. A member's own record is its person's alone.
     fn holds_document_keys_as(
         &self,
+        device: [u8; 32],
         member: &MemberAccess,
         (app, document): (&str, &str),
         own: Option<&collab_types::OwnResource>,
         now: SystemTime,
     ) -> bool {
         if self
-            .check_read_as(member, (app, document), own, now)
+            .check_read_as(device, member, (app, document), own, now)
             .is_ok()
         {
             return true;
         }
-        if own.is_some() {
+        let root = collab_types::document_access_target(app, document).unwrap_or(document);
+        if own.is_some() || tilo_action_policy::roles::lacks_private_record_owner(app, root) {
             return false;
         }
-        let root = collab_types::document_access_target(app, document).unwrap_or(document);
         let kind = self
             .core
             .documents
@@ -1040,26 +1049,15 @@ impl StatePeer {
 
     /// Resolve personal routes before the first write teaches the replica
     /// their owner. A document group can be founded before any data exists.
-    fn document_owner(
+    pub(super) fn document_owner(
         &self,
         app: &str,
         document: &str,
         policy: &WorkspacePolicy,
     ) -> Option<collab_types::OwnResource> {
-        self.core.own_of(app, document).or_else(|| {
-            if collab_types::own_resource::own_kinds(app).is_empty() {
-                return None;
-            }
-            policy
-                .owner
-                .iter()
-                .chain(policy.members.keys())
-                .find_map(|person| {
-                    let mut owner = [0; 32];
-                    hex::decode_to_slice(person, &mut owner).ok()?;
-                    collab_types::OwnResource::recognise(app, document, owner)
-                })
-        })
+        self.core
+            .own_of(app, document)
+            .or_else(|| collab_types::OwnResource::recognise_in(app, document, policy))
     }
 
     /// Certified key holders whose current authority allows reading this
@@ -1083,7 +1081,7 @@ impl StatePeer {
             .access_of(&devices, now)?
             .into_iter()
             .filter_map(|(device, member)| {
-                self.holds_document_keys_as(&member, (app, document), own.as_ref(), now)
+                self.holds_document_keys_as(device, &member, (app, document), own.as_ref(), now)
                     .then_some(device)
             })
             .collect())
@@ -1146,7 +1144,9 @@ impl StatePeer {
         let devices: Vec<_> = governance.key_holders(now)?.into_iter().collect();
         let access = governance.access_of(&devices, now)?;
         Ok(devices.iter().any(|device| match access.get(device) {
-            Some(member) => !self.holds_document_keys_as(member, (app, document), None, now),
+            Some(member) => {
+                !self.holds_document_keys_as(*device, member, (app, document), None, now)
+            }
             // A holder the governance names to hold the workspace's keys reads
             // what they seal because it is named so, not through a member's
             // role. A server that takes no member's work, or no longer does,
@@ -1438,7 +1438,9 @@ impl StatePeer {
             .map_err(AuthorizeRefusal::Denied)?
         {
             Under::Missing => return Ok(Authorized::Hold(crate::MissingPrerequisite::Governance)),
-            Under::Now => self.decide_written(source, app_id, record, envelope, authorization_time)?,
+            Under::Now => {
+                self.decide_written(source, app_id, record, envelope, authorization_time)?
+            }
             Under::Past(judged) => {
                 judged.decide_written(source, app_id, record, envelope, authorization_time)?
             }
@@ -1495,7 +1497,10 @@ impl StatePeer {
             .written_as(app_id, record, envelope, authorization_time)
             .map_err(|error| AuthorizeRefusal::Denied(error.to_string()))?;
         let Some((member, history, kept)) = written else {
-            return Ok((Authorized::Hold(crate::MissingPrerequisite::RemovalCut), false));
+            return Ok((
+                Authorized::Hold(crate::MissingPrerequisite::RemovalCut),
+                false,
+            ));
         };
         // A change made with another version of the app than the workspace runs
         // is held: its author's desktop switches to the workspace's version, and
@@ -1504,7 +1509,10 @@ impl StatePeer {
             && let Some(running) = self.workspace_surface(app_id)
             && envelope.surface != Some(running)
         {
-            return Ok((Authorized::Hold(crate::MissingPrerequisite::AppSurface), false));
+            return Ok((
+                Authorized::Hold(crate::MissingPrerequisite::AppSurface),
+                false,
+            ));
         }
         let route = Route {
             app: app_id.into(),

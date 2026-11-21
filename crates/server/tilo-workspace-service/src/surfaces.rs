@@ -333,10 +333,22 @@ pub(crate) fn own_refusal(
     delta: &[u8],
 ) -> Option<tilo_server_protocol::refusal::Refusal> {
     let owner = store.frame_owner(delta)?;
-    let reason = if owner == *person {
-        collab_types::own_resource::ARCHIVE_READ_ONLY
+    let reason = if owner != *person {
+        "another member's private record"
     } else {
-        "another member's private archive"
+        let body = crate::coedit::retention_view(delta).map_or(delta, |(_, _, body)| body);
+        let live = store
+            .payloads()
+            .open_document(body)
+            .and_then(|(route, _)| {
+                collab_types::OwnResource::recognise(&route.app_id, &route.document_id, owner)
+                    .map(|own| own.is_live_in(&route.app_id))
+            })
+            .unwrap_or(false);
+        if live {
+            return None;
+        }
+        collab_types::own_resource::ARCHIVE_READ_ONLY
     };
     Some(tilo_server_protocol::refusal::Refusal::NotAllowed(
         reason.into(),
@@ -384,25 +396,45 @@ pub(crate) fn refusal(
         hex::decode_to_slice(person, &mut key).ok()?;
         Some(key)
     });
-    if route.own.is_some()
-        || person.is_some_and(|key| {
-            collab_types::OwnResource::recognise(&route.app_id, &route.document_id, key).is_some()
+    let own = route
+        .own
+        .clone()
+        .or_else(|| {
+            let access = author.flatten()?;
+            collab_types::OwnResource::recognise_in(
+                &route.app_id,
+                &route.document_id,
+                &access.policy,
+            )
         })
-    {
-        return Some(tilo_server_protocol::refusal::Refusal::NotAllowed(
-            collab_types::own_resource::ARCHIVE_READ_ONLY.into(),
-        ));
+        .or_else(|| {
+            collab_types::OwnResource::recognise(&route.app_id, &route.document_id, person?)
+        });
+    if let Some(own) = &own {
+        let reason = if !own.is_live_in(&route.app_id) {
+            Some(collab_types::own_resource::ARCHIVE_READ_ONLY)
+        } else if Some(own.owner) != person || !own.names(&route.document_id) {
+            Some("only the owning member's device may change this record")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Some(tilo_server_protocol::refusal::Refusal::NotAllowed(
+                reason.into(),
+            ));
+        }
     }
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
-    if let Some(refusal) = document_group_refusal(&route, &envelope, device_access, &cx) {
+    if let Some(refusal) =
+        document_group_refusal(&route, &envelope, device_access, &cx, own.is_some())
+    {
         return Some(refusal);
     }
-    // A person's own record — their view of the layout — is decided as theirs: they write it
-    // whatever their role, and nobody else does.
+    // A person's own record is decided as theirs, whatever their role.
     let own_owner = tilo_desktop_model::shared_resource::guard::own_person(
         &route.app_id,
         &route.document_id,
-        route.own.as_ref(),
+        own.as_ref(),
     );
     let mut cx = cx;
     if let Some(owner) = own_owner.as_deref()
@@ -443,6 +475,7 @@ fn document_group_refusal(
     envelope: &collab_types::SignedOp,
     devices: Option<&crate::workspace::DeviceAccess>,
     context: &tilo_action_policy::Context<'_>,
+    owned: bool,
 ) -> Option<tilo_server_protocol::refusal::Refusal> {
     use collab_types::{EncryptionMetadata, EncryptionScheme};
     use tilo_action_policy::{ActionKind, Answer};
@@ -483,10 +516,12 @@ fn document_group_refusal(
             ));
         }
     }
-    if collab_types::validator::requires_independent_document_keys(
-        &route.app_id,
-        &route.document_id,
-    ) {
+    if owned
+        || collab_types::validator::requires_independent_document_keys(
+            &route.app_id,
+            &route.document_id,
+        )
+    {
         return Some(Refusal::NotAllowed(
             "this document requires its own encryption group".into(),
         ));
@@ -608,9 +643,9 @@ mod tests {
                 tilo_clock::wall(),
                 1,
             );
-            assert!(super::document_group_refusal(&route, &write, None, &context).is_some());
+            assert!(super::document_group_refusal(&route, &write, None, &context, false).is_some());
             write.encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
-            assert!(super::document_group_refusal(&route, &write, None, &context).is_some());
+            assert!(super::document_group_refusal(&route, &write, None, &context, false).is_some());
             let group = neighbour_wire::KeyScope::Document {
                 workspace,
                 app: app.into(),
@@ -624,7 +659,7 @@ mod tests {
                 1,
                 ContentRetention::Delta,
             ));
-            assert!(super::document_group_refusal(&route, &write, None, &context).is_none());
+            assert!(super::document_group_refusal(&route, &write, None, &context, false).is_none());
         }
     }
 

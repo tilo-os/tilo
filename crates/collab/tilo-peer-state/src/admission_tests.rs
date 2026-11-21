@@ -8,7 +8,7 @@ mod editor;
 mod holders;
 use crate::join::WorkspaceId;
 use editor::owner_signs;
-pub(crate) use editor::{other_owner, seeded_editor};
+pub(crate) use editor::{other_owner, seeded_editor, seeded_editor_with_second_device};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {

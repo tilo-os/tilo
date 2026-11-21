@@ -1,11 +1,10 @@
-//! Unsent text by conversation in the workspace. It enters the conversation only on send.
+//! A member's unsent text by conversation. It enters the conversation only on send.
 
 use std::collections::BTreeMap;
 
 use ui::framework::{ResourceOpener, WorkspaceResource};
 use ui::tilo_resource::Refusal;
 
-pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_MESSAGE_DRAFTS_DOCUMENT as DOCUMENT;
 pub(crate) type DraftRecord = WorkspaceResource<MessageDrafts>;
 
 pub(crate) fn import_previous(
@@ -13,7 +12,7 @@ pub(crate) fn import_previous(
     conversation: String,
 ) -> Result<(), String> {
     let workspace = opener
-        .open(DOCUMENT)
+        .open_own()
         .filter(|record| record.may_read() && record.may("import-previous"))
         .ok_or("the workspace must grant permission to import drafts")?;
     if let Some(previous) = opener.legacy_member_state()?
@@ -32,7 +31,7 @@ const MAX_DRAFT_CHARS: usize = 16 * 1024;
 /// limit.
 const MAX_KEY_CHARS: usize = 512;
 
-/// The workspace's unsent message text, by conversation.
+/// This member's unsent message text, by conversation.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct MessageDrafts {
     /// The text of each unsent message, under its conversation.

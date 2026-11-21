@@ -622,7 +622,7 @@ fn sending_and_drafts(
     services: &Services,
 ) -> (crate::sending::Sending, Option<crate::drafts::DraftRecord>) {
     let drafts = live
-        .then(|| cx.shared_resource(ui::apps::MESSAGES, crate::drafts::DOCUMENT))
+        .then(|| cx.resource_opener(ui::apps::MESSAGES).open_own())
         .flatten();
     let sending = crate::sending::Sending::new(
         live.then(|| {

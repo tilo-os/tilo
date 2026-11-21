@@ -26,6 +26,12 @@ takes precedence over their custom roles, and those roles can extend access beyo
 the default. Administrators can assign roles in **People** and edit document rules in
 **Privacy & Security**.
 
+When a resource belongs to a member, their authenticated identity decides who
+reads it, regardless of workspace role. Watch history and private message
+drafts use this rule in the same workspace store. Shared channel drafts follow
+workspace roles. Earlier records with no trustworthy owner stay retained
+without granting read access.
+
 A restricted document uses its own MLS content key group. The group follows the
 devices that can read that document. Delivery checks the same read permission before
 replaying or forwarding document writes. When a device loses access, the group must

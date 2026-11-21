@@ -286,10 +286,7 @@ mod tests {
                 videos.sort();
                 videos
             };
-            let history = app.shared_resource::<WatchHistory>(
-                ui::apps::TUBE,
-                crate::history::DOCUMENT,
-            ).unwrap();
+            let history = app.own_workspace_resource::<WatchHistory>(ui::apps::TUBE).unwrap();
             assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
             assert!(history.record().syncs(), "it syncs with the workspace");
             let route = history.record().route().unwrap();
@@ -316,41 +313,37 @@ mod tests {
 
             drop(history);
             let mut app = app.reopen().unwrap();
-            let history = app.shared_resource::<WatchHistory>(
-                ui::apps::TUBE,
-                crate::history::DOCUMENT,
-            ).unwrap();
+            let history = app.own_workspace_resource::<WatchHistory>(ui::apps::TUBE).unwrap();
             assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
             app.effect_confirmed(&TubeEffect::ClearHistory).unwrap();
             assert!(history.get().videos().is_empty());
         }
 
-        phase earlier_watch_history_can_be_imported_and_stays_cleared;
+        phase earlier_owned_watch_history_reopens_and_stays_cleared;
         {
-            use crate::history::{DOCUMENT, WatchHistory};
-            use ui::automerge::transaction::Transactable as _;
+            use crate::history::WatchHistory;
             let mut app = TestApp::<TubeShell>::for_person(&"ad".repeat(32)).unwrap();
             let previous = app.person::<WatchHistory>().unwrap();
             previous.invoke(&WatchHistory::RECORD.with(("old".into(), 11))).unwrap();
             previous.invoke(&WatchHistory::PROGRESS.with(("old".into(), 1200, 0))).unwrap();
-            previous
+            let record = app.own_workspace_resource::<WatchHistory>(ui::apps::TUBE).unwrap();
+            assert_eq!(record.record().route(), previous.record().route());
+            assert!(record
                 .record()
-                .edit(false, |doc| {
-                    doc.delete(ui::automerge::ROOT, "forgotten")
-                        .and_then(|()| doc.delete(ui::automerge::ROOT, "cleared"))
-                        .map_err(|error| error.to_string())
-                })
-                .unwrap();
-            let record = app.shared_resource::<WatchHistory>(ui::apps::TUBE, DOCUMENT).unwrap();
-            app.effect_confirmed(&TubeEffect::ImportPreviousWatchHistory).unwrap();
+                .merge_peer_document(previous.record().document().unwrap())
+                .unwrap());
+            record.record().flush();
+            drop(previous);
+            drop(record);
+            let mut app = app.reopen().unwrap();
+            let record = app.own_workspace_resource::<WatchHistory>(ui::apps::TUBE).unwrap();
             assert_eq!(record.get().videos(), ["old"]);
             assert_eq!(record.get().position_of("old"), Some(1200));
             app.effect_confirmed(&TubeEffect::ClearHistory).unwrap();
             app.effect_confirmed(&TubeEffect::ImportPreviousWatchHistory).unwrap();
             assert!(record.get().videos().is_empty());
             app.set_role(ui::permissions::Role::Viewer);
-            assert!(!record.may_read());
-            assert!(app.effect_confirmed(&TubeEffect::ImportPreviousWatchHistory).is_err());
+            assert!(record.may_read(), "a Viewer reads their own watch history");
         }
 
         phase comments_are_liked_and_answered_through_the_library;

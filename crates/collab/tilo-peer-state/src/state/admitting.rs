@@ -13,6 +13,43 @@ use crate::document;
 use automerge::transaction::Transactable as _;
 
 impl StatePeer {
+    /// Resolve ownership from the frame, retained records or the roster, then require
+    /// the owning person's device. A first write cannot found someone else's record
+    /// by omitting its ownership descriptor.
+    fn admit_owned_route(
+        &self,
+        app: &str,
+        document: &str,
+        source: [u8; 32],
+        now: SystemTime,
+        declared: Option<collab_types::OwnResource>,
+    ) -> Result<Option<collab_types::OwnResource>, AdmissionError> {
+        let own = declared
+            .or_else(|| {
+                let policy = self
+                    .core
+                    .workspace_doc
+                    .as_ref()?
+                    .workspace_policy(&self.core.workspace);
+                self.document_owner(app, document, policy)
+            })
+            .or_else(|| self.core.own_write(app, document, &source));
+        let Some(own) = own else {
+            return Ok(None);
+        };
+        if !own.is_live_in(app) {
+            return Err(collab_types::own_resource::ARCHIVE_READ_ONLY.into());
+        }
+        let signed = self
+            .core
+            .certificate_typed(&source, now)
+            .is_ok_and(|cert| cert.user_public_key == own.owner);
+        if !signed || !own.names(document) {
+            return Err("only the owning member's device may change this record".into());
+        }
+        Ok(Some(own))
+    }
+
     /// Host-local SDK publication after its certified connection was admitted.
     /// No wire message can select this path. Unlike a retained checkpoint, an
     /// SDK snapshot is an authored mutation of an already-owned exact record.
@@ -119,16 +156,23 @@ impl StatePeer {
         {
             return Err("transport author or document workspace mismatch".into());
         }
+        let own = if retained_replay {
+            own
+        } else {
+            self.admit_owned_route(&app_id, &document_id, source, now, own)?
+        };
         if !retained_replay
-            && (own.is_some()
-                || self
-                    .core
-                    .own_write(&app_id, &document_id, &source)
-                    .is_some())
+            && own.is_some()
+            && !matches!(
+                envelope.encryption,
+                Some(collab_types::EncryptionMetadata {
+                    scheme: collab_types::EncryptionScheme::DocumentContentKey { .. },
+                    ..
+                })
+            )
         {
-            return Err(collab_types::own_resource::ARCHIVE_READ_ONLY.into());
+            return Err("this document requires its own encryption group".into());
         }
-        self.core.learn_own(&app_id, &document_id, own.as_ref());
         self.check_document_key_scope(
             (&app_id, &document_id),
             readers.as_deref(),
@@ -136,6 +180,7 @@ impl StatePeer {
             now,
             retained_replay,
         )?;
+        self.core.learn_own(&app_id, &document_id, own.as_ref());
         // A piece of a compaction that spans several ops changes nothing on its
         // own: it is gathered, and the compaction is admitted once it is whole.
         let envelope = if collab_types::is_compaction_piece(&envelope)

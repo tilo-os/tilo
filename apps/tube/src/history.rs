@@ -1,13 +1,12 @@
-//! Watch history: the videos watched in the workspace, newest first.
+//! The current member's watch history in this workspace, newest first.
 
 pub use tube_model::{MAX_HISTORY_ENTRIES, RESUME_TOLERANCE_MS, WatchHistory};
-pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_TUBE_HISTORY_DOCUMENT as DOCUMENT;
 
 pub(crate) fn import_previous(
     opener: &ui::framework::ResourceOpener<WatchHistory>,
 ) -> Result<(), String> {
     let workspace = opener
-        .open(DOCUMENT)
+        .open_own()
         .ok_or("the workspace watch history is arriving")?;
     if !workspace.may_read() || !workspace.may("import-previous") {
         return Err("the workspace must grant permission to import watch history".into());

@@ -53,6 +53,13 @@ impl OwnResource {
         Self::new(kind, owner)
     }
 
+    /// Whether the app still uses this owned record as a workspace resource. The other
+    /// member-record kinds stay readable as archives and take no new writes.
+    #[must_use]
+    pub fn is_live_in(&self, app: &str) -> bool {
+        tilo_action_policy::roles::has_member_reader(app, &self.kind)
+    }
+
     /// The person's id: the lowercase hex of
     /// their user root key.
     #[must_use]
@@ -92,13 +99,53 @@ impl OwnResource {
     /// as the record it belongs to.
     #[must_use]
     pub fn recognise(app: &str, record: &str, owner: [u8; 32]) -> Option<Self> {
-        let base = crate::document::DocumentId::parse(record)
-            .and_then(|id| id.tree())
-            .map_or_else(|| record.to_owned(), |tree| tree.as_str().to_owned());
-        own_kinds(app)
-            .into_iter()
-            .filter_map(|kind| Self::new(&kind, owner))
-            .find(|own| own.names(&base))
+        Self::recognise_among(app, record, [owner])
+    }
+
+    /// Resolve a document's owner from the workspace's current membership before any of its
+    /// writes have arrived. This is the same identity check a signed owner frame must meet.
+    #[must_use]
+    pub fn recognise_in(
+        app: &str,
+        record: &str,
+        policy: &tilo_action_policy::WorkspacePolicy,
+    ) -> Option<Self> {
+        let people = policy
+            .owner
+            .iter()
+            .chain(policy.members.keys())
+            .filter_map(|person| {
+                let mut root = [0; 32];
+                hex::decode_to_slice(person, &mut root).ok()?;
+                Some(root)
+            });
+        Self::recognise_among(app, record, people)
+    }
+
+    fn recognise_among(
+        app: &str,
+        record: &str,
+        people: impl IntoIterator<Item = [u8; 32]>,
+    ) -> Option<Self> {
+        let tree = crate::document::DocumentId::parse(record).and_then(|id| id.tree());
+        let base = tree
+            .as_ref()
+            .map_or(record, crate::document::DocumentId::as_str);
+        let uuid = uuid::Uuid::parse_str(base.strip_prefix("uuid:")?).ok()?;
+        // No other UUID version can name one of these records.
+        if uuid.get_version_num() != 8 {
+            return None;
+        }
+        let kinds = own_kinds(app);
+        if kinds.is_empty() {
+            return None;
+        }
+        people.into_iter().find_map(|person| {
+            kinds
+                .iter()
+                .filter_map(|kind| Self::new(kind, person))
+                .find(|own| own.names(base))
+        })
     }
 }
 

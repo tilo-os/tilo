@@ -453,18 +453,6 @@ impl AppBrokerState {
                 "certified document operation does not match its joined route".into(),
             ));
         }
-        if self.personal_route(route).is_none()
-            && collab_types::OwnResource::recognise(
-                &route.app_id,
-                &route.document_id,
-                admitted.verified.user_public_key,
-            )
-            .is_some()
-        {
-            return Err(BrokerError::failed(
-                collab_types::own_resource::ARCHIVE_READ_ONLY.into(),
-            ));
-        }
         let payload = collab_types::validate_document_payload_route(
             &route.app_id,
             &route.cluster_id,
@@ -515,18 +503,18 @@ impl AppBrokerState {
         };
         let allowed = admitted
             .with_current_authority(self.membership.as_ref(), &route.cluster_id, |access| {
+                let owner = self.admitted_record_owner(route, admitted, envelope, access)?;
+                let mut cx = tilo_desktop_model::context_at(now);
+                if let Some(person) = &owner {
+                    cx = cx.with_own_resource(&route.document_id, person);
+                }
                 let allows = |invoker: Option<&tilo_action_policy::Acting>,
                               node: &tilo_action_policy::TreePath,
                               kind| {
-                    collab_types::ChangeAuthor::answer(
-                        access,
-                        invoker,
-                        node,
-                        kind,
-                        &tilo_desktop_model::context_at(now),
-                    ) == Answer::Allow
+                    collab_types::ChangeAuthor::answer(access, invoker, node, kind, &cx)
+                        == Answer::Allow
                 };
-                collab_types::decide_op(
+                Ok::<_, BrokerError>(collab_types::decide_op(
                     envelope,
                     &record,
                     None,
@@ -534,9 +522,9 @@ impl AppBrokerState {
                     &collab_types::Surfaces::process(),
                     &allows,
                 )
-                .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit)
+                .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit))
             })
-            .map_err(BrokerError::failed)?;
+            .map_err(BrokerError::failed)??;
         if !allowed {
             return Err(BrokerError::failed(
                 "current workspace grants deny this document action".into(),
@@ -546,5 +534,51 @@ impl AppBrokerState {
             artifact: envelope.artifact,
             payload,
         })
+    }
+
+    fn admitted_record_owner(
+        &self,
+        route: &CrdtRoute,
+        admitted: &AdmittedJoinIdentity,
+        envelope: &SignedOp,
+        access: &tilo_action_policy::MemberAccess,
+    ) -> Result<Option<String>, BrokerError> {
+        if self.personal_route(route).is_some() {
+            return Ok(None);
+        }
+        let certified = admitted.verified.user_public_key;
+        let own = collab_types::OwnResource::recognise_in(
+            &route.app_id,
+            &route.document_id,
+            &access.policy,
+        )
+        .or_else(|| {
+            collab_types::OwnResource::recognise(&route.app_id, &route.document_id, certified)
+        });
+        let Some(own) = own else {
+            return Ok(None);
+        };
+        if own.owner != certified {
+            return Err(BrokerError::failed(
+                "only the owning member's device may change this record".into(),
+            ));
+        }
+        if !own.is_live_in(&route.app_id) {
+            return Err(BrokerError::failed(
+                collab_types::own_resource::ARCHIVE_READ_ONLY.into(),
+            ));
+        }
+        if !matches!(
+            envelope.encryption,
+            Some(collab_types::EncryptionMetadata {
+                scheme: collab_types::EncryptionScheme::DocumentContentKey { .. },
+                ..
+            })
+        ) {
+            return Err(BrokerError::failed(
+                "this document requires its own encryption group".into(),
+            ));
+        }
+        Ok(Some(own.person()))
     }
 }

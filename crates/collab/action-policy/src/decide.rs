@@ -260,6 +260,12 @@ impl<'g> Party<'g> {
     }
 
     fn decide_grants(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
+        if kind == ActionKind::Read && crate::roles::lacks_private_record_owner_at(node, cx) {
+            return Decision {
+                answer: Answer::Deny,
+                basis: Basis::NoGrant,
+            };
+        }
         // A member's own document is that person's alone, whatever the workspace's
         // grants or owner say ([`Context::with_own_resource`]). A delegation, known
         // by no person, is decided by its grants as anywhere else.
@@ -452,6 +458,9 @@ impl<'g> Authority<'g> {
                 .min()
                 .unwrap_or(Answer::Deny)
         };
+        if self.unowned_actor_reads_own_record(node, kind, cx) {
+            answer = Answer::Deny;
+        }
         if let (Some(app), Some(kinds)) = (self.app, self.app_kinds)
             && node.id_at(Level::App) == Some(app.as_str())
             && !kinds
@@ -492,6 +501,15 @@ impl Authority<'_> {
                 .any(|at| allows(&at))
     }
 
+    fn unowned_actor_reads_own_record(
+        &self,
+        node: &TreePath,
+        kind: ActionKind,
+        cx: &Context<'_>,
+    ) -> bool {
+        kind == ActionKind::Read && self.people == 0 && cx.owner_of(node).is_some()
+    }
+
     /// [`Self::decide`]'s answer alone, made [`Verdict::privileged`] when
     /// `privileged`, without keeping each party's decision: what a check
     /// that only needs the answer asks.
@@ -503,6 +521,9 @@ impl Authority<'_> {
         privileged: bool,
         cx: &Context<'_>,
     ) -> Answer {
+        if self.unowned_actor_reads_own_record(node, kind, cx) {
+            return Answer::Deny;
+        }
         let person = self.person.decide(node, kind, cx).answer;
         if privileged && self.people <= 1 && person == Answer::Ask {
             return Answer::Deny;

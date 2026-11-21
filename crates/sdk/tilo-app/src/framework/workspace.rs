@@ -86,6 +86,11 @@ impl<P: Resource> ResourceOpener<P> {
         self.storage.shared_resource::<P>(self.owner, id)
     }
 
+    /// The current member's private record in this workspace.
+    pub fn open_own(&self) -> Option<WorkspaceResource<P>> {
+        self.storage.own_workspace_resource::<P>(self.owner)
+    }
+
     /// Read the current member's previous record of this app's kind for import.
     pub fn legacy_member_state(&self) -> Result<Option<Rc<P::State>>, String> {
         self.storage.legacy_member_state::<P>(self.owner)
@@ -454,9 +459,15 @@ impl<P: Resource> WorkspaceResource<P> {
         &self.shared.me
     }
 
-    /// Whether the workspace grants read access to this record.
+    /// Whether the caller may read this record. A member's own record follows its
+    /// authenticated owner; shared records follow the workspace's policy.
     #[must_use]
     pub fn may_read(&self) -> bool {
+        if self.shared.permissions.is_none()
+            && tilo_actions::policy::roles::has_member_reader(self.shared.owner, P::KIND)
+        {
+            return false;
+        }
         let node = TreePath::root()
             .app(self.shared.owner)
             .kind(P::KIND)
@@ -489,7 +500,10 @@ impl<P: Resource> WorkspaceResource<P> {
     }
 
     fn independently_sealed(&self) -> bool {
-        tilo_actions::policy::roles::requires_document_keys(self.shared.owner, self.id().route())
+        let app = self.shared.owner;
+        let route = self.id().route();
+        tilo_actions::policy::roles::requires_document_keys(app, route)
+            || tilo_actions::policy::roles::has_member_reader(app, P::KIND)
     }
 
     /// Whether the workspace's grants let the person invoke the verb `verb` of
@@ -987,6 +1001,19 @@ impl WorkspaceState {
         })
     }
 
+    /// A member's own live record, held beside the app's other records in the same store.
+    pub(crate) fn open_own<P: Resource>(
+        &self,
+        owner: &'static str,
+    ) -> Option<WorkspaceResource<P>> {
+        let person = self.records.author().person_id()?;
+        let own = collab_types::OwnResource::of_person(person, P::KIND)?;
+        if !own.is_live_in(owner) {
+            return None;
+        }
+        self.open_at::<P>(owner, &own.document_id())
+    }
+
     /// The record `id` of `P` that `owner` keeps, opened on first use and
     /// created with the resource's genesis where it does not exist yet: a
     /// conversation's record, named by the two people it is between.
@@ -1188,3 +1215,6 @@ impl WorkspaceState {
         self.owners.borrow().clone()
     }
 }
+
+#[cfg(test)]
+mod tests;

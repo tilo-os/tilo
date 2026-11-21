@@ -31,6 +31,50 @@ pub const WORKSPACE_TERMINAL_HISTORY_DOCUMENT: &str = "uuid:8038f29a-fb3e-400a-a
 /// The workspace's Tube watch history.
 pub const WORKSPACE_TUBE_HISTORY_DOCUMENT: &str = "uuid:3bd2daf5-120b-469b-be38-d5203c58efb2";
 
+/// These earlier singleton routes could contain several people's private data. They have no
+/// authenticated record owner, so neither a workspace role nor a grant can disclose them.
+#[must_use]
+pub fn lacks_private_record_owner(app: &str, document: &str) -> bool {
+    matches!(
+        (app, document),
+        (
+            tilo_app_id::apps::MESSAGES | "dev.tilo.messages",
+            WORKSPACE_MESSAGE_DRAFTS_DOCUMENT
+        ) | (
+            tilo_app_id::apps::TUBE | "dev.tilo.tube",
+            WORKSPACE_TUBE_HISTORY_DOCUMENT
+        )
+    )
+}
+
+/// These live record kinds have a single authenticated reader in their workspace.
+#[must_use]
+pub fn has_member_reader(app: &str, kind: &str) -> bool {
+    matches!(
+        (app, kind),
+        (
+            tilo_app_id::apps::TUBE | "dev.tilo.tube",
+            "tube.watch-history"
+        ) | (
+            tilo_app_id::apps::MESSAGES | "dev.tilo.messages",
+            "messages.drafts"
+        )
+    )
+}
+
+pub(crate) fn lacks_private_record_owner_at(node: &TreePath, context: &Context<'_>) -> bool {
+    let Some(app) = node.id_at(Level::App) else {
+        return false;
+    };
+    node.id_at(Level::Resource)
+        .is_some_and(|record| lacks_private_record_owner(app, record))
+        || (node
+            .id_at(Level::Kind)
+            .is_some_and(|kind| has_member_reader(app, kind))
+            && node.id_at(Level::Resource).is_some()
+            && context.owner_of(node).is_none())
+}
+
 /// The resource kind of a record that always uses independent document keys.
 #[must_use]
 pub fn protected_resource_kind(app: &str, document: &str) -> Option<&'static str> {

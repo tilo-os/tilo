@@ -421,8 +421,7 @@ fn repeated_person_and_route_selection_preserves_private_drafts_and_history() {
 
 #[test]
 fn a_previous_draft_is_imported_by_route_and_cannot_return_after_discard() {
-    use crate::drafts::{DOCUMENT, MessageDrafts};
-    use ui::automerge::transaction::Transactable as _;
+    use crate::drafts::MessageDrafts;
 
     let mut app = crate::tests::live_messages_with_history(None);
     let route = choice();
@@ -430,25 +429,31 @@ fn a_previous_draft_is_imported_by_route_and_cannot_return_after_discard() {
     previous
         .invoke(&MessageDrafts::KEEP_DRAFT.with((route.clone(), "earlier draft".to_owned())))
         .unwrap();
-    previous
-        .record()
-        .edit(false, |doc| {
-            doc.delete(ui::automerge::ROOT, "handled")
-                .map_err(|error| error.to_string())
-        })
+    let current = app
+        .own_workspace_resource::<MessageDrafts>(ui::apps::MESSAGES)
         .unwrap();
-    previous.record().flush();
+    assert_eq!(current.record().route(), previous.record().route());
+    assert!(
+        current
+            .record()
+            .merge_peer_document(previous.record().document().unwrap())
+            .unwrap()
+    );
+    current.record().flush();
     drop(previous);
+    drop(current);
+    let mut app = app.reopen().unwrap();
 
+    app.effect(&MessagesEffect::OpenPerson {
+        person: "00000000-0000-4000-8000-000000000001".to_owned(),
+    })
+    .unwrap();
     app.effect(&MessagesEffect::SelectRoute {
         choice: route.clone(),
     })
     .unwrap();
     let current = app
-        .shared_resource::<MessageDrafts>(ui::apps::MESSAGES, DOCUMENT)
-        .unwrap();
-    assert!(current.get().drafts.is_empty());
-    app.effect_confirmed(&MessagesEffect::ImportPreviousDraft)
+        .own_workspace_resource::<MessageDrafts>(ui::apps::MESSAGES)
         .unwrap();
     assert_eq!(
         current.get().drafts.get(&route).map(String::as_str),
@@ -461,18 +466,13 @@ fn a_previous_draft_is_imported_by_route_and_cannot_return_after_discard() {
         .unwrap();
     assert!(current.get().drafts.is_empty());
     app.set_role(ui::permissions::Role::Viewer);
-    assert!(!current.may_read());
-    assert!(
-        !app.agent_surface()
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|entry| entry["resource"] == "messages.drafts")
-    );
-    assert!(
-        current
-            .invoke(&MessageDrafts::KEEP_DRAFT.with((route, "denied".to_owned())))
-            .is_err()
+    assert!(current.may_read(), "a Viewer reads their own draft");
+    current
+        .invoke(&MessageDrafts::KEEP_DRAFT.with((route.clone(), "private draft".to_owned())))
+        .unwrap();
+    assert_eq!(
+        current.get().drafts.get(&route).map(String::as_str),
+        Some("private draft")
     );
 }
 

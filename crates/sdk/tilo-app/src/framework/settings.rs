@@ -413,6 +413,13 @@ impl ViewStorage {
         self.workspace.as_ref()?.open_at::<P>(owner, id)
     }
 
+    pub(crate) fn own_workspace_resource<P: tilo_resource::Resource>(
+        &self,
+        owner: &'static str,
+    ) -> Option<super::workspace::WorkspaceResource<P>> {
+        self.workspace.as_ref()?.open_own::<P>(owner)
+    }
+
     pub(crate) fn legacy_member_state<P: tilo_resource::Resource>(
         &self,
         owner: &str,

@@ -681,19 +681,6 @@ impl PermissionContext {
     ) -> Result<R, String> {
         let now = self.policy_now()?;
         let mut cx = policy::Context::at_secs(now.unwrap_or(0));
-        // A node in the actor's own record is decided as theirs.
-        let named = |level| {
-            node.segments().iter().find_map(|segment| match segment {
-                policy::Segment::Name(at, name) if *at == level => Some(name.as_str()),
-                _ => None,
-            })
-        };
-        if let (Some(app), Some(record)) =
-            (named(policy::Level::App), named(policy::Level::Resource))
-            && let Some(person) = self.own_person(app, record)
-        {
-            cx = cx.with_own_resource(record, person);
-        }
         let sampled;
         let held = match &self.action_authority {
             Some(authority) if authority.matches(node) => {
@@ -702,6 +689,28 @@ impl PermissionContext {
             }
             _ => &self.access,
         };
+        let document = node
+            .id_at(policy::Level::App)
+            .zip(node.id_at(policy::Level::Resource));
+        // A read of anyone's own record follows its person, even when a different member
+        // (including the workspace's owner) is asking to read it.
+        let read_owner = (kind == ActionKind::Read)
+            .then_some(document)
+            .flatten()
+            .and_then(|(app, record)| {
+                collab_types::OwnResource::recognise_in(app, record, &held.policy)
+            })
+            .map(|own| own.person());
+        if let Some((app, record)) = document {
+            let owner = if kind == ActionKind::Read {
+                read_owner.as_deref()
+            } else {
+                self.own_person(app, record)
+            };
+            if let Some(owner) = owner {
+                cx = cx.with_own_resource(record, owner);
+            }
+        }
         let access = self.usable(held, once);
         let mut verdict = access.verdict(&access.node(node), kind, &cx);
         if privileged {

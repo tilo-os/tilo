@@ -275,6 +275,37 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase the_earlier_private_singletons_can_neither_be_read_nor_give_keys;
+    {
+        let (mut peer, source, now) = fixture();
+        let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+        let workspace = peer.core.workspace_doc.as_mut().unwrap();
+        workspace.put(ROOT, "owner", person.as_str()).unwrap();
+        workspace.commit();
+        for (app, record) in [
+            ("so.tilo.tube", roles::WORKSPACE_TUBE_HISTORY_DOCUMENT),
+            ("so.tilo.messages", roles::WORKSPACE_MESSAGE_DRAFTS_DOCUMENT),
+        ] {
+            assert!(
+                peer.check_document_read(source, app, record, now).is_err(),
+                "workspace ownership cannot disclose private data with no verifiable owner"
+            );
+            assert!(
+                !peer.document_key_holders(app, record, now).unwrap().contains(&source),
+                "an editing grant cannot restore the old group's read access"
+            );
+        }
+        assert!(
+            peer.check_document_read(
+                source,
+                "so.tilo.chat",
+                roles::WORKSPACE_CHAT_DRAFTS_DOCUMENT,
+                now,
+            ).is_ok(),
+            "the workspace's channel drafts remain shared by role"
+        );
+    }
+
     phase another_member_neither_reads_nor_writes_a_members_own_record;
     // A member's own record in the workspace is theirs alone: another member,
     // even the workspace's owner, neither reads nor changes it, and a steward
@@ -424,6 +455,103 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+#[test]
+fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
+    use crate::state::document_capture::{KeptDocument, PeerDocumentReadError};
+    use collab_types::{ContentRetention, DocumentMutation, OwnResource};
+
+    const APP: &str = "so.tilo.tube";
+    let (mut peer, owner_key, member_key, member, second, now) =
+        crate::admission_tests::seeded_editor_with_second_device();
+    let person = hex::encode(member.user_public_key);
+    put_member(&mut peer, &person, Role::Viewer);
+    peer.select_exact_admissions().unwrap();
+    let owner = owner_key.verifying_key().to_bytes();
+    let device = member.device_public_key;
+    let history = OwnResource::new("tube.watch-history", member.user_public_key)
+        .unwrap()
+        .document_id();
+    let route = (APP, history.as_str());
+    let workspace = collab_types::WorkspaceId::parse(peer.workspace_id()).unwrap();
+    let group = neighbour_wire::KeyScope::document(workspace, route.0, route.1, None)
+        .unwrap()
+        .group();
+    let mut first_group =
+        key_group::KeyGroup::create(group, key_group::MemberKey::generate(device).unwrap()).unwrap();
+    let second_key = key_group::MemberKey::generate(second.device_public_key).unwrap();
+    let welcome = first_group
+        .add_member(second_key.fresh_key_package().unwrap())
+        .unwrap();
+    let second_group = key_group::KeyGroup::process_welcome(group, &welcome, second_key).unwrap();
+    let keys = first_group.content_keys().unwrap();
+    assert_eq!(
+        peer.document_key_holders(APP, &history, now).unwrap(),
+        [device, second.device_public_key].into(),
+        "the group follows the person to both devices and excludes the owner"
+    );
+    let mut watched = automerge::AutoCommit::new();
+    watched.put(ROOT, "video", "lecture").unwrap();
+    let frame = DocumentMutation::Snapshot(watched.save()).encode().unwrap();
+    assert!(peer.draft_write(route, None, &frame, None, device, 0, now).is_err());
+    let artifact = collab_types::document_artifact_id(APP, peer.workspace_id(), &history);
+    let write = |key: &SigningKey| {
+        let mut seal = |plaintext: &[u8]| {
+            keys.seal_content(artifact, ContentRetention::of_frame(plaintext), plaintext)
+                .map_err(|error| error.to_string())
+        };
+        let mut envelope = peer
+            .draft_write(
+                route,
+                None,
+                &frame,
+                Some(&mut seal),
+                key.verifying_key().to_bytes(),
+                0,
+                now,
+            )
+            .unwrap();
+        collab_types::sign_op(&mut envelope, key).unwrap();
+        envelope
+    };
+    // The workspace owner cannot found another person's record.
+    let wrong = write(&owner_key);
+    let own = write(&member_key);
+    assert!(peer.admit_new_local_document(APP, &history, wrong, now).is_err());
+    peer.admit_new_local_document(APP, &history, own, now).unwrap();
+
+    let second_keys = second_group.content_keys().unwrap();
+    let mut unseal = |op: &collab_types::SignedOp| {
+        second_keys
+            .open_content(op.artifact, op.encryption.as_ref().unwrap(), &op.payload)
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| error.to_string())
+    };
+    let mut held = KeptDocument::default();
+    assert!(matches!(
+        peer.open_document(owner, route, now, usize::MAX, Some(&mut unseal), &mut held),
+        Err(PeerDocumentReadError::Denied)
+    ));
+    let own_history = peer
+        .open_document(second.device_public_key, route, now, usize::MAX, Some(&mut unseal), &mut held)
+        .expect("the other Viewer device reads what their first device kept");
+    assert_eq!(
+        own_history
+            .get(ROOT, "video")
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok())
+            .as_deref(),
+        Some("lecture")
+    );
+
+    sign_as_owner(&mut peer, tilo_action_policy::Change::RemoveMember { person });
+    assert!(peer.check_document_read(owner, APP, &history, now).is_err());
+    assert!(
+        peer.document_key_holders(APP, &history, now).unwrap().is_empty(),
+        "retained ownership cannot fall back to shared readership after removal"
+    );
+}
+
 fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {
     let workspace = peer.admitted_workspace().unwrap();
     let identities = workspace
