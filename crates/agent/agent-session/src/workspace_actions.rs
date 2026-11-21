@@ -125,7 +125,7 @@ use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::member::actions::{Outcome, api_outcome, resource_provider, resource_of};
+use crate::member::actions::{Outcome, api_outcome, resource_of, resource_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_documents::{Reads, WorkspaceDocuments};
 use catch_up::caught_up_with_own;
@@ -1841,7 +1841,12 @@ impl Worker {
                         };
                         let asked = self.hand(workspace_id, &holder, move || {
                             feedback::answer_and_review(
-                                &link, catalogue, workspace_id, caller, *query, done,
+                                &link,
+                                catalogue,
+                                workspace_id,
+                                caller,
+                                *query,
+                                done,
                             );
                         });
                         if asked.is_none() {

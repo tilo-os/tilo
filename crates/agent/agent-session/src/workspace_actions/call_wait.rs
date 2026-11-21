@@ -350,10 +350,7 @@ impl Worker {
     /// caller by itself ([`Self::hand`]): nothing of it is applied again once it answered, and
     /// what waits for what it reads is served when it has.
     pub(super) fn await_completed(&mut self, workspace_id: WorkspaceId) {
-        let Some(HandedCall {
-            holder, answer, ..
-        }) = self.call_waits.held.take()
-        else {
+        let Some(HandedCall { holder, answer, .. }) = self.call_waits.held.take() else {
             return;
         };
         let step = answer.as_ref().map_or(0, |(step, _)| *step);

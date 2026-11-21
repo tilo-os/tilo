@@ -7,7 +7,7 @@ use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 use super::{
     ActionCallError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
     DEFAULT_DOCUMENTS, DocumentRoute, Worker, WorkspaceState, catalogue_keys, is_part,
-    provider_workspace, resource_provider, resource_of,
+    provider_workspace, resource_of, resource_provider,
 };
 use tilo_server_protocol::WorkspaceId;
 

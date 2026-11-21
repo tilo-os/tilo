@@ -7,10 +7,10 @@ tilo_automerge_isolate::test_worker!();
 mod admission_cost;
 #[path = "deferred.rs"]
 mod deferred;
-#[path = "isolation.rs"]
-mod isolation;
 #[path = "fair_turns.rs"]
 mod fair_turns;
+#[path = "isolation.rs"]
+mod isolation;
 // Workers are processes only on Linux.
 #[cfg(target_os = "linux")]
 #[path = "program.rs"]

@@ -46,7 +46,10 @@ const ALPHABET: &[u8; 64] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX
 /// Text that does not compress: what a part's titles and descriptions are to
 /// a deflate pass.
 fn text(seed: usize) -> String {
-    let mut state = u64::try_from(seed).unwrap().wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut state = u64::try_from(seed)
+        .unwrap()
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        | 1;
     (0..PART_TEXT)
         .map(|_| {
             state ^= state << 13;

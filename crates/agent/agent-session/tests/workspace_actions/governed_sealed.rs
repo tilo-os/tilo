@@ -21,7 +21,7 @@ use tilo_peer_state::join::Role;
 
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
-    Browser, DeviceCapabilities, DocumentRoute, SHEETS, enrol, resource_provider, request,
+    Browser, DeviceCapabilities, DocumentRoute, SHEETS, enrol, request, resource_provider,
     sheet_named, sheet_names, start,
 };
 use tilo_server_protocol::WorkspaceId;

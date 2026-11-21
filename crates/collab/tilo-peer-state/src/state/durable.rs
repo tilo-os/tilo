@@ -138,17 +138,19 @@ fn decode_documents(documents: &[DurableDocument]) -> Vec<Result<CachedDocument,
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| {
-                    caller.enter(|| loop {
-                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(document) = documents.get(at) else {
-                            break;
-                        };
-                        let decoded = decode_document(document);
-                        let mut ready = ready
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if let Some(held) = ready.get_mut(at) {
-                            *held = Some(decoded);
+                    caller.enter(|| {
+                        loop {
+                            let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(document) = documents.get(at) else {
+                                break;
+                            };
+                            let decoded = decode_document(document);
+                            let mut ready = ready
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if let Some(held) = ready.get_mut(at) {
+                                *held = Some(decoded);
+                            }
                         }
                     });
                 });

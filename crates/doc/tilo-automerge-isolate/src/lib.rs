@@ -39,9 +39,9 @@ pub mod precheck;
 #[cfg(target_os = "linux")]
 mod sandbox;
 #[cfg(target_os = "linux")]
-mod wire;
-#[cfg(target_os = "linux")]
 mod turns;
+#[cfg(target_os = "linux")]
+mod wire;
 #[cfg(target_os = "linux")]
 mod worker;
 

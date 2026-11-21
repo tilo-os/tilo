@@ -97,7 +97,11 @@ fn a_pages_sidebar_rows_stand_where_they_are_pressed() {
         .map(|side| side.trim_end_matches("px").parse().expect("a length in px"))
         .collect();
     let [x, _, width, _] = list.rect;
-    let rows: Vec<_> = list.children.iter().filter(|row| row.tag == Some("li")).collect();
+    let rows: Vec<_> = list
+        .children
+        .iter()
+        .filter(|row| row.tag == Some("li"))
+        .collect();
     assert_eq!(rows.len(), 3, "each place is a row: {layout}");
     for row in rows {
         assert_eq!(

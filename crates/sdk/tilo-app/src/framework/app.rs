@@ -1004,9 +1004,9 @@ pub(crate) fn build_root<A: ResourceApp>(
         content,
         share,
     )
-        .following(permissions, scope)
-        .with_presentation((app.local_operations)())
-        .opening_links(open_link);
+    .following(permissions, scope)
+    .with_presentation((app.local_operations)())
+    .opening_links(open_link);
     // A window shown over other apps' content paints no ground of its own:
     // what it does not paint shows what is under it, and a keyboard that
     // hides its keys takes the whole of its window with them.
