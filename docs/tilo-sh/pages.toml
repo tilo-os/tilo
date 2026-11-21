@@ -80,13 +80,6 @@ nav = "Approvals"
 description = "Actions that ask a person first: AskPending, what a person is asked, and how their answer releases one request."
 
 [[page]]
-slug = "one-workspace-per-customer"
-source = "docs/developers/one-workspace-per-customer.md"
-section = "Guides"
-nav = "One workspace per customer"
-description = "A workspace and a key per customer, from one backend key: the visa application, built end to end."
-
-[[page]]
 slug = "hosted-browser"
 source = "docs/tilo-sh/hosted-browser.md"
 section = "Guides"

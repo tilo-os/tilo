@@ -1,14 +1,18 @@
 # Tilo apps
 
+New first-party apps are written in **[tilolang](https://tilolang.dev)** under
+`apps/tl/` (`notes`, `tasks`, `mail`, `chat`, `shell`, …), rendering natively with
+**Tilo UI** (`crates/sdk/ui-core`). Existing native Rust apps live under
+`apps/<name>/` and are being replaced by tilolang apps (see [AGENTS.md](../AGENTS.md)).
+
 Use hyphens for multiword package names, app directories, and executables. Rust
 library names and imports use underscores (`code_editor`).
 
-Every app here is a native Tilo application built on the public
-[`tilo-app`](../crates/sdk/tilo-app) SDK (normally renamed to `ui` in Cargo).
-`tilo-app` re-exports the complete retained-widget, layout, canvas,
-custom-painting, native-view and GPU API. The internal
+Each Rust app here is built on the public [`tilo-app`](../crates/sdk/tilo-app) SDK
+(normally renamed to `ui` in Cargo). `tilo-app` re-exports the retained-widget,
+layout, canvas, custom-painting, native-view and GPU API from Tilo UI. The internal
 [`ui-core`](../crates/sdk/ui-core) package is a dependency of the shell and SDK;
-apps use `tilo-app`.
+Rust apps use `tilo-app`.
 
 Apps are retained-mode and CRDT-native: durable state lives in a shared
 Automerge document for undo/redo, persistence and collaboration. Vello and Taffy

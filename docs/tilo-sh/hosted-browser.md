@@ -89,8 +89,7 @@ window offers the wait as two actions bound to it, `send-held-request` and `keep
 
 ## Filling a form without a Browser
 
-Not every form is a web page. When the application is a PDF, the agent fills it in PDF Viewer instead:
+Not every form is a web page. When a form is a PDF, the agent fills it in PDF Viewer instead:
 `pdf-viewer#import-pdf-content`, `read-form-fields`, a field edit per answer, and
-`word-processor#export-content` for the letter that goes with it. A person reviews both, in the same
-workspace, with the same undo — [one workspace per
-customer](../developers/one-workspace-per-customer.md) is that flow end to end.
+`word-processor#export-content` for any accompanying document. A person reviews both in the same
+workspace, with the same history and undo.

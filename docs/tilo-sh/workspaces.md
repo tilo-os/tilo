@@ -45,21 +45,20 @@ Making one is an action on your account, like minting a key. So it appears in hi
 and can be done from the page, the command or the SDK:
 
 ```sh
-tilo workspace create "Applicant: Jane Doe" --label customer_id=cus_8121
-tilo workspace ls --label customer_id=cus_8121
+tilo workspace create "Q2 Launch" --label team=product
+tilo workspace ls --label team=product
 ```
 
-Labels are yours, for your programs to find a workspace by: your own id for the customer it is for, say.
+Labels are yours, for your scripts and agents to find a workspace by.
 A workspace keeps up to 16, each a name (`a-z`, `0-9`, `_`, `-`, `.`) and a text value. Only your keys read
-them; nobody you invite in sees them. [One workspace per customer](../developers/one-workspace-per-customer.md)
-makes, finds, exports and deletes hundreds by them.
+them; nobody you invite in sees them.
 
 Deleting a workspace is final. There is no undo and nothing asks again: the call is the confirmation.
 The host removes its records, files and history, stops counting them against your storage, tells anyone
 who has it open that it was deleted, and revokes every key that reached only it.
 
 ```sh
-tilo workspace rm applicant-jane-doe   # {"deleted": …, "revoked_keys": [...]}
+tilo workspace rm q2-launch   # {"deleted": …, "revoked_keys": [...]}
 ```
 
 Only a key that reaches all your workspaces deletes, and only workspaces of your own: one you were
