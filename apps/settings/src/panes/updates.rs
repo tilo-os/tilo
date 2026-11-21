@@ -71,6 +71,21 @@ fn run_bounded(
         .map_err(|error| format!("{program} command failed: {error}"))
 }
 
+/// Start a system unit, and whether it ended well; its own error is said
+/// when it gives one.
+fn start_unit(args: &[&str], timeout: Duration, failed: &str) -> Result<(), String> {
+    let output = run_bounded("systemctl", args, timeout)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let error = output.stderr_diagnostic();
+    Err(if error.is_empty() {
+        failed.to_string()
+    } else {
+        error
+    })
+}
+
 fn target_of(target: &Result<Option<String>, String>) -> Option<&str> {
     target.as_ref().ok().and_then(Option::as_deref)
 }
@@ -95,13 +110,61 @@ fn schedule_from_label(label: &str) -> String {
     }
 }
 
+/// What the live update applied of the staged image, and what still waits
+/// (the state `tilo-extension live:system` leaves for the desktop).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LiveUpdate {
+    /// Part of the update waits for the desktop to restart.
+    pub desktop_pending: bool,
+    /// The machine must restart to finish it.
+    pub reboot_required: bool,
+    /// The live update did not finish and rolled back.
+    pub failed: bool,
+}
+
+impl LiveUpdate {
+    /// The state `json` names, or `None` when nothing was read.
+    pub fn parse(json: &str) -> Option<Self> {
+        let root: serde_json::Value = serde_json::from_str(json).ok()?;
+        let flag = |key: &str| {
+            root.get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        };
+        Some(Self {
+            desktop_pending: flag("desktop_pending"),
+            reboot_required: flag("reboot_required"),
+            failed: flag("failed"),
+        })
+    }
+
+    /// Part of it applied live and only the desktop is left, so it finishes
+    /// without a restart of the machine.
+    #[must_use]
+    pub fn finishes_without_restart(&self) -> bool {
+        self.desktop_pending && !self.reboot_required && !self.failed
+    }
+
+    /// The live update applied all of it: nothing waits, and the staged
+    /// deployment becomes the one that boots at the next restart.
+    #[must_use]
+    pub fn applied_without_restart(&self) -> bool {
+        !self.desktop_pending && !self.reboot_required && !self.failed
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UpdateStatus {
     pub current_version: String,
     pub staged_version: Option<String>,
+    /// The staged deployment's image digest: what names the image a live
+    /// update's own state describes.
+    pub staged_digest: Option<String>,
     /// Why the staged image could not be read. While set, `staged_version`
     /// says nothing about the machine and the pane shows this instead.
     pub staged_error: Option<String>,
+    /// What the live update says of the staged image, where this machine keeps one.
+    pub live: Option<LiveUpdate>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -210,16 +273,38 @@ impl UpdateStatus {
             .ok()
             .and_then(|s| crate::panes::about::parse_os_release_pretty_name(&s))
             .unwrap_or_else(|| "Tilo (Fedora bootc)".to_string());
-        let (staged_version, staged_error) = match read_bootc_staged() {
-            Ok(staged) => (staged, None),
-            Err(error) => (None, Some(error)),
+        let (staged_version, staged_digest, staged_error) = match read_bootc_staged() {
+            Ok(staged) => (staged.0, staged.1, None),
+            Err(error) => (None, None, Some(error)),
         };
+        // The live update's state describes one image by its digest: a state a
+        // previous update left says nothing about this staged deployment.
+        let live = live_state_for(staged_digest.as_deref(), read_live_update());
         Self {
             current_version: current,
             staged_version,
+            staged_digest,
             staged_error,
+            live,
         }
     }
+}
+
+fn read_live_update() -> Option<(String, LiveUpdate)> {
+    let text = fs::read_to_string(os_actions::LIVE_UPDATE_STATE).ok()?;
+    let root: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let image = root.get("image")?.as_str()?.to_owned();
+    if image.is_empty() {
+        return None;
+    }
+    LiveUpdate::parse(&text).map(|live| (image, live))
+}
+
+/// The live update's state for the staged deployment `staged`, and nothing
+/// when it describes another image.
+fn live_state_for(staged: Option<&str>, state: Option<(String, LiveUpdate)>) -> Option<LiveUpdate> {
+    let (image, live) = state?;
+    (staged == Some(image.as_str())).then_some(live)
 }
 
 fn read_bootc_status() -> Result<String, String> {
@@ -235,8 +320,19 @@ fn read_bootc_status() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn read_bootc_staged() -> Result<Option<String>, String> {
-    read_bootc_status().map(|json| parse_bootc_staged(&json))
+fn read_bootc_staged() -> Result<(Option<String>, Option<String>), String> {
+    read_bootc_status().map(|json| (parse_bootc_staged(&json), parse_bootc_staged_digest(&json)))
+}
+
+/// The staged deployment's image digest, as the live update names its state.
+pub fn parse_bootc_staged_digest(json: &str) -> Option<String> {
+    let root: serde_json::Value = serde_json::from_str(json).ok()?;
+    root.get("status")?
+        .get("staged")?
+        .get("image")?
+        .get("imageDigest")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 pub fn parse_bootc_staged(json: &str) -> Option<String> {
@@ -291,6 +387,11 @@ pub trait UpdateControl: Send + Sync {
     }
     fn check_now(&self) -> Result<(), String> {
         Err("checking for updates is unavailable on this machine".into())
+    }
+    /// Finish the update that applied live by restarting the desktop in place:
+    /// the login stays and the windows it had open come back.
+    fn restart_desktop(&self) -> Result<(), String> {
+        Err("finishing the update without a restart is unavailable on this machine".into())
     }
     fn refresh_firmware(
         &self,
@@ -500,21 +601,28 @@ impl UpdateControl for RealUpdateControl {
 
     fn check_now(&self) -> Result<(), String> {
         crate::device_read::off_ui_thread();
-        let output = run_bounded(
-            "systemctl",
+        start_unit(
             &["start", "--wait", "tilo-deployment-update.service"],
             LONG_UPDATE_TIMEOUT,
-        )?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            let error = output.stderr_diagnostic();
-            Err(if error.is_empty() {
-                "update service failed; see its system journal".into()
-            } else {
-                error
-            })
-        }
+            "update service failed; see its system journal",
+        )
+    }
+
+    fn restart_desktop(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
+        // The unit restarts this desktop too, so waiting would wait for
+        // ourselves: the job is queued and the desktop comes back with the
+        // update finished, or rolled back to the image that ran.
+        start_unit(
+            &[
+                "start",
+                "--no-block",
+                "--no-ask-password",
+                "tilo-live-update-session.service",
+            ],
+            CONTROL_TIMEOUT,
+            "finishing the update failed; see the system journal",
+        )
     }
 
     fn refresh_firmware(
@@ -713,6 +821,8 @@ impl FirstRead {
                 current_version: String::new(),
                 staged_version: None,
                 staged_error: Some(error.to_string()),
+                staged_digest: None,
+                live: None,
             },
             timer_enabled: None,
             rollback_target: Err(error.to_string()),
@@ -790,6 +900,7 @@ pub struct UpdatesModel {
     rollback_armed: bool,
     notice: Option<String>,
     dispatched_restart: bool,
+    dispatched_desktop_restart: bool,
     sections: crate::sections::Sections,
     replies: crate::replies::Replies,
     changed: bool,
@@ -826,6 +937,8 @@ impl UpdatesModel {
                 current_version: String::new(),
                 staged_version: None,
                 staged_error: None,
+                staged_digest: None,
+                live: None,
             },
             details: UpdateDetails::default(),
             prefs: prefs.clone(),
@@ -869,6 +982,7 @@ impl UpdatesModel {
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
+            dispatched_desktop_restart: false,
             sections,
             replies: crate::replies::Replies::default(),
             changed: false,
@@ -964,6 +1078,8 @@ impl UpdatesModel {
             current_version: "Tilo 2026.06".into(),
             staged_version: Some("Tilo 2026.07".into()),
             staged_error: None,
+            staged_digest: None,
+            live: None,
         };
         let staged = status.clone();
         Self::with_parts_and_control(
@@ -1409,6 +1525,36 @@ impl UpdatesModel {
             );
         }
         let body = match &self.status.staged_version {
+            // The live update applied the image and left only the desktop: it
+            // finishes now, with the apps the person has open kept.
+            Some(_)
+                if self
+                    .live()
+                    .is_some_and(LiveUpdate::finishes_without_restart) =>
+            {
+                setting_row_described(
+                    &t("upd-live-ready"),
+                    &t("upd-finishes-now"),
+                    Box::new(
+                        button(
+                            cx,
+                            "settings.updates.restart-desktop",
+                            &t("upd-finish-now"),
+                            UpdatesEffect::RestartDesktop,
+                        )
+                        .role(ui::widget::ButtonRole::Primary),
+                    ),
+                )
+            }
+            // It applied live with nothing left to finish: the staged deployment
+            // becomes the one that boots at the next restart of the machine.
+            Some(_) if self.live().is_some_and(LiveUpdate::applied_without_restart) => {
+                setting_row_described(
+                    &t("upd-live-ready"),
+                    &t("upd-live-complete"),
+                    Box::new(Text::new(&t("upd-os-live")).dimmed()),
+                )
+            }
             Some(staged) => setting_row_described(
                 &t_args("upd-ready", &[("version", staged.as_str().into())]),
                 &t("upd-restart-apply"),
@@ -1429,7 +1575,17 @@ impl UpdatesModel {
                 None,
             ))),
         };
-        section(&t("upd-software"), rows(vec![body]))
+        let mut body = vec![body];
+        // A live update that did not finish rolled back to the running image:
+        // the person has to know the prepared update still takes a restart.
+        if self.status.live.as_ref().is_some_and(|live| live.failed) {
+            body.push(block(error_caption(&t("upd-live-failed"))));
+        }
+        section(&t("upd-software"), rows(body))
+    }
+
+    fn live(&self) -> Option<&LiveUpdate> {
+        self.status.live.as_ref()
     }
 
     fn overview_card(&self) -> SettingsSection {
@@ -1438,9 +1594,17 @@ impl UpdatesModel {
                 &t("upd-os"),
                 &t_args("upd-status-error", &[("error", error.as_str().into())]),
             ),
-            None if self.status.staged_version.is_some() => {
-                value_row(&t("upd-os"), &t("upd-os-staged"))
-            }
+            None if self.status.staged_version.is_some() => value_row(
+                &t("upd-os"),
+                &match self.live() {
+                    Some(live)
+                        if live.applied_without_restart() || live.finishes_without_restart() =>
+                    {
+                        t("upd-os-live")
+                    }
+                    _ => t("upd-os-staged"),
+                },
+            ),
             None => value_row(&t("upd-os"), &t("upd-os-current")),
         }];
         if let Ok(updates) = &self.firmware_updates {
@@ -2053,6 +2217,45 @@ impl UpdatesModel {
         }
     }
 
+    /// Finish an update that applied live: the desktop comes back on the new
+    /// interface with the windows the person had open.
+    fn finish_without_restart(&mut self) {
+        if self.dispatched_desktop_restart {
+            self.operation_failed(
+                UpdatesEffect::RESTART_DESKTOP.id,
+                "the desktop restart is already on its way",
+            );
+            return;
+        }
+        self.dispatched_desktop_restart = true;
+        let control = Arc::clone(&self.control);
+        self.start(UpdatesEffect::RESTART_DESKTOP.id, move || {
+            let result = control.restart_desktop();
+            Box::new(move |model: &mut Self| model.desktop_restart_dispatched(result))
+        });
+    }
+
+    fn desktop_restart_dispatched(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.notice = Some(t("upd-notice-desktop"));
+                self.operation_succeeded(
+                    UpdatesEffect::RESTART_DESKTOP.id,
+                    "the desktop restarts onto the update",
+                );
+            }
+            Err(e) => {
+                warn!(target: "tilo::settings", op = "restart_desktop", error = %e, "finishing the update failed");
+                self.dispatched_desktop_restart = false;
+                self.failed(
+                    UpdatesEffect::RESTART_DESKTOP.id,
+                    t_args("upd-notice-desktop-failed", &[("error", e.as_str().into())]),
+                );
+            }
+        }
+        self.changed = true;
+    }
+
     /// Automatic updates → drive the timer, then report what the timer
     /// actually says. Persisting the preference happens only once the
     /// machine agrees, so the stored value never claims a state the timer
@@ -2263,6 +2466,11 @@ pub enum UpdatesEffect {
     #[effect(kind = "outside")]
     #[effect(job, destructive, returns)]
     RestartToUpdate,
+    /// Finish an update that applied live: restart the desktop in place, with
+    /// the apps the person has open kept.
+    #[effect(kind = "outside")]
+    #[effect(job, returns)]
+    RestartDesktop,
     /// Show what rolling back to the previous system image does not undo.
     #[effect(kind = "outside")]
     #[effect(job, returns)]
@@ -2334,6 +2542,7 @@ impl UpdatesModel {
         match effect {
             UpdatesEffect::CheckForUpdates => self.check(),
             UpdatesEffect::RestartToUpdate => self.restart(),
+            UpdatesEffect::RestartDesktop => self.finish_without_restart(),
             UpdatesEffect::ReviewRollback => self.review_rollback(),
             UpdatesEffect::RollBack => self.roll_back(),
             UpdatesEffect::RefreshFirmware => self.refresh_firmware(),

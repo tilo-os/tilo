@@ -26,7 +26,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 /// What the live update applied of the staged image, and what waits.
-pub const LIVE_STATE: &str = "/run/tilo/live-update/state.json";
+pub const LIVE_STATE: &str = os_actions::LIVE_UPDATE_STATE;
 /// Where ostree records the deployment staged for the next boot.
 const OSTREE_STAGED: &str = "/run/ostree/staged-deployment";
 /// Where a deployment that did not start leaves its report: one directory per

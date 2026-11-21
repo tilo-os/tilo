@@ -23,11 +23,15 @@ fn pane_with(staged: Option<&str>, rebooter: Arc<RecordingRebooter>) -> UpdatesM
         current_version: "Tilo 2026.06".into(),
         staged_version: staged.map(std::string::ToString::to_string),
         staged_error: None,
+        staged_digest: None,
+        live: None,
     };
     let requeried = UpdateStatus {
         current_version: "Tilo 2026.06".into(),
         staged_version: Some("Tilo 2026.07".into()),
         staged_error: None,
+        staged_digest: None,
+        live: None,
     };
     UpdatesModel::with_parts(
         test_cx(),
@@ -733,6 +737,8 @@ tilo_test_env::scenario! {
                     current_version: "Tilo".into(),
                     staged_version: None,
                     staged_error: None,
+                    staged_digest: None,
+                    live: None,
                 },
                 UpdatePrefs {
                     auto: false,
@@ -742,6 +748,8 @@ tilo_test_env::scenario! {
                     current_version: "Tilo".into(),
                     staged_version: None,
                     staged_error: None,
+                    staged_digest: None,
+                    live: None,
                 }),
                 Arc::new(|| "now".to_string()),
                 Arc::new(RecordingRebooter::default()),
@@ -858,6 +866,7 @@ struct FakeControl {
     refresh_hold: Mutex<Option<channel::Receiver<()>>>,
     refresh_fails: Mutex<bool>,
     check_calls: Mutex<u32>,
+    desktop_restarts: Mutex<u32>,
     hold_timed_out: std::sync::atomic::AtomicBool,
 }
 
@@ -877,6 +886,7 @@ impl FakeControl {
             refresh_hold: Mutex::new(None),
             refresh_fails: Mutex::new(false),
             check_calls: Mutex::new(0),
+            desktop_restarts: Mutex::new(0),
             hold_timed_out: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -960,6 +970,12 @@ impl UpdateControl for FakeControl {
         }
     }
 
+    fn restart_desktop(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
+        *self.desktop_restarts.lock().unwrap() += 1;
+        Ok(())
+    }
+
     fn refresh_firmware(
         &self,
     ) -> Result<
@@ -987,6 +1003,8 @@ fn an_unreadable_bootc_status_is_not_reported_as_up_to_date() {
             current_version: "Tilo 2026.06".into(),
             staged_version: None,
             staged_error: Some("error: This command requires root privileges".into()),
+            staged_digest: None,
+            live: None,
         };
         let requeried = status.clone();
         *crate::panes::updates::area(settings)
@@ -1020,6 +1038,8 @@ fn pane_with_control(control: Arc<FakeControl>) -> UpdatesModel {
         current_version: "Tilo 2026.06".into(),
         staged_version: None,
         staged_error: None,
+        staged_digest: None,
+        live: None,
     };
     let requeried = status.clone();
     UpdatesModel::with_parts_and_control(
@@ -1045,6 +1065,8 @@ fn a_check_and_the_timer_are_kept_in_the_update_preferences() {
             current_version: "Tilo 2026.06".into(),
             staged_version: None,
             staged_error: None,
+            staged_digest: None,
+            live: None,
         };
         let requeried = status.clone();
         *crate::panes::updates::area(settings)
@@ -1166,6 +1188,8 @@ fn a_stalled_update_control_never_holds_the_window() {
                 current_version: "Tilo 2026.06".into(),
                 staged_version: None,
                 staged_error: None,
+                staged_digest: None,
+                live: None,
             }
         }),
         details: Arc::new(|_| UpdateDetails::default()),
@@ -1379,4 +1403,190 @@ fn asking_for_windows_support_opens_its_card() {
         .with_widget::<crate::window::Inspected, _>(|window| window.selected())
         .expect("the Settings window is mounted");
     assert_eq!(shown, crate::categories::Category::Updates);
+}
+/// An update the live update applied and left for the desktop.
+fn staged_live(desktop_pending: bool, reboot_required: bool, failed: bool) -> UpdateStatus {
+    UpdateStatus {
+        current_version: "Tilo 2026.06".into(),
+        staged_version: Some("Tilo 2026.07".into()),
+        staged_digest: Some("sha256:aa".into()),
+        staged_error: None,
+        live: Some(LiveUpdate {
+            desktop_pending,
+            reboot_required,
+            failed,
+        }),
+    }
+}
+
+#[test]
+fn a_live_state_only_speaks_for_the_staged_image_it_names() {
+    let live = LiveUpdate {
+        desktop_pending: true,
+        ..LiveUpdate::default()
+    };
+    assert_eq!(
+        live_state_for(Some("sha256:aa"), Some(("sha256:aa".into(), live.clone()))),
+        Some(live.clone())
+    );
+    assert_eq!(
+        live_state_for(Some("sha256:bb"), Some(("sha256:aa".into(), live))),
+        None,
+        "a state a previous update left says nothing about this deployment"
+    );
+    assert_eq!(live_state_for(None, None), None);
+    assert_eq!(
+        live_state_for(Some("sha256:aa"), None),
+        None,
+        "no live update is on this machine"
+    );
+}
+
+#[test]
+fn the_live_state_reads_back_what_the_update_recorded() {
+    let parsed = LiveUpdate::parse(
+        r#"{"schema":1,"image":"sha256:aa","applied":"session","desktop_pending":true,"reboot_required":false,"failed":false}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        parsed,
+        LiveUpdate {
+            desktop_pending: true,
+            reboot_required: false,
+            failed: false
+        }
+    );
+    assert!(parsed.finishes_without_restart());
+    assert!(
+        LiveUpdate::parse(r#"{"failed":true,"reboot_required":true}"#)
+            .unwrap()
+            .failed
+    );
+    assert!(LiveUpdate::parse("not json").is_none());
+    let complete = LiveUpdate::default();
+    assert!(complete.applied_without_restart());
+    assert!(
+        !complete.finishes_without_restart(),
+        "nothing waits for the desktop"
+    );
+}
+
+#[test]
+fn the_live_update_offers_a_desktop_restart_and_keeps_open_apps() {
+    let control = Arc::new(FakeControl::new(Some(true), None));
+    let status = staged_live(true, false, false);
+    let mut pane = UpdatesModel::with_parts_and_control(
+        test_cx(),
+        status.clone(),
+        UpdatePrefs::default(),
+        Arc::new(move || status.clone()),
+        Arc::new(|| "CHECKED-NOW".to_string()),
+        Arc::new(RecordingRebooter::default()),
+        Arc::clone(&control) as Arc<dyn UpdateControl>,
+    );
+    pane.poll();
+    pane.finish_without_restart();
+    pane.poll();
+    settle(&mut pane, UpdatesModel::working);
+    assert_eq!(*control.desktop_restarts.lock().unwrap(), 1);
+    assert_eq!(
+        *control.rollbacks.lock().unwrap(),
+        0,
+        "finishing an update live restarts nothing else"
+    );
+    let notice = pane.notice().expect("the person is told what happens");
+    assert!(
+        notice.contains("stay open"),
+        "the notice says the apps stay open, got: {notice}"
+    );
+}
+
+#[test]
+fn the_update_card_says_a_live_update_stays_open_and_a_reboot_does_not() {
+    for (live, expected, absent) in [
+        (
+            Some(LiveUpdate {
+                desktop_pending: true,
+                ..LiveUpdate::default()
+            }),
+            vec![
+                t("upd-live-ready"),
+                t("upd-finishes-now"),
+                t("upd-finish-now"),
+            ],
+            vec![t("upd-os-staged"), t("upd-restart-update")],
+        ),
+        (
+            Some(LiveUpdate {
+                reboot_required: true,
+                ..LiveUpdate::default()
+            }),
+            vec![t("upd-os-staged"), t("upd-restart-update")],
+            vec![t("upd-finish-now"), t("upd-os-live")],
+        ),
+        (
+            None,
+            vec![t("upd-os-staged"), t("upd-restart-update")],
+            vec![t("upd-finish-now")],
+        ),
+    ] {
+        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        let status = UpdateStatus {
+            live,
+            ..staged_live(false, false, false)
+        };
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
+            let requeried = status.clone();
+            *crate::panes::updates::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut() = UpdatesModel::with_parts_and_control(
+                settings.sections().clone(),
+                status.clone(),
+                UpdatePrefs::default(),
+                Arc::new(move || requeried.clone()),
+                Arc::new(|| "CHECKED-NOW".to_string()),
+                Arc::new(RecordingRebooter::default()),
+                Arc::new(FakeControl::new(Some(true), None)),
+            );
+        })
+        .expect("the Settings window is mounted");
+        crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
+        app.settle();
+        let frame = app.harness().inspection_json().unwrap();
+        for claim in expected {
+            assert!(frame.contains(&claim), "shows {claim:?}: {frame}");
+        }
+        for claim in absent {
+            assert!(!frame.contains(&claim), "does not claim {claim:?}: {frame}");
+        }
+    }
+}
+
+#[test]
+fn a_live_update_that_could_not_finish_says_a_restart_completes_it() {
+    let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let status = staged_live(false, true, true);
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
+        let requeried = status.clone();
+        *crate::panes::updates::area(settings)
+            .unwrap()
+            .model()
+            .borrow_mut() = UpdatesModel::with_parts_and_control(
+            settings.sections().clone(),
+            status.clone(),
+            UpdatePrefs::default(),
+            Arc::new(move || requeried.clone()),
+            Arc::new(|| "CHECKED-NOW".to_string()),
+            Arc::new(RecordingRebooter::default()),
+            Arc::new(FakeControl::new(Some(true), None)),
+        );
+    })
+    .expect("the Settings window is mounted");
+    crate::effects::show_pane(&mut app, crate::categories::Category::Updates);
+    app.settle();
+    let frame = app.harness().inspection_json().unwrap();
+    assert!(frame.contains(&t("upd-live-failed")), "{frame}");
+    assert!(frame.contains(&t("upd-restart-update")), "{frame}");
+    assert!(!frame.contains(&t("upd-finish-now")), "{frame}");
 }

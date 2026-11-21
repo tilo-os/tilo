@@ -376,3 +376,8 @@ pub fn log_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
 /// Applies to every shell-out in this crate: a tool that exceeds it is killed and reported as a
 /// timeout.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(2_500);
+
+/// What the live update applied of a staged image, and what still waits (the state
+/// `tilo-extension live:system` leaves for the desktop). Settings and the session's system
+/// service both read it.
+pub const LIVE_UPDATE_STATE: &str = "/run/tilo/live-update/state.json";
