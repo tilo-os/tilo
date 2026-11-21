@@ -9749,15 +9749,28 @@ fn app_manifest(spec: &AppSpec) -> Result<String> {
         })
     };
     let mut manifest = format!(
-        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@{collab}\"\ntilo-fs = \"optional@{fs}\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
+        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[resources]\nkinds = [{kind:?}]\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@{collab}\"\ntilo-fs = \"optional@{fs}\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
         app_id = spec.app_id,
         title = spec.title,
         package = spec.package_name,
+        kind = scaffold_record(spec),
         collab = version("collab")?,
         fs = version("tilo-fs")?,
     );
     manifest.push_str(&scaffold_offers(spec));
     Ok(manifest)
+}
+
+/// The record kind the template's code declares: the resource its view publishes, which the
+/// manifest names in `[resources] kinds` as `tilo-app surface` writes it.
+fn scaffold_record(spec: &AppSpec) -> String {
+    let kind = match spec.template {
+        Template::Starter => "greeting",
+        Template::Document => "document",
+        Template::Collection => "items",
+        Template::Graph => "graph-project",
+    };
+    format!("{}.{kind}", spec.app_id)
 }
 
 /// The actions the template's code offers a person while its app is closed, as its manifest's
@@ -9768,17 +9781,17 @@ fn app_manifest(spec: &AppSpec) -> Result<String> {
 fn scaffold_offers(spec: &AppSpec) -> String {
     const HEADER: &str = "# What the app offers a person while it is closed: written by `tilo-app surface` from\n\
                           # what its code publishes. Invoking one opens the app and invokes it there.\n";
-    // The resource each template publishes its view on, the verb it offers there, how the app
-    // names that verb while it is closed, and what it needs beyond that.
-    let (resource, action, label, extra) = match spec.template {
-        Template::Starter => (".greeting", "clear", "Forget the name", ""),
-        Template::Document => (".document", "clear", "Erase the document", ""),
-        Template::Collection => (".items", "add", "Add an item", "asks = \"title\"\n"),
-        Template::Graph => (".graph-project", "create", "Create a project", ""),
+    // The verb each template offers on the record its view publishes, how the app names that
+    // verb while it is closed, and what it needs beyond that.
+    let (action, label, extra) = match spec.template {
+        Template::Starter => ("clear", "Forget the name", ""),
+        Template::Document => ("clear", "Erase the document", ""),
+        Template::Collection => ("add", "Add an item", "asks = \"title\"\n"),
+        Template::Graph => ("create", "Create a project", ""),
     };
     format!(
         "\n{HEADER}\n[[offers]]\nresource = {resource:?}\naction = {action:?}\nlabel = {label:?}\noperation = \"document\"\n{extra}",
-        resource = format!("{}{resource}", spec.app_id),
+        resource = scaffold_record(spec),
     )
 }
 

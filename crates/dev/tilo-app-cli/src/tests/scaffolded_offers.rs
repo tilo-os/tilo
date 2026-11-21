@@ -42,5 +42,10 @@ fn a_scaffolded_manifest_carries_the_offers_its_code_publishes() {
             "{} writes the offers its code publishes",
             template.name()
         );
+        assert!(
+            manifest.contains(&format!("[resources]\nkinds = [\"{resource}\"]\n")),
+            "{} names the record its code declares: {manifest}",
+            template.name()
+        );
     }
 }
