@@ -892,14 +892,16 @@ impl CollaborationLaunchpad {
         let hint_width = (button.x0 - left - 12.0).min(width).max(0.0);
         if hint_width > 0.0 {
             let hint_y = last_bottom + HINT_TOP;
+            // A narrow window leaves the hint little room beside "Open an app": it wraps
+            // rather than being cut to its first few words.
             let hint = cx.part(
                 "hint",
                 "LaunchpadHint",
-                Rect::new(left, hint_y, left + hint_width, hint_y + caption_h),
+                Rect::new(left, hint_y, left + hint_width, hint_y + 2.0 * caption_h),
             );
             hint.own = Some(ui::composition::Own::Text(
                 ui::composition::TextLook::new(self.keyboard_hint(), &caption_style, Some(ink))
-                    .with_max_lines(Some(1)),
+                    .with_max_lines(Some(2)),
             ));
         }
     }
@@ -1135,16 +1137,16 @@ impl Widget for CollaborationLaunchpad {
         );
         if let Some(last) = self.card_rects.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
-            let hint = text.elide_to_width(&keyboard_hint, caption, hint_width);
             // The button is centred on this line (`app_button_rect`), so the hint stays where it
-            // was and the pair share one centre.
+            // was and the pair share one centre. A narrow window leaves little room beside the
+            // button: the hint wraps on the line rather than being cut to a few words.
             text.draw_text(
                 scene,
-                &hint,
+                &keyboard_hint,
                 caption,
                 theme.text_primary,
                 transform * Affine::translate((content_left, last.y1 + HINT_TOP)),
-                None,
+                Some(hint_width),
             );
         }
     }
@@ -1359,6 +1361,44 @@ mod tests {
         let mut found = Vec::new();
         walk(root, widget, &mut found);
         found
+    }
+
+    /// A phone leaves the keyboard hint little room beside "Open an app": it wraps onto the
+    /// line rather than being cut to its first few words.
+    #[test]
+    fn a_narrow_launchpad_wraps_its_keyboard_hint() {
+        crate::i18n::ensure();
+        let pad = every_card();
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            pad,
+            (320, 568),
+            Theme::default(),
+        );
+        frame.relayout();
+        frame.poll_frame().expect("a frame draws the launchpad");
+        let composition = frame.composition();
+        let hint = collect(&composition.root, "LaunchpadHint");
+        assert_eq!(hint.len(), 1, "{hint:#?}");
+        let Some(ui::composition::Own::Text(look)) = &hint[0].own else {
+            panic!("the hint is words: {:#?}", hint[0]);
+        };
+        assert_eq!(
+            look.text,
+            t("launchpad-keyboard-hint"),
+            "the hint reads whole, not cut to what fits beside the button"
+        );
+        let line = f64::from(
+            Theme::default()
+                .text(ui::tokens::TextRole::Caption)
+                .line_height_px(),
+        );
+        let [_, _, _, height] = hint[0].rect;
+        assert!(
+            height > line * 1.5,
+            "the hint keeps a second line to wrap onto: {:?}, over a line of {line}",
+            hint[0].rect
+        );
     }
 
     /// The start cards are real buttons on a page, each with its own name and sentence, with the
