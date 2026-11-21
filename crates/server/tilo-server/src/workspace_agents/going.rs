@@ -321,6 +321,7 @@ mod tests {
             conversation: "ada with scout".to_owned(),
             cause: message.to_owned(),
             request: message.to_owned(),
+            history: Vec::new(),
             asked: message.to_owned(),
             fold: None,
             typed: true,

@@ -1114,10 +1114,11 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "the newest message is the one turn");
     assert_eq!(turns[0].cause, first.to_string());
+    let instruction = chat::recall::instruction_with_history(&turns[0].request, &turns[0].history);
     assert!(
-        turns[0].request.len() <= ui::collaboration::recall::INSTRUCTION_BYTES,
+        instruction.len() <= ui::collaboration::recall::INSTRUCTION_BYTES,
         "a turn stays inside its budget: {} bytes",
-        turns[0].request.len()
+        instruction.len()
     );
     let fold = turns[0]
         .fold
@@ -1177,20 +1178,17 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn in the conversation: {turns:?}");
     assert_eq!(turns[0].cause, second.to_string());
+    let recalled = chat::recall::instruction_with_history(&turns[0].request, &turns[0].history);
     assert!(
-        turns[0]
-            .request
-            .contains("What came before, as you summarised it"),
-        "the next turn is told the summary: {}",
-        turns[0].request
+        recalled.contains("What came before, as you summarised it"),
+        "the next turn is told the summary: {recalled}"
     );
     assert!(
-        turns[0].request.contains("The boat is called Aurelia."),
-        "{}",
-        turns[0].request
+        recalled.contains("The boat is called Aurelia."),
+        "{recalled}"
     );
     assert!(
-        !turns[0].request.contains("Remember this"),
+        !recalled.contains("Remember this"),
         "what the summary took in is not told again as written"
     );
     assert_eq!(
@@ -1252,6 +1250,29 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
         2,
         "their model answers and summarises, once each"
     );
+    let messages = &calls[0].request.messages;
+    let has_text = |message: &Message, words: &str| {
+        message.content.iter().any(|content| {
+            matches!(
+                content,
+                Content::Text { text } if text.contains(words)
+            )
+        })
+    };
+    assert!(messages.iter().any(|message| {
+        message.role == Role::Assistant && has_text(message, "Nothing needs doing today.")
+    }));
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message.role == Role::User && has_text(message, "Later note 8:") })
+    );
+    assert!(messages.last().is_some_and(|message| {
+        message.role == Role::User
+            && has_text(message, "and now?")
+            && !has_text(message, "Nothing needs doing today.")
+            && !has_text(message, "Later note 8:")
+    }));
     assert!(
         calls[1].request.tools.is_empty(),
         "a summary is words, no tools"
@@ -1266,14 +1287,14 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     write_to_agent(&actions, &workspaces, &workspace, written, "thanks").await;
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn in the conversation: {turns:?}");
+    let recalled = chat::recall::instruction_with_history(&turns[0].request, &turns[0].history);
     for kept in [
         "The boat is called Aurelia.",
         "The later crossings were quiet too.",
     ] {
         assert!(
-            turns[0].request.contains(kept),
-            "{kept:?} is in the summary the turn is told: {}",
-            turns[0].request
+            recalled.contains(kept),
+            "{kept:?} is in the summary the turn is told: {recalled}"
         );
     }
 

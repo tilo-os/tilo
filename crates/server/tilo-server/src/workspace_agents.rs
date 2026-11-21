@@ -671,6 +671,8 @@ pub struct Turn {
     pub cause: String,
     /// What the person asked, in words.
     pub request: String,
+    /// Earlier messages kept in the conversation, before this request.
+    pub history: Vec<chat::recall::Recalled>,
     /// What they asked, as a person reads it: what the agent's session is labelled by.
     pub asked: String,
     /// What the turn asks its agent to take into its conversation's summary while it answers
@@ -1258,7 +1260,8 @@ impl ServerAgents {
                     person: summons.person.clone(),
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
-                    request: told.instruction,
+                    request: told.request,
+                    history: told.history,
                     asked: chat::summons::asked_words(message),
                     fold: told.fold,
                     typed: summons.typed,
@@ -1280,6 +1283,7 @@ impl ServerAgents {
                     conversation: summons.address(),
                     cause: summons.message.to_string(),
                     request: String::new(),
+                    history: Vec::new(),
                     asked: String::new(),
                     fold: None,
                     typed: summons.typed,
@@ -1358,6 +1362,7 @@ impl ServerAgents {
                 conversation: tasks_model::issue_resource(&ask.issue),
                 cause: ask.cause.clone(),
                 request,
+                history: Vec::new(),
                 asked: issue.title.clone(),
                 fold: None,
                 typed: true,
@@ -2597,6 +2602,7 @@ async fn work(
     let mut own_tools = learned::with_tools(Vec::new(), keeping);
     own_tools.extend([view_tool(turn), shares::tool(turn)].into_iter().flatten());
     let asked = tilo_agent_turn::Asked {
+        history: instructions::history(&turn.history),
         own_tools,
         sees: turns.sees(),
         budget,

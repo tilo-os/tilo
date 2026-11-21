@@ -1199,7 +1199,7 @@ fn turns<'a>(
                 &MemberId::agent(&summons.agent),
                 instruction,
             );
-            let instruction = told.instruction;
+            let instruction = told.instruction();
             let fold = told.fold;
             let agent_instruction = agent_instructions.get(&summons.agent).cloned();
             Some(AgentTurn {

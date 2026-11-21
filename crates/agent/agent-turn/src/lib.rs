@@ -250,6 +250,8 @@ pub struct Asked {
     pub system: String,
     /// The person's request, as the model reads it.
     pub request: String,
+    /// Earlier conversation in model roles, ordered before the current request.
+    pub history: Vec<Message>,
     /// The caller's own tools beside the workspace's, answered by [`Doing::own`].
     pub own_tools: Vec<ToolDefinition>,
     /// Whether the model is shown the pictures a tool answers with.
@@ -279,6 +281,7 @@ impl Asked {
         Self {
             system: system.into(),
             request: request.into(),
+            history: Vec::new(),
             own_tools: Vec::new(),
             sees: false,
             budget: None,
@@ -353,10 +356,9 @@ where
         Ok(tools) => tools,
         Err(why) => return (Outcome::Failed(why), 0),
     };
-    let mut messages = vec![
-        Message::text(Role::System, asked.system.clone()),
-        Message::text(Role::User, asked.request.clone()),
-    ];
+    let mut messages = vec![Message::text(Role::System, asked.system.clone())];
+    messages.extend(asked.history.iter().cloned());
+    messages.push(Message::text(Role::User, asked.request.clone()));
     let mut cost = 0u64;
     let mut asked_for_words = false;
     let mut unusable = 0usize;

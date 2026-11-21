@@ -187,6 +187,10 @@ async fn a_turn_lists_the_sessions_tools_and_calls_each_there() {
     }));
     let told = Told::default();
     let mut turn = Asked::new("You work in a workspace.", "What apps are there?");
+    turn.history = vec![
+        Message::text(Role::User, "Can you see the workspace?"),
+        Message::text(Role::Assistant, "Yes."),
+    ];
     turn.own_tools.push(ToolDefinition {
         name: "search_web".into(),
         description: "Search the web".into(),
@@ -198,6 +202,15 @@ async fn a_turn_lists_the_sessions_tools_and_calls_each_there() {
     assert_eq!(*told.spent.lock_recover(), 30);
     assert_eq!(*told.calls.lock_recover(), ["tilo_ls", "search_web"]);
     let asked = asked.lock_recover().clone();
+    assert_eq!(
+        asked[0].messages,
+        [
+            Message::text(Role::System, "You work in a workspace."),
+            Message::text(Role::User, "Can you see the workspace?"),
+            Message::text(Role::Assistant, "Yes."),
+            Message::text(Role::User, "What apps are there?"),
+        ],
+    );
     let tools: Vec<&str> = asked[0]
         .tools
         .iter()

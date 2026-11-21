@@ -757,17 +757,23 @@ impl super::ServerAgents {
     /// job and a note are their own words, a note with whose it is; anything else is what the
     /// message asks as every agent is told it.
     async fn asked(&self, workspace: &str, turn: &Turn) -> (String, Option<String>) {
+        let remembered = || {
+            (
+                chat::recall::instruction_with_history(&turn.request, &turn.history),
+                None,
+            )
+        };
         let Ask::Message { part, message, .. } = &turn.ask else {
-            return (turn.request.clone(), None);
+            return remembered();
         };
         let Ok(Some(held)) = self
             .read::<chat::parts::ChatMessages>(workspace, CHAT, part)
             .await
         else {
-            return (turn.request.clone(), None);
+            return remembered();
         };
         let Some(found) = held.messages.get(&Id::from_raw(message.clone())) else {
-            return (turn.request.clone(), None);
+            return remembered();
         };
         let own = found.text.trim();
         match &found.cause {
