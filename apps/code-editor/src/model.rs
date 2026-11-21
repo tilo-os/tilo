@@ -272,42 +272,6 @@ impl Project {
         id
     }
 
-    #[cfg(test)]
-    pub(crate) fn peek_next_id(&self) -> NodeId {
-        self.next_id
-    }
-
-    /// Surface a buffer that already exists in the document as a tracked in-memory file under the root,
-    /// keeping its `id` so the node and the buffer key agree. Idempotent, and an alloc never collides with
-    /// it. The text stays in the CRDT; no persisted file model is invented.
-    pub fn adopt_file(&mut self, id: NodeId, name: &str) {
-        if self.nodes.contains_key(&id) {
-            return;
-        }
-        let depth = self.nodes.get(&self.root).map_or(0, |n| n.depth + 1);
-        let lang = Language::from_path(name);
-        self.nodes.insert(
-            id,
-            TreeNode {
-                id,
-                resource_id: format!("legacy-node-{id}"),
-                name: name.to_string(),
-                parent: Some(self.root),
-                kind: NodeKind::File {
-                    language: lang,
-                    seed: String::new(),
-                },
-                depth,
-                disk_path: None,
-            },
-        );
-        let root = self.root;
-        self.attach(root, id);
-        if id >= self.next_id {
-            self.next_id = id + 1;
-        }
-    }
-
     /// Materialise a shared file resource in this process's tree. The caller owns the durable `resource_id`;
     /// the arena id is local and never goes in a payload.
     pub fn adopt_collaborative_file(
@@ -1052,7 +1016,6 @@ mod tests {
         {
             tree_visible_rows_respect_expansion();
             folders_sort_before_files();
-            adopt_file_tracks_a_document_buffer_and_advances_the_allocator();
             durable_tree_ids_project_across_different_local_arena_layouts();
         }
 
@@ -1098,20 +1061,6 @@ mod tests {
         let _a = p.add_folder(p.root, "alpha");
         let rows = p.visible_rows();
         assert!(p.get(rows[0]).unwrap().is_folder());
-    }
-
-    fn adopt_file_tracks_a_document_buffer_and_advances_the_allocator() {
-        let mut p = Project::new("proj");
-        let orphan = 7;
-        assert!(p.get(orphan).is_none());
-        p.adopt_file(orphan, "untitled-7.txt");
-        assert!(!p.get(orphan).unwrap().is_folder());
-        assert!(p.visible_rows().contains(&orphan));
-        assert!(p.peek_next_id() > orphan);
-        let next = p.add_file(p.root, "z.rs", "");
-        assert_ne!(next, orphan);
-        p.adopt_file(orphan, "different.txt");
-        assert_eq!(p.get(orphan).unwrap().name, "untitled-7.txt");
     }
 
     fn opening_another_file_replaces_the_shown_one() {

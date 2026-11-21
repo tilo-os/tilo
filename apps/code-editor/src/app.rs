@@ -817,8 +817,7 @@ impl CodeApp {
                 );
             } else {
                 // An explicitly selected language is durable metadata and wins
-                // over extension inference; the extension is only a fallback
-                // for legacy imported resources.
+                // over extension inference; a file without one goes by its name.
                 let language = language_from_label(&file.language)
                     .unwrap_or_else(|| Language::from_path(&file.name));
                 self.session.project.adopt_collaborative_file(
@@ -833,11 +832,17 @@ impl CodeApp {
         self.explorer.show(&self.session.project);
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "a buffer is open only on a file of the project: closing the file closes it"
+    )]
     fn buffer_key(&self, node: TreeId) -> String {
-        self.session.project.get(node).map_or_else(
-            || format!("legacy-node-{node}"),
-            |file| file.resource_id.clone(),
-        )
+        self.session
+            .project
+            .get(node)
+            .expect("an open file is in the project")
+            .resource_id
+            .clone()
     }
 
     /// The only route from the editor's view to the document: it derives the character splice, dispatches
