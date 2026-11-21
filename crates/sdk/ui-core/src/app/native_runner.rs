@@ -379,68 +379,10 @@ fn layer_repaints(drawn_last: &mut bool, drawn_now: bool) -> bool {
 }
 
 #[cfg(test)]
-mod layer_repaint_tests {
-    use super::layer_repaints;
-
-    /// A menu or box drawn over the widgets repaints the window while it stands and once more as
-    /// it goes, so its pixels are erased; then frames go back to the widgets' damage.
-    #[test]
-    fn the_frame_after_a_layer_erases_it() {
-        let mut drawn_last = false;
-        assert!(
-            !layer_repaints(&mut drawn_last, false),
-            "nothing over the widgets"
-        );
-        assert!(layer_repaints(&mut drawn_last, true), "the box opens");
-        assert!(layer_repaints(&mut drawn_last, true), "the box stands");
-        assert!(
-            layer_repaints(&mut drawn_last, false),
-            "the box went: erase it"
-        );
-        assert!(!layer_repaints(&mut drawn_last, false), "it is gone");
-    }
-}
+mod layer_repaint_tests;
 
 #[cfg(test)]
-mod native_floating_paint_tests {
-    use super::native_floating_window_clip;
-    use vello::kurbo::Rect;
-
-    tilo_test_env::scenario! {
-        fn native_floating_content_stays_inside_its_window;
-
-        phase content_ground_is_clipped_to_the_submitted_native_window;
-        {
-            let window = Rect::new(-16.0, 120.0, 544.0, 480.0);
-            assert_eq!(
-                native_floating_window_clip(window, Rect::new(0.0, 120.0, 520.0, 480.0)),
-                Some(Rect::new(0.0, 120.0, 520.0, 480.0))
-            );
-            assert_eq!(
-                native_floating_window_clip(window, Rect::new(-32.0, 100.0, 560.0, 500.0)),
-                Some(window),
-                "a crossing presentation update cannot paint beyond this buffer"
-            );
-            assert_eq!(
-                native_floating_window_clip(window, Rect::new(600.0, 120.0, 700.0, 220.0)),
-                None
-            );
-        }
-
-        phase malformed_content_never_becomes_an_opaque_shell_spill;
-        {
-            let window = Rect::new(0.0, 0.0, 560.0, 360.0);
-            assert_eq!(
-                native_floating_window_clip(window, Rect::new(0.0, 0.0, f64::NAN, 360.0)),
-                None
-            );
-            assert_eq!(
-                native_floating_window_clip(window, Rect::new(0.0, 0.0, 0.0, 360.0)),
-                None
-            );
-        }
-    }
-}
+mod native_floating_paint_tests;
 
 fn forward_native_surface_focus(root: &mut dyn Widget, surface: Option<&str>, event: &WindowEvent) {
     if let WindowEvent::Focused(focused) = event {
@@ -5499,38 +5441,4 @@ fn present_hook(
 }
 
 #[cfg(test)]
-mod early_window_tests {
-    use super::{Early, early_for};
-
-    tilo_test_env::scenario! {
-        fn an_early_window_or_surface_is_kept_only_for_its_owner;
-
-        phase an_early_window_is_kept_only_for_the_app_id_it_announces;
-        {
-            let made = Some(("so.tilo.notes".to_string(), "window"));
-            assert_eq!(
-                early_for(made.clone(), &"so.tilo.notes".to_string()),
-                Early::Kept("window")
-            );
-            // An input surface announces its own id, never the package's: the
-            // early window must not become its window.
-            assert_eq!(
-                early_for(made, &"so.tilo.keyboard".to_string()),
-                Early::Discarded
-            );
-            assert_eq!(
-                early_for(None::<(String, &str)>, &"so.tilo.notes".to_string()),
-                Early::Absent
-            );
-        }
-
-        phase a_prepared_surface_is_used_only_by_the_window_it_was_made_for;
-        {
-            assert_eq!(
-                early_for(Some((7_u64, "surface")), &7),
-                Early::Kept("surface")
-            );
-            assert_eq!(early_for(Some((7_u64, "surface")), &8), Early::Discarded);
-        }
-    }
-}
+mod early_window_tests;
