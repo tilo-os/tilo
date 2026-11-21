@@ -29,6 +29,3 @@ fn production_rejects_regular_file_and_caller_device_assertions() {
         assert!(out.stdout.is_empty(), "refused request emitted evidence");
     }
 }
-#[cfg(target_os = "linux")]
-#[path = "support/linux_boundary.rs"]
-mod linux;

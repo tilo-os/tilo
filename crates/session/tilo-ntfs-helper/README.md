@@ -102,59 +102,6 @@ EFS or hard-link scopes are explicit incomplete records. Raw NTFS security and
 metadata are diagnostic facts, not an ACL policy or round-trip fidelity promise.
 Later metadata capsule, write/session and durability stages remain separate.
 
-## Native boundary tests awaiting a coordinator
-
-The VMs were not accessed. The Linux tests are compiled but deliberately ignored
-by default. A coordinator must supply disposable fixtures and set
-TILO_NTFS_NATIVE_AUTHORIZATION=DISPOSABLE_FIXTURE_ONLY. For the busy-alias test,
-provide TILO_NTFS_NATIVE_INVENTORY_ID of an already mounted disposable NTFS
-partition. For the sandbox test, provide TILO_NTFS_NATIVE_DEVICE for an unmounted
-disposable block partition and provision the dedicated account. Run the named
-fd_boundary test with --ignored only in that environment. Tests do not create,
-format, mount, detach or reconfigure block devices. They exercise actual kernel
-readonly/seccomp/allocation limits; image-only runs are not substitutes.
-
-The runnable `production_physical_partition_inventory_and_inspection` test
-requires `TILO_NTFS_NATIVE_DEVICE` to be a direct, unmounted physical partition
-with native WWID, partition geometry and disk sequence; its image must be clean
-and have a root directory. The coordinator must remove clone ambiguity and
-provision the dedicated account. It runs actual production inventory and
-inspection and requires native identity, status 0, zero writes and enforced Linux
-memory limits. It never substitutes the image-only reader for production.
-
-For both production tests, set `TILO_NTFS_NATIVE_COORDINATOR_SCRIPT` to the deployed
-`tests/native_coordinator.py`. `TILO_NTFS_NATIVE_PROBE` optionally identifies the
-deployed production executable when running a cross-built test executable whose
-compiled Cargo path is not present. The native runner needs Python 3 and root
-ptrace permission. This does not relax the production sandbox.
-
-Run `production_detach_replacement_invalidates_evidence` twice, on separately
-prepared disposable fixtures: once with `TILO_NTFS_NATIVE_ACTION_KIND=detach`, once
-with `TILO_NTFS_NATIVE_ACTION_KIND=replace`. Set `TILO_NTFS_NATIVE_ACTION` to an
-absolute executable path for the **external fixture coordinator**. The harness
-first requires the same positive inventory/inspection as above. It then traces a
-fresh actual production process to its first native reader fork, verifies the
-selected readonly block descriptor in both processes, and keeps them stopped
-while the external action executes. No production hooks, fake claims or device
-mutations are built into the test harness.
-
-The action receives one argument (`detach` or `replace`) and a JSON stdin request
-with schema 1, action, phase `production-claimed-reader-fork`, device, native
-inventory, broker/reader PIDs and claim FDs. Within five seconds it must actually
-detach or replace that explicitly authorized disposable fixture and return only
-`{"schema":1,"completed":"detach"}` (or `"replace"`) on stdout. Replacement
-must change the kernel object/disk sequence; a no-op action cannot pass. The
-coordinator independently checks kernel identity invalidation, removes ptrace
-before the production privilege/seccomp setup, and requires nonzero termination,
-zero evidence output, exited reader and no remaining claim descriptors. Its
-cleanup kills only its own recorded processes. The source supports these tests;
-**neither positive, detach nor replacement has been executed on Linux yet**.
-The external action remains environment-specific and must be supplied by the
-fixture controller; there is deliberately no default device mutation command.
-
-Cross-namespace automounter races, watchdog death, actual Windows Fast Startup/
-hibernation and allocation-bomb Linux scenarios also need native evidence.
-
 ## Strict logfile admission
 
 The pinned recovery parser can ignore one malformed restart page. Stage 1 instead
@@ -253,64 +200,12 @@ complete image before/after. No generated image is committed. Host execution is
 not Linux claim/sandbox acceptance; macOS retains its approved diagnostic-only
 memory-limit exception.
 
-The Linux coordinator is `tests/native_session_coordinator.py` (deploy beside
-`native_coordinator.py`). It requires:
-
-- TILO_NTFS_NATIVE_AUTHORIZATION=DISPOSABLE_FIXTURE_ONLY and root invocation;
-- TILO_NTFS_NATIVE_DEVICE naming an already prepared direct physical partition,
-  with the generated `large.bin` fixture and no unresolved inventory candidates;
-- TILO_NTFS_NATIVE_CLIENT_UID naming an existing nonroot client account;
-- TILO_NTFS_NATIVE_FILE_SHA256 from the independently generated 12 MiB content;
-- deployed helper and parser-free example `read_session` paths passed as
-  `--probe PATH --client PATH --mode MODE`.
-
-Modes are positive, ranges, transport, aliases, parent-before-child, parent-after-child,
-parser-death, client-death, cancel, cancel-manifest, cancel-postflight, watchdog,
-idle, stalled-client, detach and replace. Every mode first proves an actual
-production session plus the Rust client's full native 12 MiB hash/postflight,
-checks retained read-only descriptors, and checks complete device nonmutation
-except where explicit detach/replacement removes the device. Fresh exclusive
-acquisition proves claim release. Ranges checks arbitrary offsets, interrupted
-hash incompleteness and fresh contiguous restart completion. Transport includes wrong UID/nonce/IDs,
-SCM_RIGHTS, malformed/oversized/unknown packets, reconnect and a real nonroot fake
-broker rejected by the Rust client's kernel credential check. Alias mode performs
-explicit temporary RO NTFS3 mounts in this/another namespace and concurrent Busy
-attempts for each chunk; no alias mode has been run in this task.
-
-Detach/replace require TILO_NTFS_NATIVE_ACTION, the same external action receipt
-contract documented above. The coordinator independently checks changed sysfs
-inode/disk sequence and rejects no-op actions. Ptrace holds the actual range-child
-fork after its transaction preflight, then detaches before credentials/seccomp.
-The parent-after-child fixture also inspects exact dedicated credentials, cleared
-groups/capabilities, no_new_privs, seccomp, 10-second CPU/256 MiB memory limits and
-absence of inherited socket FDs. Existing native sandbox attack tests remain
-required alongside these new-operation lifecycle cases.
-
-Rust ignored entrypoint `production_retained_read_session` uses
-TILO_NTFS_SESSION_COORDINATOR_SCRIPT, TILO_NTFS_SESSION_CLIENT and
-TILO_NTFS_SESSION_TEST_MODE. The exact-source Imager fixture
-`native_session_context_reads_windows_names_and_refuses_write_trial` requires an
-already admitted locator in TILO_NTFS_SESSION_LOCATOR and the independent file hash.
-It proves actual context registration/read dispatch, Windows encoding, scoped
-pending entries, full native hash, candidate-name keys and refusal before a write
-trial. Deploy/run it as the selected UID. All Linux session/alias/credential/death/
-detach/endpoint execution, all Windows runtime evidence and public capability
-promotion remain UNRUN/open. Cross-linking these entrypoints is not native proof.
-
-Stage 2 fix-round fixtures also require the generated `cancel/last.bin` subtree.
-Its selected-root manifest has exactly one readable file, ensuring cancellation
-at the last chunk cannot be caught by an unrelated later entry-loop check.
-`endpoint-cancel-last-chunk` and `endpoint-cancel-postflight` modes require
-TILO_NTFS_NATIVE_ENDPOINT_TEST naming the cross-linked actual endpoint test binary.
-The coordinator first proves the subtree's native content/hash/postflight, then
-stops the target native worker at fork and signals a test-only inherited control
-socket. The endpoint fixture flips its supplied AtomicBool and acknowledges it
-before the worker resumes; it asserts an unavailable empty tree and an unusable
-client session. These are actual endpoint/client tests, without a fake authority
-constructor. They remain UNRUN until the disposable Linux runner is authorized.
-The positive Rust client prerequisite additionally runs under the selected nonroot
-credentials and proves O_RDONLY cannot open the exact root-owned 0711 session
-parent before exercising the client's search-only O_PATH pins.
+The parser-free `read_session` example (`cargo run -p tilo-ntfs-protocol --example
+read_session`) connects to an already admitted administrative session: give it the
+locator in TILO_NTFS_SESSION_LOCATOR and the generated 12 MiB file's content hash
+in TILO_NTFS_NATIVE_FILE_SHA256, and run it as the selected UID. It drives actual
+protocol reads and observations against a running helper. No other cross-linked
+endpoint runs have been executed on Linux yet.
 
 `tests/test_stage_install.py` extracts two generated staging bundles, compares
 reproducibility and ownership/modes, verifies all three standalone pinned manifests,
@@ -355,22 +250,6 @@ range or postflight discards that file; a blocked operation can take its existin
 requires explicit fresh-selected resume. Root-volume system entries remain
 explicit pending scopes; ordinary file success does not imply whole-volume or
 Windows metadata completeness. The public native capability remains unverified.
-
-`tests/native_copy_coordinator.py` is executable production acceptance and is
-**UNRUN**. It requires the existing disposable physical fixture, deployed broker
-and Imager, existing parser/client accounts, and the same explicit authorization
-environment as `native_session_coordinator.py`. `--mode positive` verifies the
-12 MiB real file, exact times, independent destination hash, V3 file/directory
-receipts, claim teardown and whole-device nonmutation before any negative mode.
-Modes cover fresh-selection resume, actual native worker holds during second-pass
-final range/postflight cancellation, client/broker/parser death, externally
-coordinated detach/replacement, and live-Copy mount refusal. The three crash modes
-require `--native-test` pointing at the cross-linked exact-source test executable;
-the ignored `native_selected_copy_command_worker` uses the real authenticated
-command, with test-only publication/receipt crash boundaries. `budget` additionally
-requires an explicitly prepared bounded inventory at `--budget-root`; no fixture
-can raise native limits. Use `--baseline-root` if the positive fixture is under a
-separately selected directory. These scripts must not run on user disks.
 
 Host diagnostics use the uninstalled image-test binary's `--copy-manifest` to
 normalize actual native metadata. Test-only Imager transport invokes actual
