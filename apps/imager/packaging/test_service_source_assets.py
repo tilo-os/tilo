@@ -46,9 +46,6 @@ class SubjectIdentity(unittest.TestCase):
                 # supplied archives and complete trees actually exist.
                 with self.assertRaises(FileNotFoundError):
                     qualifier.source_assets(pin)
-        legacy = located(Path('/tmp/legacy'))
-        del legacy['distribution']
-        self.assertEqual(assets.subject_digest(legacy), expected)
 
     def test_every_subject_fact_not_only_counts_is_pinned(self):
         original = located(Path('/tmp/public'))

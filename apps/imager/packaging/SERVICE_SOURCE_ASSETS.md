@@ -15,8 +15,8 @@ repository fixture app. It contains no builder path. Its canonical SHA-256 is
 pinned in `service-source-assets.py`, independently of the archive SHA-256 pins.
 Only `source_root` and `source_path` locators are excluded from subject identity;
 unknown fields, altered endpoints, substituted archives and partial trees fail.
-Legacy schema-1 operator manifests remain accepted with the same distribution
-identity, after relocating their locators. The public flags must remain false.
+Every manifest names the same public distribution facts. The public flags must
+remain false.
 
 ## Supply bytes on this builder
 

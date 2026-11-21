@@ -31,9 +31,7 @@ ASSET_MANIFEST_SHA256 = 'f088c5f9dec427570879bdf6c4e1582adb7722c242a4907c6552e2c
 
 
 def subject(assets):
-    require(type(assets) is dict and set(assets) in (
-        {'schema', 'archives', 'assets', 'destinations', 'namespace_endpoints',
-         'native_executed', 'provider_authentication_verified'},
+    require(type(assets) is dict and set(assets) == (
         {'schema', 'archives', 'assets', 'destinations', 'namespace_endpoints',
          'native_executed', 'provider_authentication_verified', 'distribution'}),
         'official public asset manifest shape differs')
@@ -41,11 +39,13 @@ def subject(assets):
             and assets['native_executed'] is False
             and assets['provider_authentication_verified'] is False,
             'official public assets cannot claim native authentication')
+    require(assets['distribution'] == DISTRIBUTION,
+            'official public asset manifest names another distribution')
     require(type(assets['assets']) is dict and set(assets['assets']) == set(GROUPS)
             and type(assets['archives']) is dict
             and set(assets['archives']) == set(ARCHIVE_SHA256),
             'official public asset manifest groups differ')
-    result = dict(assets, distribution=assets.get('distribution', DISTRIBUTION))
+    result = dict(assets)
     result['assets'] = {}
     result['archives'] = {}
     for group, row in assets['assets'].items():
