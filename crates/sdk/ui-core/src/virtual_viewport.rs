@@ -180,7 +180,7 @@ impl ScrollMomentum {
 
     fn start_clock(&mut self) {
         if !self.is_active() {
-            self.last_step = Some(crate::time::now());
+            self.last_step = Some(crate::motion::frame_now());
             self.carry = 0.0;
         }
     }

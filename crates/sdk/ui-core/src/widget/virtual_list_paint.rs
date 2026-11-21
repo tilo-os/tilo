@@ -92,7 +92,7 @@ impl VirtualRows {
             .iter()
             .map(|row| self.row_selection(row.index))
             .collect();
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         let poses: Vec<(f64, f32)> = self
             .mounted
             .iter()

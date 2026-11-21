@@ -2329,6 +2329,9 @@ impl AppHandler {
         };
         mark_first_frame("first-frame-redraw-start");
         self.undrawn.drew();
+        // The frame's instant: its update steps its motions to it, as its layout and paint read
+        // them, so a glide stands where the frame lays out the rows it shows.
+        let _frame = crate::motion::pin_frame();
         let _entry = self.app.enter_wake_scope();
         if self.surface_suspended {
             return;

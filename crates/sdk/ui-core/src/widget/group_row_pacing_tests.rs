@@ -14,7 +14,6 @@ enum Report {
     Begin,
     Travel(f64, Instant),
     End(Instant),
-    Reveal(u64, Instant),
 }
 
 struct FedRow {
@@ -42,13 +41,6 @@ impl crate::widget::Decorator for FedRow {
                 }
                 Report::End(at) => {
                     let _ = self.row.end_strip_pan(at);
-                }
-                Report::Reveal(group, at) => {
-                    let _ = self.row.scroll_group_into_view_animated(
-                        group,
-                        at,
-                        crate::tokens::MotionSource::Pointer,
-                    );
                 }
             }
         }
@@ -101,6 +93,18 @@ impl Strip {
 
     fn report(&self, report: Report) {
         self.reports.borrow_mut().push(report);
+    }
+
+    /// A notch reveals `group` between frames, as the window hands the strip its input: at the
+    /// notch's own instant, not a frame's.
+    fn reveal(&mut self, group: u64, at: Instant) {
+        with_monotonic_time(at, || {
+            let _ = self.harness.root_mut::<FedRow>().row.scroll_group_into_view_animated(
+                group,
+                at,
+                crate::tokens::MotionSource::Pointer,
+            );
+        });
     }
 
     fn row(&self) -> &GroupRow {
@@ -316,7 +320,7 @@ fn a_spun_wheel_moves_the_strip_without_stalls_or_surges() {
             }
             let index = usize::try_from(notches).expect("eight notches") + 3;
             let target = ids[index.min(ids.len() - 1)];
-            strip.report(Report::Reveal(target, strip.at(notch_ms)));
+            strip.reveal(target, strip.at(notch_ms));
             notches += 1;
         }
         let scroll = strip.frame(ms);

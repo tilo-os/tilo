@@ -1654,6 +1654,51 @@ fn a_reveal_a_click_asked_for_glides_and_the_wheel_takes_over() {
     assert!(list.scroll.to.opacity(at(2400)) >= 1.0);
 }
 
+/// A wheel's glide steps on the frame's instant, not the clock: a frame whose update comes late
+/// (a loaded machine) shows the rows where a punctual frame at the same instant shows them, so what
+/// the frame lays out and mounts is the same however long the machine kept it waiting.
+#[test]
+fn a_wheels_glide_steps_on_the_frames_instant_not_the_clock() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    let doc = AutoCommit::new();
+    let wheel = WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
+        phase: winit::event::TouchPhase::Moved,
+    };
+    let mut punctual = plain_rows(1000);
+    let mut late = plain_rows(1000);
+    for list in [&mut punctual, &mut late] {
+        let (taffy, node) = lay_out(list, 300.0);
+        let over = list.rect.center().y;
+        with_monotonic_time(start, || {
+            dispatch(list, &cursor(over), &taffy, node);
+            dispatch(list, &wheel, &taffy, node);
+        });
+    }
+    assert!(punctual.scroll.momentum.is_active(), "the wheel glides on");
+    for frame in 1..=12_u64 {
+        let instant = at(frame * 16);
+        with_monotonic_time(instant, || {
+            let _frame = crate::motion::pin_frame_at(instant);
+            punctual.update(&doc, &automerge::ROOT);
+        });
+        // The same frame, its update reached 11 ms after the frame began.
+        with_monotonic_time(instant + Duration::from_millis(11), || {
+            let _frame = crate::motion::pin_frame_at(instant);
+            late.update(&doc, &automerge::ROOT);
+        });
+        assert_eq!(
+            late.scroll_offset(),
+            punctual.scroll_offset(),
+            "frame {frame} shows the glide where its instant puts it"
+        );
+    }
+    assert!(punctual.scroll_offset() > 0.0, "the glide moved the rows");
+}
+
 fn right_click_row<M>(list: &mut VirtualList<M>, row: usize)
 where
     M: ListModel + 'static,

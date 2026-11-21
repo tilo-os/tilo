@@ -1241,7 +1241,8 @@ impl Widget for Scrollable {
     /// ([`crate::widget::note_layout_moved`]).
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         if self.glide.is_active() {
-            self.advance_momentum(crate::time::now());
+            // On the frame's instant, the one its layout reads the view at.
+            self.advance_momentum(crate::motion::frame_now());
         }
         // The give springing back moves the content like a glide does.
         if self.give_unplaced() {

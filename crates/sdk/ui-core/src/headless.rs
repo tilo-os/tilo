@@ -3299,6 +3299,9 @@ impl FrameHarness {
     }
 
     fn try_relayout_content(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        // The frame's instant: its update steps its motions to it, as its layout reads them, so a
+        // glide stands where the frame lays out the rows it shows.
+        let _frame = crate::motion::pin_frame();
         let _carets = crate::caret_owner::holding(self.keyboard_held);
         self.history_inputs.set(None);
         use crate::widget::layout::{

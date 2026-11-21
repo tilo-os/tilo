@@ -1989,7 +1989,7 @@ impl ToggleGroup {
 impl ToggleGroup {
     fn follow_thumb(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Rect> {
         use crate::motion::{Direction, ListChange};
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         let target = self
             .chosen
             .is_none()

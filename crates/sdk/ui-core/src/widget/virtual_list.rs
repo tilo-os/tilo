@@ -1611,7 +1611,9 @@ impl Widget for VirtualRows {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let now = crate::time::now();
+        // A glide steps on the frame's instant, the one its layout and paint read the list at: on
+        // the clock, a frame that came late moved the rows past where its layout had mounted them.
+        let now = crate::motion::frame_now();
         let elapsed = self
             .last_tick
             .replace(now)

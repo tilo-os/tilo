@@ -4187,8 +4187,9 @@ impl Widget for DataTableCore {
         if received_changes {
             self.notify_model_changes(&model_changes);
         }
-        let now = crate::time::now();
-        self.observe_arrivals(crate::motion::frame_now());
+        // A glide steps on the frame's instant, the one its layout and paint read the table at.
+        let now = crate::motion::frame_now();
+        self.observe_arrivals(now);
         let mut children_changed = false;
         for cell in &mut self.mounted_cells {
             children_changed |= cell.widget.update(state, path);
