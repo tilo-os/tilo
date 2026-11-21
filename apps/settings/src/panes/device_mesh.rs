@@ -731,22 +731,42 @@ fn name_args(names: &[&str]) -> Vec<(&'static str, ui::i18n::ArgValue)> {
     ]
 }
 
-fn home_peer_health_path() -> PathBuf {
-    identity_root().join("home-peer-health.json")
-}
+/// When each home server last answered, as Settings keeps it: a document of the store in the
+/// identity directory, under a key no app holds.
+const HOME_PEER_SEEN: &str = "so.tilo.settings-home-peer-seen";
 
 fn load_home_peer_last_seen() -> HashMap<String, u64> {
-    std::fs::read(home_peer_health_path())
-        .ok()
-        .filter(|bytes| bytes.len() <= 1024 * 1024)
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    use durable_store::DurableStore as _;
+    let store = app_state::shared_store(identity_root());
+    match store.read(&durable_store::StorageKey::app(HOME_PEER_SEEN)) {
+        Ok(Some(stored)) => serde_json::from_slice(&stored.bytes).unwrap_or_default(),
+        Ok(None) => HashMap::new(),
+        Err(error) => {
+            tracing::warn!(%error, "when home servers last answered does not read back");
+            HashMap::new()
+        }
+    }
 }
 
 fn save_home_peer_last_seen(last_seen: &HashMap<String, u64>) {
-    if let Ok(bytes) = serde_json::to_vec_pretty(last_seen) {
-        let _ =
-            tilo_files::native::atomic::write_with_mode(&home_peer_health_path(), &bytes, 0o600);
+    use durable_store::DurableStore as _;
+    let Ok(bytes) = serde_json::to_vec(last_seen) else {
+        return;
+    };
+    let store = app_state::shared_store(identity_root());
+    let key = durable_store::StorageKey::app(HOME_PEER_SEEN);
+    // The write before this one holds the document until it is on disk.
+    let leased = store.lease(&key).or_else(|error| match error {
+        durable_store::StoreError::Busy(_) => {
+            store.flush(Some(&key))?;
+            store.lease(&key)
+        }
+        error => Err(error),
+    });
+    let written =
+        leased.and_then(|_lease| store.write(&key, durable_store::WriteOp::Replace(bytes), None));
+    if let Err(error) = written {
+        tracing::warn!(%error, "when home servers last answered was not kept");
     }
 }
 

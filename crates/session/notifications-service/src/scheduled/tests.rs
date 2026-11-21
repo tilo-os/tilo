@@ -1,4 +1,5 @@
 use super::*;
+use durable_store::DurableStore as _;
 
 /// The instant `value` names, read in the offset it is written with.
 fn at(value: &str) -> jiff::Zoned {
@@ -8,6 +9,20 @@ fn at(value: &str) -> jiff::Zoned {
         .expect("an offset");
     let instant: jiff::Timestamp = value.parse().expect("valid test instant");
     instant.to_zoned(jiff::tz::TimeZone::fixed(offset))
+}
+
+/// Keep `bytes` as the log of the store at `root`, as an earlier daemon left it.
+fn keep_log(root: &Path, bytes: &[u8]) {
+    use durable_store::DurableStore as _;
+    let store = app_state::shared_store(root);
+    let key = durable_store::StorageKey::app(LOG_KEY);
+    {
+        let _lease = store.lease(&key).expect("nothing else keeps the log");
+        store
+            .write(&key, durable_store::WriteOp::Replace(bytes.to_vec()), None)
+            .expect("the log written");
+    }
+    store.flush(Some(&key)).expect("the log is on disk");
 }
 
 fn owner(workspace: &str, app: &str) -> Owner {
@@ -44,7 +59,7 @@ fn ids() -> impl FnMut() -> u32 {
 
 /// An alarm scheduled and rung once at `due`: the log and the ringing
 /// occurrence.
-fn rung(due: &jiff::Zoned, weekdays: u8, path: Option<PathBuf>) -> (Log, Occurrence) {
+fn rung(due: &jiff::Zoned, weekdays: u8, path: Option<&Path>) -> (Log, Occurrence) {
     let mut log = Log::open(path).expect("log");
     log.schedule(
         &owner("studio", "so.tilo.clocks"),
@@ -103,16 +118,15 @@ tilo_test_env::scenario! {
     phase a_log_written_under_the_workspace_key_still_delivers_its_deadline;
     {
         let temp = tempfile::tempdir().expect("private fixture");
-        let path = temp.path().join("schedules.json");
-        std::fs::write(
+        let path = temp.path().to_path_buf();
+        keep_log(
             &path,
-            r#"[{"workspace":"studio","app":"so.tilo.clocks","tag":"alarm","title":"Alarm",
+            br#"[{"workspace":"studio","app":"so.tilo.clocks","tag":"alarm","title":"Alarm",
              "body":"Wake up","activation":"tilo-clocks:alarms","original_at_ms":1000,
              "next_at_ms":1000,"calendar":null,"last_rung":null,
              "token":"0123456789abcdef0123456789abcdef"}]"#,
-        )
-        .expect("an earlier session's log");
-        let log = Log::open(Some(path)).expect("log");
+        );
+        let log = Log::open(Some(&path)).expect("log");
         assert_eq!(
             log.pending(&owner("studio", "so.tilo.clocks")),
             [("alarm".to_owned(), 1000)]
@@ -122,15 +136,15 @@ tilo_test_env::scenario! {
     phase deadlines_survive_restart_and_do_not_repeat_once_delivered;
     {
         let temp = tempfile::tempdir().expect("private fixture");
-        let path = temp.path().join("schedules.json");
+        let path = temp.path().to_path_buf();
         let caller = owner("studio", "so.tilo.clocks");
         let due = at("2026-04-14T12:00:00+00:00");
-        let mut log = Log::open(Some(path.clone())).expect("new log");
+        let mut log = Log::open(Some(&path)).expect("new log");
         log
             .schedule(&caller, alarm("alarm", &due, 0))
             .expect("handoff");
         drop(log); // The app and the daemon may both exit before the deadline.
-        let mut restarted = Log::open(Some(path.clone())).expect("restart");
+        let mut restarted = Log::open(Some(&path)).expect("restart");
         let delivered = restarted.take_due(&due, ids()).expect("deliver");
         assert_eq!(delivered.len(), 1);
         assert_eq!(
@@ -145,7 +159,7 @@ tilo_test_env::scenario! {
             .schedule(&caller, alarm("alarm", &due, 0))
             .expect("idempotent reopen");
         drop(restarted);
-        let mut restarted = Log::open(Some(path)).expect("second restart");
+        let mut restarted = Log::open(Some(&path)).expect("second restart");
         assert!(
             restarted
                 .take_due(&due, ids())
@@ -158,27 +172,30 @@ tilo_test_env::scenario! {
     phase a_failed_write_keeps_the_deadline_and_delivers_nothing;
     {
         let temp = tempfile::tempdir().expect("private fixture");
-        let path = temp.path().join("schedules.json");
+        let path = temp.path().to_path_buf();
         let caller = owner("studio", "so.tilo.clocks");
         let due = at("2026-04-14T12:00:00+00:00");
-        let mut log = Log::open(Some(path.clone())).expect("log");
+        let mut log = Log::open(Some(&path)).expect("log");
         log
             .schedule(&caller, alarm("alarm", &due, 0))
             .expect("schedule");
-        std::fs::remove_file(&path).expect("remove the file");
-        std::fs::create_dir(&path).expect("block its replacement with a directory");
+        let file = app_state::shared_store(&path)
+            .local_path(&durable_store::StorageKey::app(LOG_KEY))
+            .expect("the log is a file");
+        std::fs::remove_file(&file).expect("remove the file");
+        std::fs::create_dir(&file).expect("block its replacement with a directory");
         assert!(log.take_due(&due, ids()).is_err());
         assert_eq!(log.pending(&caller).len(), 1);
-        std::fs::remove_dir(&path).expect("writable again");
+        std::fs::remove_dir(&file).expect("writable again");
         assert_eq!(log.take_due(&due, ids()).expect("retry").len(), 1);
     }
 
     phase an_unavailable_log_refuses_rather_than_losing_deadlines;
     {
         let temp = tempfile::tempdir().expect("private fixture");
-        let path = temp.path().join("schedules.json");
-        std::fs::write(&path, b"not a log").expect("corrupt");
-        let schedules = Schedules::open(Some(path));
+        let path = temp.path().to_path_buf();
+        keep_log(&path, b"not a log");
+        let schedules = Schedules::open(Some(&path));
         assert!(
             schedules
                 .schedule(
@@ -208,9 +225,9 @@ tilo_test_env::scenario! {
     phase a_snooze_survives_restart_and_rings_once;
     {
         let temp = tempfile::tempdir().expect("private fixture");
-        let path = temp.path().join("schedules.json");
+        let path = temp.path().to_path_buf();
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut log, occurrence) = rung(&due, 127, Some(path.clone()));
+        let (mut log, occurrence) = rung(&due, 127, Some(&path));
         let original = log.alarm_states(&owner("studio", "so.tilo.clocks"));
         log
             .act(
@@ -221,7 +238,7 @@ tilo_test_env::scenario! {
             )
             .expect("snooze");
         drop(log);
-        let mut restarted = Log::open(Some(path)).expect("restart");
+        let mut restarted = Log::open(Some(&path)).expect("restart");
         let snoozed = due + jiff::SignedDuration::from_mins(5);
         assert!(
             restarted
@@ -258,8 +275,8 @@ tilo_test_env::scenario! {
     {
         let due = at("2026-04-14T12:00:00+00:00");
         let temp = tempfile::tempdir().expect("private fixture");
-        let path = temp.path().join("schedules.json");
-        let (mut log, occurrence) = rung(&due, 0, Some(path.clone()));
+        let path = temp.path().to_path_buf();
+        let (mut log, occurrence) = rung(&due, 0, Some(&path));
         let app = "so.tilo.clocks";
         log
             .act(
@@ -311,7 +328,7 @@ tilo_test_env::scenario! {
                 .is_err()
         );
         drop(log);
-        let mut restarted = Log::open(Some(path)).expect("restart after dismissal");
+        let mut restarted = Log::open(Some(&path)).expect("restart after dismissal");
         assert!(restarted.next_at_ms().is_none());
         assert!(
             restarted
@@ -324,9 +341,9 @@ tilo_test_env::scenario! {
     phase cancelling_a_snoozed_alarm_survives_restart_and_a_stale_dismiss_cannot_rearm_it;
     {
         let temp = tempfile::tempdir().expect("private fixture");
-        let path = temp.path().join("schedules.json");
+        let path = temp.path().to_path_buf();
         let due = at("2026-04-14T12:00:00+00:00");
-        let (mut log, occurrence) = rung(&due, 0, Some(path.clone()));
+        let (mut log, occurrence) = rung(&due, 0, Some(&path));
         let app = "so.tilo.clocks";
         log
             .act(
@@ -340,7 +357,7 @@ tilo_test_env::scenario! {
             .cancel(&owner("studio", app), "alarm")
             .expect("cancel");
         drop(log);
-        let mut restarted = Log::open(Some(path)).expect("restart");
+        let mut restarted = Log::open(Some(&path)).expect("restart");
         assert!(
             restarted
                 .act(

@@ -15831,6 +15831,7 @@ dependencies = [
  "cloud-source-onedrive",
  "collab-types",
  "desktop-policy",
+ "durable-store",
  "file-explorer",
  "hex",
  "jiff",
@@ -15854,6 +15855,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-app-package",
+ "tilo-app-state",
  "tilo-audio-service",
  "tilo-automerge-fork",
  "tilo-bluez",
@@ -21053,6 +21055,7 @@ name = "tilo-notifications-service"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "durable-store",
  "futures-util",
  "getrandom 0.4.3",
  "hex",
@@ -21066,6 +21069,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app-id",
+ "tilo-app-state",
  "tilo-clock",
  "tilo-copy-lint",
  "tilo-desktop-entry",

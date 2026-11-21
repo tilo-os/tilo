@@ -2,9 +2,9 @@
 //! wish: its copies are staged beside the names they will take (`.tilo-transfer-<id>` inside the
 //! receiving folder), synced, written down in a receipt, and only then renamed into place, so a
 //! power cut never shows a partly copied file under a real name and a cut never loses its source.
-//! Copying runs here, never on the session's loop. The receipt (`paste.json` in the session's state
-//! directory, written atomically and synced) holds the whole paste and how far each item got; it is
-//! written once per batch, and its removal is the last thing a finished paste does.
+//! Copying runs here, never on the session's loop. The receipt (a document of the device's store,
+//! on disk before the paste goes on) holds the whole paste and how far each item got; it is
+//! written once per batch, and emptying it is the last thing a finished paste does.
 //! [`Paste::unfinished`] undoes what a session that stopped left behind: every item ends as either
 //! its source, untouched, or its copy, complete.
 
@@ -31,8 +31,9 @@ const BATCH_ITEMS: usize = 256;
 const MAX_NAME_TRIES: usize = 4;
 /// The environment names a moment of a paste a crash test dies at (see [`crash_point`]).
 const CRASH_POINT_ENV: &str = "TILO_FILE_PASTE_CRASH_POINT";
-/// The receipt this writes and reads.
-const RECEIPT_FILE: &str = "paste.json";
+/// The receipt's reserved name in the device's document store: this session's own state, never
+/// the shared settings document, which the person's devices keep in step.
+const RECEIPT_KEY: &str = "so.tilo.session-file-paste";
 /// The shape of that receipt.
 const RECEIPT_VERSION: u32 = 1;
 
@@ -876,32 +877,47 @@ fn remove_staging(staging: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The receipt's file: this session's own state, never the shared settings document, which the
-/// person's devices keep in step.
-fn receipt_path() -> Option<PathBuf> {
-    tilo_paths::state_dir().map(|root| root.join("tilo/file-paste").join(RECEIPT_FILE))
+/// Keep `bytes` as the receipt, on disk before this returns.
+fn keep_receipt(bytes: Vec<u8>) -> Result<(), String> {
+    use durable_store::DurableStore as _;
+    let Some(state) = tilo_paths::state_dir() else {
+        return Err("there is nowhere to write a paste down".to_owned());
+    };
+    let store = crate::kept::store(&state);
+    let key = durable_store::StorageKey::app(RECEIPT_KEY);
+    // The receipt written before this one holds the document until it is on disk.
+    let leased = store.lease(&key).or_else(|error| match error {
+        durable_store::StoreError::Busy(_) => {
+            store.flush(Some(&key))?;
+            store.lease(&key)
+        }
+        error => Err(error),
+    });
+    leased
+        .and_then(|_lease| {
+            store.write(&key, durable_store::WriteOp::Replace(bytes), None)?;
+            store.flush(Some(&key))
+        })
+        .map_err(|error| error.to_string())
 }
 
 /// Write the paste down durably, so a session that stops knows what it was doing.
 fn save(receipt: &Receipt) -> Result<(), String> {
-    let Some(path) = receipt_path() else {
-        return Err("there is nowhere to write a paste down".to_owned());
-    };
     let bytes = serde_json::to_vec(receipt)
         .map_err(|error| format!("the paste could not be written down: {error}"))?;
-    tilo_files::native::atomic::write_private(&path, &bytes)
-        .map_err(|error| format!("the paste could not be written down: {error}"))
+    keep_receipt(bytes).map_err(|error| format!("the paste could not be written down: {error}"))
 }
 
 /// The paste a session that stopped left behind, if any.
 fn read_receipt() -> Option<Receipt> {
-    let path = receipt_path()?;
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
+    use durable_store::DurableStore as _;
+    let state = tilo_paths::state_dir()?;
+    let bytes = match crate::kept::store(&state).read(&durable_store::StorageKey::app(RECEIPT_KEY))
+    {
+        Ok(Some(stored)) if !stored.bytes.is_empty() => stored.bytes,
+        Ok(_) => return None,
         Err(error) => {
-            if error.kind() != io::ErrorKind::NotFound {
-                tracing::warn!(%error, path = %path.display(), "a paste was not read");
-            }
+            tracing::warn!(%error, "a paste was not read");
             return None;
         }
     };
@@ -915,7 +931,7 @@ fn read_receipt() -> Option<Receipt> {
             None
         }
         Err(error) => {
-            tracing::warn!(%error, path = %path.display(), "a paste was not read");
+            tracing::warn!(%error, "a paste was not read");
             None
         }
     }
@@ -923,18 +939,10 @@ fn read_receipt() -> Option<Receipt> {
 
 /// Forget the paste: it is over, one way or the other.
 fn clear_receipt() -> io::Result<()> {
-    let Some(path) = receipt_path() else {
+    if tilo_paths::state_dir().is_none() {
         return Ok(());
-    };
-    match fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
     }
-    match path.parent() {
-        Some(folder) => sync_directory(folder),
-        None => Ok(()),
-    }
+    keep_receipt(Vec::new()).map_err(io::Error::other)
 }
 
 #[cfg(test)]

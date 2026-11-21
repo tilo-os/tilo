@@ -5,9 +5,9 @@
 //! Apps hand them over through the daemon (`XTiloScheduleNotification` and
 //! its siblings, as `tilo-notify` calls them), the person through the
 //! published resources. Each deadline belongs to the app and the workspace
-//! that scheduled it: only they read, replace or cancel it. The log is
-//! kept in the person's private state and every claim on it (a delivery,
-//! a snooze) is written before it takes effect, so a deadline neither
+//! that scheduled it: only they read, replace or cancel it. The log is a
+//! document of the device's store in the person's private state, and every
+//! claim on it (a delivery, a snooze) is on disk before it takes effect, so a deadline neither
 //! repeats nor goes missing across restarts, suspend or clock changes.
 //!
 //! A delivered alarm offers Snooze and Dismiss. Snoozing rings it again
@@ -15,7 +15,7 @@
 //! occurrence (a repeating alarm rings on its next day).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use jiff::civil::Date;
@@ -276,44 +276,69 @@ fn valid_token(token: &str) -> bool {
     token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// The log's reserved name in the device's document store.
+const LOG_KEY: &str = "so.tilo.notification-schedules";
+
+/// The document the log is kept in, held as its only writer.
+struct Kept {
+    store: std::sync::Arc<app_state::FsStore>,
+    key: durable_store::StorageKey,
+    _lease: durable_store::Lease,
+}
+
 /// The log: every deadline, as last written.
 struct Log {
     entries: Vec<Entry>,
-    path: Option<PathBuf>,
+    kept: Option<Kept>,
 }
 
 impl Log {
-    fn open(path: Option<PathBuf>) -> Result<Self, String> {
-        let entries = match &path {
-            Some(path) => match std::fs::metadata(path) {
-                Ok(metadata) if metadata.len() <= MAX_STORE_BYTES => {
-                    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-                    serde_json::from_slice::<Vec<Entry>>(&bytes).map_err(|e| e.to_string())?
-                }
-                Ok(_) => return Err("notification schedule store exceeds its limit".into()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-                Err(e) => return Err(e.to_string()),
-            },
+    /// The log kept in the device's document store at `root`, or in memory alone when there is
+    /// none.
+    fn open(root: Option<&Path>) -> Result<Self, String> {
+        use durable_store::DurableStore as _;
+        let Some(root) = root else {
+            return Ok(Self {
+                entries: Vec::new(),
+                kept: None,
+            });
+        };
+        let store = app_state::shared_store(root);
+        let key = durable_store::StorageKey::app(LOG_KEY);
+        let lease = store.lease(&key).map_err(|e| e.to_string())?;
+        let entries = match store.read(&key).map_err(|e| e.to_string())? {
+            Some(stored) if stored.bytes.len() as u64 <= MAX_STORE_BYTES => {
+                serde_json::from_slice::<Vec<Entry>>(&stored.bytes).map_err(|e| e.to_string())?
+            }
+            Some(_) => return Err("notification schedule store exceeds its limit".into()),
             None => Vec::new(),
         };
         if entries.len() > MAX_ENTRIES {
             return Err("too many stored notification schedules".into());
         }
-        Ok(Self { entries, path })
+        Ok(Self {
+            entries,
+            kept: Some(Kept {
+                store,
+                key,
+                _lease: lease,
+            }),
+        })
     }
 
-    /// Write `entries`, then take them as the log. A failed write
+    /// Write `entries` to disk, then take them as the log. A failed write
     /// changes nothing.
     fn commit(&mut self, entries: Vec<Entry>) -> Result<(), String> {
-        if let Some(path) = &self.path {
+        use durable_store::DurableStore as _;
+        if let Some(kept) = &self.kept {
             let bytes = serde_json::to_vec(&entries).map_err(|e| e.to_string())?;
             if bytes.len() as u64 > MAX_STORE_BYTES {
                 return Err("notification schedule store exceeds its limit".into());
             }
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            tilo_files::native::atomic::write_private(path, &bytes).map_err(|e| e.to_string())?;
+            kept.store
+                .write(&kept.key, durable_store::WriteOp::Replace(bytes), None)
+                .and_then(|_| kept.store.flush(Some(&kept.key)))
+                .map_err(|e| e.to_string())?;
         }
         self.entries = entries;
         Ok(())
@@ -647,13 +672,17 @@ impl Schedules {
     /// The deadlines kept in the person's private state.
     #[must_use]
     pub fn open_default() -> Self {
-        let path = tilo_paths::xdg::state_home()
-            .map(|root| root.join("tilo/notifications/schedules.json"));
-        if path.is_none() {
+        let Some(state) = tilo_paths::xdg::state_home() else {
             tracing::warn!(target: "notifications", "no state directory: notification schedules unavailable");
             return Self::unavailable();
+        };
+        let root = state.join("tilo").join("documents");
+        // The deadlines are the person's alone: so is the store's directory.
+        if let Err(error) = tilo_files::native::atomic::create_private_directory(&root) {
+            tracing::warn!(target: "notifications", %error, "notification schedules unavailable");
+            return Self::unavailable();
         }
-        Self::open(path)
+        Self::open(Some(&root))
     }
 
     /// Deadlines kept in memory only.
@@ -662,10 +691,10 @@ impl Schedules {
         Self::open(None)
     }
 
-    /// Deadlines kept at `path`, when there is one.
+    /// Deadlines kept in the device's document store at `root`, when there is one.
     #[must_use]
-    pub fn open(path: Option<PathBuf>) -> Self {
-        match Log::open(path) {
+    pub fn open(root: Option<&Path>) -> Self {
+        match Log::open(root) {
             Ok(log) => Self::over(Some(log)),
             Err(error) => {
                 tracing::warn!(target: "notifications", %error, "notification schedules unavailable");

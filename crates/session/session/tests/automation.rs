@@ -814,15 +814,24 @@ fn until_the_resource(session: &mut Session, window: &Window, workspace: &str) {
     );
 }
 
-/// The schedule log this device keeps.
-fn log_path(state: &Path) -> std::path::PathBuf {
-    state.join("tilo").join("automation").join("schedules.json")
+/// The device's store the schedule log is a document of, and the log's key in it.
+fn log_document(state: &Path) -> (Arc<app_state::FsStore>, durable_store::StorageKey) {
+    (
+        app_state::shared_store(state.join("tilo").join("documents")),
+        durable_store::StorageKey::app("so.tilo.session-schedules"),
+    )
 }
 
 /// The one schedule the log holds, as (its key, its trigger, its next fire time).
 fn only_schedule(state: &Path) -> (String, serde_json::Value, i64) {
-    let text = std::fs::read_to_string(log_path(state)).expect("the schedule log");
-    let log: serde_json::Value = serde_json::from_str(&text).expect("the log's JSON");
+    use durable_store::DurableStore as _;
+    let (store, key) = log_document(state);
+    let text = store
+        .read(&key)
+        .expect("the store reads")
+        .expect("the schedule log")
+        .bytes;
+    let log: serde_json::Value = serde_json::from_slice(&text).expect("the log's JSON");
     let schedules = log["schedules"].as_object().expect("the schedules");
     assert_eq!(schedules.len(), 1, "one schedule is armed");
     let (key, entry) = schedules.iter().next().expect("the schedule");
@@ -836,6 +845,7 @@ fn only_schedule(state: &Path) -> (String, serde_json::Value, i64) {
 /// The log a device that was off when a fire time came finds: the schedule it kept, its next
 /// fire `due` milliseconds past the epoch.
 fn keep_a_schedule_due_at(state: &Path, trigger: &TriggerSpec, due: i64) {
+    use durable_store::DurableStore as _;
     let log = serde_json::json!({
         "schedules": {
             format!("{WORKSPACE}/tidy/0"): {
@@ -844,10 +854,18 @@ fn keep_a_schedule_due_at(state: &Path, trigger: &TriggerSpec, due: i64) {
             }
         }
     });
-    let path = log_path(state);
-    std::fs::create_dir_all(path.parent().expect("the log's directory"))
-        .expect("the log's directory");
-    std::fs::write(path, log.to_string()).expect("the log written");
+    let (store, key) = log_document(state);
+    {
+        let _lease = store.lease(&key).expect("nothing else keeps the log now");
+        store
+            .write(
+                &key,
+                durable_store::WriteOp::Replace(log.to_string().into_bytes()),
+                None,
+            )
+            .expect("the log written");
+    }
+    store.flush(Some(&key)).expect("the log is on disk");
 }
 
 #[test]
