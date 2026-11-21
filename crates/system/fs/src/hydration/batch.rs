@@ -112,7 +112,12 @@ impl Hydrator {
     pub fn warm_peer(self: &Arc<Self>, peer: EndpointAddr) {
         let hydrator = Arc::clone(self);
         tokio::spawn(async move {
-            let _ = hydrator.blob_connection(&peer).await;
+            if let Err(error) = hydrator.blob_connection(&peer).await {
+                eprintln!(
+                    "could not prepare content from {}: {error:#}; the first read retries it",
+                    peer.id
+                );
+            }
         });
     }
 
