@@ -1539,7 +1539,11 @@ impl Widget for VirtualRows {
             .node()
             .children
             .iter()
-            .map(|row| (row.rect[0] - x, x + width - (row.rect[0] + row.rect[2])))
+            .map(|row| {
+                let start = row.rect[0];
+                let end = start + row.rect[2];
+                (start - x, (x + width) - end)
+            })
             .reduce(|(l0, r0), (l1, r1)| (l0.min(l1), r0.min(r1)))
             .unwrap_or((0.0, 0.0));
         cx.flow(&format!(
