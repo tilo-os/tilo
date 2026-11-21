@@ -47,7 +47,7 @@ fn serve(mut stream: UnixStream, request: &Request, hosting: Option<&HostedWorks
         // The asker may have gone; its terminal answer then has nowhere to land.
         tilo_failure::ignored!(
             "the asker of a workspace's terminal has gone before its answer",
-            stream.write_all(&Reply::Local.line())
+            stream.write_all(&Reply::Local.line()).ok()
         );
         return;
     };
@@ -76,7 +76,7 @@ fn serve(mut stream: UnixStream, request: &Request, hosting: Option<&HostedWorks
             tracing::info!(workspace = %request.workspace, %reason, "a workspace's terminal did not open");
             tilo_failure::ignored!(
                 "the asker of a workspace's terminal has gone before its refusal",
-                stream.write_all(&Reply::Refused { reason }.line())
+                stream.write_all(&Reply::Refused { reason }.line()).ok()
             );
             return;
         }
