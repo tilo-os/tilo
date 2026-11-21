@@ -272,6 +272,10 @@ pub(crate) struct PersonState {
     /// The ids they went by before this device had an identity, under which
     /// what they changed is still theirs.
     earlier: Vec<String>,
+    /// The window this host opens them for: woken when another replica's
+    /// change to one of the records arrives in the store that holds it,
+    /// which nothing else tells it of.
+    wake: Option<ui_core::wake::WakeHandle>,
     /// The open records, by the app that owns them and their kind.
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
     /// The records of the person's other apps keep, held here too.
@@ -463,9 +467,10 @@ impl PersonState {
         own: Option<PersonResources>,
         app_id: &'static str,
         app_title: &'static str,
+        wake: Option<ui_core::wake::WakeHandle>,
     ) -> Self {
         let me = records.author().clone();
-        Self::named(Some(records), own, me, Vec::new(), app_id, app_title)
+        Self::named(Some(records), own, me, Vec::new(), app_id, app_title, wake)
     }
 
     /// The person `me`, whose shared records this host does not hold: their
@@ -479,7 +484,7 @@ impl PersonState {
         app_id: &'static str,
         app_title: &'static str,
     ) -> Self {
-        Self::named(None, None, me, earlier, app_id, app_title)
+        Self::named(None, None, me, earlier, app_id, app_title, None)
     }
 
     fn named(
@@ -489,6 +494,7 @@ impl PersonState {
         earlier: Vec<String>,
         app_id: &'static str,
         app_title: &'static str,
+        wake: Option<ui_core::wake::WakeHandle>,
     ) -> Self {
         Self {
             records,
@@ -497,6 +503,7 @@ impl PersonState {
             app_title,
             me,
             earlier,
+            wake,
             opened: RefCell::default(),
             others: RefCell::default(),
             owners: Rc::default(),
@@ -757,6 +764,12 @@ impl PersonState {
             .ok_or_else(|| "the record cannot be read".to_owned())?
             .map_err(|error| format!("it does not read: {error}"))?;
         let live = Live::new(reader);
+        if let Some(wake) = &self.wake {
+            // The record is kept for the person, not the app's window: another
+            // device's or app's change to it arrives in its store, and nothing
+            // else would tell this window to read it.
+            record.wake_on_arrival(wake.clone());
+        }
         self.owners.borrow_mut().push(record.history_owner());
         let shared = Rc::new(Shared::<P> {
             record,

@@ -538,7 +538,7 @@ impl SettingsResources {
                 app_id,
                 document: SettingsDocument::Session,
                 person: Some(Rc::new(super::person::PersonState::new(
-                    records, None, app_id, app_title,
+                    records, None, app_id, app_title, None,
                 ))),
                 apis: Vec::new(),
             },

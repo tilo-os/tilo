@@ -347,6 +347,33 @@ tilo_test_env::scenario! {
         assert_eq!(saved(&kept), ["added-by-the-editor"]);
     }
 
+    phase a_change_to_the_persons_record_from_another_device_wakes_the_window_reading_it;
+    {
+        let mut app = TestApp::<UndeclaredApp>::for_person(&ada()).unwrap();
+        app.settle();
+        let read = app.shared_person::<Saved>().unwrap();
+        assert!(shows(&mut app, "0 saved"), "nothing is saved yet: {}", shown(&mut app));
+
+        // Their other device saves one: its copy of the record arrives here,
+        // as the person's own store carries it between their devices. Nothing
+        // else tells this window, which has been idle since it opened.
+        let mut theirs = Replica::<Saved>::load(&read.record().document().unwrap()).unwrap();
+        theirs.apply(Saved::SAVE.with("from-their-phone")).unwrap();
+        read.record()
+            .merge_peer_document(theirs.save())
+            .unwrap();
+
+        assert!(
+            app.frame(),
+            "the window asks for a frame when the record changes under it"
+        );
+        assert!(
+            shows(&mut app, "1 saved"),
+            "the frame the arrival asked for shows it: {}",
+            shown(&mut app)
+        );
+    }
+
     phase the_person_records_an_app_declares_are_its_surface_before_a_view_opens_them;
     {
         let report = tilo_app::framework::headless::surface_report::<DeclaringApp>();
@@ -459,6 +486,24 @@ impl tilo_app::tilo_resource::SharedResource for Saved {
     const EDITORS: &'static [&'static str] = &[EditorApp::ID];
 }
 
+/// Whether the window the app shows names `label` to assistive technology.
+fn shows(app: &mut TestApp<UndeclaredApp>, label: &str) -> bool {
+    app.harness()
+        .a11y_nodes()
+        .iter()
+        .any(|(_, node)| node.label() == Some(label))
+}
+
+/// What the window the app shows announces, for a failure to say.
+fn shown(app: &mut TestApp<UndeclaredApp>) -> String {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
 fn saved(record: &PersonResource<Saved>) -> Vec<String> {
     let mut videos: Vec<String> = record.with(|state| state.videos.values().cloned().collect());
     videos.sort();
@@ -515,10 +560,12 @@ impl ResourceApp for UndeclaredApp {
     const TITLE: &'static str = "Undeclared";
 
     fn view(cx: &mut ViewCx<Queue>) -> Element {
-        let saved = cx.shared_person::<Saved>();
-        Box::new(Column::new().push(Box::new(Text::new(&format!(
-            "{} saved",
-            saved.map_or(0, |saved| saved.with(|state| state.videos.len()))
-        )))))
+        let shown = match cx.shared_person::<Saved>() {
+            Some(saved) => Text::from_state(&saved.state(), |state| {
+                format!("{} saved", state.videos.len())
+            }),
+            None => Text::new("none saved"),
+        };
+        Box::new(Column::new().push(Box::new(shown)))
     }
 }

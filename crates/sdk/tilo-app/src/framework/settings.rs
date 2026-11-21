@@ -165,6 +165,10 @@ pub(crate) struct Hosted {
         ui_core::resource::workspace::WorkspaceResources,
         ui_core::wake::WakeHandle,
     )>,
+    /// The window's wake scope: what wakes it when another replica's change
+    /// reaches a record the person keeps ([`super::PersonResource`]), which
+    /// nothing else tells it of.
+    pub(crate) wake: Option<ui_core::wake::WakeHandle>,
 }
 
 /// [`Hosted`], with the person's records opened for one app.
@@ -194,6 +198,7 @@ impl Hosted {
             (state, emoji)
         });
         let (workspace, emoji) = workspace.unzip();
+        let wake = self.wake.clone();
         Attached {
             workspace,
             emoji,
@@ -208,7 +213,7 @@ impl Hosted {
                         })
                         .ok()
                 });
-                super::person::PersonState::new(records, own, app_id, app_title)
+                super::person::PersonState::new(records, own, app_id, app_title, wake)
             }),
             device: self.device,
             records: self.records.map(|(store, me, permissions)| {

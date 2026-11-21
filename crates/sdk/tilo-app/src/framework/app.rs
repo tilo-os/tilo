@@ -1320,6 +1320,7 @@ pub(crate) fn hosted(context: &ProcessContext) -> super::settings::Hosted {
             .workspace_resources()
             .cloned()
             .map(|records| (records, context.wake_handle())),
+        wake: Some(context.wake_handle()),
     }
 }
 
