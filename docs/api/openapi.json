@@ -18941,6 +18941,12 @@
               "string",
               "null"
             ]
+          },
+          "in_reply_to": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

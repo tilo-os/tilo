@@ -450,7 +450,7 @@ ForgetCopiesArgs = TypedDict("ForgetCopiesArgs", {
 
 class Mailbox(Resource):
     """Mail — `mail.mailbox`."""
-    __surface__ = "so.tilo.mail@5c73452d0fa24e9b"
+    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
     folders: list[Entry[LocalFolder]]
     draft: DraftState
     drafts: list[Entry[DraftState]]
@@ -498,12 +498,15 @@ class Mailbox(Resource):
         *,
         message: DraftData,
         draft: str | None = None,
+        in_reply_to: str | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["message"] = message
         if draft is not None:
             args["draft"] = draft
+        if in_reply_to is not None:
+            args["in_reply_to"] = in_reply_to
         return self.action("save-draft", **args)
 
     def create_draft(self,
@@ -664,7 +667,7 @@ class Mailbox(Resource):
 
 class Messages(Resource):
     """Messages — `mail.messages`."""
-    __surface__ = "so.tilo.mail@5c73452d0fa24e9b"
+    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
     messages: list[Entry[MessageState]]
     @property
     def held(self) -> list[Entry[HeldMessage]]:
@@ -809,7 +812,7 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.mail@5c73452d0fa24e9b"
+    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -865,7 +868,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.mail@5c73452d0fa24e9b"
+    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
     people: list[Entry[Person]]
 
     def project_contact(self,
@@ -1005,7 +1008,7 @@ class Identities(Resource):
 
 class TrustedSenders(Resource):
     """Trusted senders — `mail.trusted-senders`."""
-    __surface__ = "so.tilo.mail@5c73452d0fa24e9b"
+    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
     senders: list[str]
     @property
     def distrusted(self) -> list[str]:
@@ -1043,7 +1046,7 @@ class TrustedSenders(Resource):
 
 class Copies(Resource):
     """Workspace mail — `mail.copies`."""
-    __surface__ = "so.tilo.mail@5c73452d0fa24e9b"
+    __surface__ = "so.tilo.mail@625ba2c35e219b4c"
     @property
     def copies(self) -> list[Entry[KeptCopy]]:
         """Read only."""
