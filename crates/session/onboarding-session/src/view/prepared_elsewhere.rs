@@ -7,7 +7,7 @@ use std::path::Path;
 impl OnboardingView {
     pub(super) fn load_prepared_setup(&mut self, _identity_dir: &Path) {}
 
-    #[allow(clippy::unused_self, reason = "the same call as on Linux")]
+    #[allow(clippy::unused_self, reason = "the Linux build reads the view, and this stub keeps its receiver")]
     pub(super) fn prepared_working(&self) -> bool {
         false
     }
@@ -16,7 +16,7 @@ impl OnboardingView {
         self.prepared_pending.then_some("unavailable")
     }
 
-    #[allow(clippy::unused_self, reason = "the same call as on Linux")]
+    #[allow(clippy::unused_self, reason = "the Linux build reads the view, and this stub keeps its receiver")]
     pub fn verified_browser_projection(&self) -> Option<&Path> {
         None
     }
