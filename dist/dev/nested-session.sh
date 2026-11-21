@@ -812,11 +812,11 @@ fi
 # a session with none shows the computer's own Home in Files instead of the workspace.
 files_state=$XDG_STATE_HOME/tilo/files
 files_runtime=$runtime/tilo/files-workspace
-mkdir -p "$files_state/mount" "$files_runtime" "$runtime/tilo/files-storage"
+mkdir -p "$files_state/mount" "$files_state/cache" "$files_runtime" "$runtime/tilo/files-storage"
 chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
 # This build's daemon, mounting this session's workspace: no capability list yet (the session
 # publishes the person's own as its apps are granted), so the device acts as itself.
-setsid "$bin/fs" serve --mount-point "$files_state/mount" --cache-dir "$files_state" \
+setsid "$bin/fs" serve --mount-point "$files_state/mount" --cache-dir "$files_state/cache" \
     --storage-sock "$runtime/tilo/files-storage/storage.sock" \
     --blob-sock "$files_runtime/fs-blobs.sock" \
     --session-link "$files_runtime/fs-session-link" \
@@ -831,7 +831,10 @@ if wait_for_socket "$files_runtime/fs-blobs.sock" "$files_pid"; then
     export TILO_FS_BLOB_SOCKET=$files_runtime/fs-blobs.sock
     export TILO_FILES_ENDPOINT_PID=$files_pid
 else
+    # Why, in the session's own output: a failure nobody can read is a failure
+    # nobody can fix, and this one runs inside a machine that keeps its logs.
     say "the session's files workspace did not start: Files shows the computer's Home (see $logs/files-workspace.log)"
+    sed 's/^/    fs: /' "$logs/files-workspace.log" 2>/dev/null >&2 || true
 fi
 
 cat >&2 <<EOF
