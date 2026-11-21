@@ -1,4 +1,13 @@
-use super::*;
+use std::collections::HashMap;
+
+use taffy::{NodeId, TaffyTree};
+use vello::kurbo::{Point, Rect};
+use winit::event::{ElementState, WindowEvent};
+
+use crate::theme::Theme;
+use crate::widget::Widget;
+
+use super::{ActivityTimeline, VisualRow};
 
 impl Widget for ActivityTimeline {
     /// The history as a page's own list: each day or band a heading, each change its author,
