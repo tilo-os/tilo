@@ -2,7 +2,7 @@
 //!
 //! A tile is stored as its JSON wherever a layout is kept: a page's own layout document
 //! (`tile_json`), the layout a workspace shares (each window's `tab`), and the steps a session
-//! keeps of a layout it could not write yet (`pending-steps.json`, each step a [`Workspace`]).
+//! keeps of a layout it could not write yet (a document of the device's store, each step a [`Workspace`]).
 //! The bytes under `golden/tiles/` were written by the build before the variants retired in
 //! place left the desktop's wire enums: one workspace holding a window of every kind a tile is
 //! stored as. Each reads here as the same window, and a tile written again is the same JSON,
