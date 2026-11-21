@@ -7493,6 +7493,17 @@ git = true
 outputs = ["/target/source-date/host"]
 default = false
 
+# The development server image's date: the same stages as the server image's, built on the same
+# base, with os/Containerfile.host-dev's additions (the dev-VM daemon and CLI, tilo-vmd's units,
+# base.json), which host-build.sh --dev appends. It names every one of those files, so the image's
+# date moves when any changes, and an unchanged set of them is the same image again.
+[[check]]
+name = "source-date-host-dev"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/host-dev os/Containerfile.host os/image/boot.Containerfile os/Containerfile.host-dev os/components.toml os/scripts/install-components.py os/scripts/finalize-dev-image.py Cargo.lock crates/dev/tilo-vmd/data os/containers/tilo-vm-host/hosted-jail.json os/etc/containers os/etc/modules-load.d/tilo-hosted.conf os/usr/libexec os/usr/lib/bootc os/usr/lib/systemd/system os/usr/lib/systemd/system-generators os/usr/lib/dracut/modules.d os/usr/lib/sysusers.d os/usr/lib/tmpfiles.d os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py keys/cosign.pub keys/release keys/tpm2-pcr-signing.public.pem docs/recovery.md docs/app-model/environments.md tools/ci/publish/host-build.sh tools/ci/publish/lib.sh"
+git = true
+outputs = ["/target/source-date/host-dev"]
+default = false
+
 # The generation the server image carries: the next of the server's own dense series, the gen<N>
 # tags of registry.tilo.so/tilo/tilo-host, each verified by its signature and its provenance
 # (os/dev/next-generation.sh). Read afresh in every run, so the image a release builds carries the
@@ -7605,17 +7616,22 @@ outputs = ["/target/publish/host-sealed/**"]
 timeout_secs = 3600
 default = false
 
-# The development server image, never a release (os/Containerfile.host-dev): the server image
-# above, before its seal, with the dev-VM daemon and CLI, tilo-vmd's boot units, a base.json naming
-# how the server's programs were built, and systemd-sysext merging layers at boot, sealed as the
-# server image is. An installed one takes a rebuilt component as a layer, which a retry of the
-# install proof swaps in instead of rebuilding the image and its medium. Its programs are compiled
-# as host-binaries compiles the server's, by the same check image, so the layers a check builds
-# later (`tilo-vm layer-pack`) carry the target, toolchain and builder its daemon admits.
+# The development server image, never a release (os/Containerfile.host-dev): the server image's
+# own stages, built on the base as image-host builds them, then the dev-VM daemon and CLI,
+# tilo-vmd's boot units, a base.json naming how the programs were built, and systemd-sysext
+# merging layers at boot, sealed as the server image is. An installed one takes a rebuilt
+# component as a layer, which a retry of the install proof swaps in instead of rebuilding the
+# image and its medium.
+#
+# It builds nothing of the release server image (host-binaries, image-host): its programs are
+# compiled without LTO, as the development OS is compiled, so a change to one costs that crate's
+# compile and the links, and its image build follows on the base. The programs are compiled by the
+# same check image as host-binaries compiles the server's, so the layers a check builds later
+# (`tilo-vm layer-pack`) carry the target, toolchain and builder its daemon admits.
 [[check]]
-name = "host-dev-binaries"
+name = "host-binaries-dev"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/server-binaries.sh host-dev /target/publish/host-dev/binaries"
+run = "TILO_SERVER_LTO=off bash tools/ci/publish/server-binaries.sh host host-dev /target/publish/host-dev/binaries"
 env = { CARGO_BUILD_JOBS = "8" }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/host-dev/binaries/**"]
@@ -7624,10 +7640,10 @@ default = false
 
 [[check]]
 name = "image-host-dev"
-# No network: the server image comes from image-host's archive, and the layer copies programs and
-# files the tree holds.
-run = "bash tools/ci/publish/host-dev-build.sh /target/publish/host-dev/binaries /target/publish/host /target/publish/host-dev"
-needs = ["image-host", "host-dev-binaries"]
+# No network: the base and the sealing tools come from host-base's archives, loaded into this
+# step's store, and the layer copies programs and files the tree holds.
+run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host-dev)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-build.sh --dev /target/publish/host-dev/binaries /target/publish/host-base /target/generation-host/generation /target/publish/host-dev"
+needs = ["source-date-host-dev", "host-base", "host-binaries-dev", "generation-host"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"

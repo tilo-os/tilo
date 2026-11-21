@@ -25,12 +25,15 @@ toolchain, and it is unsealed. Two ways that could leak into production:
    feature, or a dev-image source file.
 
 os/Containerfile.host-dev, the development server image, is held to the same
-rule: it builds FROM the server image, labels itself sh.tilo.image.development,
-writes base.json alone (the server's flavour and update policy stay), builds no
-UKI of its own (its seal is seal-host-dev's), and no t check that signs,
-attests or publishes, or that a release tag runs, depends on it; the one
-publication allowed downstream is an unsigned development push into the dev
-repository, which production policy refuses by name.
+rule: its stages build on the server image's own last stage (host-build.sh
+appends it to os/Containerfile.host and os/image/boot.Containerfile, so it adds
+to those, it does not copy them), it labels itself
+sh.tilo.image.development, writes base.json alone (the server's flavour and
+update policy stay), builds no UKI of its own (its seal is seal-host-dev's), and
+no t check that signs, attests or publishes, or that a release tag runs,
+depends on it; the one publication allowed downstream is an unsigned
+development push into the dev repository, which production policy refuses by
+name.
 
 Every finding names file:line, why it matters, and the fix.
 """
@@ -218,10 +221,13 @@ def check_dev_server_containerfile(repo: Path) -> list[Finding]:
     final = lines[stages[-1]:] if stages else lines
     final_text = "\n".join(text for _, text in final)
     last_line = final[0][0] if final else 1
-    if not re.match(r"FROM\s+\$\{HOST_IMAGE\}\s", final[0][1] + " " if final else ""):
-        findings.append(Finding(f"{shown}:{last_line}", "the final stage is not FROM ${HOST_IMAGE}, the "
-                                "server image", WHY_SERVER,
-                                "build the last stage FROM ${HOST_IMAGE}, the image image-host built."))
+    if not re.match(r"FROM\s+final\s", final[0][1] + " " if final else ""):
+        findings.append(Finding(f"{shown}:{last_line}", "the final stage does not build on the "
+                                "server image's own last stage", WHY_SERVER,
+                                "write `FROM final AS <stage>`: tools/ci/publish/host-build.sh "
+                                "appends this file after os/Containerfile.host and "
+                                "os/image/boot.Containerfile, whose last stage is `final`, so the "
+                                "development image adds to the server image instead of copying it."))
     if not re.search(r'LABEL\b.*\bsh\.tilo\.image\.development="?true"?', final_text):
         findings.append(Finding(f"{shown}:{last_line}", "the final stage does not label the image "
                                 'sh.tilo.image.development="true"', WHY_SERVER,

@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# The upper half of the server image (os/Containerfile.host): the programs t already built
-# (server-binaries.sh, the check host-binaries) and the install-time files they read, laid out on
-# BASE, the image os/Containerfile.host-base built (host-base.sh): the same mirrored Fedora bootc
-# base and package set the desktop image uses, with Firecracker. The layer is a copying build, so a
-# change to one program or one unit file costs the compile and this build, not a package install.
+# The server image (os/Containerfile.host): the programs t already built (server-binaries.sh, the
+# check host-binaries) and the install-time files they read, laid out on BASE, the image
+# os/Containerfile.host-base built (host-base.sh): the same mirrored Fedora bootc base and package
+# set the desktop image uses, with Firecracker. The layer is a copying build, so a change to one
+# program or one unit file costs the compile and this build, not a package install.
+#
+# With --dev it builds the development server image instead (t's image-host-dev), on the same base
+# and with the same stages, then the additions of os/Containerfile.host-dev on their last one
+# (t's image-host-dev programs, server-binaries.sh `host host-dev`, are built without LTO): the
+# server image's own programs, units, flavour and update policy with the dev-VM daemon and CLI,
+# tilo-vmd's boot units, a base.json naming how the programs were built, and systemd-sysext
+# merging layers at boot. It is never a release; seal-host-dev seals it as seal-host seals the
+# server image. A commit that changes a server program therefore costs its no-LTO compile and this
+# build, not the release server image's.
 #
 # The snapshot the image came from is the base's, recorded beside it: this layer installs no
 # package, so it names what the base applied. OUT/rpms-source carries it for oci-sign.sh, which
@@ -14,12 +23,15 @@
 # carrying the kernel, the initramfs and a command line with GENERATION, the number in the file
 # GENERATION names (generation-host). Its composefs digest is a placeholder of zeros: the install
 # computes the real one and os/dev/build-image.sh rewrites only the UKI under /boot to name it
-# (bootc#2334), which seal-host does before anything is signed.
+# (bootc#2334), which seal-host (seal-host-dev for the development image) does before anything is
+# signed.
 #
-# usage: host-build.sh BINARIES BASE GENERATION OUT
+# usage: host-build.sh [--dev] BINARIES BASE GENERATION OUT
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: host-build.sh BINARIES BASE GENERATION OUT'
+usage='usage: host-build.sh [--dev] BINARIES BASE GENERATION OUT'
+dev=0
+case ${1:-} in --dev) dev=1; shift ;; esac
 binaries=${1:?$usage}
 base=${2:?$usage}
 generation_file=${3:?$usage}
@@ -27,10 +39,22 @@ out=${4:?$usage}
 read -r generation < "$generation_file"
 [[ $generation =~ ^[1-9][0-9]*$ ]] || die "$generation_file holds no generation: '$generation'"
 cd "$repo_root"
-for bin in tilo-server tilo-server-admin tilo-enroll fs tilo-linux-vm tilo-hosted-jail tilo-api \
-  tilolang-process \
-  tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor \
-  tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start; do
+bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-linux-vm tilo-hosted-jail tilo-api
+      tilolang-process
+      tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
+      tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start)
+# tilo-vmd's units a development server enables: the record of the booted image (before
+# systemd-sysext merges anything), the accounts brought back after boot, and the layers an
+# installation left for the first boot, applied before the server starts.
+vm_units=(tilo-vm-reconcile-image.service tilo-vm-restore.service tilo-vm-incoming.service)
+if (( dev )); then
+  mapfile -t dev_bins < <(python3 os/scripts/install-components.py --dry-run --format bins vmd vm-cli)
+  bins+=("${dev_bins[@]}")
+  for unit in "${vm_units[@]}"; do
+    [[ -f crates/dev/tilo-vmd/data/$unit ]] || die "no crates/dev/tilo-vmd/data/$unit"
+  done
+fi
+for bin in "${bins[@]}"; do
   [[ -x $binaries/$bin ]] || die "no $bin in $binaries"
 done
 use_buildah buildah overlay
@@ -47,7 +71,8 @@ b tag "$base_image" localhost/tilo-host-base:built
 b tag "$(b pull -q "oci-archive:$base/uki-tools/image.oci.tar")" localhost/tilo-host-uki-tools:built
 # The context is what the image copies and nothing else, so no checkout metadata reaches the
 # build and a one-crate change moves one file in it. Source bytes and the cached base decide the
-# image; a commit time is no input (the date is source-date-host's, over exactly these files).
+# image; a commit time is no input (the date is source-date-host's, or source-date-host-dev's,
+# over exactly these files).
 context=$scratch/host-context
 rm -rf "$context"
 mkdir -p "$context/bin" "$context/keys/release" \
@@ -60,6 +85,9 @@ mkdir -p "$context/bin" "$context/keys/release" \
   "$context/os/usr/lib/dracut/modules.d" \
   "$context/os/usr/libexec" "$context/os/scripts" "$context/docs/app-model"
 cat os/Containerfile.host os/image/boot.Containerfile > "$context/Containerfile"
+if (( dev )); then
+  cat os/Containerfile.host-dev >> "$context/Containerfile"
+fi
 cp "$binaries"/* "$context/bin/"
 # The server image's components, placed as os/components.toml says (`images = ["host"]`).
 python3 os/scripts/install-components.py --all --image host --from "$binaries" \
@@ -83,11 +111,46 @@ cp docs/recovery.md "$context/docs/"
 cp docs/app-model/environments.md "$context/docs/app-model/"
 cp keys/cosign.pub keys/tpm2-pcr-signing.public.pem "$context/keys/"
 cp -r keys/release/. "$context/keys/release/"
-bash tools/ci/publish/oci-build.sh "$context" "$context/Containerfile" "$out" \
-  --platform linux/amd64 \
-  --build-arg "HOST_BASE=localhost/tilo-host-base:built" \
-  --build-arg "UKI_TOOLS=localhost/tilo-host-uki-tools:built" \
-  --build-arg "TILO_GENERATION=$generation" \
-  --build-arg "TILO_CFS_DIGEST=$(printf '0%.0s' {1..128})"
+args=(--platform linux/amd64
+      --build-arg "HOST_BASE=localhost/tilo-host-base:built"
+      --build-arg "UKI_TOOLS=localhost/tilo-host-uki-tools:built"
+      --build-arg "TILO_GENERATION=$generation"
+      --build-arg "TILO_CFS_DIGEST=$(printf '0%.0s' {1..128})")
+if (( dev )); then
+  # The additions' inputs, as os/Containerfile.host-dev stages them, and the base.json they read:
+  # the programs came from t's host-binaries-dev check, whose image must be t.toml's default one,
+  # since that is the builder a layer says it was built by.
+  mkdir -p "$context/vm-units"
+  for unit in "${vm_units[@]}"; do
+    cp "crates/dev/tilo-vmd/data/$unit" "$context/vm-units/"
+  done
+  cp os/components.toml "$context/os/"
+  cp os/scripts/install-components.py os/scripts/finalize-dev-image.py "$context/os/scripts/"
+  cp Cargo.lock "$context/"
+  builder=$(awk '/^\[/ { exit } /^image = "/ { gsub(/^image = "|"$/, ""); print; exit }' t.toml)
+  [[ $builder =~ ^registry\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}$ ]] \
+    || die "t.toml names no default check image pinned by digest: '$builder'"
+  awk -v name='name = "host-binaries-dev"' '
+    /^\[\[check\]\]/ { inside = 0 } $0 == name { inside = 1 }
+    inside && /^image = / { found = 1 } END { exit !found }' t.toml \
+    && die "host-binaries-dev names an image of its own; base.json would name the wrong builder"
+  base_created=$(b inspect --type image --format '{{.OCIv1.Created.UTC.Format "2006-01-02T15:04:05Z"}}' \
+    localhost/tilo-host-base:built)
+  args+=(--build-arg "TILO_BASE_IMAGE=localhost/tilo-host-base:built"
+         --build-arg "TILO_BASE_DIGEST=$base_digest"
+         --build-arg "TILO_BASE_CREATED=$base_created"
+         --build-arg "TILO_BUILDER_IMAGE=$builder"
+         --build-arg "TILO_VM_UNITS=${vm_units[*]}")
+fi
+bash tools/ci/publish/oci-build.sh "$context" "$context/Containerfile" "$out" "${args[@]}"
 printf '%s\n' "$rpms_source" > "$out/rpms-source"
 printf '%s\n' "$generation" > "$out/generation"
+if (( dev )); then
+  # What the image's layer check reads, beside it, for whoever builds a layer for it.
+  b tag "$(b pull -q "oci-archive:$out/image.oci.tar")" localhost/tilo-host-dev:built
+  container=$(b from -q localhost/tilo-host-dev:built)
+  cp "$(b mount "$container")/usr/share/tilo-vm/base.json" "$out/base.json"
+  b rm "$container" >/dev/null
+  printf 'development server %s on %s\n' "$(cat "$out/digest")" "$base_digest"
+  cat "$out/base.json"
+fi

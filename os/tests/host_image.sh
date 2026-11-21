@@ -297,5 +297,5 @@ grep -aqF "rustc version ${toolchain#rustc }" "$root/usr/libexec/tilo/tilo-serve
   || die "tilo-server was not built by $toolchain"
 [[ $(field cargo_lock_hash) == "$(sha256sum "$repo_root/Cargo.lock" | cut -d' ' -f1)" ]] \
   || die "base.json names another Cargo.lock than this tree's"
-[[ $(field image_digest) =~ ^sha256:[0-9a-f]{64}$ ]] || die 'base.json names no server image'
+[[ $(field image_digest) =~ ^sha256:[0-9a-f]{64}$ ]] || die 'base.json names no base image digest'
 echo 'the development server image holds what a server runs, and takes layers at boot'

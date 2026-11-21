@@ -86,6 +86,12 @@ class DevImageContractTests(unittest.TestCase):
             self.assertIn("never runs os/scripts/unseal-rootfs.py", errors)
 
     def test_dev_server_image_stays_a_development_image(self):
+        with self.subTest(phase='it adds to the server image instead of copying it'):
+            root = self.fixture()
+            self.edit(root / "os/Containerfile.host-dev", "FROM final AS dev-server",
+                      "FROM localhost/tilo-host-base:built AS dev-server")
+            errors = "\n".join(self.findings(root))
+            self.assertIn("does not build on the server image's own last stage", errors)
         with self.subTest(phase='the development label, the server flavour and base.json alone'):
             root = self.fixture()
             recipe = root / "os/Containerfile.host-dev"

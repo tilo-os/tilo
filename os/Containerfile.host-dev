@@ -10,30 +10,27 @@
 # signs or publishes away from it, and os/tests/sealed_extensions.sh keeps the
 # unmask here and in os/Containerfile.dev alone.
 #
-# Built FROM the server image of the same commit (t's image-host, before it is
-# sealed), as os/Containerfile.dev sits on os/Containerfile, and sealed after
-# (seal-host-dev): the server's programs, units, flavour and update policy are
-# the server's own. It adds:
+# This file is not a build of its own: tools/ci/publish/host-build.sh --dev
+# appends it to os/Containerfile.host and os/image/boot.Containerfile, so its
+# stages build on `final`, the server image's own last stage of the same base,
+# programs and units, and it is sealed after (seal-host-dev). It adds:
 #
 #   * the dev-VM daemon (os/components.toml's `vmd`, with the component
 #     manifest it reads) and the CLI (`vm-cli`, which applies the layers an
 #     installation leaves for the first boot), placed by
 #     os/scripts/install-components.py as the dev image places them, from the
-#     programs t's host-dev-binaries check compiled
-#     (tools/ci/publish/server-binaries.sh host-dev);
+#     programs t's host-binaries-dev check compiled without LTO
+#     (tools/ci/publish/server-binaries.sh `host host-dev`);
 #   * tilo-vmd's boot units from crates/dev/tilo-vmd/data, the ones
-#     TILO_VM_UNITS names (tools/ci/publish/host-dev-build.sh chooses them);
+#     TILO_VM_UNITS names (tools/ci/publish/host-build.sh chooses them);
 #   * /usr/share/tilo-vm/base.json, what the daemon checks every layer against:
 #     the target and toolchain read off the server's own programs, the check
 #     image that compiled them and the Cargo.lock they were built from
 #     (os/scripts/finalize-dev-image.py --base-only);
 #   * systemd-sysext.service, unmasked and enabled.
 #
-# Build context: what tools/ci/publish/host-dev-build.sh stages, nothing else.
+# Build context: what tools/ci/publish/host-build.sh stages, nothing else.
 # ============================================================================
-
-# The server image, unsealed: t's image-host archive, loaded into the build's store.
-ARG HOST_IMAGE
 
 # The inputs the stages below run, staged through a scratch stage and
 # bind-mounted from it, as os/Containerfile.dev does.
@@ -46,7 +43,7 @@ FROM scratch AS dev-builder
 COPY bin/ /out/
 
 # ---- Dev components, placed by the manifest ---------------------------------
-FROM ${HOST_IMAGE} AS dev-component-files
+FROM final AS dev-component-files
 RUN --network=none \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     --mount=type=bind,from=dev-builder,source=/out,target=/out,ro \
@@ -55,13 +52,13 @@ RUN --network=none \
       --from /out --dest /image vmd vm-cli
 
 # ---- The development server image -------------------------------------------
-FROM ${HOST_IMAGE} AS dev-server
+FROM final AS dev-server
 
 # A server image, and not already a development one.
 RUN test "$(cat /usr/lib/tilo/image-flavour)" = server \
-      || { echo "HOST_IMAGE is not the server image: its flavour is $(cat /usr/lib/tilo/image-flavour)" >&2; exit 1; } \
+      || { echo "the image is not the server image: its flavour is $(cat /usr/lib/tilo/image-flavour)" >&2; exit 1; } \
     && if [ -e /usr/share/tilo-vm/base.json ]; then \
-         echo "HOST_IMAGE is already a development server image" >&2; exit 1; \
+         echo "the image is already a development server image" >&2; exit 1; \
        fi
 
 COPY --from=dev-component-files /image/ /
@@ -74,7 +71,10 @@ RUN test ! -e /usr/bin/tilo \
     && ln -sfn ../libexec/tilo/tilo-vm /usr/bin/tilo-vm
 COPY vm-units/ /usr/lib/systemd/system/
 
-ARG HOST_IMAGE
+# The base the development image is built on: the server image's own base, in
+# the store as host-build.sh loaded it, and the builder image t's check
+# compiled the programs in.
+ARG TILO_BASE_IMAGE
 ARG TILO_BASE_DIGEST
 ARG TILO_BASE_CREATED
 ARG TILO_BUILDER_IMAGE
@@ -82,7 +82,7 @@ ARG TILO_VM_UNITS
 RUN --network=none \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     python3 /run/tilo-dev/os/scripts/finalize-dev-image.py --base-only \
-      --base-image "$HOST_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
+      --base-image "$TILO_BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --base-created "$TILO_BASE_CREATED" \
       --builder-image "$TILO_BUILDER_IMAGE" \
       --built-binary /usr/libexec/tilo/tilo-server --built-binary /usr/libexec/tilo/tilo-vmd \
