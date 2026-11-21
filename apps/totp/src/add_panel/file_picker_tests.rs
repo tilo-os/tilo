@@ -135,7 +135,7 @@ fn the_totp_app_opens_the_file_picker() {
     let link = tilo_dialogs::shell::ShellLink::connect(shell.serve("acme-qr.png", qr_png(uri)))
         .expect("the chooser connection");
     let mut services = ui::process::ProcessServices::null();
-    services.files = link.picker(None);
+    services.files = link.picker(std::sync::Arc::new(LaterChooser::default()));
     let _host = ui::process::enter(&services);
 
     let mut app = opened((1280, 900));
