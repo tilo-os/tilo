@@ -600,3 +600,90 @@ fn a_tree_lays_the_rows_under_a_row_out_below_it() {
     }
     assert!(holding > 0, "the Data page's tree holds rows under rows");
 }
+
+/// The Data page's conversation on a page that never paints stands as the window paints it: each
+/// bubble, name and caption at the box painting places it, opened and scrolled.
+#[test]
+fn a_conversation_on_a_page_stands_as_the_window_paints_it() {
+    crate::support::installed("gallery");
+    // The conversation's parts at each scroll step, in a window that paints or on a page that
+    // never does.
+    let shown = |drawn: bool| {
+        let mut app =
+            TestApp::<TlApp>::drive_at("custom", (1280, 800)).expect("the scenario stages");
+        let harness = app.harness();
+        harness.set_scene_drawn(drawn);
+        harness.set_coalesce_input_frames(true);
+        for _ in 0..4 {
+            let _ = harness.poll_frame();
+            let _ = harness.compose_frame();
+        }
+        let (x, y) =
+            words_at(harness.presented_composition(), "Data").expect("the sidebar names Data");
+        harness.click_at(x, y);
+        for _ in 0..4 {
+            let _ = harness.poll_frame();
+            let _ = harness.compose_frame();
+        }
+        let scroller = harness
+            .presented_composition()
+            .and_then(|composition| {
+                let mut best: Option<(String, f64)> = None;
+                let mut nodes = vec![&composition.root];
+                while let Some(node) = nodes.pop() {
+                    if let Some([_, content, viewport]) = node.scroll
+                        && node.rect[0] > 200.0
+                        && content > viewport
+                        && best
+                            .as_ref()
+                            .is_none_or(|(_, room)| content - viewport > *room)
+                    {
+                        best = Some((node.path.clone(), content - viewport));
+                    }
+                    nodes.extend(&node.children);
+                }
+                best
+            })
+            .map(|(path, _)| path)
+            .expect("the Data page scrolls");
+        let mut steps = Vec::new();
+        for step in 0..=6 {
+            let offset = f64::from(step) * 100.0;
+            if step > 0 {
+                assert!(harness.scroll_composed(&scroller, offset));
+            }
+            let _ = harness.poll_frame();
+            let _ = harness.compose_frame();
+            let mut found = Vec::new();
+            let mut nodes: Vec<&ui::composition::Composed> = harness
+                .presented_composition()
+                .map(|composition| vec![&composition.root])
+                .unwrap_or_default();
+            while let Some(node) = nodes.pop() {
+                if node.path.contains("ConversationList[0]#") {
+                    found.push((node.path.clone(), node.rect));
+                }
+                nodes.extend(&node.children);
+            }
+            found.sort_by(|a, b| a.0.cmp(&b.0));
+            steps.push((offset, found));
+        }
+        steps
+    };
+    let painted = shown(true);
+    let on_page = shown(false);
+    for ((offset, page), (_, window)) in on_page.iter().zip(&painted) {
+        assert!(!window.is_empty(), "the window shows the conversation");
+        assert_eq!(
+            page.iter().map(|(path, _)| path).collect::<Vec<_>>(),
+            window.iter().map(|(path, _)| path).collect::<Vec<_>>(),
+            "scrolled to {offset}: the page composes the parts the window does"
+        );
+        for ((path, at), (_, painted_at)) in page.iter().zip(window) {
+            assert!(
+                at.iter().zip(painted_at).all(|(a, b)| (a - b).abs() < 0.5),
+                "scrolled to {offset}: {path} stands at {at:?} on the page, at {painted_at:?} in the window"
+            );
+        }
+    }
+}

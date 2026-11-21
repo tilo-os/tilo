@@ -865,10 +865,21 @@ pub struct ConversationList {
     name: String,
     dirty: bool,
     theme: Option<Theme>,
-    /// What the last frame measured and placed, kept so the next frame — a
-    /// caret blink, a presence change, one arriving message — measures and
-    /// places only what changed.
-    cache: ListCache,
+    /// What the list measured and placed at each width a layout asked it about, the latest
+    /// first, so the next frame — a caret blink, a presence change, one arriving message —
+    /// measures and places only what changed. A layout asks at widths the list will not stand
+    /// at (its content's, what a container offers before it settles), and the rows it composes
+    /// and paints are the ones at the width it stands at.
+    caches: Vec<(f64, ListCache)>,
+}
+
+/// How many widths a list keeps what it placed at: its own, and the probes one layout makes.
+const KEPT_WIDTHS: usize = 4;
+
+/// Whether two widths are one column: the width a layout measured at, and the box it then gave,
+/// which can differ in their last bits.
+fn same_width(left: f64, right: f64) -> bool {
+    (left - right).abs() < 0.01
 }
 
 impl ConversationList {
@@ -880,7 +891,7 @@ impl ConversationList {
             name: String::new(),
             dirty: true,
             theme: None,
-            cache: ListCache::default(),
+            caches: Vec::new(),
         }
     }
 
@@ -935,14 +946,39 @@ impl ConversationList {
 
     #[must_use]
     pub fn work(&self) -> ListWork {
-        self.cache.work()
+        self.kept().map(ListCache::work).unwrap_or_default()
+    }
+
+    /// What the list placed at the width it stands at, when a layout asked it about that width.
+    fn kept(&self) -> Option<&ListCache> {
+        let width = self.rect.width();
+        self.caches
+            .iter()
+            .find(|(at, _)| same_width(*at, width))
+            .map(|(_, cache)| cache)
+    }
+
+    /// What the list placed at `width`, made the latest kept: a new one, the oldest let go,
+    /// when no layout asked about `width` lately.
+    fn kept_at(caches: &mut Vec<(f64, ListCache)>, width: f64) -> &mut ListCache {
+        let at = caches
+            .iter()
+            .position(|(at, _)| same_width(*at, width))
+            .unwrap_or_else(|| {
+                caches.truncate(KEPT_WIDTHS - 1);
+                caches.push((width, ListCache::default()));
+                caches.len() - 1
+            });
+        let kept = caches.remove(at);
+        caches.insert(0, kept);
+        &mut caches[0].1
     }
 
     /// How far the list stands from where its kept rows were placed: a measure places them at
     /// the origin, a paint where it paints, and the list may have moved since, as a scrolled
     /// page moves it without painting it.
     fn moved(&self) -> [f64; 2] {
-        self.cache.placed.as_ref().map_or([0.0, 0.0], |placed| {
+        self.kept().and_then(|cache| cache.placed.as_ref()).map_or([0.0, 0.0], |placed| {
             [self.rect.x0 - placed.x0, self.rect.y0 - placed.y0]
         })
     }
@@ -958,7 +994,7 @@ impl Widget for ConversationList {
         let body = theme.text(TextRole::Body);
         let caption = theme.text(TextRole::Caption);
         let author_style = theme.text(TextRole::Caption);
-        let rows = &self.cache.layout.rows;
+        let rows = self.kept().map_or(&[][..], |cache| &cache.layout.rows[..]);
         if rows.is_empty() {
             let shows = captions(&self.lines, ConversationClock::local());
             // A page never paints the list, so it lays its lines out itself when no paint has.
@@ -1164,7 +1200,12 @@ impl Widget for ConversationList {
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => 0.0,
         });
         let face = ListFace::owned(&self.lines, ConversationClock::local());
-        let height = face.height_in(&mut self.cache, text_renderer, theme, f64::from(width));
+        let height = face.height_in(
+            Self::kept_at(&mut self.caches, f64::from(width)),
+            text_renderer,
+            theme,
+            f64::from(width),
+        );
         taffy::Size {
             width,
             height: crate::num::f32_of_f64(height),
@@ -1186,7 +1227,13 @@ impl Widget for ConversationList {
         }
         let face = ListFace::owned(&self.lines, ConversationClock::local());
         let mut paint = PaintCtx::new(scene, transform, text_renderer, theme);
-        face.paint_in(&mut paint, self.rect, presence.viewport(), &mut self.cache);
+        let rect = self.rect;
+        face.paint_in(
+            &mut paint,
+            rect,
+            presence.viewport(),
+            Self::kept_at(&mut self.caches, rect.width()),
+        );
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1210,9 +1257,8 @@ impl Widget for ConversationList {
                 // The row's own band, from the last paint: a list item that
                 // names a line must point at where that line is.
                 let row = self
-                    .cache
-                    .layout
-                    .rows
+                    .kept()
+                    .map_or(&[][..], |cache| &cache.layout.rows[..])
                     .iter()
                     .find_map(|row| match row {
                         Row::Line {
