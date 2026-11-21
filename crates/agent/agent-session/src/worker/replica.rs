@@ -2199,9 +2199,14 @@ fn named_in<'a>(
     document: Option<DocumentId>,
     doc: &AutoCommit,
 ) -> &'a BTreeSet<String> {
+    use automerge::transaction::Transactable as _;
     let heads = doc.committed_heads();
+    // No committed heads say nothing of what a transaction still open holds, so such a document
+    // is read every time. One that holds nothing at all, as a part the worker started stands
+    // while its own changes wait unapplied beside it, names nothing and is not read again.
+    let unknown = heads.is_empty() && !(doc.is_empty() && doc.pending_ops() == 0);
     let entry = read.entry(document).or_default();
-    if entry.0 != heads || heads.is_empty() {
+    if entry.0 != heads || unknown {
         *entry = (heads, referenced_content(doc));
     }
     &entry.1
