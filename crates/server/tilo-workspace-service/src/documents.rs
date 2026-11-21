@@ -8,10 +8,11 @@
 //! channel keys ([`device_keys::DeviceKeys`]); a holder answers only where its
 //! replica and keys are.
 
-pub(crate) mod device_keys;
+pub mod device_keys;
 pub mod held;
 pub(crate) mod sealed;
 
+pub use device_keys::{DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture};
 pub use held::HeldDocuments;
 
 use std::sync::Arc;
@@ -26,7 +27,6 @@ use tilo_peer_state::{KeptDocument, PeerDocumentReadError, StatePeer};
 #[cfg(feature = "apps")]
 use tilo_peer_state::PeerDocumentCapture;
 
-use device_keys::DeviceKeys;
 use tilo_lock::MutexRecover as _;
 use sealed::DocumentKeys;
 use web_time::SystemTime;

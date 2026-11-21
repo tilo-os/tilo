@@ -10,16 +10,18 @@
 //! by whoever embeds it with the storage it already has: a page's durable store keeps it beside
 //! the peer record it keeps its owner in.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use collab_types::signer::DeviceSigner;
-use tilo_lock::MutexRecover as _;
 use tilo_peer_state::owner::{AppWrite, WriteRefusal};
 use tilo_peer_state::owner_commit::CommitOperation;
+use tilo_peer_state::replica::Replica;
 use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentWrite,
 };
 use tilo_peer_state::{ReceiveOutcome, StatePeer, TransportOrigin};
+
+use tilo_lock::MutexRecover as _;
 
 use super::device_keys::DeviceKeys;
 use super::on_its_own;
@@ -27,12 +29,13 @@ use super::on_its_own;
 /// The most bytes of one document a read hands out.
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 
-/// One workspace's documents, held by a replica and written as the device whose key signs it.
+/// One workspace's documents, held by a replica and read as the device it acts as, whose key
+/// signs the writes this process makes of its own where it has one.
 pub struct HeldDocuments {
     workspace: String,
-    held: Arc<Mutex<StatePeer>>,
+    replica: Replica,
     device: [u8; 32],
-    signer: Arc<dyn DeviceSigner>,
+    signer: Option<Arc<dyn DeviceSigner>>,
     keys: Option<DeviceKeys>,
     opened: super::Opened,
 }
@@ -47,10 +50,25 @@ impl HeldDocuments {
         signer: Arc<dyn DeviceSigner>,
         keys: Option<DeviceKeys>,
     ) -> Self {
+        let device = signer.device_public_key();
+        Self::over(workspace, Replica::new(peer), device, Some(signer), keys)
+    }
+
+    /// The documents of `workspace`, held in the replica its embedder keeps and admits into,
+    /// read as the device `device` and written as its `signer` where this process has the key
+    /// that signs its changes.
+    #[must_use]
+    pub fn over(
+        workspace: &str,
+        replica: Replica,
+        device: [u8; 32],
+        signer: Option<Arc<dyn DeviceSigner>>,
+        keys: Option<DeviceKeys>,
+    ) -> Self {
         Self {
             workspace: workspace.to_owned(),
-            device: signer.device_public_key(),
-            held: Arc::new(Mutex::new(peer)),
+            replica,
+            device,
             signer,
             keys,
             opened: super::Opened::default(),
@@ -63,13 +81,13 @@ impl HeldDocuments {
     ///
     /// The replica does not encode.
     pub fn durable(&self) -> Result<Vec<u8>, String> {
-        self.held.lock_recover().durable()
+        self.replica.read(StatePeer::durable)
     }
 
     /// The replica, for an embedder that reads and changes it itself.
     #[must_use]
-    pub fn replica(&self) -> Arc<Mutex<StatePeer>> {
-        Arc::clone(&self.held)
+    pub fn replica(&self) -> Replica {
+        self.replica.clone()
     }
 
     /// Take in `message`, a frame of the workspace by the device `from` (its key), as a service's
@@ -85,9 +103,10 @@ impl HeldDocuments {
         message: neighbour_wire::NeighbourMsg,
         now: web_time::SystemTime,
     ) -> Result<ReceiveOutcome, String> {
-        self.held
-            .lock_recover()
-            .receive_from(TransportOrigin::RetainedServerDelta(from), message, now)
+        self.replica
+            .write(|peer| {
+                peer.receive_from(TransportOrigin::RetainedServerDelta(from), message, now)
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -114,7 +133,7 @@ impl DeviceDocuments for HeldDocuments {
         if !self.holds_workspace(workspace) {
             return Ok(DocumentRead::Absent);
         }
-        let peer = self.held.lock_recover().clone();
+        let peer = self.replica.read(StatePeer::clone);
         let keys = self.keys.clone();
         let device = self.device;
         let since = since.unwrap_or_default().to_vec();
@@ -157,7 +176,7 @@ impl DeviceDocuments for HeldDocuments {
         if !self.holds_workspace(workspace) {
             return false;
         }
-        let peer = self.held.lock_recover().clone();
+        let peer = self.replica.read(StatePeer::clone);
         let keys = self.keys.clone();
         let device = self.device;
         let route = (app.to_owned(), resource.to_owned());
@@ -179,7 +198,7 @@ impl DeviceDocuments for HeldDocuments {
         if !self.holds_workspace(workspace) {
             return Err("this device holds no such workspace".to_owned());
         }
-        Ok(super::listing(&self.held.lock_recover()))
+        Ok(self.replica.read(super::listing))
     }
 
     fn own_records(
@@ -189,11 +208,12 @@ impl DeviceDocuments for HeldDocuments {
         if !self.holds_workspace(workspace) {
             return std::collections::BTreeMap::new();
         }
-        super::own_records(&self.held.lock_recover())
+        self.replica.read(super::own_records)
     }
 
     fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
-        self.holds_workspace(workspace) && super::holds(&self.held.lock_recover(), app, resource)
+        self.holds_workspace(workspace)
+            && self.replica.read(|peer| super::holds(peer, app, resource))
     }
 
     fn workspaces(&self) -> Vec<String> {
@@ -211,8 +231,8 @@ impl DeviceWrites for HeldDocuments {
         founding: bool,
         sealed: Option<&key_group::ContentKeys>,
     ) -> DocumentWrite {
-        let held = Arc::clone(&self.held);
-        let signer = Arc::clone(&self.signer);
+        let replica = self.replica.clone();
+        let signer = self.signer.clone();
         let device = self.device;
         let mine = self.holds_workspace(workspace);
         let (workspace, app, document) =
@@ -225,10 +245,15 @@ impl DeviceWrites for HeldDocuments {
                     "this device holds no such workspace".to_owned(),
                 ));
             }
+            let Some(signer) = signer else {
+                return Err(WriteRefusal::Refused(
+                    "this holder has no device key to sign its writes".to_owned(),
+                ));
+            };
             let now = tilo_clock::wall();
             // The write is drafted against the replica as it stands, signed, and admitted as this
             // device's: the guard is never held across the signer's answer.
-            let snapshot = held.lock_recover().clone();
+            let snapshot = replica.read(StatePeer::clone);
             let (mut request, author) = super::draft(
                 &snapshot,
                 &workspace,
@@ -258,8 +283,10 @@ impl DeviceWrites for HeldDocuments {
             envelope.signature = collab_types::Signature(signature);
             let (envelope, own) = ((**envelope).clone(), own.clone());
             drop(snapshot);
-            held.lock_recover()
-                .admit_new_local_document(&app, &document, envelope.clone(), now)
+            replica
+                .write(|peer| {
+                    peer.admit_new_local_document(&app, &document, envelope.clone(), now)
+                })
                 .map_err(|refused| WriteRefusal::Refused(refused.to_string()))?;
             Ok(AppWrite {
                 peer: neighbour_wire::peer_handle(&device),
@@ -286,7 +313,6 @@ mod tests {
     use automerge::{AutoCommit, ReadDoc as _, ROOT, Value};
     use ed25519_dalek::SigningKey;
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
-    use tilo_lock::MutexRecover as _;
     use tilo_peer_state::workspace_documents::{
         DeviceDocuments as _, DeviceWrites as _, DocumentRead,
     };
@@ -429,8 +455,7 @@ mod tests {
         // the workspace admitted it.
         let current = holder
             .replica()
-            .lock_recover()
-            .document(DESKTOP_APP, DESKTOP_DOCUMENT)
+            .read(|peer| peer.document(DESKTOP_APP, DESKTOP_DOCUMENT))
             .expect("the holder keeps the record");
         let (change, _) = write_front(&current, &other_key, "Elsewhere");
         let (message, from) = write_message(&other_key, &change, 1, now);
@@ -456,8 +481,7 @@ mod tests {
         // Its own device's write is committed through the same core a service writes through.
         let current = holder
             .replica()
-            .lock_recover()
-            .document(DESKTOP_APP, DESKTOP_DOCUMENT)
+            .read(|peer| peer.document(DESKTOP_APP, DESKTOP_DOCUMENT))
             .expect("the holder keeps the record");
         let (change, _) = write_front(&current, &SigningKey::from_bytes(&[2; 32]), "Mine");
         let written = futures::executor::block_on(holder.write(
