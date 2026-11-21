@@ -4,9 +4,5 @@
 
 #[path = "accounts_mail_loop.rs"]
 mod accounts_mail_loop;
-#[path = "cloud_storage.rs"]
-mod cloud_storage;
-#[path = "cloud_ux.rs"]
-mod cloud_ux;
 #[path = "prefs_persistence.rs"]
 mod prefs_persistence;

@@ -63,7 +63,7 @@ impl VaultOpener {
 
     #[cfg(feature = "tilo-os")]
     pub fn credential_store(&self) -> account_credentials::CredentialStore {
-        account_credentials::CredentialStore::for_root(self.explicit.clone()).with_apple_icloud()
+        account_credentials::CredentialStore::for_root(self.explicit.clone())
     }
 
     #[cfg(feature = "tilo-os")]
@@ -147,7 +147,7 @@ impl AccountRoot {
 
     #[cfg(feature = "tilo-os")]
     pub fn credential_store(&self) -> account_credentials::CredentialStore {
-        account_credentials::CredentialStore::for_root(self.explicit.clone()).with_apple_icloud()
+        account_credentials::CredentialStore::for_root(self.explicit.clone())
     }
 
     pub fn path(&self) -> Option<PathBuf> {
@@ -504,10 +504,6 @@ pub enum AccountKind {
     CalDav,
     WebDav,
     Nextcloud,
-    GoogleDrive,
-    OneDrive,
-    Dropbox,
-    ICloudDrive,
 }
 
 fn read_file(path: &std::path::Path) -> Result<Option<Vec<u8>>, tilo_files::FsError> {
@@ -536,23 +532,7 @@ fn remove_file(path: &std::path::Path) -> Result<(), tilo_files::FsError> {
 }
 
 impl AccountKind {
-    pub const ALL: [Self; 8] = [
-        Self::Mail,
-        Self::CalDav,
-        Self::WebDav,
-        Self::Nextcloud,
-        Self::GoogleDrive,
-        Self::OneDrive,
-        Self::Dropbox,
-        Self::ICloudDrive,
-    ];
-
-    /// The kinds Settings' Add account list offers: those whose sign-in reaches the provider
-    /// and leaves a working account. Google Drive, `OneDrive`, Dropbox and iCloud Drive are not
-    /// among them: their sign-in exchanges the provider's tokens from Settings' own process,
-    /// which has no network, and no build carries the OAuth client registrations they need.
-    /// Accounts of those kinds kept from elsewhere still show and can be removed.
-    pub const ADDABLE: [Self; 4] = [Self::Mail, Self::CalDav, Self::WebDav, Self::Nextcloud];
+    pub const ALL: [Self; 4] = [Self::Mail, Self::CalDav, Self::WebDav, Self::Nextcloud];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -560,10 +540,6 @@ impl AccountKind {
             AccountKind::CalDav => "Calendar",
             AccountKind::WebDav => "Files",
             AccountKind::Nextcloud => "Nextcloud",
-            AccountKind::GoogleDrive => "Google Drive",
-            AccountKind::OneDrive => "OneDrive",
-            AccountKind::Dropbox => "Dropbox",
-            AccountKind::ICloudDrive => "iCloud Drive",
         }
     }
 
@@ -573,10 +549,6 @@ impl AccountKind {
             AccountKind::CalDav => "caldav",
             AccountKind::WebDav => "webdav",
             AccountKind::Nextcloud => "nextcloud",
-            AccountKind::GoogleDrive => "google-drive",
-            AccountKind::OneDrive => "onedrive",
-            AccountKind::Dropbox => "dropbox",
-            AccountKind::ICloudDrive => "icloud-drive",
         }
     }
 
@@ -587,10 +559,6 @@ impl AccountKind {
             AccountKind::CalDav => CALDAV_TYPE,
             AccountKind::WebDav => WEBDAV_TYPE,
             AccountKind::Nextcloud => NEXTCLOUD_TYPE,
-            AccountKind::GoogleDrive => account_credentials::providers::GOOGLE_DRIVE_TYPE,
-            AccountKind::OneDrive => account_credentials::providers::ONEDRIVE_TYPE,
-            AccountKind::Dropbox => account_credentials::providers::DROPBOX_TYPE,
-            AccountKind::ICloudDrive => account_credentials::providers::ICLOUD_DRIVE_TYPE,
         }
     }
 
@@ -606,23 +574,11 @@ impl AccountKind {
         Self::ALL.into_iter().find(|kind| kind.type_id() == type_id)
     }
 
-    #[cfg(feature = "tilo-os")]
-    pub fn oauth_cloud(self) -> Option<account_credentials::OAuthCloud> {
-        account_credentials::OAuthCloud::from_type_id(self.type_id())
-    }
-
-    #[cfg(feature = "tilo-os")]
-    pub fn is_cloud_storage(self) -> bool {
-        self.oauth_cloud().is_some() || self == AccountKind::ICloudDrive
-    }
-
+    /// Whether the account is signed in to on its server's own page rather than with a
+    /// password typed here.
     #[cfg(feature = "tilo-os")]
     pub fn signs_in(self) -> bool {
-        self.is_cloud_storage() || self == AccountKind::Nextcloud
-    }
-
-    pub fn best_effort(self) -> bool {
-        self == AccountKind::ICloudDrive
+        self == AccountKind::Nextcloud
     }
 }
 
@@ -720,37 +676,7 @@ fn account_view(kind: AccountKind, account: &accounts::Account) -> Option<Accoun
                 tint: account.tint,
             }
         }
-        AccountKind::GoogleDrive
-        | AccountKind::OneDrive
-        | AccountKind::Dropbox
-        | AccountKind::ICloudDrive => cloud_view(kind, account),
     })
-}
-
-#[cfg(feature = "tilo-os")]
-fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
-    let identity = account
-        .config
-        .get("identity")
-        .and_then(serde_json::Value::as_str)
-        .filter(|identity| !identity.is_empty());
-    let summary = match (identity, kind.oauth_cloud()) {
-        (Some(identity), _) => identity.to_string(),
-        (None, Some(cloud)) => format!("Signed in with {}", cloud.sign_in_with()),
-        (None, None) => "Apple ID".to_string(),
-    };
-    AccountView {
-        id: account.id.to_string(),
-        kind,
-        label: if account.display_name.is_empty() {
-            kind.label().to_string()
-        } else {
-            account.display_name.clone()
-        },
-        summary,
-        enabled: account.enabled,
-        tint: account.tint,
-    }
 }
 
 #[cfg(feature = "tilo-os")]

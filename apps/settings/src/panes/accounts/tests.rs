@@ -387,50 +387,6 @@ pub(super) fn announced(app: &mut TestApp<SettingsShell>) -> Vec<String> {
 }
 
 #[test]
-fn import_only_rows_keep_recorded_errors_offline_and_signin_requirements() {
-    fn texts(widget: &dyn Widget) -> Vec<String> {
-        let mut result: Vec<String> = widget
-            .as_any()
-            .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
-            .map(|row| row.tag_labels().into_iter().map(str::to_owned).collect())
-            .unwrap_or_default();
-        for child in widget.children() {
-            result.extend(texts(child));
-        }
-        result
-    }
-    let (_scratch, root) = scratch_root();
-    let id = accounts::AccountId::from("import-google");
-    let mut account = accounts::Account::new(
-        id.clone(),
-        account_credentials::providers::GOOGLE_DRIVE_TYPE,
-    );
-    account.config = serde_json::json!({"files_mode": "import", "use_files": true});
-    let mut store = accounts::AccountStore::new();
-    store.upsert(account);
-    root.save_store(&store).unwrap();
-    let reporter = root.sync_reporter(id);
-    for expected in [
-        "accounts-status-error",
-        "accounts-status-offline",
-        "accounts-status-reauth",
-    ] {
-        match expected {
-            "accounts-status-error" => reporter.failed(),
-            "accounts-status-offline" => reporter.offline(),
-            _ => reporter.needs_authentication(),
-        }
-        .unwrap();
-        let labels = on_page(AccountsPane::in_root(root.clone()), texts);
-        assert!(labels.contains(&t(expected)), "{labels:?}");
-        assert!(
-            !labels.contains(&t("accounts-status-import-only")),
-            "a known failure is not an untested import source"
-        );
-    }
-}
-
-#[test]
 fn adding_an_account_opens_its_form_where_add_account_was() {
     let (_scratch, root) = scratch_root();
     let mut app = window_showing(AccountsPane::from_dir_in(root, sample_directory(), true));
@@ -469,19 +425,19 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
         let labels = page_actions(pane);
         assert_eq!(
             labels.len(),
-            AccountKind::ADDABLE.len() + 1,
+            AccountKind::ALL.len() + 1,
             "every provider kind can be added and metadata imported over the sample: {labels:?}"
         );
         assert_eq!(
             labels
                 .iter()
-                .filter(|label| AccountKind::ADDABLE.into_iter().any(|kind| **label
+                .filter(|label| AccountKind::ALL.into_iter().any(|kind| **label
                     == t_args(
                         "accounts-add-provider",
                         &[("kind", kind_shown(kind).into())]
                     )))
                 .count(),
-            AccountKind::ADDABLE.len(),
+            AccountKind::ALL.len(),
             "one Add action per provider kind"
         );
         assert_eq!(
@@ -507,7 +463,7 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
         let actions = page_actions(pane);
         assert_eq!(
             actions.len(),
-            AccountKind::ADDABLE.len() + 1 + 16 + 1,
+            AccountKind::ALL.len() + 1 + 16 + 1,
             "{actions:?}"
         );
     }
@@ -536,13 +492,13 @@ fn accounts_pane_renders_only_real_accounts_as_removable() {
         assert_eq!(
             labels
                 .iter()
-                .filter(|label| AccountKind::ADDABLE.into_iter().any(|kind| **label
+                .filter(|label| AccountKind::ALL.into_iter().any(|kind| **label
                     == t_args(
                         "accounts-add-provider",
                         &[("kind", kind_shown(kind).into())]
                     )))
                 .count(),
-            AccountKind::ADDABLE.len(),
+            AccountKind::ALL.len(),
             "the single chooser retains every provider's add action"
         );
     }

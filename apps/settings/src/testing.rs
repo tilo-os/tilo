@@ -41,17 +41,6 @@ pub fn actions_of(w: &dyn ui::Widget, actions: &mut Vec<String>) {
     }
 }
 
-pub fn labels_of(w: &dyn ui::Widget, name: &str, labels: &mut Vec<String>) {
-    if w.name() == name
-        && let Some(label) = w.accessibility().and_then(|node| node.name)
-    {
-        labels.push(label);
-    }
-    for child in w.children() {
-        labels_of(child, name, labels);
-    }
-}
-
 /// The row caption `key` names, as the pane shows it and a screen reader
 /// reads it. A key no catalogue has answers with itself, and an id is never
 /// a word to read aloud.

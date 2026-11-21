@@ -1358,9 +1358,6 @@ readers = ["crates/collab/tilo-device-identity/src/bin/tilo-device-key-init.rs"]
 [[cargo]]
 package = "settings"
 inputs = [
-  "crates/system/cloud-source-gdrive/tests/fixtures/docx.rs",
-  "crates/system/cloud-source-gdrive/tests/fixtures/xlsx.rs",
-  "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
   # The provider admin pane's tests run the shared provider settings fake
   # backend and mounted tests against Settings' own mount.
   "crates/sdk/provider-settings-ui/src/fake_backend.rs",
@@ -1370,8 +1367,6 @@ inputs = [
   "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json",
 ]
 readers = [
-  "apps/settings/tests/cloud_ux.rs",
-  "apps/settings/src/panes/accounts/cloud_import_acceptance.rs",
   "apps/settings/src/panes/agent_models/admin_tests.rs",
   "apps/settings/src/panes/updates/tests.rs",
 ]
