@@ -26,7 +26,8 @@ class DevImageContractTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        for name in ("os/Containerfile", "os/Containerfile.dev", "os/image/compile.sh", "os/dev/resolve-rpm-snapshot.sh", "os/components.toml",
+        for name in ("os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host-dev", "t.toml",
+                     "os/image/compile.sh", "os/dev/resolve-rpm-snapshot.sh", "os/components.toml",
                      "os/scripts/install-components.py", "os/etc/containers/policy.json",
                      "os/scripts/builder-packages.py", "os/scripts/builder-packages.txt",
                      "os/dev/derive-rpm-package-set.py"):
@@ -83,6 +84,36 @@ class DevImageContractTests(unittest.TestCase):
             errors = "\n".join(self.findings(root))
             self.assertIn('does not label the image sh.tilo.image.flavour="dev"', errors)
             self.assertIn("never runs os/scripts/unseal-rootfs.py", errors)
+
+    def test_dev_server_image_stays_a_development_image(self):
+        with self.subTest(phase='the server-dev label and base.json alone'):
+            root = self.fixture()
+            recipe = root / "os/Containerfile.host-dev"
+            self.edit(recipe, 'sh.tilo.image.flavour="server-dev"', 'sh.tilo.image.flavour="server"')
+            self.edit(recipe, "finalize-dev-image.py --base-only \\", "finalize-dev-image.py \\")
+            errors = "\n".join(self.findings(root))
+            self.assertIn('does not label the image sh.tilo.image.flavour="server-dev"', errors)
+            self.assertIn("never writes base.json with os/scripts/finalize-dev-image.py --base-only", errors)
+        with self.subTest(phase='its seal is the seal step\'s'):
+            root = self.fixture()
+            self.edit(root / "os/Containerfile.host-dev", "COPY vm-units/ /usr/lib/systemd/system/\n",
+                      "COPY vm-units/ /usr/lib/systemd/system/\nRUN bootc container ukify --rootfs /\n")
+            self.assertIn("builds, installs or removes a UKI", "\n".join(self.findings(root)))
+        with self.subTest(phase='nothing that signs, publishes or a tag runs depends on it'):
+            root = self.fixture()
+            (root / "t.toml").write_text(
+                (root / "t.toml").read_text(encoding="utf-8")
+                + '\n[[check]]\nname = "sign-host-dev"\nrun = "bash tools/ci/publish/oci-sign.sh x y"\n'
+                'needs = ["server-installer-medium-dev-x86_64"]\nid_token = ["sts.amazonaws.com"]\n'
+                'on = ["tag:v*"]\n', encoding="utf-8")
+            errors = "\n".join(self.findings(root))
+            self.assertIn("t.toml: check sign-host-dev: depends on image-host-dev and takes an identity "
+                          "token, runs on a release tag, signs, attests or publishes", errors)
+        with self.subTest(phase='a production recipe may not build it'):
+            root = self.fixture()
+            self.edit(root / "os/Containerfile", "FROM scratch AS public-trust\n",
+                      "FROM scratch AS public-trust\nCOPY os/Containerfile.host-dev /x\n")
+            self.assertIn("dev-image source Containerfile.host-dev", "\n".join(self.findings(root)))
 
     def test_missing_package_generator_cannot_skip_parity_verification(self):
         root = self.fixture()

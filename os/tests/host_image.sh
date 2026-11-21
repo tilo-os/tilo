@@ -6,11 +6,24 @@
 # update units are enabled with this image's own health verdict and update
 # window, and the API server is inert until an operator configures it.
 #
-# usage: host_image.sh ARCHIVE
-# ARCHIVE is an OCI archive as t's image build writes it (the check image-host).
-# It runs in the buildah image, without a daemon, as root in a micro-VM step.
+# With --dev, the development server image (os/Containerfile.host-dev, sealed by
+# seal-host-dev) is held to all of that but the one difference it is for:
+# systemd-sysext merges layers at boot. Beside the server it carries tilo-vmd
+# and its CLI, the component manifest the daemon reads, its boot units, and a
+# base.json naming the check image, target, toolchain and Cargo.lock the
+# server's own programs were built with.
+#
+# usage: host_image.sh [--dev] ARCHIVE
+# ARCHIVE is an OCI archive as t's image build writes it (the check image-host,
+# or seal-host-dev with --dev). It runs in the buildah image, without a daemon,
+# as root in a micro-VM step.
 set -euo pipefail
-archive=${1:?usage: host_image.sh ARCHIVE}
+dev=0
+if [[ ${1:-} == --dev ]]; then
+  dev=1
+  shift
+fi
+archive=${1:?usage: host_image.sh [--dev] ARCHIVE}
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/lib.sh"
 use_buildah host-test
 image=$(b pull --quiet "oci-archive:$archive")
@@ -220,8 +233,9 @@ grep -Eq '(^| )composefs=[0-9a-f]{128}( |$)' <<<"$cmdline" \
 # Boot hardening besides: no extension merged over /usr at boot, nobody signing
 # in at a console, sudo the only setuid program, no listener of the base's left
 # and no port the firewall opens for one.
-for unit in systemd-sysext.service systemd-confext.service systemd-sysext.socket \
-  avahi-daemon.service avahi-daemon.socket; do
+masked=(systemd-confext.service systemd-sysext.socket avahi-daemon.service avahi-daemon.socket)
+(( dev )) || masked+=(systemd-sysext.service)
+for unit in "${masked[@]}"; do
   [[ $(readlink "$root/etc/systemd/system/$unit") == /dev/null ]] || die "$unit is not masked"
 done
 unlocked=$(awk -F: '$2 !~ /^[!*]/ { print $1 }' "$root/etc/shadow")
@@ -239,4 +253,49 @@ done
 # Nothing of a desktop's session is in it.
 [[ ! -e $root/usr/bin/greetd && ! -e $root/usr/libexec/tilo/tilo-greeter ]] \
   || die 'the server image carries a sign-in stack'
-echo 'the server image holds what a server runs'
+if (( ! dev )); then
+  [[ ! -e $root/usr/libexec/tilo/tilo-vmd && ! -e $root/usr/share/tilo-vm/base.json ]] \
+    || die 'the server image carries the dev-VM daemon'
+  echo 'the server image holds what a server runs'
+  exit 0
+fi
+
+# The development server: layers merge at boot, and nothing else of the boot
+# changes.
+[[ ! -e $root/etc/systemd/system/systemd-sysext.service ]] || die 'systemd-sysext.service is still masked'
+[[ -L $wants/sysinit.target.wants/systemd-sysext.service ]] || die 'systemd-sysext.service is not enabled'
+[[ -L $wants/sysinit.target.wants/tilo-vm-reconcile-image.service ]] \
+  || die 'tilo-vm-reconcile-image is not enabled, so no booted image is recorded before layers merge'
+[[ -L $wants/multi-user.target.wants/tilo-vm-restore.service ]] || die 'tilo-vm-restore is not enabled'
+[[ -L $wants/multi-user.target.wants/tilo-vm-incoming.service ]] \
+  || die 'tilo-vm-incoming is not enabled, so the layers an installation leaves are never applied'
+# The wants links are absolute, so each unit is read where it is installed.
+for unit in "$wants"/*.wants/tilo-vm-*.service; do
+  unit=${unit##*/}
+  program=$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "$root/usr/lib/systemd/system/$unit")
+  inside test -x "$program" || die "$unit runs $program, which the image does not have"
+done
+[[ $(readlink "$root/usr/bin/tilo-vmd") == ../libexec/tilo/tilo-vmd ]] || die 'tilo-vmd is not on PATH'
+grep -q '^tilo-vmd ' <<<"$(inside tilo-vmd --version)" || die 'tilo-vmd does not start on the server'
+grep -q '^tilo-vm ' <<<"$(inside tilo-vm --version)" || die 'tilo-vm does not start on the server'
+cmp -s "$root/usr/share/tilo/components.toml" "$repo_root/os/components.toml" \
+  || die "the image's component manifest is not this tree's"
+# The daemon refuses a layer built for another target or by another check
+# image, so base.json names the ones that built the server's own programs and
+# the daemon beside them.
+base=$root/usr/share/tilo-vm/base.json
+builder=$(awk '/^\[/ { exit } /^image = "/ { gsub(/^image = "|"$/, ""); print; exit }' "$repo_root/t.toml")
+field() { inside python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]] or "")' \
+  /usr/share/tilo-vm/base.json "$1"; }
+[[ -f $base ]] || die 'no /usr/share/tilo-vm/base.json, so tilo-vmd checks no layer'
+[[ $(field builder_image_digest) == "${builder#*@}" ]] \
+  || die "base.json names builder $(field builder_image_digest), not t's check image ${builder#*@}"
+[[ $(field target) == x86_64-unknown-linux-gnu ]] || die "base.json names target $(field target)"
+toolchain=$(field toolchain)
+[[ $toolchain =~ ^rustc\ [0-9]+\.[0-9]+\.[0-9]+ ]] || die "base.json names toolchain '$toolchain'"
+grep -aqF "rustc version ${toolchain#rustc }" "$root/usr/libexec/tilo/tilo-server" \
+  || die "tilo-server was not built by $toolchain"
+[[ $(field cargo_lock_hash) == "$(sha256sum "$repo_root/Cargo.lock" | cut -d' ' -f1)" ]] \
+  || die "base.json names another Cargo.lock than this tree's"
+[[ $(field image_digest) =~ ^sha256:[0-9a-f]{64}$ ]] || die 'base.json names no server image'
+echo 'the development server image holds what a server runs, and takes layers at boot'

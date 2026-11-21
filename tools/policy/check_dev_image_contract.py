@@ -24,6 +24,12 @@ toolchain, and it is unsealed. Two ways that could leak into production:
    component of os/components.toml (its layer, bins, packages or paths), a dev
    feature, or a dev-image source file.
 
+os/Containerfile.host-dev, the development server image, is held to the same
+rule: it builds FROM the server image, labels itself the server-dev flavour,
+writes base.json alone (the server's flavour and update policy stay), builds no
+UKI of its own (its seal is seal-host-dev's), and no t check that signs,
+attests or publishes, or that a release tag runs, depends on it.
+
 Every finding names file:line, why it matters, and the fix.
 """
 
@@ -34,11 +40,17 @@ import importlib.util
 import json
 import re
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DEV_CONTAINERFILE = "os/Containerfile.dev"
+DEV_SERVER_CONTAINERFILE = "os/Containerfile.host-dev"
+# The t check that builds the development server image; everything downstream of it is development.
+DEV_SERVER_CHECK = "image-host-dev"
+# What signs, attests or publishes an image: none of it may ever see the development server.
+RELEASE_STEPS = re.compile(r"oci-sign\.sh|oci-attest\.sh|oci-publish\.sh|os-release\.sh|host-seal\.sh apply")
 DEV_REPOSITORY = "registry.tilo.so/tilo/tilo-vm"
 # Unsigned OS images from main integration builds; dev disks build on them.
 INTEGRATION_REPOSITORY = "registry.tilo.so/tilo/tilo-ci"
@@ -52,7 +64,11 @@ WHY_LEAK = ("production images are built from os/Containerfile* and must never c
             "components, dev features or dev-image files; each one weakens the shipped system")
 # Dev-image sources that only os/Containerfile.dev may use.
 DEV_SOURCES = ("os/dev-image/", "crates/dev/tilo-vmd/data", "os/scripts/unseal-rootfs.py",
-               "os/scripts/check-dev-kernel.sh", "os/scripts/finalize-dev-image.py", "Containerfile.dev")
+               "os/scripts/check-dev-kernel.sh", "os/scripts/finalize-dev-image.py", "Containerfile.dev",
+               "Containerfile.host-dev")
+WHY_SERVER = ("the development server image merges unsigned system extensions over /usr at boot and "
+              "carries the dev-VM daemon; a machine installed or updated from it as a release would "
+              "run whatever a file under /var/lib/extensions holds")
 WHY_TOOLCHAIN = ("the dev image and in-VM builds must compile with the compiler CI checks the workspace with; "
                  "Fedora's rust package, or a floating image tag, changes version whenever it is refreshed")
 PRODUCTION_NAME = re.compile(r"(?:registry\.tilo\.so/tilo/tilo|localhost/tilo)(?=[:@\s\"']|$)")
@@ -113,8 +129,8 @@ def rel(repo: Path, path: Path) -> str:
 
 def production_containerfiles(repo: Path) -> list[Path]:
     """The production image recipes, and the compile they pack (os/image/compile.sh)."""
-    recipes = [p for p in (repo / "os").glob("Containerfile*")
-               if p.is_file() and p.name != Path(DEV_CONTAINERFILE).name]
+    dev = {Path(DEV_CONTAINERFILE).name, Path(DEV_SERVER_CONTAINERFILE).name}
+    recipes = [p for p in (repo / "os").glob("Containerfile*") if p.is_file() and p.name not in dev]
     compile_script = repo / "os/image/compile.sh"
     return sorted(recipes + ([compile_script] if compile_script.is_file() else []))
 
@@ -185,6 +201,77 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
     return findings
 
 
+def check_dev_server_containerfile(repo: Path) -> list[Finding]:
+    path = repo / DEV_SERVER_CONTAINERFILE
+    shown = DEV_SERVER_CONTAINERFILE
+    if not path.is_file():
+        return [Finding(shown, "is missing", WHY_SERVER,
+                        "restore os/Containerfile.host-dev; t's image-host-dev builds it")]
+    lines = logical_lines(path)
+    findings: list[Finding] = []
+    stages = [i for i, (_, text) in enumerate(lines) if re.match(r"FROM\s", text, re.I)]
+    final = lines[stages[-1]:] if stages else lines
+    final_text = "\n".join(text for _, text in final)
+    last_line = final[0][0] if final else 1
+    if not re.match(r"FROM\s+\$\{HOST_IMAGE\}\s", final[0][1] + " " if final else ""):
+        findings.append(Finding(f"{shown}:{last_line}", "the final stage is not FROM ${HOST_IMAGE}, the "
+                                "server image", WHY_SERVER,
+                                "build the last stage FROM ${HOST_IMAGE}, the image image-host built."))
+    if not re.search(r'LABEL\b.*\bsh\.tilo\.image\.flavour="?server-dev"?', final_text):
+        findings.append(Finding(f"{shown}:{last_line}", "the final stage does not label the image "
+                                'sh.tilo.image.flavour="server-dev"', WHY_SERVER,
+                                'add `LABEL sh.tilo.image.flavour="server-dev"` to the last stage.'))
+    if not re.search(r"finalize-dev-image\.py\s+--base-only\b", final_text):
+        findings.append(Finding(f"{shown}:{last_line}", "the final stage never writes base.json with "
+                                "os/scripts/finalize-dev-image.py --base-only", WHY_SERVER,
+                                "run it in the last stage; --base-only keeps the server's flavour and policy."))
+    for number, text in lines:
+        if re.search(r"\bbootc\s+container\s+ukify\b|/boot/EFI/Linux|unseal-rootfs\.py", text):
+            findings.append(Finding(f"{shown}:{number}", "builds, installs or removes a UKI", WHY_SERVER,
+                                    "remove it: seal-host-dev seals the image as seal-host seals the server's."))
+    return findings
+
+
+def check_dev_server_never_released(repo: Path) -> list[Finding]:
+    """No check that signs, attests or publishes, or that a release tag runs, depends on the
+    development server image."""
+    path = repo / "t.toml"
+    try:
+        checks = tomllib.loads(path.read_text(encoding="utf-8")).get("check", [])
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        return [Finding("t.toml", f"cannot be read: {error}", WHY_SERVER, "restore a valid t.toml.")]
+    needs = {check["name"]: set(check.get("needs", [])) | set(check.get("optional_needs", []))
+             for check in checks}
+    if DEV_SERVER_CHECK not in needs:
+        return [Finding("t.toml", f"has no {DEV_SERVER_CHECK} check", WHY_SERVER,
+                        f"restore the {DEV_SERVER_CHECK} check that builds {DEV_SERVER_CONTAINERFILE}.")]
+    downstream = {DEV_SERVER_CHECK}
+    grew = True
+    while grew:
+        grew = False
+        for name, wanted in needs.items():
+            if name not in downstream and wanted & downstream:
+                downstream.add(name)
+                grew = True
+    findings = []
+    for check in checks:
+        if check["name"] not in downstream:
+            continue
+        why = []
+        if check.get("id_token"):
+            why.append("takes an identity token")
+        if any(str(trigger).startswith("tag:") for trigger in check.get("on", [])):
+            why.append("runs on a release tag")
+        if RELEASE_STEPS.search(check.get("run", "")):
+            why.append("signs, attests or publishes")
+        if why:
+            findings.append(Finding(
+                f"t.toml: check {check['name']}", f"depends on {DEV_SERVER_CHECK} and {', '.join(why)}",
+                WHY_SERVER, "keep the development server image to its own checks; a release "
+                "builds, seals and signs the server image (image-host, seal-host) alone."))
+    return findings
+
+
 def check_builder_packages(repo: Path) -> list[Finding]:
     """The dev toolchain list must equal what os/Containerfile's builder stage installs."""
     generator = repo / "os/scripts/builder-packages.py"
@@ -218,7 +305,9 @@ def check_builder_packages(repo: Path) -> list[Finding]:
 def builders_of_dev_image(repo: Path) -> list[Path]:
     candidates = [*sorted((repo / ".forgejo/workflows").glob("*.y*ml")),
                   *sorted((repo / "os").rglob("*.sh")), *sorted((repo / "tools").rglob("*.sh"))]
-    return [p for p in candidates if p.is_file() and "Containerfile.dev" in p.read_text(encoding="utf-8")]
+    return [p for p in candidates if p.is_file()
+            and any(name in p.read_text(encoding="utf-8")
+                    for name in ("Containerfile.dev", "Containerfile.host-dev"))]
 
 
 def check_dev_image_names(repo: Path) -> list[Finding]:
@@ -382,7 +471,9 @@ def check_production_containerfiles(repo: Path) -> list[Finding]:
 
 
 def audit(repo: Path = REPO) -> list[Finding]:
-    return [*check_dev_containerfile(repo), *check_builder_packages(repo), *check_dev_image_names(repo),
+    return [*check_dev_containerfile(repo), *check_dev_server_containerfile(repo),
+            *check_dev_server_never_released(repo),
+            *check_builder_packages(repo), *check_dev_image_names(repo),
             *check_production_policy(repo),
             *check_production_containerfiles(repo)]
 

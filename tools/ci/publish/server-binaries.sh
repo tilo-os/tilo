@@ -4,12 +4,15 @@
 # server's daemon, its admin and its enroll program with the filesystem replica, and the server OS's
 # boot and update tools. The images package what this leaves (api-build.sh, vm-host-build.sh,
 # server-build.sh, host-build.sh); none compiles Rust inside its build, so an image after a change
-# costs that crate's compile and a layering run.
+# costs that crate's compile and a layering run. `host-dev` is what the development server image
+# adds to the server OS (host-dev-build.sh): the dev-VM daemon and its CLI, compiled by the same
+# check image and toolchain as `host`, so a layer built later the same way passes the daemon's
+# layer check there.
 #
-# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, server or host)
+# usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, server, host or host-dev)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, server or host)'
+usage='usage: server-binaries.sh IMAGE OUT    (IMAGE: api, vm-host, server, host or host-dev)'
 image=${1:?$usage}
 out=${2:?$usage}
 cd "$repo_root"
@@ -61,8 +64,13 @@ case $image in
           tilolang-process
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
           tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start) ;;
+  host-dev)
+    # The dev-VM daemon and its CLI, as os/components.toml declares them, so this names no
+    # binary of its own.
+    read -ra packages <<<"$(python3 os/scripts/install-components.py --dry-run --format cargo vmd vm-cli)"
+    mapfile -t bins < <(python3 os/scripts/install-components.py --dry-run --format bins vmd vm-cli) ;;
   *)
-    die "unknown server image $image: api, vm-host, server or host" ;;
+    die "unknown server image $image: api, vm-host, server, host or host-dev" ;;
 esac
 rm -rf "$out"
 mkdir -p "$out"

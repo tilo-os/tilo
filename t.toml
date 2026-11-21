@@ -4841,6 +4841,34 @@ outputs = ["/target/server-installer-imager/imager"]
 timeout_secs = 5400
 default = false
 
+# The installer medium and Imager of the development server image: the same medium, live root and
+# bundle as server-installer-medium-x86_64 and server-installer-imager-x86_64, with seal-host-dev's
+# image preloaded as the target instead of seal-host's.
+[[check]]
+name = "server-installer-medium-dev-x86_64"
+# Pinned, as server-installer-medium-x86_64.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash tools/ci/publish/server-installer-medium.sh /target/publish/host-dev-sealed /target/publish/server-installer-medium-dev/x86_64 /target/publish/server-installer-bundle-dev/x86_64"
+needs = ["os-image-x86_64", "seal-host-dev", "bootc-alongside-x86_64"]
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
+env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/x86_64/bootc" }
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/server-installer-medium-dev/x86_64/disk.qcow2", "/target/publish/server-installer-medium-dev/x86_64/disk.qcow2.sha256", "/target/publish/server-installer-medium-dev/x86_64/disk.qcow2.hardware.json", "/target/publish/server-installer-medium-dev/x86_64/source.json", "/target/publish/server-installer-bundle-dev/x86_64/**"]
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "server-installer-imager-dev-x86_64"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "rm -rf /target/server-installer-imager-dev && mkdir -p /target/server-installer-imager-dev\nbash os/dev/build-internal-cycle-imager.sh /target/publish/server-installer-bundle-dev/x86_64 imager-v0.0.0 /target/server-installer-imager-dev/imager"
+needs = ["server-installer-medium-dev-x86_64"]
+env = { CARGO_PROFILE_RELEASE_LTO = "off", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/server-installer-imager-dev/imager"]
+timeout_secs = 5400
+default = false
+
 [[check]]
 name = "test-server-installer-medium-x86_64"
 # QEMU and its firmware come from the packages below, which dnf fetches from Fedora's mirrors.
@@ -7446,6 +7474,61 @@ requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/host-sealed/**"]
 timeout_secs = 3600
+default = false
+
+# The development server image, never a release (os/Containerfile.host-dev): the server image
+# above, before its seal, with the dev-VM daemon and CLI, tilo-vmd's boot units, a base.json naming
+# how the server's programs were built, and systemd-sysext merging layers at boot, sealed as the
+# server image is. An installed one takes a rebuilt component as a layer, which a retry of the
+# install proof swaps in instead of rebuilding the image and its medium. Its programs are compiled
+# as host-binaries compiles the server's, by the same check image, so the layers a check builds
+# later (`tilo-vm layer-pack`) carry the target, toolchain and builder its daemon admits.
+[[check]]
+name = "host-dev-binaries"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/publish/server-binaries.sh host-dev /target/publish/host-dev/binaries"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/host-dev/binaries/**"]
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "image-host-dev"
+# No network: the server image comes from image-host's archive, and the layer copies programs and
+# files the tree holds.
+run = "bash tools/ci/publish/host-dev-build.sh /target/publish/host-dev/binaries /target/publish/host /target/publish/host-dev"
+needs = ["image-host", "host-dev-binaries"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/publish/host-dev/image.oci.tar", "/target/publish/host-dev/digest", "/target/publish/host-dev/rpms-source", "/target/publish/host-dev/generation", "/target/publish/host-dev/base.json"]
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "seal-host-dev"
+# Pinned, as seal-host: the OS assembler image and the pinned base by digest.
+egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash tools/ci/publish/host-seal.sh seal /target/publish/host-dev /target/publish/host-dev-sealed"
+needs = ["image-host-dev", "bootc-reseal-x86_64"]
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
+env = { TILO_BOOTC_RESEAL = "/target/bootc-reseal/x86_64/bootc" }
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/host-dev-sealed/**"]
+timeout_secs = 3600
+default = false
+
+[[check]]
+name = "test-image-host-dev"
+# No network: it pulls the sealed image out of seal-host-dev's archive and runs what is in it.
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash os/tests/host_image.sh --dev /target/publish/host-dev-sealed/image.oci.tar"
+needs = ["seal-host-dev"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 1800
 default = false
 
 # The server image's release, asked for and never run by a tag or a change: build it (host-base,
