@@ -8,7 +8,7 @@ use tilo_model_gateway::host_backend::protocol::{
 };
 use tilo_server::{
     workspace_agents::{Model, ServerAgents},
-    workspace_bots::events::PersonEvents,
+    workspace_bots::events::WorkspaceEvents,
 };
 use ui::tilo_resource::{Id, Resource as _};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
@@ -1390,7 +1390,7 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
         .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
         .await
         .unwrap();
-    let events = PersonEvents::start(workspaces.clone(), state.path().join("events"), None);
+    let events = WorkspaceEvents::start(workspaces.clone(), None);
 
     write_to_agent(
         &actions,

@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tilo_actions::remote::person_initiative::Found;
+use tilo_actions::remote::workspace_initiative::Found;
 use tilo_automation::dispatch::DocumentEvent;
 
 use crate::workspaces::Workspaces;

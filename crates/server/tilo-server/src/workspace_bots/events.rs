@@ -1,37 +1,39 @@
-//! A person's events on this server: kept, run, and answered as typed
-//! actions ([`tilo_actions::remote::person_events`]).
+//! A workspace's events on this server: kept, run, and answered as typed
+//! actions ([`tilo_actions::remote::workspace_events`]).
 //!
-//! An event is a Shortcut the server runs for one person
+//! An event is a Shortcut the server runs with no device of anyone's on
 //! ([`tilo_agent_session::bot::event`]). It is run by the engine that runs a
-//! workspace's bots ([`super::installed::BotRunner`]), for that person, and
-//! is no member of the workspace: its program's steps are the server's own (a
-//! judgement, a count, an instruction handed to the person's assistant), so
-//! it changes no record and nothing has to admit it. What it starts is the
-//! assistant's own work, under the assistant's own bounds.
+//! workspace's bots ([`super::installed::BotRunner`]) for the member who set
+//! it up, and is no member of the workspace: its program's steps are the
+//! server's own (a judgement, a count, an instruction handed to that
+//! member's assistant), so it changes no record and nothing has to admit it.
+//! What it starts is the assistant's own work, under the assistant's own
+//! bounds.
 //!
-//! Each event keeps a directory of its own under the server's state: what was
-//! described, what its runner took in, and what it keeps between its runs.
-//! A server that starts again runs every event it kept, and a moment that
-//! passed while it was down fires once.
+//! The events are the workspace's, kept in its store beside its mail and its
+//! models ([`Workspaces::workspace_root`]): every member whose role reaches
+//! them sees and changes the same events, and who set one up is kept as its
+//! author, not its owner ([`EventView::by`]). A server that starts again
+//! runs every event it kept, and a moment that passed while it was down
+//! fires once.
 //!
-//! The actions are answered for the person a caller is, or acts for on a
-//! session that person handed it, and only in a workspace that is theirs.
-//! Whoever else asks, another person's agent included, is refused, and no
-//! action reaches an event of anyone but the asker's own person. Letting an
-//! event's work act unasked ([`person_events::PERMIT`]) is the person's
-//! alone: their agent is refused it.
+//! The actions are answered as the workspace's records are: for a member on
+//! a device of theirs, and their assistant on a session they handed it, in a
+//! workspace whose policy lets them, and for a turn this server carries out
+//! itself on a member's behalf. Whoever else asks, another workspace's
+//! member included, is refused.
 //!
-//! An event says how its result is told to its person
-//! ([`Definition::tells_as`]), and the turn it starts carries that as its
-//! cause. It says so only of its own person's event: nothing here names
-//! anyone else, and whether a thing then reaches that person, and through
-//! their do-not-disturb, stays their own rule's to say.
+//! An event says how its result is told ([`Definition::tells_as`]), and the
+//! turn it starts carries that as its cause. Whether a thing then reaches a
+//! person, and through their do-not-disturb, stays that person's own rule's
+//! to say.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::contract::{
@@ -39,26 +41,27 @@ use tilo_actions::contract::{
     RiskLevel,
 };
 use tilo_actions::params::{ActionParam, ParamType};
-use tilo_actions::remote::person_events::{self, Change, EventView, Events, Named, SetUp, Sort};
 use tilo_actions::remote::person_telling::Kind;
+use tilo_actions::remote::workspace_events::{self, Change, EventView, Events, Named, SetUp, Sort};
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
     CatalogueRow, InvocationReceipt, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionMessage,
+    RemoteActionMessage, pending,
 };
-use tilo_actions::{ActionOutput, ExecutionLocus, OperationKind};
+use tilo_actions::{ActionOutput, ExecutionLocus, MemberId, OperationKind};
 use tilo_agent_session::bot::event::{Definition, told_as_of};
 use tilo_agent_session::bot::host_steps::{HostStepError, HostSteps, Keeps as _};
 use tilo_agent_session::bot::kept::{self, NoteChange};
 use tilo_automation::TriggerSpec;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
+use tilo_user_identity::DeviceCert;
 
 use super::installed::{self, BotRunner, InstalledBot};
 use super::kept::KeptFile;
-use crate::workspaces::Workspaces;
+use crate::workspaces::{Store, Workspaces};
 
-/// The most events one person keeps in one workspace.
+/// The most events one workspace keeps.
 pub const MAX_EVENTS: usize = 200;
 /// What an event's installation says it was installed from.
 const ENTRY: &str = "event";
@@ -66,21 +69,22 @@ const ENTRY: &str = "event";
 const DESCRIPTION: &str = "event.json";
 /// The file an event's runner keeps what it took in.
 const PROGRESS: &str = "progress.json";
-
-/// Whose events: the workspace, and the person by their root, hex.
-type Owner = (String, String);
+/// The folder of the workspace's store its events are kept in.
+const FOLDER: &str = "events";
 
 /// What answers the steps of one event.
 type StepsFor = Arc<dyn Fn(&Definition) -> Arc<dyn HostSteps> + Send + Sync>;
 
-/// Whether `message` is for a person's events.
+/// Whether `message` is for a workspace's events.
 #[must_use]
 pub fn addresses(message: &RemoteActionMessage) -> bool {
     match message {
         RemoteActionMessage::CatalogueRequest { query, .. } => {
-            query.provider.as_deref() == Some(person_events::PROVIDER)
+            query.provider.as_deref() == Some(workspace_events::PROVIDER)
         }
-        RemoteActionMessage::Invoke(request) => request.target.provider == person_events::PROVIDER,
+        RemoteActionMessage::Invoke(request) => {
+            request.target.provider == workspace_events::PROVIDER
+        }
         _ => false,
     }
 }
@@ -108,7 +112,28 @@ pub fn not_served(message: RemoteActionMessage) -> Option<Pending<RemoteActionMe
     }
 }
 
-/// Who asks for a person's events.
+/// Who asks of a workspace's events: a caller on a device the handshake
+/// verified, or a turn this server carries out with no device behind it.
+#[derive(Clone, Debug)]
+pub enum Authority {
+    /// A caller on `certificate`'s device. What an agent on a person's
+    /// session changes asks its person first, unless they answered that
+    /// action in advance.
+    Device(Box<DeviceCert>),
+    /// A turn this server carries out for a member, with no device behind
+    /// it: the member acting as themselves.
+    Turn,
+}
+
+impl Authority {
+    /// The authority of a caller on the device `certificate` names.
+    #[must_use]
+    pub fn of(certificate: &DeviceCert) -> Self {
+        Self::Device(Box::new(certificate.clone()))
+    }
+}
+
+/// Who asks for a workspace's events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Asker {
     /// The person themselves, on a device of theirs.
@@ -119,7 +144,7 @@ pub(super) enum Asker {
 
 /// One event running here.
 struct Running {
-    definition: Definition,
+    stored: Stored,
     kept: Arc<KeptFile>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -130,35 +155,59 @@ impl Drop for Running {
     }
 }
 
-struct Inner {
-    workspaces: Workspaces,
-    /// Where every event keeps its directory.
-    state: PathBuf,
-    /// What the server answers an event's steps with.
-    steps: StepsFor,
-    running: Mutex<BTreeMap<Owner, BTreeMap<String, Running>>>,
+/// One event as its store keeps it: what it is, who set it up, and the person
+/// whose assistant its instruction starts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Stored {
+    definition: Definition,
+    /// Who set it up, as authorship: its changes are the workspace's.
+    by: MemberId,
+    /// The member whose assistant its instruction starts, by their root, hex:
+    /// the one who set it up.
+    person: String,
 }
 
-/// The events of this server's people: every one it keeps runs for as long as
-/// this, or a clone of it, is held.
+/// Who the policy answered for, and where.
+pub(super) struct Theirs {
+    /// The workspace as its store names it.
+    pub workspace: String,
+    /// The person behind the caller: the person themselves, or the one whose
+    /// agent asks.
+    pub person: [u8; 32],
+    /// Whether the caller is that person or an agent on their session.
+    pub asker: Asker,
+    /// Who makes a change now, as authorship keeps it.
+    pub by: MemberId,
+}
+
+struct Inner {
+    workspaces: Workspaces,
+    /// What the server answers an event's steps with.
+    steps: StepsFor,
+    /// The events running in each workspace, by their id.
+    running: Mutex<BTreeMap<String, BTreeMap<String, Running>>>,
+}
+
+/// The events of this server's workspaces: every one it keeps runs for as
+/// long as this, or a clone of it, is held.
 #[derive(Clone)]
-pub struct PersonEvents {
+pub struct WorkspaceEvents {
     inner: Arc<Inner>,
 }
 
-impl PersonEvents {
-    /// Run every event kept under `state`, and keep new ones there. Their
-    /// steps are answered by this server ([`super::assistant`]): with
-    /// `actions`, the server's action service, an instruction an event hands
-    /// over starts a turn of its person's assistant. Called on the runtime
-    /// the events work on.
+impl WorkspaceEvents {
+    /// Run every event kept in its workspace's store, and keep new ones
+    /// there. Their steps are answered by this server
+    /// ([`super::assistant`]): with `actions`, the server's action service,
+    /// an instruction an event hands over starts a turn of its author's
+    /// assistant. Called on the runtime the events work on.
     #[must_use]
     pub fn start(
         workspaces: Workspaces,
-        state: PathBuf,
         actions: Option<tilo_agent_session::workspace_actions::WorkspaceActions>,
     ) -> Self {
-        Self::start_behind(workspaces, state, actions, None)
+        Self::start_behind(workspaces, actions, None)
     }
 
     /// [`Self::start`], with `before` put in front of what answers each
@@ -167,7 +216,6 @@ impl PersonEvents {
     #[must_use]
     pub fn start_behind(
         workspaces: Workspaces,
-        state: PathBuf,
         actions: Option<tilo_agent_session::workspace_actions::WorkspaceActions>,
         before: Option<super::initiative::Before>,
     ) -> Self {
@@ -200,24 +248,22 @@ impl PersonEvents {
             Some(before) => Arc::new(move |event: &Definition| before(steps(event))),
             None => steps,
         };
-        Self::started(workspaces, state, steps)
+        Self::started(workspaces, steps)
     }
 
     /// [`Self::start`], with what answers the events' steps given.
     #[must_use]
-    pub fn start_with(workspaces: Workspaces, state: PathBuf, steps: Arc<dyn HostSteps>) -> Self {
+    pub fn start_with(workspaces: Workspaces, steps: Arc<dyn HostSteps>) -> Self {
         Self::started(
             workspaces,
-            state,
             Arc::new(move |_: &Definition| Arc::clone(&steps)),
         )
     }
 
-    fn started(workspaces: Workspaces, state: PathBuf, steps: StepsFor) -> Self {
+    fn started(workspaces: Workspaces, steps: StepsFor) -> Self {
         let events = Self {
             inner: Arc::new(Inner {
                 workspaces,
-                state,
                 steps,
                 running: Mutex::default(),
             }),
@@ -230,49 +276,49 @@ impl PersonEvents {
     /// start is said and left where it is, so a fixed server runs it again.
     fn resume_kept(&self) {
         let mut kept = Vec::new();
-        for (workspace, at) in directories(&self.inner.state) {
-            for (person, at) in directories(&at) {
-                let owner = (workspace.clone(), person);
-                for (id, dir) in directories(&at) {
-                    let started = std::fs::read(dir.join(DESCRIPTION))
-                        .map_err(|error| error.to_string())
-                        .and_then(|bytes| {
-                            serde_json::from_slice::<Definition>(&bytes)
-                                .map_err(|error| error.to_string())
-                        })
-                        .and_then(|definition| self.run(&owner, definition, &dir));
-                    match started {
-                        Ok(event) => kept.push((owner.clone(), id, event)),
-                        Err(error) => {
-                            tracing::warn!(workspace = %owner.0, event = %id, %error, "a kept event does not run");
-                        }
+        for (hexed, at) in directories(&self.inner.workspaces.workspace_stores_root()) {
+            let Some(workspace) = workspace_of(&hexed) else {
+                continue;
+            };
+            for (id, dir) in directories(&at.join(FOLDER)) {
+                let started =
+                    read_stored(&dir).and_then(|stored| self.run(&workspace, stored, &dir));
+                match started {
+                    Ok(event) => kept.push((workspace.clone(), id, event)),
+                    Err(error) => {
+                        tracing::warn!(%workspace, event = %id, %error, "a kept event does not run");
                     }
                 }
             }
         }
         let mut running = self.inner.running.lock_recover();
-        for (owner, id, event) in kept {
-            running.entry(owner).or_default().insert(id, event);
+        for (workspace, id, event) in kept {
+            running.entry(workspace).or_default().insert(id, event);
         }
     }
 
-    fn dir(&self, owner: &Owner, id: &str) -> PathBuf {
-        self.inner.state.join(&owner.0).join(&owner.1).join(id)
+    fn dir(&self, workspace: &str, id: &str) -> PathBuf {
+        self.inner
+            .workspaces
+            .workspace_root(workspace)
+            .join(FOLDER)
+            .join(id)
     }
 
-    /// Keep `definition` in its directory and run it.
-    fn begin(&self, owner: &Owner, definition: Definition) -> Result<Running, String> {
-        let dir = self.dir(owner, &definition.id);
+    /// Keep `stored` in its directory and run it.
+    fn begin(&self, workspace: &str, stored: Stored) -> Result<Running, String> {
+        let dir = self.dir(workspace, &stored.definition.id);
         std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-        let bytes = serde_json::to_vec_pretty(&definition).map_err(|error| error.to_string())?;
+        let bytes = serde_json::to_vec_pretty(&stored).map_err(|error| error.to_string())?;
         tilo_files::native::atomic::write(&dir.join(DESCRIPTION), &bytes)
             .map_err(|error| error.to_string())?;
-        self.run(owner, definition, &dir)
+        self.run(workspace, stored, &dir)
     }
 
-    /// Run `definition` for its person from what `dir` keeps: where its
+    /// Run `stored` for its author's person from what `dir` keeps: where its
     /// runner had read up to, its counts and its note.
-    fn run(&self, owner: &Owner, definition: Definition, dir: &Path) -> Result<Running, String> {
+    fn run(&self, workspace: &str, stored: Stored, dir: &Path) -> Result<Running, String> {
+        let definition = &stored.definition;
         let bot = InstalledBot {
             installation: definition.id.clone(),
             entry: ENTRY.to_owned(),
@@ -287,20 +333,33 @@ impl PersonEvents {
         let key = SigningKey::from_bytes(&rand::random());
         let runner = BotRunner::new(
             self.inner.workspaces.clone(),
-            owner.0.clone(),
+            workspace.to_owned(),
             self.inner.workspaces.governor().clone(),
             key,
             bot,
             BTreeMap::new(),
             dir.join(PROGRESS),
         )?
-        .runs_for(owner.1.clone(), (self.inner.steps)(&definition));
+        .runs_for(stored.person.clone(), (self.inner.steps)(definition));
         let kept = runner.kept();
         Ok(Running {
-            definition,
+            stored,
             kept,
             task: tokio::spawn(runner.run()),
         })
+    }
+
+    /// Whether an event of `workspace` this server keeps has the id `event`.
+    /// For the server's own code, which carries out turns with no caller to
+    /// weigh: an action is answered as the workspace's policy decides it
+    /// instead.
+    #[must_use]
+    pub fn keeps(&self, workspace: &str, event: &str) -> bool {
+        self.inner
+            .running
+            .lock_recover()
+            .get(workspace)
+            .is_some_and(|theirs| theirs.contains_key(event))
     }
 
     /// Answer `message` for `workspace_id`: the actions' rows, or one
@@ -310,70 +369,208 @@ impl PersonEvents {
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: Authority,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
         match message {
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
-                Some(Pending::ready(RemoteActionMessage::CatalogueResponse {
-                    correlation,
-                    result: Ok(self.catalogue(workspace_id, caller, &query)),
-                }))
+                let page = match runtime() {
+                    Some(runtime) => {
+                        let (completer, answer) = pending();
+                        let (this, caller) = (self.clone(), caller.clone());
+                        runtime.spawn(async move {
+                            let page = this
+                                .catalogue(workspace_id, &caller, &authority, &query)
+                                .await;
+                            completer.complete(RemoteActionMessage::CatalogueResponse {
+                                correlation,
+                                result: Ok(page),
+                            });
+                        });
+                        answer
+                    }
+                    None => Pending::ready(RemoteActionMessage::CatalogueResponse {
+                        correlation,
+                        result: Err(no_runtime()),
+                    }),
+                };
+                Some(page)
             }
-            RemoteActionMessage::Invoke(request) => Some(Pending::ready(
-                RemoteActionMessage::Receipt(self.invoke(workspace_id, caller, &request)),
-            )),
+            RemoteActionMessage::Invoke(request) => Some(
+                self.invoking(workspace_id, caller, authority, request)
+                    .map(RemoteActionMessage::Receipt),
+            ),
             _ => None,
         }
     }
 
-    /// The actions `caller` is offered on their person's events in
-    /// `workspace_id`: none for a caller they are not answered for.
+    /// Take one action for `caller`, answered when the workspace's policy has.
     #[must_use]
-    pub fn catalogue(
+    pub fn invoking(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: Authority,
+        request: InvokeRequest,
+    ) -> Pending<InvocationReceipt> {
+        let invocation = request.invocation;
+        let Some(runtime) = runtime() else {
+            return Pending::ready(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Rejected {
+                    error: no_runtime(),
+                },
+            });
+        };
+        let (completer, answer) = pending();
+        let (this, caller) = (self.clone(), caller.clone());
+        runtime.spawn(async move {
+            let receipt = this
+                .invoke(workspace_id, &caller, &authority, &request)
+                .await;
+            completer.complete(receipt);
+        });
+        answer
+    }
+
+    /// The actions `caller` is offered on `workspace_id`'s events: none for
+    /// a caller the workspace's policy does not let reach them.
+    #[must_use]
+    pub async fn catalogue(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        authority: &Authority,
         query: &CatalogueQuery,
     ) -> CataloguePage {
-        let rows = self
-            .asking(workspace_id, caller)
-            .map(|(_, asker)| rows(asker))
-            .unwrap_or_default();
-        let mut page = CataloguePage::from_rows(String::from("0"), rows, query);
+        let mut page = match self
+            .reach(
+                workspace_id,
+                caller,
+                authority,
+                workspace_events::LIST,
+                ActionKind::Read,
+            )
+            .await
+        {
+            Ok(_) => CataloguePage::from_rows(String::from("0"), rows(), query),
+            Err(_) => CataloguePage::from_rows(String::from("0"), Vec::new(), query),
+        };
         if query.provider.is_none() {
-            page.providers = self.provider(workspace_id, caller).into_iter().collect();
+            page.providers = self
+                .provider(workspace_id, caller, authority)
+                .await
+                .into_iter()
+                .collect();
         }
         page
     }
 
-    /// The events' provider as a catalogue lists it for `caller`, when
-    /// they are answered here.
+    /// The events' provider as a catalogue lists it for `caller`, when the
+    /// workspace's policy lets them reach its events.
     #[must_use]
-    pub fn provider(
+    pub async fn provider(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: &Authority,
     ) -> Option<CatalogueProvider> {
-        self.asking(workspace_id, caller)
-            .ok()
-            .map(|_| CatalogueProvider {
-                provider: person_events::PROVIDER.to_owned(),
-                app_id: person_events::PROVIDER.to_owned(),
-                workspace: workspace_id.to_string(),
-                document_id: String::new(),
-                browsable: true,
-            })
+        self.reach(
+            workspace_id,
+            caller,
+            authority,
+            workspace_events::LIST,
+            ActionKind::Read,
+        )
+        .await
+        .ok()
+        .map(|_| CatalogueProvider {
+            provider: workspace_events::PROVIDER.to_owned(),
+            app_id: workspace_events::PROVIDER.to_owned(),
+            workspace: workspace_id.to_string(),
+            document_id: String::new(),
+            browsable: true,
+        })
+    }
+
+    /// Who `caller` asks for and as what, as the workspace's policy decides
+    /// it: the member themselves on a device the handshake verified (an
+    /// agent's change first put to their person where the policy asks), or a
+    /// turn this server carries out for them. A bot, an app, and an agent no
+    /// person's session stands behind are told what a caller asking for
+    /// something that does not exist is told.
+    ///
+    /// # Errors
+    /// [`ActionCallError::UnknownAction`] for a caller the workspace does not
+    /// have or a workspace not governed here;
+    /// [`ActionCallError::NotPermitted`] for one whose role or grants do not
+    /// reach.
+    pub(super) async fn reach(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        authority: &Authority,
+        action: &str,
+        effect: ActionKind,
+    ) -> Result<Theirs, ActionCallError> {
+        let asker = asker_of(caller).ok_or(ActionCallError::UnknownAction)?;
+        if caller
+            .workspace()
+            .is_some_and(|confined| WorkspaceId::parse(confined) != Some(workspace_id))
+        {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let workspaces = &self.inner.workspaces;
+        match authority {
+            Authority::Device(certificate) => {
+                let reach = workspaces
+                    .reaching_allowed(
+                        (Some(workspace_id), caller, Some(certificate.as_ref())),
+                        Store::EVENTS,
+                        action,
+                        effect,
+                    )
+                    .await?;
+                Ok(Theirs {
+                    workspace: reach.workspace.to_string(),
+                    person: reach.person,
+                    asker,
+                    by: member_of(caller, &reach.person),
+                })
+            }
+            Authority::Turn => {
+                // A turn has no device behind it: it is the member acting as
+                // themselves.
+                let person = caller
+                    .user_public_key()
+                    .copied()
+                    .ok_or(ActionCallError::UnknownAction)?;
+                if !workspaces
+                    .person_reaches(workspace_id, &person, Store::EVENTS, action, effect)
+                    .await
+                {
+                    return Err(ActionCallError::NotPermitted);
+                }
+                Ok(Theirs {
+                    workspace: workspace_id.to_string(),
+                    person,
+                    asker,
+                    by: member_of(caller, &person),
+                })
+            }
+        }
     }
 
     /// Take one action for `caller`, answered at once.
     #[must_use]
-    pub fn invoke(
+    pub async fn invoke(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: &Authority,
         request: &InvokeRequest,
     ) -> InvocationReceipt {
-        let status = match self.answer(workspace_id, caller, request) {
+        let status = match self.answer(workspace_id, caller, authority, request).await {
             Ok(value) => ReceiptStatus::Completed {
                 output: ActionOutput {
                     value: Some(value),
@@ -388,97 +585,54 @@ impl PersonEvents {
         }
     }
 
-    /// The person `caller` asks for and as what: the person themselves, or
-    /// an agent on a session they handed it, in a workspace that is that
-    /// person's. A bot, an app, and an agent no person's session stands
-    /// behind are told what a caller asking for something that does not
-    /// exist is told.
-    pub(super) fn asking(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-    ) -> Result<([u8; 32], Asker), ActionCallError> {
-        let acting = caller.acting();
-        let asker = if acting.app().is_some() {
-            None
-        } else if acting.is_person() {
-            Some(Asker::Person)
-        } else if acting.is_agent() && caller.is_session_delegated() {
-            Some(Asker::Assistant)
-        } else {
-            None
-        };
-        let (Some(asker), Some(person)) = (asker, caller.user_public_key().copied()) else {
-            return Err(ActionCallError::UnknownAction);
-        };
-        if caller
-            .workspace()
-            .is_some_and(|confined| WorkspaceId::parse(confined) != Some(workspace_id))
-        {
-            return Err(ActionCallError::UnknownAction);
-        }
-        let workspaces = &self.inner.workspaces;
-        // Where a server keeps workspaces of people's own, a workspace is
-        // whose the server says it is. A server that keeps none governs its
-        // workspaces for its own person, and they are that person's.
-        let theirs = if workspaces.keeps_own_workspaces() {
-            workspaces.owns(&person, &workspace_id.to_string())
-        } else {
-            workspaces.governor().user_public_key == person
-        };
-        if !theirs {
-            return Err(ActionCallError::Refused {
-                reason: "events are set up in a workspace of your own".into(),
-            });
-        }
-        Ok((person, asker))
-    }
-
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "an action is taken whole: a person's events stay locked until it is answered"
+        reason = "an action is taken whole: a workspace's events stay locked until it is answered"
     )]
-    fn answer(
+    async fn answer(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: &Authority,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let (person, _asker) = self.asking(workspace_id, caller)?;
-        let owner = (workspace_id.to_string(), hex::encode(person));
+        let action = request.target.address.action.as_str();
+        let theirs = self
+            .reach(workspace_id, caller, authority, action, effect_of(action))
+            .await?;
         let mut running = self.inner.running.lock_recover();
-        let theirs = running.entry(owner.clone()).or_default();
-        match request.target.address.action.as_str() {
-            person_events::LIST => said(&listed(theirs)),
-            person_events::SET_UP => {
+        let kept = running.entry(theirs.workspace.clone()).or_default();
+        match action {
+            workspace_events::LIST => said(&listed(kept)),
+            workspace_events::SET_UP => {
                 let wanted: SetUp = argument(
                     request,
                     "an event to set up names itself, what starts it and what to do then",
                 )?;
-                said(&self.set_up(&owner, theirs, wanted)?)
+                said(&self.set_up(&theirs, kept, wanted)?)
             }
-            person_events::CHANGE => {
+            workspace_events::CHANGE => {
                 let changes: Change = argument(request, "a change names the event it changes")?;
-                said(&self.change(&owner, theirs, changes)?)
+                said(&self.change(&theirs, kept, changes)?)
             }
-            action @ (person_events::PAUSE | person_events::RESUME) => {
+            action @ (workspace_events::PAUSE | workspace_events::RESUME) => {
                 let named: Named = argument(request, "an event is named by its id")?;
-                let event = theirs.get(&named.event).ok_or_else(no_such_event)?;
+                let event = kept.get(&named.event).ok_or_else(no_such_event)?;
                 event
                     .kept
-                    .pause(action == person_events::PAUSE)
+                    .pause(action == workspace_events::PAUSE)
                     .map_err(step_error)?;
                 said(&view(event))
             }
-            person_events::REMOVE => {
+            workspace_events::REMOVE => {
                 let named: Named = argument(request, "an event is named by its id")?;
                 // Dropped, its runner stops; then what it kept goes.
-                drop(theirs.remove(&named.event).ok_or_else(no_such_event)?);
-                let dir = self.dir(&owner, &named.event);
+                drop(kept.remove(&named.event).ok_or_else(no_such_event)?);
+                let dir = self.dir(&theirs.workspace, &named.event);
                 if let Err(error) = std::fs::remove_dir_all(&dir) {
                     tracing::warn!(event = %named.event, %error, "a removed event's directory stays");
                 }
-                said(&listed(theirs))
+                said(&listed(kept))
             }
             _ => Err(ActionCallError::UnknownAction),
         }
@@ -486,13 +640,13 @@ impl PersonEvents {
 
     fn set_up(
         &self,
-        owner: &Owner,
-        theirs: &mut BTreeMap<String, Running>,
+        theirs: &Theirs,
+        kept: &mut BTreeMap<String, Running>,
         asked: SetUp,
     ) -> Result<EventView, ActionCallError> {
-        if theirs.len() >= MAX_EVENTS {
+        if kept.len() >= MAX_EVENTS {
             return Err(refused(format!(
-                "a person keeps at most {MAX_EVENTS} events in a workspace"
+                "a workspace keeps at most {MAX_EVENTS} events"
             )));
         }
         let definition = Definition {
@@ -509,7 +663,12 @@ impl PersonEvents {
         .map_err(refused)?;
         watched_address(&definition).map_err(refused)?;
         let id = definition.id.clone();
-        let event = self.begin(owner, definition).map_err(unavailable)?;
+        let stored = Stored {
+            definition,
+            by: theirs.by.clone(),
+            person: hex::encode(theirs.person),
+        };
+        let event = self.begin(&theirs.workspace, stored).map_err(unavailable)?;
         let note = NoteChange {
             instruction: asked.purpose,
             style: asked.style,
@@ -521,22 +680,22 @@ impl PersonEvents {
         {
             // An event is set up whole or not at all.
             drop(event);
-            let _ = std::fs::remove_dir_all(self.dir(owner, &id));
+            let _ = std::fs::remove_dir_all(self.dir(&theirs.workspace, &id));
             return Err(step_error(error));
         }
         let view = view(&event);
-        theirs.insert(id, event);
+        kept.insert(id, event);
         Ok(view)
     }
 
     fn change(
         &self,
-        owner: &Owner,
-        theirs: &mut BTreeMap<String, Running>,
+        theirs: &Theirs,
+        kept: &mut BTreeMap<String, Running>,
         asked: Change,
     ) -> Result<EventView, ActionCallError> {
-        let current = theirs.get(&asked.event).ok_or_else(no_such_event)?;
-        let mut definition = current.definition.clone();
+        let current = kept.get(&asked.event).ok_or_else(no_such_event)?;
+        let mut definition = current.stored.definition.clone();
         if let Some(name) = asked.name {
             definition.name = name;
         }
@@ -568,17 +727,83 @@ impl PersonEvents {
         if note != NoteChange::default() {
             current.kept.keep(note).map_err(step_error)?;
         }
-        if definition != current.definition {
+        if definition != current.stored.definition {
             // The same event runs another program from now on: its runner
             // stops, and the new one carries on from what the event keeps,
             // its count and its note included. A changed trigger starts its
-            // own times.
-            drop(theirs.remove(&asked.event));
-            let event = self.begin(owner, definition).map_err(unavailable)?;
-            theirs.insert(asked.event.clone(), event);
+            // own times. Its author stays who set it up.
+            let author = current.stored.clone();
+            drop(kept.remove(&asked.event));
+            let event = self
+                .begin(
+                    &theirs.workspace,
+                    Stored {
+                        definition,
+                        ..author
+                    },
+                )
+                .map_err(unavailable)?;
+            kept.insert(asked.event.clone(), event);
         }
-        theirs.get(&asked.event).map(view).ok_or_else(no_such_event)
+        kept.get(&asked.event).map(view).ok_or_else(no_such_event)
     }
+}
+
+/// The runtime the events work on, where there is one.
+fn runtime() -> Option<tokio::runtime::Handle> {
+    tokio::runtime::Handle::try_current().ok()
+}
+
+fn no_runtime() -> ActionCallError {
+    unavailable("this server is not running its workspaces".to_owned())
+}
+
+/// Who asks, as the events answer a person and their assistant; none for a
+/// bot, an app, or an agent no person's session stands behind.
+fn asker_of(caller: &Caller) -> Option<Asker> {
+    let acting = caller.acting();
+    if acting.app().is_some() {
+        None
+    } else if acting.is_person() {
+        Some(Asker::Person)
+    } else if acting.is_agent() && caller.is_session_delegated() {
+        Some(Asker::Assistant)
+    } else {
+        None
+    }
+}
+
+/// Who makes a change now, as authorship keeps it: the agent on a session, or
+/// the person themselves.
+fn member_of(caller: &Caller, person: &[u8; 32]) -> MemberId {
+    if caller.acting().is_agent() {
+        let agent = caller
+            .agent_name()
+            .or_else(|| caller.acting().agent_id())
+            .unwrap_or_default();
+        MemberId::agent(agent.to_owned())
+    } else {
+        MemberId::person(hex::encode(person))
+    }
+}
+
+/// What an action does to the workspace's events, as its policy weighs it.
+const fn effect_of(action: &str) -> ActionKind {
+    match action.as_bytes() {
+        b"list" => ActionKind::Read,
+        _ => ActionKind::Undoable,
+    }
+}
+
+/// The workspace whose store folder `hexed` names, where it names one.
+fn workspace_of(hexed: &str) -> Option<String> {
+    String::from_utf8(hex::decode(hexed).ok()?).ok()
+}
+
+/// What `dir` keeps of an event: none where it does not read.
+fn read_stored(dir: &Path) -> Result<Stored, String> {
+    let bytes = std::fs::read(dir.join(DESCRIPTION)).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
 /// The directories in `at`, by name; none where `at` is no directory.
@@ -619,10 +844,10 @@ pub(super) fn watched_address(definition: &Definition) -> Result<(), String> {
     tilo_web_search::check_url(&address).map_err(|refusal| refusal.to_string())
 }
 
-/// `event` as its person reads it now.
+/// `event` as a member reads it now.
 fn view(event: &Running) -> EventView {
     let kept = event.kept.read();
-    let definition = &event.definition;
+    let definition = &event.stored.definition;
     let on = !kept.paused();
     let next_at_ms = definition
         .trigger()
@@ -651,17 +876,18 @@ fn view(event: &Running) -> EventView {
         note: kept::note_value(kept.note()),
         on,
         runs: kept.runs(),
-        last_run: kept.last_run().map(|last| person_events::LastRun {
+        last_run: kept.last_run().map(|last| workspace_events::LastRun {
             at_ms: last.at_ms,
             ended: match last.ended {
-                kept::Ended::Ran => person_events::Ended::Ran,
-                kept::Ended::Waits => person_events::Ended::Waits,
-                kept::Ended::Refused => person_events::Ended::Refused,
-                kept::Ended::Failed => person_events::Ended::Failed,
+                kept::Ended::Ran => workspace_events::Ended::Ran,
+                kept::Ended::Waits => workspace_events::Ended::Waits,
+                kept::Ended::Refused => workspace_events::Ended::Refused,
+                kept::Ended::Failed => workspace_events::Ended::Failed,
             },
             why: last.why.clone(),
         }),
         set_up_at_ms: definition.set_up_at_ms,
+        by: event.stored.by.clone(),
     }
 }
 
@@ -674,7 +900,7 @@ fn unavailable(reason: String) -> ActionCallError {
 }
 
 fn no_such_event() -> ActionCallError {
-    refused("you keep no such event here".to_owned())
+    refused("the workspace keeps no such event".to_owned())
 }
 
 fn step_error(error: HostStepError) -> ActionCallError {
@@ -713,10 +939,9 @@ struct Offered {
     retry: RetryPolicy,
 }
 
-/// The rows the events' actions are offered as to `asker`. What only the
-/// person themselves may do is not offered to their agent.
-fn rows(_asker: Asker) -> Vec<CatalogueRow> {
-    for_their_assistant().into_iter().map(row).collect()
+/// The rows the events' actions are offered as.
+fn rows() -> Vec<CatalogueRow> {
+    offered().into_iter().map(row).collect()
 }
 
 /// The parameter that names an event.
@@ -739,18 +964,18 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
         }
     };
     vec![
-        needed("name", "What its person reads it by, in a few words."),
+        needed("name", "What it is read by, in a few words."),
         needed(
             "when",
             "What starts it, as one line: `once at 2026-11-17T11:32:00Z` (a moment, with its \
              offset from UTC), `every day at 09:00`, `every Monday, Thursday at 17:30` (this \
              host's clock), `every 3600 seconds`, `15 minutes before \"entries.*.start\" in a \
              \"tilo.accounts.calendars\" where categories is \"Travel\"` (a moment before, `at` \
-             or after the start or the end, `entries.*.end`, of each entry in its person's \
+             or after the start or the end, `entries.*.end`, of each entry in the workspace's \
              calendars, every occurrence of one that repeats; each `where` names a field of the \
              entry and the value it holds, and what the assistant is told carries the entry), \
              `when something new is in \"tilo.accounts.mail\"` (a message arrives in a mail \
-             account its person named you for; `at \"ACCOUNT\"` after the kind keeps it to one \
+             account named for its assistant; `at \"ACCOUNT\"` after the kind keeps it to one \
              account, and each `where` names a field of the message and the value it holds, \
              such as `from` for the sender's address; what you are told carries who wrote, \
              what about and the start of the words, as data), `when something new is in \
@@ -766,12 +991,12 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
         ),
         needed(
             "instruction",
-            "What the person's assistant is told to do when it fires.",
+            "What its author's assistant is told to do when it fires.",
         ),
         ActionParam::optional(
             "onlyIf",
             ParamType::Text,
-            "A question the person's own model answers with yes or no about what happened; the \
+            "A question the author's own model answers with yes or no about what happened; the \
              event goes on only on a yes. Empty asks none.",
         ),
         ActionParam::optional(
@@ -782,7 +1007,7 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
         ActionParam::optional(
             "toldAs",
             ParamType::Text,
-            "How its result is told to your person: `brief` reaches them with a notice every \
+            "How its result is told to its author: `brief` reaches them with a notice every \
              time it fires, as a reminder does; `news` stays in their list and reaches them \
              only where their own rule calls it important; `reminder` is something they asked \
              to be reminded of. Left out, a moment (`once at`) is a reminder and everything \
@@ -792,13 +1017,13 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
         ActionParam::optional(
             "purpose",
             ParamType::Text,
-            "What the event is for, in its person's words.",
+            "What the event is for, in its author's words.",
         ),
         ActionParam::optional("style", ParamType::Text, "How what it writes should read."),
         ActionParam::optional(
             "guidance",
             ParamType::Text,
-            "What its person cares about and how the work is done.",
+            "What its author cares about and how the work is done.",
         ),
     ]
 }
@@ -812,12 +1037,12 @@ fn changed() -> Vec<ActionParam> {
         ActionParam::optional(
             "accepted",
             ParamType::Text,
-            "An answer the person accepted, to keep as an example.",
+            "An answer the author accepted, to keep as an example.",
         ),
         ActionParam::optional(
             "rejected",
             ParamType::Text,
-            "An answer the person rejected, to keep as an example.",
+            "An answer the author rejected, to keep as an example.",
         ),
         ActionParam::optional(
             "kept",
@@ -828,32 +1053,31 @@ fn changed() -> Vec<ActionParam> {
     params
 }
 
-/// What a person and their assistant are both offered.
-fn for_their_assistant() -> Vec<Offered> {
+/// What every member whose role reaches the workspace's events is offered.
+fn offered() -> Vec<Offered> {
     vec![
         Offered {
-            action: person_events::LIST,
+            action: workspace_events::LIST,
             label: "List events",
-            description: "Your person's scheduled work and events in this workspace: what starts \
-                          each, its filter, count and note, whether it is on, and how its last \
-                          run ended.",
+            description: "The workspace's scheduled work and events: what starts each, its \
+                          filter, count and note, whether it is on, and how its last run ended.",
             params: Vec::new(),
             kind: ActionKind::Read,
             retry: RetryPolicy::Idempotent,
         },
         Offered {
-            action: person_events::SET_UP,
+            action: workspace_events::SET_UP,
             label: "Set up an event",
-            description: "Have the host do something for your person at a time or when something \
-                          happens, with no device of theirs on: a reminder, a summary every \
-                          morning, a look at every tenth thing that arrives. When it fires you \
-                          are told the instruction.",
+            description: "Have the host do something at a time or when something happens, with \
+                          no device on: a reminder, a summary every morning, a look at every \
+                          tenth thing that arrives. When it fires its author's assistant is told \
+                          the instruction.",
             params: described(true),
             kind: ActionKind::Undoable,
             retry: RetryPolicy::AtMostOnce,
         },
         Offered {
-            action: person_events::CHANGE,
+            action: workspace_events::CHANGE,
             label: "Change an event",
             description: "Change what starts an event, its filter, its count, its instruction or \
                           its note. What is left out stays as it is.",
@@ -862,7 +1086,7 @@ fn for_their_assistant() -> Vec<Offered> {
             retry: RetryPolicy::Idempotent,
         },
         Offered {
-            action: person_events::PAUSE,
+            action: workspace_events::PAUSE,
             label: "Pause an event",
             description: "Stop an event from firing until it is resumed. What comes while it is \
                           paused is not answered later.",
@@ -871,7 +1095,7 @@ fn for_their_assistant() -> Vec<Offered> {
             retry: RetryPolicy::Idempotent,
         },
         Offered {
-            action: person_events::RESUME,
+            action: workspace_events::RESUME,
             label: "Resume an event",
             description: "Let a paused event fire again.",
             params: vec![event_param()],
@@ -879,7 +1103,7 @@ fn for_their_assistant() -> Vec<Offered> {
             retry: RetryPolicy::Idempotent,
         },
         Offered {
-            action: person_events::REMOVE,
+            action: workspace_events::REMOVE,
             label: "Remove an event",
             description: "Remove an event for good, with its count and its note.",
             params: vec![event_param()],
@@ -893,12 +1117,12 @@ fn for_their_assistant() -> Vec<Offered> {
 fn row(offered: Offered) -> CatalogueRow {
     CatalogueRow {
         offered: None,
-        provider: person_events::PROVIDER.to_owned(),
-        app_id: person_events::PROVIDER.to_owned(),
+        provider: workspace_events::PROVIDER.to_owned(),
+        app_id: workspace_events::PROVIDER.to_owned(),
         parent_resource: String::new(),
         resource: CatalogueResource {
-            id: person_events::RESOURCE.to_owned(),
-            kind: person_events::KIND.to_owned(),
+            id: workspace_events::RESOURCE.to_owned(),
+            kind: workspace_events::KIND.to_owned(),
             label: "Events".to_owned(),
             presentation: None,
         },
@@ -906,8 +1130,8 @@ fn row(offered: Offered) -> CatalogueRow {
             did: None,
             state: tilo_actions::ActionState::default(),
             semantic_identity: None,
-            address: ActionAddress::new(person_events::RESOURCE, offered.action),
-            resource_kind: person_events::KIND.to_owned(),
+            address: ActionAddress::new(workspace_events::RESOURCE, offered.action),
+            resource_kind: workspace_events::KIND.to_owned(),
             resource_label: "Events".to_owned(),
             action_label: offered.label.to_owned(),
             keywords: Vec::new(),

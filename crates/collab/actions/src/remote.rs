@@ -63,9 +63,7 @@ mod pending;
 pub mod person_accounts;
 pub mod person_asking;
 pub mod person_connections;
-pub mod person_events;
 pub mod person_formats;
-pub mod person_initiative;
 pub mod person_models;
 pub mod person_telling;
 pub mod person_vault;
@@ -88,6 +86,8 @@ pub use watch::{CHANGED_UNAVAILABLE, Here, HereWindow, WatchScope};
 mod window_actions;
 mod within;
 pub mod workspace_activity;
+pub mod workspace_events;
+pub mod workspace_initiative;
 pub mod workspace_invocations;
 
 pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;

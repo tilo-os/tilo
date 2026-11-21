@@ -11,7 +11,7 @@
 
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::Caller;
-use tilo_actions::remote::person_initiative::ProposedTask;
+use tilo_actions::remote::workspace_initiative::ProposedTask;
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_peer_state::document_frame::DocumentRoute;
 

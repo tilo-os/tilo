@@ -83,7 +83,7 @@ async fn a_turn_a_reminder_started_tells_its_person_how_it_ended_and_their_own_a
         "when": when,
         "instruction": "Say that it is time to stand up.",
     });
-    up.take(&workspace, &theirs, person_events::SET_UP, &set_up);
+    up.take(&workspace, &theirs, workspace_events::SET_UP, &set_up);
     let second = asked_as(&up, &workspace, "Stand up").await;
     let agents = up.agents(None);
     let turns = agents.turns(&workspace).await.unwrap();

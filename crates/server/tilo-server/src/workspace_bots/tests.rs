@@ -20,7 +20,7 @@ use tilo_agent_session::bot::host_steps::{
     HostStepError, HostSteps, Instruction, Judgement, Question,
 };
 
-/// A person's events through the host's own actions.
+/// A workspace's events through the host's own actions.
 mod events;
 mod initiative;
 /// The host's own answers for the programs it runs for a person.
@@ -81,6 +81,32 @@ pub(super) async fn bot_server_taking_part(
     let _ = AppCatalogue::native();
     crate::surfaces::decide_receipt(&state.join("surfaces"));
     test_host_taking_part(state, key, cert).await
+}
+
+/// A new member of `workspace` of their own person, admitted through its entry
+/// with `role`, and their certificate.
+pub(super) async fn member(
+    workspaces: &Workspaces,
+    owner: &DeviceCert,
+    workspace: &str,
+    seed: u8,
+    role: tilo_server_protocol::workspaces::Role,
+) -> DeviceCert {
+    let (key, cert) = crate::workspaces::fixtures::device_cert(
+        &ed25519_dalek::SigningKey::from_bytes(&[seed; 32]),
+        "member",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    crate::workspaces::fixtures::entry_join_as(
+        workspaces,
+        owner,
+        workspace,
+        (&key, &cert),
+        seed,
+        role,
+    )
+    .await;
+    cert
 }
 
 /// `bot`'s runner in `workspace`, the bot installed as a member first, as the

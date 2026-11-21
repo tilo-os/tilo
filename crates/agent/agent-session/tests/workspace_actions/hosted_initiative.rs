@@ -9,7 +9,7 @@
 use super::ServerAgents;
 use super::*;
 use crate::harness::hosted::serving_documents_with_actions as serving_with_actions;
-use tilo_actions::remote::person_initiative::{
+use tilo_actions::remote::workspace_initiative::{
     self, LookEnded, LookRound, Proposal, Proposals, State,
 };
 use tilo_actions::remote::{ActionCallError, Caller, ReceiptStatus};
@@ -40,7 +40,7 @@ async fn take_of(
 ) -> Result<serde_json::Value, ActionCallError> {
     let request = InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_initiative::target(resource, action),
+        target: workspace_initiative::target(resource, action),
         argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
         context: None,
         confirmation: None,
@@ -49,7 +49,12 @@ async fn take_of(
         wait_ms: None,
         appearance: None,
     };
-    let answering = initiative.invoking(WorkspaceId::parse(workspace).unwrap(), caller, request);
+    let answering = initiative.invoking(
+        WorkspaceId::parse(workspace).unwrap(),
+        caller,
+        Authority::Turn,
+        request,
+    );
     let receipt =
         tokio::task::spawn_blocking(move || answering.wait_timeout(Duration::from_secs(60)))
             .await
@@ -72,7 +77,7 @@ async fn take(
     action: &str,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, ActionCallError> {
-    let proposals = (person_initiative::PROPOSALS, action);
+    let proposals = (workspace_initiative::PROPOSALS, action);
     take_of(initiative, workspace, caller, proposals, arguments).await
 }
 
@@ -84,7 +89,7 @@ async fn look_round(
     action: &str,
     arguments: serde_json::Value,
 ) -> LookRound {
-    let look_round = (person_initiative::LOOK_ROUND, action);
+    let look_round = (workspace_initiative::LOOK_ROUND, action);
     let answer = take_of(initiative, workspace, person, look_round, arguments).await;
     serde_json::from_value(answer.expect("the look-round answers its person"))
         .expect("a look-round is answered")
@@ -101,7 +106,7 @@ async fn proposed(initiative: &Initiative, workspace: &str, caller: &Caller) -> 
         initiative,
         workspace,
         caller,
-        person_initiative::LIST,
+        workspace_initiative::LIST,
         serde_json::json!({}),
     )
     .await;
@@ -120,7 +125,7 @@ async fn tidy(
         initiative,
         workspace,
         assistant,
-        person_initiative::PROPOSE,
+        workspace_initiative::PROPOSE,
         serde_json::json!({
             "kind": "tidy-notes",
             "title": title,
@@ -241,7 +246,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
             &initiative,
             &workspace,
             &me,
-            person_initiative::ACCEPT,
+            workspace_initiative::ACCEPT,
             serde_json::json!({"proposal": first.id}),
         )
         .await,
@@ -304,7 +309,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
             &initiative,
             &workspace,
             &me,
-            person_initiative::DECLINE,
+            workspace_initiative::DECLINE,
             serde_json::json!({"proposal": third.id, "why": "Leave my notes as they are."}),
         )
         .await,
@@ -683,7 +688,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         &initiative,
         &workspace,
         &me,
-        person_initiative::TURN_ON,
+        workspace_initiative::TURN_ON,
         serde_json::json!({"when": "every 3600 seconds", "dayLimitMicros": 2_000}),
     )
     .await;
@@ -739,7 +744,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         &initiative,
         &workspace,
         &me,
-        person_initiative::READ,
+        workspace_initiative::READ,
         serde_json::json!({}),
     )
     .await;
@@ -765,7 +770,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         &initiative,
         &workspace,
         &me,
-        person_initiative::READ,
+        workspace_initiative::READ,
         serde_json::json!({}),
     )
     .await;

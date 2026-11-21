@@ -493,9 +493,9 @@ struct WorkspaceActionsServer {
     stores: Arc<WorkspaceStores>,
     /// The Browser this host places for its workspaces, when it places one.
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
-    /// The events this host runs for its people, once its workspaces are up.
-    events: Arc<std::sync::OnceLock<crate::workspace_bots::events::PersonEvents>>,
-    /// What its people's assistants find to do on their own, once its workspaces are up.
+    /// The events this host runs for its workspaces, once they are up.
+    events: Arc<std::sync::OnceLock<crate::workspace_bots::events::WorkspaceEvents>>,
+    /// What its workspaces' assistants find to do on their own, once they are up.
     initiative: Arc<std::sync::OnceLock<crate::workspace_bots::initiative::Initiative>>,
 }
 
@@ -541,20 +541,11 @@ impl crate::AppActionServer for WorkspaceActionsServer {
         // An agent goes by its session's name in all a call makes (its Chat byline, its History
         // rows, its questions), as its window's mark names it.
         let caller = &caller.clone().in_named_session(&message);
-        // A person's events are the host's own to answer, for their device
-        // and their page as for their assistant's turn.
-        if self.roster.is_some() && crate::workspace_bots::events::addresses(&message) {
-            return match self.events.get() {
-                Some(events) => events.serve(workspace_id, caller, message),
-                None => crate::workspace_bots::events::not_served(message),
-            };
-        }
-        // So is what their assistant finds to do on its own.
-        if self.roster.is_some() && crate::workspace_bots::initiative::addresses(&message) {
-            return match self.initiative.get() {
-                Some(initiative) => initiative.serve(workspace_id, caller, message),
-                None => crate::workspace_bots::events::not_served(message),
-            };
+        // Without a device behind the call — a page, or a turn this server
+        // carries out for a member — the workspace's policy decides it for
+        // that member as themselves.
+        if let Some(answer) = self.serve_roster(workspace_id, caller, message.clone(), None) {
+            return Some(answer);
         }
         let observe: Arc<crate::hosted_browser::ObserveInvocation> = {
             let actions = self.actions.clone();
@@ -577,6 +568,14 @@ impl crate::AppActionServer for WorkspaceActionsServer {
         certificate: &DeviceCert,
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>> {
+        // The workspace's events and its assistant's initiative answer for the
+        // device the handshake verified.
+        let named = caller.clone().in_named_session(&message);
+        if let Some(answer) =
+            self.serve_roster(workspace, &named, message.clone(), Some(certificate))
+        {
+            return Some(answer);
+        }
         if let (Some(roster), Some(supervisor)) = (&self.roster, &self.supervisor)
             && let Some(answer) = roster.serve(workspace, caller, certificate, &message, supervisor)
         {
@@ -1367,7 +1366,7 @@ pub async fn start_serving_documents(
 pub struct RosterServices {
     pub sessions: tilo_agent_session::AgentSessions,
     pub actions: WorkspaceActions,
-    pub events: Option<crate::workspace_bots::events::PersonEvents>,
+    pub events: Option<crate::workspace_bots::events::WorkspaceEvents>,
     pub initiative: Option<crate::workspace_bots::initiative::Initiative>,
 }
 
@@ -1375,8 +1374,6 @@ impl WorkspaceActionsServer {
     fn start_events(
         &self,
         server: &Server,
-        events_state: PathBuf,
-        initiative_state: PathBuf,
         sessions: tilo_agent_session::AgentSessions,
     ) -> RosterServices {
         let (initiative, events) = server
@@ -1385,8 +1382,6 @@ impl WorkspaceActionsServer {
             .map(|workspaces| {
                 crate::workspace_bots::initiative::Initiative::start(
                     workspaces,
-                    initiative_state,
-                    events_state,
                     Some(self.actions.clone()),
                 )
             })
@@ -1403,6 +1398,36 @@ impl WorkspaceActionsServer {
             events,
             initiative,
         }
+    }
+
+    /// Answer `message` for the workspace's events or its assistant's
+    /// initiative, as the workspace's policy decides it: for `certificate`'s
+    /// device, or with none for the member a turn this server carries out
+    /// acts as. `None` for any other message.
+    fn serve_roster(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        message: tilo_actions::remote::RemoteActionMessage,
+        certificate: Option<&DeviceCert>,
+    ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
+        use crate::workspace_bots::events::Authority;
+
+        self.roster.as_ref()?;
+        let authority = certificate.map_or(Authority::Turn, Authority::of);
+        if crate::workspace_bots::events::addresses(&message) {
+            return match self.events.get() {
+                Some(events) => events.serve(workspace, caller, authority, message),
+                None => crate::workspace_bots::events::not_served(message),
+            };
+        }
+        if crate::workspace_bots::initiative::addresses(&message) {
+            return match self.initiative.get() {
+                Some(initiative) => initiative.serve(workspace, caller, authority, message),
+                None => crate::workspace_bots::events::not_served(message),
+            };
+        }
+        None
     }
 }
 
@@ -1492,15 +1517,12 @@ pub async fn start_workspace_documents(
     identity: ServerIdentity,
     options: AgentOptions,
 ) -> Result<(Server, AgentService, RosterServices), ServerError> {
-    let events_state = cfg.state_root.join("person-events");
-    let initiative_state = cfg.state_root.join("person-initiative");
+    // What a host before this one kept per person: the events and the
+    // initiative are the workspace's now, and nothing reads those folders.
+    let _ = std::fs::remove_dir_all(cfg.state_root.join("person-events"));
+    let _ = std::fs::remove_dir_all(cfg.state_root.join("person-initiative"));
     let (server, agents, actions) = start_inner(cfg, identity, options).await?;
-    let roster = actions.start_events(
-        &server,
-        events_state,
-        initiative_state,
-        agents.agent_sessions(),
-    );
+    let roster = actions.start_events(&server, agents.agent_sessions());
     Ok((server, agents, roster))
 }
 

@@ -10,13 +10,13 @@ use crate::harness::hosted::serving_documents_with_actions as serving_with_actio
 use serde_json::{Value, json};
 use tasks::model::{StoppedWhy, TaskState};
 use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, person_events,
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, workspace_events,
 };
 use tilo_server::{
     workspace_agents::{
         ServerAgents, Turn, WorkspaceActionProvider as ActionService, invoke_named,
     },
-    workspace_bots::events::PersonEvents,
+    workspace_bots::events::WorkspaceEvents,
     workspaces::Workspaces,
 };
 
@@ -579,14 +579,14 @@ async fn a_task_whose_sessions_were_lost_stops_and_says_so() {
 /// One action on the person's automations, taken by the person on a device of theirs: what it
 /// answered, or why it was not taken.
 fn on_automations(
-    automations: &PersonEvents,
+    automations: &WorkspaceEvents,
     given: &Given,
     action: &str,
     arguments: &Value,
 ) -> Result<Value, String> {
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: person_events::target(action),
+        target: workspace_events::target(action),
         argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
         context: None,
         confirmation: None,
@@ -622,13 +622,12 @@ async fn a_task_goes_on_when_the_automation_it_waits_for_comes() {
     let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
     given.answered(&agents, now_ms()).await;
     let kept = crate::support::scratch_dir();
-    let automations =
-        PersonEvents::start(given.workspaces.clone(), kept.path().to_path_buf(), None);
+    let automations = WorkspaceEvents::start(given.workspaces.clone(), None);
     let set_up = |name: &str, at_ms: i64, instruction: &str| {
         on_automations(
             &automations,
             &given,
-            person_events::SET_UP,
+            workspace_events::SET_UP,
             &json!({"name": name, "when": format!("once at {at_ms} ms"), "instruction": instruction}),
         )
         .expect("its person sets the automation up")["id"]

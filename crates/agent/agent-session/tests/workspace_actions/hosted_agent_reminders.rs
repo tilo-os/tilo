@@ -5,7 +5,7 @@
 //! the moment, and where it starts again after. All through the server's own interfaces.
 use super::*;
 use tilo_actions::remote::ReceiptStatus;
-use tilo_actions::remote::person_events::{self, Ended, EventView, Events, Sort};
+use tilo_actions::remote::workspace_events::{self, Ended, EventView, Events, Sort};
 use tilo_server::{
     ServerConfig as Config,
     agents::{AgentOptions, start_workspace_documents},
@@ -99,7 +99,7 @@ impl Up {
     ) -> serde_json::Value {
         let request = InvokeRequest {
             invocation: InvocationId::new(),
-            target: person_events::target(action),
+            target: workspace_events::target(action),
             argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
             context: None,
             confirmation: None,
@@ -109,15 +109,26 @@ impl Up {
             appearance: None,
         };
         let workspace = WorkspaceId::parse(workspace).unwrap();
-        match self.events.invoke(workspace, caller, &request).status {
+        let receipt = self
+            .events
+            .invoking(workspace, caller, Authority::Turn, request)
+            .wait_timeout(std::time::Duration::from_secs(30))
+            .expect("the server answers an action on its events")
+            .expect("the server answered");
+        match receipt.status {
             ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
-            other => panic!("{action} on a person's events: {other:?}"),
+            other => panic!("{action} on the workspace's events: {other:?}"),
         }
     }
 
     /// The events of the person `me` is, as a device of theirs reads them from the server.
     fn events_of(&self, workspace: &str, me: &Caller) -> Vec<EventView> {
-        let listed = self.take(workspace, me, person_events::LIST, &serde_json::json!({}));
+        let listed = self.take(
+            workspace,
+            me,
+            workspace_events::LIST,
+            &serde_json::json!({}),
+        );
         serde_json::from_value::<Events>(listed)
             .expect("the list reads as events")
             .events
@@ -428,7 +439,7 @@ async fn a_reminder_due_while_its_server_was_down_starts_its_turn_once_the_serve
         "instruction": "Say that it is time to call home.",
     });
     let reminder: EventView =
-        serde_json::from_value(up.take(&workspace, &theirs, person_events::SET_UP, &set_up))
+        serde_json::from_value(up.take(&workspace, &theirs, workspace_events::SET_UP, &set_up))
             .expect("setting one up answers the event");
     assert_eq!(reminder.next_at_ms, Some(at_ms));
 

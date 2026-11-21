@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tilo_actions::remote::person_events::{self, EventView, Events, Sort};
-use tilo_actions::remote::person_initiative::{
+use tilo_actions::remote::workspace_events::{self, EventView, Events, Sort};
+use tilo_actions::remote::workspace_initiative::{
     self, LookEnded, LookRound, Proposal, Proposals, State,
 };
 use tilo_actions::remote::{
@@ -25,7 +25,7 @@ use tilo_agent_session::bot::host_steps::{
 use super::bot_server;
 use super::*;
 use crate::WorkspaceId;
-use crate::workspace_bots::events::PersonEvents;
+use crate::workspace_bots::events::{Authority, WorkspaceEvents};
 use crate::workspace_bots::initiative::{Initiative, look_round_spender};
 
 /// One action of the server's own, to take.
@@ -69,11 +69,13 @@ fn answered(pending: Option<Pending<RemoteActionMessage>>) -> Result<Value, Acti
 }
 
 /// Whether `answer` is what a caller who is not answered here is told:
-/// that there is no such action, or a refusal in words.
+/// that there is no such action, or a refusal.
 fn turned_away(answer: &Result<Value, ActionCallError>) -> bool {
     matches!(
         answer,
-        Err(ActionCallError::UnknownAction | ActionCallError::Refused { .. })
+        Err(ActionCallError::UnknownAction
+            | ActionCallError::NotPermitted
+            | ActionCallError::Refused { .. })
     )
 }
 
@@ -86,17 +88,18 @@ fn ask(
     action: &str,
     arguments: Value,
 ) -> Result<Value, ActionCallError> {
-    let target = person_initiative::target(person_initiative::LOOK_ROUND, action);
+    let target = workspace_initiative::target(workspace_initiative::LOOK_ROUND, action);
     answered(initiative.serve(
         WorkspaceId::parse(workspace).unwrap(),
         caller,
+        Authority::Turn,
         asking(target, arguments),
     ))
 }
 
-/// One action on the person's events as `caller` takes it.
+/// One action on the workspace's events as `caller` takes it.
 fn of_events(
-    events: &PersonEvents,
+    events: &WorkspaceEvents,
     workspace: &str,
     caller: &Caller,
     action: &str,
@@ -105,7 +108,8 @@ fn of_events(
     answered(events.serve(
         WorkspaceId::parse(workspace).unwrap(),
         caller,
-        asking(person_events::target(action), arguments),
+        Authority::Turn,
+        asking(workspace_events::target(action), arguments),
     ))
 }
 
@@ -120,15 +124,15 @@ fn read(initiative: &Initiative, workspace: &str, caller: &Caller) -> LookRound 
         initiative,
         workspace,
         caller,
-        person_initiative::READ,
+        workspace_initiative::READ,
         json!({}),
     ))
 }
 
-/// The events `caller`'s person keeps.
-fn their_events(events: &PersonEvents, workspace: &str, caller: &Caller) -> Vec<EventView> {
-    let answer = of_events(events, workspace, caller, person_events::LIST, json!({}));
-    serde_json::from_value::<Events>(answer.expect("a person lists their events"))
+/// The events of the workspace `caller` reaches.
+fn their_events(events: &WorkspaceEvents, workspace: &str, caller: &Caller) -> Vec<EventView> {
+    let answer = of_events(events, workspace, caller, workspace_events::LIST, json!({}));
+    serde_json::from_value::<Events>(answer.expect("a member lists the workspace's events"))
         .expect("events are answered")
         .events
 }
@@ -191,17 +195,8 @@ async fn fires(
 
 /// A server with a workspace of `cert`'s person, their events and their
 /// assistant's initiative, the events' steps answered by `assistant`.
-fn started(
-    scratch: &std::path::Path,
-    workspaces: &Workspaces,
-    assistant: &Arc<Assistant>,
-) -> (Initiative, PersonEvents) {
-    Initiative::start_with(
-        workspaces.clone(),
-        scratch.join("person-initiative"),
-        scratch.join("person-events"),
-        assistant.clone(),
-    )
+fn started(workspaces: &Workspaces, assistant: &Arc<Assistant>) -> (Initiative, WorkspaceEvents) {
+    Initiative::start_with(workspaces.clone(), assistant.clone())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -220,7 +215,7 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
     let models = ScriptedProvider::answering(Vec::<Reply>::new());
     workspaces.answer_models_with(models.clone());
     let assistant = Assistant::answering(vec![]);
-    let (initiative, events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
 
@@ -228,10 +223,10 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
     let off = read(&initiative, &workspace, &me);
     assert!(!off.on);
     assert_eq!((off.event.clone(), off.next_at_ms), (None, None));
-    assert_eq!(off.when, person_initiative::DEFAULT_WHEN);
+    assert_eq!(off.when, workspace_initiative::DEFAULT_WHEN);
     assert_eq!(
         off.day_limit_micros,
-        person_initiative::DEFAULT_DAY_LIMIT_MICROS
+        workspace_initiative::DEFAULT_DAY_LIMIT_MICROS
     );
     assert!(off.looks.is_empty());
     assert!(their_events(&events, &workspace, &me).is_empty());
@@ -241,7 +236,7 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
         &initiative,
         &workspace,
         &theirs,
-        person_initiative::TURN_ON,
+        workspace_initiative::TURN_ON,
         json!({}),
     ));
     assert!(on.on);
@@ -253,7 +248,7 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
         (listed[0].id.as_str(), listed[0].sort),
         (event.as_str(), Sort::Scheduled)
     );
-    assert_eq!(listed[0].when, person_initiative::DEFAULT_WHEN);
+    assert_eq!(listed[0].when, workspace_initiative::DEFAULT_WHEN);
 
     // The first look notes where the workspace stands, the second finds
     // nothing new: neither hands anything on, asks a model or writes.
@@ -328,7 +323,7 @@ async fn a_look_that_finds_nothing_new_asks_no_model_and_writes_nothing() {
     // The server starts again: it still keeps the look-round and its looks,
     // and a look goes on from where the last one left the workspace.
     drop((initiative, events, steps));
-    let (initiative, events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, events) = started(&workspaces, &assistant);
     let kept = read(&initiative, &workspace, &me);
     assert_eq!(kept.event.as_deref(), Some(event.as_str()));
     assert_eq!(kept.looks.len(), 4);
@@ -371,7 +366,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
         .await
         .unwrap();
     let assistant = Assistant::answering(vec![]);
-    let (initiative, _events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, _events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
 
@@ -380,7 +375,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
         &initiative,
         &workspace,
         &me,
-        person_initiative::TURN_ON,
+        workspace_initiative::TURN_ON,
         json!({"when": "every day at 09:00", "dayLimitMicros": 500_000}),
     ));
     assert_eq!(on.when, "every day at 09:00");
@@ -452,7 +447,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
         &initiative,
         &workspace,
         &theirs,
-        person_initiative::CHANGE,
+        workspace_initiative::CHANGE,
         json!({"dayLimitMicros": 2_000_000}),
     );
     assert!(
@@ -463,7 +458,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
         &initiative,
         &workspace,
         &theirs,
-        person_initiative::CHANGE,
+        workspace_initiative::CHANGE,
         json!({"dayLimitMicros": 400_000}),
     ));
     assert_eq!(lowered.day_limit_micros, 400_000);
@@ -474,7 +469,7 @@ async fn the_look_rounds_own_day_holds_and_only_its_person_raises_it() {
         &initiative,
         &workspace,
         &me,
-        person_initiative::CHANGE,
+        workspace_initiative::CHANGE,
         json!({"dayLimitMicros": 2_000_000}),
     ));
     assert_eq!(raised.day_limit_micros, 2_000_000);
@@ -502,17 +497,27 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
-    let (initiative, events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
     let id = WorkspaceId::parse(&workspace).unwrap();
     let everything: CatalogueQuery = serde_json::from_value(json!({})).unwrap();
 
-    // The person and their assistant are offered it; nobody else is, and
-    // nobody else reads or turns on another person's.
-    let offered = serde_json::to_string(&initiative.catalogue(id, &theirs, &everything)).unwrap();
+    // A member and their assistant are offered it; nobody outside the
+    // workspace is.
+    let offered = serde_json::to_string(
+        &initiative
+            .catalogue(id, &theirs, &Authority::Turn, &everything)
+            .await,
+    )
+    .unwrap();
     assert!(offered.contains("\"turn-on\""), "{offered}");
-    assert!(initiative.provider(id, &me).is_some());
+    assert!(
+        initiative
+            .provider(id, &me, &Authority::Turn)
+            .await
+            .is_some()
+    );
     let bot =
         Caller::bot(GREETER.to_owned(), cert.user_public_key, [5; 32]).in_workspace(&workspace);
     for other in [
@@ -520,13 +525,22 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         as_another(&workspace).delegated_to("scout"),
         bot,
     ] {
-        for action in [person_initiative::READ, person_initiative::TURN_ON] {
+        for action in [workspace_initiative::READ, workspace_initiative::TURN_ON] {
             let answer = ask(&initiative, &workspace, &other, action, json!({}));
             assert!(turned_away(&answer), "{action}: {answer:?}");
         }
-        assert!(initiative.provider(id, &other).is_none());
-        let offered =
-            serde_json::to_string(&initiative.catalogue(id, &other, &everything)).unwrap();
+        assert!(
+            initiative
+                .provider(id, &other, &Authority::Turn)
+                .await
+                .is_none()
+        );
+        let offered = serde_json::to_string(
+            &initiative
+                .catalogue(id, &other, &Authority::Turn, &everything)
+                .await,
+        )
+        .unwrap();
         assert!(!offered.contains("\"turn-on\""), "{offered}");
     }
 
@@ -540,7 +554,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
             &initiative,
             &workspace,
             &theirs,
-            person_initiative::TURN_ON,
+            workspace_initiative::TURN_ON,
             json!({"when": when}),
         );
         assert!(
@@ -554,7 +568,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         &initiative,
         &workspace,
         &theirs,
-        person_initiative::TURN_ON,
+        workspace_initiative::TURN_ON,
         json!({"when": "every 600 seconds"}),
     ));
     assert_eq!(on.when, "every 600 seconds");
@@ -567,7 +581,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         &initiative,
         &workspace,
         &me,
-        person_initiative::TURN_OFF,
+        workspace_initiative::TURN_OFF,
         json!({}),
     ));
     assert!(!off.on);
@@ -580,7 +594,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         &events,
         &workspace,
         &me,
-        person_events::RESUME,
+        workspace_events::RESUME,
         named.clone(),
     )
     .unwrap();
@@ -589,7 +603,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         &events,
         &workspace,
         &me,
-        person_events::PAUSE,
+        workspace_events::PAUSE,
         named.clone(),
     )
     .unwrap();
@@ -600,7 +614,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         &initiative,
         &workspace,
         &theirs,
-        person_initiative::TURN_ON,
+        workspace_initiative::TURN_ON,
         json!({"when": "every day at 09:00"}),
     ));
     assert!(again.on);
@@ -612,14 +626,14 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         &initiative,
         &workspace,
         &theirs,
-        person_initiative::CHANGE,
+        workspace_initiative::CHANGE,
         json!({"when": "every 3600 seconds"}),
     ));
     assert_eq!(slower.when, "every 3600 seconds");
 
     // Removed among the events, it is no look-round any more; turned on
     // again, it is a new event.
-    of_events(&events, &workspace, &me, person_events::REMOVE, named).unwrap();
+    of_events(&events, &workspace, &me, workspace_events::REMOVE, named).unwrap();
     let gone = read(&initiative, &workspace, &me);
     assert!(!gone.on);
     assert_eq!(gone.event, None);
@@ -627,7 +641,7 @@ async fn the_look_round_is_one_of_its_persons_events_with_their_switch_and_rhyth
         &initiative,
         &workspace,
         &me,
-        person_initiative::TURN_ON,
+        workspace_initiative::TURN_ON,
         json!({}),
     ));
     assert!(anew.on);
@@ -642,14 +656,14 @@ async fn the_server_looks_when_the_look_round_fires_and_hands_other_events_on_as
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
-    let (initiative, events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
     let on = look_round(ask(
         &initiative,
         &workspace,
         &theirs,
-        person_initiative::TURN_ON,
+        workspace_initiative::TURN_ON,
         json!({}),
     ));
     let event = on.event.clone().expect("it is an event now");
@@ -661,7 +675,7 @@ async fn the_server_looks_when_the_look_round_fires_and_hands_other_events_on_as
         &events,
         &workspace,
         &me,
-        person_events::CHANGE,
+        workspace_events::CHANGE,
         json!({"event": event, "when": when}),
     )
     .unwrap();
@@ -669,7 +683,7 @@ async fn the_server_looks_when_the_look_round_fires_and_hands_other_events_on_as
         &events,
         &workspace,
         &theirs,
-        person_events::SET_UP,
+        workspace_events::SET_UP,
         json!({
             "name": "Call home",
             "when": when,
@@ -748,14 +762,14 @@ async fn what_the_assistant_and_its_server_did_themselves_is_not_news_to_a_look(
     let person = hex::encode(cert.user_public_key);
     keeps_an_assistant(&workspaces, &workspace, &cert, &person).await;
     let assistant = Assistant::answering(vec![]);
-    let (initiative, _events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, _events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
     let on = look_round(ask(
         &initiative,
         &workspace,
         &theirs,
-        person_initiative::TURN_ON,
+        workspace_initiative::TURN_ON,
         json!({}),
     ));
     let event = on.event.expect("it is an event now");
@@ -838,13 +852,13 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
     let assistant = Assistant::answering(vec![Err(StepError::Unavailable(
         "this server starts no turn of a person's assistant".into(),
     ))]);
-    let (initiative, _events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, _events) = started(&workspaces, &assistant);
     let me = as_person(&cert, &workspace);
     let on = look_round(ask(
         &initiative,
         &workspace,
         &me,
-        person_initiative::TURN_ON,
+        workspace_initiative::TURN_ON,
         json!({}),
     ));
     let event = on.event.expect("it is an event now");
@@ -908,7 +922,7 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
             &event,
             "Look-round",
             &day,
-            person_initiative::DEFAULT_DAY_LIMIT_MICROS,
+            workspace_initiative::DEFAULT_DAY_LIMIT_MICROS,
         ))
     );
     assert_eq!(
@@ -930,10 +944,11 @@ fn on_proposals(
     action: &str,
     arguments: Value,
 ) -> Result<Value, ActionCallError> {
-    let target = person_initiative::target(person_initiative::PROPOSALS, action);
+    let target = workspace_initiative::target(workspace_initiative::PROPOSALS, action);
     answered(initiative.serve(
         WorkspaceId::parse(workspace).unwrap(),
         caller,
+        Authority::Turn,
         asking(target, arguments),
     ))
 }
@@ -949,7 +964,7 @@ fn proposed(initiative: &Initiative, workspace: &str, caller: &Caller) -> Propos
         initiative,
         workspace,
         caller,
-        person_initiative::LIST,
+        workspace_initiative::LIST,
         json!({}),
     );
     serde_json::from_value(answer.expect("a person lists what was proposed"))
@@ -969,7 +984,7 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
-    let (initiative, events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
     let compare = |initiative: &Initiative, title: &str| {
@@ -977,7 +992,7 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
             initiative,
             &workspace,
             &theirs,
-            person_initiative::PROPOSE,
+            workspace_initiative::PROPOSE,
             json!({
                 "kind": "Compare price pages",
                 "title": title,
@@ -994,7 +1009,7 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
             &initiative,
             &workspace,
             caller,
-            person_initiative::DECLINE,
+            workspace_initiative::DECLINE,
             arguments,
         )
     };
@@ -1026,7 +1041,7 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
         &initiative,
         &workspace,
         &theirs,
-        person_initiative::PROPOSE,
+        workspace_initiative::PROPOSE,
         json!({
             "kind": "review-open-branches",
             "title": "Review the two open branches",
@@ -1035,7 +1050,7 @@ async fn a_kind_its_person_turned_down_twice_is_not_proposed_a_third_time() {
     ));
     assert_eq!(other.state, State::Proposed);
     drop((initiative, events));
-    let (initiative, _events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, _events) = started(&workspaces, &assistant);
     assert_eq!(proposed(&initiative, &workspace, &me).proposals.len(), 2);
 }
 
@@ -1047,7 +1062,7 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
-    let (initiative, _events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, _events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
     let take = |caller: &Caller, action: &str, arguments: Value| {
@@ -1056,7 +1071,7 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
     let file = |title: &str| {
         take(
             &theirs,
-            person_initiative::PROPOSE,
+            workspace_initiative::PROPOSE,
             json!({
                 "kind": "file-receipts",
                 "title": title,
@@ -1071,20 +1086,20 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
     // neither does the other's part, and nobody else reaches either.
     let own = take(
         &me,
-        person_initiative::PROPOSE,
+        workspace_initiative::PROPOSE,
         json!({"kind": "file-receipts", "title": "Mine", "why": "Because."}),
     );
     assert!(refused_for(&own, "assistant's to make"), "{own:?}");
-    let nod = take(&theirs, person_initiative::ACCEPT, named.clone());
+    let nod = take(&theirs, workspace_initiative::ACCEPT, named.clone());
     assert!(refused_for(&nod, "only the person"), "{nod:?}");
     for other in [
         as_another(&workspace),
         as_another(&workspace).delegated_to("scout"),
     ] {
         for action in [
-            person_initiative::LIST,
-            person_initiative::ACCEPT,
-            person_initiative::DECLINE,
+            workspace_initiative::LIST,
+            workspace_initiative::ACCEPT,
+            workspace_initiative::DECLINE,
         ] {
             let answer = take(&other, action, named.clone());
             assert!(turned_away(&answer), "{action}: {answer:?}");
@@ -1098,8 +1113,18 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
     // What each is offered says the same.
     let id = WorkspaceId::parse(&workspace).unwrap();
     let everything: CatalogueQuery = serde_json::from_value(json!({})).unwrap();
-    let to_agent = serde_json::to_string(&initiative.catalogue(id, &theirs, &everything)).unwrap();
-    let to_person = serde_json::to_string(&initiative.catalogue(id, &me, &everything)).unwrap();
+    let to_agent = serde_json::to_string(
+        &initiative
+            .catalogue(id, &theirs, &Authority::Turn, &everything)
+            .await,
+    )
+    .unwrap();
+    let to_person = serde_json::to_string(
+        &initiative
+            .catalogue(id, &me, &Authority::Turn, &everything)
+            .await,
+    )
+    .unwrap();
     assert!(
         to_agent.contains("\"propose\"") && !to_agent.contains("\"accept\""),
         "{to_agent}"
@@ -1112,13 +1137,13 @@ async fn only_its_person_gives_the_nod_and_always_lets_a_kind_start_alone() {
     // Their person nods, and work that has begun is not turned down afterwards.
     let accepted = proposal(take(
         &me,
-        person_initiative::ACCEPT,
+        workspace_initiative::ACCEPT,
         json!({"proposal": march.id}),
     ));
     assert_eq!(accepted.state, State::Accepted);
     let late = take(
         &me,
-        person_initiative::DECLINE,
+        workspace_initiative::DECLINE,
         json!({"proposal": march.id}),
     );
     assert!(refused_for(&late, "begun already"), "{late:?}");
@@ -1138,7 +1163,7 @@ async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_t
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![]);
-    let (initiative, events) = started(scratch.path(), &workspaces, &assistant);
+    let (initiative, events) = started(&workspaces, &assistant);
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
     let take = |caller: &Caller, action: &str, arguments: Value| {
@@ -1148,7 +1173,7 @@ async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_t
     // What comes round again is proposed as an event: a card to look at.
     let card = proposal(take(
         &theirs,
-        person_initiative::PROPOSE,
+        workspace_initiative::PROPOSE,
         json!({
             "kind": "weekly-numbers",
             "title": "Sum up the orders every Monday",
@@ -1174,7 +1199,7 @@ async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_t
     // One no server can set up is refused when it is proposed.
     let never = take(
         &theirs,
-        person_initiative::PROPOSE,
+        workspace_initiative::PROPOSE,
         json!({
             "kind": "weekly-numbers",
             "title": "Say hello soon",
@@ -1187,7 +1212,7 @@ async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_t
     // Its person accepts: the event is there, set up from what the server kept,
     // with no reach of its own.
     let named = json!({"proposal": card.id});
-    let accepted = proposal(take(&me, person_initiative::ACCEPT, named.clone()));
+    let accepted = proposal(take(&me, workspace_initiative::ACCEPT, named.clone()));
     assert_eq!(accepted.state, State::Accepted);
     let running = their_events(&events, &workspace, &me);
     assert_eq!(running.len(), 1, "{running:?}");
@@ -1207,6 +1232,60 @@ async fn a_proposed_event_is_set_up_only_once_its_person_accepted_it_from_what_t
     assert_eq!(running[0].note["style"], "Three lines.");
 
     // A nod given again sets nothing up a second time.
-    take(&me, person_initiative::ACCEPT, named).unwrap();
+    take(&me, workspace_initiative::ACCEPT, named).unwrap();
     assert_eq!(their_events(&events, &workspace, &me).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_member_reads_and_stops_the_workspaces_look_round() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let assistant = Assistant::answering(vec![]);
+    let (initiative, events) = started(&workspaces, &assistant);
+    let theirs = as_their_agent(&cert, &workspace);
+    let me = as_person(&cert, &workspace);
+
+    let on = look_round(ask(
+        &initiative,
+        &workspace,
+        &theirs,
+        workspace_initiative::TURN_ON,
+        json!({}),
+    ));
+    assert!(on.on);
+    assert_eq!(their_events(&events, &workspace, &me).len(), 1);
+
+    // Another member of the workspace reads the same look-round and stops it:
+    // it is the workspace's, and its event is paused with it.
+    let editor = member(
+        &workspaces,
+        &cert,
+        &workspace,
+        63,
+        tilo_server_protocol::workspaces::Role::Editor,
+    )
+    .await;
+    let by_editor = as_person(&editor, &workspace);
+    let same = read(&initiative, &workspace, &by_editor);
+    assert_eq!(same.event, on.event);
+    assert_eq!(same.when, on.when);
+    let off = look_round(ask(
+        &initiative,
+        &workspace,
+        &by_editor,
+        workspace_initiative::TURN_OFF,
+        json!({}),
+    ));
+    assert!(!off.on);
+    assert!(
+        !read(&initiative, &workspace, &me).on,
+        "it is the workspace's look-round"
+    );
+    assert!(
+        !their_events(&events, &workspace, &me)[0].on,
+        "its event is paused with it"
+    );
 }

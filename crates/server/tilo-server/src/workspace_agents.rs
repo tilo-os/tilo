@@ -64,12 +64,12 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use tracing::Instrument as _;
 
-use crate::workspace_bots::events::PersonEvents;
+use crate::workspace_bots::events::{Authority, WorkspaceEvents};
 use crate::workspace_bots::initiative::Initiative;
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{ModelRefusal, PersonModel, Spender};
-use tilo_actions::remote::person_events;
-use tilo_actions::remote::person_initiative;
+use tilo_actions::remote::workspace_events;
+use tilo_actions::remote::workspace_initiative;
 use turn_provider::TurnProvider;
 
 mod across;
@@ -146,10 +146,10 @@ pub struct WorkspaceActionProvider {
     actions: WorkspaceActions,
     roster_caller: Option<Caller>,
     workspace: WorkspaceId,
-    /// The events this device runs for its people, where it runs any: what an agent sets up,
+    /// The events this device runs for its workspaces, where it runs any: what an agent sets up,
     /// pauses, changes and removes for the person its turn is for.
-    events: Option<PersonEvents>,
-    /// What the people's assistants find to do on their own, where this server keeps it: the
+    events: Option<WorkspaceEvents>,
+    /// What the workspaces' assistants find to do on their own, where this server keeps it: the
     /// look-round an agent reads, turns on and off for the person its turn is for.
     initiative: Option<Initiative>,
     /// What this service answers itself for the one turn it serves, beside the workspace's
@@ -240,6 +240,92 @@ impl WorkspaceActionProvider {
         self.actions.landed(self.workspace, route);
     }
 
+    /// What `caller` is offered of the workspace's records, its events and
+    /// its assistant's initiative, as the workspace's policy decides it for a
+    /// turn this server carries out for them.
+    async fn page(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Result<CataloguePage, ActionCallError> {
+        if let Some(events) = &self.events
+            && query.provider.as_deref() == Some(workspace_events::PROVIDER)
+        {
+            return Ok(events
+                .catalogue(self.workspace, caller, &Authority::Turn, &query)
+                .await);
+        }
+        if let Some(initiative) = &self.initiative
+            && query.provider.as_deref() == Some(workspace_initiative::PROVIDER)
+        {
+            return Ok(initiative
+                .catalogue(self.workspace, caller, &Authority::Turn, &query)
+                .await);
+        }
+        let initiative = match &self.initiative {
+            Some(initiative) if query.provider.is_none() => {
+                initiative
+                    .provider(self.workspace, caller, &Authority::Turn)
+                    .await
+            }
+            _ => None,
+        };
+        // A listing of everything names the events' provider beside the records'.
+        let events = match &self.events {
+            Some(events) if query.provider.is_none() => {
+                events
+                    .provider(self.workspace, caller, &Authority::Turn)
+                    .await
+            }
+            _ => None,
+        };
+        // One provider id is answered by every provider of the turn's own that holds a
+        // resource of it: their rows make one page.
+        let own: Vec<_> = self
+            .own
+            .iter()
+            .filter_map(|own| own.rows(caller, &query))
+            .collect();
+        if !own.is_empty()
+            && let Some(ended) = &self.ended
+        {
+            return ended
+                .page(own, query)
+                .await
+                .unwrap_or_else(|| Err(unavailable()));
+        }
+        // A listing of everything names the turn's own providers beside the workspace's, each
+        // once.
+        let mut offered: Vec<tilo_actions::remote::CatalogueProvider> = Vec::new();
+        if query.provider.is_none() {
+            for named in self.own.iter().flat_map(|own| own.providers(caller)) {
+                if offered.iter().all(|known| known.provider != named.provider) {
+                    offered.push(named);
+                }
+            }
+        }
+        match self
+            .serve(
+                caller,
+                RemoteActionMessage::CatalogueRequest {
+                    correlation: 0,
+                    query,
+                },
+            )
+            .await
+        {
+            Some(RemoteActionMessage::CatalogueResponse { result, .. }) => {
+                result.map(|mut page| {
+                    page.providers.extend(events);
+                    page.providers.extend(offered);
+                    page.providers.extend(initiative);
+                    page
+                })
+            }
+            _ => Err(unavailable()),
+        }
+    }
+
     /// This service, for a turn its person asked `asked` of: every invocation it carries out
     /// that says no purpose of its own has that one ([`tilo_actions::ActionContext::purpose`]).
     #[must_use]
@@ -257,10 +343,10 @@ impl WorkspaceActionProvider {
         self
     }
 
-    /// This service, answering also for `events`: this server's own actions on a person's scheduled
-    /// work and events, listed and taken beside the workspace's resources.
+    /// This service, answering also for `events`: this server's own actions on the workspace's
+    /// scheduled work and events, listed and taken beside its resources.
     #[must_use]
-    pub fn offering(mut self, events: Option<PersonEvents>) -> Self {
+    pub fn offering(mut self, events: Option<WorkspaceEvents>) -> Self {
         self.events = events;
         self
     }
@@ -341,65 +427,15 @@ impl ActionProvider for WorkspaceActionProvider {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        if let Some(events) = &self.events
-            && query.provider.as_deref() == Some(person_events::PROVIDER)
-        {
-            return Pending::ready(Ok(events.catalogue(self.workspace, caller, &query)));
-        }
-        if let Some(initiative) = &self.initiative
-            && query.provider.as_deref() == Some(person_initiative::PROVIDER)
-        {
-            return Pending::ready(Ok(initiative.catalogue(self.workspace, caller, &query)));
-        }
-        let initiative = self
-            .initiative
-            .as_ref()
-            .filter(|_| query.provider.is_none())
-            .and_then(|initiative| initiative.provider(self.workspace, caller));
-        // A listing of everything names the events' provider beside the records'.
-        let events = self
-            .events
-            .as_ref()
-            .filter(|_| query.provider.is_none())
-            .and_then(|events| events.provider(self.workspace, caller));
-        // One provider id is answered by every provider of the turn's own that holds a
-        // resource of it: their rows make one page.
-        let own: Vec<_> = self
-            .own
-            .iter()
-            .filter_map(|own| own.rows(caller, &query))
-            .collect();
-        if !own.is_empty()
-            && let Some(ended) = &self.ended
-        {
-            return ended.page(own, query);
-        }
-        // A listing of everything names the turn's own providers beside the workspace's, each
-        // once.
-        let mut offered: Vec<tilo_actions::remote::CatalogueProvider> = Vec::new();
-        if query.provider.is_none() {
-            for named in self.own.iter().flat_map(|own| own.providers(caller)) {
-                if offered.iter().all(|known| known.provider != named.provider) {
-                    offered.push(named);
-                }
-            }
-        }
-        self.serve(
-            caller,
-            RemoteActionMessage::CatalogueRequest {
-                correlation: 0,
-                query,
-            },
-        )
-        .map(move |answer| match answer {
-            RemoteActionMessage::CatalogueResponse { result, .. } => result.map(|mut page| {
-                page.providers.extend(events);
-                page.providers.extend(offered);
-                page.providers.extend(initiative);
-                page
-            }),
-            _ => Err(unavailable()),
-        })
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return Pending::ready(Err(unavailable()));
+        };
+        let (completer, answer) = pending();
+        let (this, caller) = (self.clone(), caller.clone());
+        runtime.spawn(async move {
+            completer.complete(this.page(&caller, query).await);
+        });
+        answer
     }
 
     fn invoke(
@@ -422,20 +458,29 @@ impl ActionProvider for WorkspaceActionProvider {
             return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
         }
         if let Some(events) = &self.events
-            && request.target.provider == person_events::PROVIDER
+            && request.target.provider == workspace_events::PROVIDER
         {
-            let receipt = events.invoke(self.workspace, caller, &request);
-            self.answered.keep(caller, &receipt);
-            return Pending::ready(Ok(receipt));
+            // Kept whoever still waits: a tool that stopped waiting asks later how it went.
+            let (answered, by) = (self.answered.clone(), caller.clone());
+            let (completer, answer) = pending();
+            events
+                .invoking(self.workspace, caller, Authority::Turn, request)
+                .then(move |receipt| {
+                    if let Some(receipt) = receipt {
+                        answered.keep(&by, &receipt);
+                        completer.complete(Ok(receipt));
+                    }
+                });
+            return answer;
         }
         if let Some(initiative) = &self.initiative
-            && request.target.provider == person_initiative::PROVIDER
+            && request.target.provider == workspace_initiative::PROVIDER
         {
             // Kept whoever still waits: a tool that stopped waiting asks later how it went.
             let (answered, by) = (self.answered.clone(), caller.clone());
             let (completer, answer) = pending();
             initiative
-                .invoking(self.workspace, caller, request)
+                .invoking(self.workspace, caller, Authority::Turn, request)
                 .then(move |receipt| {
                     if let Some(receipt) = receipt {
                         answered.keep(&by, &receipt);
@@ -716,7 +761,7 @@ pub struct ServerAgents {
     /// their workspace's machine ([`coding`]). `None` works none.
     coding: Option<Arc<coding::Coders>>,
     /// The events this host runs for its people, which a turn's tools reach for its person.
-    events: Option<PersonEvents>,
+    events: Option<WorkspaceEvents>,
     /// What carries out the answers to what code of this server asked.
     carriers: asks::Carriers,
     /// What the people's assistants find to do on their own, which a turn's tools reach too.
@@ -841,7 +886,7 @@ impl ServerAgents {
     /// These agents, whose turns reach `events`: an agent sets its person's scheduled work and
     /// events up, pauses, changes and removes them through the host's own actions.
     #[must_use]
-    pub fn with_events(mut self, events: Option<PersonEvents>) -> Self {
+    pub fn with_events(mut self, events: Option<WorkspaceEvents>) -> Self {
         self.events = events;
         self
     }

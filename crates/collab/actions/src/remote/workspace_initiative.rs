@@ -1,27 +1,26 @@
-//! What a person's assistant finds to do on its own: the look-round, and
-//! what it puts in front of its person.
+//! What a workspace's assistant finds to do on its own: the look-round, and
+//! what it puts in front of the workspace's members.
 //!
 //! An assistant that only answers waits to be asked. One that works on its
-//! own looks round on a rhythm (what came in, what changed where its person
-//! works, what became due) and, where it finds work it could do, proposes
-//! it. Two things bound that: the look-round is one of the person's own
-//! events ([`super::person_events`]), with a switch, a rhythm and a day's
-//! limit of its own, and a look that finds nothing new asks no model and
-//! writes nothing; and what it proposes waits for its person's nod, unless
-//! they said always to that kind of work.
+//! own looks round on a rhythm (what came in, what changed where the
+//! workspace's people work, what became due) and, where it finds work it
+//! could do, proposes it. Two things bound that: the look-round is one of
+//! the workspace's own events ([`super::workspace_events`]), with a switch,
+//! a rhythm and a day's limit of its own, and a look that finds nothing new
+//! asks no model and writes nothing; and what it proposes waits for a
+//! member's nod, unless they said always to that kind of work.
 //!
 //! It learns from what is turned down: a kind of work declined twice is
-//! not proposed again until its person says so.
+//! not proposed again until a member says so.
 //!
-//! These actions are answered as a person's events are: for the person on
-//! a device of theirs, and for an agent on a session that person handed
-//! it, only in a workspace of the person's own. What widens what the
-//! assistant may do alone ([`ACCEPT`], a higher limit) is the person's
-//! alone.
+//! These are the workspace's, as its events are: every member whose role
+//! reaches them reads the same look-round and proposals, and a member's
+//! assistant works with them on that member's behalf. What widens what the
+//! assistant may do alone ([`ACCEPT`], a higher limit) is a person's alone.
 
 use serde::{Deserialize, Serialize};
 
-use super::person_events::SetUp;
+use super::workspace_events::SetUp;
 use super::{ActionAddress, RemoteActionTarget};
 
 /// The provider the server answers a person's assistant's own initiative

@@ -1,26 +1,30 @@
-//! A person's events through the host's own actions
-//! ([`crate::workspace_bots::events`]), as a device, a page and an agent's
-//! turn take them: who may set one up and reach it, what a listing says of
-//! it, and that the host fires what was set up, once, also across a restart.
+//! A workspace's events through the host's own actions
+//! ([`crate::workspace_bots::events`]), as a device and an agent's turn take
+//! them: who may set one up and reach it, what a listing says of it, that
+//! every member the workspace's policy lets sees and changes the same ones,
+//! and that the host fires what was set up, once, also across a restart.
 
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tilo_actions::remote::person_events::{self, Ended, EventView, Events, Sort};
+use tilo_actions::MemberId;
+use tilo_actions::remote::workspace_events::{self, Ended, EventView, Events, Sort};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionMessage,
 };
 use tilo_server_protocol::WorkspaceId;
+use tilo_server_protocol::workspaces::Role;
 
 use super::*;
-use crate::workspace_bots::events::PersonEvents;
+use crate::workspace_bots::events::{Authority, WorkspaceEvents};
 
-/// One action on a person's events as `caller` takes it, through what the
-/// host's app action server and an agent's turn both answer with.
-fn take(
-    events: &PersonEvents,
+/// One action on a workspace's events as `caller` on `certificate`'s device
+/// takes it, through what the host's app action server answers with.
+async fn take_on(
+    events: &WorkspaceEvents,
     workspace: &str,
+    certificate: &DeviceCert,
     caller: &Caller,
     action: &str,
     arguments: serde_json::Value,
@@ -36,7 +40,7 @@ fn take(
     };
     let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: person_events::target(action),
+        target: workspace_events::target(action),
         argument: InvokeArgument::Json(arguments),
         context: None,
         confirmation: None,
@@ -45,11 +49,19 @@ fn take(
         wait_ms: None,
         appearance: None,
     };
-    let answered = events
-        .serve(workspace, caller, RemoteActionMessage::Invoke(request))
-        .and_then(|answer| answer.wait_timeout(Duration::from_secs(5)).ok().flatten());
+    let Some(answer) = events.serve(
+        workspace,
+        caller,
+        Authority::of(certificate),
+        RemoteActionMessage::Invoke(request),
+    ) else {
+        return Err(unanswered("an action on events is answered"));
+    };
+    let Some(answered) = answer.await else {
+        return Err(unanswered("an action on events answered nothing"));
+    };
     match answered {
-        Some(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
+        RemoteActionMessage::Receipt(receipt) => match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
             ReceiptStatus::Rejected { error } => Err(error),
             other => Err(unanswered(&format!(
@@ -60,15 +72,64 @@ fn take(
     }
 }
 
+/// One action on a workspace's events as a turn this server carries out for
+/// `caller`'s member takes it: what an assistant's own tool call is.
+async fn take_as_turn(
+    events: &WorkspaceEvents,
+    workspace: &str,
+    caller: &Caller,
+    action: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, ActionCallError> {
+    let Some(workspace) = WorkspaceId::parse(workspace) else {
+        return Err(ActionCallError::UnknownAction);
+    };
+    let request = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: workspace_events::target(action),
+        argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    match events
+        .invoke(workspace, caller, &Authority::Turn, &request)
+        .await
+        .status
+    {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+        ReceiptStatus::Rejected { error } => Err(error),
+        other => Err(ActionCallError::Unavailable {
+            reason: format!("an action in a turn ends at once: {other:?}"),
+        }),
+    }
+}
+
 /// The event `answer` describes.
 fn event(answer: Result<serde_json::Value, ActionCallError>) -> EventView {
     serde_json::from_value(answer.expect("the action is taken")).expect("an event is answered")
 }
 
-/// The events `caller`'s person keeps.
-fn listed(events: &PersonEvents, workspace: &str, caller: &Caller) -> Vec<EventView> {
-    let answer = take(events, workspace, caller, person_events::LIST, json!({}));
-    serde_json::from_value::<Events>(answer.expect("a person lists their events"))
+/// The events of `workspace` whose policy lets `caller` reach them.
+async fn listed(
+    events: &WorkspaceEvents,
+    workspace: &str,
+    certificate: &DeviceCert,
+    caller: &Caller,
+) -> Vec<EventView> {
+    let answer = take_on(
+        events,
+        workspace,
+        certificate,
+        caller,
+        workspace_events::LIST,
+        json!({}),
+    )
+    .await;
+    serde_json::from_value::<Events>(answer.expect("a member lists the workspace's events"))
         .expect("events are answered")
         .events
 }
@@ -78,19 +139,19 @@ fn everything() -> CatalogueQuery {
     serde_json::from_value(json!({})).expect("the empty query asks for everything")
 }
 
-/// The person the workspace is of, on a device of theirs.
+/// A member on a device of theirs, in `workspace`.
 fn as_person(cert: &DeviceCert, workspace: &str) -> Caller {
     Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(workspace)
 }
 
-/// That person's assistant, on a turn their session was handed to.
+/// That member's assistant, on a turn their session was handed to.
 fn as_their_agent(cert: &DeviceCert, workspace: &str) -> Caller {
     as_person(cert, workspace)
         .delegated_to("assistant")
         .named("Assistant")
 }
 
-/// Another person, on a device of their own.
+/// Another person, on a device of their own: no member of the workspace.
 fn as_another(workspace: &str) -> Caller {
     Caller::authenticated(ADA, [9; 32]).in_workspace(workspace)
 }
@@ -109,29 +170,19 @@ fn morning_numbers() -> serde_json::Value {
     })
 }
 
-/// The events of the person a test's workspace is of, as their callers reach
+/// The events of the workspace a test's host governs, as its members reach
 /// them.
 struct Theirs {
-    events: PersonEvents,
+    events: WorkspaceEvents,
     workspace: String,
     cert: DeviceCert,
 }
 
 impl Theirs {
-    /// Their events on the host of `workspaces`, kept under `state`. Nothing
-    /// takes what they hand over.
-    fn on(
-        workspaces: &Workspaces,
-        workspace: &str,
-        cert: &DeviceCert,
-        state: &std::path::Path,
-    ) -> Self {
+    /// Its events, with nothing taking what they hand over.
+    fn on(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert) -> Self {
         Self {
-            events: PersonEvents::start_with(
-                workspaces.clone(),
-                state.to_path_buf(),
-                Assistant::answering(vec![]),
-            ),
+            events: WorkspaceEvents::start_with(workspaces.clone(), Assistant::answering(vec![])),
             workspace: workspace.to_owned(),
             cert: cert.clone(),
         }
@@ -149,47 +200,68 @@ impl Theirs {
         WorkspaceId::parse(&self.workspace).expect("a workspace has an id")
     }
 
-    fn take(
+    async fn take(
         &self,
         caller: &Caller,
         action: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, ActionCallError> {
-        take(&self.events, &self.workspace, caller, action, arguments)
+        take_on(
+            &self.events,
+            &self.workspace,
+            &self.cert,
+            caller,
+            action,
+            arguments,
+        )
+        .await
     }
 
-    /// Their events, as they read them on a device of their own.
-    fn listed(&self) -> Vec<EventView> {
-        listed(&self.events, &self.workspace, &self.me())
+    /// The same as a turn this server carries out for the caller's member:
+    /// what an assistant's own tool call is.
+    async fn take_in_turn(
+        &self,
+        caller: &Caller,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        take_as_turn(&self.events, &self.workspace, caller, action, arguments).await
+    }
+
+    /// Its events, as they read them on a device of their own.
+    async fn listed(&self) -> Vec<EventView> {
+        listed(&self.events, &self.workspace, &self.cert, &self.me()).await
     }
 
     /// The event their assistant sets up as [`morning_numbers`] describes.
-    fn set_up(&self) -> EventView {
-        event(self.take(&self.agent(), person_events::SET_UP, morning_numbers()))
+    async fn set_up(&self) -> EventView {
+        event(
+            self.take_in_turn(&self.agent(), workspace_events::SET_UP, morning_numbers())
+                .await,
+        )
     }
 
-    /// What `caller` is offered on events, as a catalogue's page reads.
-    fn offered(&self, caller: &Caller) -> String {
-        serde_json::to_string(&self.events.catalogue(self.id(), caller, &everything()))
-            .expect("a page is written")
+    /// What `caller` is offered on the workspace's events, as a catalogue's
+    /// page reads.
+    async fn offered(&self, caller: &Caller) -> String {
+        let page = self
+            .events
+            .catalogue(self.id(), caller, &Authority::of(&self.cert), &everything())
+            .await;
+        serde_json::to_string(&page).expect("a page is written")
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_persons_assistant_sets_an_event_up_and_its_person_reads_the_same() {
+async fn a_members_assistant_sets_an_event_up_and_another_member_reads_and_changes_it() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
-    let theirs = Theirs::on(
-        &workspaces,
-        &workspace,
-        &cert,
-        &scratch.path().join("events"),
-    );
+    let theirs = Theirs::on(&workspaces, &workspace, &cert);
 
-    let made = theirs.set_up();
+    let made = theirs.set_up().await;
     assert_eq!(made.name, "Morning numbers");
     assert_eq!(made.sort, Sort::Scheduled);
     assert_eq!(made.when, "every day at 09:00");
@@ -207,101 +279,202 @@ async fn a_persons_assistant_sets_an_event_up_and_its_person_reads_the_same() {
     assert_eq!(made.note["style"], "Three lines.");
     assert!(made.on);
     assert_eq!((made.runs, made.last_run.clone()), (0, None));
+    assert_eq!(
+        made.by,
+        MemberId::agent("Assistant"),
+        "authorship is who set it up"
+    );
 
     // An agent is offered the event actions.
-    let offered = theirs.offered(&theirs.agent());
+    let offered = theirs.offered(&theirs.agent()).await;
     assert!(offered.contains("\"set-up\""), "{offered}");
     assert!(
         theirs
             .events
-            .provider(theirs.id(), &theirs.agent())
+            .provider(theirs.id(), &theirs.agent(), &Authority::of(&theirs.cert))
+            .await
             .is_some()
     );
 
     // The person reads the same on a device of their own.
-    assert_eq!(theirs.listed(), vec![made]);
+    assert_eq!(theirs.listed().await, vec![made.clone()]);
+
+    // The member sets one up themselves too, on a device of theirs.
+    let own = event(
+        theirs
+            .take(
+                &theirs.me(),
+                workspace_events::SET_UP,
+                json!({
+                    "name": "Weekly review",
+                    "when": "every Monday at 09:00",
+                    "instruction": "Sum up the week.",
+                }),
+            )
+            .await,
+    );
+    assert_eq!(own.by, MemberId::person(hex::encode(cert.user_public_key)));
+
+    // Another member of the workspace, an editor, lists both and changes the
+    // one the first set up themselves: the events are the workspace's, and a
+    // change keeps the authorship of whoever set one up.
+    let editor = member(&workspaces, &cert, &workspace, 61, Role::Editor).await;
+    let by_editor = as_person(&editor, &workspace);
+    let seen = listed(&theirs.events, &workspace, &editor, &by_editor).await;
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    for id in [&made.id, &own.id] {
+        assert!(seen.iter().any(|event| &event.id == id), "{seen:?}");
+    }
+    let changed = event(
+        take_on(
+            &theirs.events,
+            &workspace,
+            &editor,
+            &by_editor,
+            workspace_events::CHANGE,
+            json!({"event": own.id, "name": "Weekly numbers"}),
+        )
+        .await,
+    );
+    assert_eq!(changed.id, own.id, "it is the same event");
+    assert_eq!(changed.name, "Weekly numbers");
+    assert_eq!(changed.by, own.by, "authorship stays who set it up");
+    let seen = theirs.listed().await;
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(
+        seen.iter()
+            .any(|event| event.id == own.id && event.name == "Weekly numbers")
+    );
+    assert!(
+        seen.iter()
+            .any(|event| event.id == made.id && event.name == "Morning numbers")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn another_persons_agent_and_a_bot_set_nothing_up_and_reach_no_event() {
+async fn a_viewer_reads_the_workspaces_events_and_changes_none() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
-    let theirs = Theirs::on(
-        &workspaces,
-        &workspace,
-        &cert,
-        &scratch.path().join("events"),
+    let theirs = Theirs::on(&workspaces, &workspace, &cert);
+    let made = theirs.set_up().await;
+
+    let viewer = member(&workspaces, &cert, &workspace, 62, Role::Viewer).await;
+    let reader = as_person(&viewer, &workspace);
+    assert_eq!(
+        listed(&theirs.events, &workspace, &viewer, &reader).await,
+        vec![made.clone()],
+        "a viewer reads the workspace's events"
     );
-    let made = theirs.set_up();
+    for (action, arguments) in [
+        (
+            workspace_events::CHANGE,
+            json!({"event": made.id, "name": "Night numbers"}),
+        ),
+        (workspace_events::SET_UP, morning_numbers()),
+        (workspace_events::PAUSE, json!({"event": made.id})),
+        (workspace_events::REMOVE, json!({"event": made.id})),
+    ] {
+        let refused = take_on(
+            &theirs.events,
+            &workspace,
+            &viewer,
+            &reader,
+            action,
+            arguments,
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(ActionCallError::NotPermitted)),
+            "{action}: {refused:?}"
+        );
+    }
+    assert_eq!(theirs.listed().await, vec![made], "nothing of it changed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_and_a_non_member_set_nothing_up_and_reach_no_event() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = bot_server(scratch.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let (workspace, _) = chat_workspace(&workspaces, &cert).await;
+    let theirs = Theirs::on(&workspaces, &workspace, &cert);
+    let made = theirs.set_up().await;
     let named = json!({"event": made.id});
 
-    // Another person and an agent acting for them set nothing up here, and
-    // reach none of this person's events.
+    // A person the workspace does not have, and an agent acting for them,
+    // set nothing up here and reach none of its events.
     for other in [
         as_another(&workspace),
         as_another(&workspace).delegated_to("scout"),
     ] {
-        let refused = theirs.take(&other, person_events::SET_UP, morning_numbers());
-        assert!(
-            matches!(refused, Err(ActionCallError::Refused { .. })),
-            "{refused:?}"
-        );
         for action in [
-            person_events::LIST,
-            person_events::PAUSE,
-            person_events::CHANGE,
-            person_events::REMOVE,
+            workspace_events::SET_UP,
+            workspace_events::LIST,
+            workspace_events::PAUSE,
+            workspace_events::CHANGE,
+            workspace_events::REMOVE,
         ] {
+            let refused = theirs.take(&other, action, named.clone()).await;
             assert!(
-                theirs.take(&other, action, named.clone()).is_err(),
-                "{action}"
+                matches!(refused, Err(ActionCallError::UnknownAction)),
+                "{action}: {refused:?}"
             );
         }
-        assert!(theirs.events.provider(theirs.id(), &other).is_none());
-        let offered = theirs.offered(&other);
+        assert!(
+            theirs
+                .events
+                .provider(theirs.id(), &other, &Authority::of(&theirs.cert))
+                .await
+                .is_none()
+        );
+        let offered = theirs.offered(&other).await;
         assert!(!offered.contains("\"set-up\""), "{offered}");
     }
     // Neither does a bot, whoever installed it.
     let bot =
         Caller::bot(GREETER.to_owned(), cert.user_public_key, [5; 32]).in_workspace(&workspace);
     assert!(matches!(
-        theirs.take(&bot, person_events::LIST, json!({})),
+        theirs.take(&bot, workspace_events::LIST, json!({})).await,
         Err(ActionCallError::UnknownAction)
     ));
-    assert_eq!(theirs.listed(), vec![made], "nothing of it changed");
+    assert_eq!(theirs.listed().await, vec![made], "nothing of it changed");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_event_is_changed_paused_and_removed_by_its_persons_assistant() {
+async fn an_event_is_changed_paused_and_removed_by_a_member() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
-    let state = scratch.path().join("events");
-    let theirs = Theirs::on(&workspaces, &workspace, &cert, &state);
+    let theirs = Theirs::on(&workspaces, &workspace, &cert);
     let agent = theirs.agent();
-    let made = theirs.set_up();
+    let made = theirs.set_up().await;
     let named = json!({"event": made.id});
 
     // Changed: what starts it, its filter, its count, what it is told, and
     // its note. What is left out stays.
-    let changed = event(theirs.take(
-        &agent,
-        person_events::CHANGE,
-        json!({
-            "event": made.id,
-            "when": "once at 2030-01-01T09:00:00Z",
-            "onlyIf": "",
-            "every": 1,
-            "instruction": "Say happy new year.",
-            "accepted": "Short and warm.",
-            "kept": {"seen": 3},
-        }),
-    ));
+    let changed = event(
+        theirs
+            .take_in_turn(
+                &agent,
+                workspace_events::CHANGE,
+                json!({
+                    "event": made.id,
+                    "when": "once at 2030-01-01T09:00:00Z",
+                    "onlyIf": "",
+                    "every": 1,
+                    "instruction": "Say happy new year.",
+                    "accepted": "Short and warm.",
+                    "kept": {"seen": 3},
+                }),
+            )
+            .await,
+    );
     assert_eq!(changed.id, made.id, "it is the same event");
     assert_eq!(changed.when, "once at 2030-01-01T09:00:00Z");
     assert_eq!(changed.next_at_ms, Some(1_893_488_400_000));
@@ -311,31 +484,48 @@ async fn an_event_is_changed_paused_and_removed_by_its_persons_assistant() {
     assert_eq!(changed.note["kept"], json!({"seen": 3}));
     assert_eq!(changed.note["style"], "Three lines.", "the rest stays");
     // What no host can run is refused in words, and changes nothing.
-    let refused = theirs.take(
-        &agent,
-        person_events::CHANGE,
-        json!({"event": made.id, "when": "when someone presses \"ctrl+k\""}),
-    );
+    let refused = theirs
+        .take_in_turn(
+            &agent,
+            workspace_events::CHANGE,
+            json!({"event": made.id, "when": "when someone presses \"ctrl+k\""}),
+        )
+        .await;
     assert!(
         matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("every device off")),
         "{refused:?}"
     );
-    assert_eq!(theirs.listed(), vec![changed]);
+    assert_eq!(theirs.listed().await, vec![changed]);
 
     // Paused, and let go on.
-    let paused = event(theirs.take(&agent, person_events::PAUSE, named.clone()));
+    let paused = event(
+        theirs
+            .take_in_turn(&agent, workspace_events::PAUSE, named.clone())
+            .await,
+    );
     assert!(!paused.on);
     assert_eq!(paused.next_at_ms, None, "a paused event fires at no time");
-    let resumed = event(theirs.take(&agent, person_events::RESUME, named.clone()));
+    let resumed = event(
+        theirs
+            .take_in_turn(&agent, workspace_events::RESUME, named.clone())
+            .await,
+    );
     assert!(resumed.on);
 
-    // Removed: gone for its person, with everything it kept.
-    let left = theirs.take(&agent, person_events::REMOVE, named.clone());
+    // Removed: gone with everything it kept, from the workspace's store.
+    let left = theirs
+        .take_in_turn(&agent, workspace_events::REMOVE, named.clone())
+        .await;
     assert_eq!(left.ok(), Some(json!({"events": []})));
-    assert!(theirs.take(&agent, person_events::PAUSE, named).is_err());
-    let kept = state
-        .join(theirs.id().to_string())
-        .join(hex::encode(cert.user_public_key))
+    assert!(
+        theirs
+            .take_in_turn(&agent, workspace_events::PAUSE, named)
+            .await
+            .is_err()
+    );
+    let kept = workspaces
+        .workspace_root(&workspace)
+        .join("events")
         .join(&made.id);
     assert!(!kept.exists(), "{}", kept.display());
 }
@@ -346,11 +536,36 @@ fn in_a_moment(in_ms: i64) -> (String, i64) {
     (format!("once at {at_ms} ms"), at_ms)
 }
 
+/// An event a turn this server carries out for `caller` sets up, saying
+/// hello when it fires.
+async fn set_up_saying(
+    events: &WorkspaceEvents,
+    workspace: &str,
+    caller: &Caller,
+    name: &str,
+    when: String,
+) -> EventView {
+    event(
+        take_as_turn(
+            events,
+            workspace,
+            caller,
+            workspace_events::SET_UP,
+            json!({"name": name, "when": when, "instruction": "Say hello."}),
+        )
+        .await,
+    )
+}
+
 /// Wait until `done` answers something, or fail when it never does.
-async fn until<T>(what: &str, mut done: impl FnMut() -> Option<T>) -> T {
+async fn until<T, F, Fut>(what: &str, mut done: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        if let Some(answer) = done() {
+        if let Some(answer) = done().await {
             return answer;
         }
         assert!(Instant::now() < deadline, "{what}");
@@ -365,31 +580,33 @@ async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_ag
     let server = bot_server(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
-    let state = scratch.path().join("person-events");
     let assistant = Assistant::answering(vec![]);
-    let events = PersonEvents::start_with(workspaces.clone(), state.clone(), assistant.clone());
+    let events = WorkspaceEvents::start_with(workspaces.clone(), assistant.clone());
     let theirs = as_their_agent(&cert, &workspace);
     let me = as_person(&cert, &workspace);
 
     let (when, at_ms) = in_a_moment(400);
-    let made = event(take(
-        &events,
-        &workspace,
-        &theirs,
-        person_events::SET_UP,
-        json!({
-            "name": "Call home",
-            "when": when,
-            "instruction": "Say that it is time to call home.",
-        }),
-    ));
+    let made = event(
+        take_as_turn(
+            &events,
+            &workspace,
+            &theirs,
+            workspace_events::SET_UP,
+            json!({
+                "name": "Call home",
+                "when": when,
+                "instruction": "Say that it is time to call home.",
+            }),
+        )
+        .await,
+    );
     assert_eq!(made.sort, Sort::Scheduled);
     assert_eq!(made.next_at_ms, Some(at_ms));
     assert!(assistant.taken().is_empty(), "nothing before its moment");
 
     // The moment comes: the host hands the instruction to the assistant of
-    // the person the event is of, with no device of theirs asking.
-    let taken = until("the reminder never fired", || {
+    // the member who set it up, with no device of theirs asking.
+    let taken = until("the reminder never fired", || async {
         Some(assistant.taken()).filter(|taken| !taken.is_empty())
     })
     .await;
@@ -405,9 +622,10 @@ async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_ag
         tilo_clock::unix_now_ms_i64() >= at_ms,
         "it fired at its moment, not before"
     );
-    // Its person reads that it ran, and that it has no next time.
-    let ran = until("the run was never kept", || {
-        listed(&events, &workspace, &me)
+    // Its author reads that it ran, and that it has no next time.
+    let ran = until("the run was never kept", || async {
+        listed(&events, &workspace, &cert, &me)
+            .await
             .into_iter()
             .find(|event| event.last_run.is_some())
     })
@@ -421,13 +639,13 @@ async fn a_reminder_the_assistant_set_up_fires_once_also_when_the_host_starts_ag
     // The host starts again: it still keeps the event, and hands nothing
     // over a second time.
     drop(events);
-    let events = PersonEvents::start_with(workspaces.clone(), state, assistant.clone());
-    let kept = listed(&events, &workspace, &me);
+    let events = WorkspaceEvents::start_with(workspaces.clone(), assistant.clone());
+    let kept = listed(&events, &workspace, &cert, &me).await;
     assert_eq!(kept.len(), 1, "{kept:?}");
     assert_eq!((kept[0].id.as_str(), kept[0].runs), (made.id.as_str(), 1));
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(assistant.taken().len(), 1);
-    assert_eq!(listed(&events, &workspace, &me)[0].runs, 1);
+    assert_eq!(listed(&events, &workspace, &cert, &me).await[0].runs, 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -438,51 +656,43 @@ async fn a_paused_event_fires_nothing_and_a_refused_run_says_why() {
     let workspaces = server.workspaces().clone();
     let (workspace, _) = chat_workspace(&workspaces, &cert).await;
     let assistant = Assistant::answering(vec![Err(HostStepError::Refused(
-        "this person keeps no assistant".into(),
+        "this workspace keeps no assistant".into(),
     ))]);
-    let events = PersonEvents::start_with(
-        workspaces.clone(),
-        scratch.path().join("person-events"),
-        assistant.clone(),
-    );
+    let events = WorkspaceEvents::start_with(workspaces.clone(), assistant.clone());
     let theirs = as_their_agent(&cert, &workspace);
-    let set_up = |name: &str, when: String| {
-        event(take(
-            &events,
-            &workspace,
-            &theirs,
-            person_events::SET_UP,
-            json!({"name": name, "when": when, "instruction": "Say hello."}),
-        ))
-    };
 
     // Paused before its moment, it never fires, also not once it goes on.
-    let quiet = set_up("Quiet", in_a_moment(300).0);
+    let quiet = set_up_saying(&events, &workspace, &theirs, "Quiet", in_a_moment(300).0).await;
     let named = json!({"event": quiet.id});
-    take(
+    take_as_turn(
         &events,
         &workspace,
         &theirs,
-        person_events::PAUSE,
+        workspace_events::PAUSE,
         named.clone(),
     )
+    .await
     .unwrap();
     tokio::time::sleep(Duration::from_millis(900)).await;
     assert!(assistant.taken().is_empty(), "{:?}", assistant.taken());
-    let resumed = event(take(
-        &events,
-        &workspace,
-        &theirs,
-        person_events::RESUME,
-        named,
-    ));
+    let resumed = event(
+        take_as_turn(
+            &events,
+            &workspace,
+            &theirs,
+            workspace_events::RESUME,
+            named,
+        )
+        .await,
+    );
     assert!(resumed.on);
     assert_eq!(resumed.runs, 0);
 
-    // One whose instruction nothing takes says so where its person reads it.
-    let refused = set_up("Loud", in_a_moment(200).0);
-    let ended = until("the refused run was never kept", || {
-        listed(&events, &workspace, &theirs)
+    // One whose instruction nothing takes says so where a member reads it.
+    let refused = set_up_saying(&events, &workspace, &theirs, "Loud", in_a_moment(200).0).await;
+    let ended = until("the refused run was never kept", || async {
+        listed(&events, &workspace, &cert, &theirs)
+            .await
             .into_iter()
             .find(|event| event.id == refused.id)
             .and_then(|event| event.last_run)
@@ -493,7 +703,7 @@ async fn a_paused_event_fires_nothing_and_a_refused_run_says_why() {
         ended
             .why
             .as_deref()
-            .is_some_and(|why| why.contains("this person keeps no assistant")),
+            .is_some_and(|why| why.contains("this workspace keeps no assistant")),
         "{ended:?}"
     );
     assert_eq!(

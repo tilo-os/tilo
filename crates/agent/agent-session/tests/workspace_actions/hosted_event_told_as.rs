@@ -79,7 +79,7 @@ fn tried(
 ) -> Result<serde_json::Value, ActionCallError> {
     let request = InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_events::target(action),
+        target: workspace_events::target(action),
         argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
         context: None,
         confirmation: None,
@@ -91,18 +91,30 @@ fn tried(
     let unanswered = |why: String| ActionCallError::Unavailable { reason: why };
     let workspace = WorkspaceId::parse(workspace)
         .ok_or_else(|| unanswered(format!("{workspace} names no workspace")))?;
-    match up.events.invoke(workspace, caller, &request).status {
+    let receipt = up
+        .events
+        .invoking(workspace, caller, Authority::Turn, request)
+        .wait_timeout(std::time::Duration::from_secs(30))
+        .map_err(|_| unanswered("the server did not answer".to_owned()))?
+        .ok_or_else(|| unanswered("the server abandoned the answer".to_owned()))?;
+    match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
         ReceiptStatus::Rejected { error } => Err(error),
         other => Err(unanswered(format!(
-            "{action} on a person's events ends at once: {other:?}"
+            "{action} on the workspace's events ends at once: {other:?}"
         ))),
     }
 }
 
 /// The person's events, as a device of their own reads them from the server.
 fn listed(up: &Up, workspace: &str, me: &Caller) -> serde_json::Value {
-    up.take(workspace, me, person_events::LIST, &serde_json::json!({}))["events"].clone()
+    up.take(
+        workspace,
+        me,
+        workspace_events::LIST,
+        &serde_json::json!({}),
+    )["events"]
+        .clone()
 }
 
 /// One action on what the person is told and on their own rule, as their own device takes it
@@ -188,7 +200,7 @@ async fn fired(
     if let Some(told_as) = told_as {
         set_up["toldAs"] = serde_json::json!(told_as);
     }
-    let event = up.take(workspace, theirs, person_events::SET_UP, &set_up);
+    let event = up.take(workspace, theirs, workspace_events::SET_UP, &set_up);
     let ask = asked_as(up, workspace, name).await;
     let model = waits(
         vec![says(SAID)],
@@ -346,7 +358,7 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
     let event = up.take(
         &workspace,
         &theirs,
-        person_events::SET_UP,
+        workspace_events::SET_UP,
         &serde_json::json!({"name": "New year", "when": far, "instruction": "Say happy new year."}),
     );
     let id = event["id"].as_str().expect("an event has an id").to_owned();
@@ -374,7 +386,7 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
             &up,
             &workspace,
             other,
-            person_events::SET_UP,
+            workspace_events::SET_UP,
             &serde_json::json!({
                 "name": "Loud",
                 "when": far,
@@ -393,7 +405,7 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
             &up,
             &workspace,
             other,
-            person_events::CHANGE,
+            workspace_events::CHANGE,
             &serde_json::json!({"event": id, "toldAs": "brief"}),
         );
         assert!(
@@ -416,7 +428,7 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
         for (key, value) in change.as_object().cloned().unwrap_or_default() {
             named[key.as_str()] = value;
         }
-        up.take(&workspace, caller, person_events::CHANGE, &named)
+        up.take(&workspace, caller, workspace_events::CHANGE, &named)
     };
     let changed = said(&theirs, serde_json::json!({"toldAs": "brief"}));
     assert_eq!(
@@ -441,7 +453,7 @@ async fn how_an_events_result_is_told_is_said_only_where_an_event_is_set_up_at_a
             &up,
             &workspace,
             &theirs,
-            person_events::CHANGE,
+            workspace_events::CHANGE,
             &serde_json::json!({"event": id, "toldAs": wrong}),
         );
         assert!(
@@ -490,7 +502,7 @@ async fn an_events_brief_reaches_its_own_person_and_nobody_else() {
         &up,
         &workspace,
         &theirs,
-        person_events::SET_UP,
+        workspace_events::SET_UP,
         &serde_json::json!({
             "name": "For Bo",
             "when": in_a_moment(600).0,
@@ -512,7 +524,7 @@ async fn an_events_brief_reaches_its_own_person_and_nobody_else() {
         &up,
         &workspace,
         &helper,
-        person_events::SET_UP,
+        workspace_events::SET_UP,
         &serde_json::json!({
             "name": "From Bo",
             "when": in_a_moment(600).0,

@@ -3,15 +3,15 @@
 //!
 //! A proposal waits for its person's nod. Two things a person says about a
 //! kind of work are kept with it and decide what the next proposal of that
-//! kind does: turned down [`person_initiative::QUIET_AFTER`] times, the
+//! kind does: turned down [`workspace_initiative::QUIET_AFTER`] times, the
 //! kind is quiet and the server refuses it when the assistant proposes it
 //! again; said always to, a piece of work of that kind starts without a
 //! nod. Both are the person's to take back. The rule is kept here, in what
 //! the server answers, and not in what a model was told.
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::person_events::SetUp;
-use tilo_actions::remote::person_initiative::{
+use tilo_actions::remote::workspace_events::SetUp;
+use tilo_actions::remote::workspace_initiative::{
     self, Proposal, Proposals, Propose, ProposedTask, State,
 };
 use tilo_agent_session::bot::event::{Definition, told_as_of};
@@ -50,24 +50,24 @@ fn one_line(text: &str) -> String {
 /// # Errors
 /// What is wrong with it, in words for whoever proposed it.
 pub(super) fn checked(wanted: Propose) -> Result<Propose, String> {
-    let kind = person_initiative::kind_word(&wanted.kind).ok_or_else(|| {
+    let kind = workspace_initiative::kind_word(&wanted.kind).ok_or_else(|| {
         format!(
             "a kind is your own short word for this sort of work, at most {} bytes",
-            person_initiative::MAX_KIND_BYTES
+            workspace_initiative::MAX_KIND_BYTES
         )
     })?;
     let title = one_line(&wanted.title);
-    if title.is_empty() || title.chars().count() > person_initiative::MAX_TITLE_CHARS {
+    if title.is_empty() || title.chars().count() > workspace_initiative::MAX_TITLE_CHARS {
         return Err(format!(
             "a proposal has a title of at most {} characters",
-            person_initiative::MAX_TITLE_CHARS
+            workspace_initiative::MAX_TITLE_CHARS
         ));
     }
     let why = one_line(&wanted.why);
-    if why.is_empty() || why.chars().count() > person_initiative::MAX_WHY_CHARS {
+    if why.is_empty() || why.chars().count() > workspace_initiative::MAX_WHY_CHARS {
         return Err(format!(
             "a proposal says why in one line of at most {} characters",
-            person_initiative::MAX_WHY_CHARS
+            workspace_initiative::MAX_WHY_CHARS
         ));
     }
     let event = wanted.event.map(event_checked).transpose()?;
@@ -131,10 +131,10 @@ impl Book {
         }) {
             return Ok(waits.clone());
         }
-        if self.waiting() >= person_initiative::MAX_WAITING {
+        if self.waiting() >= workspace_initiative::MAX_WAITING {
             return Err(format!(
                 "{} proposals wait for your person already: propose more once they decided some",
-                person_initiative::MAX_WAITING
+                workspace_initiative::MAX_WAITING
             ));
         }
         let proposal = Proposal {
@@ -347,7 +347,7 @@ mod tests {
         let first = proposed(&mut book, "tidy", "Tidy the notes", "a").unwrap();
         let again = proposed(&mut book, "tidy", "  Tidy   the notes ", "b").unwrap();
         assert_eq!(again, first);
-        for n in 1..person_initiative::MAX_WAITING {
+        for n in 1..workspace_initiative::MAX_WAITING {
             proposed(&mut book, "tidy", &format!("Tidy {n}"), &n.to_string()).unwrap();
         }
         let refused = proposed(&mut book, "tidy", "One more", "more");
@@ -431,7 +431,7 @@ mod tests {
         );
         assert!(
             refused(Propose {
-                why: "x".repeat(person_initiative::MAX_WHY_CHARS + 1),
+                why: "x".repeat(workspace_initiative::MAX_WHY_CHARS + 1),
                 ..base()
             })
             .contains("one line")

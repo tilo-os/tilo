@@ -1,40 +1,39 @@
-//! What a person has the host do for them at a time or when something
-//! happens: their scheduled work and their events.
+//! What a workspace has its host do at a time or when something happens: its
+//! scheduled work and its events.
 //!
-//! An event is a Shortcut the host runs for one person, with no device of
-//! theirs on: a reminder at a moment, a summary every morning, a look at
-//! every tenth thing that arrives. It names what starts it (its trigger),
-//! optionally a question the person's own model answers about what happened
-//! (only on a yes does it go on) and a count (only every so many times), and
-//! the instruction its person's assistant is then handed. It keeps a note
-//! between its runs: what it is for, how its person wants it done, and what
-//! the last run left for the next. It may say how its result is told to its
-//! person ([`SetUp::told_as`]): as a brief, which reaches them as a reminder
-//! does, or as news, which reaches them only where their own rule calls it
-//! important.
+//! An event is a Shortcut the host runs with no device of anyone's on: a
+//! reminder at a moment, a summary every morning, a look at every tenth
+//! thing that arrives. It names what starts it (its trigger), optionally a
+//! question a model answers about what happened (only on a yes does it go
+//! on) and a count (only every so many times), and the instruction it hands
+//! on. It keeps a note between its runs: what it is for, how it is wanted,
+//! and what the last run left for the next. It may say how its result is
+//! told ([`SetUp::told_as`]): as a brief, which is told with a notice, or as
+//! news, which stays in the list.
 //!
-//! The person sets one up, or their assistant does it for them: these
-//! actions are the same for both, and are answered only for the person the
-//! caller is or acts for, in a workspace that is theirs. Nobody else's
-//! agent reaches another person's events. Setting an event up gives nothing
-//! new reach: the work it starts is the assistant's own, which still asks
-//! before anything leaves the workspace, unless the event carries its
-//! person's permission for exactly that action ([`PERMIT`]), which only the
-//! person gives and takes back.
+//! These are the workspace's, not one person's: every member whose role
+//! reaches them sees and changes the same events, and a member's assistant
+//! works with them on that member's behalf. Who set an event up is kept as
+//! its author ([`EventView::by`]), and the instruction it hands over starts
+//! that author's assistant's own work, which still asks before anything
+//! leaves the workspace, unless the event carries that person's permission
+//! for exactly that action (`PERMIT`), which only the person gives and
+//! takes back.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::person_telling::Kind;
 use super::{ActionAddress, RemoteActionTarget};
+use crate::MemberId;
 
-/// The provider that answers a person's events under.
+/// The provider that answers a workspace's events under.
 pub const PROVIDER: &str = "tilo.events";
 /// The resource the events are actions of.
 pub const RESOURCE: &str = "events";
 /// The kind of that resource.
 pub const KIND: &str = "events.list";
-/// Every event of the person in the workspace, as an [`Events`].
+/// Every event of the workspace, as an [`Events`].
 pub const LIST: &str = "list";
 /// Set an event up ([`SetUp`]), answering it as an [`EventView`].
 pub const SET_UP: &str = "set-up";
@@ -214,9 +213,12 @@ pub struct EventView {
     pub last_run: Option<LastRun>,
     /// When it was set up, ms since the Unix epoch.
     pub set_up_at_ms: i64,
+    /// Who set it up: kept as its author. The instruction it hands over
+    /// starts that member's assistant's work.
+    pub by: MemberId,
 }
 
-/// Every event of a person in a workspace, in the order they were set up.
+/// Every event of a workspace, in the order they were set up.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Events {

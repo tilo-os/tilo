@@ -17,16 +17,13 @@
 //! makes news of the answer, whatever kind it says it is, as what an agent
 //! tells is news.
 
-use tilo_actions::InvocationId;
-use tilo_actions::remote::person_events::{self, Events};
+use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_telling::{Cause, Kind, Tell, Teller};
-use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_resource::Id;
-use tilo_server_protocol::WorkspaceId;
 
 use super::questions::at_message;
 use crate::workspace_agents::{Ask, Outcome, Turn};
-use crate::workspace_bots::events::PersonEvents;
+use crate::workspace_bots::events::WorkspaceEvents;
 use crate::workspaces::{ToTell, Workspaces};
 
 /// The app that keeps the conversations.
@@ -61,38 +58,13 @@ fn asked_by(bytes: &[u8], message: &Id, person: &str) -> Result<Option<Asked>, S
     }))
 }
 
-/// Whether `author`, who wrote the message that asked, is an event `person`
-/// keeps on this server in `workspace`: asked as they read their own events.
-fn their_event(
-    events: Option<&PersonEvents>,
-    person: &Caller,
-    workspace: &str,
-    author: Option<&str>,
-) -> bool {
-    let (Some(events), Some(workspace), Some(author)) =
-        (events, WorkspaceId::parse(workspace), author)
-    else {
+/// Whether `author`, who wrote the message that asked, is an event this
+/// server keeps in `workspace`.
+fn their_event(events: Option<&WorkspaceEvents>, workspace: &str, author: Option<&str>) -> bool {
+    let (Some(events), Some(author)) = (events, author) else {
         return false;
     };
-    let listing = InvokeRequest {
-        invocation: InvocationId::new(),
-        target: person_events::target(person_events::LIST),
-        argument: InvokeArgument::None,
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-    };
-    let ReceiptStatus::Completed { output } = events.invoke(workspace, person, &listing).status
-    else {
-        return false;
-    };
-    output
-        .value
-        .and_then(|listed| serde_json::from_value::<Events>(listed).ok())
-        .is_some_and(|listed| listed.events.iter().any(|event| event.id == author))
+    events.keeps(workspace, author)
 }
 
 /// Tell the person `turn` was for how it ended as `outcome`, where a cause
@@ -104,7 +76,7 @@ fn their_event(
 /// either: it answers the agent that started it, whose own turn tells.
 pub(crate) async fn turn_ended(
     workspaces: &Workspaces,
-    events: Option<&PersonEvents>,
+    events: Option<&WorkspaceEvents>,
     person: &Caller,
     workspace: &str,
     turn: &Turn,
@@ -146,7 +118,7 @@ pub(crate) async fn turn_ended(
         }
     };
     // What it is, is its cause's to say only for an event its person keeps.
-    let kind = if their_event(events, person, workspace, author.as_deref()) {
+    let kind = if their_event(events, workspace, author.as_deref()) {
         Kind::of_cause(Some(&cause))
     } else {
         Kind::News

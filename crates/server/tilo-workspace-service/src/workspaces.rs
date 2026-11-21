@@ -145,6 +145,8 @@ mod account_logins_tests;
 // What a workspace keeps on the host beside its records, and who reaches it.
 #[cfg(not(target_arch = "wasm32"))]
 mod workspace_stores;
+#[cfg(not(target_arch = "wasm32"))]
+pub use workspace_stores::{Reach, Store};
 // A secret used by reference by a turn this server carries out itself.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted_use;

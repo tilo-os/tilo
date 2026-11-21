@@ -9,14 +9,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tilo_actions::remote::person_events::{self, EventView, Sort};
+use tilo_actions::remote::workspace_events::{self, EventView, Sort};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_server_protocol::WorkspaceId;
 
 use super::judging::ASSISTANT;
 use super::times::person_with_an_assistant;
 use super::*;
-use crate::workspace_bots::events::PersonEvents;
+use crate::workspace_bots::events::{Authority, WorkspaceEvents};
 use crate::workspaces::fixtures::mail::{InboxSeen, Inboxes, held_message};
 
 /// The account the event watches.
@@ -69,26 +69,22 @@ impl Hers {
             .unwrap();
     }
 
-    /// Her events on this holder, kept under `state`, with `assistant`
-    /// taking what they hand over.
-    fn events(&self, state: &std::path::Path, assistant: &Arc<Assistant>) -> PersonEvents {
-        PersonEvents::start_with(
-            self.workspaces.clone(),
-            state.to_path_buf(),
-            assistant.clone(),
-        )
+    /// The workspace's events on this holder, with `assistant` taking what
+    /// they hand over.
+    fn events(&self, assistant: &Arc<Assistant>) -> WorkspaceEvents {
+        WorkspaceEvents::start_with(self.workspaces.clone(), assistant.clone())
     }
 
-    /// One action on her events as her assistant takes it on a turn her
-    /// session was handed to, answered as the event it is about.
-    fn take(&self, events: &PersonEvents, action: &str, arguments: &Value) -> EventView {
+    /// One action on the workspace's events as a turn this server carries
+    /// out for her takes it, answered as the event it is about.
+    async fn take(&self, events: &WorkspaceEvents, action: &str, arguments: &Value) -> EventView {
         let caller = Caller::authenticated(self.person(), self.cert.device_public_key)
             .in_workspace(self.workspace.clone())
             .delegated_to(ASSISTANT)
             .named("Assistant");
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
-            target: person_events::target(action),
+            target: workspace_events::target(action),
             argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
             context: None,
             confirmation: None,
@@ -98,7 +94,11 @@ impl Hers {
             appearance: None,
         };
         let workspace = WorkspaceId::parse(&self.workspace).unwrap();
-        match events.invoke(workspace, &caller, &request).status {
+        match events
+            .invoke(workspace, &caller, &Authority::Turn, &request)
+            .await
+            .status
+        {
             ReceiptStatus::Completed { output } => {
                 serde_json::from_value(output.value.unwrap_or_default()).unwrap()
             }
@@ -107,7 +107,7 @@ impl Hers {
     }
 
     /// An event of hers that waits on `when` and hands `instruction` over.
-    fn sets_up(&self, events: &PersonEvents, when: &str, more: &Value) -> EventView {
+    async fn sets_up(&self, events: &WorkspaceEvents, when: &str, more: &Value) -> EventView {
         let mut described = json!({
             "name": "Mail",
             "when": when,
@@ -116,7 +116,8 @@ impl Hers {
         if let (Some(described), Some(more)) = (described.as_object_mut(), more.as_object()) {
             described.extend(more.clone());
         }
-        self.take(events, person_events::SET_UP, &described)
+        self.take(events, workspace_events::SET_UP, &described)
+            .await
     }
 
     /// The watch this server keeps of `account`'s inbox hears a message
@@ -167,9 +168,8 @@ async fn a_pass_goes_by() {
 async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_as_data() {
     let scratch = tempfile::tempdir().unwrap();
     let (hers, _holder) = Hers::on(scratch.path()).await;
-    let state = scratch.path().join("person-events");
     let assistant = Assistant::answering(vec![]);
-    let events = hers.events(&state, &assistant);
+    let events = hers.events(&assistant);
 
     // A message reaches the workspace's log while something else listens,
     // before any event of hers waits on its mail.
@@ -184,7 +184,7 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
         "with nothing waiting on her mail her inbox is not watched"
     );
 
-    let made = hers.sets_up(&events, ON_MAIL, &json!({}));
+    let made = hers.sets_up(&events, ON_MAIL, &json!({})).await;
     assert_eq!((made.sort, made.when.as_str()), (Sort::Event, ON_MAIL));
     hers.workspaces.mail_watches_settled().await;
     assert_eq!(
@@ -264,7 +264,7 @@ async fn a_message_that_arrives_starts_its_persons_event_once_with_what_arrived_
 
     // The server starts again: the event is handed what arrived while it
     // was down, once, and nothing it was handed before.
-    let events = hers.events(&state, &assistant);
+    let events = hers.events(&assistant);
     let taken = handed(&assistant, 3).await;
     assert!(
         taken[2].instruction.contains("While you were down"),
@@ -281,12 +281,13 @@ async fn nothing_new_asks_nobody_and_its_persons_model_says_what_is_handed_over(
     let scratch = tempfile::tempdir().unwrap();
     let (hers, _holder) = Hers::on(scratch.path()).await;
     let assistant = Assistant::judging(vec![Ok(Value::Bool(false)), Ok(Value::Bool(true))]);
-    let events = hers.events(&scratch.path().join("person-events"), &assistant);
+    let events = hers.events(&assistant);
     hers.sets_up(
         &events,
         ON_MAIL,
         &json!({"onlyIf": "Does it ask her for an answer?"}),
-    );
+    )
+    .await;
 
     // Nothing arrives: no model is asked anything and no turn starts.
     a_pass_goes_by().await;
@@ -327,7 +328,7 @@ async fn mail_the_workspace_keeps_is_handed_over_and_another_workspaces_mail_is_
     let scratch = tempfile::tempdir().unwrap();
     let (hers, _holder) = Hers::on(scratch.path()).await;
     let assistant = Assistant::answering(vec![]);
-    let events = hers.events(&scratch.path().join("person-events"), &assistant);
+    let events = hers.events(&assistant);
 
     // The workspace keeps a second account. Another workspace keeps an
     // account on the same server, and something listens for its mail.
@@ -342,7 +343,7 @@ async fn mail_the_workspace_keeps_is_handed_over_and_another_workspaces_mail_is_
         hers.inboxes.heard(BOBS).is_some().then_some(())
     })
     .await;
-    hers.sets_up(&events, ON_MAIL, &json!({}));
+    hers.sets_up(&events, ON_MAIL, &json!({})).await;
 
     hers.arrives(HOME, 4, BO, ("Home", "For her.")).await;
     hers.arrives(BOBS, 4, BO, ("Elsewhere", "For the other workspace."))
@@ -377,10 +378,10 @@ async fn an_event_keeps_to_the_account_and_sender_it_names_and_to_nothing_that_c
     let scratch = tempfile::tempdir().unwrap();
     let (hers, _holder) = Hers::on(scratch.path()).await;
     let assistant = Assistant::answering(vec![]);
-    let events = hers.events(&scratch.path().join("person-events"), &assistant);
+    let events = hers.events(&assistant);
     hers.keeps(HOME).await;
     let when = format!("{ON_MAIL} at \"{WORK}\" where from is \"{BO}\"");
-    let made = hers.sets_up(&events, &when, &json!({}));
+    let made = hers.sets_up(&events, &when, &json!({})).await;
     assert_eq!(made.when, when, "the line reads back as it was written");
 
     // Another account, another sender, and then the one it waits for, whose
@@ -400,12 +401,20 @@ async fn an_event_keeps_to_the_account_and_sender_it_names_and_to_nothing_that_c
 
     // Paused, it takes in what arrives and hands nothing over, then or
     // later.
-    let paused = hers.take(&events, person_events::PAUSE, &json!({"event": made.id}));
+    let paused = hers
+        .take(&events, workspace_events::PAUSE, &json!({"event": made.id}))
+        .await;
     assert!(!paused.on);
     hers.arrives(WORK, 6, BO, ("While paused", "Passed over."))
         .await;
     a_pass_goes_by().await;
-    let resumed = hers.take(&events, person_events::RESUME, &json!({"event": made.id}));
+    let resumed = hers
+        .take(
+            &events,
+            workspace_events::RESUME,
+            &json!({"event": made.id}),
+        )
+        .await;
     assert!(resumed.on);
     hers.arrives(WORK, 7, BO, ("After", "Handed over again."))
         .await;
@@ -431,7 +440,7 @@ async fn an_event_keeps_to_the_account_and_sender_it_names_and_to_nothing_that_c
     // Removed, the event no longer holds her inboxes watched.
     let removed = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: person_events::target(person_events::REMOVE),
+        target: workspace_events::target(workspace_events::REMOVE),
         argument: InvokeArgument::Json(
             json!({"event": made.id})
                 .as_object()
@@ -447,11 +456,14 @@ async fn an_event_keeps_to_the_account_and_sender_it_names_and_to_nothing_that_c
     };
     let caller = Caller::authenticated(hers.person(), hers.cert.device_public_key)
         .in_workspace(hers.workspace.clone());
-    let answered = events.invoke(
-        WorkspaceId::parse(&hers.workspace).unwrap(),
-        &caller,
-        &removed,
-    );
+    let answered = events
+        .invoke(
+            WorkspaceId::parse(&hers.workspace).unwrap(),
+            &caller,
+            &Authority::Turn,
+            &removed,
+        )
+        .await;
     assert!(
         matches!(answered.status, ReceiptStatus::Completed { .. }),
         "{:?}",

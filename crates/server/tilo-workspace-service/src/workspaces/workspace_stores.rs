@@ -1,15 +1,16 @@
 //! What a workspace keeps on the host that serves it beside its records: its
-//! mail and calendar accounts, its model providers, the services it connected
-//! and what its agents learned. Each account and provider names its sign-in or
-//! key, an entry of the workspace's one vault ([`super::vault`]); no secret is
-//! kept here. One set per workspace, for all its members, kept under
-//! `workspaces/<workspace>/` in the host's state, beside the workspace's asks
-//! and grants.
+//! mail and calendar accounts, its model providers, the services it connected,
+//! what its agents learned, and the events and initiative its assistant works
+//! with. Each account and provider names its sign-in or key, an entry of the
+//! workspace's one vault ([`super::vault`]); no secret is kept here. One set
+//! per workspace, for all its members, kept under `workspaces/<workspace>/` in
+//! the host's state, beside the workspace's asks and grants.
 //!
 //! The workspace's policy decides who reaches them, as it decides every app's
 //! records ([`tilo_action_policy::decide`]). Each store stands at its app's
 //! node ([`Store`]): the mail accounts at Mail's, the calendars at
-//! Calendar's, the vault's items at Passwords' vault. A member reaches them
+//! Calendar's, the vault's items at Passwords' vault, the events at
+//! Shortcuts' and the initiative at Assistant's. A member reaches them
 //! through their role (an Editor uses the mail accounts and the vault's
 //! items, a Viewer reads them), an agent or an API key through its grants,
 //! and an owner who wants one closed says so with a grant like any other. A
@@ -35,42 +36,53 @@ const QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 /// Where a store stands in the workspace's policy: an app's node, and the
 /// kind of resource it is in that app.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Store {
+pub struct Store {
     app: &'static str,
     kind: &'static str,
 }
 
 impl Store {
     /// The workspace's mail accounts, in Mail.
-    pub(super) const MAIL: Self = Self {
+    pub const MAIL: Self = Self {
         app: "so.tilo.mail",
         kind: tilo_actions::remote::person_accounts::PROVIDER,
     };
     /// The workspace's calendar accounts, in Calendar: only agents' hosts keep them.
     #[cfg(feature = "agents")]
-    pub(super) const CALENDARS: Self = Self {
+    pub const CALENDARS: Self = Self {
         app: tilo_app_id::apps::CALENDAR,
         kind: tilo_actions::remote::person_accounts::PROVIDER,
     };
     /// The items of the workspace's vault, in Passwords.
-    pub(super) const VAULT: Self = Self {
+    pub const VAULT: Self = Self {
         app: tilo_app_id::apps::PASSWORDS,
         kind: "passwords.workspace-vault",
     };
     /// The workspace's model providers and their keys.
-    pub(super) const MODELS: Self = Self {
+    pub const MODELS: Self = Self {
         app: tilo_actions::remote::person_models::PROVIDER,
         kind: tilo_actions::remote::person_models::RESOURCE,
     };
     /// The services the workspace connected.
-    pub(super) const CONNECTIONS: Self = Self {
+    pub const CONNECTIONS: Self = Self {
         app: tilo_actions::remote::person_connections::PROVIDER,
         kind: tilo_actions::remote::person_connections::KIND,
     };
     /// What the workspace's agents learned.
-    pub(super) const LEARNED: Self = Self {
+    pub const LEARNED: Self = Self {
         app: super::person_learned::PROVIDER,
         kind: super::person_learned::RESOURCE,
+    };
+    /// The workspace's scheduled work and events, in Shortcuts.
+    pub const EVENTS: Self = Self {
+        app: tilo_app_id::apps::SHORTCUTS,
+        kind: tilo_actions::remote::workspace_events::KIND,
+    };
+    /// What the workspace's assistant finds to do on its own: its
+    /// look-round and proposals, in Assistant.
+    pub const INITIATIVE: Self = Self {
+        app: tilo_app_id::apps::ASSISTANT,
+        kind: tilo_actions::remote::workspace_initiative::LOOK_ROUND_KIND,
     };
 
     /// The node `action` of this store stands at in `workspace`.
@@ -85,7 +97,7 @@ impl Store {
 
 /// Who asks of a workspace's stores, once its policy let them.
 #[derive(Clone, Debug)]
-pub(super) struct Reach {
+pub struct Reach {
     /// The workspace whose stores they reach.
     pub workspace: WorkspaceId,
     /// The person behind the caller: the person themselves, or the person
@@ -109,8 +121,14 @@ impl Reach {
 impl Workspaces {
     /// Where this host keeps what `workspace` keeps on it beside its records:
     /// its accounts, providers and connections.
-    pub(super) fn workspace_root(&self, workspace: &str) -> PathBuf {
+    pub fn workspace_root(&self, workspace: &str) -> PathBuf {
         super::person_asking::workspace_store_dir(&self.inner.dir, workspace)
+    }
+
+    /// Where every workspace's store stands on this host: a directory for
+    /// each, named by the hex of its id.
+    pub fn workspace_stores_root(&self) -> PathBuf {
+        super::person_asking::workspace_store_root(&self.inner.dir)
     }
 
     /// Whether `caller`, on the device `certificate` certifies, may do
@@ -126,7 +144,7 @@ impl Workspaces {
     /// have, on a device it does not certify, or a workspace not governed
     /// here; [`ActionCallError::NotPermitted`] for one whose grants do not
     /// reach.
-    pub(super) async fn reaching(
+    pub async fn reaching(
         &self,
         (workspace_id, caller, certificate): (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
         store: Store,
@@ -212,7 +230,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// As [`Self::reaching`], or the person did not allow it.
-    pub(super) async fn reaching_allowed(
+    pub async fn reaching_allowed(
         &self,
         asked: (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
         store: Store,
@@ -229,7 +247,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// The person did not allow it.
-    pub(super) async fn allowed(
+    pub async fn allowed(
         &self,
         mut reach: Reach,
         caller: &Caller,
@@ -277,7 +295,7 @@ impl Workspaces {
     /// it. A policy that asks them has not refused them: the turn waits on
     /// their answer for that one change, and this is where the change is
     /// weighed again after it.
-    pub(super) async fn person_reaches(
+    pub async fn person_reaches(
         &self,
         workspace: WorkspaceId,
         person: &[u8; 32],

@@ -1,13 +1,14 @@
-//! What a person's assistant finds to do on its own, on this server
-//! ([`tilo_actions::remote::person_initiative`]).
+//! What a workspace's assistant finds to do on its own, on this server
+//! ([`tilo_actions::remote::workspace_initiative`]).
 //!
-//! The look-round is one of its person's own events ([`super::events`]): it
-//! is set up, paused, changed and carried out like any other, and listed among
-//! them. What makes it a look-round is what this server stands in front of
-//! its instruction ([`Initiative::before`]): when the event fires, the server
-//! first looks itself, with no model ([`look`]), and only where something
-//! is new, and its day is not spent, is the instruction handed on with what
-//! was found. A look that finds nothing asks no model and writes nothing.
+//! The look-round is one of the workspace's own events ([`super::events`]):
+//! it is set up, paused, changed and carried out like any other, and listed
+//! among them. What makes it a look-round is what this server stands in
+//! front of its instruction ([`Initiative::before`]): when the event fires,
+//! the server first looks itself, with no model ([`look`]), and only where
+//! something is new, and its day is not spent, is the instruction handed on
+//! with what was found. A look that finds nothing asks no model and writes
+//! nothing.
 //!
 //! Its cost is bounded twice: by the day's limit of the assistant, like
 //! all of the assistant's work, and by a day of its own
@@ -15,23 +16,23 @@
 //!
 //! What a look-round's turn finds to do it proposes ([`proposals`]): a
 //! piece of work is filed in the workspace's tracker as a task of the
-//! assistant's that nobody gave it ([`tracker`]), so it stands among its
-//! person's tasks and nothing starts until they give it; an event is kept
-//! as a card and set up only when they accept it. A kind of work turned
-//! down twice is refused from then on, by the server, whatever a model was
-//! told.
+//! assistant's that nobody gave it ([`tracker`]), so it stands among the
+//! workspace's tasks and nothing starts until a member gives it; an event
+//! is kept as a card and set up only when they accept it. A kind of work
+//! turned down twice is refused from then on, by the server, whatever a
+//! model was told.
 //!
-//! What it keeps for a person (the event it is, its limit, its last looks
-//! where the last look left the workspace, and what was proposed) is one
-//! file under the
-//! server's state, beside nothing else of theirs.
+//! What it keeps (the event it is, whose assistant looks round, its limit,
+//! its last looks where the last look left the workspace, and what was
+//! proposed) is one file in the workspace's store, beside its events
+//! ([`Workspaces::workspace_root`]).
 //!
-//! The actions are answered for whom a person's events are answered
-//! ([`PersonEvents::asking`]): the person themselves, or an agent on a
-//! session they handed it, in a workspace of their own.
+//! The actions are answered for whom the workspace's events are answered
+//! (`WorkspaceEvents::reach`): a member on a device of theirs or their
+//! assistant on a session they handed it, in a workspace whose policy lets
+//! them, and for a turn this server carries out for them.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde::{Deserialize, Serialize};
@@ -42,8 +43,8 @@ use tilo_actions::contract::{
     RiskLevel,
 };
 use tilo_actions::params::{ActionParam, ParamType};
-use tilo_actions::remote::person_events::{self, EventView, Events};
-use tilo_actions::remote::person_initiative::{
+use tilo_actions::remote::workspace_events::{self, EventView, Events};
+use tilo_actions::remote::workspace_initiative::{
     self, Accept, Decline, Look, LookEnded, LookRound, Proposal, Proposals, Propose, Settings,
     State, TurnOn,
 };
@@ -61,7 +62,7 @@ use tilo_automation::{Schedule, TriggerSpec};
 use tilo_lock::MutexRecover as _;
 
 use super::assistant::assistant_of;
-use super::events::{Asker, PersonEvents};
+use super::events::{Asker, Authority, WorkspaceEvents};
 use crate::WorkspaceId;
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{Interaction, Spender};
@@ -72,8 +73,8 @@ mod tracker;
 
 /// The file a person's initiative is kept in.
 const FILE: &str = "initiative.json";
-/// What the look-round is called among its person's events until they
-/// rename it.
+/// What the look-round is called among the workspace's events until a
+/// member renames it.
 const NAME: &str = "Look-round";
 /// What the look-round's event says its assistant is told. Its person
 /// reads it on the event and may change it; the rules of a look are the
@@ -99,23 +100,20 @@ const RULES: &str = "How a look goes:\n\
      - Send nothing out of the workspace on your own.\n\
      - If nothing here is worth their time, answer with nothing at all.";
 
-/// Whose initiative: the workspace, and the person by their root, hex.
-type Owner = (String, String);
-
 /// What a server stands in front of its answers to an event's steps: it is
 /// handed what would answer and answers in its place, so a step can be
 /// looked at before it is taken.
 pub type Before = Arc<dyn Fn(Arc<dyn Steps>) -> Arc<dyn Steps> + Send + Sync>;
 
-/// Whether `message` is for a person's assistant's initiative.
+/// Whether `message` is for a workspace's assistant's initiative.
 #[must_use]
 pub fn addresses(message: &RemoteActionMessage) -> bool {
     match message {
         RemoteActionMessage::CatalogueRequest { query, .. } => {
-            query.provider.as_deref() == Some(person_initiative::PROVIDER)
+            query.provider.as_deref() == Some(workspace_initiative::PROVIDER)
         }
         RemoteActionMessage::Invoke(request) => {
-            request.target.provider == person_initiative::PROVIDER
+            request.target.provider == workspace_initiative::PROVIDER
         }
         _ => false,
     }
@@ -151,13 +149,16 @@ struct KeptLook {
     spent_before_micros: u64,
 }
 
-/// What this server keeps of one person's initiative in one workspace.
+/// What this server keeps of one workspace's initiative.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Kept {
-    /// The look-round's id among the person's events, once it was turned
+    /// The look-round's id among the workspace's events, once it was turned
     /// on.
     event: Option<String>,
+    /// The member whose assistant looks round, by their root, hex: the one
+    /// who turned it on.
+    person: Option<String>,
     /// The most its looking may spend in a day; none is the default.
     day_limit_micros: Option<u64>,
     /// Its last looks, oldest first.
@@ -172,7 +173,7 @@ struct Kept {
 impl Kept {
     fn day_limit(&self) -> u64 {
         self.day_limit_micros
-            .unwrap_or(person_initiative::DEFAULT_DAY_LIMIT_MICROS)
+            .unwrap_or(workspace_initiative::DEFAULT_DAY_LIMIT_MICROS)
     }
 
     /// Keep `look`, taken on `day` when the look-round had spent `spent`.
@@ -200,7 +201,7 @@ impl Kept {
             day: day.to_owned(),
             spent_before_micros: spent,
         });
-        while self.looks.len() > person_initiative::MAX_LOOKS {
+        while self.looks.len() > workspace_initiative::MAX_LOOKS {
             self.looks.pop_front();
         }
     }
@@ -208,81 +209,62 @@ impl Kept {
 
 struct Inner {
     workspaces: Workspaces,
-    /// Where every person's initiative keeps its file.
-    state: PathBuf,
     /// The events the look-round is one of, once they are started.
-    events: OnceLock<PersonEvents>,
+    events: OnceLock<WorkspaceEvents>,
     /// The server's action service, where it has one: a proposed piece of
     /// work is filed in the workspace's tracker through it.
     actions: Option<WorkspaceActions>,
-    kept: Mutex<BTreeMap<Owner, Kept>>,
-    /// The people whose mail the server watches because their assistant
-    /// looks round.
-    listening: Mutex<BTreeMap<Owner, crate::workspaces::MailListening>>,
-    /// The look each person's look-round is handing to their assistant, by
+    kept: Mutex<BTreeMap<String, Kept>>,
+    /// The workspaces whose mail the server watches because their
+    /// assistant looks round.
+    listening: Mutex<BTreeMap<String, crate::workspaces::MailListening>>,
+    /// The look each workspace's look-round is handing to its assistant, by
     /// its id: the turn it starts may begin before the look is kept.
-    handing: Mutex<BTreeMap<Owner, String>>,
+    handing: Mutex<BTreeMap<String, String>>,
 }
 
-/// What this server's people's assistants find to do on their own. It holds
-/// the events the look-rounds are among: they go on for as long as this, or a
-/// clone of it, is held.
+/// What this server's workspaces' assistants find to do on their own. It
+/// holds the events the look-rounds are among: they go on for as long as
+/// this, or a clone of it, is held.
 #[derive(Clone)]
 pub struct Initiative {
     inner: Arc<Inner>,
 }
 
 impl Initiative {
-    /// Start every person's events kept under `events_state`, with a look
-    /// put in front of each look-round's instruction, and keep what the
-    /// assistants' initiative keeps under `state`. With `actions`, the
-    /// server's action service, an instruction an event hands over starts a
-    /// turn of its person's assistant, and a proposed piece of work is filed
-    /// in the workspace's tracker. Called on the runtime the events are
-    /// carried out on.
+    /// Run every workspace's events, with a look put in front of each
+    /// look-round's instruction, and keep what the assistants' initiative
+    /// keeps in each workspace's store. With `actions`, the server's action
+    /// service, an instruction an event hands over starts a turn of its
+    /// author's assistant, and a proposed piece of work is filed in the
+    /// workspace's tracker. Called on the runtime the events are carried
+    /// out on.
     #[must_use]
     pub fn start(
         workspaces: Workspaces,
-        state: PathBuf,
-        events_state: PathBuf,
         actions: Option<WorkspaceActions>,
-    ) -> (Self, PersonEvents) {
-        let initiative = Self::new(workspaces.clone(), state, actions.clone());
+    ) -> (Self, WorkspaceEvents) {
+        let initiative = Self::new(workspaces.clone(), actions.clone());
         let before = Some(initiative.before());
-        let events = PersonEvents::start_behind(workspaces, events_state, actions, before);
+        let events = WorkspaceEvents::start_behind(workspaces, actions, before);
         let _ = initiative.inner.events.set(events.clone());
         (initiative, events)
     }
 
     /// [`Self::start`], with what answers the events' steps given.
     #[must_use]
-    pub fn start_with(
-        workspaces: Workspaces,
-        state: PathBuf,
-        events_state: PathBuf,
-        steps: Arc<dyn Steps>,
-    ) -> (Self, PersonEvents) {
-        Self::started(workspaces, (state, events_state), None, steps)
-    }
-
-    fn started(
-        workspaces: Workspaces,
-        (state, events_state): (PathBuf, PathBuf),
-        actions: Option<WorkspaceActions>,
-        steps: Arc<dyn Steps>,
-    ) -> (Self, PersonEvents) {
-        let initiative = Self::new(workspaces.clone(), state, actions);
+    pub fn start_with(workspaces: Workspaces, steps: Arc<dyn Steps>) -> (Self, WorkspaceEvents) {
+        let initiative = Self::new(workspaces.clone(), None);
         let looking = (initiative.before())(steps);
-        let events = PersonEvents::start_with(workspaces, events_state, looking);
+        let events = WorkspaceEvents::start_with(workspaces, looking);
         let _ = initiative.inner.events.set(events.clone());
         (initiative, events)
     }
 
-    fn new(workspaces: Workspaces, state: PathBuf, actions: Option<WorkspaceActions>) -> Self {
+    fn new(workspaces: Workspaces, actions: Option<WorkspaceActions>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 workspaces,
-                state,
                 events: OnceLock::new(),
                 actions,
                 kept: Mutex::default(),
@@ -307,46 +289,49 @@ impl Initiative {
         })
     }
 
-    fn events(&self) -> Result<&PersonEvents, ActionCallError> {
+    fn events(&self) -> Result<&WorkspaceEvents, ActionCallError> {
         self.inner
             .events
             .get()
             .ok_or_else(|| unavailable("this server has started no events yet".to_owned()))
     }
 
-    fn file(&self, owner: &Owner) -> PathBuf {
-        self.inner.state.join(&owner.0).join(&owner.1).join(FILE)
+    /// Where `workspace` keeps what its assistant's initiative keeps.
+    fn file(&self, workspace: &str) -> std::path::PathBuf {
+        self.inner.workspaces.workspace_root(workspace).join(FILE)
     }
 
-    /// What the file of `owner` keeps: nothing where there is none, or one
-    /// this build cannot read.
-    fn read(&self, owner: &Owner) -> Kept {
-        let Ok(bytes) = std::fs::read(self.file(owner)) else {
+    /// What the file of `workspace` keeps: nothing where there is none, or
+    /// one this build cannot read.
+    fn read(&self, workspace: &str) -> Kept {
+        let Ok(bytes) = std::fs::read(self.file(workspace)) else {
             return Kept::default();
         };
         serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            tracing::warn!(workspace = %owner.0, %error, "a person's initiative could not be read and starts again");
+            tracing::warn!(%workspace, %error, "a workspace's initiative could not be read and starts again");
             Kept::default()
         })
     }
 
-    /// What is kept for `owner` now.
-    fn kept(&self, owner: &Owner) -> Kept {
+    /// What is kept for `workspace` now.
+    fn kept(&self, workspace: &str) -> Kept {
         self.inner
             .kept
             .lock_recover()
-            .entry(owner.clone())
-            .or_insert_with(|| self.read(owner))
+            .entry(workspace.to_owned())
+            .or_insert_with(|| self.read(workspace))
             .clone()
     }
 
-    /// Change what is kept for `owner`, written whole or not at all.
-    fn change<T>(&self, owner: &Owner, work: impl FnOnce(&mut Kept) -> T) -> Result<T, String> {
+    /// Change what is kept for `workspace`, written whole or not at all.
+    fn change<T>(&self, workspace: &str, work: impl FnOnce(&mut Kept) -> T) -> Result<T, String> {
         let mut all = self.inner.kept.lock_recover();
-        let kept = all.entry(owner.clone()).or_insert_with(|| self.read(owner));
+        let kept = all
+            .entry(workspace.to_owned())
+            .or_insert_with(|| self.read(workspace));
         let mut changed = kept.clone();
         let answer = work(&mut changed);
-        let file = self.file(owner);
+        let file = self.file(workspace);
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
         }
@@ -376,12 +361,11 @@ impl Initiative {
         // A turn names its person as a resource does. Only a person's own
         // root is looked up: nothing else names a place this keeps.
         person_of(person).ok()?;
-        let owner = (workspace.to_owned(), person.to_owned());
-        let kept = self.kept(&owner);
+        let kept = self.kept(workspace);
         let event = kept.event.as_deref()?;
         let asker = MemberId::person(person.to_owned());
         let asked_by = |look: &str| chat::cause::message_id(&asker, look).to_string() == cause;
-        let handing = self.inner.handing.lock_recover().get(&owner).cloned();
+        let handing = self.inner.handing.lock_recover().get(workspace).cloned();
         let theirs = handing.as_deref().is_some_and(&asked_by)
             || kept.looks.iter().any(|past| asked_by(&past.look.id));
         theirs.then(|| look_round_spender(workspace, event, NAME, day, kept.day_limit()))
@@ -404,17 +388,35 @@ impl Initiative {
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: Authority,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
         match message {
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
-                Some(Pending::ready(RemoteActionMessage::CatalogueResponse {
-                    correlation,
-                    result: Ok(self.catalogue(workspace_id, caller, &query)),
-                }))
+                let page = match runtime() {
+                    Some(runtime) => {
+                        let (completer, answer) = pending();
+                        let (this, caller) = (self.clone(), caller.clone());
+                        runtime.spawn(async move {
+                            let page = this
+                                .catalogue(workspace_id, &caller, &authority, &query)
+                                .await;
+                            completer.complete(RemoteActionMessage::CatalogueResponse {
+                                correlation,
+                                result: Ok(page),
+                            });
+                        });
+                        answer
+                    }
+                    None => Pending::ready(RemoteActionMessage::CatalogueResponse {
+                        correlation,
+                        result: Err(no_runtime()),
+                    }),
+                };
+                Some(page)
             }
             RemoteActionMessage::Invoke(request) => Some(
-                self.invoking(workspace_id, caller, request)
+                self.invoking(workspace_id, caller, authority, request)
                     .map(RemoteActionMessage::Receipt),
             ),
             _ => None,
@@ -422,21 +424,38 @@ impl Initiative {
     }
 
     /// The actions `caller` is offered in `workspace_id`: none for a caller
-    /// they are not answered for.
+    /// the workspace's policy does not let reach them.
     #[must_use]
-    pub fn catalogue(
+    pub async fn catalogue(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: &Authority,
         query: &CatalogueQuery,
     ) -> CataloguePage {
-        let rows = self
-            .asker(workspace_id, caller)
-            .map(rows)
-            .unwrap_or_default();
+        let reach = self.events().ok().map(|events| {
+            events.reach(
+                workspace_id,
+                caller,
+                authority,
+                workspace_initiative::READ,
+                ActionKind::Read,
+            )
+        });
+        let rows = match reach {
+            Some(reach) => reach
+                .await
+                .map(|theirs| rows(theirs.asker))
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
         let mut page = CataloguePage::from_rows(String::from("0"), rows, query);
         if query.provider.is_none() {
-            page.providers = self.provider(workspace_id, caller).into_iter().collect();
+            page.providers = self
+                .provider(workspace_id, caller, authority)
+                .await
+                .into_iter()
+                .collect();
         }
         page
     }
@@ -444,103 +463,134 @@ impl Initiative {
     /// The provider as a catalogue lists it for `caller`, when they are
     /// answered here.
     #[must_use]
-    pub fn provider(
+    pub async fn provider(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: &Authority,
     ) -> Option<CatalogueProvider> {
-        self.asker(workspace_id, caller).map(|_| CatalogueProvider {
-            provider: person_initiative::PROVIDER.to_owned(),
-            app_id: person_initiative::PROVIDER.to_owned(),
-            workspace: workspace_id.to_string(),
-            document_id: String::new(),
-            browsable: true,
-        })
+        self.events()
+            .ok()?
+            .reach(
+                workspace_id,
+                caller,
+                authority,
+                workspace_initiative::READ,
+                ActionKind::Read,
+            )
+            .await
+            .ok()
+            .map(|_| CatalogueProvider {
+                provider: workspace_initiative::PROVIDER.to_owned(),
+                app_id: workspace_initiative::PROVIDER.to_owned(),
+                workspace: workspace_id.to_string(),
+                document_id: String::new(),
+                browsable: true,
+            })
     }
 
-    /// As what `caller` is answered in `workspace_id`, when they are: as
-    /// for a person's events.
-    fn asker(&self, workspace_id: WorkspaceId, caller: &Caller) -> Option<Asker> {
-        let (_, asker) = self.events().ok()?.asking(workspace_id, caller).ok()?;
-        Some(asker)
-    }
-
-    /// Take one action for `caller`. The look-round's are answered at once;
-    /// one on what was proposed may read and write the workspace's tracker
-    /// first, and is answered when that is done.
+    /// Take one action for `caller`, answered when the workspace's policy
+    /// has. The look-round's are answered at once; one on what was proposed
+    /// may read and write the workspace's tracker first, and is answered
+    /// when that is done.
     #[must_use]
     pub fn invoking(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: Authority,
         request: InvokeRequest,
     ) -> Pending<InvocationReceipt> {
         let invocation = request.invocation;
-        if request.target.address.resource != person_initiative::PROPOSALS {
-            let answer = self.answer(workspace_id, caller, &request);
-            return Pending::ready(receipt(invocation, answer));
-        }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            let answer = Err(unavailable(
-                "this server is not running its workspaces".to_owned(),
-            ));
-            return Pending::ready(receipt(invocation, answer));
+        let Some(runtime) = runtime() else {
+            return Pending::ready(receipt(invocation, Err(no_runtime())));
         };
         let (completer, answered) = pending();
         let (initiative, caller) = (self.clone(), caller.clone());
         runtime.spawn(async move {
-            let answer = initiative.proposing(workspace_id, &caller, &request).await;
+            let answer = initiative
+                .answering(workspace_id, &caller, &authority, &request)
+                .await;
             completer.complete(receipt(invocation, answer));
         });
         answered
     }
 
-    /// Who asks through `caller` in `workspace_id`, and for whom: as for a
-    /// person's events.
-    fn asked<'a>(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &'a Caller,
-    ) -> Result<Asked<'a>, ActionCallError> {
-        let (person, asker) = self.events()?.asking(workspace_id, caller)?;
-        Ok(Asked {
-            workspace_id,
-            caller,
-            owner: (workspace_id.to_string(), hex::encode(person)),
-            asker,
-        })
-    }
-
-    fn answer(
+    /// One action as `caller` takes it: on the look-round, or on what was
+    /// proposed.
+    async fn answering(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: &Authority,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let asked = self.asked(workspace_id, caller)?;
+        if request.target.address.resource == workspace_initiative::LOOK_ROUND {
+            self.answer(workspace_id, caller, authority, request).await
+        } else if request.target.address.resource == workspace_initiative::PROPOSALS {
+            self.proposing(workspace_id, caller, authority, request)
+                .await
+        } else {
+            Err(ActionCallError::UnknownAction)
+        }
+    }
+
+    /// Who asks through `caller` in `workspace_id`, and for whom: as for the
+    /// workspace's events.
+    async fn asked<'a>(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &'a Caller,
+        authority: &'a Authority,
+        action: &str,
+    ) -> Result<Asked<'a>, ActionCallError> {
+        let theirs = self
+            .events()?
+            .reach(workspace_id, caller, authority, action, effect_of(action))
+            .await?;
+        Ok(Asked {
+            workspace_id,
+            caller,
+            authority,
+            workspace: theirs.workspace,
+            person: theirs.person,
+            asker: theirs.asker,
+        })
+    }
+
+    async fn answer(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        authority: &Authority,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
         let address = &request.target.address;
-        if address.resource != person_initiative::LOOK_ROUND {
+        if address.resource != workspace_initiative::LOOK_ROUND {
             return Err(ActionCallError::UnknownAction);
         }
+        let asked = self
+            .asked(workspace_id, caller, authority, address.action.as_str())
+            .await?;
         match address.action.as_str() {
-            person_initiative::READ => {}
-            person_initiative::TURN_ON => {
+            workspace_initiative::READ => {}
+            workspace_initiative::TURN_ON => {
                 let wanted: TurnOn = argument(request, "turning it on names a rhythm or a limit")?;
-                self.turn_on(&asked, &wanted)?;
+                self.turn_on(&asked, &wanted).await?;
             }
-            person_initiative::TURN_OFF => self.turn_off(&asked)?,
-            person_initiative::CHANGE => {
+            workspace_initiative::TURN_OFF => self.turn_off(&asked).await?,
+            workspace_initiative::CHANGE => {
                 let wanted: Settings = argument(request, "a change names a rhythm or a limit")?;
-                self.set(&asked, &wanted)?;
+                self.set(&asked, &wanted).await?;
             }
             _ => return Err(ActionCallError::UnknownAction),
         }
-        said(&self.look_round(&asked)?)
+        said(&self.look_round(&asked).await?)
     }
 
-    /// One action on the person's events, taken as `asked`'s own caller, so
-    /// what is theirs to do there is theirs here.
-    fn of_events(
+    /// One action on the workspace's events, taken as `asked`'s own caller,
+    /// so what they may do there is what they may do here.
+    async fn of_events(
         &self,
         asked: &Asked<'_>,
         action: &str,
@@ -548,7 +598,7 @@ impl Initiative {
     ) -> Result<Value, ActionCallError> {
         let request = InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
-            target: person_events::target(action),
+            target: workspace_events::target(action),
             argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
             context: None,
             confirmation: None,
@@ -559,7 +609,8 @@ impl Initiative {
         };
         let receipt = self
             .events()?
-            .invoke(asked.workspace_id, asked.caller, &request);
+            .invoke(asked.workspace_id, asked.caller, asked.authority, &request)
+            .await;
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
             ReceiptStatus::Rejected { error } => Err(error),
@@ -567,18 +618,25 @@ impl Initiative {
         }
     }
 
-    /// The look-round among the person's events, while it is one of them:
-    /// an event its person removed is no look-round any more.
-    fn event(&self, asked: &Asked<'_>, kept: &Kept) -> Result<Option<EventView>, ActionCallError> {
+    /// The look-round among the workspace's events, while it is one of
+    /// them: an event a member removed is no look-round any more.
+    async fn event(
+        &self,
+        asked: &Asked<'_>,
+        kept: &Kept,
+    ) -> Result<Option<EventView>, ActionCallError> {
         let Some(id) = &kept.event else {
             return Ok(None);
         };
-        let events: Events = heard(self.of_events(asked, person_events::LIST, &json!({}))?)?;
+        let events: Events = heard(
+            self.of_events(asked, workspace_events::LIST, &json!({}))
+                .await?,
+        )?;
         Ok(events.events.into_iter().find(|event| &event.id == id))
     }
 
-    /// The limit `asked` may set: any for the person; for their assistant
-    /// one that is not above what stands.
+    /// The limit `asked` may set: any for a person; for an agent one that is
+    /// not above what stands.
     fn limit(
         asked: &Asked<'_>,
         kept: &Kept,
@@ -595,41 +653,49 @@ impl Initiative {
         }
     }
 
-    fn turn_on(&self, asked: &Asked<'_>, wanted: &TurnOn) -> Result<(), ActionCallError> {
-        let kept = self.kept(&asked.owner);
+    async fn turn_on(&self, asked: &Asked<'_>, wanted: &TurnOn) -> Result<(), ActionCallError> {
+        let kept = self.kept(&asked.workspace);
         let limit = Self::limit(asked, &kept, wanted.day_limit_micros)?;
         let when = wanted.when.as_deref().map(rhythm).transpose()?;
-        let event = if let Some(event) = self.event(asked, &kept)? {
+        let event = if let Some(event) = self.event(asked, &kept).await? {
             if let Some(when) = when.filter(|when| *when != event.when) {
                 self.of_events(
                     asked,
-                    person_events::CHANGE,
+                    workspace_events::CHANGE,
                     &json!({"event": event.id, "when": when}),
-                )?;
+                )
+                .await?;
             }
             if !event.on {
-                self.of_events(asked, person_events::RESUME, &json!({"event": event.id}))?;
+                self.of_events(asked, workspace_events::RESUME, &json!({"event": event.id}))
+                    .await?;
             }
             event.id
         } else {
-            let made: EventView = heard(self.of_events(
-                asked,
-                person_events::SET_UP,
-                &json!({
-                    "name": NAME,
-                    "when": when.unwrap_or_else(|| person_initiative::DEFAULT_WHEN.to_owned()),
-                    "instruction": TOLD,
-                    "purpose": PURPOSE,
-                }),
-            )?)?;
+            let made: EventView = heard(
+                self.of_events(
+                    asked,
+                    workspace_events::SET_UP,
+                    &json!({
+                        "name": NAME,
+                        "when": when
+                            .unwrap_or_else(|| workspace_initiative::DEFAULT_WHEN.to_owned()),
+                        "instruction": TOLD,
+                        "purpose": PURPOSE,
+                    }),
+                )
+                .await?,
+            )?;
             made.id
         };
-        self.change(&asked.owner, |kept| {
+        let person = hex::encode(asked.person);
+        self.change(&asked.workspace, |kept| {
             if kept.event.as_deref() != Some(event.as_str()) {
                 // Another event looks from where the workspace stands now.
                 kept.seen = look::Seen::default();
             }
             kept.event = Some(event);
+            kept.person = Some(person);
             if limit.is_some() {
                 kept.day_limit_micros = limit;
             }
@@ -637,45 +703,47 @@ impl Initiative {
         .map_err(unavailable)
     }
 
-    fn turn_off(&self, asked: &Asked<'_>) -> Result<(), ActionCallError> {
-        let kept = self.kept(&asked.owner);
-        if let Some(event) = self.event(asked, &kept)?.filter(|event| event.on) {
-            self.of_events(asked, person_events::PAUSE, &json!({"event": event.id}))?;
+    async fn turn_off(&self, asked: &Asked<'_>) -> Result<(), ActionCallError> {
+        let kept = self.kept(&asked.workspace);
+        if let Some(event) = self.event(asked, &kept).await?.filter(|event| event.on) {
+            self.of_events(asked, workspace_events::PAUSE, &json!({"event": event.id}))
+                .await?;
         }
-        self.inner.listening.lock_recover().remove(&asked.owner);
+        self.inner.listening.lock_recover().remove(&asked.workspace);
         Ok(())
     }
 
-    fn set(&self, asked: &Asked<'_>, wanted: &Settings) -> Result<(), ActionCallError> {
-        let kept = self.kept(&asked.owner);
+    async fn set(&self, asked: &Asked<'_>, wanted: &Settings) -> Result<(), ActionCallError> {
+        let kept = self.kept(&asked.workspace);
         let limit = Self::limit(asked, &kept, wanted.day_limit_micros)?;
         if let Some(when) = wanted.when.as_deref().map(rhythm).transpose()? {
-            let event = self.event(asked, &kept)?.ok_or_else(|| {
+            let event = self.event(asked, &kept).await?.ok_or_else(|| {
                 refused("it has no rhythm to change before it was turned on".to_owned())
             })?;
             self.of_events(
                 asked,
-                person_events::CHANGE,
+                workspace_events::CHANGE,
                 &json!({"event": event.id, "when": when}),
-            )?;
+            )
+            .await?;
         }
         if limit.is_some() {
-            self.change(&asked.owner, |kept| kept.day_limit_micros = limit)
+            self.change(&asked.workspace, |kept| kept.day_limit_micros = limit)
                 .map_err(unavailable)?;
         }
         Ok(())
     }
 
-    /// The look-round as `asked`'s person reads it now.
-    fn look_round(&self, asked: &Asked<'_>) -> Result<LookRound, ActionCallError> {
-        let kept = self.kept(&asked.owner);
-        let event = self.event(asked, &kept)?;
+    /// The look-round as a member reads it now.
+    async fn look_round(&self, asked: &Asked<'_>) -> Result<LookRound, ActionCallError> {
+        let kept = self.kept(&asked.workspace);
+        let event = self.event(asked, &kept).await?;
         let day = crate::workspace_agents::today();
         let limit = kept.day_limit();
         let spent = event.as_ref().map_or(0, |event| {
             self.spent(
-                &asked.owner.0,
-                &look_round_spender(&asked.owner.0, &event.id, &event.name, &day, limit),
+                &asked.workspace,
+                &look_round_spender(&asked.workspace, &event.id, &event.name, &day, limit),
             )
         });
         let mut looks: Vec<Look> = kept
@@ -694,7 +762,7 @@ impl Initiative {
         Ok(LookRound {
             on: event.as_ref().is_some_and(|event| event.on),
             when: event.as_ref().map_or_else(
-                || person_initiative::DEFAULT_WHEN.to_owned(),
+                || workspace_initiative::DEFAULT_WHEN.to_owned(),
                 |event| event.when.clone(),
             ),
             next_at_ms: event.as_ref().and_then(|event| event.next_at_ms),
@@ -706,14 +774,14 @@ impl Initiative {
         })
     }
 
-    /// Watch the workspace's mail for as long as `owner`'s assistant looks
-    /// round, so a look can say what came in.
-    fn listen(&self, owner: &Owner) {
+    /// Watch the workspace's mail for as long as its assistant looks round,
+    /// so a look can say what came in.
+    fn listen(&self, workspace: &str) {
         self.inner
             .listening
             .lock_recover()
-            .entry(owner.clone())
-            .or_insert_with(|| self.inner.workspaces.listen_for_mail(&owner.0));
+            .entry(workspace.to_owned())
+            .or_insert_with(|| self.inner.workspaces.listen_for_mail(workspace));
     }
 
     /// Take the look `instruction` fired, and hand it on through `steps`
@@ -721,36 +789,38 @@ impl Initiative {
     /// Called on the thread that drives the event's invocation.
     fn look(
         &self,
-        owner: &Owner,
+        workspace: &str,
         instruction: Instruction,
         steps: &dyn Steps,
     ) -> Result<String, StepError> {
-        let person = person_of(&owner.1)?;
+        let person = person_of(&instruction.person)?;
         let event = instruction.cause.installation.clone();
         let id = instruction.cause.invocation.0.to_string();
-        let kept = self.kept(owner);
+        let kept = self.kept(workspace);
         let now_ms = tilo_clock::unix_now_ms_i64();
-        self.listen(owner);
+        self.listen(workspace);
         let workspaces = &self.inner.workspaces;
         let gathered = on_the_runtime(|runtime| {
             runtime
                 .block_on(async {
-                    let assistant = assistant_of(workspaces, &owner.0, &person)
+                    let assistant = assistant_of(workspaces, workspace, &person)
                         .await?
                         .map(|agent| agent.id.0);
                     let own = look::Own {
-                        person: owner.1.clone(),
-                        thread: assistant.as_deref().map(|agent| thread(&owner.1, agent)),
+                        person: instruction.person.clone(),
+                        thread: assistant
+                            .as_deref()
+                            .map(|agent| thread(&instruction.person, agent)),
                         assistant,
                         event: event.clone(),
                     };
                     let gathered =
-                        look::gather(workspaces, &owner.0, &person, &own, &kept.seen, now_ms)
+                        look::gather(workspaces, workspace, &person, &own, &kept.seen, now_ms)
                             .await?;
-                    // What its person did with a proposed task counts
-                    // before the assistant is told what they made of each
-                    // kind of work.
-                    self.reconcile(owner).await;
+                    // What a member did with a proposed task counts before
+                    // the assistant is told what they made of each kind of
+                    // work.
+                    self.reconcile(workspace).await;
                     Ok(gathered)
                 })
                 .map_err(StepError::Unavailable)
@@ -758,8 +828,8 @@ impl Initiative {
         let day = crate::workspace_agents::today();
         let limit = kept.day_limit();
         let spent = self.spent(
-            &owner.0,
-            &look_round_spender(&owner.0, &event, NAME, &day, limit),
+            workspace,
+            &look_round_spender(workspace, &event, NAME, &day, limit),
         );
         let found = gathered.found;
         let (ended, answer) = if !found.anything_new() {
@@ -776,7 +846,7 @@ impl Initiative {
             self.inner
                 .handing
                 .lock_recover()
-                .insert(owner.clone(), id.clone());
+                .insert(workspace.to_owned(), id.clone());
             match steps.instruct(handed) {
                 Ok(said) => (LookEnded::Told, Ok(said)),
                 // Refused, or nothing took it now: the look says why, and
@@ -800,7 +870,7 @@ impl Initiative {
         };
         // What was found and not handed on is still new at the next look.
         let seen = matches!(ended, LookEnded::Quiet | LookEnded::Told).then_some(gathered.seen);
-        self.change(owner, |kept| {
+        self.change(workspace, |kept| {
             if let Some(seen) = seen {
                 kept.seen = seen;
             }
@@ -817,12 +887,20 @@ impl Initiative {
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
+        authority: &Authority,
         request: &InvokeRequest,
     ) -> Result<Value, ActionCallError> {
-        let asked = self.asked(workspace_id, caller)?;
+        let asked = self
+            .asked(
+                workspace_id,
+                caller,
+                authority,
+                request.target.address.action.as_str(),
+            )
+            .await?;
         match request.target.address.action.as_str() {
-            person_initiative::LIST => {}
-            person_initiative::PROPOSE => {
+            workspace_initiative::LIST => {}
+            workspace_initiative::PROPOSE => {
                 asked.only(
                     Asker::Assistant,
                     "a proposal is the assistant's to make: its person gives it a task in the \
@@ -834,48 +912,48 @@ impl Initiative {
                 )?;
                 return said(&self.propose(&asked, wanted).await?);
             }
-            person_initiative::ACCEPT => {
+            workspace_initiative::ACCEPT => {
                 asked.only(Asker::Person, "only the person themselves gives their nod")?;
                 let nod: Accept = argument(request, "a nod names the proposal it is for")?;
                 return said(&self.accept(&asked, &nod).await?);
             }
-            person_initiative::DECLINE => {
+            workspace_initiative::DECLINE => {
                 let no: Decline = argument(request, "turning one down names the proposal")?;
                 return said(&self.decline(&asked, &no).await?);
             }
             _ => return Err(ActionCallError::UnknownAction),
         }
-        said(&self.listed(&asked.owner).await)
+        said(&self.listed(&asked.workspace).await)
     }
 
-    /// What was proposed, as its person reads it now: what they did with a
+    /// What was proposed, as a member reads it now: what they did with a
     /// proposed task in the tracker counted first.
-    async fn listed(&self, owner: &Owner) -> Proposals {
-        self.reconcile(owner).await;
-        self.kept(owner).book.listed()
+    async fn listed(&self, workspace: &str) -> Proposals {
+        self.reconcile(workspace).await;
+        self.kept(workspace).book.listed()
     }
 
     /// Hold what waits against the workspace's tracker
     /// ([`proposals::Book::reconcile`]). A tracker that cannot be read says
     /// nothing: what waits goes on waiting.
-    async fn reconcile(&self, owner: &Owner) {
-        let mut book = self.kept(owner).book;
+    async fn reconcile(&self, workspace: &str) {
+        let mut book = self.kept(workspace).book;
         if !book.waits_in_tracker() {
             return;
         }
-        let Ok(issues) = tracker::issues(&self.inner.workspaces, &owner.0).await else {
+        let Ok(issues) = tracker::issues(&self.inner.workspaces, workspace).await else {
             return;
         };
         let now_ms = tilo_clock::unix_now_ms_i64();
         if !book.reconcile(|issue| tracker::in_tracker(&issues, issue), now_ms) {
             return;
         }
-        let kept = self.change(owner, |kept| {
+        let kept = self.change(workspace, |kept| {
             kept.book
                 .reconcile(|issue| tracker::in_tracker(&issues, issue), now_ms);
         });
         if let Err(error) = kept {
-            tracing::warn!(workspace = %owner.0, %error, "what a person decided in the tracker is not kept");
+            tracing::warn!(%workspace, %error, "what a person decided in the tracker is not kept");
         }
     }
 
@@ -887,7 +965,7 @@ impl Initiative {
             workspaces: self.inner.workspaces.clone(),
             actions,
             workspace_id: asked.workspace_id,
-            workspace: asked.owner.0.clone(),
+            workspace: asked.workspace.clone(),
             caller: asked.caller.clone(),
         })
     }
@@ -901,11 +979,11 @@ impl Initiative {
         wanted: Propose,
     ) -> Result<Proposal, ActionCallError> {
         let wanted = proposals::checked(wanted).map_err(refused)?;
-        self.reconcile(&asked.owner).await;
+        self.reconcile(&asked.workspace).await;
         let id = uuid::Uuid::new_v4().to_string();
         let now_ms = tilo_clock::unix_now_ms_i64();
         let proposal = self
-            .change(&asked.owner, |kept| {
+            .change(&asked.workspace, |kept| {
                 kept.book.propose(wanted, id, None, now_ms)
             })
             .map_err(unavailable)?
@@ -924,7 +1002,7 @@ impl Initiative {
             .await
         {
             Ok(task) => self
-                .change(&asked.owner, |kept| {
+                .change(&asked.workspace, |kept| {
                     kept.book.stands_as(&proposal.id, task);
                     kept.book.get(&proposal.id).cloned()
                 })
@@ -933,7 +1011,7 @@ impl Initiative {
             Err(why) => {
                 // What its person cannot find among their tasks was not
                 // proposed.
-                let _ = self.change(&asked.owner, |kept| kept.book.withdraw(&proposal.id));
+                let _ = self.change(&asked.workspace, |kept| kept.book.withdraw(&proposal.id));
                 Err(unavailable(format!(
                     "the proposal could not be filed as a task: {why}"
                 )))
@@ -947,10 +1025,10 @@ impl Initiative {
     /// out, so one given twice, or on two devices at once, starts nothing
     /// twice; where it could not be carried out, the proposal waits again.
     async fn accept(&self, asked: &Asked<'_>, nod: &Accept) -> Result<Proposal, ActionCallError> {
-        self.reconcile(&asked.owner).await;
+        self.reconcile(&asked.workspace).await;
         let now_ms = tilo_clock::unix_now_ms_i64();
         let (accepted, first) = self
-            .change(&asked.owner, |kept| {
+            .change(&asked.workspace, |kept| {
                 let waited = kept
                     .book
                     .get(&nod.proposal)
@@ -966,11 +1044,13 @@ impl Initiative {
         }
         match self.carry_out(asked, &accepted).await {
             Ok(carried) => {
-                self.learn(asked, &carried, None);
+                self.learn(asked, &carried, None).await;
                 Ok(carried)
             }
             Err(error) => {
-                let _ = self.change(&asked.owner, |kept| kept.book.waits_again(&nod.proposal));
+                let _ = self.change(&asked.workspace, |kept| {
+                    kept.book.waits_again(&nod.proposal);
+                });
                 Err(error)
             }
         }
@@ -984,10 +1064,12 @@ impl Initiative {
         accepted: &Proposal,
     ) -> Result<Proposal, ActionCallError> {
         if let Some(event) = &accepted.event {
-            let made: EventView =
-                heard(self.of_events(asked, person_events::SET_UP, &said(event)?)?)?;
+            let made: EventView = heard(
+                self.of_events(asked, workspace_events::SET_UP, &said(event)?)
+                    .await?,
+            )?;
             return self
-                .change(&asked.owner, |kept| {
+                .change(&asked.workspace, |kept| {
                     kept.book.set_up_as(&accepted.id, made.id);
                     kept.book.get(&accepted.id).cloned()
                 })
@@ -1003,10 +1085,10 @@ impl Initiative {
     /// A proposal turned down: its kind counts one more, and its task is
     /// cancelled. Turned down again, or by two at once, it counts once.
     async fn decline(&self, asked: &Asked<'_>, no: &Decline) -> Result<Proposal, ActionCallError> {
-        self.reconcile(&asked.owner).await;
+        self.reconcile(&asked.workspace).await;
         let now_ms = tilo_clock::unix_now_ms_i64();
         let (declined, first) = self
-            .change(&asked.owner, |kept| {
+            .change(&asked.workspace, |kept| {
                 let waited = kept
                     .book
                     .get(&no.proposal)
@@ -1021,24 +1103,26 @@ impl Initiative {
             if let (Some(task), Some(tracker)) = (&declined.task, self.tracker(asked))
                 && let Err(error) = tracker.cancel(&task.issue).await
             {
-                tracing::warn!(workspace = %asked.owner.0, %error, "a declined proposal's task is not cancelled in the tracker");
+                tracing::warn!(workspace = %asked.workspace, %error, "a declined proposal's task is not cancelled in the tracker");
             }
-            self.learn(asked, &declined, no.why.as_deref());
+            self.learn(asked, &declined, no.why.as_deref()).await;
         }
         Ok(declined)
     }
 
-    /// Keep what its person made of `proposal` as an example in the
-    /// look-round's own note, where an event keeps what its person
-    /// accepted and rejected: every later look is handed it.
-    fn learn(&self, asked: &Asked<'_>, proposal: &Proposal, why: Option<&str>) {
-        let Some(event) = self.kept(&asked.owner).event else {
+    /// Keep what a member made of `proposal` as an example in the
+    /// look-round's own note, where an event keeps what was accepted and
+    /// rejected: every later look is handed it. The server writes it for its
+    /// assistant on the member's word, so it is taken as a turn the server
+    /// carries out for them: a decision already made asks nothing twice.
+    async fn learn(&self, asked: &Asked<'_>, proposal: &Proposal, why: Option<&str>) {
+        let Some(event) = self.kept(&asked.workspace).event else {
             return;
         };
         let mut example = format!("{}: {}", proposal.kind, proposal.title);
         if let Some(why) = why.map(str::trim).filter(|why| !why.is_empty()) {
             example.push_str(" (they said: ");
-            example.extend(why.chars().take(person_initiative::MAX_WHY_CHARS));
+            example.extend(why.chars().take(workspace_initiative::MAX_WHY_CHARS));
             example.push(')');
         }
         let part = if proposal.state == State::Declined {
@@ -1046,12 +1130,31 @@ impl Initiative {
         } else {
             "accepted"
         };
-        let mut change = serde_json::Map::new();
-        change.insert("event".to_owned(), json!(event));
-        change.insert(part.to_owned(), json!(example));
-        // An example that is not kept changes nothing its person decided.
-        if let Err(error) = self.of_events(asked, person_events::CHANGE, &Value::Object(change)) {
-            tracing::debug!(workspace = %asked.owner.0, %error, "the look-round's note did not take an example");
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: workspace_events::target(workspace_events::CHANGE),
+            argument: InvokeArgument::Json(
+                json!({"event": event, part: example})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        // An example that is not kept changes nothing a member decided.
+        let Ok(events) = self.events() else {
+            return;
+        };
+        let receipt = events
+            .invoke(asked.workspace_id, asked.caller, &Authority::Turn, &request)
+            .await;
+        if let ReceiptStatus::Rejected { error } = receipt.status {
+            tracing::debug!(workspace = %asked.workspace, %error, "the look-round's note did not take an example");
         }
     }
 }
@@ -1060,7 +1163,11 @@ impl Initiative {
 struct Asked<'a> {
     workspace_id: WorkspaceId,
     caller: &'a Caller,
-    owner: Owner,
+    authority: &'a Authority,
+    /// The workspace as its store names it.
+    workspace: String,
+    /// The person behind the caller.
+    person: [u8; 32],
     asker: Asker,
 }
 
@@ -1100,9 +1207,9 @@ fn rhythm(when: &str) -> Result<String, ActionCallError> {
         TriggerSpec::Schedule {
             schedule: Schedule::Interval { seconds },
             ..
-        } if *seconds < person_initiative::MIN_PERIOD_SECS => Err(refused(format!(
+        } if *seconds < workspace_initiative::MIN_PERIOD_SECS => Err(refused(format!(
             "it looks round every {} seconds at the most often",
-            person_initiative::MIN_PERIOD_SECS
+            workspace_initiative::MIN_PERIOD_SECS
         ))),
         TriggerSpec::Schedule { .. } => Ok(tilo_automation::text::trigger_line(&trigger)),
         _ => Err(refused(
@@ -1124,12 +1231,13 @@ impl Steps for Looking {
             return self.steps.instruct(instruction);
         };
         let initiative = Initiative { inner };
-        let owner = (instruction.workspace.clone(), instruction.person.clone());
-        if initiative.kept(&owner).event.as_deref() != Some(instruction.cause.installation.as_str())
+        let workspace = instruction.workspace.clone();
+        if initiative.kept(&workspace).event.as_deref()
+            != Some(instruction.cause.installation.as_str())
         {
             return self.steps.instruct(instruction);
         }
-        initiative.look(&owner, instruction, &*self.steps)
+        initiative.look(&workspace, instruction, &*self.steps)
     }
 
     fn judge(&self, judgement: Judgement) -> Result<Value, StepError> {
@@ -1194,6 +1302,24 @@ fn unavailable(reason: String) -> ActionCallError {
     ActionCallError::Unavailable { reason }
 }
 
+/// The runtime the initiative works on, where there is one.
+fn runtime() -> Option<tokio::runtime::Handle> {
+    tokio::runtime::Handle::try_current().ok()
+}
+
+fn no_runtime() -> ActionCallError {
+    unavailable("this server is not running its workspaces".to_owned())
+}
+
+/// What an action does to the workspace's initiative, as its policy weighs
+/// it.
+const fn effect_of(action: &str) -> ActionKind {
+    match action.as_bytes() {
+        b"read" | b"list" => ActionKind::Read,
+        _ => ActionKind::Undoable,
+    }
+}
+
 /// What a request's arguments name, or `what` they should have named. The
 /// reason never quotes the arguments.
 fn argument<T: serde::de::DeserializeOwned>(
@@ -1228,15 +1354,15 @@ enum On {
 impl On {
     const fn id(self) -> &'static str {
         match self {
-            Self::LookRound => person_initiative::LOOK_ROUND,
-            Self::Proposals => person_initiative::PROPOSALS,
+            Self::LookRound => workspace_initiative::LOOK_ROUND,
+            Self::Proposals => workspace_initiative::PROPOSALS,
         }
     }
 
     const fn kind(self) -> &'static str {
         match self {
-            Self::LookRound => person_initiative::LOOK_ROUND_KIND,
-            Self::Proposals => person_initiative::PROPOSALS_KIND,
+            Self::LookRound => workspace_initiative::LOOK_ROUND_KIND,
+            Self::Proposals => workspace_initiative::PROPOSALS_KIND,
         }
     }
 
@@ -1302,7 +1428,7 @@ fn for_both() -> Vec<Offered> {
     vec![
         Offered {
             on: On::LookRound,
-            action: person_initiative::READ,
+            action: workspace_initiative::READ,
             label: "Read the look-round",
             description: "Whether you look round for your person on your own, how often, what \
                           that may spend in a day and has spent today, and how your last looks \
@@ -1312,7 +1438,7 @@ fn for_both() -> Vec<Offered> {
         },
         Offered {
             on: On::LookRound,
-            action: person_initiative::TURN_ON,
+            action: workspace_initiative::TURN_ON,
             label: "Look round on your own",
             description: "Have the server wake you on a rhythm to look for work you could do for \
                           your person: what came in, what changed where they work, what became \
@@ -1322,7 +1448,7 @@ fn for_both() -> Vec<Offered> {
         },
         Offered {
             on: On::LookRound,
-            action: person_initiative::TURN_OFF,
+            action: workspace_initiative::TURN_OFF,
             label: "Stop looking round",
             description: "Stop looking round on your own until it is turned on again.",
             params: Vec::new(),
@@ -1330,7 +1456,7 @@ fn for_both() -> Vec<Offered> {
         },
         Offered {
             on: On::LookRound,
-            action: person_initiative::CHANGE,
+            action: workspace_initiative::CHANGE,
             label: "Change the look-round",
             description: "Change how often you look round, or lower what it may spend in a day. \
                           What is left out stays as it is.",
@@ -1339,7 +1465,7 @@ fn for_both() -> Vec<Offered> {
         },
         Offered {
             on: On::Proposals,
-            action: person_initiative::LIST,
+            action: workspace_initiative::LIST,
             label: "List proposals",
             description: "What you proposed to your person and where each stands, and what they \
                           made of each kind of work: turned down, not to be proposed again, or \
@@ -1349,7 +1475,7 @@ fn for_both() -> Vec<Offered> {
         },
         Offered {
             on: On::Proposals,
-            action: person_initiative::DECLINE,
+            action: workspace_initiative::DECLINE,
             label: "Turn a proposal down",
             description: "Turn a proposal down, on your person's word. Its task is cancelled, and \
                           a kind of work turned down twice is not proposed again.",
@@ -1366,7 +1492,7 @@ fn for_both() -> Vec<Offered> {
 fn for_the_assistant() -> Vec<Offered> {
     vec![Offered {
         on: On::Proposals,
-        action: person_initiative::PROPOSE,
+        action: workspace_initiative::PROPOSE,
         label: "Propose work",
         description: "Put a piece of work you could do in front of your person. It stands among \
                       their tasks and waits for their nod; when the answer says `started`, they \
@@ -1400,7 +1526,7 @@ fn for_the_assistant() -> Vec<Offered> {
 fn for_the_person_alone() -> Vec<Offered> {
     vec![Offered {
         on: On::Proposals,
-        action: person_initiative::ACCEPT,
+        action: workspace_initiative::ACCEPT,
         label: "Accept a proposal",
         description: "Give your nod to a proposal: its task is given to your assistant and \
                       the work starts, or its event is set up.",
@@ -1414,8 +1540,8 @@ fn row(offered: Offered) -> CatalogueRow {
     let on = offered.on;
     CatalogueRow {
         offered: None,
-        provider: person_initiative::PROVIDER.to_owned(),
-        app_id: person_initiative::PROVIDER.to_owned(),
+        provider: workspace_initiative::PROVIDER.to_owned(),
+        app_id: workspace_initiative::PROVIDER.to_owned(),
         parent_resource: String::new(),
         resource: CatalogueResource {
             id: on.id().to_owned(),
@@ -1459,7 +1585,7 @@ fn row(offered: Offered) -> CatalogueRow {
 
 #[cfg(test)]
 mod tests {
-    use tilo_actions::remote::person_initiative::Found;
+    use tilo_actions::remote::workspace_initiative::Found;
 
     use super::*;
 
@@ -1512,10 +1638,10 @@ mod tests {
     #[test]
     fn only_the_last_looks_are_kept() {
         let mut kept = Kept::default();
-        for n in 0..person_initiative::MAX_LOOKS + 5 {
+        for n in 0..workspace_initiative::MAX_LOOKS + 5 {
             kept.looked(look(&n.to_string(), LookEnded::Quiet), "2026-11-17", 0);
         }
-        assert_eq!(kept.looks.len(), person_initiative::MAX_LOOKS);
+        assert_eq!(kept.looks.len(), workspace_initiative::MAX_LOOKS);
         assert_eq!(kept.looks[0].look.id, "5");
     }
 
