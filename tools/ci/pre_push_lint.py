@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lint what a push can break before its refs leave, natively and for the page.
+"""Lint what a push can break before its refs leave.
 
 Git runs `.githooks/pre-push` with one line per ref it is updating on stdin:
 
@@ -14,15 +14,13 @@ features the workspace's unified build gives each package (so code behind a
 feature that no default build enables is compiled). Those features are the same
 whichever packages are selected, so one push's build stays warm for the next.
 
-`--wide` adds what a push leaves out, and the pull request workflow runs it over a merge onto main
-before it lands: the packages whose own source names something the commits changed (a rename, a
-removed item or a field added to a struct breaks the crates that use it, not the crate that
-declares it), the packages CI also checks as they ship, and Clippy for `wasm32-unknown-unknown` on
-the ones that build for the page, under the page's own Clippy configuration (std's clocks are
-banned there). A push used to run them too; with main moving every minute, their minutes of
-rebuilding lost the race to the next commit, again on each retry. t's `clippy`,
-`clippy-{arch}`, `clippy-shipped` and `clippy-page` families cover them on every change instead:
-each is keyed by what it reads, dependents included, and a miss is named on the head it broke.
+A push lints only what its commits change: the dependents that name what it
+changed (a rename, a removed item or a field added to a struct breaks the crates
+that use it, not the crate that declares it), the packages CI also checks as
+they ship, and Clippy for `wasm32-unknown-unknown` on the crates that build for
+the page are t's `clippy`, `clippy-{arch}`, `clippy-idle`, `clippy-shipped` and
+`clippy-page` families' work, on every change: each is keyed by what it reads,
+dependents included, and a miss is named on the head it broke.
 
 The Clippy runs start together, so a one-crate push costs about one build. A run
 that passed is not repeated while everything it reads is unchanged
@@ -47,7 +45,6 @@ escape, and CONTRIBUTING.md asks contributors never to use it.
 
     tools/ci/pre_push_lint.py --plan < pre-push-stdin    print what a push would lint
     tools/ci/pre_push_lint.py --range BASE..HEAD         lint what that range changes
-    tools/ci/pre_push_lint.py --wide --range BASE..HEAD  also its dependents, as shipped, and the page
 """
 from __future__ import annotations
 
@@ -68,14 +65,10 @@ from typing import Iterable, NamedTuple
 TOOLS = Path(__file__).resolve().parents[1]
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
-from ci import package_features, suites, wasm_clippy_conf
-from ci.package_sets import PAGE_ENTRY, browser_crates, page_closure, wasm_crates
+from ci import suites
 from ci.lint_inputs import Workspace
-from ci.workspace_graph import (
-    cargo_metadata, closure, file_at, lockfile_change, package_maps, reverse_dependencies,
-)
+from ci.workspace_graph import cargo_metadata, file_at, lockfile_change, package_maps
 
-WASM_TARGET = "wasm32-unknown-unknown"
 # A changed file is Rust or Cargo when it can change what a package compiles.
 RUST_SUFFIXES = (".rs", ".tl")
 RUST_NAMES = ("Cargo.toml", "Cargo.lock", "build.rs")
@@ -113,32 +106,6 @@ KEPT_PASSES = 256
 # as they were. Long enough for a push to be retried until it wins the race for main's head, short
 # enough that main has not become another tree under them.
 REBASE_WINDOW = 20 * 60
-# Identifiers of the language itself, and words every crate uses, say nothing
-# about which crate names what a change did: a dependent is picked by the names
-# a change removed or declared, never by these.
-KEYWORDS = frozenset("""as async await box break const continue crate dyn else enum extern false
-fn for if impl in let loop macro_rules match mod move mut pub raw ref return self Self static
-struct super trait true try type union unsafe use where while""".split())
-EVERYDAY = frozenset("""allow cfg cfg_attr default derive deny doc expect allow warn Option Result
-Some None Ok Err String Vec Box Arc Rc HashMap HashSet BTreeMap default new from into try_from
-clone eq ne fmt debug display hash iter map filter collect extend push pop insert remove get set
-len is_empty as_ref as_mut as_str as_deref to_string to_owned iter_mut into_iter collect
-Default Clone Copy Debug Display Send Sync Sized Drop From Iterator Into PartialEq Eq Hash
-Self self serde derive macro use super crate""".split())
-# A line that declares a name another crate can spell: an item, or a field of a
-# public struct, which a dependent's own struct literal has to name.
-DECLARED_ITEM = re.compile(
-    r"^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?(?:default[ \t]+)?(?:const[ \t]+)?(?:async[ \t]+)?"
-    r"(?:unsafe[ \t]+)?(?:extern[ \t]+\"[^\"]*\"[ \t]+)?"
-    r"(?:struct|enum|trait|fn|type|union|static|const|mod)[ \t]+([A-Za-z_][A-Za-z0-9_]*)",
-    re.MULTILINE)
-DECLARED_MACRO = re.compile(r"^[ \t]*macro_rules![ \t]*([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
-DECLARED_FIELD = re.compile(r"^[ \t]*pub[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*:", re.MULTILINE)
-# Names a change names: the dependents are searched for these in one pass. Above
-# this many the change reaches too much of the workspace for a word match to
-# narrow, so every dependent is linted instead; the number is about how long a
-# command line may be, not how many crates a change may touch.
-NAMED_LIMIT = 2000
 
 
 def say(message: str) -> None:
@@ -149,15 +116,6 @@ def say(message: str) -> None:
 def cargo_command() -> list[str]:
     """The cargo that builds: any drop-in named in $CARGO (which may build on another machine), else cargo."""
     return shlex.split(os.environ.get("CARGO", "")) or ["cargo"]
-
-
-def wasm_target_installed() -> bool:
-    """Whether the toolchain here has the page's target, so the wasm32 pass can run."""
-    if shutil.which("rustup") is None:
-        return False
-    installed = subprocess.run(["rustup", "target", "list", "--installed"],
-                               capture_output=True, text=True, check=False)
-    return installed.returncode == 0 and WASM_TARGET in installed.stdout.split()
 
 
 class Lint(NamedTuple):
@@ -269,43 +227,6 @@ def unchecked_tree(root: Path, push: Push) -> str | None:
     return None
 
 
-def declarations(text: str) -> set[str]:
-    """The names a source text declares: an item, a macro, or a public field."""
-    return (set(DECLARED_ITEM.findall(text)) | set(DECLARED_MACRO.findall(text))
-            | set(DECLARED_FIELD.findall(text)))
-
-
-def named_by_change(names: set[str]) -> set[str]:
-    """The words of a change worth matching a dependent against."""
-    return {name for name in names
-            if len(name) >= 3 and name not in KEYWORDS and name not in EVERYDAY}
-
-
-def changed_names(root: Path, comparisons: list[tuple[str, str]], files: set[str]) -> set[str]:
-    """The names the pushed commits stop offering, and the ones they start declaring.
-
-    What a dependent can break on is a declared name: an item or a public field
-    it names goes away, or a public field it has to spell in a struct literal
-    appears. A value on a changed line is nobody's to depend on, and an import
-    line names what its own crate borrows, not what another crate offers.
-    """
-    paths = sorted(path for path in files if path.endswith(RUST_SUFFIXES))
-    if not paths:
-        return set()
-    names: set[str] = set()
-    for base, head in comparisons:
-        result = subprocess.run(
-            ["git", "diff", "-U0", "--no-renames", f"{base}..{head}", "--", *paths],
-            cwd=root, capture_output=True, check=False,
-        )
-        for line in result.stdout.decode("utf-8", "surrogateescape").splitlines():
-            if line.startswith(("---", "+++")):
-                continue
-            if line.startswith(("-", "+")):
-                names |= declarations(line[1:])
-    return named_by_change(names)
-
-
 def owner_of(path: str, by_directory: dict[str, str]) -> str | None:
     """The package owning a repository path: the nearest directory above it that is one.
 
@@ -321,27 +242,6 @@ def owner_of(path: str, by_directory: dict[str, str]) -> str | None:
         parent = candidate.rsplit("/", 1)[0] if "/" in candidate else ""
         candidate = parent
     return by_directory.get("")
-
-
-def naming(root: Path, by_dir: dict[Path, str], candidates: set[str], names: set[str]) -> list[str]:
-    """The candidates whose own source names what the change did.
-
-    One pass of Git's own search, over the candidates' sources only: a search
-    of the whole tree reads the vendored crates and shipped assets that no
-    member compiles from source, which costs more than everything else here.
-    """
-    if not names or not candidates:
-        return []
-    patterns = [item for name in sorted(names) for item in ("-e", name)]
-    by_directory = {directory.as_posix(): name for directory, name in by_dir.items()}
-    directories = {directory for directory, name in by_directory.items() if name in candidates}
-    sources = [pattern for directory in sorted(directories)
-               for pattern in (f"{directory}/*.rs", f"{directory}/*.tl")]
-    result = subprocess.run(["git", "grep", "-l", "-z", "-F", "-w", *patterns, "--", *sources],
-                            cwd=root, capture_output=True, check=False)
-    found = {owner_of(path, by_directory) for path in
-             result.stdout.decode("utf-8", "surrogateescape").split("\0") if path}
-    return sorted(found & candidates)
 
 
 def lock_seeds(root: Path, push: Push, members: set[str]) -> set[str] | None:
@@ -442,10 +342,8 @@ def manifest_seeds(root: Path, push: Push, metadata: dict) -> set[str] | None:
 
 
 class Selection(NamedTuple):
-    """What a push is linted as: the packages, and the dependents that made them that many."""
+    """What a push is linted as: the packages, and the metadata they were named from."""
     native: list[str]
-    web: list[str]
-    dependents: list[str]
     metadata: dict
 
 
@@ -462,21 +360,15 @@ def reading_packages(root: Path, paths: list[str]) -> list[str]:
         return []
 
 
-def whole_workspace(packages: dict, members: set[str], metadata: dict) -> Selection:
-    """Every member, and the page: what a change that reaches how all of them build is linted as."""
-    web = (wasm_crates(packages) | {PAGE_ENTRY}) & members
-    return Selection(sorted(members), sorted(web), [], metadata)
+def whole_workspace(members: set[str], metadata: dict) -> Selection:
+    """Every member: what a change that reaches how all of them build is linted as."""
+    return Selection(sorted(members), metadata)
 
 
-def select(root: Path, push: Push, files: set[str], wide: bool = True) -> Selection | None:
-    """The packages to lint for the host and the page, or None when the push cannot be named.
+def select(root: Path, push: Push, files: set[str]) -> Selection | None:
+    """The packages to lint for the host, or None when the push cannot be named.
 
-    Those are the packages the commits own or read the changed files through,
-    plus every package whose own source names something they changed: a rename,
-    a removed item or a field added to a struct breaks the crates that use it.
-    The page lint covers the same crates that build for it, and the page's entry
-    when the change reaches anything the page compiles. Without `wide`, only the
-    packages the commits own are linted, for the host alone.
+    Those are the packages the commits own or read the changed files through.
     """
     metadata = cargo_metadata(root)
     packages, by_dir = package_maps(metadata, root)
@@ -501,31 +393,16 @@ def select(root: Path, push: Push, files: set[str], wide: bool = True) -> Select
         if reached is None:
             say(f"pre-push: {WORKSPACE_LOCK}'s change cannot be attributed to the packages it "
                 "reaches, so the whole workspace is linted")
-            return whole_workspace(packages, members, metadata)
+            return whole_workspace(members, metadata)
         seeds |= reached
     if WORKSPACE_MANIFEST in files:
         reached = manifest_seeds(root, push, metadata)
         if reached is None:
             say(f"pre-push: {WORKSPACE_MANIFEST}'s change decides how every member is built, so "
                 "the whole workspace is linted")
-            return whole_workspace(packages, members, metadata)
+            return whole_workspace(members, metadata)
         seeds |= reached
-    if not wide:
-        return Selection(sorted(seeds), [], [], metadata)
-    names = changed_names(root, push.comparisons, files)
-    dependents = closure(seeds, reverse_dependencies(packages, root)) - seeds
-    if len(names) > NAMED_LIMIT:
-        say(f"pre-push: the change names {len(names)} items, too many to say which of the "
-            f"{len(dependents)} packages that build on these use one: they are all linted")
-        named = sorted(dependents)
-    else:
-        named = naming(root, by_dir, dependents, names)
-    native = sorted(seeds | set(named))
-    web = (set(native) & wasm_crates(packages))
-    if set(native) & (page_closure(packages) | browser_crates(packages)):
-        web |= {PAGE_ENTRY}
-    web &= members
-    return Selection(native, sorted(web), named, metadata)
+    return Selection(sorted(seeds), metadata)
 
 
 def unified_features(root: Path, selected: Iterable[str]) -> list[str]:
@@ -560,40 +437,12 @@ def unified_features(root: Path, selected: Iterable[str]) -> list[str]:
     return ["--features", ",".join(sorted(set(features)))] if features else []
 
 
-def page_clippy_config(root: Path) -> dict[str, str]:
-    """The environment of the page's lint: the workspace's Clippy configuration, with std's clocks banned.
+def lint_runs(root: Path, selection: Selection, formatting: list[str]) -> list[Lint]:
+    """The runs the check makes: formatting, and the host lint.
 
-    The same configuration tools/ci/check-wasm.sh lints with. A configuration
-    that could not be written is said, not silently replaced by the root one:
-    the clocks are why the run exists.
-    """
-    directory = Path(os.environ.get("CARGO_TARGET_DIR", str(root / "target"))) / "wasm-clippy"
-    result = subprocess.run([sys.executable, "-I", str(TOOLS / "ci/wasm_clippy_conf.py"), str(directory)],
-                            cwd=root, capture_output=True, text=True, check=False)
-    if result.returncode != 0 or not (directory / "clippy.toml").is_file():
-        say("pre-push: the page's Clippy configuration could not be written, so the page lint runs "
-            f"without it: {(result.stderr or result.stdout).strip()}")
-        return {}
-    return {"CLIPPY_CONF_DIR": str(directory)}
-
-
-def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list[str],
-              own_build_dirs: bool = False, wide: bool = True) -> list[Lint]:
-    """The runs the check makes: formatting, the host lint, and the page lint where it can run.
-
-    `web` is what is actually linted for the page, so a toolchain without the
-    target leaves it empty. Each command is also the line a failure prints to
-    rerun it.
-
-    With `own_build_dirs`, the lints as the packages ship and for the page build in build
-    directories of their own. Cargo locks a build directory for the whole of a build, so the
-    three otherwise waited for one another instead of starting together; a build directory
-    of their own costs a first build each.
+    Each command is also the line a failure prints to rerun it.
     """
     cargo = cargo_command()
-
-    def build_dir(name: str) -> list[str]:
-        return ["--config", f'build.build-dir="target/{name}"'] if own_build_dirs else []
     native = selection.native
     selected = [item for name in native for item in ("-p", name)]
     runs = []
@@ -602,21 +451,6 @@ def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list
     runs.append(Lint("clippy (native)",
                      [*cargo, "clippy", "--locked", *selected, *unified_features(root, native),
                       "--all-targets", "--keep-going", "--", "-D", "warnings"], native, True))
-    # The packages CI lints as they ship too (tools/ci/package_features.py): a
-    # lint that only sees them with extra features never builds that shape.
-    shipped = package_features.default_builds(native) if wide else []
-    if shipped:
-        runs.append(Lint("clippy (native, as it ships)", [
-            *cargo, "clippy", "--locked", *build_dir("lint-as-shipped"),
-            *(item for name in shipped for item in ("-p", name)),
-            "--all-targets", "--keep-going", "--", "-D", "warnings",
-        ], shipped, True))
-    if web:
-        page = [item for name in web for item in ("-p", name)]
-        runs.append(Lint("clippy (wasm32)", [
-            *cargo, "clippy", "--locked", *build_dir("lint-page"), "--target", WASM_TARGET, *page,
-            "--", "-D", "warnings",
-        ], web, True, page_clippy_config(root)))
     return runs
 
 
@@ -789,12 +623,6 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--plan", action="store_true", help="print what the push would lint, and lint nothing")
     parser.add_argument("--range", metavar="BASE..HEAD",
                         help="lint what that range changes, for a run outside a push (CI)")
-    parser.add_argument("--wide", action="store_true",
-                        help="also lint the dependents that name what changed, the packages as they "
-                             "ship, and the page (what a pull request's merge is linted as)")
-    parser.add_argument("--own-build-dirs", action="store_true",
-                        help="build the lints as packages ship and for the page in build directories "
-                             "of their own, so all three start together")
     parser.add_argument("--keep-logs", metavar="DIR", type=Path,
                         help="keep each run's whole output, and how long it took, in DIR")
     parser.add_argument("--only", metavar="PACKAGES",
@@ -827,11 +655,11 @@ def main(argv: list[str]) -> int:
         say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "
             "on disk: check it out and push again")
         return 1
-    # Only a push asks this: `--range` and `--wide` lint a commit outside a push, and they read
-    # every commit on the tree it landed on.
+    # Only a push asks this: `--range` lints a commit outside a push, and it reads every commit
+    # on the tree it landed on.
     passes = Passes(root)
     change = None
-    if not (options.range or options.wide or options.only or options.plan):
+    if not (options.range or options.only or options.plan):
         change = change_key(root, push)
         age = passes.passed_since(change, REBASE_WINDOW)
         if age is not None:
@@ -839,7 +667,7 @@ def main(argv: list[str]) -> int:
                 "they were, on a newer main; what main's commits since do to them is linted on main")
             return 0
     try:
-        selection = select(root, push, files, options.wide)
+        selection = select(root, push, files)
     except (subprocess.CalledProcessError, RuntimeError) as error:
         say(f"pre-push: cargo metadata could not name the packages this push touches: {error}")
         return 1
@@ -848,8 +676,7 @@ def main(argv: list[str]) -> int:
         return 1
     if options.only is not None:
         only = set(filter(None, options.only.split(",")))
-        selection = Selection(sorted(set(selection.native) & only), sorted(set(selection.web) & only),
-                              sorted(set(selection.dependents) & only), selection.metadata)
+        selection = Selection(sorted(set(selection.native) & only), selection.metadata)
         if not selection.native:
             say("pre-push: none of the packages asked for is one this range reaches; nothing to lint")
             return 0
@@ -858,17 +685,9 @@ def main(argv: list[str]) -> int:
         return 0
     if options.plan:
         print(f"native: {' '.join(selection.native)}")
-        print(f"wasm32: {' '.join(selection.web)}")
-        if selection.dependents:
-            print(f"dependents: {' '.join(selection.dependents)}")
         return 0
-    web = selection.web
     if shutil.which(cargo_command()[0]) is None:
         say(f"pre-push: there is no cargo to lint with ({cargo_command()[0]}); the lint cannot run")
-        return 1
-    if web and not (os.environ.get("CARGO", "").strip() or wasm_target_installed()):
-        say(f"pre-push: {WASM_TARGET} is not installed here, so the page build cannot be linted, and "
-            f"this push changes crates the page compiles (rustup target add {WASM_TARGET})")
         return 1
     if git(root, "status", "--porcelain").stdout.strip():
         say("pre-push: the worktree has uncommitted changes; the lint covers the files on disk, which "
@@ -876,13 +695,10 @@ def main(argv: list[str]) -> int:
     formatting = formatting_run(root, push) if rustfmt_available() else []
     if not formatting:
         say("pre-push: rustfmt is not installed, so formatting is not checked here")
-    page = f", {len(web)} of them for the page" if web else ""
-    dependents = (f" and {packages(len(selection.dependents))} built on them"
-                  if selection.dependents else "")
-    say(f"pre-push: linting {packages(len(selection.native))}{dependents}{page}")
-    runs = lint_runs(root, selection, web, formatting,
-                     options.own_build_dirs, options.wide)
-    checked = f"{'clippy and rustfmt' if formatting else 'clippy'} for {packages(len(selection.native))}{page}"
+    say(f"pre-push: linting {packages(len(selection.native))}")
+    runs = lint_runs(root, selection, formatting)
+    checked = (f"{'clippy and rustfmt' if formatting else 'clippy'} "
+               f"for {packages(len(selection.native))}")
     pending = []
     for run, key in zip(runs, lint_keys(root, selection.metadata, runs)):
         if passes.passed(key):

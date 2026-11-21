@@ -96,10 +96,6 @@ publications build from.
   the page's own Clippy configuration (`clippy-page`), so a break only the web
   build sees is named on the head that introduced it. A push's own hook lints
   what it changes.
-- A pull request's merge is linted before it lands by the `pre-merge-lint`
-  workflow, over the wide selection (`tools/ci/pre_push_lint.py --wide`: the
-  changed packages, the packages that name what they changed, as shipped, and
-  the page), which `t`'s families otherwise cover on every change.
 - `changes` reads the commits a push added, and the whole-tree checks (`fmt`,
   `hakari`, `lockfile`, `deny`, `machete`, `policy/{step}`) run
   on the same head, so no push's run stands in for another's.
