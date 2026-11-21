@@ -667,7 +667,7 @@ fn a_part_whose_answer_kept_typed_words_migrates_and_keeps_the_answer() {
 
     assert!(evolution::migrate::<ChatMessages>(&mut old).unwrap(), "version 1 migrates");
     assert!(
-        old.get(&answered_at(&old), "detail").unwrap().is_none(),
+        old.get(answered_at(&old), "detail").unwrap().is_none(),
         "the typed words are gone"
     );
     let migrated = ChatMessages::read(&old).expect("the migrated part reads");
