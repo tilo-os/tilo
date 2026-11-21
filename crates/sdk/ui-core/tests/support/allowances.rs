@@ -157,12 +157,6 @@ pub const ALLOWANCES: &[Allowance] = &[
         "the multiplication sign of a size, text rather than an icon",
     ),
     allowance(
-        "crates/sdk/ui-core/src/widget/virtual_list_reconcile.rs",
-        "reconcile_mounted",
-        Rule::LegacySizeApi,
-        "the row's height, not a text's, is measured.",
-    ),
-    allowance(
         "apps/poker/src/card.rs",
         "paint_back",
         Rule::LiteralAlpha,
