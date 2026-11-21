@@ -51,9 +51,11 @@ pub(crate) fn with_native_backends(services: ProcessServices) -> ProcessServices
             tilo_dialogs::unattended_picker(directory.into(), services.files.clone())
         });
     // A session without a desktop portal draws choosers in its shell, and
-    // hands the unattended picker the ones nobody is there to answer.
-    let files = tilo_dialogs::inherited_shell_picker(unattended.clone())
-        .or(unattended)
+    // what nobody is there to answer — a path another app chose, a Save into
+    // the unattended directory — goes to the unattended picker or the
+    // desktop's own.
+    let elsewhere = unattended.clone().unwrap_or_else(|| services.files.clone());
+    let files = tilo_dialogs::inherited_shell_picker(elsewhere)
         .unwrap_or_else(|| services.files.clone());
     // A link with a scheme a Tilo app claims (`settings://updates`) opens in
     // that app through the shell, as its search opens it; the desktop's

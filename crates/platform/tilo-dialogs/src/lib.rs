@@ -105,11 +105,15 @@ pub fn unattended_picker(
         .map(|picker| Arc::new(picker) as Arc<dyn FilePicker>)
 }
 
+/// The session shell's chooser, when the launcher handed this process its connection: the
+/// person picks in the session's own sheet. `elsewhere` answers what the session says nobody is
+/// at the computer for — a session with no desktop portal behind it has nobody to choose a path
+/// for an app, and the unattended picker or the desktop's chooser still answers a Save.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn inherited_shell_picker(
-    unattended: Option<Arc<dyn FilePicker>>,
+    elsewhere: Arc<dyn FilePicker>,
 ) -> Option<Arc<dyn FilePicker>> {
-    shell::inherited_picker(unattended)
+    shell::inherited_picker(elsewhere)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -146,6 +146,31 @@ pub enum AdmitError {
     Window(std::io::Error),
 }
 
+/// The device content store over the connection the session opened for this instance: the app's
+/// in its workspace, which the launcher never started the process with. A connection that does
+/// not hold leaves the instance running without one, as a launched app runs without media.
+fn store_of(fd: Option<OwnedFd>) -> Option<tilo_content::ContentStore> {
+    let stream = std::os::unix::net::UnixStream::from(fd?);
+    tilo_content_device::for_connection(stream)
+        .inspect_err(|error| tracing::warn!(%error, "the instance's content store is unusable"))
+        .ok()
+}
+
+/// The person's chooser over the connection the session opened for this instance, over the
+/// chooser the launch brought for what nobody is at the computer to answer.
+fn chooser_of(fd: Option<OwnedFd>) -> Option<Arc<dyn tilo_dialogs::FilePicker>> {
+    let stream = std::os::unix::net::UnixStream::from(fd?);
+    let elsewhere = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
+        .filter(|directory| !directory.is_empty())
+        .and_then(|directory| {
+            tilo_dialogs::unattended_picker(directory.into(), tilo_dialogs::system_picker())
+        })
+        .unwrap_or_else(tilo_dialogs::system_picker);
+    tilo_dialogs::shell::picker(stream, elsewhere)
+        .inspect_err(|error| tracing::warn!(%error, "the person's chooser is unusable"))
+        .ok()
+}
+
 /// One running instance and its window's connection, watched for the window closing.
 struct Running {
     hosted: Hosted,
@@ -169,6 +194,11 @@ struct Opening {
     /// The connection to the app's origin connector, for an app whose types hold an outside
     /// service's resources.
     origin: Option<OwnedFd>,
+    /// The device content store of the app in its workspace, over the connection the session
+    /// opened for this instance.
+    content: Option<tilo_content::ContentStore>,
+    /// The person's chooser, over the connection the session opened for this instance.
+    chooser: Option<Arc<dyn tilo_dialogs::FilePicker>>,
     /// When the host was handed the instance, and the stages it reached since, with how long
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
@@ -314,6 +344,8 @@ impl TilolangProcess {
             return Ok(Kept {
                 documents: Rc::new(durable_store::MemoryStore::default()),
                 indexes: None,
+                content: None,
+                chooser: None,
             });
         };
         if app.is_empty() || app.contains(['/', '\0']) || app.starts_with('.') {
@@ -333,6 +365,8 @@ impl TilolangProcess {
         Ok(Kept {
             documents: Rc::new(app_state::FsStore::provisioned(&documents)),
             indexes: Some(package.join("indexes")),
+            content: None,
+            chooser: None,
         })
     }
 
@@ -514,6 +548,8 @@ impl TilolangProcess {
             change,
             identity: Some(fds.identity),
             origin: fds.origin,
+            content: store_of(fds.content),
+            chooser: chooser_of(fds.chooser),
             received: std::time::Instant::now(),
             reached: Vec::new(),
             person_changed: false,
@@ -546,6 +582,8 @@ impl TilolangProcess {
             change: None,
             identity: None,
             origin: None,
+            content: None,
+            chooser: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
             person_changed: false,
@@ -780,9 +818,13 @@ impl TilolangProcess {
         if records != bundle.meta.app {
             collab_types::app_surface::register_package(&records, &surface);
         }
-        let kept = self
+        let mut kept = self
             .kept(&records)
             .map_err(|error| AdmitError::Join(error.to_string()))?;
+        // The device's files travel with the instance as its own store and the person's chooser,
+        // opened by the session for the app in its workspace.
+        kept.content = opening.content.take();
+        kept.chooser = opening.chooser.take();
         let _scope = self.scope.enter();
         // What the document's actions keep as content lives in the device's content store, as a
         // native window's document content does: it outlives the instance and reaches the document's
@@ -794,7 +836,11 @@ impl TilolangProcess {
             spec.person.clone(),
             bundle.meta.resource_type(),
         )?
-        .keeping_content_in(tilo_content_device::for_app());
+        .keeping_content_in(
+            kept.content
+                .clone()
+                .unwrap_or_else(tilo_content_device::for_app),
+        );
         if let Some(change) = opening.change.take() {
             // A change at the document's origin: the document and the package, no instance.
             let applier = hosted::Applier::open(

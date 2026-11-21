@@ -69,6 +69,11 @@ VARIANTS = ("rust", "tl")
 # The shell's own verbs: a window is focused and closed by the tab it holds.
 SHELL = "so.tilo.session"
 SHELL_RESOURCE = "desktop:shell"
+# The file chooser's own steps (`so.tilo.file-chooser`), which the person takes in
+# its sheet: select the file, then use it.
+FILE_CHOOSER = "so.tilo.file-chooser"
+FILE_CHOOSER_STEP = f"{FILE_CHOOSER}.step"
+FILE_CHOOSER_QUESTION = "portal.file-chooser"
 
 
 def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
@@ -430,6 +435,13 @@ class Walk:
         self.session.right_click_at(x + w / 2, y + h / 2)
         return {"right_clicked": selector, "rect": target["rect"]}
 
+    def op_right_click_at(self, value) -> dict:
+        """A second-button press at a point of the window, for the menu empty
+        space offers and nothing names: `[x, y]`, as the step file writes it."""
+        x, y = value
+        self.session.right_click_at(float(x), float(y))
+        return {"right_clicked_at": [x, y]}
+
     def op_context_menu(self, value) -> dict:
         """Open the menu the control `selector` names shows, without a point:
         the same menu a right press opens, addressed by what the control is."""
@@ -586,6 +598,59 @@ class Walk:
         path = folder / name
         path.write_text(text)
         return {"file": str(path)}
+
+    def chooser_question(self) -> dict | None:
+        """The file chooser asking the person now, if one is."""
+        questions = self.session.control({"op": "questions"})["answer"]["questions"]
+        return next((q for q in questions if q.get("kind") == FILE_CHOOSER_QUESTION), None)
+
+    def chooser_step(self, ident: str) -> dict | None:
+        """The chooser's own step `ident` ("select", "confirm"), as the sheet
+        publishes it: the person's way through the chooser, not a shortcut past
+        it."""
+        return next((a for a in self.session.actions("")
+                     if a.get("operation") == FILE_CHOOSER_STEP and a.get("id") == ident), None)
+
+    def op_choose(self, value) -> dict:
+        """Choose the fixture file a person's chooser offers: the sheet the app's
+        request opens is answered by its own steps — the file is selected, then
+        used — as the person clicks them. Selecting waits for the chooser to have
+        listed the file; the answer ends it."""
+        name = value["name"]
+        path = (self.state / "home" / name).resolve()
+        question = until_value("the file chooser to ask for a file",
+                               self.chooser_question, 60)
+        handle = question["handle"]
+
+        def act(ident: str) -> bool:
+            action = self.chooser_step(ident)
+            if action is None:
+                return False
+            try:
+                self.session.invoke(action["provider"], action["id"],
+                                    {"handle": handle, "path": str(path)}
+                                    if ident == "select" else {"handle": handle})
+                return True
+            except Failed:
+                # The chooser has not listed the file yet, or the answer is
+                # already given: what it says is the finding, not a failure.
+                return False
+
+        deadline = time.monotonic() + 60
+        selected = used = False
+        while time.monotonic() < deadline:
+            if not selected:
+                selected = act("select")
+            if selected and not used:
+                used = act("confirm")
+            if used or self.chooser_question() is None:
+                break
+            time.sleep(0.1)
+        answered = self.chooser_question() is None
+        if not (selected and (used or answered)):
+            raise Failed(f"the chooser did not take {name!r} "
+                         f"(selected: {selected}, used: {used}, answered: {answered})")
+        return {"chose": str(path), "question": handle}
 
     # -- a step ---------------------------------------------------------------------------
 

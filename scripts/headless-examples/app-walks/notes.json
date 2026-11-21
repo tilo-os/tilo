@@ -229,10 +229,29 @@
             }
           },
           {
+            "right_click_at": [
+              180,
+              650
+            ]
+          },
+          {
+            "wait_for": "Import Markdown"
+          },
+          {
             "press_any": [
               "Import Markdown",
               "Import Markdown…"
             ]
+          },
+          {
+            "choose": {
+              "name": "Lisbon.md"
+            }
+          },
+          {
+            "wait_for": {
+              "prefix": "Lisbon in May"
+            }
           },
           {
             "questions": true
@@ -259,6 +278,16 @@
                 "prefix": "Import Markdown"
               }
             ]
+          },
+          {
+            "choose": {
+              "name": "Lisbon.md"
+            }
+          },
+          {
+            "wait_for": {
+              "prefix": "Lisbon in May"
+            }
           },
           {
             "questions": true

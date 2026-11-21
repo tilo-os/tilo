@@ -5,7 +5,7 @@
 //! capability to it, and [`device()`] is the one store every caller in the process
 //! shares.
 
-use tilo_content::ContentStore;
+use tilo_content::{ContentBackend, ContentStore};
 
 #[cfg(unix)]
 mod device;
@@ -96,6 +96,22 @@ pub fn public_copy(name: &'static str) -> Option<PublicCopy> {
 #[must_use]
 pub fn for_app() -> ContentStore {
     device().unwrap_or_else(ContentStore::local_for_app)
+}
+
+/// The device content store over a connection the session opened on this process's
+/// behalf, scoped to one app in one workspace: what a tilolang instance keeps and
+/// reads, which the launcher never started with a capability of its own.
+///
+/// # Errors
+///
+/// The connection is not the daemon's document-media handoff.
+#[cfg(unix)]
+pub fn for_connection(stream: std::os::unix::net::UnixStream) -> std::io::Result<ContentStore> {
+    let client = runtime_fs::blobs::BlobClient::from_app_stream(stream)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(ContentStore::from_backend(
+        std::sync::Arc::new(DeviceBackend::new(client)) as std::sync::Arc<dyn ContentBackend>,
+    ))
 }
 
 /// The content a session's apps read, as the session's own process: the daemon at

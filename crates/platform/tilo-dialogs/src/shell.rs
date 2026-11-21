@@ -8,8 +8,9 @@
 //! shows its own file chooser. Legacy path results remain limited to existing
 //! grants; owner-confirmed contents selections expose only bounded bytes on this
 //! connection, never a directory grant or a replayable host path. When nobody is at the
-//! computer it answers [`Reply::Nobody`] and the app falls back to the
-//! unattended picker ([`crate::unattended_picker`]).
+//! computer it answers [`Reply::Nobody`] and the app falls back to the chooser it
+//! brought ([`crate::unattended_picker`] or the desktop's own), so a session with no
+//! portal behind it still answers a Save.
 //!
 //! Links go the same way ([`ShellLink::opener`]): the shell opens a link in
 //! the app that claims its scheme, as its own search does, and answers
@@ -38,7 +39,6 @@ pub const FD_ENV: &str = "TILO_SVC_CHOOSER_FD";
 pub const PROTOCOL: u16 = 1;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
-const NOBODY: &str = "nobody is at this computer to choose a file; name the file instead";
 const NOBODY_TO_CHOOSE_APP: &str = "nobody is at this computer to choose an app";
 const OUT_OF_TURN: &str = "the session's shell answered out of turn";
 // What an app may show the person when the shell's chooser itself is out
@@ -74,6 +74,201 @@ pub struct Filter {
     pub globs: Vec<String>,
     #[serde(default)]
     pub mimetypes: Vec<String>,
+}
+
+/// What an app asks the shell to choose: files of the types it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Choice {
+    pub title: String,
+    /// More than one file may be chosen.
+    pub multiple: bool,
+    /// The app's own word for the confirm button, empty for the default.
+    pub accept_label: String,
+    pub filters: Vec<Filter>,
+}
+
+/// What a session answers its apps' chooser requests with: the person's choice, asked in
+/// whatever way that session shows it.
+pub trait Session {
+    /// The contents `app` asked for, as the person chose them. Blocks until they choose, or
+    /// refuse; a session that cannot ask answers [`ContentsOutcome::Failed`] in the person's
+    /// words.
+    fn choose_contents(&self, app: &str, choice: &Choice) -> ContentsOutcome;
+}
+
+/// Serve one app's connection to the shell's chooser, which `session` answers: its handshake
+/// names the app, and its requests are answered until it goes.
+///
+/// Only a choice of contents is answered. A request for a path is answered [`Reply::Nobody`]:
+/// the app keeps the chooser it brought for that, so a session with no portal behind it never
+/// hands a sandboxed app a path it could not reach.
+pub fn answer(stream: UnixStream, session: &dyn Session) {
+    let Ok(mut writer) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(stream);
+    let Ok(Some(frame)) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) else {
+        return;
+    };
+    let Ok(handshake) = serde_json::from_slice::<Handshake>(frame.trim_ascii_end()) else {
+        tracing::warn!("an app's chooser connection carried no handshake");
+        return;
+    };
+    let mut grants = Grants::default();
+    while let Ok(Some(frame)) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
+        let Ok(request) = serde_json::from_slice::<Request>(frame.trim_ascii_end()) else {
+            tracing::warn!("an app's chooser connection sent an unreadable request");
+            return;
+        };
+        let reply = match request {
+            Request::PickContents {
+                id,
+                multiple,
+                title,
+                accept_label,
+                filters,
+            } => {
+                let choice = Choice {
+                    title,
+                    multiple,
+                    accept_label,
+                    filters,
+                };
+                match session.choose_contents(&handshake.app_id, &choice) {
+                    ContentsOutcome::Picked(files) => grants.grant(id, files),
+                    ContentsOutcome::Cancelled => Reply::Cancelled { id },
+                    ContentsOutcome::Failed(reason) => Reply::Failed { id, reason },
+                }
+            }
+            Request::ReadContents {
+                id,
+                grant,
+                offset,
+                max_bytes,
+            } => grants.read(id, &grant, offset, max_bytes),
+            Request::ReleaseContents { id, grant } => {
+                grants.bytes.remove(&grant.token);
+                Reply::ContentsReleased { id }
+            }
+            other => Reply::Nobody {
+                id: request_id(&other),
+            },
+        };
+        let mut frame = match serde_json::to_vec(&reply) {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::warn!(%error, "a chooser answer could not be written");
+                return;
+            }
+        };
+        frame.push(b'\n');
+        if writer.write_all(&frame).and_then(|()| writer.flush()).is_err() {
+            return;
+        }
+    }
+}
+
+/// The bytes one app's chosen files are held as, by the grant that names them.
+#[derive(Default)]
+struct Grants {
+    bytes: HashMap<String, Vec<u8>>,
+}
+
+impl Grants {
+    /// Hold the files the person chose for request `id`, and name them by grants of their own:
+    /// an app reads them in chunks and never sees where they came from.
+    fn grant(&mut self, id: u64, files: Vec<PickedContents>) -> Reply {
+        let mut total = 0_u64;
+        for file in &files {
+            total = total.saturating_add(u64::try_from(file.bytes.len()).unwrap_or(u64::MAX));
+        }
+        if total > MAX_CONTENT_BYTES {
+            return Reply::Failed {
+                id,
+                reason: format!(
+                    "the files you chose are more than the {MAX_CONTENT_BYTES} bytes an app may be given at once"
+                ),
+            };
+        }
+        let grants: Vec<FilePortalGrant> = files
+            .into_iter()
+            .map(|file| {
+                let token = format!(
+                    "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+                    rand_u32(),
+                    rand_u32() & 0xffff,
+                    rand_u32() & 0xffff,
+                    rand_u32() & 0xffff,
+                    (u64::from(rand_u32()) << 16) | u64::from(rand_u32() & 0xffff)
+                );
+                let grant = FilePortalGrant {
+                    request: id,
+                    token: token.clone(),
+                    name: file.name,
+                    size: u64::try_from(file.bytes.len()).unwrap_or(u64::MAX),
+                };
+                self.bytes.insert(token, file.bytes);
+                grant
+            })
+            .collect();
+        if grants.is_empty() {
+            return Reply::Cancelled { id };
+        }
+        Reply::ContentsGranted { id, grants }
+    }
+
+    /// The answer to a chunk read of `grant`.
+    fn read(&self, id: u64, grant: &FilePortalGrant, offset: u64, max_bytes: u32) -> Reply {
+        let Some(bytes) = self.bytes.get(&grant.token) else {
+            return Reply::Failed {
+                id,
+                reason: "the file you chose is no longer held; choose it again".to_owned(),
+            };
+        };
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let wanted = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+        let Some(slice) = bytes.get(start..) else {
+            return Reply::Failed {
+                id,
+                reason: "the file you chose is no longer held; choose it again".to_owned(),
+            };
+        };
+        let chunk = slice.get(..wanted.min(slice.len())).unwrap_or(slice).to_vec();
+        let eof = start.saturating_add(chunk.len()) >= bytes.len();
+        Reply::ContentsChunk {
+            id,
+            bytes: chunk,
+            eof,
+        }
+    }
+}
+
+/// The id a request names, for the requests a session answers `Nobody`.
+fn request_id(request: &Request) -> u64 {
+    match request {
+        Request::Pick { id, .. }
+        | Request::PickContents { id, .. }
+        | Request::ReadContents { id, .. }
+        | Request::ReleaseContents { id, .. }
+        | Request::Open { id, .. }
+        | Request::OpenUri { id, .. }
+        | Request::ChooseApp { id, .. }
+        | Request::AwaitIdentity { id }
+        | Request::ChooseIdentity { id } => *id,
+    }
+}
+
+/// A number for a grant's token, which only has to name one grant on one connection.
+fn rand_u32() -> u32 {
+    // The grant is a handle, never a secret: an app on this connection can only read what the
+    // person chose for it, and the connection is its own.
+    static COUNTER: AtomicU64 = AtomicU64::new(0x9e37_79b9);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    let mixed = (count ^ u64::from(nanos).wrapping_mul(0x9e37_79b9)).wrapping_mul(0x85eb_ca6b);
+    u32::try_from(mixed & 0xffff_ffff).unwrap_or_default()
 }
 
 /// A private, read-only selection on one authenticated chooser connection.
@@ -346,10 +541,10 @@ impl ShellLink {
     }
 
     #[must_use]
-    pub fn picker(&self, unattended: Option<Arc<dyn FilePicker>>) -> Arc<dyn FilePicker> {
+    pub fn picker(&self, elsewhere: Arc<dyn FilePicker>) -> Arc<dyn FilePicker> {
         Arc::new(ShellChooser {
             link: self.clone(),
-            unattended,
+            elsewhere,
         })
     }
 
@@ -401,15 +596,18 @@ impl ShellLink {
     }
 }
 
+/// The shell's chooser over `stream`, asking `elsewhere` what the session answers `Nobody` for:
+/// a session with no portal behind it has nobody to choose a path for an app, and the save
+/// directory or the desktop's own chooser still answers a Save.
 pub fn picker(
     stream: UnixStream,
-    unattended: Option<Arc<dyn FilePicker>>,
+    elsewhere: Arc<dyn FilePicker>,
 ) -> std::io::Result<Arc<dyn FilePicker>> {
-    Ok(ShellLink::connect(stream)?.picker(unattended))
+    Ok(ShellLink::connect(stream)?.picker(elsewhere))
 }
 
-pub fn inherited_picker(unattended: Option<Arc<dyn FilePicker>>) -> Option<Arc<dyn FilePicker>> {
-    ShellLink::inherited().map(|link| link.picker(unattended))
+pub fn inherited_picker(elsewhere: Arc<dyn FilePicker>) -> Option<Arc<dyn FilePicker>> {
+    ShellLink::inherited().map(|link| link.picker(elsewhere))
 }
 
 pub fn inherited_opener(elsewhere: Arc<dyn crate::UriOpener>) -> Option<Arc<dyn crate::UriOpener>> {
@@ -441,7 +639,10 @@ fn adopt_socket(fd: RawFd) -> Option<UnixStream> {
 
 struct ShellChooser {
     link: ShellLink,
-    unattended: Option<Arc<dyn FilePicker>>,
+    /// What answers a request the session says `Nobody` for: a session with no portal behind it
+    /// has nobody to choose a path, and the unattended picker or the desktop's chooser still
+    /// answers a Save.
+    elsewhere: Arc<dyn FilePicker>,
 }
 
 struct ShellOpener {
@@ -556,9 +757,9 @@ impl ShellChooser {
         on_paths: impl FnOnce(Vec<PathBuf>) -> T + Send + 'static,
         cancelled: T,
         failed: impl FnOnce(String) -> T + Send + 'static,
-        unattended: impl FnOnce(&dyn FilePicker, PickRequest) -> T + Send + 'static,
+        elsewhere: impl FnOnce(&dyn FilePicker, PickRequest) -> T + Send + 'static,
     ) {
-        let fallback = self.unattended.clone();
+        let fallback = Arc::clone(&self.elsewhere);
         let build = pick_request(&request);
         self.link.connection().ask(
             build,
@@ -566,10 +767,7 @@ impl ShellChooser {
                 deliver(match reply {
                     Reply::Picked { paths, .. } if !paths.is_empty() => on_paths(paths),
                     Reply::Picked { .. } | Reply::Cancelled { .. } => cancelled,
-                    Reply::Nobody { .. } => match fallback {
-                        Some(picker) => unattended(&*picker, request),
-                        None => failed(NOBODY.to_owned()),
-                    },
+                    Reply::Nobody { .. } => elsewhere(&*fallback, request),
                     Reply::Failed { reason, .. } => failed(reason),
                     _ => failed(CHOOSER_OUT_OF_TURN.to_owned()),
                 });
@@ -660,7 +858,7 @@ impl FilePicker for ShellChooser {
         }
         let (deliver, rx) = channel();
         let link = self.link.clone();
-        let fallback = self.unattended.clone();
+        let fallback = Arc::clone(&self.elsewhere);
         let title = request.title.clone();
         let accept_label = request.accept_label.clone();
         let multiple = request.is_multiple();
@@ -682,14 +880,9 @@ impl FilePicker for ShellChooser {
                                 read_contents(link.connection(), grants)
                             }
                             Reply::Cancelled { .. } => ContentsOutcome::Cancelled,
-                            Reply::Nobody { .. } => fallback.map_or_else(
-                                || ContentsOutcome::Failed(NOBODY.to_owned()),
-                                |picker| {
-                                    closed_recv(
-                                        &picker.pick_contents(request),
-                                        ContentsOutcome::Failed(CLOSED.to_owned()),
-                                    )
-                                },
+                            Reply::Nobody { .. } => closed_recv(
+                                &fallback.pick_contents(request),
+                                ContentsOutcome::Failed(CLOSED.to_owned()),
                             ),
                             Reply::Failed { reason, .. } => ContentsOutcome::Failed(reason),
                             _ => ContentsOutcome::Failed(CHOOSER_OUT_OF_TURN.to_owned()),
@@ -885,7 +1078,7 @@ mod tests {
                     id: id_of(&request),
                     reason: "no".into(),
                 }),
-                None,
+                crate::unavailable_picker(),
             )
             .unwrap();
             crate::conformance::check_picker_contract(&*chooser);
@@ -903,7 +1096,7 @@ mod tests {
                         paths: vec!["/data/in/x.xlsx".into(), "/data/in/y.xlsx".into()],
                     }
                 }),
-                None,
+                crate::unavailable_picker(),
             )
             .unwrap();
             let request = PickRequest::open("Import spreadsheet", "Import")
@@ -955,7 +1148,7 @@ mod tests {
             let nobody = |request: Request| Reply::Nobody {
                 id: id_of(&request),
             };
-            let chooser = picker(shell(nobody), unattended).unwrap();
+            let chooser = picker(shell(nobody), unattended.expect("an unattended picker")).unwrap();
             assert_eq!(
                 chooser
                     .pick(PickRequest::save("Save", "Save", "report.xlsx"))
@@ -968,12 +1161,13 @@ mod tests {
                 Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
             ));
 
-            let alone = picker(shell(nobody), None).unwrap();
+            // An app that brought no chooser of its own says plainly there is none.
+            let alone = picker(shell(nobody), crate::unavailable_picker()).unwrap();
             assert!(matches!(
                 alone
                     .pick(PickRequest::save("Save", "Save", "report.xlsx"))
                     .recv_timeout(answer()),
-                Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
+                Ok(PortalOutcome::Failed(_))
             ));
         }
 
@@ -989,7 +1183,7 @@ mod tests {
                         reason: "not granted".into(),
                     },
                 }),
-                None,
+                crate::unavailable_picker(),
             )
             .unwrap();
             assert_eq!(
@@ -1080,7 +1274,7 @@ mod tests {
                 shell(|request| Reply::Cancelled {
                     id: id_of(&request),
                 }),
-                None,
+                crate::unavailable_picker(),
             )
             .unwrap();
             assert_eq!(
@@ -1092,7 +1286,7 @@ mod tests {
             );
 
             let (app, shell) = UnixStream::pair().unwrap();
-            let chooser = picker(app, None).unwrap();
+            let chooser = picker(app, crate::unavailable_picker()).unwrap();
             let waiting = chooser.pick(PickRequest::open("Open", "Open"));
             drop(shell);
             assert!(matches!(
@@ -1105,6 +1299,97 @@ mod tests {
                     .recv_timeout(answer()),
                 Ok(LaunchOutcome::Failed(_))
             ));
+        }
+
+        phase an_apps_choice_of_contents_is_the_bytes_the_session_person_picked;
+        {
+            /// The session's half: what the person chose, as the session that showed them
+            /// the chooser would answer.
+            struct Chooses(ContentsOutcome);
+
+            impl Session for Chooses {
+                fn choose_contents(&self, app: &str, choice: &Choice) -> ContentsOutcome {
+                    assert_eq!(app, "so.tilo.notes", "the handshake names who asks");
+                    assert_eq!(choice.title, "Import Markdown");
+                    assert_eq!(choice.filters.first().map(|f| f.name.as_str()), Some("Text files"));
+                    self.0.clone()
+                }
+            }
+
+            let (app, shell) = UnixStream::pair().unwrap();
+            // The launcher names the app and its workspace on the connection before the app
+            // holds it.
+            let handshake = Handshake {
+                protocol: PROTOCOL,
+                app_id: "so.tilo.notes".into(),
+                workspace_id: "workspace-7".into(),
+            };
+            // The launcher names the app on the connection it hands it, from the app's end.
+            let mut naming = app.try_clone().unwrap();
+            writeln!(naming, "{}", serde_json::to_string(&handshake).unwrap()).unwrap();
+            let choosing = ContentsOutcome::Picked(vec![PickedContents {
+                name: "Lisbon.md".into(),
+                media_type: Some("text/markdown".into()),
+                bytes: b"# Lisbon in May\n".to_vec(),
+                location: None,
+            }]);
+            let answering = std::thread::spawn(move || super::answer(shell, &Chooses(choosing)));
+
+            let chooser = picker(app, crate::unavailable_picker()).unwrap();
+            let chosen = chooser
+                .pick_contents(
+                    PickRequest::open("Import Markdown", "Text files")
+                        .filter(FileFilter::new("Text files").mimetype("text/markdown")),
+                )
+                .recv_timeout(answer())
+                .unwrap();
+            let ContentsOutcome::Picked(files) = chosen else {
+                panic!("the app was given the file: {chosen:?}");
+            };
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].name, "Lisbon.md");
+            assert_eq!(files[0].bytes, b"# Lisbon in May\n");
+            // The app closes its connection: the session's end then stops answering.
+            drop(chooser);
+            answering.join().unwrap();
+        }
+
+        phase a_path_a_session_has_no_one_to_choose_goes_to_the_chooser_the_app_brought;
+        {
+            struct Nobody;
+
+            impl Session for Nobody {
+                fn choose_contents(&self, _: &str, _: &Choice) -> ContentsOutcome {
+                    ContentsOutcome::Cancelled
+                }
+            }
+
+            let (app, shell) = UnixStream::pair().unwrap();
+            let handshake = Handshake {
+                protocol: PROTOCOL,
+                app_id: "so.tilo.notes".into(),
+                workspace_id: "workspace-7".into(),
+            };
+            let mut naming = app.try_clone().unwrap();
+            writeln!(naming, "{}", serde_json::to_string(&handshake).unwrap()).unwrap();
+            std::thread::spawn(move || super::answer(shell, &Nobody));
+
+            // A Save is a path: the session says nobody is there to choose one, and the app's
+            // own chooser answers it.
+            let directory = tempfile::tempdir().unwrap();
+            let unattended = crate::unattended_picker(
+                directory.path().to_path_buf(),
+                crate::unavailable_picker(),
+            )
+            .expect("an unattended picker");
+            let chooser = picker(app, unattended).unwrap();
+            assert_eq!(
+                chooser
+                    .pick(PickRequest::save("Save", "Save", "report.xlsx"))
+                    .recv_timeout(answer())
+                    .unwrap(),
+                PortalOutcome::Opened(directory.path().join("report.xlsx"))
+            );
         }
     }
 

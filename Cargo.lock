@@ -22612,6 +22612,7 @@ dependencies = [
  "tilo-device-identity",
  "tilo-device-mcp",
  "tilo-device-vpn",
+ "tilo-dialogs",
  "tilo-dictation",
  "tilo-documents",
  "tilo-endpoint-reachability",

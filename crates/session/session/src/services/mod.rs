@@ -14,9 +14,8 @@
 //! and the match over [`Service`] is exhaustive: a row this module owns
 //! without code to start it does not compile. The rows served by a module
 //! beside this one name that module, and the rows another program of this
-//! login serves name the program; a row nothing serves carries the reason,
-//! so a gap is read here rather than found by an app whose service is
-//! missing.
+//! login serves name the program, so who serves what is read here rather
+//! than found by an app whose service is missing.
 //!
 //! The test below pairs the table with what clients dial — the names the launcher hands an app
 //! ([`launcher::services::HANDED_SERVICES`]) and the services every app's manifest declares — and
@@ -47,6 +46,8 @@ use crate::tools;
 
 mod accounts;
 pub(crate) mod app_wire;
+#[cfg(unix)]
+mod chooser;
 
 /// How a client reaches a service of this session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,8 +73,6 @@ pub(crate) enum Owner {
     Module(&'static str),
     /// Another program of this login.
     Elsewhere(&'static str),
-    /// Nothing on this desktop yet, and why.
-    Nothing(&'static str),
 }
 
 /// The services [`start`] starts.
@@ -97,6 +96,8 @@ pub(crate) enum Service {
     /// The connections adding an account makes to its servers, made for Settings, whose sandbox
     /// has no network ([`accounts`]).
     Accounts,
+    /// The person's file chooser, on the launcher's socket for it ([`chooser`]).
+    Chooser,
 }
 
 /// One service of this desktop: its name, how it is reached, and what serves it.
@@ -141,10 +142,7 @@ pub(crate) const TABLE: &[Row] = &[
     Row {
         name: launcher::services::CHOOSER_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Nothing(
-            "the identity and application choosers an app asks the shell for on this socket are \
-             not served by this session yet",
-        ),
+        owner: Owner::Session(Service::Chooser),
     },
     Row {
         name: launcher::services::COMPAT_SERVICE,
@@ -220,6 +218,9 @@ pub(crate) struct Served {
     windows: Option<crate::windows_compat::Served>,
     /// The connections to accounts' servers, made for Settings.
     accounts: Option<accounts::Served>,
+    /// The person's file chooser, which every app asks on the launcher's socket for it.
+    #[cfg(unix)]
+    chooser: Option<chooser::Chooser>,
 }
 
 /// What a session serves its services with.
@@ -288,7 +289,20 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                 }
             }
             Service::SystemInfo => {
-                served.system_info = system_info(serving.questions.take(), serving.consents.take());
+                served.system_info =
+                    system_info(serving.questions.clone(), serving.consents.take());
+            }
+            Service::Chooser => {
+                // The person answers a file pick in the session's own chooser sheet, as they
+                // answer the portal's: one sheet, whether an app reached it through the portal or
+                // through the shell's socket.
+                #[cfg(unix)]
+                if let Some(questions) = serving.questions.clone() {
+                    match chooser::serve(questions) {
+                        Ok(chooser) => served.chooser = Some(chooser),
+                        Err(error) => tracing::warn!(%error, "the file chooser is unavailable"),
+                    }
+                }
             }
             Service::Tools => {
                 served.tools =
@@ -953,11 +967,6 @@ mod tests {
                         "`{}` names `{program}` as its server on no socket",
                         row.name
                     ),
-                    Owner::Nothing(reason) => assert!(
-                        reason.len() > 20,
-                        "`{}` says nothing of why nothing serves it",
-                        row.name
-                    ),
                 }
             }
         }
@@ -974,6 +983,7 @@ mod tests {
                 Service::Render,
                 Service::Windows,
                 Service::Accounts,
+                Service::Chooser,
             ] {
                 assert!(
                     TABLE

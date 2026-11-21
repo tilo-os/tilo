@@ -228,6 +228,15 @@ pub struct InstanceFds {
     /// service's resources.
     #[serde(with = "crate::packet::optional_fd")]
     pub origin: Option<Descriptor>,
+    /// The instance's connection to the device's content store, scoped to its app in its
+    /// workspace: what a file it chooses or keeps, and the pictures its document holds, are read
+    /// and written through. `None` on a device that keeps no content store.
+    #[serde(with = "crate::packet::optional_fd")]
+    pub content: Option<Descriptor>,
+    /// The instance's connection to the person's chooser: what `file.choose` and `file.save`
+    /// ask. `None` on a session that serves none.
+    #[serde(with = "crate::packet::optional_fd")]
+    pub chooser: Option<Descriptor>,
 }
 
 #[cfg(unix)]
@@ -245,6 +254,16 @@ impl InstanceFds {
             window: self.window.try_clone()?,
             origin: self
                 .origin
+                .as_ref()
+                .map(Descriptor::try_clone)
+                .transpose()?,
+            content: self
+                .content
+                .as_ref()
+                .map(Descriptor::try_clone)
+                .transpose()?,
+            chooser: self
+                .chooser
                 .as_ref()
                 .map(Descriptor::try_clone)
                 .transpose()?,
@@ -625,8 +644,11 @@ mod tests {
         {
             let (session, process) = pair().unwrap();
             let request = instance_request();
-            for origin in [None, Some(connection())] {
-                let had_origin = origin.is_some();
+            for (origin, content, chooser) in [
+                (None, None, None),
+                (Some(connection()), Some(connection()), Some(connection())),
+            ] {
+                let had = (origin.is_some(), content.is_some(), chooser.is_some());
                 ToProcess::Instance {
                     request: Box::new(request.clone()),
                     fds: InstanceFds {
@@ -635,6 +657,8 @@ mod tests {
                         module: connection(),
                         window: connection(),
                         origin,
+                        content,
+                        chooser,
                     },
                 }
                 .send(&session)
@@ -645,7 +669,11 @@ mod tests {
                     panic!("an instance arrives as one");
                 };
                 assert_eq!(*received, request);
-                assert_eq!(fds.origin.is_some(), had_origin);
+                assert_eq!(
+                    (fds.origin.is_some(), fds.content.is_some(), fds.chooser.is_some()),
+                    had,
+                    "the instance's own chooser and content store cross with it"
+                );
             }
         }
 

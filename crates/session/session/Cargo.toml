@@ -195,6 +195,11 @@ tilo-workspace-directory = { path = "../workspace-directory" }
 agent-provider-config = { path = "../../agent/provider-config" }
 tilo-rt = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
+# The shell's chooser protocol: the socket the launcher hands an app, and what the session
+# answers on it.
+tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+# Asking the person a question blocks a thread of the chooser's own until they answer.
+pollster.workspace = true
 tracing.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
@@ -455,7 +460,6 @@ tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilolang-tilo = { path = "../../platform/tilolang-tilo", features = ["document"] }
 # The page track and window-share tests drive a synchronous web engine.
 tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
-pollster.workspace = true
 # A check that answers a sheet as the person does asks the questions service the
 # sheets show, and reads its answer back.
 tilo-service = { path = "../service" }

@@ -677,6 +677,33 @@ impl Apps {
             }
             Err(error) => return refused(error),
         };
+        // The device's content store, opened and scoped exactly as the launcher scopes a launched
+        // app's: the files a person chooses and the pictures the document holds are kept there,
+        // and a document's other readers reach them on its route.
+        let content = match launcher::services::resolve_blob_bind(
+            &hosted.app,
+            Some(&hosted.workspace),
+            false,
+        ) {
+            Ok(content) => content.map(|bind| bind.host),
+            Err(error) => {
+                tracing::warn!(app = %hosted.app, %error, "the document media service is unusable");
+                None
+            }
+        };
+        // The person's chooser, over the shell's socket, as the launcher opens it for a launched
+        // app: what `file.choose` asks, so the person picks in the session's own sheet.
+        let chooser = match launcher::services::resolve_chooser_bind(
+            &hosted.app,
+            Some(&hosted.workspace),
+            false,
+        ) {
+            Ok(chooser) => chooser.map(|bind| bind.host),
+            Err(error) => {
+                tracing::warn!(app = %hosted.app, %error, "the chooser service is unusable");
+                None
+            }
+        };
         // What the person may do in the app, as a launched app of it reads it: the instance's
         // views offer and refuse by it.
         let access = tilo_app_launch::authority::access(
@@ -693,6 +720,8 @@ impl Apps {
             collaboration: hosted.collaboration,
             identity,
             origin,
+            content,
+            chooser,
             opens: hosted.opens,
         });
     }

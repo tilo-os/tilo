@@ -398,6 +398,14 @@ struct HostPlatform {
     surface: SurfaceSlot,
     /// The later builds the instance follows ([`Hosted::follow_builds`]).
     builds: BuildsSlot,
+    /// The device content store of the app in its workspace, which the session opened for this
+    /// instance: what a chosen file's bytes are kept in and its document's pictures are read
+    /// from. `None` on a device that keeps no content store.
+    content: Option<tilo_content::ContentStore>,
+    /// The person's own chooser, which the session opened for this instance.
+    chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
+    /// What a person asking for a file is told when the session opened no chooser.
+    no_chooser: String,
 }
 
 impl Platform for HostPlatform {
@@ -519,14 +527,20 @@ impl Platform for HostPlatform {
     }
 
     fn read_content(&self, hash: &str) -> Option<Vec<u8>> {
-        crate::files::read(hash)
+        crate::files::read(self.content.as_ref()?, hash)
     }
 
     fn choose_file(
         &self,
         request: &tilolang_tilo::runtime::blob::FileRequest,
     ) -> Result<Option<tilolang_tilo::runtime::blob::FileValue>, String> {
-        crate::files::choose(request)
+        let Some(store) = self.content.as_ref() else {
+            return Err(crate::files::NO_CONTENT_STORE.to_owned());
+        };
+        let Some(chooser) = self.chooser.as_deref() else {
+            return Err(self.no_chooser.clone());
+        };
+        crate::files::choose(store, chooser, request)
     }
 
     fn save_file(
@@ -534,7 +548,10 @@ impl Platform for HostPlatform {
         request: &tilolang_tilo::runtime::blob::SaveRequest,
         content: &[u8],
     ) -> Result<(), String> {
-        crate::files::save(request, content)
+        let Some(chooser) = self.chooser.as_deref() else {
+            return Err(self.no_chooser.clone());
+        };
+        crate::files::save(chooser, request, content)
     }
 
     fn keep_content(
@@ -543,7 +560,11 @@ impl Platform for HostPlatform {
         media: &str,
         bytes: &[u8],
     ) -> Result<tilolang_tilo::runtime::blob::FileValue, String> {
-        crate::files::keep(name, media, bytes)
+        let store = self
+            .content
+            .as_ref()
+            .ok_or_else(|| crate::files::NO_CONTENT_STORE.to_owned())?;
+        crate::files::keep(store, name, media, bytes)
     }
 
     fn waker(&self) -> Waker {
@@ -566,6 +587,12 @@ impl Platform for HostPlatform {
 pub struct Kept {
     pub documents: Rc<dyn durable_store::DurableStore>,
     pub indexes: Option<std::path::PathBuf>,
+    /// The device content store of the app in its workspace, when the session opened one for
+    /// this instance: the files a person chooses and the pictures its document holds are kept
+    /// there, outliving the window.
+    pub content: Option<tilo_content::ContentStore>,
+    /// The person's chooser, when the session opened one for this instance.
+    pub chooser: Option<std::sync::Arc<dyn tilo_dialogs::FilePicker>>,
 }
 
 /// The directory of the indexes of `document` of `workspace` under `indexes`: one per document, read by
@@ -875,6 +902,9 @@ impl Hosted {
             wake: Arc::clone(&wake),
             surface: Rc::clone(&surface),
             builds: Rc::clone(&builds),
+            content: kept.content.clone(),
+            chooser: kept.chooser.clone(),
+            no_chooser: crate::files::NO_CHOOSER.to_owned(),
         };
         let mut instance = Instance::new(
             Config {

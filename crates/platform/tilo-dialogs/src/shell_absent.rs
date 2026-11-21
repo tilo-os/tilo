@@ -44,7 +44,7 @@ pub struct ChosenApp {
     pub window_ids: Vec<String>,
 }
 
-pub fn inherited_picker(_unattended: Option<Arc<dyn FilePicker>>) -> Option<Arc<dyn FilePicker>> {
+pub fn inherited_picker(_elsewhere: Arc<dyn FilePicker>) -> Option<Arc<dyn FilePicker>> {
     None
 }
 

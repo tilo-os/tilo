@@ -244,6 +244,11 @@ pub struct Instance {
     pub identity: OwnedFd,
     /// Its connection to the app's origin connector, when the app has one.
     pub origin: Option<OwnedFd>,
+    /// Its connection to the device's content store, scoped to the app in its workspace: the
+    /// files a person chooses, the pictures its document holds.
+    pub content: Option<OwnedFd>,
+    /// Its connection to the person's chooser, when this session serves one.
+    pub chooser: Option<OwnedFd>,
     /// What the window was asked to show.
     pub opens: crate::Opens,
     /// What the person may do in the app ([`crate::authority::access`]).
@@ -470,6 +475,8 @@ impl Processes {
             module,
             window: instance.patch,
             origin: instance.origin,
+            content: instance.content,
+            chooser: instance.chooser,
         };
         let started = self.send(&key, &request, &fds, build)?;
         tracing::info!(
