@@ -146,8 +146,22 @@ class Person:
               exact: bool = True) -> dict:
         """Press the control `name` where this shell draws it, once the shell shows it, as a
         person points at it and clicks."""
-        target = until(what or f"{name!r} on {self.name}'s shell",
-                       lambda: self.target(name, exact), deadline, 0.2)
+        what = what or f"{name!r} on {self.name}'s shell"
+        target = until(what, lambda: self.target(name, exact), deadline, 0.2)
+        # A control that has just appeared may still be moving into place (a card sliding in):
+        # a person clicks where it comes to rest, so its place is read until two looks agree.
+        last = target.get("rect")
+
+        def settled():
+            nonlocal last
+            now = self.target(name, exact)
+            rect = now and now.get("rect")
+            if rect and rect == last:
+                return now
+            last = rect
+            return None
+
+        target = until(f"{what} to come to rest", settled, 5, 0.15)
         x, y, width, height = target["rect"]
         self.session.click_at(x + width / 2, y + height / 2)
         return target

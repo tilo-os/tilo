@@ -226,7 +226,10 @@ def steps(story: Story) -> None:
             answer = ada.session.invoke(ACTIVITY_PROVIDER, f"{ACTIVITY_RESOURCE}\u001ffeed",
                                         {"scope": "this-workspace", "limit": 0})
             value = ((answer.get("receipt") or {}).get("update") or {}).get("output", {}).get("value")
-            return (value or {}).get("entries") or []
+            if not isinstance(value, dict) or "entries" not in value:
+                story.note("history-feed-answer", answer)
+                raise Failed(f"the workspace's history answered no feed: {json.dumps(answer)[:600]}")
+            return value["entries"]
 
         def about(entry: dict, text: str) -> bool:
             words = " ".join(str(entry.get(k) or "") for k in ("summary", "resource", "app"))
@@ -239,7 +242,12 @@ def steps(story: Story) -> None:
 
         try:
             found = until("History listing the agent's file, issue, note and message", listed, 30, 0.5)
-        finally:
+        except Failed as missing:
+            entries = feed()
+            story.note("history-feed", [{k: e.get(k) for k in ("summary", "resource", "app", "author")}
+                                        for e in entries])
+            raise Failed(f"{missing}; it lists {len(entries)} changes") from None
+        else:
             entries = feed()
             story.note("history-feed", [{k: e.get(k) for k in ("summary", "resource", "app", "author")}
                                         for e in entries])
