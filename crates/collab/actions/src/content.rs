@@ -1,8 +1,8 @@
 //! Large parts of a recorded action, kept as content and named by reference.
 //!
 //! Every change records the action it ran ([`crate::ActionContext::action`])
-//! so a receiver can replay it. An action whose payload is larger than the
-//! history budget (a paste with images inline) still records it: each long
+//! so a receiver can replay it. An action larger than a change documents
+//! whole (a paste with images inline) still records it: each long
 //! text or byte run of its payload is kept, sealed, in the content store of
 //! the window whose code records the action ([`register`]), and the recorded
 //! payload names it by the reference that store answered. Only the record's
@@ -94,9 +94,9 @@ pub(crate) fn recording_store() -> Option<ContentStore> {
 }
 
 /// Keep a content store of this thread's own for the records it writes, where a window keeps its
-/// own: a replica a test or a headless tool runs has no window to lend one, and an action past the
-/// history budget is refused when nothing keeps its large parts. The returned scope must stay
-/// alive for as long as records are written.
+/// own: a replica a test or a headless tool runs has no window to lend one, and an action larger
+/// than a change documents whole is refused when nothing keeps its large parts. The returned
+/// scope must stay alive for as long as records are written.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn register_for_resources() -> tilo_wake::WakeScope {

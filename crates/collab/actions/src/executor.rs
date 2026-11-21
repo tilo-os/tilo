@@ -839,14 +839,14 @@ pub enum Verified {
     ContentMissing(String),
 }
 
-/// The action as its change records it: itself when it fits the history
-/// budget, else with its large parts kept, sealed, in the content store of
+/// The action as its change records it: itself when the change documents it
+/// whole, else with its large parts kept, sealed, in the content store of
 /// the window that records it ([`crate::content::register`]). Built once, on
 /// the device that invokes the action. An action too large even then is
 /// refused, and so is one whose parts no store would keep: a change never
 /// commits without the action it ran.
 pub fn recorded_form(action: &EncodedAction) -> Result<EncodedAction, ActionError> {
-    if recorded_size(action) <= crate::context::HISTORY_BUDGET {
+    if recorded_size(action) <= crate::context::WHOLE_ACTION_BUDGET {
         return Ok(action.clone());
     }
     let recorded = action.with_content_parts(crate::content::CONTENT_PART_THRESHOLD)?;

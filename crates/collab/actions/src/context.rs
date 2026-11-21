@@ -73,9 +73,10 @@ pub struct ActionContext {
     /// The action this change ran, encoded as the executor dispatched it:
     /// what a device that receives the change replays to verify it, and
     /// what redo runs again. The executor records it on every change it
-    /// commits whose action fits [`HISTORY_BUDGET`]; a larger one records
-    /// its large parts as content ([`crate::content`]) and names them, and
-    /// one too large even then is refused. It describes the change; it
+    /// commits whose action the change documents whole
+    /// ([`WHOLE_ACTION_BUDGET`]); a larger one records its large parts as
+    /// content ([`crate::content`]) and names them, and one too large even
+    /// then ([`HISTORY_BUDGET`]) is refused. It describes the change; it
     /// carries no caller authority.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<crate::EncodedAction>,
@@ -161,7 +162,15 @@ impl Clone for ActionContext {
 /// take, encoded: an action whose inverse is larger is refused.
 pub const COMPENSATION_BUDGET: usize = 128 * 1024;
 
-/// The most an entry's [`action`](ActionContext::action) may take, encoded.
+/// The most a change documents whole of the action it records, its payload inline: a larger
+/// action keeps its long parts as content ([`crate::content`]) and names them instead. Every
+/// device a change reaches reads that entry to verify the change, so what one change carries
+/// of an action stays small: 256 KiB of payload is a few hundred items of an import, or a page
+/// of pasted pictures.
+pub const WHOLE_ACTION_BUDGET: usize = 256 * 1024;
+
+/// The most an entry's [`action`](ActionContext::action) may take, its large parts kept as
+/// content included: a larger action is refused.
 pub const HISTORY_BUDGET: usize = 1024 * 1024;
 
 /// What a change is to the people sharing a document. Every kind is durable,

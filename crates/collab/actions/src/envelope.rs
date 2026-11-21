@@ -50,8 +50,8 @@ pub struct ActionEnvelope {
 impl ActionEnvelope {
     /// The content the change's recorded action names
     /// ([`crate::executor::recorded_form`]), by reference: the large parts
-    /// of an action over the history budget, read from the action as it
-    /// ran. A device that applies the action keeps them in its content
+    /// of an action larger than a change documents whole, read from the
+    /// action as it ran. A device that applies the action keeps them in its content
     /// store, sealed as their writer sealed them, so receivers can resolve
     /// them to replay. Empty for an action recorded whole.
     ///

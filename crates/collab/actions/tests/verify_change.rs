@@ -49,7 +49,7 @@ impl Action for Paste {
     }
 }
 
-/// An action over the history budget records its large parts as content:
+/// An action larger than a change documents whole records its large parts as content:
 /// the change still names the action, a device with the content replays
 /// it, and one without holds the change until the content arrives.
 #[test]
@@ -59,7 +59,7 @@ fn a_large_action_is_recorded_with_its_parts_as_content() {
     tilo_actions::register(&window.handle(), store.clone());
     let mut origin = base();
     let mut transport = LocalTransport::new();
-    let paste = Paste("p".repeat(tilo_actions::context::HISTORY_BUDGET + 1));
+    let paste = Paste("p".repeat(tilo_actions::context::WHOLE_ACTION_BUDGET + 1));
     {
         let _in_the_window = window.enter();
         dispatch_with_context(
@@ -111,7 +111,7 @@ fn a_large_action_is_recorded_with_its_parts_as_content() {
     assert_eq!(reproduced, Verified::Reproduced);
 }
 
-/// An action over the history budget with nowhere to keep its parts is
+/// An action a change cannot document whole, with nowhere to keep its parts, is
 /// refused, with the reason, before it commits anything: no change is
 /// written and nothing is recorded that names a part nothing holds.
 #[test]
@@ -119,7 +119,7 @@ fn a_large_action_with_nowhere_to_keep_its_parts_is_refused() {
     let mut origin = base();
     let before = origin.get_heads();
     let mut transport = LocalTransport::new();
-    let paste = Paste("p".repeat(tilo_actions::context::HISTORY_BUDGET + 1));
+    let paste = Paste("p".repeat(tilo_actions::context::WHOLE_ACTION_BUDGET + 1));
     let refused = dispatch_with_context(
         &mut origin,
         &paste,
