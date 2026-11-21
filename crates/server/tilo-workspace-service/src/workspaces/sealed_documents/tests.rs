@@ -2957,3 +2957,45 @@ async fn a_member_write_is_taken_in_while_the_disk_keeps_the_last() {
     drop(workspaces);
     server.shutdown().await;
 }
+
+/// A document can come to need keys of its own before anything was sealed
+/// under them: a Deny on reading makes one, and the Mail workspace's retained
+/// copies always need them. Its group does not exist yet, and the host serves
+/// its members' reads with those keys, so asking for them opens the group
+/// rather than refusing the record to everyone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_that_needs_keys_of_its_own_opens_its_group_for_a_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_taking_part(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    let created = workspaces.create("Demo").await.unwrap();
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: tilo_app_id::apps::MAIL.into(),
+        cluster_id: created.workspace,
+        document: tilo_action_policy::roles::WORKSPACE_MAIL_COPIES_DOCUMENT.into(),
+    };
+    assert!(
+        workspaces
+            .state(&route.cluster_id)
+            .await
+            .expect("the host reads its workspace's governance")
+            .requires_document_keys(&route.app_id, &route.document, tilo_clock::wall())
+            .expect("the workspace decides the document's keys"),
+        "the document needs keys of its own, and none was sealed under them"
+    );
+    let read = workspaces
+        .own_route_keys(&route, false)
+        .await
+        .expect("the host takes part in the workspace's channels")
+        .expect("a read opens the document's group");
+    // The read after it finds the group the first opened, rather than a new one.
+    let again = workspaces
+        .own_route_keys(&route, false)
+        .await
+        .expect("the host takes part in the workspace's channels")
+        .expect("the group the read opened answers again");
+    assert!(read.same_write_key(&again));
+    drop(workspaces);
+    server.shutdown().await;
+}

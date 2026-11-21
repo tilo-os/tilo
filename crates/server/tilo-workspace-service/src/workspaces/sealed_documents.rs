@@ -775,8 +775,11 @@ impl Workspaces {
     /// (workspace actions for members' pages and bots), as this device holds them.
     /// `create` opens the key group for the documents the
     /// writes are about to start, and otherwise only an existing key group is
-    /// read. `None` when this device takes part in no
-    /// key group of the workspace.
+    /// read. A document that needs keys of its own has one opened for it when
+    /// it has none yet, as a read of that document opens it: a rule can make a
+    /// document need its own keys after it was written, and nothing has sealed
+    /// there since. `None` when this device takes part in no key group of the
+    /// workspace.
     pub async fn own_route_keys(
         &self,
         route: &tilo_peer_state::document_frame::DocumentRoute,
@@ -806,11 +809,19 @@ impl Workspaces {
         if !isolated {
             return device.group_keys(&route.cluster_id, readers, create).await;
         }
-        let keys = match device
-            .group_keys(&scope.to_string(), readers, create)
-            .await?
-        {
+        let scope = scope.to_string();
+        let keys = match device.group_keys(&scope, readers, create).await? {
             Ok(keys) => keys,
+            // A document that came to need keys of its own after it was written
+            // has no group yet, and a document's group is founded by whichever
+            // of its devices first needs its keys. This host reads the
+            // document, so it opens the group as its own reads of it do
+            // (`GovernedWorkspace::document_keys`): the policy names the devices
+            // the group admits, and this device is among them.
+            Err(_) if !create => match device.group_keys(&scope, readers, true).await? {
+                Ok(keys) => keys,
+                Err(reason) => return Some(Err(reason)),
+            },
             Err(reason) => return Some(Err(reason)),
         };
         let keys = match device.group_keys(&route.cluster_id, readers, false).await {
