@@ -1,3 +1,4 @@
+import base64
 import gzip
 import io
 from pathlib import Path
@@ -10,6 +11,16 @@ import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
 import installed_material_audit as audit
+
+# A complete PKCS#8 Ed25519 test key, with a public, deterministic test seed.
+PRIVATE_DER = bytes.fromhex('302e020100300506032b657004220420') + bytes(range(32))
+
+
+def pem(label=b'PRIVATE KEY', payload=PRIVATE_DER):
+    encoded = base64.b64encode(payload)
+    lines = [encoded[i:i + 64] for i in range(0, len(encoded), 64)]
+    return (b'-----BEGIN ' + label + b'-----\n' + b'\n'.join(lines)
+            + b'\n-----END ' + label + b'-----')
 
 
 def cpio(entries):
@@ -32,7 +43,7 @@ class InstalledAuditTests(unittest.TestCase):
                           ('usr/public.pem', b'-----BEGIN PUBLIC KEY-----\nabc', stat.S_IFREG)])
             self.assertEqual(audit.Scanner().initramfs(gzip.compress(image))['entries'], 2)
         with self.subTest(phase="private_pem_across_chunks"):
-            data = b'x' * (audit.layers.CHUNK - 9) + b'-----BEGIN PRIVATE KEY-----'
+            data = b'x' * (audit.layers.CHUNK - 9) + pem()
             with self.assertRaises(audit.AuditError):
                 audit.Scanner().entry('var/innocent', stat.S_IFREG, len(data), io.BytesIO(data))
         with self.subTest(phase="exact_private_bytes"):
@@ -60,7 +71,7 @@ class InstalledAuditTests(unittest.TestCase):
                                    stderr=subprocess.DEVNULL)
                     return gzip.compress(cpio([('squash-root.img', image.read_bytes(), stat.S_IFREG)]))
                 self.assertEqual(audit.Scanner().initramfs(build())['squashfs_images'], 1)
-                (root / 'usr' / 'innocent').write_bytes(b'-----BEGIN PRIVATE KEY-----')
+                (root / 'usr' / 'innocent').write_bytes(pem())
                 with self.assertRaises(audit.AuditError):
                     audit.Scanner().initramfs(build())
                 (root / 'usr' / 'innocent').unlink()
@@ -91,7 +102,7 @@ class InstalledAuditTests(unittest.TestCase):
                 root = Path(tmp) / 'root'
                 root.mkdir()
                 outside = Path(tmp) / 'private'
-                outside.write_bytes(b'-----BEGIN PRIVATE KEY-----')
+                outside.write_bytes(pem())
                 (root / 'link').symlink_to(outside)
                 audit.Scanner().tree(root, 'var')
                 (root / 'actual').write_bytes(outside.read_bytes())
@@ -113,7 +124,7 @@ class InstalledAuditTests(unittest.TestCase):
                 self.assertEqual(result['initramfs']['entries'], 1)
                 for root in roots:
                     bad = root / 'innocent'
-                    bad.write_bytes(b'-----BEGIN OPENSSH PRIVATE KEY-----')
+                    bad.write_bytes(pem(b'OPENSSH PRIVATE KEY'))
                     with self.assertRaises(audit.AuditError):
                         audit.audit_installed_material(*roots, uki)
                     bad.unlink()
