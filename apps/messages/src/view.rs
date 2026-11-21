@@ -1264,7 +1264,6 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
     );
     let mut accounts = PersonAccounts {
         accounts: Collection::new(),
-        ..PersonAccounts::default()
     };
     for (id, service, label) in [
         ("fixture-signal", "signal", "Personal"),
