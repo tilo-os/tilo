@@ -531,6 +531,16 @@ pub fn is_throwaway_test_identity(identity_dir: &Path) -> bool {
     identity_dir.join(THROWAWAY_TEST_IDENTITY_MARKER).is_file()
 }
 
+/// Whether the primary record still carries the label assigned by dev provisioning.
+#[must_use]
+pub fn is_throwaway_test_display_name(record: &Path, name: &str) -> bool {
+    name == THROWAWAY_TEST_IDENTITY_NAME
+        && record
+            .file_name()
+            .is_some_and(|file| file == PRIMARY_IDENTITY_FILE)
+        && record.parent().is_some_and(is_throwaway_test_identity)
+}
+
 /// Provision the collaboration identity chain around a disposable identity
 /// named [`THROWAWAY_TEST_IDENTITY_NAME`] and marked with
 /// [`THROWAWAY_TEST_IDENTITY_MARKER`], for a test session on a dev image.

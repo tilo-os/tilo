@@ -228,6 +228,8 @@ fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
     ready_rx
         .recv_timeout(tilo_test_env::hang_bound())
         .expect("the serving device's endpoint came up");
+    // A name given while the approval endpoint is already serving reaches the new device.
+    tilo_identity::store::rename_active_identity(serving.identities.path(), "Ada").unwrap();
 
     // A machine is handed the token the person made for it.
     let machine = Machine {
@@ -289,6 +291,18 @@ fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
             )
             .expect("the answer is sealed to this machine");
             let (payload, approver) = verify_response(&plaintext, &decoded).expect("the answer");
+            let public_identity = tilo_identity_client::load_metadata_from_bytes(
+                payload
+                    .public_identity_json
+                    .as_deref()
+                    .expect("the public identity"),
+            )
+            .expect("valid public identity");
+            assert_eq!(public_identity.display_name, "Ada");
+            assert_eq!(
+                public_identity.group_public_key,
+                payload.cert.user_public_key
+            );
             let ack = make_ack(&response, decoded.nonce, &machine.device).expect("an ack");
             send(&connection, &ack).await.expect("the ack");
             let finalized = receive(&connection).await.expect("the Finalized");

@@ -14,6 +14,7 @@ use anyhow::{Context, bail};
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::enrollment::{Certifier, NonceStore, Redemption};
+use tilo_identity::store::{UNNAMED_DISPLAY_NAME, is_chosen_display_name};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
     DeviceCert, EnrollmentScope, decode_enrollment_token, enrollment_scope, verify_device_cert,
@@ -288,14 +289,16 @@ fn approval_projection(
             })
         }
         EnrollmentKind::PersonalDevice => {
-            options
+            let directory = options
                 .identity_dir
                 .context("identity directory is required for personal-device approval")?;
+            let name =
+                personal_display_name(directory, options.person_uid, identity.user_public_key);
             Ok(ApprovalProjection {
                 home_peer_toml: None,
                 public_identity_json: Some(crate::public_identity_document(
                     identity.user_public_key,
-                    "My Tilo identity",
+                    name.as_deref().unwrap_or(UNNAMED_DISPLAY_NAME),
                 )?),
                 fleet_json: None,
                 home_peers_json: Some(bounded_home_peer_registry(
@@ -305,6 +308,36 @@ fn approval_projection(
             })
         }
     }
+}
+
+/// Read the current name at approval time, for the same person the certificate names.
+fn personal_display_name(
+    directory: &std::path::Path,
+    person_uid: Option<u32>,
+    user_public_key: [u8; 32],
+) -> Option<String> {
+    use tilo_identity::person_files::as_person;
+    use tilo_identity::provisioning::is_throwaway_test_display_name;
+    use tilo_identity_client::{load_metadata_from_path, resolve_active_identity};
+
+    as_person(person_uid, directory, || {
+        let name = resolve_active_identity(directory).and_then(|record| {
+            let metadata = load_metadata_from_path(&record).ok()?;
+            let name = &metadata.display_name;
+            if metadata.group_public_key != user_public_key
+                || !is_chosen_display_name(name)
+                || is_throwaway_test_display_name(&record, name)
+            {
+                return None;
+            }
+            tilo_user_identity::display_name(name)
+                .ok()
+                .map(str::to_owned)
+        });
+        Ok(name)
+    })
+    .ok()
+    .flatten()
 }
 
 /// Redeem the request's token and sign the machine's configuration: what the
