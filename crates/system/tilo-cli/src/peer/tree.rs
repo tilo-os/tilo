@@ -313,13 +313,15 @@ async fn write_as_device(
     copy.writes
         .write(
             &copy.name,
-            FILES_APP,
-            &route.document,
-            None,
             changes,
-            founding,
-            snapshot,
-            keys.as_ref(),
+            tilo_peer_state::workspace_documents::DocumentWriting {
+                app: FILES_APP,
+                document: &route.document,
+                readers: None,
+                founding,
+                snapshot,
+                sealed: keys.as_ref(),
+            },
         )
         .await
         .map(drop)

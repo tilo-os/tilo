@@ -88,13 +88,15 @@ async fn found_front(workspaces: &Workspaces, workspace: &str, want: &str) {
     ServiceWrites::of(workspaces.clone())
         .write(
             workspace,
-            DESKTOP_APP,
-            DESKTOP_DOCUMENT,
-            None,
             &document.save(),
-            true,
-            true,
-            Some(&sealed),
+            tilo_peer_state::workspace_documents::DocumentWriting {
+                app: DESKTOP_APP,
+                document: DESKTOP_DOCUMENT,
+                readers: None,
+                founding: true,
+                snapshot: true,
+                sealed: Some(&sealed),
+            },
         )
         .await
         .unwrap_or_else(|refusal| panic!("the server seals the layout: {refusal:?}"));

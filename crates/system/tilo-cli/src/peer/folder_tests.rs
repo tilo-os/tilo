@@ -174,13 +174,15 @@ async fn put_on_server(
             writes
                 .write(
                     workspace,
-                    FILES_APP,
-                    &route.document,
-                    None,
                     &automerge::AutoCommit::new().save(),
-                    true,
-                    true,
-                    Some(&keys),
+                    tilo_peer_state::workspace_documents::DocumentWriting {
+                        app: FILES_APP,
+                        document: &route.document,
+                        readers: None,
+                        founding: true,
+                        snapshot: true,
+                        sealed: Some(&keys),
+                    },
                 )
                 .await
                 .unwrap_or_else(|refusal| {
@@ -190,13 +192,15 @@ async fn put_on_server(
         writes
             .write(
                 workspace,
-                FILES_APP,
-                &route.document,
-                None,
                 &write.changes,
-                false,
-                false,
-                Some(&keys),
+                tilo_peer_state::workspace_documents::DocumentWriting {
+                    app: FILES_APP,
+                    document: &route.document,
+                    readers: None,
+                    founding: false,
+                    snapshot: false,
+                    sealed: Some(&keys),
+                },
             )
             .await
             .unwrap_or_else(|refusal| panic!("the server changes its tree: {refusal:?}"));
