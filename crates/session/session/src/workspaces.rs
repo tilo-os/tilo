@@ -1752,9 +1752,10 @@ impl crate::Shared {
     /// Settle the workspace the shell started with on a device that kept none
     /// ([`Personal::seed`]) against what the person has: what the hosts of the workspaces this
     /// device holds list for them, unless this computer is still joining the community it was set
-    /// up for, or redeeming an invitation, which list them once it is in. A join under way is the
-    /// person having a workspace, so settling the seed before it lands would make the shell's own
-    /// workspace theirs and list it to their other devices.
+    /// up for — its site has not answered — or redeeming an invitation, which list them once it is
+    /// in. A join under way is the person having a workspace, so settling the seed before it lands
+    /// would make the shell's own workspace theirs and list it to their other devices; one whose
+    /// site answered brings no workspace, so it holds the seed back no longer.
     fn settle_seed(
         &self,
         personal: &mut Personal,
@@ -1769,7 +1770,11 @@ impl crate::Shared {
             .map(|engine| engine.workspaces())
             .unwrap_or_default();
         let joining = self.directory_store.joining().is_some() || self.directory_store.settling();
-        let listed = if joining || self.community.borrow().joining(personal) {
+        let community = self
+            .community
+            .borrow()
+            .joining(personal, &self.directory_store);
+        let listed = if joining || community {
             None
         } else {
             hosted.map_or_else(

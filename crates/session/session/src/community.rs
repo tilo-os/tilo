@@ -52,12 +52,16 @@ impl crate::Shared {
 }
 
 impl Community {
-    /// Whether this computer is still joining the community it was set up for: one is configured
-    /// and the person decided nothing of it yet. Its site lists their workspaces once they are in.
-    pub(crate) fn joining(&self, personal: &Personal) -> bool {
-        self.site
-            .as_ref()
-            .is_some_and(|site| personal.community(site.as_str()) != Some(CommunityState::Decided))
+    /// Whether this computer is still joining the community it was set up for: one is configured,
+    /// the person decided nothing of it yet, and its site has not answered the join asked for
+    /// them. Its site lists their workspaces once they are in, so a join that may still land holds
+    /// the shell's first workspace back; a site that answered — letting them in or not — or that
+    /// could not be asked is over, and holds nothing back.
+    pub(crate) fn joining(&self, personal: &Personal, store: &directory::Store) -> bool {
+        self.site.as_ref().is_some_and(|site| {
+            personal.community(site.as_str()) != Some(CommunityState::Decided)
+                && !store.community_answered(site)
+        })
     }
 
     fn follow(

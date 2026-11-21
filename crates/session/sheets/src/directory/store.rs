@@ -124,6 +124,14 @@ struct Snapshot {
     failures: Vec<String>,
 }
 
+/// The community site whose home workspace this store was asked to join, and whether the site
+/// answered: a join still unanswered may bring a workspace onto the shell, and one that answered —
+/// letting the person in or not — is over ([`Store::community_answered`]).
+struct CommunityJoin {
+    site: String,
+    answered: bool,
+}
+
 /// The directories as last read, the joins asked for, and the task that
 /// carries both out.
 #[derive(Default)]
@@ -157,6 +165,10 @@ pub struct Store {
     /// the workspace granted: the person's community is theirs once a host
     /// admits them to it, which is after the entry grants ([`Store::community_of`]).
     communities: std::cell::RefCell<BTreeMap<String, String>>,
+    /// The community whose home workspace was asked for, while its site has
+    /// not answered: its join may still bring a workspace onto the shell
+    /// ([`Store::community_answered`]).
+    community: std::cell::RefCell<Option<CommunityJoin>>,
     asks: std::cell::RefCell<Option<mpsc::UnboundedSender<Ask>>>,
     answers: std::cell::RefCell<Option<mpsc::UnboundedReceiver<Answer>>>,
     /// What wakes the caller's loop as the task answers, so a directory being
@@ -279,17 +291,36 @@ impl Store {
     /// # Errors
     /// Why nothing was asked: there is no task to ask.
     pub fn join_community(&self, site: &url::Url, person: &Person) -> Result<(), String> {
-        let Some(asks) = self.worker() else {
-            return Err("the directory has nowhere to ask".to_owned());
-        };
-        tracing::info!(
-            target: JOIN_FLOW_TARGET,
-            site = %site,
-            person = %hex::encode(person.user),
-            "join: asking the community site's home entry"
-        );
-        asks.send(Ask::Community { site: site.clone() })
-            .map_err(|error| format!("the community site was not asked: {error}"))
+        let asked = self
+            .worker()
+            .ok_or_else(|| "the directory has nowhere to ask".to_owned())
+            .and_then(|asks| {
+                tracing::info!(
+                    target: JOIN_FLOW_TARGET,
+                    site = %site,
+                    person = %hex::encode(person.user),
+                    "join: asking the community site's home entry"
+                );
+                asks.send(Ask::Community { site: site.clone() })
+                    .map_err(|error| format!("the community site was not asked: {error}"))
+            });
+        *self.community.borrow_mut() = Some(CommunityJoin {
+            site: site.to_string(),
+            // Nothing is left to answer a join that could not be asked: it is over as it was asked.
+            answered: asked.is_err(),
+        });
+        asked
+    }
+
+    /// Whether the community `site`'s home workspace was asked for and the site answered: the
+    /// join is over, whether it let the person in or not. `false` before it is asked, and while
+    /// the site has not answered, which is while its workspace may still come onto the shell.
+    #[must_use]
+    pub fn community_answered(&self, site: &url::Url) -> bool {
+        self.community
+            .borrow()
+            .as_ref()
+            .is_some_and(|join| join.site == site.as_str() && join.answered)
     }
 
     /// The listing `key` names, while it is listed.
@@ -583,32 +614,39 @@ impl Store {
                     }
                 }
             }
-            Answer::Community { site, joined } => match joined {
-                Ok(Some((name, granted))) => {
-                    tracing::info!(
+            Answer::Community { site, joined } => {
+                if let Some(join) = self.community.borrow_mut().as_mut() {
+                    // The join is over, however it went: a site that refused it, or that was not
+                    // reachable, brings no workspace onto the shell.
+                    join.answered |= join.site == site;
+                }
+                match joined {
+                    Ok(Some((name, granted))) => {
+                        tracing::info!(
+                            target: JOIN_FLOW_TARGET,
+                            site = %site,
+                            workspace = %granted.workspace,
+                            name = %name,
+                            outcome = "granted",
+                            "join: the community's home workspace is granted"
+                        );
+                        self.granted(&site, &name, granted, Some(&site));
+                    }
+                    Ok(None) => tracing::info!(
                         target: JOIN_FLOW_TARGET,
                         site = %site,
-                        workspace = %granted.workspace,
-                        name = %name,
-                        outcome = "granted",
-                        "join: the community's home workspace is granted"
-                    );
-                    self.granted(&site, &name, granted, Some(&site));
+                        outcome = "no home workspace",
+                        "join: the community site serves no home workspace to join"
+                    ),
+                    Err(reason) => tracing::info!(
+                        target: JOIN_FLOW_TARGET,
+                        site = %site,
+                        %reason,
+                        outcome = "failed",
+                        "join: the community site did not let this person in; their community stays unjoined"
+                    ),
                 }
-                Ok(None) => tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    site = %site,
-                    outcome = "no home workspace",
-                    "join: the community site serves no home workspace to join"
-                ),
-                Err(reason) => tracing::info!(
-                    target: JOIN_FLOW_TARGET,
-                    site = %site,
-                    %reason,
-                    outcome = "failed",
-                    "join: the community site did not let this person in; their community stays unjoined"
-                ),
-            },
+            }
             Answer::Taken { key, name, granted } => {
                 *self.joining.borrow_mut() = None;
                 match granted {

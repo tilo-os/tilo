@@ -96,3 +96,42 @@ fn a_link_no_site_keeps_carries_the_signed_invitation() {
     assert_eq!(made.made().expect("native link after refusal").link, native);
     assert!(made.note().is_none());
 }
+
+/// A community's join is under way until its site answers: what waits on it — the shell's first
+/// workspace, held back so a community's home workspace is not made a person's first — is let go
+/// once the answer comes, whether the site let the person in or not.
+#[test]
+fn a_community_join_is_over_once_its_site_answers() {
+    let site = Responder::handle(|_| Some(Reply::status(404)));
+    let site_url = url::Url::parse(&format!("{}/", site.url())).expect("the site's address");
+    let store = Store::default();
+    let person = tilo_workspace_directory::Person {
+        user: [7; 32],
+        name: "Ada".to_owned(),
+    };
+    assert!(
+        !store.community_answered(&site_url),
+        "no join was asked of the site"
+    );
+    store
+        .join_community(&site_url, &person)
+        .expect("the join is asked");
+    assert!(
+        !store.community_answered(&site_url),
+        "the site has not answered yet, so its workspace may still come"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !store.answered() {
+        assert!(std::time::Instant::now() < deadline, "the site answers");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        store.community_answered(&site_url),
+        "the answer, one way or the other, ends the join"
+    );
+    let other = url::Url::parse("https://another.site/").expect("another site's address");
+    assert!(
+        !store.community_answered(&other),
+        "a site this store asked nothing of has not answered"
+    );
+}
