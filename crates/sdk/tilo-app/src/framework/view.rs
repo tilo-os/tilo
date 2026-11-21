@@ -399,11 +399,13 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// on its own sync: the framework keeps each anchor the app has not
     /// shown yet, in the order asked, and asks again until the app reports
     /// it shown or gone ([`Opens::show`]). Ask for it in place of
-    /// [`Self::on_open`] when the item cannot be shown from the view itself.
+    /// [`Self::on_open`] when the item cannot be shown from the view itself;
+    /// an app that has anchors to refuse first takes [`Self::open_queue`]
+    /// and registers its own [`Self::on_open`].
     ///
     /// [`Opens::show`]: super::Opens::show
     pub fn opens(&self) -> super::Opens {
-        let opens = self.opens.clone();
+        let opens = self.open_queue();
         let asked = opens.clone();
         self.stages.push_opener(
             self.alive.clone(),
@@ -413,6 +415,12 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             }),
         );
         opens
+    }
+
+    /// The window's queue of anchors to show ([`Self::opens`]), without the
+    /// opener that asks into it: an app that registers its own.
+    pub fn open_queue(&self) -> super::Opens {
+        self.opens.clone()
     }
 
     /// Show the item of the resource a search hit or an agent's `open`

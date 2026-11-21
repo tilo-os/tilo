@@ -6521,15 +6521,16 @@ impl FilesState {
 
     fn drain_opened(&mut self) -> bool {
         let opened = self.opened.clone();
-        let asked = !opened.waiting().is_empty();
+        let mut changed = false;
         opened.show(|anchor| {
             let outcome = self.open_anchor(anchor);
             if let ui::framework::OpenOutcome::Gone(reason) = &outcome {
                 self.set_external_status(reason.clone());
             }
+            changed |= outcome != ui::framework::OpenOutcome::NotYet;
             outcome
         });
-        asked
+        changed
     }
 
     fn drain_commands(&mut self) -> bool {

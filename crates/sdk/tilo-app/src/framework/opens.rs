@@ -76,6 +76,12 @@ impl Opens {
         self.0.borrow().clone()
     }
 
+    /// Whether nothing waits to be shown.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+
     /// The window has shown `anchor`, or never will: stop asking for it.
     pub fn settled(&self, anchor: &str) {
         self.0.borrow_mut().retain(|kept| kept != anchor);

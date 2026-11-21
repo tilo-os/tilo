@@ -1772,7 +1772,7 @@ impl Widget for RemoteApp {
     fn needs_idle_sync(&self) -> bool {
         let store = self.store.borrow();
         store.pending_resource_operation.is_some()
-            || !store.opened.waiting().is_empty()
+            || !store.opened.is_empty()
             || store.staged.is_some()
             || store.changed
     }
