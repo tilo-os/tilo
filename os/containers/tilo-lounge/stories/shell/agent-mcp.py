@@ -317,10 +317,44 @@ def steps(story: Story) -> None:
         made = next((i for i, said in enumerate(order) if said.startswith("Created the note")), None)
         if appended is None or made is None or appended > made:
             wrong.append(f"newest first, “Added to the note” is not above “Created the note”: {order}")
+        # Ada reads her own History: every row of hers is hers to her ("You"), whatever path it
+        # came by, a device of hers registering itself included.
+        def by_ada(e: dict) -> bool:
+            author = e.get("author") or {}
+            return author.get("relation") == "reader" or author.get("name") == "Ada"
+        not_hers = sorted({e.get("summary") or "" for e in entries if by_ada(e)
+                           and (e.get("author") or {}).get("relation") != "reader"})
+        if not_hers:
+            wrong.append(f"rows of Ada's read “Ada”, not “You”: {'; '.join(not_hers)}")
+        # Narrowing History to a person is the window's own, never a change of the workspace.
+        narrowed = sorted({said for said in order if "Workspace activity" in said
+                           or said.startswith("Changed Author")})
+        if narrowed:
+            wrong.append(f"narrowing History is listed as a change: {'; '.join(narrowed)}")
+        # Every row is a sentence in the past tense, in its app's own words: never an action's
+        # label with what it acted on after a colon, nor the label quoted.
+        unworded = sorted({said for said in order if said.startswith("Ran “")
+                           or re.match(r"^[A-Z][a-z]+( [a-z]+)*: ", said)})
+        if unworded:
+            wrong.append(f"rows say an action's name, not what was done: {'; '.join(unworded)}")
+        # Making the agent names the agent made.
+        if not any(said == f"Added the agent “{AGENT}”" for said in order):
+            wrong.append(f"no row reads “Added the agent “{AGENT}””: {order}")
+        # A channel is named as Chat names it, "#chat".
+        bare = sorted({said for said in order if said.startswith("Opened")
+                       and re.search(r"(?<![#\w])chat\b", said)})
+        if bare:
+            wrong.append(f"a channel is named without its “#”: {'; '.join(bare)}")
         # Ada's own rows say what each did, and setting the workspace up is said once: no row of
-        # hers names nothing, and none repeats the one before it.
-        hers = [e.get("summary") or "" for e in entries
-                if (e.get("author") or {}).get("name") == "Ada"]
+        # hers names nothing, and none repeats the one before it; windows she opened one after
+        # another are one row.
+        hers = [e.get("summary") or "" for e in entries if by_ada(e)]
+        opened = sorted({(e.get("summary") or "") for e, before in zip(entries[1:], entries)
+                         if by_ada(e) and by_ada(before)
+                         and (e.get("summary") or "").startswith("Opened")
+                         and (before.get("summary") or "").startswith("Opened")})
+        if opened:
+            wrong.append(f"windows Ada opened one after another are listed apart: {'; '.join(opened)}")
         vague = sorted({said for said in hers
                         if said in ("Updated the workspace", "Changed who is in the workspace")})
         if vague:
