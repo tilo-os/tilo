@@ -40,12 +40,6 @@ keep_pictures() {
 # typed but keeps none of it says why nowhere else.
 keep_page_lines() {
   [[ -s ${log:-} ]] || return 0
-  echo "--- acts on a page the server took: $(grep -c 'acted=true' "$log" 2>/dev/null || echo 0)"
-  grep 'acted=true' "$log" | tail -40
-  echo '--- the server on the page, from its start:'
-  grep -i 'page was acted on\|page-act\|page-show' "$log" | grep -vi 'acted=false' | head -60
-  echo '--- what the server refused:'
-  grep -i 'the page.s action was refused\|no addressable widget\|not support\|read-only' "$log" | tail -40
   echo '--- page acts, opens and refusals:'
   grep -i "page's act\|found no page held\|found its record not ready\|a page was refused\|no page is open\|page was closed" "$log" | grep -vi 'acted=false' | tail -60
 }
