@@ -25,13 +25,6 @@ from rust_source import blank_test_items, code_only, line_number, matching  # no
 
 
 ROOT = Path(__file__).resolve().parents[2]
-# Audited ceilings, one file per app (`<app>.toml`, `[ratchets.<rule>]` tables
-# of `"apps/<app>/<path>" = <count>`), so changes to different apps never edit
-# the same file. Rules absent from every file allow nothing; adding an entry is
-# a certification exception requiring architectural review. A file whose debt
-# is gone is deleted.
-BASELINE = Path("tools/policy/app_resource_action_baseline")
-
 RESOURCE_PROVIDER = re.compile(r"\bfn\s+resources\s*\(")
 RESOURCE_VALUE = re.compile(r"\bResourceSpec\s*::\s*new\s*\(")
 ACTION_SPEC = re.compile(r"\bActionSpec\s*::\s*(?:immediate|prompted|typed|operation)")
@@ -460,8 +453,8 @@ def unclassified_control_callbacks(root: Path) -> list[Violation]:
     return violations
 
 
-# These limits record the reviewed amount of bypass-shaped code. New work must
-# use the shared action route or update the auditable baseline.
+# Bypass-shaped code an app may not hold: every match fails, and the shared
+# action route replaces it.
 RATCHETS = {
     "closure_control": (
         re.compile(r"\.\s*(?:" + "|".join(sorted(CONTROL_CALLBACKS)) + r")\s*\("),
@@ -725,13 +718,6 @@ LEGACY_API_BAN_FILTERS = {
     "direct_automerge_write": document_writes,
     "untyped_action_args": action_arguments,
 }
-# Ratchets that reached zero and stay there: a ceiling for one is refused.
-CLOSED_RATCHETS = {"raw_operation_handler"}
-RATCHET_REASONS = {
-    **{rule: reason for rule, (_, reason) in RATCHETS.items()},
-    **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
-    **{rule: reason for rule, (_, reason) in WORKSPACE_RATCHETS.items()},
-}
 
 
 def is_test_source(relative: str) -> bool:
@@ -844,56 +830,15 @@ def is_ui_core_dependency(alias: str, specification: object) -> bool:
     return False
 
 
-def baseline_file(relative: str) -> Path:
-    """The per-app baseline file that holds `relative`'s ceilings."""
-    parts = relative.split("/")
-    if len(parts) > 2 and parts[0] == "apps":
-        owner = parts[1]
-    elif len(parts) > 3 and parts[:2] == ["examples", "apps"]:
-        owner = f"example-{parts[2]}"
-    else:
-        owner = "workspace"
-    return BASELINE / f"{owner}.toml"
-
-
-def load_ratchet_baseline(
-    root: Path, violations: list[Violation] | None = None
-) -> dict[str, dict[str, int]]:
-    baseline: dict[str, dict[str, int]] = {}
-    for path in sorted((root / BASELINE).glob("*.toml")):
-        with path.open("rb") as handle:
-            raw = tomllib.load(handle).get("ratchets", {})
-        if not isinstance(raw, dict):
-            continue
-        for rule, entries in raw.items():
-            if not isinstance(entries, dict):
-                continue
-            for relative, limit in entries.items():
-                if not (isinstance(relative, str) and isinstance(limit, int) and limit >= 0):
-                    continue
-                if violations is not None and rule in CLOSED_RATCHETS:
-                    violations.append(
-                        Violation(path, 1, f"{rule} is closed: no ceiling for `{relative}`")
-                    )
-                    continue
-                if violations is not None and root / baseline_file(relative) != path:
-                    violations.append(
-                        Violation(path, 1, f"{rule} ceiling for `{relative}` belongs in {baseline_file(relative)}")
-                    )
-                baseline.setdefault(rule, {})[relative] = limit
-    return baseline
-
-
 def audit_ratchets(
     root: Path,
     sources: list[tuple[Path, str]],
-    baseline: dict[str, dict[str, int]],
     violations: list[Violation],
     *,
     workspace: bool | None = None,
     counts: dict[tuple[str, str], int] | None = None,
 ) -> None:
-    """Hold each source to its ceilings; record every count in `counts`."""
+    """Every match of a rule is a violation; record every count in `counts`."""
     if workspace is None:
         workspace = root.resolve() == ROOT.resolve()
     if counts is None:
@@ -926,26 +871,14 @@ def audit_ratchets(
             if rule in RATCHET_FILTERS:
                 matches = RATCHET_FILTERS[rule](code, source_text, matches)
             counts[(rule, relative)] = len(matches)
-            limit = baseline.get(rule, {}).get(relative, 0)
-            if len(matches) <= limit:
-                if len(matches) < limit:
-                    violations.append(
-                        Violation(
-                            root / baseline_file(relative),
-                            1,
-                            f"stale {rule} ceiling for {relative}: lower {limit} to {len(matches)} "
-                            f"({Path(__file__).name} --write-baseline)",
-                        )
+            if matches:
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(source_text, matches[0].start()),
+                        f"{reason} ({len(matches)} found)",
                     )
-                continue
-            first_excess = matches[limit]
-            violations.append(
-                Violation(
-                    source,
-                    line_number(source_text, first_excess.start()),
-                    f"{reason} ({len(matches)} found, audited ceiling {limit} in {baseline_file(relative)})",
                 )
-            )
 
 
 def legacy_api_sources(owner: Path, directories: tuple[str, ...]) -> list[tuple[Path, str]]:
@@ -1916,20 +1849,6 @@ def audit(
                     "app host must install bounded canonical search for every live resource tree",
                 )
             )
-    ratchet_baseline = load_ratchet_baseline(root, violations)
-    for rule, entries in ratchet_baseline.items():
-        for relative in entries:
-            baseline_path = root / baseline_file(relative)
-            if rule not in RATCHET_REASONS:
-                violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
-            if not (root / relative).is_file():
-                violations.append(
-                    Violation(
-                        baseline_path,
-                        1,
-                        f"stale {rule} baseline path `{relative}` does not exist",
-                    )
-                )
     manifests = sorted((root / "apps").glob("*/Cargo.toml"))
     for manifest_path in manifests:
         with manifest_path.open("rb") as handle:
@@ -1988,7 +1907,7 @@ def audit(
         main_path = manifest_path.parent / "src" / "main.rs"
         main_raw = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
         main_code = code_only(live_launch_registration_code(main_raw))
-        audit_ratchets(root, sources, ratchet_baseline, violations, counts=counts)
+        audit_ratchets(root, sources, violations, counts=counts)
         if root.resolve() == ROOT.resolve():
             audit_legacy_apis(
                 legacy_api_sources(manifest_path.parent, ("src", "tests", "examples", "benches")),
@@ -2157,83 +2076,9 @@ def audit(
     return violations, len(manifests)
 
 
-def write_baseline(
-    root: Path,
-    counts: dict[tuple[str, str], int],
-    baseline: dict[str, dict[str, int]],
-    seed: set[str],
-) -> None:
-    """Rewrite the per-app baseline files: lower every ceiling to its count
-    and drop those at zero. A ceiling is never raised, and a new one only for
-    a rule in `seed` that has no ceiling anywhere yet (introducing a ratchet
-    over existing debt)."""
-    ceilings: dict[str, dict[str, int]] = {}
-    for (rule, relative), count in counts.items():
-        limit = baseline.get(rule, {}).get(relative)
-        if limit is None and rule in seed:
-            limit = count
-        if limit is not None and min(limit, count) > 0:
-            ceilings.setdefault(rule, {})[relative] = min(limit, count)
-    files: dict[Path, dict[str, dict[str, int]]] = {}
-    for rule, entries in ceilings.items():
-        for relative, limit in entries.items():
-            files.setdefault(root / baseline_file(relative), {}).setdefault(rule, {})[relative] = limit
-    for path in (root / BASELINE).glob("*.toml"):
-        if path not in files:
-            path.unlink()
-    for path, rules in files.items():
-        lines = leading_comments(path)
-        for rule in sorted(rules):
-            lines.append(f"[ratchets.{rule}]")
-            lines += [f'"{relative}" = {limit}' for relative, limit in sorted(rules[rule].items())]
-            lines.append("")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
-
-
-def leading_comments(path: Path) -> list[str]:
-    """The comment block a baseline file opens with, kept across rewrites: it
-    says why the ceiling that is left is there, which no count can say."""
-    if not path.exists():
-        return []
-    kept: list[str] = []
-    lines = path.read_text(encoding="utf-8").splitlines()
-    for index, line in enumerate(lines):
-        if not line.startswith("#"):
-            if kept and line.strip() == "":
-                kept.append("")
-            break
-        kept.append(line)
-    return kept
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--write-baseline",
-        action="store_true",
-        help="lower each ratchet ceiling to its count and drop those at zero; never raises one",
-    )
-    parser.add_argument(
-        "--seed",
-        action="append",
-        default=[],
-        metavar="RULE",
-        help="with --write-baseline, record the current counts of a ratchet that has no ceiling yet",
-    )
-    arguments = parser.parse_args()
-    if arguments.seed and not arguments.write_baseline:
-        parser.error("--seed needs --write-baseline")
-    if arguments.write_baseline:
-        baseline = load_ratchet_baseline(ROOT)
-        for rule in arguments.seed:
-            if rule not in RATCHET_REASONS or rule in CLOSED_RATCHETS:
-                parser.error(f"--seed {rule}: not an open ratchet")
-            if rule in baseline:
-                parser.error(f"--seed {rule}: it has ceilings; they only fall")
-        counts: dict[tuple[str, str], int] = {}
-        audit(ROOT, counts)
-        write_baseline(ROOT, counts, baseline, set(arguments.seed))
+    parser.parse_args()
     violations, app_count = audit()
     if violations:
         print("application resource/action contract FAILED", file=sys.stderr)

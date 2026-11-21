@@ -1094,73 +1094,16 @@ class AppResourceActionContractTests(unittest.TestCase):
             violations, _ = contract.audit(root)
             self.assertTrue(any("direct ui-core dependency" in item.reason for item in violations))
 
-    def test_raw_callback_ratchet_is_zero_by_default_and_reduce_only(self):
-        with self.subTest(phase='new raw callback exceeds zero default ratchet'):
-            root = self.fixture(
-                "use tilo_actions::ActionSpec;\n"
-                "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
-                " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
-                "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
-            )
-            violations, _ = contract.audit(root)
-            self.assertTrue(any("closure-activated control" in item.reason for item in violations))
-        with self.subTest(phase='audited callback ceiling is reduce only'):
-            root = self.fixture(
-                "use tilo_actions::ActionSpec;\n"
-                "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
-                " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
-                "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
-            )
-            baseline = root / contract.BASELINE / "sample.toml"
-            baseline.parent.mkdir(parents=True)
-            baseline.write_text(
-                '[ratchets.closure_control]\n"apps/sample/src/lib.rs"=1\n',
-                encoding="utf-8",
-            )
-            violations, _ = contract.audit(root)
-            self.assertEqual(violations, [])
-
-            app = root / "apps" / "sample" / "src" / "lib.rs"
-            app.write_text(
-                app.read_text(encoding="utf-8")
-                + "fn second() { Button::new().on_click(move || mutate_more()); }\n",
-                encoding="utf-8",
-            )
-            violations, _ = contract.audit(root)
-            self.assertTrue(any("audited ceiling 1" in item.reason for item in violations))
-        with self.subTest(phase='reducing debt requires lowering the audited ceiling'):
-            root = self.fixture(
-                "use tilo_actions::ActionSpec;\n"
-                "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
-                " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
-            )
-            baseline = root / contract.BASELINE / "sample.toml"
-            baseline.parent.mkdir(parents=True)
-            baseline.write_text(
-                '[ratchets.closure_control]\n"apps/sample/src/lib.rs"=1\n',
-                encoding="utf-8",
-            )
-            violations, _ = contract.audit(root)
-            self.assertTrue(any("stale closure_control ceiling" in item.reason for item in violations))
-        with self.subTest(phase="each ceiling lives in its app's baseline file"):
-            root = self.fixture(
-                "use tilo_actions::ActionSpec;\n"
-                "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
-                " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
-                "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
-            )
-            baseline = root / contract.BASELINE / "other.toml"
-            baseline.parent.mkdir(parents=True)
-            baseline.write_text(
-                '[ratchets.closure_control]\n"apps/sample/src/lib.rs"=1\n',
-                encoding="utf-8",
-            )
-            violations, _ = contract.audit(root)
-            self.assertTrue(any("belongs in" in item.reason for item in violations))
+    def test_a_raw_callback_fails(self):
+        root = self.fixture(
+            "use tilo_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+            "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("closure-activated control" in item.reason for item in violations))
 
     def test_closure_controls_count_any_argument_but_an_action_binding(self):
         header = (
@@ -1190,7 +1133,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations, _ = contract.audit(root, counts)
         self.assertEqual(counts[("closure_control", "apps/sample/src/lib.rs")], 5)
         self.assertEqual(counts[("closure_control", "apps/sample/src/tests.rs")], 0)
-        self.assertTrue(any("5 found, audited ceiling 0" in item.reason for item in violations))
+        self.assertTrue(any("5 found" in item.reason for item in violations))
 
     def test_a_callback_that_submits_a_published_action_is_the_action_route(self):
         header = (
@@ -1237,7 +1180,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         # that submits nothing are still counted.
         self.assertEqual(counts[("closure_control", "apps/sample/src/lib.rs")], 4)
         self.assertEqual(counts[("closure_action_button", "apps/sample/src/lib.rs")], 0)
-        self.assertTrue(any("4 found, audited ceiling 0" in item.reason for item in violations))
+        self.assertTrue(any("4 found" in item.reason for item in violations))
 
     def test_closure_run_buttons_of_composites_count_by_builder_and_arity(self):
         header = (
@@ -1283,39 +1226,6 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations = contract.unclassified_control_callbacks(root)
         self.assertEqual(len(violations), 1)
         self.assertIn("`action` takes 2 arguments", violations[0].reason)
-
-    def test_write_baseline_only_lowers_ceilings_unless_seeding_a_new_ratchet(self):
-        root = self.fixture("")
-        baseline = root / contract.BASELINE
-        baseline.mkdir(parents=True)
-        (baseline / "sample.toml").write_text(
-            '[ratchets.closure_control]\n"apps/sample/src/lib.rs" = 3\n"apps/sample/src/gone.rs" = 2\n'
-            '"apps/sample/src/up.rs" = 1\n',
-            encoding="utf-8",
-        )
-        (baseline / "other.toml").write_text(
-            '[ratchets.closure_control]\n"apps/other/src/lib.rs" = 1\n', encoding="utf-8"
-        )
-        counts = {
-            ("closure_control", "apps/sample/src/lib.rs"): 2,
-            ("closure_control", "apps/sample/src/gone.rs"): 0,
-            ("closure_control", "apps/sample/src/up.rs"): 4,
-            ("closure_control", "apps/sample/src/new.rs"): 5,
-            ("closure_control", "apps/other/src/lib.rs"): 0,
-            ("private_palette_argument", "apps/sample/src/lib.rs"): 2,
-        }
-        current = contract.load_ratchet_baseline(root)
-        contract.write_baseline(root, counts, current, set())
-        self.assertFalse((baseline / "other.toml").exists())
-        self.assertEqual(
-            (baseline / "sample.toml").read_text(encoding="utf-8"),
-            '[ratchets.closure_control]\n"apps/sample/src/lib.rs" = 2\n"apps/sample/src/up.rs" = 1\n',
-        )
-        contract.write_baseline(root, counts, {}, {"private_palette_argument"})
-        self.assertEqual(
-            (baseline / "sample.toml").read_text(encoding="utf-8"),
-            '[ratchets.private_palette_argument]\n"apps/sample/src/lib.rs" = 2\n',
-        )
 
     def test_every_closure_taking_toolkit_callback_is_classified(self):
         root = self.fixture("")
