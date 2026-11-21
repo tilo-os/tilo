@@ -504,16 +504,28 @@ fn main() -> ExitCode {
     dispatch_command(cli.cmd, retained_endpoint)
 }
 
+/// Whether `command` runs an app or is about to start one: one of Tilo's, one of the machine's
+/// own, or a Windows program. Left under the session's protection, a Windows program could not be
+/// ended for the memory it took: over its limit it hung, and a machine out of memory lost
+/// something else first.
+const fn starts_an_app(command: &Cmd) -> bool {
+    matches!(
+        command,
+        Cmd::Run { .. }
+            | Cmd::RunInstalled { .. }
+            | Cmd::Exec { .. }
+            | Cmd::MachineApp(_)
+            | Cmd::WindowsProgram(_)
+    )
+}
+
 fn dispatch_command(
     command: Cmd,
     retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchAdmission>,
 ) -> ExitCode {
     // Whatever runs an app, or is about to start one, leaves the session's protection from the OOM
     // killer, which it may have inherited from the compositor: an app is always a candidate.
-    if matches!(
-        command,
-        Cmd::Run { .. } | Cmd::RunInstalled { .. } | Cmd::Exec { .. } | Cmd::MachineApp(_)
-    ) {
+    if starts_an_app(&command) {
         launcher::priority::leave_session_protection();
     }
     match command {
@@ -1521,6 +1533,10 @@ mod host_launch_tests {
             "/usr/bin/wine",
         ])
         .expect("the session's launch of a Windows program parses");
+        assert!(
+            starts_an_app(&parsed.cmd),
+            "a Windows program is an app: it leaves the session's protection from the OOM killer"
+        );
         let Cmd::WindowsProgram(args) = parsed.cmd else {
             panic!("a Windows program's launch is not windows-program");
         };
