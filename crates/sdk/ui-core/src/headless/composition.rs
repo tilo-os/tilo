@@ -114,15 +114,10 @@ pub(super) struct Kept {
 }
 
 /// What a composition reads besides what each widget paints: the layout, the document and what
-/// it lets the person do, the window's size and density, and whether the window shows its live
-/// content. A frame that moved none of it, a hover, a press's look, a focus ring, a chart's
-/// readout, changes only what its widgets paint.
+/// it lets the person do, the window's size and density. A frame that moved none of it, a hover,
+/// a press's look, a focus ring, a chart's readout, changes only what its widgets paint.
 #[derive(PartialEq)]
 pub(super) struct Read {
-    /// The window shows its live content: it has no History, or its History is closed with
-    /// nothing in flight. An open History shows other times of the document than the one read
-    /// here, so no part composed while it is open is kept.
-    live: bool,
     layout: u64,
     document: (Vec<automerge::ChangeHash>, usize),
     presentation: u64,
@@ -437,12 +432,15 @@ impl FrameHarness {
     /// chart's readout): only those are composed again, and every other part is the one the last
     /// frame composed. A page's frames leave the widgets' paint marks
     /// ([`Widget::mark_drawn`]) for this to clear, as a drawn frame's paint clears them.
+    ///
+    /// A window with History composes every part each frame: parts kept there left a page with
+    /// references to parts it no longer held once a tree's rows scrolled.
     pub fn compose_frame(&mut self) -> Option<&Composition> {
         let read = self.composition_read();
         let previous = self.presented.kept.take();
         let reusable = previous
             .as_ref()
-            .filter(|kept| kept.read == read && read.live);
+            .filter(|kept| kept.read == read && self.history.is_none());
         let (composition, stood_on) = self.compose_with(reusable);
         if std::mem::take(&mut self.presented.drawn_owed) {
             self.root.mark_drawn();
@@ -475,10 +473,6 @@ impl FrameHarness {
 
     fn composition_read(&self) -> Read {
         Read {
-            live: self
-                .history
-                .as_ref()
-                .is_none_or(|history| history.at_rest()),
             layout: self.presented.layout_revision,
             document: crate::doc::settle_mark(&self.state.doc),
             presentation: crate::widget::resource_presentation_epoch(),
