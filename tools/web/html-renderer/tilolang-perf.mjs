@@ -4,7 +4,7 @@
 // waits for: from each input to the end of the rendering update after it (`p50`/`max`, ms),
 // the long tasks it caused, and the work behind it: frames presented, the runtime's time in
 // wasm (update and layout, then the composition encoded) and the presenter's, elements
-// written and made, and the browser's style and layout passes. A click on a place of the
+// written and made, and the browser's style and layout passes and the time they took. A click on a place of the
 // sidebar that leaves another page showing (the sidebar marking another, or the page beside it
 // titled otherwise) fails, whatever the numbers.
 //
@@ -300,6 +300,8 @@ async function measure() {
         layoutMs: most(3), encodeMs: most(4), presentMs: most(2),
         writes: sum(0), created: sum(1),
         styleRecalcs: delta('RecalcStyleCount'), layouts: delta('LayoutCount'),
+        // The browser's own time on the elements: their styles, then their boxes.
+        styleMs: round(delta('RecalcStyleDuration') * 1000), boxesMs: round(delta('LayoutDuration') * 1000),
         scriptMs: round(delta('ScriptDuration') * 1000),
         elements: page.elements,
         kib: Math.round((page.bytes ?? 0) / 1024),
@@ -488,7 +490,7 @@ console.log(`startup: first frame ${result.startup.firstFrameMs} ms (${result.st
   + `${result.startup.transferredKiB} KiB, ${result.startup.elements} elements; largest (KiB, loaded at ms): `
   + result.startup.largest.map(([name, kib, at]) => `${name} ${kib} @${at}`).join(', '));
 console.log(`startup marks (ms): ${Object.entries(result.startup.marks ?? {}).map(([name, at]) => `${name} ${at}`).join(', ')}`);
-const columns = ['inputs', 'p50', 'max', 'wallP50', 'wallMax', 'frames', 'layoutMs', 'encodeMs', 'presentMs', 'writes', 'created', 'styleRecalcs', 'layouts', 'scriptMs', 'elements', 'kib'];
+const columns = ['inputs', 'p50', 'max', 'wallP50', 'wallMax', 'frames', 'layoutMs', 'encodeMs', 'presentMs', 'writes', 'created', 'styleRecalcs', 'layouts', 'styleMs', 'boxesMs', 'scriptMs', 'elements', 'kib'];
 console.log(['interaction'.padEnd(24), ...columns.map(c => c.padStart(9)), '  long tasks'].join(''));
 for (const [name, step] of Object.entries(result.interactions)) {
   console.log([name.padEnd(24), ...columns.map(c => String(step[c] ?? '-').padStart(9)),
