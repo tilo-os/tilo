@@ -351,7 +351,10 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
         "Ada archives the conversation: {}",
         ada.answer(2)
     );
-    let revoked = MemberAccess::new(policy(workspace), Acting::person(BO));
+    // Ada takes Bo out of the workspace, as a person does: his mail closes with it.
+    let mut without_bo = policy(workspace);
+    without_bo.members.remove(BO);
+    let revoked = MemberAccess::new(without_bo, Acting::person(BO));
     assert!(bo.host.set_access(MAIL, Some(&revoked)));
     assert_eq!(bo.host.instances().count(), 0);
     assert_eq!(bo.host.take_ended(), [1]);
