@@ -41,7 +41,8 @@ class Refused(Exception):
 
 
 def call(method: str, path: str, body=None, raw: bytes | None = None, tries: int = 40):
-    """The API's answer to `method path`, asked again while the server is still starting."""
+    """The API's answer to `method path`, asked again while the server is still starting or
+    waits for the workspace's keys a holder is about to give it."""
     data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
     kind = "application/octet-stream" if raw is not None else "application/json"
     last = ""
@@ -56,7 +57,8 @@ def call(method: str, path: str, body=None, raw: bytes | None = None, tries: int
                 return json.loads(text) if text else None
         except urllib.error.HTTPError as error:
             last = error.read().decode(errors="replace")
-            starting = any(word in last for word in ("retry", "not serving", "starting"))
+            starting = any(word in last for word in ("retry", "not serving", "starting",
+                                                     "no group keys yet"))
             if error.code in (425, 429, 503) or (error.code in (409, 422) and starting):
                 time.sleep(3)
                 continue

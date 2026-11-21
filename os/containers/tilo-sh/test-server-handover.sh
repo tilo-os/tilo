@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # A workspace kept by a server of an earlier build is handed over, peer to peer, to a server of
-# this commit, with both running: the way a workspace moves to another server without a copy of
-# its state. Two tilo.sh stacks come up on this machine from this checkout's stack.sh, the first
+# this commit: the way a workspace moves to another server without a copy of its state. The
+# earlier server serves only until this commit's is current, then stops, and this commit's
+# finishes the move alone. Two tilo.sh stacks come up on this machine from this checkout's stack.sh, the first
 # from the earlier build's programs and the second from this commit's. The second is another
 # server of the same person, as a real move's is: it starts with the earlier stack's workspace
 # root (the operator's secret) and its Lounge's id, and a fresh state. Each stack has its own
@@ -14,10 +15,14 @@
 #      person is made an owner of the workspace;
 #   3. the workspace's owner has the earlier server hand it over (`workspace/servers#add`, the
 #      governance action `server.add`, with this commit's server's site);
-#   4. this commit's server holds every record and member, and a write on either server reaches
-#      the other while both run;
-#   5. the owner has this commit's server let the earlier one go (`server.remove`), the earlier
-#      stack stops, and the workspace is still served and still takes writes.
+#   4. this commit's server holds every record and member, and a write on the earlier server
+#      reaches it;
+#   5. the earlier stack stops, its state kept, as a server taken off the move does; the owner
+#      has this commit's server let it go (`server.remove`, naming it by its device key, since
+#      its site answers no more), and the workspace is still served, takes writes, and its
+#      owner's tilo reads through this commit's server what the earlier one was written. Nothing
+#      waits on the earlier server: the owner's key decides where the workspace is kept, and the
+#      next of its holders makes its base once the earlier one is gone.
 #
 # Records are counted from each server's side, through its own API with the owner's key. Both
 # stacks keep to loopback: neither is reached through a packet relay of the web.
@@ -208,8 +213,8 @@ else
   fail '3. server.add on the earlier server' "$(cat "$steps/server-add.err")"
 fi
 
-# -- 4. both hold it, and each one's writes reach the other ---------------------------------------
-say "4. this commit's server holds every record, and writes cross both ways"
+# -- 4. both hold it, and the earlier one's writes reach this commit's ---------------------------
+say "4. this commit's server holds every record, and a write on the earlier one reaches it"
 api to
 listed=0
 for _ in $(seq 60); do
@@ -240,9 +245,6 @@ PY
 api from
 data write "$workspace" earlier >"$steps/written-from.json" 2>"$steps/write-from.err" \
   || fail '4d. the earlier server takes a write' "$(cat "$steps/write-from.err")"
-api to
-data write "$workspace" newer >"$steps/written-to.json" 2>"$steps/write-to.err" \
-  || fail '4e. this commit'\''s server takes a write' "$(cat "$steps/write-to.err")"
 if [[ -s $steps/written-from.json ]]; then
   if data expect "$workspace" "$steps/written-from.json" 120 >/dev/null 2>"$steps/from-to.err"; then
     pass '4d. a write on the earlier server reaches this commit'\''s'
@@ -250,30 +252,29 @@ if [[ -s $steps/written-from.json ]]; then
     fail '4d. a write on the earlier server reaches this commit'\''s' "$(cat "$steps/from-to.err")"
   fi
 fi
-if [[ -s $steps/written-to.json ]]; then
-  api from
-  if data expect "$workspace" "$steps/written-to.json" 120 >/dev/null 2>"$steps/to-from.err"; then
-    pass '4e. a write on this commit'\''s server reaches the earlier one'
-  else
-    fail '4e. a write on this commit'\''s server reaches the earlier one' "$(cat "$steps/to-from.err")"
-  fi
-fi
 
-# -- 5. the earlier server let go -------------------------------------------------------------------
-say "5. this commit's server lets the earlier one go (server.remove), and the earlier stack stops"
+# -- 5. the earlier server stops, and this commit's lets it go -------------------------------------
+# The earlier server's device key, as it named itself among the holders when it handed the
+# workspace over: its site answers no more once it stops.
+from_device=$(python3 -I -c '
+import json, sys
+servers = json.load(open(sys.argv[1]))["result"]["servers"]
+print(next(server["device"] for server in servers if server.get("here")))' "$steps/server-add.json" 2>/dev/null || true)
+say "5. the earlier stack stops (${from_device:-its device unknown}), and this commit's server lets it go (server.remove)"
+stack from down >"$steps/from-down.log" 2>&1 || true
 api to
 data act "$workspace" 'workspace/servers#list' >"$steps/servers-before-remove.json" 2>&1 || true
-if data act "$workspace" 'workspace/servers#remove' "{\"server\":\"$from_origin\"}" \
+if [[ -n $from_device ]] && data act "$workspace" 'workspace/servers#remove' "{\"server\":\"$from_device\"}" \
   >"$steps/server-remove.json" 2>"$steps/server-remove.err"; then
-  pass '5a. server.remove on this commit'\''s server'
+  pass '5a. server.remove on this commit'\''s server, the earlier one stopped'
   say "it answered: $(cat "$steps/server-remove.json")"
 else
-  fail '5a. server.remove on this commit'\''s server' "$(cat "$steps/server-remove.err")"
+  fail '5a. server.remove on this commit'\''s server, the earlier one stopped' \
+    "$(cat "$steps/server-remove.err" 2>/dev/null || echo 'the earlier server named no device of its own')"
 fi
-stack from down >"$steps/from-down.log" 2>&1 || true
 data write "$workspace" remaining >"$steps/written-after.json" 2>"$steps/write-after.err" \
   || fail '5b. this commit'\''s server takes a write alone' "$(cat "$steps/write-after.err")"
-cat "$steps/written.json" "$steps/written-from.json" "$steps/written-to.json" "$steps/written-after.json" 2>/dev/null \
+cat "$steps/written.json" "$steps/written-from.json" "$steps/written-after.json" 2>/dev/null \
   | python3 -I -c '
 import json, sys
 merged = {}
@@ -289,4 +290,14 @@ else
 fi
 data counts "$workspace" >"$steps/after-counts.json" 2>&1 || true
 say "this commit's server holds, alone: $(cat "$steps/after-counts.json")"
+# The owner's own tilo, against this commit's server alone, reads a message the earlier one was
+# written before the hand-over.
+earliest=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat/Messages"][0])' "$steps/written.json")
+if stack to tilo read chat/Messages -w "$workspace" >"$steps/owner-read.txt" 2>&1 \
+  && grep -qF "$earliest" "$steps/owner-read.txt"; then
+  pass '5c. the owner'\''s tilo reads, through this commit'\''s server, what the earlier one was written'
+else
+  fail '5c. the owner'\''s tilo reads, through this commit'\''s server, what the earlier one was written' \
+    "$(head -c 600 "$steps/owner-read.txt")"
+fi
 report
