@@ -112,6 +112,8 @@ CONTINUE = "Continue"
 ACCOUNT_MORE = "More for Nextcloud"
 CONNECT_CALENDARS = "Connect calendars"
 SAVE = "Save account"
+SELECT_CALENDAR = "Select"
+DESELECT_CALENDAR = "Deselect"
 SEEDED_CALENDAR = "Personal"
 
 
@@ -393,13 +395,23 @@ def connect_account(story, one, server: str, user: str, password: str,
     story.note("account-menu", one.names()[:60])
     press_settled(one, CONNECT_CALENDARS, "the account menu's Connect calendars")
 
+    def offered(calendar: str) -> bool:
+        # A calendar the form offers is its name on the row of its Select (or Deselect) button;
+        # the same words elsewhere, such as the sidebar's Personal heading, are not it.
+        buttons = [t.get("rect") for t in one.targets()
+                   if t.get("name") in (SELECT_CALENDAR, DESELECT_CALENDAR) and t.get("rect")]
+        return any(abs((t["rect"][1] + t["rect"][3] / 2) - (b[1] + b[3] / 2)) < 24
+                   for t in one.targets() if t.get("name") == calendar and t.get("rect")
+                   for b in buttons)
+
     def choosing():
-        if one.target(SEEDED_CALENDAR) and one.target(SAVE):
+        if offered(SEEDED_CALENDAR) and one.target(SAVE):
             return "form", []
         # The form did not come: say what the pane did instead.
         said = [name for name in one.names()
                 if any(part in name for part in ("Could not", "check the server",
-                                                 "Select at least", "unavailable"))]
+                                                 "Select at least", "unavailable",
+                                                 "discovery", "No calendars"))]
         return ("said", said) if said else None
 
     try:
