@@ -339,20 +339,7 @@ impl Worker {
             ),
             None => (Vec::new(), Vec::new()),
         };
-        // A person's own device and their page say they are here twice: each
-        // person, agent or device counts once.
-        let mut identities: Vec<String> = Vec::new();
-        for shown in &present {
-            let identity = match (&shown.member, &shown.user) {
-                (Some(member), _) => format!("member:{member}"),
-                (None, Some(user)) => format!("user:{user}"),
-                (None, None) => format!("device:{}", shown.publisher),
-            };
-            if !identities.contains(&identity) {
-                identities.push(identity);
-            }
-        }
-        let here = identities.len();
+        let here = here(&present);
         let mut apps: Vec<_> = self
             .catalogue
             .iter()
@@ -620,6 +607,24 @@ margin-right:8px;border-radius:50%;background:var(--tilo-accent);vertical-align:
 background:var(--tilo-raised);color:var(--tilo-text-dim);font-size:22px;font-weight:600;}";
 
 /// An app's first letter, on the tile an icon stands on.
+/// How many are here of what `present` shows: a person's own device and
+/// their page say they are here twice, and each person, agent or device
+/// counts once.
+fn here(present: &[collab_types::presence::Shown]) -> usize {
+    let mut identities: Vec<String> = Vec::new();
+    for shown in present {
+        let identity = match (&shown.member, &shown.user) {
+            (Some(member), _) => format!("member:{member}"),
+            (None, Some(user)) => format!("user:{user}"),
+            (None, None) => format!("device:{}", shown.publisher),
+        };
+        if !identities.contains(&identity) {
+            identities.push(identity);
+        }
+    }
+    identities.len()
+}
+
 fn initial_tile(title: &str) -> String {
     let initial = title
         .chars()
