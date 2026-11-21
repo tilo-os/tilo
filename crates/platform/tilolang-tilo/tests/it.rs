@@ -53,6 +53,7 @@ mod native_chat;
 mod native_mail;
 mod native_notes;
 mod note_import;
+mod notes_checklist;
 mod notebook_order;
 mod notes;
 mod notices;
