@@ -45,6 +45,24 @@ fn wait(
     }
 }
 
+/// The accounts `store` holds, kept in the person's accounts record as
+/// Settings keeps them, and that record as it reaches Files' copy of it.
+fn share_with_files(files: &mut TestApp<FileExplorerShell>, store: &accounts::AccountStore) {
+    use accounts::person::PersonAccounts;
+    let mut settings = TestApp::<crate::SettingsShell>::new().unwrap();
+    let kept = settings.shared_person::<PersonAccounts>().unwrap();
+    for account in store.all() {
+        kept.invoke(&PersonAccounts::saving(account)).unwrap();
+    }
+    files
+        .shared_person::<PersonAccounts>()
+        .expect("Files reads the person's accounts")
+        .record()
+        .merge_peer_document(kept.record().document().unwrap())
+        .unwrap();
+    files.settle();
+}
+
 fn row(id: &str) -> String {
     format!("files.cloud-entry:{}", hex::encode(id))
 }
@@ -194,6 +212,7 @@ fn settings_import_connection_to_files_exports_independent_copies_and_undo() {
     let (host, recorder) = ui::process::ProcessServices::recording();
     let _host = ui::process::enter(&host);
     let mut app = TestApp::<FileExplorerShell>::launched(&[home.to_str().unwrap()]).unwrap();
+    share_with_files(&mut app, &root.store());
     let account_row = file_explorer::remote_accounts::resource_id(&account.id);
     wait(&mut app, &mut service, |app| {
         app.actions().unwrap().iter().any(|a| {

@@ -490,6 +490,31 @@ fn row(id: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
+/// The accounts Settings signed in, kept in the person's accounts record as
+/// Settings keeps them on Files' device, and that record as it reaches Files'
+/// copy of it.
+fn share_with_files(files: &mut Files, root: &AccountRoot) -> TestResult {
+    use accounts::person::PersonAccounts;
+    let mut settings = TestApp::<SettingsShell>::new()?;
+    let kept = settings
+        .shared_person::<PersonAccounts>()
+        .ok_or("Settings keeps the person's accounts")?;
+    for account in root.store().all() {
+        kept.invoke(&PersonAccounts::saving(account))?;
+    }
+    files
+        .shared_person::<PersonAccounts>()
+        .ok_or("Files reads the person's accounts")?
+        .record()
+        .merge_peer_document(
+            kept.record()
+                .document()
+                .ok_or("the accounts record's document")?,
+        )?;
+    files.settle();
+    Ok(())
+}
+
 fn browse_and_select(
     files: &mut Files,
     service: &mut fs::cloud::CloudService,
@@ -881,6 +906,7 @@ fn google_services_and_files_import_have_real_hosted_frames() -> TestResult {
     let (host, recorder) = ui::process::ProcessServices::recording();
     let _host = ui::process::enter(&host);
     let mut files = Files::launched(&[profile.home.to_str().ok_or("home path")?])?;
+    share_with_files(&mut files, &profile.root)?;
     browse_and_select(&mut files, &mut service, &account, &document, &plain)?;
     let destination = profile.home.join("Chosen folder");
     std::fs::create_dir(&destination)?;
