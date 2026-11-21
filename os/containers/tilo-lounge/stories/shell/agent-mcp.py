@@ -237,17 +237,17 @@ def steps(story: Story) -> None:
         history("Ada", "Added the device")
         story.shot(ada, "ada-s-changes")
         # Then the agent's, newest first, each naming its item: the step's shot.
-        history(AGENT, "Write file")
+        history(AGENT, "Wrote")
         # Its History lists the workspace's changes. A row of that list is no control the shell
         # names, so what it lists is read from the feed the window draws: the session's
         # `tilo.activity` history of the workspace, each change with its author.
         # Each of the agent's changes, as History words it: what was done, naming the item it
         # changed (the file's name, the issue's title, the note's title, the message's words). A
         # row that names no item is said in the failure.
-        changes = {f"the file {FILE}": ("write file", FILE),
-                   f"the issue “{TASK}”": ("create", TASK),
-                   f"the note “{NOTE}”": ("new note", NOTE),
-                   "the message": ("post", CHAT)}
+        changes = {f"the file {FILE}": ("wrote", FILE),
+                   f"the issue “{TASK}”": ("created the task", TASK),
+                   f"the note “{NOTE}”": ("created the note", NOTE),
+                   "the message": ("posted", CHAT)}
 
         def feed() -> list[dict]:
             answer = ada.session.invoke(ACTIVITY_PROVIDER, f"{ACTIVITY_RESOURCE}\u001ffeed",
@@ -313,10 +313,10 @@ def steps(story: Story) -> None:
         # Newest first, a change after the one it builds on: the line appended to the note above
         # the note.
         order = [e.get("summary") or "" for e in entries]
-        appended = next((i for i, said in enumerate(order) if said.startswith("Append to note")), None)
-        made = next((i for i, said in enumerate(order) if said.startswith("New note")), None)
+        appended = next((i for i, said in enumerate(order) if said.startswith("Added to the note")), None)
+        made = next((i for i, said in enumerate(order) if said.startswith("Created the note")), None)
         if appended is None or made is None or appended > made:
-            wrong.append(f"newest first, “Append to note” is not above “New note”: {order}")
+            wrong.append(f"newest first, “Added to the note” is not above “Created the note”: {order}")
         # Ada's own rows say what each did, and setting the workspace up is said once: no row of
         # hers names nothing, and none repeats the one before it.
         hers = [e.get("summary") or "" for e in entries

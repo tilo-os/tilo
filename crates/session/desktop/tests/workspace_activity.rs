@@ -308,23 +308,54 @@ tilo_test_env::scenario! {
     // A record's changes a second apart or less tie on their clock. Ordering the tie by anything
     // but the record's own causal order (its change hashes, say) lists an append below the note it
     // appended to, newest first, for about half of all pairs: each pair here must fail that.
+    // Each reads in the words Notes publishes for what its action did, as the session learns them
+    // from the apps' published actions: never the action's id, nor its name quoted.
     {
         use automerge::{ActorId, transaction::CommitOptions};
+        use tilo_actions::published::{Offer, PublishedAction};
         use tilo_actions::{ActionContext, ActionKey, Described, Did};
         use tilo_desktop::activity::*;
         use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+        let publish = |action: &str, label: &str, did: &str| {
+            let mut published = PublishedAction::offered(
+                &Offer {
+                    resource: "notes.pages",
+                    resource_kind: "notes.pages",
+                    action,
+                    label,
+                    description: None,
+                    kind: tilo_actions::ActionKind::Undoable,
+                    operation: tilo_actions::OperationKind::Document,
+                    confirm: false,
+                    asks: None,
+                    keywords: Vec::new(),
+                    icon: None,
+                },
+                "Notes",
+            );
+            published.did = Some(did.to_owned());
+            published
+        };
+        ui::history_source::sentence::learn_published(
+            "so.tilo.notes",
+            &[
+                publish("new-note", "New note", "created the note"),
+                publish("append-to-note", "Append to note", "added to the note"),
+            ],
+        );
+        // As Notes records a verb: its kind and its declared id, the app the entry's.
         let step = |verb: &str| {
-            ActionContext::for_resource("notes.note:spring", "notes.note", "Spring plans")
+            ActionContext::for_resource("notes.pages", "notes.pages", "Notes")
                 .with_app("so.tilo.notes", "Notes")
-                .with_described(Described::new(Did::verb(
-                    ActionKey::new("so.tilo.notes", "notes.note", verb),
-                    [],
-                )))
+                .with_described(
+                    Described::new(Did::verb(ActionKey::new("", "notes.pages", verb), []))
+                        .on("notes.note:spring", "Spring plans"),
+                )
         };
         for seed in 0..8_u8 {
             let mut tree = design();
             let mut note = AutoCommit::new().with_actor(ActorId::from([seed; 16].as_slice()));
-            for (verb, text) in [("new-note", "Spring plans"), ("append-to-note", "- book the trip")] {
+            for (verb, text) in [("new-note", "Spring plans"), ("append_to_note", "- book the trip")] {
                 note.put(ROOT, "text", text).unwrap();
                 note.commit_with(
                     CommitOptions::default()
@@ -355,8 +386,8 @@ tilo_test_env::scenario! {
             assert!(
                 matches!(
                     summaries.as_slice(),
-                    [appended, made] if appended.starts_with("Ran “Append to note”")
-                        && made.starts_with("Ran “New note”")
+                    [appended, made] if appended == &"Added to the note “Spring plans”"
+                        && made == &"Created the note “Spring plans”"
                 ),
                 "newest first, the append above the note it appended to: {summaries:?}"
             );

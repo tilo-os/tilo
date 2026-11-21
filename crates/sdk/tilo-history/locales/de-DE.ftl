@@ -43,6 +43,9 @@ history-edit-unnamed = { $field } geändert
 history-verb = „{ $action }“ auf { $item } ausgeführt
 history-verb-unnamed = „{ $action }“ ausgeführt
 history-verb-in = „{ $action }“ in { $item } ausgeführt
+history-verb-did = { $did }: „{ $item }“
+history-verb-did-unnamed = { $did }
+history-verb-did-in = { $did } in { $item }
 history-verb-create = { $item } erstellt
 history-verb-create-unnamed = Erstellt
 

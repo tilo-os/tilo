@@ -1340,6 +1340,9 @@ impl Session {
         );
         let undo_api: std::sync::Arc<dyn crate::task_undo::UndoApi> = host.clone();
         activity.attach_api(undo_api);
+        if let Some(broker) = app_wire.as_ref().and_then(AppWire::agent_broker) {
+            activity.attach_broker(broker);
+        }
         activity.attach_content(std::sync::Arc::clone(&document_content));
         let control = crate::test_control::Control::open(&options, host);
         tilo_startup_metrics::mark("control-socket-open");

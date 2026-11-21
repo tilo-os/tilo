@@ -291,7 +291,7 @@ impl IssueList {
     /// An issue moved from another tracker keeps where it came from in
     /// `origin`: its author and date there show as the issue's, and its
     /// history still says who moved it.
-    #[action(writes = issues, step = "create")]
+    #[action(writes = issues, step = "create", did = "created the task")]
     pub fn create(
         &mut self,
         cx: &mut ActionCx,

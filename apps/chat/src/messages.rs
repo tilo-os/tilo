@@ -374,7 +374,7 @@ impl ChatMessages {
     /// Post a message.
     ///
     /// `@Name` of a member becomes a mention of them.
-    #[action(incoming_message)]
+    #[action(incoming_message, did = "posted")]
     pub fn post(
         &mut self,
         cx: &mut ActionCx,

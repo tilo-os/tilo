@@ -48,6 +48,11 @@ history-edit-unnamed = Changed { $field }
 history-verb = Ran “{ $action }” on { $item }
 history-verb-unnamed = Ran “{ $action }”
 history-verb-in = Ran “{ $action }” in { $item }
+## A verb whose app says what it did ($did, "added to the note"), the words it reads after who
+## did it: the row starts with them, the item it did it to quoted after them.
+history-verb-did = { $did } “{ $item }”
+history-verb-did-unnamed = { $did }
+history-verb-did-in = { $did } in { $item }
 history-verb-create = Created { $item }
 history-verb-create-unnamed = Created
 

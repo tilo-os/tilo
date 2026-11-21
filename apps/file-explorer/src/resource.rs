@@ -520,7 +520,7 @@ impl FileExplorer {
     /// Write a file
     ///
     /// Text as given: Markdown where a document app owns the format.
-    #[action(undo = Self::revert_queued, icon = "file-text", audience = "agents")]
+    #[action(undo = Self::revert_queued, icon = "file-text", audience = "agents", did = "wrote")]
     pub fn write_file(
         &mut self,
         cx: &mut ActionCx,

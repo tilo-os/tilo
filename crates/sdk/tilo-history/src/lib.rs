@@ -75,6 +75,13 @@ pub trait Labels {
         None
     }
 
+    /// What the action did, in the words its app declares beside its label, said after who did
+    /// it ("added to the note"): how a step of it reads where the app has no message of its own.
+    fn did(&self, key: &ActionKey) -> Option<String> {
+        let _ = key;
+        None
+    }
+
     /// The name the item `id` goes by now, where the reader's app holds it: a step that recorded
     /// no name for it reads with its name as it is.
     fn item(&self, id: &str) -> Option<String> {
@@ -83,11 +90,21 @@ pub trait Labels {
     }
 }
 
-/// The labels of the actions an app publishes, by the id a change of each
-/// says it by, each with the kind of the resource that publishes it: what a
-/// reader names an action by, in the words the app publishes it in.
+/// The labels of the actions apps publish, by the id a change of each says it by, each with the
+/// app and the kind of the resource that publishes it, and what the app says the action did: what
+/// a reader names an action by, in the words the app publishes it in.
 #[derive(Clone, Debug, Default)]
-pub struct ActionLabels(HashMap<String, Vec<(String, String)>>);
+pub struct ActionLabels(HashMap<String, Vec<Known>>);
+
+/// One published action's words, as [`ActionLabels`] keeps them.
+#[derive(Clone, Debug)]
+struct Known {
+    /// The app that publishes it: empty for the reader's own app.
+    app: String,
+    kind: String,
+    label: String,
+    did: Option<String>,
+}
 
 impl ActionLabels {
     /// Remember the labels of the actions `resources` publish, under each the id a change of it
@@ -98,31 +115,91 @@ impl ActionLabels {
                 // A change says the id the app declares the action by, where it declares one
                 // apart from the name it publishes the action under.
                 let by = if action.declared.is_empty() {
-                    action.id.clone()
+                    &action.id
                 } else {
-                    action.declared.clone()
+                    &action.declared
                 };
-                let known = self.0.entry(by).or_default();
-                match known.iter_mut().find(|(kind, _)| *kind == resource.kind) {
-                    Some(entry) => entry.1.clone_from(&action.label),
-                    None => known.push((resource.kind.clone(), action.label.clone())),
-                }
+                self.know(
+                    "",
+                    &resource.kind,
+                    by,
+                    &action.label,
+                    action.did.as_deref(),
+                );
             }
             self.learn(&resource.children);
         }
     }
+
+    /// Remember the words of the actions `app` publishes as `actions`: what a reader that is not
+    /// that app (the session's History of a workspace) names a change of one by.
+    pub fn learn_published(
+        &mut self,
+        app: &str,
+        actions: &[tilo_actions::published::PublishedAction],
+    ) {
+        for action in actions {
+            self.know(
+                app,
+                &action.resource_kind,
+                &action.action,
+                &action.action_label,
+                action.did.as_deref(),
+            );
+        }
+    }
+
+    fn know(&mut self, app: &str, kind: &str, by: &str, label: &str, did: Option<&str>) {
+        // A change says a native verb by its declared name (`append_to_note`), and a surface may
+        // publish it spelled for callers (`append-to-note`): one action either way.
+        let known = self.0.entry(tilo_actions::entry::kebab(by)).or_default();
+        let did = did
+            .map(str::trim)
+            .filter(|did| !did.is_empty())
+            .map(str::to_owned);
+        match known
+            .iter_mut()
+            .find(|entry| entry.app == app && entry.kind == kind)
+        {
+            Some(entry) => {
+                label.clone_into(&mut entry.label);
+                entry.did = did;
+            }
+            None => known.push(Known {
+                app: app.to_owned(),
+                kind: kind.to_owned(),
+                label: label.to_owned(),
+                did,
+            }),
+        }
+    }
+
+    /// The words for `key`: those of the action on a resource of its kind, else of the action
+    /// its app (or the reader's own app) publishes on any resource. Another app's action of the
+    /// same name is never this one.
+    fn find(&self, key: &ActionKey) -> Option<&Known> {
+        let known = self.0.get(&tilo_actions::entry::kebab(&key.action))?;
+        let app = app_prefix(&key.app);
+        known
+            .iter()
+            .find(|entry| entry.kind == key.kind)
+            .or_else(|| {
+                known
+                    .iter()
+                    .find(|entry| entry.app.is_empty() || app_prefix(&entry.app) == app)
+            })
+    }
 }
 
 impl Labels for ActionLabels {
-    /// On a resource of the key's kind, or of any kind when that one has none.
     fn action(&self, key: &ActionKey) -> Option<String> {
-        let known = self.0.get(&key.action)?;
-        known
-            .iter()
-            .find(|(kind, _)| *kind == key.kind)
-            .or_else(|| known.first())
-            .map(|(_, label)| label.clone())
+        self.find(key)
+            .map(|known| known.label.clone())
             .filter(|label| !label.trim().is_empty())
+    }
+
+    fn did(&self, key: &ActionKey) -> Option<String> {
+        self.find(key)?.did.clone()
     }
 }
 
@@ -329,8 +406,13 @@ fn is_uuid(text: &str) -> bool {
 
 /// `new-snippet` → `New snippet`: a readable name for an id nothing labels.
 fn humanize(id: &str) -> String {
-    let words = tilo_actions::entry::kebab(id).replace('-', " ");
-    let mut chars = words.chars();
+    capitalised(&tilo_actions::entry::kebab(id).replace('-', " "))
+}
+
+/// `text` with its first letter a capital: words said after who did them ("added to the note")
+/// starting a row of their own.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().collect::<String>() + chars.as_str()
     })
@@ -602,6 +684,12 @@ impl<'a> Reader<'a> {
 
     fn verb(&self, verb: &VerbCall, what: &Did, scope: &Scope<'_>) -> String {
         let mut args = self.base_args(scope);
+        // A verb that names no app is the entry's app's.
+        let key = if verb.action.app.is_empty() {
+            ActionKey::new(scope.app, verb.action.kind.as_str(), verb.action.action.as_str())
+        } else {
+            verb.action.clone()
+        };
         // An empty value says nothing: a message that needs it falls back to the action's label.
         // An argument naming an item reads as the item's name now ("New note" says the note it
         // made); an id the reader cannot name says nothing either.
@@ -624,12 +712,23 @@ impl<'a> Reader<'a> {
         if let Some(sentence) = self.app_message(what, scope, &args) {
             return sentence;
         }
+        // What the app says the action did ("added to the note"), said with the item it did it
+        // to, starts the row: a sentence in the app's own words without a message of its own.
+        if let Some(did) = self.labels.and_then(|labels| labels.did(&key)) {
+            args.set("did", did);
+            let sentence = if scope.within {
+                self.framework_message("history-verb-did-in", &args)
+            } else {
+                self.named_or_not("history-verb-did", scope, &args)
+            };
+            return capitalised(&sentence);
+        }
         if verb.action.action == tilo_actions::CREATE_ACTION {
             return self.named_or_not("history-verb-create", scope, &args);
         }
         let action = self
             .labels
-            .and_then(|labels| labels.action(&verb.action))
+            .and_then(|labels| labels.action(&key))
             .unwrap_or_else(|| humanize(&verb.action.action));
         args.set("action", action);
         if scope.within {

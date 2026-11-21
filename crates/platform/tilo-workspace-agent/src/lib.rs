@@ -371,7 +371,7 @@ impl WorkspaceAgents {
     /// Make an agent: a name people read (at most 64 characters), and optionally a model as
     /// `provider/model`. Whoever makes it keeps it: a keeper it
     /// names is refused unless it is the one who makes it.
-    #[action]
+    #[action(did = "added the agent")]
     pub fn create_agent(
         &mut self,
         cx: &mut ActionCx,

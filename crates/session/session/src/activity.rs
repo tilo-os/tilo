@@ -174,6 +174,15 @@ struct Inner {
     /// The records' content this device keeps.
     #[cfg(target_os = "linux")]
     content: RefCell<Option<Arc<crate::content::ContentService>>>,
+    /// The session's action broker, whose apps' published actions say in their own words what
+    /// each of their changes did, and the generation of them History last learned.
+    #[cfg(target_os = "linux")]
+    broker: RefCell<
+        Option<(
+            Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>,
+            Cell<Option<u64>>,
+        )>,
+    >,
     #[cfg(target_os = "linux")]
     undos: crate::task_undo::Undos,
     /// The records each workspace holds, read on a worker of its own, told by the change stream
@@ -221,6 +230,28 @@ struct Inner {
     own_reads: RefCell<HashMap<String, OwnRead>>,
     /// What wakes the session's loop when a model answered off this thread.
     wake: Option<tilo_service::Wake>,
+}
+
+#[cfg(target_os = "linux")]
+impl Inner {
+    /// Learn, on the thread that words History, the words of every action the apps publish,
+    /// once they published anything new: a change an app made reads as that app says it.
+    fn learn_published_words(&self) {
+        let broker = self.broker.borrow();
+        let Some((broker, learned)) = broker.as_ref() else {
+            return;
+        };
+        let generation = broker.published_surfaces_generation();
+        if learned.get() == Some(generation) {
+            return;
+        }
+        learned.set(Some(generation));
+        // A live surface is listed before the one kept from before its app closed: learned last,
+        // its words are the ones kept.
+        for surface in broker.published_surfaces().iter().rev() {
+            ui::history_source::sentence::learn_published(&surface.app_id, &surface.actions);
+        }
+    }
 }
 
 /// How often a session with nothing new looks again for a model the person may have configured.
@@ -325,6 +356,8 @@ impl Activity {
             api: RefCell::default(),
             #[cfg(target_os = "linux")]
             content: RefCell::default(),
+            #[cfg(target_os = "linux")]
+            broker: RefCell::default(),
             #[cfg(target_os = "linux")]
             undos: crate::task_undo::Undos::default(),
             person,
@@ -482,6 +515,16 @@ impl Activity {
     #[cfg(target_os = "linux")]
     pub(crate) fn attach_content(&self, content: Arc<crate::content::ContentService>) {
         *self.0.content.borrow_mut() = Some(content);
+    }
+
+    /// Word the apps' changes by what `broker` says they publish: each action's label and what
+    /// the app says it did, as the apps publish them now.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn attach_broker(
+        &self,
+        broker: Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>,
+    ) {
+        *self.0.broker.borrow_mut() = Some((broker, Cell::new(None)));
     }
 
     /// Read the records the session's own services keep from `services` : what History lists and
@@ -763,6 +806,8 @@ impl HistorySource for Activity {
         tree: &Layout,
         workspace: WorkspaceId,
     ) -> Vec<DetachedRecordHistory> {
+        #[cfg(target_os = "linux")]
+        self.0.learn_published_words();
         let mut records = Vec::new();
         if let Some(workspace_id) = Self::id_of(tree, workspace) {
             records.extend(self.resources_of(workspace_id));

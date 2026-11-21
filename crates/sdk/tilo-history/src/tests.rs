@@ -629,3 +629,110 @@ fn a_change_names_the_item_it_made_as_it_is_called_now() {
     // An item gone since is said as the change recorded it.
     assert_eq!(reader.sentence(&made("new-note", GONE)), "Created “Plan”");
 }
+
+/// What an app publishes an action as, with the words it says the action did.
+fn published(action: &str, label: &str, did: Option<&str>) -> tilo_actions::published::PublishedAction {
+    let mut published = tilo_actions::published::PublishedAction::offered(
+        &tilo_actions::published::Offer {
+            resource: "notes.pages",
+            resource_kind: "notes.pages",
+            action,
+            label,
+            description: None,
+            kind: tilo_actions::ActionKind::Undoable,
+            operation: tilo_actions::OperationKind::Document,
+            confirm: false,
+            asks: None,
+            keywords: Vec::new(),
+            icon: None,
+        },
+        "Notes",
+    );
+    published.did = did.map(str::to_owned);
+    published
+}
+
+/// A step on a note, by a verb of Notes named `action`.
+fn on_note(action: &str) -> ActionContext {
+    ActionContext::for_resource("pages", "notes.pages", "Notes")
+        .with_app("so.tilo.notes", "Notes")
+        .with_described(
+            Described::new(Did::verb(
+                ActionKey::new("so.tilo.notes", "notes.note", action),
+                [],
+            ))
+            .on("n1", "Spring plans"),
+        )
+}
+
+/// A reader that is not the app (the session's History of a workspace) words a step by what
+/// the app published: what the action did, starting the row and naming the item it did it to,
+/// whichever spelling of the action's id the change and the surface use.
+#[test]
+fn a_verb_reads_in_the_words_its_app_says_it_did() {
+    let mut labels = ActionLabels::default();
+    labels.learn_published(
+        "so.tilo.notes",
+        &[
+            published("append-to-note", "Append to note", Some("added to the note")),
+            published("pin", "Pin", None),
+        ],
+    );
+    let english = Reader::new("en-US").with_labels(&labels);
+    assert_eq!(
+        english.sentence(&on_note("append_to_note")),
+        "Added to the note “Spring plans”"
+    );
+    // An action that declares nothing it did is named by its label.
+    assert_eq!(
+        english.sentence(&on_note("pin")),
+        "Ran “Pin” on Spring plans"
+    );
+    let german = Reader::new("de-DE").with_labels(&labels);
+    assert_eq!(
+        german.sentence(&on_note("append-to-note")),
+        "Added to the note: „Spring plans“"
+    );
+    // Unnamed, and in the resource it ran in.
+    let unnamed = ActionContext::default().with_described(Described::new(Did::verb(
+        ActionKey::new("so.tilo.notes", "notes.pages", "append-to-note"),
+        [],
+    )));
+    assert_eq!(english.sentence(&unnamed), "Added to the note");
+    let within = ActionContext::for_resource("pages", "notes.pages", "Notes").with_described(
+        Described::new(Did::verb(
+            ActionKey::new("so.tilo.notes", "notes.pages", "append-to-note"),
+            [],
+        )),
+    );
+    assert_eq!(english.sentence(&within), "Added to the note in Notes");
+}
+
+/// The app's own message still wins over what it says the action did, and another app's action
+/// of the same name never lends this one its words.
+#[test]
+fn an_app_message_wins_and_another_apps_words_are_not_borrowed() {
+    let mut labels = ActionLabels::default();
+    labels.learn_published(
+        "so.tilo.chat",
+        &[published("append-to-note", "Append", Some("appended"))],
+    );
+    let reader = Reader::new("en-US").with_labels(&labels);
+    assert_eq!(
+        reader.sentence(&on_note("append-to-note")),
+        "Ran “Append to note” on Spring plans"
+    );
+    labels.learn_published(
+        "so.tilo.notes",
+        &[published("append-to-note", "Append to note", Some("added to the note"))],
+    );
+    let notes = Catalogue::new(
+        "en-US",
+        &["notes-append-to-note = Wrote more in “{ $item }”"],
+    );
+    let reader = Reader::new("en-US").with_app(&notes).with_labels(&labels);
+    assert_eq!(
+        reader.sentence(&on_note("append-to-note")),
+        "Wrote more in “Spring plans”"
+    );
+}

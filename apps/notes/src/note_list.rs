@@ -371,6 +371,7 @@ impl NoteList {
         answers,
         icon = "file-plus",
         step = "create",
+        did = "created the note",
         writes = pages
     )]
     pub fn new_note(
@@ -867,7 +868,7 @@ impl NoteList {
     /// titled `title` (case and spacing aside); with no title, the one note
     /// you made. An agent names notes by the titles it reads, so it need
     /// not look the note's id up first; answers the note's id and resource.
-    #[action(answers, audience = "agents", step = "write", writes = pages)]
+    #[action(answers, audience = "agents", step = "write", writes = pages, did = "added to the note")]
     pub fn append_to_note(
         &mut self,
         #[param("The note's title, case and spacing aside; the one note you made when omitted")]

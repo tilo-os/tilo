@@ -313,7 +313,16 @@ pub fn step_summary(entry: &ActionContext) -> Option<String> {
 pub fn step_target(entry: &ActionContext, summary: &str) -> Option<crate::widget::EntryTarget> {
     let item = entry.item.as_ref()?;
     let label = with_reader(|reader| reader.item_name(item))?;
-    let action = summary.trim_end().strip_suffix(label.as_str())?;
+    // The item is the sentence's last words, as they are or quoted ("Added to the note “Plan”").
+    let summary = summary.trim_end();
+    let action = summary.strip_suffix(label.as_str()).or_else(|| {
+        [("“", "”"), ("„", "“")].into_iter().find_map(|(open, close)| {
+            summary
+                .strip_suffix(close)?
+                .strip_suffix(label.as_str())?
+                .strip_suffix(open)
+        })
+    })?;
     // The framework's own words for an action it has no sentence for put a colon between the
     // two ("Write note: Supplier terms"): the row lays them out apart instead.
     let action = action.trim_end().trim_end_matches(':').trim();
@@ -370,6 +379,13 @@ pub fn learn_item_names(names: impl IntoIterator<Item = (String, String)>) {
 /// them in the reader's language, so entries naming them read the same.
 pub fn learn_labels(resources: &[tilo_actions::ResourceSpec]) {
     ACTION_LABELS.with(|labels| labels.borrow_mut().learn(resources));
+}
+
+/// Remember the words of the actions `app` publishes, as a reader that words other apps' changes
+/// (the session's History of a workspace) hears them from the apps: each action's label and what
+/// the app says it did.
+pub fn learn_published(app: &str, actions: &[tilo_actions::published::PublishedAction]) {
+    ACTION_LABELS.with(|labels| labels.borrow_mut().learn_published(app, actions));
 }
 
 /// Remember the titles of the fields `shape` lays out (and those of its
@@ -430,6 +446,10 @@ impl tilo_history::Labels for ThreadLabels {
 
     fn action(&self, key: &tilo_actions::ActionKey) -> Option<String> {
         ACTION_LABELS.with(|labels| tilo_history::Labels::action(&*labels.borrow(), key))
+    }
+
+    fn did(&self, key: &tilo_actions::ActionKey) -> Option<String> {
+        ACTION_LABELS.with(|labels| tilo_history::Labels::did(&*labels.borrow(), key))
     }
 
     fn item(&self, id: &str) -> Option<String> {
