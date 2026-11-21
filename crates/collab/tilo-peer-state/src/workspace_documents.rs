@@ -40,8 +40,10 @@ pub enum DocumentRead {
 /// the session's own roles read on worker threads, without an app or a peer asking.
 ///
 /// Synchronous, as those roles read: the service's tasks must be driven by a runtime with a
-/// worker of its own, never by the thread that calls here.
-pub trait DeviceDocuments: Send + Sync + 'static {
+/// worker of its own, never by the thread that calls here. `Send + Sync` where the platform has
+/// threads, nothing on the web, where a page's holder reaches JavaScript handles bound to its one
+/// thread.
+pub trait DeviceDocuments: collab_types::signer::MaybeSendSync + 'static {
     /// `app`'s `resource` of `workspace` whole, or, for `since` heads the service holds, only
     /// what changed after them.
     ///
@@ -116,7 +118,7 @@ pub type DocumentWrite =
 ///
 /// A write is signed and sealed as the device the service serves, so the workspace keeps it as
 /// any of that device's writes and carries it to the workspace's other devices.
-pub trait DeviceWrites: Send + Sync + 'static {
+pub trait DeviceWrites: collab_types::signer::MaybeSendSync + 'static {
     /// Write `changes` to `app`'s `document` of `workspace`: the document's founding write when
     /// `founding` (the whole document, which the workspace must not hold yet), a change of it
     /// otherwise, sealed under `sealed` (the keys of the document's group) where the workspace
