@@ -359,6 +359,20 @@ impl Hydrator {
         Ok((Some((hash, len)), false))
     }
 
+    /// Whether this mount's content for `workspace` is stored plainly, so a staged file can
+    /// become its entry on the thread that closed it; a workspace with its own keys seals it.
+    pub(crate) fn stores_plainly(&self, workspace: Option<WorkspaceId>) -> bool {
+        matches!(self.file_writer(workspace), Ok(None))
+    }
+
+    /// [`ContentStore::adopt_staged_inline`] for this mount's plain content.
+    pub(crate) fn adopt_staged_inline(
+        &self,
+        path: &Path,
+    ) -> Result<Option<(Option<(Hash, u64)>, bool)>> {
+        self.store.adopt_staged_inline(path)
+    }
+
     async fn previous_tier(&self, previous: Option<Hash>) -> Option<content::ChunkTier> {
         Some(self.store.manifest(previous?).await?.tier())
     }

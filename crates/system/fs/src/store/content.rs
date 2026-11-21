@@ -27,6 +27,44 @@ use crate::content::{self, ChunkTier, Manifest};
 /// what a copy of a photo library closes, so the link is what a copy pays.
 const ADOPT_MAX: u64 = 1024 * 1024;
 
+/// What became of a staged file handed to the store.
+enum Staged {
+    /// Its bytes are the entry now: the content id, and the encoded manifest to cache.
+    Linked { hash: Hash, encoded: Bytes },
+    /// The store already holds these bytes; the manifest names them.
+    AlreadyStored(Manifest),
+    /// The stage and the store are on different filesystems, so it is written in as content.
+    Elsewhere,
+}
+
+/// Links the staged bytes at `path` in as the entry for their chunks: the one place a stage
+/// becomes an entry, shared by the mount's own thread ([`ContentStore::adopt_staged_inline`]) and
+/// the async paths.
+fn link_staged(
+    files: &crate::store::FileArea,
+    path: &Path,
+    len: u64,
+    data: &[u8],
+    tier: Option<ChunkTier>,
+) -> Result<Staged> {
+    let (manifest, _) = content::build(data, tier);
+    let key = manifest.id();
+    if files.entry(&key).is_some_and(|e| e.complete()) {
+        return Ok(Staged::AlreadyStored(manifest));
+    }
+    let encoded = manifest.encode();
+    let chunks = content::chunk_locations(&manifest);
+    match files.adopt_version_file(&key, path, len, Retention::LocalOnly, &chunks, &encoded) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::CrossesDevices => return Ok(Staged::Elsewhere),
+        Err(error) => return Err(error.into()),
+    }
+    Ok(Staged::Linked {
+        hash: Hash::from_bytes(key),
+        encoded: Bytes::from(encoded),
+    })
+}
+
 /// The largest file that is published by reading it into memory rather than chunking it as a
 /// stream: a version this size costs less held once than read from the disk twice.
 const IN_MEMORY_PUBLISH_MAX: u64 = 256 * 1024;
@@ -102,6 +140,56 @@ impl ContentStore {
         self.persist_manifest(&manifest).await.map(Some)
     }
 
+    /// A staged file becomes the entry itself on the calling thread: its bytes are read for their
+    /// chunks and linked in as the one write the mount already made, so a closed photo costs no
+    /// thread hand-off beside it. A photo the library already holds is named here too. `None` when
+    /// the stage is on another filesystem or the bytes need the async paths to be named;
+    /// [`Self::publish_file`] then does that.
+    ///
+    /// # Errors
+    ///
+    /// The file could not be read or linked into the store.
+    pub(crate) fn adopt_staged_inline(
+        &self,
+        path: &Path,
+    ) -> Result<Option<(Option<(Hash, u64)>, bool)>> {
+        let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let len = file.metadata()?.len();
+        if len == 0 || len > ADOPT_MAX {
+            return Ok(None);
+        }
+        let data = std::fs::read(path)?;
+        anyhow::ensure!(
+            data.len() as u64 == len,
+            "{} changed while it was published",
+            path.display()
+        );
+        // A version with no previous one keeps the default chunk tier, so nothing here waits on
+        // a manifest.
+        match link_staged(&self.files, path, len, &data, None)? {
+            Staged::Linked { hash, encoded } => {
+                self.cache_insert(hash, encoded);
+                Ok(Some((Some((hash, len)), true)))
+            }
+            Staged::AlreadyStored(manifest) => {
+                // A library holds the same photo more than once: when the manifest naming the
+                // entry's chunks is stored too, the close is done, with nothing to name twice.
+                let hash = Hash::from_bytes(manifest.id());
+                if self
+                    .files
+                    .entry(hash.as_bytes())
+                    .is_some_and(|entry| entry.complete())
+                {
+                    self.cache_insert(hash, Bytes::from(manifest.encode()));
+                    Ok(Some((Some((hash, len)), true)))
+                } else {
+                    Ok(None)
+                }
+            }
+            Staged::Elsewhere => Ok(None),
+        }
+    }
+
     /// Stores the file at `path` as a version and returns its content id
     /// and length (`None` for an empty file), and whether the file itself became
     /// the stored entry. `path` must not change while
@@ -139,36 +227,26 @@ impl ContentStore {
             // The bytes are read once for their chunks and linked into the store as they stand:
             // the write the mount already made is the write the entry holds.
             let tier = self.tier_of(previous).await;
-            let (manifest, _) = content::build(&data, tier);
-            let key = manifest.id();
-            let encoded = manifest.encode();
             let files = Arc::clone(&self.files);
-            if files.entry(&key).is_some_and(|e| e.complete()) {
-                // The bytes are already stored: only the naming is left, and a manifest some
-                // other path stored beside its entry may be missing after a crash in its window.
-                let hash = self.persist_manifest(&manifest).await?;
-                self.cache_insert(hash, Bytes::from(encoded));
-                return Ok((Some((hash, len)), true));
-            }
-            let chunks = content::chunk_locations(&manifest);
             let staged = path.to_path_buf();
-            let inline = encoded.clone();
-            let linked = tokio::task::spawn_blocking(move || {
-                files
-                    .adopt_version_file(&key, &staged, len, Retention::LocalOnly, &chunks, &inline)
-                    .map(|()| true)
-                    .or_else(|error| match error.kind() {
-                        // The stage and the store are on different filesystems: the bytes are
-                        // already read, so they are written again as a content entry.
-                        io::ErrorKind::CrossesDevices => Ok(false),
-                        _ => Err(error),
-                    })
+            let (outcome, data) = tokio::task::spawn_blocking(move || {
+                let outcome = link_staged(&files, &staged, len, &data, tier);
+                (outcome, data)
             })
-            .await??;
-            if linked {
-                let hash = Hash::from_bytes(key);
-                self.cache_insert(hash, Bytes::from(encoded));
-                return Ok((Some((hash, len)), true));
+            .await?;
+            match outcome? {
+                Staged::Linked { hash, encoded } => {
+                    self.cache_insert(hash, encoded);
+                    return Ok((Some((hash, len)), true));
+                }
+                Staged::AlreadyStored(manifest) => {
+                    // The bytes are already stored: only the naming is left, and a manifest some
+                    // other path stored beside its entry may be missing after a crash in its window.
+                    let hash = self.persist_manifest(&manifest).await?;
+                    self.cache_insert(hash, Bytes::from(manifest.encode()));
+                    return Ok((Some((hash, len)), true));
+                }
+                Staged::Elsewhere => {}
             }
             let hash = self.write_content_after(&data, previous).await?;
             return Ok((hash.map(|hash| (hash, len)), false));

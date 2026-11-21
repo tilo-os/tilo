@@ -2497,6 +2497,47 @@ mod read_lock_tests {
         drop(fs);
         endpoint.close().await;
     }
+
+    /// A close needs no async runtime and no thread beside it: the staged photo is read, chunked
+    /// and linked in on the thread that answered it. This runs on a plain test thread with no
+    /// runtime entered, so a close that waited on the store's runtime — as it did through
+    /// `block_in_place` — would panic here rather than quietly cost a hand-off per photo.
+    #[test]
+    fn a_close_stores_its_photo_without_a_runtime() {
+        use crate::test_bytes::pseudo;
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (fs, store) = runtime.block_on(async {
+            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+            let store = Arc::new(ContentStore::memory());
+            let hydrator = Arc::new(Hydrator::new(endpoint, Arc::clone(&store)));
+            let namespace = Arc::new(Mutex::new(Namespace::new("adopt-plain").unwrap()));
+            let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+            let fs = QuickFS::new(namespace, hydrator, heuristics)
+                .with_write_stage_dir(dir.path().join("stage"));
+            (fs, store)
+        });
+        let ino = fs.create_empty_file(ROOT_INO, "photo.jpg").unwrap();
+        let photo = pseudo(256 * 1024, 11);
+        assert_eq!(
+            fs.write_buffer(ino, 0, &photo),
+            Ok(u32::try_from(photo.len()).unwrap())
+        );
+        assert_eq!(fs.flush_inode(ino), Ok(()));
+        let hash = fs.ns().hash_for(ino).unwrap();
+        assert_eq!(
+            store.files().entry(hash.as_bytes()).unwrap().size,
+            photo.len() as u64,
+            "the closed photo is one entry"
+        );
+        let stored = std::fs::read(store.files().path_of(hash.as_bytes())).unwrap();
+        assert_eq!(stored, photo, "the entry holds the photo's bytes");
+    }
 }
 
 mod listing_stream_tests {

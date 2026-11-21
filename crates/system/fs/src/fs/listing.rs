@@ -34,6 +34,41 @@ pub(super) fn note_request(kind: &str) {
     }
 }
 
+/// Whether every request's cost is named on stderr (`TILO_FS_FUSE_TIMING=1`), so a check can
+/// price the requests a copy makes one by one instead of guessing at the sum.
+fn timing_traced() -> bool {
+    static TIMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TIMED.get_or_init(|| std::env::var_os("TILO_FS_FUSE_TIMING").is_some())
+}
+
+/// Times one answered request: it reports its own cost as it is dropped, after the reply is
+/// sent. Nothing is timed or printed unless the trace is asked for.
+pub(super) struct OpTimer {
+    kind: &'static str,
+    started: std::time::Instant,
+}
+
+impl OpTimer {
+    pub(super) fn new(kind: &'static str) -> Self {
+        Self {
+            kind,
+            started: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Drop for OpTimer {
+    fn drop(&mut self) {
+        if timing_traced() {
+            eprintln!(
+                "fuse timing {} {}",
+                self.kind,
+                self.started.elapsed().as_micros()
+            );
+        }
+    }
+}
+
 impl QuickFS {
     /// The entries of `ino` that belong in the view, as `readdir` would report them; `None`
     /// when `ino` is not a directory in the view. `.` and `..` always survive.
