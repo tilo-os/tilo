@@ -4,6 +4,7 @@
 //! refusal that is the key's fault is the turn's answer at once.
 use super::*;
 use std::collections::VecDeque;
+use tilo_server::workspace_bots::events::WorkspaceEvents;
 use tilo_server::workspaces::person_model::protocol::ErrorKind;
 
 /// A model whose calls are written out, its provider's refusals among them: each ask takes the
@@ -107,7 +108,6 @@ const ASK: &str = "Remind me every morning to call home.";
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let kept = crate::support::scratch_dir();
     let events = WorkspaceEvents::start(workspaces.clone(), None);
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
@@ -176,7 +176,6 @@ async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let kept = crate::support::scratch_dir();
     let events = WorkspaceEvents::start(workspaces.clone(), None);
     let first = write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), ASK).await;
     let asked = Arc::new(Mutex::new(Vec::new()));

@@ -11,6 +11,7 @@ use std::pin::Pin;
 use super::*;
 use tilo_actions::remote::ActionCallError;
 use tilo_actions::remote::person_telling::{self, Kind, Told, ToldList, WhyCode};
+use tilo_server::workspace_bots::events::Authority;
 use tilo_server::workspace_telling::{Outside, Teller};
 
 /// What the assistant answers every turn an event starts here.

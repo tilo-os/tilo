@@ -1517,10 +1517,6 @@ pub async fn start_workspace_documents(
     identity: ServerIdentity,
     options: AgentOptions,
 ) -> Result<(Server, AgentService, RosterServices), ServerError> {
-    // What a host before this one kept per person: the events and the
-    // initiative are the workspace's now, and nothing reads those folders.
-    let _ = std::fs::remove_dir_all(cfg.state_root.join("person-events"));
-    let _ = std::fs::remove_dir_all(cfg.state_root.join("person-initiative"));
     let (server, agents, actions) = start_inner(cfg, identity, options).await?;
     let roster = actions.start_events(&server, agents.agent_sessions());
     Ok((server, agents, roster))

@@ -10,7 +10,7 @@ use tilo_server::{
     ServerConfig as Config,
     agents::{AgentOptions, start_workspace_documents},
     daemon::{Server, ServerIdentity as Identity},
-    workspace_bots::events::PersonEvents,
+    workspace_bots::events::{Authority, WorkspaceEvents},
     workspaces::Workspaces,
 };
 
@@ -24,7 +24,7 @@ struct Up {
     server: Server,
     agents: tilo_agent_session::AgentService,
     actions: Actions,
-    events: PersonEvents,
+    events: WorkspaceEvents,
     workspaces: Workspaces,
 }
 
@@ -109,12 +109,15 @@ impl Up {
             appearance: None,
         };
         let workspace = WorkspaceId::parse(workspace).unwrap();
-        let receipt = self
+        let receipt = match self
             .events
             .invoking(workspace, caller, Authority::Turn, request)
             .wait_timeout(std::time::Duration::from_secs(30))
-            .expect("the server answers an action on its events")
-            .expect("the server answered");
+        {
+            Ok(Some(receipt)) => receipt,
+            Ok(None) => panic!("the server abandoned an action on its events"),
+            Err(_) => panic!("the server did not answer an action on its events"),
+        };
         match receipt.status {
             ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
             other => panic!("{action} on the workspace's events: {other:?}"),

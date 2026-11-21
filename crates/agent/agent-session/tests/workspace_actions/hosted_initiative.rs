@@ -19,7 +19,11 @@ use tilo_agent_session::bot::host_steps::{
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_server::{
     workspace_agents::{Ask, WorkspaceActionProvider, invoke_named},
-    workspace_bots::{initiative::Initiative, workspace_resource},
+    workspace_bots::{
+        events::Authority,
+        initiative::Initiative,
+        workspace_resource,
+    },
     workspaces::{
         Workspaces,
         person_model::{
@@ -179,12 +183,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
     let issues = furnished(&page, &workspaces, &workspace, &person).await;
 
     // What the assistant finds to do on its own, on this server, with the server's action service.
-    let (initiative, _events) = Initiative::start(
-        workspaces.clone(),
-        state.path().join("initiative"),
-        state.path().join("events"),
-        Some(actions.clone()),
-    );
+    let (initiative, _events) = Initiative::start(workspaces.clone(), Some(actions.clone()));
 
     // The person writes to their assistant, and the server owes it a turn. The assistant acts as
     // that turn's caller: the person's device behind it, the session handed to the agent.
@@ -345,12 +344,7 @@ async fn the_model_of_a_hosted_turn_proposes_through_the_tools_its_turn_has() {
     let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let issues = furnished(&page, &workspaces, &workspace, &person).await;
-    let (initiative, events) = Initiative::start(
-        workspaces.clone(),
-        state.path().join("initiative"),
-        state.path().join("events"),
-        Some(actions.clone()),
-    );
+    let (initiative, events) = Initiative::start(workspaces.clone(), Some(actions.clone()));
 
     // The person asks, and the server answers the turn with what its agents are given: the
     // workspace's resources, the person's events and what their assistant does on its own.
@@ -449,12 +443,7 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     furnished(&page, &workspaces, &workspace, &person).await;
-    let (initiative, events) = Initiative::start(
-        workspaces.clone(),
-        state.path().join("initiative"),
-        state.path().join("events"),
-        Some(actions.clone()),
-    );
+    let (initiative, events) = Initiative::start(workspaces.clone(), Some(actions.clone()));
 
     write_to_agent(
         &actions,
@@ -675,12 +664,7 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
         .to_owned(),
         handed: Mutex::default(),
     });
-    let (initiative, events) = Initiative::start_with(
-        workspaces.clone(),
-        state.path().join("initiative"),
-        state.path().join("events"),
-        hands.clone(),
-    );
+    let (initiative, events) = Initiative::start_with(workspaces.clone(), hands.clone());
     let steps = (initiative.before())(hands.clone());
 
     // Its person turns the look-round on, with a day of its own.

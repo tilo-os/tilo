@@ -599,6 +599,7 @@ fn on_automations(
         .serve(
             WorkspaceId::parse(&given.workspace).unwrap(),
             &given.person(),
+            tilo_server::workspace_bots::events::Authority::Turn,
             RemoteActionMessage::Invoke(request),
         )
         .and_then(|answer| answer.wait_timeout(Duration::from_secs(5)).ok().flatten());
@@ -621,7 +622,6 @@ async fn a_task_goes_on_when_the_automation_it_waits_for_comes() {
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = given.started(looks_then_answers(1_000, Arc::clone(&asked)));
     given.answered(&agents, now_ms()).await;
-    let kept = crate::support::scratch_dir();
     let automations = WorkspaceEvents::start(given.workspaces.clone(), None);
     let set_up = |name: &str, at_ms: i64, instruction: &str| {
         on_automations(
