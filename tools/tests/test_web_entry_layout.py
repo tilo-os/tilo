@@ -259,15 +259,17 @@ class ShippedGraph(unittest.TestCase):
     """The graph layout.py reads out of the runtime's own modules."""
 
     @unittest.skipUnless((WEB / 'entry-page.mjs').is_file(), 'the runtime sources are not here')
-    def test_the_shipped_entry_module_reaches_the_editor_through_static_imports(self):
+    def test_the_shipped_entry_module_reaches_what_it_imports_however_deep(self):
         layout = graph_functions()
         graph = layout['graph'](WEB / 'entry-page.mjs')
-        self.assertGreater(len(graph), 40, 'the entry module reaches the editor')
         for module in graph:
             self.assertTrue(module.is_file(), module)
         names = {module.name for module in graph}
         self.assertIn('host.mjs', names)
         self.assertIn('entry-page.mjs', names)
+        # Calls reach the page through peer.mjs, voice-peer.mjs and voice.mjs: the graph
+        # follows every static import, not just the entry module's own.
+        self.assertIn('voice-video.mjs', names)
         # A module a dynamic import names is preloaded only if a static import
         # reaches it too: the server a page connects to when it has one is not
         # preloaded.
