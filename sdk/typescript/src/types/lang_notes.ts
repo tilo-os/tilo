@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.notes@0f7ba6ca9d5c382a";
+export const SURFACE = "so.tilo.lang.notes@2574c97af6c5e5f3";
 
 /** The arguments of `pin`. */
 export interface PinArgs {
@@ -131,6 +131,8 @@ export interface Note extends tilo.Resource {
   zex2vawx: string;  // page
   rnhwkv6z: string;  // created
   "2od7mwir": string;  // updated
+  /** Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row. It is `n`'s action, so the window offers it for the note it shows and a person reaches it by the shortcut or the note's row. */
+  new_child(): Promise<Note>;
   /** Pins or unpins a note. */
   pin(args?: {
     pinned?: boolean;
@@ -201,7 +203,7 @@ export interface Note extends tilo.Resource {
 
 /** The actions `Note` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTE_ACTIONS = ["pin", "pinMany", "indent", "indentMany", "outdent", "outdentMany", "move_up", "move_upMany", "move_down", "move_downMany", "retitle", "retitleMany", "add_text", "add_textMany", "tag", "tagMany", "untag", "untagMany", "insert_image", "insert_imageMany", "keep_image", "keep_imageMany", "export_markdown", "export_note"] as const;
+export const NOTE_ACTIONS = ["new_child", "pin", "pinMany", "indent", "indentMany", "outdent", "outdentMany", "move_up", "move_upMany", "move_down", "move_downMany", "retitle", "retitleMany", "add_text", "add_textMany", "tag", "tagMany", "untag", "untagMany", "insert_image", "insert_imageMany", "keep_image", "keep_imageMany", "export_markdown", "export_note"] as const;
 
 /** The `tl.so.tilo.lang.notes.Note` kind at `path`. */
 export function note(ws: tilo.Workspace, path: string): Note {
@@ -216,10 +218,6 @@ export interface Notebook extends tilo.Resource {
   new_note(args?: {
     title?: string;
     body?: string;
-  }): Promise<Note>;
-  /** Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row. */
-  new_child(args: {
-    n: Note;
   }): Promise<Note>;
   /** Moves a note to a place in the tree: at the end of `parent`'s own, or where `before` stands. */
   move_to(args: {
@@ -295,7 +293,7 @@ export interface Notebook extends tilo.Resource {
 
 /** The actions `Notebook` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTEBOOK_ACTIONS = ["new_note", "new_child", "move_to", "move_toMany", "move_after", "move_afterMany", "duplicate", "sort_children", "sort_childrenMany", "delete", "deleteMany", "append_to_note", "append_to_noteMany", "file_note", "export_notebook", "import_markdown", "import_page", "import_archive", "import_archiveMany", "import_dropped", "import_droppedMany"] as const;
+export const NOTEBOOK_ACTIONS = ["new_note", "move_to", "move_toMany", "move_after", "move_afterMany", "duplicate", "sort_children", "sort_childrenMany", "delete", "deleteMany", "append_to_note", "append_to_noteMany", "file_note", "export_notebook", "import_markdown", "import_page", "import_archive", "import_archiveMany", "import_dropped", "import_droppedMany"] as const;
 
 /** The `tl.so.tilo.lang.notes.Notebook` kind at `path`. */
 export function notebook(ws: tilo.Workspace, path: string): Notebook {
