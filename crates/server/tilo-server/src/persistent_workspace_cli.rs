@@ -370,8 +370,8 @@ pub(crate) fn keep_root(
         .context("keep the workspace root in the host's secret store")
 }
 
-/// Keep the mounted root for a workspace that starts fresh under an id it
-/// kept, checking it against the root already stored when there is one.
+/// Keep the mounted root for a workspace handed to this server under the id
+/// it kept, checking it against the root already stored when there is one.
 pub(crate) fn adopt_root(
     store: &tilo_secrets::SecretStore,
     workspace: &str,
@@ -529,39 +529,36 @@ fn read_workspace_id(id_file: &Path) -> anyhow::Result<Option<String>> {
     read(id_file)
 }
 
-/// The governed workspace: the one named in `workspace_id_file`, else the only workspace
+/// The governed workspace: the one named in `workspace_id_file` (`kept`), else the only workspace
 /// this server governs (a start interrupted between keeping the root and
-/// writing the file), else a new one. An id whose state is gone starts again
-/// under it: the id is the workspace's address, which the id file keeps.
+/// writing the file), else a new one. The id file is written only once its
+/// workspace exists, so an id this server holds nothing of names a workspace
+/// founded on another device of its person: the server founds nothing under
+/// it, and waits until one of the workspace's holders hands it over
+/// (`workspace/servers#add`), as a server that joins any workspace is given it.
+/// Founded here again, it would be a second founding of that workspace, which
+/// its holders refuse.
 async fn governed_workspace(
     workspaces: &Workspaces,
     shown: &str,
+    kept: Option<String>,
     id_file: &Path,
     store: &tilo_secrets::SecretStore,
     root: &SigningKey,
 ) -> anyhow::Result<String> {
-    let known = read_workspace_id(id_file)?;
-    let workspace = match known {
-        Some(workspace)
-            if !workspaces
-                .list()
-                .await
-                .iter()
-                .any(|summary| summary.workspace == workspace) =>
-        {
-            let created = workspaces
-                .create_workspace(shown, Some(&workspace))
-                .await
-                .map_err(anyhow::Error::msg)?;
-            adopt_root(store, &created.workspace, root)?;
-            created.workspace
+    let workspace = match kept {
+        Some(workspace) => {
+            if !holds(workspaces, &workspace).await {
+                handed(workspaces, &workspace).await;
+                adopt_root(store, &workspace, root)?;
+            }
+            workspace
         }
-        Some(workspace) => workspace,
         None => match workspaces.list().await.as_slice() {
             [only] => only.workspace.clone(),
             [] => {
                 // The root goes into the store before the workspace exists, so a
-                // crash in between is re-adopted above, never orphaned.
+                // crash in between is found above, never orphaned.
                 let created = workspaces.create(shown).await.map_err(anyhow::Error::msg)?;
                 keep_root(store, &created.workspace, root)?;
                 created.workspace
@@ -579,6 +576,45 @@ async fn governed_workspace(
     tilo_files::native::atomic::write_with_mode(id_file, workspace.as_bytes(), 0o644)
         .context("write the workspace id file")?;
     Ok(workspace)
+}
+
+/// Serve browsers on `listen`, the entry's wait list read from `wait_list`
+/// once it is set.
+async fn serve_browsers(
+    server: &tilo_server::Server,
+    args: &WorkspaceArgs,
+    listen: std::net::SocketAddr,
+    state: &Path,
+    wait_list: &tilo_server::web::WaitListSlot,
+) -> anyhow::Result<WebHandle> {
+    let mut config = web_config(&args.web, listen, state);
+    config.wait_list = Arc::clone(wait_list);
+    server
+        .serve_web_also_at(config, args.web.public_origins_also.clone())
+        .await
+        .context("start the browser listener")
+}
+
+/// Whether this server holds `workspace`.
+async fn holds(workspaces: &Workspaces, workspace: &str) -> bool {
+    workspaces
+        .list()
+        .await
+        .iter()
+        .any(|summary| summary.workspace == workspace)
+}
+
+/// Once one of `workspace`'s holders has handed it to this server. Until
+/// then the server serves its hand-over and says it is starting.
+async fn handed(workspaces: &Workspaces, workspace: &str) {
+    tracing::info!(
+        %workspace,
+        "this server holds none of the workspace its id file names: it waits for one of the workspace's holders to hand it over (workspace/servers#add)"
+    );
+    while !holds(workspaces, workspace).await {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    tracing::info!(%workspace, "the workspace was handed over");
 }
 
 /// Whom the workspace has taken in as removed, so each removal is reported
@@ -1429,7 +1465,23 @@ pub(crate) async fn run(
                 storage_bytes: persistent.person_storage_gb.saturating_mul(1_000_000_000),
             })
             .map_err(|error| anyhow::anyhow!("read whose own workspaces are whose: {error}"))?;
-        let workspace = governed_workspace(&workspaces, &shown, &id_file, &store, &root).await?;
+        // A workspace this server is to be handed is handed through its site,
+        // whose `/host` names this server to the holder handing it over: the
+        // browser listener serves before the wait. One this server founds is
+        // served only once its entry is settled below, since until then a fresh
+        // workspace lets anyone in; a handed one comes with its own entry.
+        let entry_wait_list = tilo_server::web::WaitListSlot::default();
+        let kept = read_workspace_id(&id_file)?;
+        let mut browsers = None;
+        if let Some(kept) = &kept
+            && !holds(&workspaces, kept).await
+        {
+            browsers = Some(
+                serve_browsers(&hosted.server, &args, listen, &state, &entry_wait_list).await?,
+            );
+        }
+        let workspace =
+            governed_workspace(&workspaces, &shown, kept, &id_file, &store, &root).await?;
         // Its own workspaces are for the people this workspace's entry, or an
         // invitation into it, let in: never for anyone holding a root alone.
         workspaces.admit_own_through(&workspace);
@@ -1462,18 +1514,32 @@ pub(crate) async fn run(
         settle_invitation_only(&workspaces, &workspace, &server_cert, &persistent)
             .await
             .map_err(|error| anyhow::anyhow!("settle the workspace's entry: {error}"))?;
-        seed_apps(&workspaces, &workspace, &server_cert, &persistent.seed_apps).await?;
-        settle_chat(
-            &workspaces,
-            &workspace,
-            &server_cert,
-            &persistent.seed_apps,
-            &persistent.chat_channels,
-            persistent.feedback_channel.as_deref(),
-            workspace_files(&persistent),
-            &persistent.discussions,
-        )
-        .await?;
+        // Its applications are set up by the one holder that governs them: on
+        // a copy another server of the same person governs, that server set
+        // them up, and this one does once it governs them, at a start then.
+        if workspaces
+            .governs_applications(&workspace)
+            .await
+            .map_err(|error| anyhow::anyhow!("{error}"))?
+        {
+            seed_apps(&workspaces, &workspace, &server_cert, &persistent.seed_apps).await?;
+            settle_chat(
+                &workspaces,
+                &workspace,
+                &server_cert,
+                &persistent.seed_apps,
+                &persistent.chat_channels,
+                persistent.feedback_channel.as_deref(),
+                workspace_files(&persistent),
+                &persistent.discussions,
+            )
+            .await?;
+        } else {
+            tracing::info!(
+                %workspace,
+                "another holder governs the workspace's applications: this server leaves their setup to it"
+            );
+        }
         settle_strips(&workspaces, &workspace, &server_cert, &persistent.strips).await?;
         ensure_guest_policy(&workspaces, &workspace, &server_cert).await?;
         settle_moderation(&workspaces, &workspace, &persistent).await?;
@@ -1524,13 +1590,13 @@ pub(crate) async fn run(
                 "the entry keeps a wait list"
             );
         }
-        let mut config = web_config(&args.web, listen, &state);
-        config.wait_list.clone_from(&page);
-        let web = hosted
-            .server
-            .serve_web_also_at(config, args.web.public_origins_also.clone())
-            .await
-            .context("start the browser listener")?;
+        if let Some(page) = &page {
+            let _ = entry_wait_list.set(Arc::clone(page));
+        }
+        let web = match browsers {
+            Some(web) => web,
+            None => serve_browsers(&hosted.server, &args, listen, &state, &entry_wait_list).await?,
+        };
         // A provider's sign-in page sends the browser back to the routes this
         // deployment publishes at the same origin as the web entry.
         workspaces.accounts_call_back_at(
@@ -1708,8 +1774,17 @@ pub(crate) async fn run(
             wait_list: page,
             owner_socket,
         })
-    }
-    .await;
+    };
+    // A start can wait for its workspace to be handed over for as long as no
+    // holder hands it: a stop meanwhile ends the wait.
+    let mut shutdown = std::pin::pin!(shutdown);
+    let serving = tokio::select! {
+        serving = serving => serving,
+        result = &mut shutdown => {
+            hosted.shutdown().await;
+            return result;
+        }
+    };
     let Serving {
         moderator,
         runners,
@@ -1734,7 +1809,7 @@ pub(crate) async fn run(
         .and_then(|page| page.invitations(&context.workspaces));
     let result = tokio::select! {
         result = serve_operator(&context, &mut operator, invitations.as_mut(), owner_socket.as_ref()) => result,
-        result = shutdown => result,
+        result = &mut shutdown => result,
     };
     // Its agents' turns end first, while everything they work with is still up.
     hosted.finish_turns().await;

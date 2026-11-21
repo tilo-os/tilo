@@ -271,7 +271,7 @@ impl Workspaces {
         ensure_model_runtime(package).await?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
-        if &governed.record.owner != governor {
+        if !governed.governs_applications(governor) {
             return Err(CollaborationError::new(
                 "application governor differs from current workspace authority",
             ));
@@ -366,7 +366,7 @@ impl Workspaces {
         ensure_model_runtime(package).await?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
-        if &governed.record.owner != governor {
+        if !governed.governs_applications(governor) {
             return Err(CollaborationError::new(
                 "application governor differs from current workspace authority",
             ));

@@ -2,14 +2,16 @@
 # A workspace kept by a server of an earlier build is handed over, peer to peer, to a server of
 # this commit, with both running: the way a workspace moves to another server without a copy of
 # its state. Two tilo.sh stacks come up on this machine from this checkout's stack.sh, the first
-# from the earlier build's programs and the second from this commit's, each with its own person.
-# Then, each step said as it passes or fails:
+# from the earlier build's programs and the second from this commit's. The second is another
+# server of the same person, as a real move's is: it starts with the earlier stack's workspace
+# root (the operator's secret) and its Lounge's id, and a fresh state. Each stack has its own
+# person. Then, each step said as it passes or fails:
 #
 #   1. the earlier server holds a workspace with members and records in notes, chat, files and
 #      mail, counted as its API answers them;
-#   2. this commit's server is up, lets the workspace's owner in as one of its owners (which a
-#      server asks before it keeps a workspace for someone), and its own person is made an
-#      owner of the workspace;
+#   2. this commit's server founds nothing under the Lounge's id: it waits until the earlier
+#      server hands it the Lounge (`workspace/servers#add`), then comes up, and its stack's
+#      person is made an owner of the workspace;
 #   3. the workspace's owner has the earlier server hand it over (`workspace/servers#add`, the
 #      governance action `server.add`, with this commit's server's site);
 #   4. this commit's server holds every record and member, and a write on either server reaches
@@ -154,27 +156,41 @@ else
   fail '1. the earlier server holds the workspace and its records' "$(cat "$steps/from-expect.err")"
 fi
 
-# -- 2. this commit's server, the workspace's owner let in ------------------------------------------
-# Each stack has its own person. The workspace's owner is let in on this commit's server as one
-# of its owners, which a server asks before it keeps a workspace for someone; and this commit's
-# stack's person is made an owner of the workspace, who later lets the earlier server go from
-# this commit's side.
-say "2. this commit's stack on $to_base ($to_programs)"
-if ! stack to up >"$steps/to-up.log" 2>&1; then
-  fail '2. this commit'\''s stack comes up' "$(tail -5 "$steps/to-up.log")"
+# -- 2. this commit's server, another of the same person's -----------------------------------
+# It takes the earlier stack's workspace root and the Lounge's id, as a server a workspace moves
+# to is given its operator's secret, and comes up only once it holds the Lounge: the earlier
+# server's owner hands it over as any workspace is handed to another server. Its stack's own
+# person is made an owner of the workspace, who later lets the earlier server go from this
+# commit's side.
+say "2. this commit's stack on $to_base ($to_programs), handed the Lounge"
+mkdir -p "$work/to/secrets" "$work/to/server/lounge"
+cp "$work/from/secrets/workspace-root-lounge" "$work/to/secrets/workspace-root-lounge"
+cp "$work/from/server/lounge/workspace-id" "$work/to/server/lounge/workspace-id"
+lounge=$(cat "$work/from/server/lounge/workspace-id")
+stack to up >"$steps/to-up.log" 2>&1 &
+to_up=$!
+handed=0
+for _ in $(seq 120); do
+  kill -0 "$to_up" 2>/dev/null || break
+  if data act "$lounge" 'workspace/servers#add' "{\"origin\":\"$to_origin\"}" \
+    >"$steps/lounge-add.json" 2>"$steps/lounge-add.err"; then
+    handed=1
+    break
+  fi
+  sleep 3
+done
+if ! wait "$to_up"; then
+  fail '2. this commit'\''s stack comes up, handed the Lounge' \
+    "$(tail -5 "$steps/to-up.log"; ((handed)) || cat "$steps/lounge-add.err")"
   report; exit 1
 fi
 if ! stack to owner --here >"$steps/to-owner.log" 2>&1; then
   fail '2. this commit'\''s stack names its owner' "$(tail -3 "$steps/to-owner.log")"
   report; exit 1
 fi
-if ! stack to owner "$(cat "$work/from/owner/key")" >"$steps/to-lets-in.log" 2>&1; then
-  fail '2. this commit'\''s server lets the workspace'\''s owner in' "$(tail -3 "$steps/to-lets-in.log")"
-  report; exit 1
-fi
 if stack from tilo workspace people add "$(cat "$work/to/owner/key")" --role owner -w "$workspace" \
   >"$steps/member-to-owner.log" 2>&1; then
-  pass '2. this commit'\''s stack is up, each owner let in on the other'
+  pass '2. this commit'\''s stack is up, handed the Lounge, its owner an owner of the workspace'
 else
   fail '2. the earlier server makes this commit'\''s owner an owner of the workspace' "$(tail -3 "$steps/member-to-owner.log")"
 fi

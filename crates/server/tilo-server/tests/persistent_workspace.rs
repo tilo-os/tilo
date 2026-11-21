@@ -234,12 +234,13 @@ fn a_persistent_workspace_keeps_its_id_and_owner_across_restarts() {
     assert!(!missing.child.wait().unwrap().success());
 }
 
-/// A host that keeps its workspace id but none of its state starts the same
-/// workspace again: the id is the workspace's address, which its entry and the
-/// links to it name, so a host whose state was kept aside comes back under it
-/// rather than minting a new one.
+/// A host that keeps its workspace id but none of its state founds nothing
+/// under the id: the id file is written only once its workspace exists, so the
+/// workspace is held elsewhere, and founded here again it would be a second
+/// founding its holders refuse. The host announces no workspace and keeps
+/// nothing of it until one of its holders hands it over.
 #[test]
-fn a_workspace_whose_state_is_gone_starts_again_under_its_id() {
+fn a_host_that_kept_only_its_workspace_id_waits_to_be_handed_it() {
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
@@ -257,28 +258,47 @@ fn a_workspace_whose_state_is_gone_starts_again_under_its_id() {
     workspace.stop();
 
     // The state kept for the workspace went away; its id file and the sealed
-    // root it keeps stay, as a host that keeps them aside leaves them.
+    // root it keeps stay, as a host started on a fresh volume beside them is.
     std::fs::remove_dir_all(state.join("server")).unwrap();
 
-    let workspace = start(&state, &root_file, &secrets).unwrap();
-    let OperatorEvent::Started {
-        workspace: Some(again),
-        ..
-    } = workspace.next(|e| matches!(e, OperatorEvent::Started { .. }))
-    else {
-        panic!("no governed workspace announced")
-    };
-    assert_eq!(
-        again, id,
-        "the workspace keeps the id its entry is addressed by"
+    let mut waiting = start(&state, &root_file, &secrets).unwrap();
+    // Longer than a start that founded the workspace took.
+    match waiting.events.recv_timeout(Duration::from_secs(8)) {
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        Ok(event) => panic!("the host said {event:?} before anyone handed it its workspace"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("the host stopped: {:?}", waiting.child.try_wait())
+        }
+    }
+    assert!(
+        waiting.child.try_wait().unwrap().is_none(),
+        "the host keeps running while it waits"
     );
-    let OperatorEvent::Online { members, .. } =
-        workspace.next(|e| matches!(e, OperatorEvent::Online { .. }))
-    else {
-        panic!("no presence announced")
-    };
-    assert_eq!(members, 0, "the fresh workspace has nobody in it yet");
-    workspace.stop();
+    let founded = walkdir(&state.join("server"))
+        .into_iter()
+        .filter(|path| path.to_string_lossy().contains(&id))
+        .collect::<Vec<_>>();
+    assert!(
+        founded.is_empty(),
+        "nothing of the workspace is kept here: {founded:?}"
+    );
+    waiting.kill();
+}
+
+/// Every path below `dir`.
+fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path.clone());
+            }
+            paths.push(path);
+        }
+    }
+    paths
 }
 
 /// The workspace as the image's entrypoint starts it on the state volume a workspace

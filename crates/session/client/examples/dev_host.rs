@@ -100,7 +100,7 @@ async fn main() {
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
-            wait_list: None,
+            wait_list: Default::default(),
             link: None,
             site: None,
         })

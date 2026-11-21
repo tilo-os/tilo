@@ -295,8 +295,12 @@ images reproduce what is deployed.
 peer to peer, from a server of an earlier build to one of this checkout. It runs
 two stacks here, the earlier one on port base 26500 and this checkout's on 26600.
 The earlier server's owner has it keep a workspace with members and records in
-notes, chat, files and mail. That owner then asks it for `workspace/servers#add`
-with the second server's site. The check reads every record back from the
+notes, chat, files and mail. The second server is another server of the same
+person, as in a real move: it starts with the earlier stack's workspace root and
+its Lounge's id on a fresh state, founds nothing under that id, and comes up once
+the earlier server hands it the Lounge (`workspace/servers#add`). The owner then
+asks the earlier server for `workspace/servers#add` of the workspace with the
+second server's site. The check reads every record back from the
 second server, writes on each side and reads each write on the other. It then
 lets the earlier server go from the second one (`workspace/servers#remove`) and
 reads the workspace again with the earlier stack stopped. Each step prints PASS

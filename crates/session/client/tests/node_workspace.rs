@@ -189,7 +189,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
             public_origin: None,
             fetch_proxy: None,
-            wait_list: None,
+            wait_list: Default::default(),
             link: None,
             site: None,
         },
@@ -279,7 +279,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
-            wait_list: None,
+            wait_list: Default::default(),
             link: None,
             site: None,
         })

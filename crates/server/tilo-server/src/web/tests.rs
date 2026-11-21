@@ -115,7 +115,7 @@ fn web_of_at(server: &Server, host: &Host, site: Option<&str>) -> Web {
         ),
         site: site.and_then(Site::new),
         login_codes: Arc::new(login_codes::LoginCodes::new(None)),
-        wait_list: None,
+        wait_list: Default::default(),
     }
 }
 
@@ -1919,8 +1919,12 @@ async fn an_invitation_only_entry_keeps_an_address_confirms_it_and_takes_it_off(
     let root = SigningKey::from_bytes(&[150; 32]);
     let (server, host, workspace, _state) = invitation_only_host(&root, 151).await;
     let mailer = Arc::new(crate::entry::mail::FakeMailer::default());
-    let mut web = web_of(&server, &host);
-    web.wait_list = Some(wait_list_page(&server, &workspace, 4, mailer.clone()));
+    let web = web_of(&server, &host);
+    assert!(
+        web.wait_list
+            .set(wait_list_page(&server, &workspace, 4, mailer.clone()))
+            .is_ok()
+    );
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     // Someone the entry turns away is told it keeps a wait list, where the
@@ -2078,8 +2082,12 @@ async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network()
     let root = SigningKey::from_bytes(&[152; 32]);
     let (server, host, workspace, _state) = invitation_only_host(&root, 153).await;
     let mailer = Arc::new(crate::entry::mail::FakeMailer::default());
-    let mut web = web_of(&server, &host);
-    web.wait_list = Some(wait_list_page(&server, &workspace, 1, mailer));
+    let web = web_of(&server, &host);
+    assert!(
+        web.wait_list
+            .set(wait_list_page(&server, &workspace, 1, mailer))
+            .is_ok()
+    );
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     let ask = |step: &str, body: serde_json::Value| {
@@ -2266,7 +2274,7 @@ fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one()
         plain_listen: Some("127.0.0.1:0".parse().unwrap()),
         public_origin: public_origin.map(str::to_owned),
         fetch_proxy: None,
-        wait_list: None,
+        wait_list: Default::default(),
         link: None,
         site: None,
     };

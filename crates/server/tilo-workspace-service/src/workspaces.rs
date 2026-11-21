@@ -625,6 +625,21 @@ impl GovernedWorkspace {
         self.peer.lock()
     }
 
+    /// Whether `device` governs the workspace's applications: the holder its
+    /// governance names to make the compacted base
+    /// ([`tilo_peer_state::PeerGovernance::base_maker`]), so every holder
+    /// agrees on one and the next of the owner's holders takes over when that
+    /// one stops holding the workspace; the device it was made on while its
+    /// governance names no such holder.
+    fn governs_applications(&self, device: &DeviceCert) -> bool {
+        let governor = self
+            .peer()
+            .governance()
+            .base_maker()
+            .unwrap_or(self.record.owner.device_public_key);
+        governor == device.device_public_key
+    }
+
     fn workspace(&self) -> &str {
         &self.record.workspace
     }

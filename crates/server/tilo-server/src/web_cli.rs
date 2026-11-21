@@ -563,7 +563,7 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
         }),
         // The entry's wait list is the workspace's own: whoever starts one sets it
         // on the config it gives the listener.
-        wait_list: None,
+        wait_list: Default::default(),
         link: args
             .link_listen
             .zip(args.link_origin.clone())

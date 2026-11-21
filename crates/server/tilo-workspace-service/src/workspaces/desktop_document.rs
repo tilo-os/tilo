@@ -16,7 +16,7 @@ impl Workspaces {
     ) -> Result<(), String> {
         use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
         if governed.seals()
-            || governed.record.owner != self.inner.host.cert
+            || !governed.governs_applications(&self.inner.host.cert)
             || governed
                 .peer()
                 .document(DESKTOP_APP, DESKTOP_DOCUMENT)

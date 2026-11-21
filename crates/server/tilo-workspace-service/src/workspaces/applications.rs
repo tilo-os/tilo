@@ -92,6 +92,21 @@ fn start_part(
 }
 
 impl Workspaces {
+    /// Whether this host governs `workspace`'s applications: of its holders,
+    /// the one its governance names to make the compacted base, else the
+    /// device it was made on. That one authors its records' setup.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    pub async fn governs_applications(&self, workspace: &str) -> Result<bool, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governs = state
+            .lock()
+            .await
+            .governs_applications(&self.inner.host.cert);
+        Ok(governs)
+    }
+
     /// Author an existing native record (`""` for the primary) as its exact
     /// current governor. The registry and synchronous change come from
     /// trusted host code. This host-local API accepts no incoming member
@@ -132,7 +147,7 @@ impl Workspaces {
         let app_id = app_id_for(catalogue, app, record)?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
-        if &governed.record.owner != governor {
+        if !governed.governs_applications(governor) {
             return Err(CollaborationError::new(
                 "application governor differs from current workspace authority",
             ));
@@ -247,7 +262,7 @@ impl Workspaces {
         let app_id = app_id_for(catalogue, app, record)?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
-        if &governed.record.owner != governor {
+        if !governed.governs_applications(governor) {
             return Err(CollaborationError::new(
                 "application governor differs from current workspace authority",
             ));
@@ -376,7 +391,7 @@ impl Workspaces {
         app_id_for(catalogue, app, record)?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
-        if &governed.record.owner != governor {
+        if !governed.governs_applications(governor) {
             return Err(CollaborationError::new(
                 "application governor differs from current workspace authority",
             ));

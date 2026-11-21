@@ -1203,6 +1203,16 @@ async fn base_made_by(holder: &crate::common::Hosted, workspace: &str, maker: [u
     .await;
 }
 
+/// Whether `holder` governs `workspace`'s applications.
+async fn governs_applications(holder: &crate::common::Hosted, workspace: &str) -> bool {
+    holder
+        .host
+        .workspaces()
+        .governs_applications(workspace)
+        .await
+        .unwrap()
+}
+
 /// Wait until `client`'s holder admits it to `workspace_id`.
 async fn admitted_soon(client: &ServerClient, workspace_id: WorkspaceId) {
     tilo_test_env::within("the holder admits the member", async {
@@ -1486,7 +1496,9 @@ async fn a_holders_role_moves_both_ways() {
 /// The workspace's compacted base is made by one holder every holder agrees
 /// on: the device it was founded on, and once that one is detached the next
 /// key holder of the owner, which the remaining holders name alike; the
-/// workspace stays writable through either.
+/// workspace stays writable through either. That holder governs the
+/// workspace's applications too, so a server that took the workspace over
+/// from the one it was founded on sets them up once that one is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::significant_drop_tightening,
@@ -1524,6 +1536,13 @@ async fn detaching_the_base_maker_hands_the_base_to_another_key_holder() {
     for at in [&founder, &one, &other] {
         base_made_by(at, &workspace.workspace, laptop.device_pubkey()).await;
     }
+    for (at, governs) in [(&founder, true), (&one, false), (&other, false)] {
+        assert_eq!(
+            governs_applications(at, &workspace.workspace).await,
+            governs,
+            "the founding device governs the applications while it holds the workspace"
+        );
+    }
 
     one.host
         .workspaces()
@@ -1533,6 +1552,13 @@ async fn detaching_the_base_maker_hands_the_base_to_another_key_holder() {
     let next = first.device_pubkey().min(second.device_pubkey());
     for at in [&one, &other] {
         base_made_by(at, &workspace.workspace, next).await;
+    }
+    for (at, device) in [(&one, &first), (&other, &second)] {
+        assert_eq!(
+            governs_applications(at, &workspace.workspace).await,
+            device.device_pubkey() == next,
+            "the holder making the base governs the applications once the founder is gone"
+        );
     }
 
     let on_one = session_to(&alice, &phone, &one).await;

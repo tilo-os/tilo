@@ -70,8 +70,9 @@ pub struct WebConfig {
     pub fetch_proxy: Option<FetchProxySetup>,
     /// The wait list this host keeps for a workspace that takes people by
     /// invitation, when whoever runs it keeps one
-    /// ([`crate::entry::WaitListPage`]).
-    pub wait_list: Option<Arc<crate::entry::WaitListPage>>,
+    /// ([`crate::entry::WaitListPage`]): set once that workspace's entry is
+    /// settled, which can be after the listener serves.
+    pub wait_list: WaitListSlot,
     /// Where the host takes WebTransport sessions, when not on the UDP port of
     /// [`Self::listen`] at the origin pages are told: a deployment whose
     /// HTTPS arrives through a proxy that carries no UDP names a way around
@@ -225,8 +226,12 @@ struct Web {
     login_codes: Arc<login_codes::LoginCodes>,
     /// The wait list the entry keeps for a workspace taking people by
     /// invitation, when whoever runs this host keeps one.
-    wait_list: Option<Arc<crate::entry::WaitListPage>>,
+    wait_list: WaitListSlot,
 }
+
+/// Where a listener finds the wait list its host keeps, once it keeps one
+/// ([`WebConfig::wait_list`]).
+pub type WaitListSlot = Arc<std::sync::OnceLock<Arc<crate::entry::WaitListPage>>>;
 
 impl Web {
     /// What `/host` answers: who this host is, and where its endpoint is dialled now. A
@@ -909,7 +914,7 @@ async fn directory_entry(
         step,
         WAIT_LIST | WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STATUS
     ) {
-        let Some(wait_list) = &web.wait_list else {
+        let Some(wait_list) = web.wait_list.get() else {
             return Err(refused(
                 StatusCode::NOT_FOUND,
                 "this workspace keeps no wait list",

@@ -307,7 +307,7 @@ pub async fn start_host_serving(
             plain_listen,
             public_origin: None,
             fetch_proxy,
-            wait_list: None,
+            wait_list: Default::default(),
             link: None,
             site: None,
         })
@@ -384,7 +384,7 @@ pub async fn start_workspace_host_relaying(
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
-            wait_list: None,
+            wait_list: Default::default(),
             link: None,
             site: None,
         })
