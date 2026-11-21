@@ -28,7 +28,6 @@ from two_people import joined  # noqa: E402
 MAIL = "so.tilo.mail"
 SUBJECT = "Quarterly invoices"
 SENDER = "Grace Hopper <grace@navy.example>"
-REPLY_SUBJECT = f"Re: {SUBJECT}"
 
 
 def targets_of(session: Session) -> list[dict]:
@@ -94,12 +93,15 @@ def answers(session: Session, out: Path) -> dict:
           60)
     shown(session, out, "reading")
     click_on(session, lambda name: name == "Reply", "Reply")
+    # The composer's fields say what they hold to a reader of the screen, not in their names: the
+    # composer is up once its own controls are, and its screenshot shows the answer it begins.
     def replying():
         now = names_of(session)
-        return now if any(REPLY_SUBJECT in name for name in now) else None
-    names = until(f"{who}'s reply composer to answer the sender", replying, 60)
+        composing = "Send" in now and any(name in now for name in ("Cc/Bcc", "Subject", "To"))
+        return now if composing else None
+    names = until(f"{who}'s reply composer to open", replying, 60)
     shown(session, out, "replying")
-    return {"composer": [name for name in names if REPLY_SUBJECT in name or "grace" in name.lower()]}
+    return {"composer": [name for name in names if name in ("Send", "Cc/Bcc", "Subject", "To")]}
 
 
 def main() -> int:
