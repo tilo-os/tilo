@@ -610,13 +610,6 @@ impl Link {
         }
     }
 
-    /// This device's documents, read and written through the replica this link's engine holds: the
-    /// holder a page reads and writes its workspaces' records through.
-    #[must_use]
-    pub fn documents(&self) -> Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> {
-        self.engine.documents()
-    }
-
     /// Whether this device holds a write of `route` its session has not drafted and admitted yet.
     #[must_use]
     pub fn holding(&self, route: &DocumentRoute) -> bool {

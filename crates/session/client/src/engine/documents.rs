@@ -1,31 +1,18 @@
-//! What a device whose engine holds its workspaces' records in its own replica reads and writes of
-//! them: the page and the sessions a device runs without a workspace service of its own, and the
-//! command line's peer. A desktop session reads and writes its workspaces' records through the
-//! device's workspace service instead ([`tilo_workspace_service::documents::HeldDocuments`]).
-//!
-//! The engine's own document calls are the command line's: it mirrors a workspace into a folder
-//! and reads what changed since the heads it holds. Everything else reaches the replica through
-//! this holder, as a page does ([`crate::Link::documents`]).
+//! What a device whose engine holds its workspaces' records in its own replica writes of them:
+//! each write drafted, sealed and signed into the replica as the device its identity certifies.
+//! Reads are not the engine's: a page reads its workspace through the workspace service's document
+//! core over the same replica (`tilo_workspace_service::documents::HeldDocuments`), and a desktop
+//! session through the device's workspace service.
 
 use std::sync::Arc;
 
 use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::owner::{Holding, LocalWrite, WriteRefusal, revision_of_heads};
-use tilo_peer_state::workspace_documents::{
-    DeviceDocuments, DeviceWrites, DocumentRead, DocumentWrite,
-};
+use tilo_peer_state::owner::{LocalWrite, WriteRefusal};
+use tilo_peer_state::workspace_documents::{DeviceWrites, DocumentWrite};
 
-use super::{Engine, MAX_DOCUMENT_BYTES, ResourceReading};
+use super::Engine;
 
 impl Engine {
-    /// This device's documents, read and written through the replica this engine holds, as the
-    /// page holds them: each write is drafted, sealed and signed into the replica as the device
-    /// its identity certifies, and a reader reads what the replica admitted.
-    #[must_use]
-    pub fn documents(self: &Arc<Self>) -> Arc<dyn DeviceDocuments> {
-        Arc::new(EngineDocuments(Arc::clone(self)))
-    }
-
     /// This device's documents, written as the device its identity certifies: each write is
     /// drafted, sealed and signed into the replica this engine owns, and whoever holds this can
     /// publish it as it was signed ([`crate::Outbox::publish_signed`]).
@@ -35,14 +22,14 @@ impl Engine {
     /// keeps it and writes it again once it can.
     #[must_use]
     pub fn document_writes(self: &Arc<Self>) -> Arc<dyn DeviceWrites> {
-        Arc::new(EngineDocuments(Arc::clone(self)))
+        Arc::new(EngineWrites(Arc::clone(self)))
     }
 }
 
-/// A device's documents held and written through the replica its engine keeps.
-struct EngineDocuments(Arc<Engine>);
+/// A device's documents written through the replica its engine keeps.
+struct EngineWrites(Arc<Engine>);
 
-impl DeviceWrites for EngineDocuments {
+impl DeviceWrites for EngineWrites {
     fn write(
         &self,
         workspace: &str,
@@ -89,90 +76,40 @@ impl DeviceWrites for EngineDocuments {
     }
 }
 
-impl DeviceDocuments for EngineDocuments {
-    fn read(
-        &self,
-        workspace: &str,
-        app: &str,
-        resource: &str,
-        since: Option<&[[u8; 32]]>,
-    ) -> Result<DocumentRead, String> {
-        if !WorkspaceId::parse(workspace).is_some_and(|id| self.0.holds(id)) {
-            return Ok(DocumentRead::Absent);
-        }
-        let heads = since.unwrap_or_default();
-        let holding = Holding {
-            revision: (!heads.is_empty()).then(|| revision_of_heads(heads)),
-            heads,
-        };
-        Ok(
-            match self
-                .0
-                .read_resource(workspace, (app, resource), holding, MAX_DOCUMENT_BYTES)?
-            {
-                ResourceReading::Captured {
-                    revision,
-                    heads,
-                    bytes,
-                } => DocumentRead::Whole {
-                    revision,
-                    heads,
-                    bytes,
-                },
-                ResourceReading::Changes {
-                    revision,
-                    heads,
-                    bytes,
-                } => DocumentRead::Changes {
-                    revision,
-                    heads,
-                    bytes,
-                },
-                ResourceReading::Unchanged(revision) => DocumentRead::Unchanged(revision),
-                ResourceReading::Pending => DocumentRead::Pending,
-            },
-        )
-    }
-
-    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let own = self.0.identity().device_cert.device_public_key;
-        let now = tilo_clock::wall();
-        self.0.owner().with_current(id, |view| {
-            let reader = super::Admission::of(view, own).reader(own);
-            let mut documents = view.peer().records();
-            documents.retain(|(app, document_id)| {
-                view.peer()
-                    .check_document_read(reader, app, document_id, now)
-                    .is_ok()
-            });
-            Ok(documents)
-        })
-    }
-
-    fn own_records(
-        &self,
-        workspace: &str,
-    ) -> std::collections::BTreeMap<(String, String), [u8; 32]> {
-        WorkspaceId::parse(workspace)
-            .and_then(|id| {
-                self.0
-                    .owner()
-                    .with_current(id, |view| Ok(view.peer().own_resources()))
-                    .ok()
-            })
-            .unwrap_or_default()
-    }
-
-    fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
-        self.0.holds_resource(workspace, app, resource)
-    }
-
-    fn workspaces(&self) -> Vec<String> {
-        self.0
-            .workspaces()
-            .iter()
-            .map(ToString::to_string)
-            .collect()
-    }
+/// `engine`'s replica of `workspace` as a page holds it: the workspace service's document core,
+/// read as the device the replica is held as (the device a copied machine was copied from, until
+/// the workspace admits it), with the device's keys as its own workspace service asks them.
+/// `None` while the engine holds no such workspace.
+#[cfg(test)]
+pub(crate) fn page_holder(
+    engine: &Arc<Engine>,
+    workspace: WorkspaceId,
+) -> Option<tilo_workspace_service::documents::HeldDocuments> {
+    let replica = engine.owner().replica(workspace).ok()?;
+    let reader = engine
+        .owner()
+        .with_current(workspace, |view| Ok(view.device().device_public_key))
+        .ok()?;
+    let handed = Arc::downgrade(engine);
+    let behind = Arc::downgrade(engine);
+    let keys = tilo_workspace_service::own_device::key_groups(
+        engine.keys(),
+        Some(Box::new(move |workspace| {
+            WorkspaceId::parse(workspace).and_then(|id| handed.upgrade()?.handed_keys(id))
+        })),
+        None,
+        Some(Arc::new(move |group, held| {
+            if let Some(link) = behind.upgrade().and_then(|engine| engine.link()) {
+                link.want_frames(group, held);
+            }
+        })),
+    )
+    .keys;
+    Some(tilo_workspace_service::documents::HeldDocuments::over(
+        &workspace.to_string(),
+        replica,
+        reader,
+        None,
+        Some(keys),
+    ))
 }

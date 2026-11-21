@@ -31,7 +31,6 @@ use tilo_actions::remote::{
 };
 
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
 use tilo_server_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
@@ -231,14 +230,7 @@ impl Page {
 
     /// What this page's holder reads of `route`: the record whole, when it reads.
     fn read(&self, route: &DocumentRoute) -> Option<Vec<u8>> {
-        match self
-            .peer
-            .documents()
-            .read(&route.cluster_id, &route.app_id, &route.document, None)
-        {
-            Ok(DocumentRead::Whole { bytes, .. }) => Some(bytes),
-            _ => None,
-        }
+        crate::support::record_of(&self.peer, route)
     }
 
     /// The records whose writes reached this page before it could open them.

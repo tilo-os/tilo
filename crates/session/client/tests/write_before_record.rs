@@ -31,8 +31,9 @@ use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use super::support::{
-    durable, enrol, enter_page, start_workspace_host_relaying, wait_keyed, written,
+    durable, enrol, enter_page, holder, start_workspace_host_relaying, wait_keyed, written,
 };
+use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -135,10 +136,8 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
         doc.put(automerge::ROOT, "early-1", "first").unwrap();
     });
     assert!(
-        !early
-            .engine()
-            .documents()
-            .holds(&chat.cluster_id, &chat.app_id, &chat.document),
+        !holder(&early, &chat.cluster_id)
+            .is_some_and(|holder| holder.holds(&chat.cluster_id, &chat.app_id, &chat.document)),
         "the early page holds no record before it is founded"
     );
     early.write(chat.clone(), &first).unwrap();

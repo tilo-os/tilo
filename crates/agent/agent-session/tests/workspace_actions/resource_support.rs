@@ -1,7 +1,7 @@
 //! Certified admission for resource fixtures; no owner-only workspace entry.
 use super::{Browser, Device, Hosted, RevocationList, ServerAddress, ready, start_peer};
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_peer_state::workspace_documents::DocumentRead;
+use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
 use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_session_client::{Cmd, Link, Outbox};
 
@@ -176,7 +176,9 @@ pub(super) fn part_route(
 /// its document.
 pub(super) fn notes_part_docs(peer: &Link, workspace: &str) -> Vec<(u64, automerge::AutoCommit)> {
     let chain = notes::note_list::chain();
-    let documents = peer.documents();
+    let Some(documents) = crate::support::holder(peer, workspace) else {
+        return Vec::new();
+    };
     let mut parts: Vec<(u64, automerge::AutoCommit)> = documents
         .listing(workspace)
         .unwrap_or_default()

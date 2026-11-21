@@ -15,6 +15,7 @@
 
 use super::*;
 use tilo_peer_state::owner::testing::{APP, LateAdmission, late_admission_at};
+use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 
 tilo_automerge_isolate::test_worker!();
 
@@ -110,8 +111,10 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
         "the governance so far does not admit the page"
     );
     let read = || {
-        link.documents()
-            .read(&workspace, APP, "", None)
+        crate::engine::page_holder(link.engine(), workspace_id)
+            .map_or(Ok(tilo_peer_state::workspace_documents::DocumentRead::Absent), |holder| {
+                holder.read(&workspace, APP, "", None)
+            })
             .map(|read| match read {
                 tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. } => {
                     Some(bytes)

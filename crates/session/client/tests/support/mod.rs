@@ -22,7 +22,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use sha2::{Digest as _, Sha256};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_peer_state::workspace_documents::DocumentRead;
+use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
 use tilo_server::certify::{ApproverDecision, ApproverReply};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
@@ -679,12 +679,68 @@ pub fn say(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
     }
 }
 
+/// The page holder `peer` reads `workspace` through, as a page holds it: the workspace service's
+/// document core over the replica its session admits into, read as the device that replica is
+/// held as, with the device's keys as its own workspace service asks them. Kept for the peer as a
+/// page keeps its holder, so a read goes on from what the last one opened; `None` while the peer
+/// holds no such workspace.
+pub fn holder(
+    peer: &Link,
+    workspace: &str,
+) -> Option<Arc<tilo_workspace_service::documents::HeldDocuments>> {
+    use tilo_session_client::engine::Engine;
+    type Holders = Vec<(
+        std::sync::Weak<Engine>,
+        Arc<tilo_workspace_service::documents::HeldDocuments>,
+    )>;
+    static HOLDERS: std::sync::Mutex<Holders> = std::sync::Mutex::new(Vec::new());
+    let engine = peer.engine();
+    let id = tilo_desktop_model::WorkspaceId::parse(workspace)?;
+    let replica = engine.owner().replica(id).ok()?;
+    let mut holders = HOLDERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    holders.retain(|(held, _)| held.strong_count() > 0);
+    if let Some((_, holder)) = holders.iter().find(|(held, holder)| {
+        std::ptr::eq(held.as_ptr(), Arc::as_ptr(engine))
+            && Arc::ptr_eq(&holder.replica().shared(), &replica.shared())
+    }) {
+        return Some(Arc::clone(holder));
+    }
+    let reader = engine
+        .owner()
+        .with_current(id, |view| Ok(view.device().device_public_key))
+        .ok()?;
+    let handed = Arc::downgrade(engine);
+    let behind = Arc::downgrade(engine);
+    let keys = tilo_workspace_service::own_device::key_groups(
+        engine.keys(),
+        Some(Box::new(move |workspace| {
+            tilo_desktop_model::WorkspaceId::parse(workspace)
+                .and_then(|id| handed.upgrade()?.handed_keys(id))
+        })),
+        None,
+        Some(Arc::new(move |group, held| {
+            if let Some(link) = behind.upgrade().and_then(|engine| engine.link()) {
+                link.want_frames(group, held);
+            }
+        })),
+    )
+    .keys;
+    let holder = Arc::new(tilo_workspace_service::documents::HeldDocuments::over(
+        workspace,
+        replica,
+        reader,
+        None,
+        Some(keys),
+    ));
+    holders.push((Arc::downgrade(engine), Arc::clone(&holder)));
+    Some(holder)
+}
+
 /// What `peer`'s page holder holds of `route` now: the record whole, when it reads.
 pub fn record_of(peer: &Link, route: &DocumentRoute) -> Option<Vec<u8>> {
-    match peer
-        .documents()
-        .read(&route.cluster_id, &route.app_id, &route.document, None)
-    {
+    match reading_of(peer, route, None) {
         Ok(DocumentRead::Whole { bytes, .. }) => Some(bytes),
         _ => None,
     }
@@ -697,8 +753,9 @@ pub fn reading_of(
     route: &DocumentRoute,
     heads: Option<&[[u8; 32]]>,
 ) -> Result<DocumentRead, String> {
-    peer.documents()
-        .read(&route.cluster_id, &route.app_id, &route.document, heads)
+    holder(peer, &route.cluster_id).map_or(Ok(DocumentRead::Absent), |holder| {
+        holder.read(&route.cluster_id, &route.app_id, &route.document, heads)
+    })
 }
 
 /// What `peer`'s replica of its workspace holds of `route` now, when it reads.

@@ -174,12 +174,7 @@ async fn chat_read_by_guest(
             match event {
                 Event::Landed { route, .. } if route == *chat => {
                     quiet_since = Instant::now();
-                    match page.documents().read(
-                        &chat.cluster_id,
-                        &chat.app_id,
-                        &chat.document,
-                        None,
-                    ) {
+                    match crate::support::reading_of(page, chat, None) {
                         Ok(DocumentRead::Whole { bytes, .. }) => {
                             shown = holds_every_message(&bytes);
                         }

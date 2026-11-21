@@ -44,10 +44,12 @@ impl Task {
         // route whose keys arrived while its first write is still on its way
         // is not a landing, and a reader told of it would have its read
         // refused. It lands when its first write does.
-        if !self
-            .documents
-            .holds(&route.cluster_id, &route.app_id, &route.document)
-        {
+        let held = route.workspace_id().is_ok_and(|workspace| {
+            self.engine.owner().with_current(workspace, |view| {
+                Ok(view.peer().holds_document(&route.app_id, &route.document))
+            }) == Ok(true)
+        });
+        if !held {
             return;
         }
         self.engine.arrivals().landed();

@@ -44,7 +44,7 @@ use neighbour_wire::content::ContentWants;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
 use tilo_session::sync::{Cmd, Event, Outbox};
-use tilo_session_client::engine::{Engine, ResourceReading};
+use tilo_session_client::engine::Engine;
 use tilo_session_client::{DocumentAnswer, Events, Link};
 use tilo_workspace_service::documents::{
     DeviceKeys, GroupKeys, GroupKeysAnswerFuture, HeldDocuments,
@@ -433,34 +433,13 @@ impl Joined {
         &self,
         route: &DocumentRoute,
         kept: Option<&[[u8; 32]]>,
-    ) -> Result<ResourceReading, String> {
+    ) -> Result<DocumentRead, String> {
         // The record was sent before this device held the workspace: it is read once it does,
         // as one whose keys are on their way is.
         let Some(documents) = self.documents() else {
-            return Ok(ResourceReading::Pending);
+            return Ok(DocumentRead::Pending);
         };
-        match documents.read(&route.cluster_id, &route.app_id, &route.document, kept)? {
-            DocumentRead::Whole {
-                revision,
-                heads,
-                bytes,
-            } => Ok(ResourceReading::Captured {
-                revision,
-                heads,
-                bytes,
-            }),
-            DocumentRead::Changes {
-                revision,
-                heads,
-                bytes,
-            } => Ok(ResourceReading::Changes {
-                revision,
-                heads,
-                bytes,
-            }),
-            DocumentRead::Unchanged(revision) => Ok(ResourceReading::Unchanged(revision)),
-            DocumentRead::Absent | DocumentRead::Pending => Ok(ResourceReading::Pending),
-        }
+        documents.read(&route.cluster_id, &route.app_id, &route.document, kept)
     }
 }
 
@@ -1511,7 +1490,7 @@ impl Joined {
             let held = self.read_heads.contains_key(&key);
             let replayed = !self.ready || !held;
             if let Ok(
-                ResourceReading::Captured { heads, .. } | ResourceReading::Changes { heads, .. },
+                DocumentRead::Whole { heads, .. } | DocumentRead::Changes { heads, .. },
             ) = &read
             {
                 // It is here: what the workspace answered while it sent none of it stands no
@@ -1523,26 +1502,26 @@ impl Joined {
                 self.read_heads.insert(key, heads.clone());
             }
             let applied = match read {
-                Ok(ResourceReading::Captured { bytes, heads, .. }) => {
+                Ok(DocumentRead::Whole { bytes, heads, .. }) => {
                     self.apply(&route, (bytes, &heads), replayed, &mut woken)
                 }
-                Ok(ResourceReading::Changes { bytes, heads, .. })
+                Ok(DocumentRead::Changes { bytes, heads, .. })
                     if self.is_open(&route.app_id, &route.document) =>
                 {
                     self.apply_open_changes(&route, &bytes, &heads, replayed, &mut woken)
                 }
-                Ok(ResourceReading::Changes { bytes, heads, .. }) => {
+                Ok(DocumentRead::Changes { bytes, heads, .. }) => {
                     self.apply_kept_changes(&route, bytes, &heads, replayed, &mut woken)
                 }
                 // The workspace holds the windows' copy as it is: they send what they change
                 // after it.
-                Ok(ResourceReading::Unchanged(_)) => {
+                Ok(DocumentRead::Unchanged(_)) => {
                     self.hold_open(&route);
                     Ok(())
                 }
                 // Still arriving (its keys, or the writes or checkpoint it builds on): it is read
                 // again once anything more reaches the replica.
-                Ok(ResourceReading::Pending) => {
+                Ok(DocumentRead::Absent | DocumentRead::Pending) => {
                     self.arriving.insert(route.clone());
                     Ok(())
                 }
@@ -1569,7 +1548,7 @@ impl Joined {
         &mut self,
         route: &DocumentRoute,
         due: f64,
-    ) -> Option<Result<ResourceReading, String>> {
+    ) -> Option<Result<DocumentRead, String>> {
         let kept = self.kept_heads(route);
         let (read, stopped) = tilo_peer_state::opening::in_turns(
             move || js_sys::Date::now() >= due,

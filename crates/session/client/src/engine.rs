@@ -33,10 +33,9 @@ use tilo_peer_state::join::Role;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_peer_state::owner::Change;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
-use tilo_peer_state::owner::{DocumentRead, History, Holding};
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_peer_state::owner::{FileHost, open_file_with, owner_file_of};
-use tilo_peer_state::{KeptDocument, Member};
+use tilo_peer_state::Member;
 use tilo_user_identity::RevocationList;
 use tilo_workspace_keys::{KeyAccess, KeyProvider};
 
@@ -46,14 +45,12 @@ use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
 
 mod documents;
-mod replica_documents;
+#[cfg(test)]
+pub(crate) use documents::page_holder;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it
 /// under, so the state it wrote is still read.
 const FILE: &str = "workspaces.json";
-
-/// The largest document the session reads out of a workspace.
-const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Why a workspace is not the person's to delete here, when it is not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,9 +225,6 @@ pub struct Engine {
     /// The keys each record's channel last gave this device: they seal and open while the channel
     /// asks for access again.
     group_keys: std::sync::Mutex<RouteKeys>,
-    /// Sealed records as this device last opened them for a reader, so the next read opens only
-    /// what was sealed since: a record its apps follow is opened once per write, not whole per read.
-    kept: std::sync::Mutex<KeptResources>,
     /// Where this device's own workspace service keeps the workspaces it holds, under the state
     /// the engine was opened on; `None` for an engine that keeps no state.
     service_root: Option<std::path::PathBuf>,
@@ -353,200 +347,13 @@ impl Founders {
     }
 }
 
-/// The sealed resources this device keeps opened, by workspace, app and document id, with the
-/// keys that opened each. Each is behind a lock of its own, held while it is read: a second read
-/// of the same resource waits for the first and goes on from what it opened, rather than opening
-/// it whole beside it.
-#[derive(Default)]
-struct KeptResources {
-    /// Each kept resource, with when it was last read ([`Self::uses`] at the time) and the bytes
-    /// it kept after that read ([`KeptDocument::size`]).
-    by_route: BTreeMap<KeptRoute, Kept>,
-    /// How many reads took a kept resource so far.
-    uses: u64,
-}
-
-/// One kept resource: when it was last read, the bytes it kept, and the resource.
-#[derive(Default)]
-struct Kept {
-    read_last: u64,
-    size: usize,
-    resource: Arc<std::sync::Mutex<KeptResource>>,
-}
-
-/// A kept resource's workspace, app and document id.
-type KeptRoute = (WorkspaceId, String, String);
-
-impl KeptResources {
-    /// The resource at `route`, kept from now on. When [`KEPT_DOCUMENTS`] are kept already, the one
-    /// read longest ago is let go: a reader that goes back over a few resources again and again
-    /// (a folder's tree, its every document read each time a write lands) keeps them, where
-    /// letting go of whichever came first by name made it open whole a resource it had just read.
-    fn take(&mut self, route: KeptRoute) -> Arc<std::sync::Mutex<KeptResource>> {
-        if !self.by_route.contains_key(&route) && self.by_route.len() >= KEPT_DOCUMENTS {
-            self.let_go_oldest(&route);
-        }
-        self.uses = self.uses.wrapping_add(1);
-        let now = self.uses;
-        let kept = self.by_route.entry(route).or_default();
-        kept.read_last = now;
-        Arc::clone(&kept.resource)
-    }
-
-    /// The resource at `route` keeps `size` bytes after a read. While all kept take more than
-    /// [`KEPT_BYTES`], the one read longest ago is let go, never this one: a reader going over
-    /// many large resources (a folder's tree of a hundred thousand files) keeps the few it reads
-    /// most, where keeping the last [`KEPT_DOCUMENTS`] of them held hundreds of megabytes.
-    fn sized(&mut self, route: &KeptRoute, size: usize) {
-        let Some(kept) = self.by_route.get_mut(route) else {
-            return;
-        };
-        kept.size = size;
-        while self.by_route.values().map(|kept| kept.size).sum::<usize>() > KEPT_BYTES
-            && self.let_go_oldest(route)
-        {}
-    }
-
-    /// Let go of the resource read longest ago but the one at `keep`; false when there is none.
-    fn let_go_oldest(&mut self, keep: &KeptRoute) -> bool {
-        let oldest = self
-            .by_route
-            .iter()
-            .filter(|(route, _)| *route != keep)
-            .min_by_key(|(_, kept)| kept.read_last)
-            .map(|(route, _)| route.clone());
-        oldest.is_some_and(|oldest| self.by_route.remove(&oldest).is_some())
-    }
-
-    fn remove(&mut self, route: &KeptRoute) {
-        self.by_route.remove(route);
-    }
-}
-
-/// One sealed resource as this device last opened it, with the keys that opened it; `None` until
-/// a read opened it.
-type KeptResource = Option<(KeysUsed, KeptDocument)>;
-
-/// The keys a sealed record was opened with: the channel and epoch of the record's own keys and of
-/// the channel's history keys. A rotation moves the epoch.
-type KeysUsed = [Option<(collab_types::WorkspaceId, u64)>; 3];
-
-/// What was kept opened of a record, when it was opened with exactly the keys `used` now: a
-/// record opened under other keys is forgotten.
-fn kept_under<K: Default>(kept: Option<(KeysUsed, K)>, used: &KeysUsed) -> K {
-    match kept {
-        Some((opened_with, kept)) if opened_with == *used => kept,
-        _ => K::default(),
-    }
-}
-
-/// Read a document with what this device kept of it, holding `opening`, the lock a second read
-/// of the same resource waits on, until what the read opened is kept under `used`.
-/// Says with it the bytes it keeps then ([`KeptDocument::size`]).
-fn opened_under<T>(
-    opening: Option<&std::sync::Mutex<KeptResource>>,
-    used: &KeysUsed,
-    read: impl FnOnce(&mut KeptDocument) -> T,
-) -> (T, usize) {
-    let Some(opening) = opening else {
-        return (read(&mut KeptDocument::default()), 0);
-    };
-    let mut held = opening.lock_recover();
-    let mut kept = kept_under(held.take(), used);
-    let value = read(&mut kept);
-    let size = kept.size();
-    if kept.is_open() {
-        *held = Some((*used, kept));
-    }
-    drop(held);
-    (value, size)
-}
-
 /// Keys, by workspace.
 type RouteKeys = BTreeMap<WorkspaceId, key_group::ContentKeys>;
-
-/// Opens one sealed write of a record into its plaintext.
-type OpenSealed<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
-
-/// How many sealed records [`Engine::read_resource`] keeps opened between reads.
-const KEPT_DOCUMENTS: usize = 64;
-
-/// The most bytes ([`KeptDocument::size`]) the sealed documents [`Engine::read_resource`] keeps
-/// opened between reads take together; in memory they take several times as much.
-const KEPT_BYTES: usize = 8 * 1024 * 1024;
-
-/// What a read of one of a workspace's records found ([`Engine::read_resource`]).
-pub enum ResourceReading {
-    /// The record as the workspace holds it, sealed writes opened with the record's channel keys.
-    Captured {
-        /// Names exactly these heads: equal revisions are equal documents.
-        revision: [u8; 32],
-        /// The document's heads, sorted.
-        heads: Vec<[u8; 32]>,
-        bytes: Vec<u8>,
-    },
-    /// Only the changes since the heads the caller holds, which they complete to `heads`.
-    Changes {
-        revision: [u8; 32],
-        heads: Vec<[u8; 32]>,
-        bytes: Vec<u8>,
-    },
-    /// The record stands where the caller last read it.
-    Unchanged([u8; 32]),
-    /// The record is not here yet: the workspace's host was asked for it, or the record's keys are
-    /// on their way, and it reads once they are.
-    Pending,
-}
-
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
             .field("workspaces", &self.workspaces())
             .finish_non_exhaustive()
-    }
-}
-
-struct DocumentHistoryKeys {
-    shared: Option<tilo_workspace_keys::HistoryKeys>,
-    historical: Option<Result<tilo_workspace_keys::HistoryKeys, String>>,
-    document: Option<tilo_workspace_keys::HistoryKeys>,
-}
-
-impl DocumentHistoryKeys {
-    fn generation(&self) -> KeysUsed {
-        [
-            self.shared
-                .as_ref()
-                .map(tilo_workspace_keys::HistoryKeys::generation),
-            self.historical
-                .as_ref()
-                .and_then(|keys| keys.as_ref().ok())
-                .map(tilo_workspace_keys::HistoryKeys::generation),
-            self.document
-                .as_ref()
-                .map(tilo_workspace_keys::HistoryKeys::generation),
-        ]
-    }
-
-    fn open(&self, write: &collab_types::SignedOp) -> Result<Vec<u8>, String> {
-        if write.encryption.is_some_and(|metadata| {
-            matches!(
-                metadata.scheme,
-                collab_types::EncryptionScheme::DocumentContentKey { .. }
-            )
-        }) {
-            return self
-                .document
-                .as_ref()
-                .ok_or("the document's keys have not arrived")?
-                .open(write);
-        }
-        match (&self.shared, &self.historical) {
-            (Some(keys), Some(Ok(history))) => keys.open(write).or_else(|_| history.open(write)),
-            (Some(keys), _) => keys.open(write),
-            (None, Some(history)) => history.as_ref().map_err(Clone::clone)?.open(write),
-            (None, None) => Err("this session's key service is not running".into()),
-        }
     }
 }
 
@@ -691,7 +498,6 @@ impl Engine {
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
             handed,
             group_keys: std::sync::Mutex::default(),
-            kept: std::sync::Mutex::default(),
             service_root: None,
             founders,
             open_links: std::sync::Mutex::default(),
@@ -846,205 +652,6 @@ impl Engine {
             workspace,
             now,
         ))
-    }
-
-    /// What this device's replica holds of the record.
-    fn read_replica(
-        &self,
-        workspace: &str,
-        route: (&str, &str),
-        holding: Holding<'_>,
-        maximum: usize,
-    ) -> Result<ResourceReading, String> {
-        Ok(self
-            .opened(workspace, route, &mut |workspace, open, kept| {
-                self.read_in(workspace, route, holding, maximum, History { open, kept })
-            })?
-            .unwrap_or(ResourceReading::Pending))
-    }
-
-    /// `read` of the document of `workspace` at `route`, with how its sealed writes open — the
-    /// document's keys, then the workspace's own history keys — and what this device kept opened of
-    /// it: `None` while the keys of a sealed document are not here.
-    fn opened<T>(
-        &self,
-        workspace: &str,
-        (app, document_id): (&str, &str),
-        read: &mut dyn FnMut(WorkspaceId, OpenSealed<'_>, &mut KeptDocument) -> Result<T, String>,
-    ) -> Result<Option<T>, String> {
-        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let own = self.identity.device_cert.device_public_key;
-        let (sealed, scoped, admission) = self.owner.with_current(workspace, |view| {
-            let admission = Admission::of(view, own);
-            view.peer().check_document_read(
-                admission.reader(own),
-                app,
-                document_id,
-                tilo_clock::wall(),
-            )?;
-            Ok((
-                view.peer()
-                    .publication()
-                    .is_sealed_document(app, document_id),
-                view.peer()
-                    .publication()
-                    .has_document_keys(app, document_id),
-                admission,
-            ))
-        })?;
-        let route = DocumentRoute {
-            app_id: app.to_owned(),
-            cluster_id: workspace.to_string(),
-            document: document_id.to_owned(),
-        };
-        let Some(keys) = self.history_keys_for(&route, workspace, admission, sealed, scoped)?
-        else {
-            return Ok(None);
-        };
-        let mut unopened = false;
-        let key = (workspace, app.to_owned(), document_id.to_owned());
-        // What was opened under other keys than these — the channel rotated, as removing a member
-        // rotates it — is let go, and it opens whole under the keys held now.
-        let used = keys.generation();
-        // A sealed resource another read is opening now is waited for, and read on from what that
-        // one opened: taking it out while it was read made the second reader open it whole, which
-        // for a chain part of a thousand items costs the second caller most of a second.
-        let opening = sealed.then(|| self.kept.lock_recover().take(key.clone()));
-        let (read, kept_size) = opened_under(opening.as_deref(), &used, |kept| {
-            read(
-                workspace,
-                &mut |write| {
-                    let opened = keys.open(write);
-                    unopened |= opened.is_err();
-                    opened
-                },
-                kept,
-            )
-        });
-        if opening.is_some() {
-            self.kept.lock_recover().sized(&key, kept_size);
-        }
-        // The person's other devices may hold the key the workspace's server has not handed this
-        // one yet, or cannot, being away: they are asked for the group's frames from the epoch
-        // held.
-        if unopened && let (Some(link), Some(Ok(history))) = (self.link(), &keys.historical) {
-            link.want_frames(workspace, history.generation().1);
-        }
-        match read {
-            Err(_) if unopened => Ok(None),
-            read => read.map(Some),
-        }
-    }
-
-    fn history_keys_for(
-        &self,
-        route: &DocumentRoute,
-        workspace: WorkspaceId,
-        admission: Admission,
-        sealed: bool,
-        scoped: bool,
-    ) -> Result<Option<DocumentHistoryKeys>, String> {
-        let named = self.named_document_readers(workspace, &route.document)?;
-        let keys: Option<tilo_workspace_keys::HistoryKeys> = if let Some(readers) = &named {
-            match self.reader_keys(workspace, readers) {
-                Ok(SealKeys::Here(keys)) => Some(keys.into()),
-                Ok(SealKeys::Waiting | SealKeys::NoSecretStore) | Err(_) if scoped => None,
-                Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => return Ok(None),
-                Err(error) => return Err(error),
-            }
-        } else if sealed {
-            match self.route_access(workspace) {
-                None => None,
-                Some(KeyAccess::Ready(keys)) => Some(keys.into()),
-                Some(KeyAccess::Waiting | KeyAccess::Removed) => {
-                    // Nothing opened under keys this device no longer holds answers a read
-                    // until the document's channel gives it keys again.
-                    self.kept.lock_recover().remove(&(
-                        workspace,
-                        route.app_id.clone(),
-                        route.document.clone(),
-                    ));
-                    return Ok(None);
-                }
-                Some(KeyAccess::NoSecretStore) => {
-                    return Err(
-                        "this device has no secret store, so it holds no channel keys".to_owned(),
-                    );
-                }
-                // A copy the workspace has not admitted takes part in none of its key groups yet:
-                // the keys it was copied with, among the history keys, open what it holds.
-                Some(KeyAccess::Unavailable) if admission != Admission::Admitted => None,
-                Some(KeyAccess::Unavailable) => {
-                    return Err("this device takes part in no channel of the document".to_owned());
-                }
-            }
-        } else {
-            None
-        };
-        // Taken before the workspace's view is held: the channel service's pump settles the groups
-        // under its own lock and reads the workspace's governance there, so a read that asked it
-        // for keys while holding the view would wait on it as it waits on the view.
-        let history = if named.is_none() {
-            self.keys
-                .get()
-                .and_then(|keys| keys.history_keys(workspace))
-        } else {
-            None
-        };
-        let document_keys = if scoped {
-            match self.scoped_keys(route, named.as_deref())? {
-                SealKeys::Here(keys) => Some(tilo_workspace_keys::HistoryKeys::from(keys)),
-                SealKeys::Waiting | SealKeys::NoSecretStore => return Ok(None),
-            }
-        } else {
-            None
-        };
-        Ok(Some(DocumentHistoryKeys {
-            shared: keys,
-            historical: history,
-            document: document_keys,
-        }))
-    }
-
-    /// [`Self::read_resource`] under keys the caller holds itself rather than this device's channel
-    /// service: what a caller that sealed a record's writes reads them back with. Nothing of it
-    /// is kept: what these keys open is the caller's alone.
-    fn read_in(
-        &self,
-        workspace: WorkspaceId,
-        (app, record): (&str, &str),
-        holding: Holding<'_>,
-        maximum: usize,
-        history: History<'_>,
-    ) -> Result<ResourceReading, String> {
-        let own = self.identity.device_cert.device_public_key;
-        self.owner
-            .with_current(workspace, |view| {
-                view.read_document_with_history(
-                    Admission::of(view, own).reader(own),
-                    (app, record),
-                    holding,
-                    maximum,
-                    tilo_clock::wall(),
-                    history,
-                )
-            })
-            .map(|read| match read {
-                DocumentRead::Captured(document) => ResourceReading::Captured {
-                    revision: document.revision,
-                    heads: document.heads,
-                    bytes: document.bytes,
-                },
-                DocumentRead::Changes(changes) => ResourceReading::Changes {
-                    revision: changes.revision,
-                    heads: changes.heads,
-                    bytes: changes.bytes,
-                },
-                DocumentRead::Unchanged(revision) => ResourceReading::Unchanged(revision),
-                DocumentRead::CheckpointPending | DocumentRead::Arriving => {
-                    ResourceReading::Pending
-                }
-            })
     }
 
     /// Whether `workspace` is held on this device, by its own workspace service: everything the
@@ -1477,10 +1084,6 @@ impl Engine {
     /// # Errors
     /// The record cannot be published.
     pub fn delete(&self, workspace: WorkspaceId) -> Result<bool, String> {
-        self.kept
-            .lock_recover()
-            .by_route
-            .retain(|(held, _, _), _| *held != workspace);
         self.owner.release_workspace(workspace)
     }
 
@@ -1998,80 +1601,8 @@ mod tests {
     )]
 
     tilo_automerge_isolate::test_worker!();
-
-    /// A record opened under keys a rotation replaced, or under keys handed over that changed, is
-    /// opened whole again under the keys held now; the same keys read on what was kept.
-    #[test]
-    fn a_record_kept_under_keys_a_rotation_replaced_is_forgotten() {
-        let channel = collab_types::WorkspaceId::from_u128(7);
-        let held: super::KeysUsed = [None, Some((channel, 1)), None];
-        let rotated: super::KeysUsed = [None, Some((channel, 2)), None];
-        let handed: super::KeysUsed = [Some((channel, 1)), Some((channel, 1)), None];
-        let scoped: super::KeysUsed = [None, Some((channel, 1)), Some((channel, 1))];
-        // Whatever a read kept stands in for the opened record.
-        let opened = || (held, Some("opened"));
-        assert_eq!(super::kept_under(Some(opened()), &held), Some("opened"));
-        assert_eq!(super::kept_under(Some(opened()), &rotated), None);
-        assert_eq!(super::kept_under(Some(opened()), &handed), None);
-        assert_eq!(super::kept_under(Some(opened()), &scoped), None);
-        assert_eq!(super::kept_under::<Option<&str>>(None, &held), None);
-    }
-
-    /// A document read again between reads of more others than are kept stays opened: a folder's
-    /// tree of more parts than that reads back the parts it writes after every write, and letting
-    /// go of whichever came first by name made each of those reads open the part's whole history.
-    #[test]
-    fn a_document_read_again_and_again_stays_opened_among_more_than_are_kept() {
-        let workspace = WorkspaceId::from_u128(7);
-        let route = |document: &str| (workspace, "files".to_owned(), document.to_owned());
-        let mut kept = super::KeptResources::default();
-        let again = kept.take(route("a-read-again"));
-        for other in 0..super::KEPT_DOCUMENTS * 3 {
-            let _ = kept.take(route(&format!("z-{other}")));
-            assert!(
-                Arc::ptr_eq(&again, &kept.take(route("a-read-again"))),
-                "the document read again was let go after {other} others"
-            );
-        }
-        assert_eq!(kept.by_route.len(), super::KEPT_DOCUMENTS);
-    }
-
-    /// Large documents are kept only up to a budget of bytes, the ones read longest ago let go
-    /// first, and never the one just read: a folder's tree of a hundred thousand files kept
-    /// opened in its last 64 parts held hundreds of megabytes it seldom read again.
-    #[test]
-    fn large_documents_are_kept_within_a_budget_of_bytes() {
-        let workspace = WorkspaceId::from_u128(7);
-        let route = |document: &str| (workspace, "files".to_owned(), document.to_owned());
-        let part = super::KEPT_BYTES / 4;
-        let mut kept = super::KeptResources::default();
-        for n in 0..10 {
-            let _ = kept.take(route(&format!("part-{n}")));
-            kept.sized(&route(&format!("part-{n}")), part);
-            let held: usize = kept.by_route.values().map(|kept| kept.size).sum();
-            assert!(
-                held <= super::KEPT_BYTES,
-                "{held} bytes kept after part {n}"
-            );
-        }
-        let left: Vec<_> = kept
-            .by_route
-            .keys()
-            .map(|(_, _, document)| document.clone())
-            .collect();
-        assert_eq!(left, ["part-6", "part-7", "part-8", "part-9"]);
-        // One larger than the whole budget is still kept while it is the one read last.
-        let _ = kept.take(route("whole"));
-        kept.sized(&route("whole"), super::KEPT_BYTES * 2);
-        let left: Vec<_> = kept
-            .by_route
-            .keys()
-            .map(|(_, _, document)| document.clone())
-            .collect();
-        assert_eq!(left, ["whole"]);
-    }
-
     use super::*;
+    use tilo_peer_state::workspace_documents::DeviceDocuments as _;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
     /// A device of a person, certified for their root, with `capabilities`,
@@ -2265,7 +1796,7 @@ mod tests {
     }
 
     /// A machine copied from a device, before the workspace admits it, reads what the copy holds
-    /// and nothing it does not hold.
+    /// through its page holder, and nothing it does not hold.
     #[test]
     fn a_copy_awaiting_its_host_reads_what_it_holds() {
         let state = tempfile::tempdir().expect("a state directory");
@@ -2299,8 +1830,8 @@ mod tests {
             copy.awaited_host(workspace).is_some(),
             "the copy waits for the workspace to admit it"
         );
-        let read = match copy
-            .documents()
+        let holder = page_holder(&copy, workspace).expect("the copy holds the workspace");
+        let read = match holder
             .read(&id, "so.tilo.notes", "note", None)
             .expect("the copy reads the note it holds")
         {
@@ -2316,7 +1847,7 @@ mod tests {
         );
         assert!(
             !matches!(
-                copy.documents().read(&id, "so.tilo.notes", "other", None),
+                holder.read(&id, "so.tilo.notes", "other", None),
                 Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { .. })
             ),
             "what the copy does not hold reads as nothing"
