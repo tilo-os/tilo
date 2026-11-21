@@ -1564,6 +1564,7 @@ impl Origin for ImapOrigin {
             body: field(4),
             in_reply_to: field(5),
             references: field(6),
+            calendar_ics: field(7),
         };
         match self.connector.send(&account, message) {
             Ok(request) => {

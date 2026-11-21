@@ -256,6 +256,9 @@ impl MailConnector for EngineConnector {
             .split_whitespace()
             .map(str::to_owned)
             .collect();
+        if !message.calendar_ics.is_empty() {
+            draft.calendar_ics = Some(message.calendar_ics);
+        }
         // A message written on this device brings its files in the draft: there is no page
         // whose files the host would have to read for it.
         self.request(EngineRequest::send(config, Box::new(draft), Vec::new()))

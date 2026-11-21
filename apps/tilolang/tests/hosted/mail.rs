@@ -719,6 +719,50 @@ fn opening_a_conversation_reads_it_here_and_on_the_server() {
     });
 }
 
+/// What Calendar can hand Mail for a guest it invites: a message with the event's invitation,
+/// which goes out with its calendar part once the person sends it.
+#[test]
+fn a_calendar_invitation_is_a_draft_that_goes_out_with_its_calendar_part() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    session.hold_for(0);
+    let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Tilo//Calendar//EN\r\nMETHOD:REQUEST\r\n\
+               BEGIN:VEVENT\r\nUID:launch@calendar.example\r\nDTSTAMP:20261112T090000Z\r\n\
+               DTSTART:20261113T100000Z\r\nDTEND:20261113T110000Z\r\nSUMMARY:Launch review\r\n\
+               ATTENDEE:mailto:grace@hopper.example\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let root = session.mail_root();
+    assert!(
+        session
+            .try_call(
+                "prepare_calendar_invitation",
+                &root,
+                &json!({"to": "grace@hopper.example", "subject": "Invitation: Launch review",
+                        "body": "You're invited.", "calendar_ics": "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"}),
+            )
+            .is_err(),
+        "a calendar that invites to nothing is no invitation"
+    );
+    let draft = session.made(
+        "prepare_calendar_invitation",
+        &root,
+        &json!({"to": "grace@hopper.example", "subject": "Invitation: Launch review",
+                "body": "You're invited.", "calendar_ics": ics}),
+    );
+    assert_eq!(session.text(&draft, "to"), "grace@hopper.example");
+    assert!(!session.flag(&draft, "sent"), "nothing is sent until the person sends it");
+    assert!(servers.smtp.sent().is_empty());
+
+    session.call("send", &draft, &json!({}));
+    session.until("the server to take the invitation", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+    assert!(sent.contains("Subject: Invitation: Launch review"), "{sent}");
+    assert!(sent.contains("text/calendar; method=REQUEST"), "{sent}");
+    assert!(sent.contains("invitation.ics"), "{sent}");
+}
+
 #[test]
 fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
     let servers = servers();

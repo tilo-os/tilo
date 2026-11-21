@@ -10,7 +10,11 @@
 //! fields at the document's root, and each collection a map of item ids, each item an order key
 //! (`k`) and its fields (`v`). A field reads as what it holds, generically: words and numbers as
 //! text, rich text as rich text, a set or a map as its keys, and a map of bytes (a native app's
-//! pictures, by their digest) as the files they are. A document that is no record of
+//! pictures, by their digest) as the files they are. A field that holds a record of its own (a
+//! draft's sender, its account and address) reads as that record's fields too, each under the
+//! field's name and its own (`sender.email`); one at a document's root (the draft a composer
+//! writes, beside the collection of the others) is besides an item of its own, `of` the field.
+//! A document that is no record of
 //! that layout (one written before it, which carries neither `tilo:version` nor `tilo:record`)
 //! yields nothing: it is left where it is, unread.
 
@@ -134,7 +138,18 @@ pub fn items(id: &str, doc: &AutoCommit) -> Vec<EarlierItem> {
         if let Some(mut items) = collection(doc, &key, &value, &obj, version) {
             held.append(&mut items);
         } else {
-            read_field(doc, &mut own, &key, &value, &obj);
+            if record(doc, &value, &obj) {
+                let mut item = EarlierItem {
+                    id: key.clone(),
+                    of: key.clone(),
+                    version,
+                    ..EarlierItem::default()
+                };
+                read_fields(doc, &mut item, "", &obj, 0);
+                held.push(item);
+            }
+            // A document's own fields are read as they are: a record among them is an item.
+            read_field_at(doc, &mut own, &key, &value, &obj, RECORD_DEPTH);
         }
     }
     let mut out = vec![own];
@@ -258,6 +273,21 @@ fn read_field(
     value: &AmValue<'_>,
     obj: &ObjId,
 ) {
+    read_field_at(doc, item, name, value, obj, 0);
+}
+
+/// How deep a record inside a record is read: deeper than any native resource keeps one.
+const RECORD_DEPTH: usize = 4;
+
+/// [`read_field`] of a field `depth` records down.
+fn read_field_at(
+    doc: &AutoCommit,
+    item: &mut EarlierItem,
+    name: &str,
+    value: &AmValue<'_>,
+    obj: &ObjId,
+    depth: usize,
+) {
     match value {
         AmValue::Scalar(s) => {
             if let Some(said) = scalar_words(s) {
@@ -277,6 +307,9 @@ fn read_field(
                 item.bytes.insert(name.to_owned(), held);
             } else {
                 item.lists.insert(name.to_owned(), doc.keys(obj).collect());
+                if depth < RECORD_DEPTH && record(doc, value, obj) {
+                    read_fields(doc, item, name, obj, depth.saturating_add(1));
+                }
             }
         }
         AmValue::Object(ObjType::List) => {
@@ -290,6 +323,45 @@ fn read_field(
             item.lists.insert(name.to_owned(), held);
         }
     }
+}
+
+/// Each field of the record `obj` into `item`, under `prefix` and its own name (`sender.email`),
+/// or under its own name alone where `prefix` is empty.
+fn read_fields(doc: &AutoCommit, item: &mut EarlierItem, prefix: &str, obj: &ObjId, depth: usize) {
+    for key in doc.keys(obj) {
+        if internal(&key) {
+            continue;
+        }
+        if let Ok(Some((value, at))) = doc.get(obj, key.as_str()) {
+            let name = if prefix.is_empty() {
+                key
+            } else {
+                format!("{prefix}.{key}")
+            };
+            read_field_at(doc, item, &name, &value, &at, depth);
+        }
+    }
+}
+
+/// Whether `value` (at `obj`) is a record of its own: a map that is neither rich text nor bytes
+/// by key, and says something in words of its own (a set keeps its members as flags, and a map
+/// of other records, as a package's own resources are kept, says nothing itself).
+fn record(doc: &AutoCommit, value: &AmValue<'_>, obj: &ObjId) -> bool {
+    if !matches!(value, AmValue::Object(ObjType::Map | ObjType::Table))
+        || words(doc, obj, "schema").as_deref() == Some(RICH_SCHEMA)
+        || bytes_by_key(doc, obj).is_some()
+    {
+        return false;
+    }
+    doc.keys(obj)
+        .filter(|key| !internal(key))
+        .any(|key| match doc.get(obj, key.as_str()) {
+            Ok(Some((AmValue::Scalar(s), _))) => {
+                !matches!(s.as_ref(), ScalarValue::Boolean(_) | ScalarValue::Null)
+            }
+            Ok(Some((AmValue::Object(ObjType::Text), _))) => true,
+            _ => false,
+        })
 }
 
 /// The bytes the map `obj` holds under each of its keys, when it holds some and nothing else.
@@ -345,4 +417,46 @@ fn scalar_words(s: &ScalarValue) -> Option<String> {
         ScalarValue::Boolean(v) => v.to_string(),
         ScalarValue::Null | ScalarValue::Bytes(_) | ScalarValue::Unknown { .. } => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use automerge::transaction::Transactable as _;
+    use automerge::{AutoCommit, ObjType, ROOT};
+
+    /// A record held in a field reads as its own fields: at the document's root as an item of
+    /// its own, inside an item under the field's name. A set and the map of a package's own
+    /// resources say nothing of their own, and are no records.
+    #[test]
+    fn a_record_in_a_field_reads_as_its_fields() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "tilo:version", 3_i64).unwrap();
+        let draft = doc.put_object(ROOT, "draft", ObjType::Map).unwrap();
+        doc.put(&draft, "to", "grace@hopper.example").unwrap();
+        let sender = doc.put_object(&draft, "sender", ObjType::Map).unwrap();
+        doc.put(&sender, "email", "sam@rivera.example").unwrap();
+        let drafts = doc.put_object(ROOT, "drafts", ObjType::Map).unwrap();
+        let entry = doc.put_object(&drafts, "d1", ObjType::Map).unwrap();
+        doc.put(&entry, "k", "a0").unwrap();
+        let fields = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+        doc.put(&fields, "to", "bo@chen.example").unwrap();
+        let sender = doc.put_object(&fields, "sender", ObjType::Map).unwrap();
+        doc.put(&sender, "email", "work@rivera.example").unwrap();
+        let set = doc.put_object(ROOT, "imported", ObjType::Map).unwrap();
+        doc.put(&set, "one", true).unwrap();
+        let tl = doc.put_object(ROOT, "tl", ObjType::Map).unwrap();
+        let app = doc.put_object(&tl, "so.tilo.mail", ObjType::Map).unwrap();
+        doc.put(&app, "x", "y").unwrap();
+
+        let items = super::items("mailbox", &doc);
+        let of = |name: &str| items.iter().find(|item| item.of == name).unwrap();
+        assert_eq!(of("draft").texts["to"], "grace@hopper.example");
+        assert_eq!(of("draft").texts["sender.email"], "sam@rivera.example");
+        assert_eq!(of("drafts").texts["to"], "bo@chen.example");
+        assert_eq!(of("drafts").texts["sender.email"], "work@rivera.example");
+        assert!(items.iter().all(|item| item.of != "imported" && item.of != "tl"));
+        let own = of("");
+        assert_eq!(own.lists["imported"], ["one"]);
+        assert!(own.texts.keys().all(|key| !key.contains('.')), "{:?}", own.texts);
+    }
 }

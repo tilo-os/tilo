@@ -61,6 +61,10 @@ pub struct Outgoing {
     pub in_reply_to: String,
     /// The Message-IDs of the conversation it continues, oldest first, space separated.
     pub references: String,
+    /// The calendar invitation it carries (iCalendar), sent as its calendar part so the guest's
+    /// calendar answers it: empty for none.
+    #[serde(default)]
+    pub calendar_ics: String,
 }
 
 /// A request handed to a server.

@@ -38,7 +38,7 @@ pub enum Wakeup {
     /// An instance attached, over this socket.
     Attach(UnixStream),
     /// The attached instance `session` asked something.
-    Asked(u64, ToConnector),
+    Asked(u64, Box<ToConnector>),
     /// The attached instance `session` is gone.
     Detached(u64),
     /// The engine has answers, or the network came back.
@@ -158,7 +158,7 @@ impl Connector {
     pub fn handle(&mut self, wakeup: Wakeup, woken: &Sender<Wakeup>) {
         match wakeup {
             Wakeup::Attach(stream) => self.attach(stream, woken),
-            Wakeup::Asked(session, asked) => self.asked(session, asked),
+            Wakeup::Asked(session, asked) => self.asked(session, *asked),
             Wakeup::Detached(session) => self.detach(session),
             Wakeup::Engine => {}
         }
@@ -201,7 +201,7 @@ impl Connector {
                     match wire::read::<ToConnector>(&mut reading) {
                         Ok(Some(asked)) => {
                             // The loop is gone only when the connector ends.
-                            if wakeups.send(Wakeup::Asked(session, asked)).is_err() {
+                            if wakeups.send(Wakeup::Asked(session, Box::new(asked))).is_err() {
                                 return;
                             }
                         }

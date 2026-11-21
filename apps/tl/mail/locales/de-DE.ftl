@@ -196,6 +196,9 @@ d-lgrwf5yf = Senden um
 d-h2nvr2op = Zurückgeholt
     .doc = Sie wurde zurückgeholt, bevor sie rausging: sie geht nie raus und ist wieder ein Entwurf.
 
+d-em6rrmae = Einladung
+    .doc = Die Kalendereinladung, die sie trägt (iCalendar), neben dem, was sie sagt, damit der Kalender des Gasts sie beantworten kann: leer für keine.
+
 d-lidkonvr-filter-drafts = Entwürfe
 
 d-lidkonvr-filter-sent = Gesendet
@@ -259,6 +262,20 @@ d-y6hvqjbf-signatures = Signaturen
 d-ygbvdl5l = Neue Nachricht
     .doc = Beginnt eine Nachricht vom ersten Konto.
     .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
+
+d-hom44or2 = Per Mail einladen
+    .doc = Beginnt eine Nachricht, die `to` zu einem Termin einlädt, mit ihrer Einladung (`calendar_ics`, iCalendar) neben dem, was sie sagt: was der Kalender Mail für jeden Gast übergibt, den er einlädt.
+    .w-add-a-mail-account-in-settings = Füge zuerst in den Einstellungen ein Mailkonto hinzu
+    .w-an-invitation-goes-to-someone = Eine Einladung geht an jemanden
+    .w-the-invitation-is-not-a-calendar = Die Einladung ist keine Kalenderanfrage
+
+d-hom44or2-to = An
+
+d-hom44or2-subject = Betreff
+
+d-hom44or2-body = Text
+
+d-hom44or2-calendar_ics = Kalender-ICS
 
 d-hirareiw = Antworten
     .doc = Beantwortet die neueste Nachricht der Unterhaltung an wen sie geschrieben hat und zitiert sie unter dem Geschriebenen.
@@ -419,6 +436,8 @@ d-k2js7gyd = Zustellung sagt
 d-2zkppx6r = Zeit zum Zurückholen~present
 
 d-gcixhwyt = Neuer Entwurf~present
+
+d-7jf4pn3j = Kalendereinladung vorbereiten~present
 
 d-bj7uen6f = Archivieren~present
 

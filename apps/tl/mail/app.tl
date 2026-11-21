@@ -118,6 +118,9 @@ type Draft (title: subject, untitled: "New message") {
     send_at: Time = Time("1970-01-01T00:00:00Z")
     /// It was taken back before it went: it never leaves, and it is a draft again.
     recalled: Bool = false
+    /// The calendar invitation it carries (iCalendar), which goes beside what it says so the
+    /// guest's calendar can answer it: empty for none.
+    invitation: Text = ""
 
     search {
         filter "Drafts" = not sent and not recalled (icon: .pencil)
@@ -125,6 +128,7 @@ type Draft (title: subject, untitled: "New message") {
         hide in_reply_to
         hide references
         hide send_at
+        hide invitation
     }
 }
 
@@ -320,6 +324,33 @@ primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message")
     applies not m.accounts.is_empty() "Add a mail account in Settings first"
     let from = m.accounts.first()?.key ?? ""
     m.drafts.insert(Draft(from: from, body: signature_of(m, from)))
+}
+
+/// Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried
+/// beside what it says: what Calendar hands Mail for each guest it invites. Nothing is sent; the
+/// person reads it, and sends it.
+action prepare_calendar_invitation(
+    m: Mail,
+    to: Text,
+    subject: Text,
+    body: Text,
+    calendar_ics: Text,
+) -> Draft (icon: .calendar, label: "Invite by mail") {
+    require not m.accounts.is_empty() "Add a mail account in Settings first"
+    require to != "" "An invitation goes to someone"
+    require calendar_ics.find("BEGIN:VCALENDAR") != .none
+        and calendar_ics.find("METHOD:REQUEST") != .none "The invitation is not a calendar request"
+    let from = m.accounts.first()?.key ?? ""
+    let signature = signature_of(m, from)
+    m.drafts.insert(
+        Draft(
+            from: from,
+            to: to,
+            subject: subject,
+            body: if signature == "" { body } else { "{body}\n{signature}" },
+            invitation: calendar_ics,
+        ),
+    )
 }
 
 /// The subject an answer to a conversation has.
@@ -613,7 +644,7 @@ action send_later(d: Draft, at: Time) uses time (icon: .clock, label: "Send late
     require at > now "Pick a moment still to come"
     outside(
         "smtp.send",
-        (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references),
+        (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references, d.invitation),
         at: at,
     )
     d.send_at = at
@@ -689,7 +720,7 @@ primary action send(d: Draft) uses time proposal compose(d) (icon: .send) {
     let at = now + Duration(m.hold)
     outside(
         "smtp.send",
-        (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references),
+        (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references, d.invitation),
         at: at,
     )
     d.send_at = at

@@ -197,6 +197,9 @@ d-lgrwf5yf = Send at
 d-h2nvr2op = Recalled
     .doc = It was taken back before it went: it never leaves, and it is a draft again.
 
+d-em6rrmae = Invitation
+    .doc = The calendar invitation it carries (iCalendar), which goes beside what it says so the guest's calendar can answer it: empty for none.
+
 d-lidkonvr-filter-drafts = Drafts
 
 d-lidkonvr-filter-sent = Sent
@@ -260,6 +263,20 @@ d-y6hvqjbf-signatures = Signatures
 d-ygbvdl5l = New message
     .doc = Starts a message from the first account.
     .w-add-a-mail-account-in-settings = Add a mail account in Settings first
+
+d-hom44or2 = Invite by mail
+    .doc = Starts a message inviting `to` to an event, its invitation (`calendar_ics`, iCalendar) carried beside what it says: what Calendar hands Mail for each guest it invites.
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings first
+    .w-an-invitation-goes-to-someone = An invitation goes to someone
+    .w-the-invitation-is-not-a-calendar = The invitation is not a calendar request
+
+d-hom44or2-to = To
+
+d-hom44or2-subject = Subject
+
+d-hom44or2-body = Body
+
+d-hom44or2-calendar_ics = Calendar ics
 
 d-hirareiw = Reply
     .doc = Answers the conversation's newest message, to whoever wrote it, quoting it under what is written.
@@ -420,6 +437,8 @@ d-k2js7gyd = Delivery says
 d-2zkppx6r = Set hold~present
 
 d-gcixhwyt = New draft~present
+
+d-7jf4pn3j = Prepare calendar invitation~present
 
 d-bj7uen6f = Archive~present
 
