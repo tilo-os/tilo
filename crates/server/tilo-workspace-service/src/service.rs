@@ -194,6 +194,11 @@ pub struct Governed {
     pub(crate) actions: Arc<dyn AppActionServer>,
 }
 
+/// The workspaces a service serves, by id, as the sessions it opens share them.
+fn empty_registry() -> WorkspaceRegistry {
+    Arc::new(AsyncMutex::new(std::collections::HashMap::new()))
+}
+
 impl ServiceSessions {
     /// Open a service's sessions and, when `governs`, its workspaces. `wrap` gives
     /// the app action server every session answers remote actions with, from the
@@ -223,8 +228,7 @@ impl ServiceSessions {
         validate_service_device_identity(&identity)?;
         may_govern(governs, &identity.device_cert)?;
         std::fs::create_dir_all(&cfg.state_root)?;
-        let workspaces: WorkspaceRegistry =
-            Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
+        let workspaces = empty_registry();
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
         let live = LiveIdentity {

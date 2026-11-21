@@ -164,15 +164,14 @@ impl Workspaces {
             return Err(Refused::UnknownAction);
         }
         let action = target.address.action.as_str();
-        // Decided before the request is read.
+        // Decided before the request is read. A command the service marks as only reading is
+        // called as one; any other asks the agent's person first ([`connections::call`]).
         let effect = match action {
             person_connections::LIST
             | person_connections::LOOK
             | person_connections::REFRESH
-            | person_connections::USES => ActionKind::Read,
-            // A command the service marks as only reading is called; any
-            // other asks the agent's person first ([`connections::call`]).
-            person_connections::CALL => ActionKind::Read,
+            | person_connections::USES
+            | person_connections::CALL => ActionKind::Read,
             person_connections::ADD
             | person_connections::REMOVE
             | person_connections::BEGIN_SIGN_IN

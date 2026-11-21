@@ -1342,6 +1342,48 @@ impl Workspaces {
     /// transport named it, by the provider it names: a workspace's on the
     /// workspace carrying it, the serving device's own on any workspace or asked of
     /// the serving device itself (`None`).
+    /// The certificate a host action is admitted on: the caller's own device's, acting for its
+    /// person; anything else is unknown, as a refusal is.
+    fn host_actions_certificate<'a>(
+        caller: &Caller,
+        certificate: Option<&'a DeviceCert>,
+    ) -> Result<&'a DeviceCert, ActionCallError> {
+        certificate
+            .filter(|certificate| {
+                agents::acts_for_its_person(caller)
+                    && caller.device_public_key() == Some(&certificate.device_public_key)
+                    && caller.user_public_key() == Some(&certificate.user_public_key)
+            })
+            .ok_or(ActionCallError::UnknownAction)
+    }
+
+    /// Stop an agent session, for a caller that keeps the server: unknown to anyone else, and to
+    /// a request that names anything but a stop.
+    fn mcp_stop(
+        &self,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        self.mcp_keeper(caller, certificate)?;
+        if request.target != mcp_server::target(mcp_server::STOP) {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let InvokeArgument::Json(argument) = &request.argument else {
+            return Err(invalid("a stop names its grant and session"));
+        };
+        let stop: mcp_server::AgentSessionRef =
+            serde_json::from_value(Value::Object(argument.clone()))
+                .map_err(|error| invalid(error.to_string()))?;
+        if self.inner.mcp_server.stop(&stop.grant, &stop.session) {
+            Ok(Value::Null)
+        } else {
+            Err(ActionCallError::Refused {
+                reason: "That agent session has ended already".into(),
+            })
+        }
+    }
+
     async fn invoke(
         &self,
         workspace_id: Option<WorkspaceId>,
@@ -1362,36 +1404,11 @@ impl Workspaces {
                     .await
             }
             (HOST_ACTIONS_PROVIDER, _) => {
-                // Unknown and forbidden are the same answer.
-                let certificate = certificate
-                    .filter(|certificate| {
-                        agents::acts_for_its_person(caller)
-                            && caller.device_public_key() == Some(&certificate.device_public_key)
-                            && caller.user_public_key() == Some(&certificate.user_public_key)
-                    })
-                    .ok_or(ActionCallError::UnknownAction)?;
+                let certificate = Self::host_actions_certificate(caller, certificate)?;
                 self.account_invoke(workspace_id, caller, certificate, request, None)
                     .await
             }
-            (mcp_server::PROVIDER, _) => {
-                self.mcp_keeper(caller, certificate)?;
-                if request.target != mcp_server::target(mcp_server::STOP) {
-                    return Err(ActionCallError::UnknownAction);
-                }
-                let InvokeArgument::Json(argument) = &request.argument else {
-                    return Err(invalid("a stop names its grant and session"));
-                };
-                let stop: mcp_server::AgentSessionRef =
-                    serde_json::from_value(Value::Object(argument.clone()))
-                        .map_err(|error| invalid(error.to_string()))?;
-                if self.inner.mcp_server.stop(&stop.grant, &stop.session) {
-                    Ok(Value::Null)
-                } else {
-                    Err(ActionCallError::Refused {
-                        reason: "That agent session has ended already".into(),
-                    })
-                }
-            }
+            (mcp_server::PROVIDER, _) => self.mcp_stop(caller, certificate, request),
             // A request that names its secret by reference carries none, so
             // an agent acting for the person may ask it too: the vault decides
             // whether the item belongs where it would be used.
