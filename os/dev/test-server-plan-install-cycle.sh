@@ -484,8 +484,12 @@ server "cd $guest_dir && ./imager --tilo-staging-request --action stage \
   || { cat "$evidence/06-request-summary.json" >&2; die 'the staging request was refused'; }
 server "sudo install -d -m 0700 /var/lib/tilo-imager"
 # The request names the bundle, the plan and the token by the absolute paths
-# the guest knows, so the container mounts that tree at the same path.
+# the guest knows, so the container mounts that tree at the same path. The
+# helper trusts files of root or of the person sudo ran it for (SUDO_UID), as
+# `sudo imager --tilo-staging-helper` does; sudo's variable is handed into the
+# container, which starts with an environment of its own.
 server "sudo podman run --rm --privileged --pid=host --security-opt label=disable \
+  -e SUDO_UID \
   -v /dev:/dev -v /sys:/sys \
   -v /sys/firmware/efi/efivars:/sys/firmware/efi/efivars \
   -v $guest_dir:$guest_dir:z -v /var/lib/tilo-imager:/var/lib/tilo-imager:z \
