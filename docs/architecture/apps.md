@@ -255,45 +255,8 @@ code can do to the machine.
 
 ## 8. What changes from today
 
-Today the framework runs inside the app process:
-- **Native apps:** every one built on the SDK's runner (about sixty under `apps/`,
-  from activity to word-processor) loads the identity broker the launcher passed
-  in, obtains a signed join proof for the workspace, requests content keys
-  (`tilo-identity` `group_keys`), and opens, signs and syncs documents
-  itself, through `crates/collab/collaboration` (`sdk_join_identity`, `join_native`).
-- **Tilolang apps:** they are closer. Their code is a WebAssembly module that
-  imports only the `tl` operations, and it runs in a tilolang process per workspace
-  and author. The process's own Rust code still holds the identity service, join
-  proofs and content keys, in the same process as the modules.
-- **Permission checks:** the SDK checks a `PermissionContext` before submitting,
-  and Chat calls it itself (`apps/chat/src/permissions.rs`).
-- **Outbox drains:** they run in the app's own process
-  (`tilo-app` `framework/effect.rs`), with no grant consulted per entry.
-- **Peer capability:** security §6.5 grants apps one on the collaboration mesh.
-
-All of that moves to the document host:
-
-1. A Rust app's model may later run as an instance kind of the workspace's tilolang process,
-   beside the tilolang packages'; its windows and an agent's windowless launch reach it.
-2. Outbox workers become their own sandboxed launch, with their grants.
-3. Input gesture tokens and actor attribution move into the session's action API.
-4. The identity broker connection, join proofs, channel keys and the peer
-   capability are removed from app launches, from the SDK and from the
-   tilolang process; §6.5 of the security architecture is replaced by this document.
-5. Permission checks leave the SDK and the apps: a view sees what it is offered
-   and nothing else, and Chat's own `ChatPermissions` goes.
-6. The outbox drain is decided per entry by the session's policy, like an action.
-7. A server applies the actions of any installed app from its package. Today
-   `tilo-workspace-service` knows only the app models compiled into it
-   (Calendar, behind its `agents` feature), and `tilo-agent-session` links the
-   models of most apps natively; both go once packages carry the model as
-   WebAssembly. Most apps' models already build for WebAssembly, for the page,
-   and the ones that do are applied from their package: Chat's resources are.
-8. A member lets a server use one secret, and a consent sheet raised on a
-   server reaches that member's devices.
-
-Each step keeps apps working while it lands, and each ends by deleting the app-side
-code it replaced.
+The steps from today's code to this model are in [the core](core.md),
+section 4.
 
 ## 9. Which device does what
 

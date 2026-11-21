@@ -18,6 +18,13 @@ nav = "Overview"
 description = "Workspaces, members and devices, CRDT state, the resource and action model, and where each part lives in the code."
 
 [[page]]
+slug = "core"
+source = "docs/architecture/core.md"
+section = "Architecture"
+nav = "The core"
+description = "The six core pieces: how each works today, every copy of it, the one design that survives and what is deleted."
+
+[[page]]
 slug = "workspace"
 source = "docs/architecture/workspace.md"
 section = "Architecture"

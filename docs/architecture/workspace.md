@@ -394,21 +394,8 @@ configuration.
 
 ## Transport
 
-Devices talk over iroh, and nothing else. A device reaches the other devices
-that hold a workspace, directly or through any device that stores it;
-store-and-forward is what a store does. There is no separate relay protocol,
-no second send path, and no gossip path beside it.
-
-A device is one iroh endpoint, under its device key, and one member of each
-workspace's key group; both are its engine's. Whatever else its session asks a
-host (the actions of a workspace placed there, the person's list kept there)
-runs on that endpoint, in a session that holds no keys. A server hands what is
-sent to an endpoint id to the connection that registered under it last, so a
-second endpoint of the device's key takes the device's place there: a device
-that starts later, or comes back, then dials it through the server and reaches
-an endpoint that answers nothing. And a second member key asked for as the same
-device has the group's key holders commit one in and the other out, turn
-about, for as long as both sessions run.
+How devices carry a workspace's changes, today and in the one design that
+survives, is in [the core](core.md), section 3.
 
 ## State
 
@@ -1161,40 +1148,5 @@ What that implies for the layers above:
 
 ## Where the code differs
 
-The code still carries models this page does not have. Each goes, not beside
-the model but instead of it:
-
-- **The old spelling.** The `workspace` key a desktop entry or an action row
-  stores its workspace id under, `(app, workspace, document)` addresses and
-  `tilo-workspaces` on disk.
-- **Governance by one device.** The governor, the separate governance document
-  with its receipts, ownership and succession,
-  and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
-  workspace state changed by actions.
-- **Per-person spaces.** The person's devices meet on the session between two
-  of them (`tilo-server-sibling/1`) and learn the person's workspaces from the
-  hosts holding them. The person's own documents are in no workspace: their
-  store is
-  one cluster per person, derived from the root key, and the readers of its
-  group are the identity's certified devices that are not revoked — the
-  identity decides, and no governor or workspace takes part. Any of those
-  devices creates the group and admits the others
-  (`key_group::GroupPeer`), as a workspace's key holders do.
-- **Per-person stores on a host.** A host keeps a vault, mail and calendar
-  accounts, model keys, connections and skills for each person under
-  `workspaces/people/<person>/`, the same in every workspace they are in and
-  reached by them alone. These belong to the workspace, decided by its grants.
-- **A host as owner.** A workspace a host makes for someone names the host as
-  its owner, and the person it is for gets a second grant beside it. The
-  people whose workspace it is own it, and the host holds the grants serving
-  it needs.
-- **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
-  Shared scopes, the settings registry and `settings.json`. Settings are
-  resources.
-- **Engines outside the one peer.** The shell's own workspace engine and
-  admission caller, the separately written browser peer with its own layout
-  schema, and the device-replica wrappers in the shell and the standalone
-  runtime.
-- **A second platform in the shell.** Its own widget host, frame pipeline,
-  persistence, collaboration, history, undo and action authority. The shell
-  uses the app stack.
+[The core](core.md) lists every copy of a core piece still on `main`, what
+survives and what is deleted.

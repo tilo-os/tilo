@@ -117,14 +117,14 @@ per target goes through a crate in `crates/platform/`. The policy suite
 
 ## Where the code still differs
 
-The code still carries models this page does not have: governance by one
-device, per-person spaces, settings outside the resource model, and a second
-platform inside the shell. Each is being replaced by the model above, not kept
-beside it.
-[`workspace.md`](workspace.md), "Where the code differs", lists them.
+[The core](core.md) is the specification of the six core pieces (devices,
+identity, sync, the app framework, the workspace and actions everywhere): how
+each works on `main`, every copy of it, the one design that survives and what
+is deleted.
 
 ## More
 
+- [The core](core.md): the six core pieces, their copies and what survives.
 - [Workspaces](workspace.md): the specification.
 - [Resources](resources.md): resource kinds, ids and documents.
 - [Compatibility](compatibility.md): how versions of formats and interfaces
