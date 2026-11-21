@@ -31,9 +31,8 @@ The records, each with its verdict, are appended to the public generic package
 `tilo-perf-results` (one immutable file per run, a version per UTC month), so
 the current numbers come from there, not from `docs/benchmarks/`. Read them with
 `python3 tools/perf/store.py fetch https://code.tilo.so`. The groups are `fs`,
-`footprint` (app and OS image sizes), `agent`, `render`, `search`, `server` and
-`browser`; `tools/ci/perf-scheduled.sh <group>` measures one from your tree, except
-`browser`, which measures a clean checkout of a commit. `render` also holds the session's
+`footprint` (app and OS image sizes), `agent`, `render`, `search` and `server`;
+`tools/ci/perf-scheduled.sh <group>` measures one from your tree. `render` also holds the session's
 own desktop surface to its budgets (`session_perf`, `[devices.<class>.session.*]`), and
 `search` runs the palette search's own measurement test, which fails over its budget and
 writes no record. `agent` times what an agent's calls cost through the session's agent
@@ -59,53 +58,6 @@ under the same rules, rather than the performance run booting a second VM. They 
 `renderer=lavapipe` and `virtualization=kvm`: software-rendered guest
 numbers, compared only with each other and never quoted as hardware figures.
 `scripts/vm-acceptance/README.md` ("Performance records") lists the KPIs.
-
-The `browser` group qualifies the browser runtime: the release desktop bundle
-(`build.sh --bundle runtime`, the bytes the web entry serves) in headless
-Chrome through `scripts/perf/browser_qualification.mjs`, which first proves the
-page ran exactly that commit's clean bundle on the WebGPU adapter the records
-name, then measures load, first opens, window activation, the demo workload's
-frame intervals and per-frame runtime CPU, keys typed into a note at a fast
-typist's rate, and an idle desktop, and reports them against the runtime's goals
-(30 fps minimum and 120 fps for the demo, 50 ms activation, a typed key on
-screen within 50 ms). Each measured frame also names what it repainted and what
-asked for it, so a frame that need not have been drawn points at the widget to
-fix; the idle workload reports that attribution for every frame an idle desktop
-presents. Load is recorded as its time, and as what the first load transferred
-and how many requests it took (every resource that started before the desktop's
-first presented frame, by Performance Resource Timing's `encodedBodySize`), so a
-change that costs bytes or round trips shows in the `browser.load.*` records
-even when the runner's wall-clock does not move. The runner has no GPU, and Chrome gives WebGPU no CPU driver but
-its own SwiftShader, so the records name `renderer=swiftshader`. SwiftShader
-takes tens of seconds over a panned FHD frame there, so the nightly run leaves
-the demo out (`--demo-seconds 0`) and types a short line (`--typing-keys 16`):
-what a key's presentation costs there is the software rasterizer's, not the
-runtime's, so the typing goal is judged where a GPU draws, and the nightly
-records the frame's runtime CPU beside it.
-A hardware qualification is the same harness on the machine under test, quiet
-and with the goals enforced:
-
-```bash
-crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/target/qualify" --bundle runtime
-node scripts/perf/browser_qualification.mjs target/qualify --out qualify.json \
-  --renderer gpu --typing-keys 60 --expect-revision "$(git rev-parse HEAD)" \
-  --max-load 0.25 --enforce-goals
-```
-
-`--renderer gpu` starts Chrome with Vulkan and ANGLE's Vulkan backend and the
-GPU blocklist off, so headless Chrome gets the machine's own WebGPU adapter;
-the report names the adapter it measured, and a run whose adapter is not the
-one asked for is invalid.
-
-`--cpu-throttle 4` slows the page's CPU fourfold, a stand-in for older hardware
-on a fast machine; such a run is never this group's series.
-
-`--network 20mbit/40ms` gives every request the throughput and round-trip
-latency of a home line, so a load is the wait a first visit is rather than
-loopback's; the load's `browser.load.start_module_bytes` record is the runtime
-module's encoded size either way, which is what a page pays before it can
-present anything. Such a run is a different series too, so the nightly stays on
-loopback and names the module's size from the bytes it served.
 
 The `server` group measures the server's cost per member-hour
 (`server_load`, workspaces of four): fan-out latency and the priced capacity of a server VM.
@@ -161,7 +113,7 @@ or to show there is no regression, run an A/B from a clean checkout on Linux:
 python3 tools/perf/ab.py run --groups server --base origin/main --candidate <commit> --rounds 8 --out target/perf-ab
 ```
 
-For each group in `--groups` (`server`, `render`, `agent`, `fs`, `browser`;
+For each group in `--groups` (`server`, `render`, `agent`, `fs`;
 `footprint` is bytes of published artifacts and `search` is a test's own budget,
 so neither has an A/B)
 builds the base and the candidate in one checkout, one after the other, and

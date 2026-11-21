@@ -73,17 +73,6 @@ Each adapter reads what a benchmark already prints and emits records through
   latency: one per delivered edit), and each provider in
   `tools/perf/prices.toml` adds `server.cost_usd_per_collab_hour.<provider>`
   and `server.cost_usd_per_user_month.<provider>`, priced per minute.
-- `browser-qualification REPORT_JSON`: the browser runtime qualification's
-  report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
-  one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
-  frame interval and frame's runtime CPU is a sample, each typed key's time
-  to the presented frame and its frame's runtime CPU one, each round's idle
-  frame rate one, and each round's first load one transfer-bytes and one
-  request-count sample (every resource that started before the desktop's
-  first presented frame); the demo's two only when the run had the demo, and
-  typing's two only when it typed. The
-  report must name the env's renderer, commit and profile,
-  and an unthrottled page.
 Usage:
 
     python3 tools/perf/adapters.py fs-check --env-json env.json run-*.log >> results.jsonl
@@ -94,7 +83,6 @@ Usage:
     python3 tools/perf/adapters.py framework-focus --env-json env.json framework-focus.log >> results.jsonl
     python3 tools/perf/adapters.py notes-latency --env-json env.json notes-latency.log >> results.jsonl
     python3 tools/perf/adapters.py server-load --env-json env.json server-load.json >> results.jsonl
-    python3 tools/perf/adapters.py browser-qualification --env-json env.json browser.json >> results.jsonl
 
 An adapter that finds nothing to record fails: a benchmark whose output format
 drifted must not turn into a silently empty night.
@@ -468,88 +456,6 @@ def server_load(report: dict[str, Any], prices: dict[str, Any], env: dict[str, A
     return records
 
 
-# What one browser qualification report becomes: its sample lists, as KPI and
-# unit. The sample fields are the harness's `samples` keys.
-BROWSER_KPIS = {
-    "load_ms": ("browser.load.desktop_presented", "ms"),
-    "transfer_bytes": ("browser.load.transfer_bytes", "bytes"),
-    "request_count": ("browser.load.request_count", "count"),
-    "start_module_bytes": ("browser.load.start_module_bytes", "bytes"),
-    "open_ms": ("browser.open.first_frame", "ms"),
-    "open_ready_ms": ("browser.open.ready", "ms"),
-    "activate_ms": ("browser.activate.first_frame", "ms"),
-    "demo_interval_ms": ("browser.demo.frame_interval", "ms"),
-    "demo_work_ms": ("browser.demo.frame_work", "ms"),
-    "typing_ms": ("browser.typing.key_to_frame", "ms"),
-    "typing_work_ms": ("browser.typing.frame_work", "ms"),
-    "typing_dom_ms": ("browser.typing.plain_page_key_to_frame", "ms"),
-    "typing_over_dom": ("browser.typing.past_plain_page", "ms"),
-    "scroll_ms": ("browser.scroll.wheel_to_frame", "ms"),
-    "scroll_vs_dom": ("browser.scroll.share_of_plain_page", "percent"),
-    "idle_per_s": ("browser.idle.presented_per_s", "per_s"),
-}
-# Reported only by a run with the demo workload (`--demo-seconds` above 0).
-BROWSER_DEMO_FIELDS = frozenset({"demo_interval_ms", "demo_work_ms"})
-# Reported only by a run with the typing workload (`--typing-keys` above 0).
-BROWSER_TYPING_FIELDS = frozenset({"typing_ms", "typing_work_ms", "typing_dom_ms", "typing_over_dom"})
-# Reported only by a run with the scroll workload (`--scroll-steps` above 0).
-BROWSER_SCROLL_FIELDS = frozenset({"scroll_ms", "scroll_vs_dom"})
-
-
-def browser_qualification(report: dict[str, Any], env: dict[str, Any],
-                          require_clean: bool = True) -> list[record.Record]:
-    """Records for one browser runtime qualification report.
-
-    The report must have measured the environment the records claim: its
-    WebGPU adapter is the env's renderer, its bundle a build of the env's
-    commit in the env's profile, clean unless `require_clean=False` (the A/B
-    job, whose output directory sits untracked in the checkout it builds),
-    and its page CPU unthrottled: a throttled run stands in for older
-    hardware and is never this series. The demo's and the typing workload's
-    KPIs come from a run with that workload and only from one.
-    """
-    if report.get("schema") != 1:
-        raise ValueError(f"browser qualification report schema {report.get('schema')!r}, not 1")
-    bundle, workload = report["bundle"], report["workload"]
-    if report["renderer"] != env["renderer"]:
-        raise ValueError(f"the report measured on {report['renderer']}, not the env's {env['renderer']}")
-    if bundle["profile"] != env["profile"]:
-        raise ValueError(f"the bundle is a {bundle['profile']} build, not the env's {env['profile']}")
-    if bundle["revision"] != env["commit"] or (require_clean and bundle["dirty"]):
-        raise ValueError(f"the bundle was built from {bundle['revision']}"
-                         f"{' (dirty)' if bundle['dirty'] else ''}, not {env['commit']}")
-    if workload.get("cpuThrottle", 1) != 1:
-        raise ValueError(f"the page's CPU was throttled {workload['cpuThrottle']}x")
-    if workload.get("network"):
-        raise ValueError(f"the page's network was emulated at {workload['network']}")
-    samples = report["samples"]
-    demo = float(workload.get("demoSeconds", 0)) > 0
-    typing = int(workload.get("typingKeys", 0)) > 0
-    absent = set() if demo else set(BROWSER_DEMO_FIELDS)
-    absent |= set() if typing else set(BROWSER_TYPING_FIELDS)
-    scrolling = int(workload.get("scrollSteps", 0)) > 0
-    absent |= set() if scrolling else set(BROWSER_SCROLL_FIELDS)
-    fields = [field for field in BROWSER_KPIS if field not in absent]
-    missing = [field for field in fields if not samples.get(field)]
-    if missing:
-        raise ValueError(f"the report has no samples for {missing}")
-    if not demo and any(samples.get(field) for field in BROWSER_DEMO_FIELDS):
-        raise ValueError("the report has demo samples from a run without the demo")
-    if not typing and any(samples.get(field) for field in BROWSER_TYPING_FIELDS):
-        raise ValueError("the report has typing samples from a run without the typing workload")
-    if not scrolling and any(samples.get(field) for field in BROWSER_SCROLL_FIELDS):
-        raise ValueError("the report has scroll samples from a run without the scroll workload")
-    adapter = report.get("adapter") or {}
-    meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "runtime_sha256": bundle["runtimeSha256"],
-            "browser": report["browser"]["product"],
-            "adapter": " ".join(str(value) for value in adapter.values() if value) or "unknown",
-            "viewport": "{width}x{height}@{deviceScaleFactor}".format(**report["viewport"]),
-            "rounds": str(workload["rounds"]), "apps": ",".join(workload["apps"]),
-            "input_hz": str(workload["inputHz"])}
-    base = {name: value for name, value in env.items() if name != "meta"}
-    return [record.from_samples(*BROWSER_KPIS[field], samples[field], meta=meta, **base) for field in fields]
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -580,16 +486,10 @@ def main(argv: list[str] | None = None) -> int:
     load.add_argument("--env-json", required=True, type=Path)
     load.add_argument("--prices", type=Path, default=PRICES)
     load.add_argument("report", type=Path)
-    browser = commands.add_parser("browser-qualification",
-                                  help="records from scripts/perf/browser_qualification.mjs's report")
-    browser.add_argument("--env-json", required=True, type=Path)
-    browser.add_argument("report", type=Path)
     args = parser.parse_args(argv)
     try:
         env = record.load_env(args.env_json)
-        if args.command == "browser-qualification":
-            records = browser_qualification(json.loads(args.report.read_text(encoding="utf-8")), env)
-        elif args.command == "server-load":
+        if args.command == "server-load":
             records = server_load(json.loads(args.report.read_text(encoding="utf-8")),
                                    tomllib.loads(args.prices.read_text(encoding="utf-8")), env)
             for item in records:

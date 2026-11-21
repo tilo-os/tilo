@@ -44,19 +44,6 @@ executable stand-alone; the higher-level flow is described below.
   reported as passed. Writes one `drm.presentation-checks` record per run and
   the log it read.
 
-- `browser_qualification.mjs BUNDLE_DIR --out REPORT --renderer R` — the
-  browser runtime's qualification: a release desktop bundle in headless Chrome
-  at FHD, fresh-context rounds of load, first opens, window activation, the
-  demo workload (a strip panned by 120 Hz wheel input: frame intervals and the
-  runtime's CPU per frame), keys typed into a note (key to presented frame, and
-  the runtime's CPU per frame) and an idle desktop (frames presented, with what
-  each repainted), judged against the 30 fps minimum, 120 fps, 50 ms activation
-  and 50 ms typing goals. It refuses to report when the
-  bundle's bytes, revision or profile, the WebGPU adapter or a quiet host
-  (`--max-load`) cannot be proven. The performance run runs it as the
-  `browser` group (`tools/perf/adapters.py browser-qualification`);
-  `docs/measurements/performance.md` has the hardware invocation.
-
 - Boot time of a qcow2 under QEMU + OVMF, from its serial console:
 
   ```bash

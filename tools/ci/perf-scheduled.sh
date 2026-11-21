@@ -27,33 +27,6 @@ env_json() { # profile renderer virtualization
   python3 tools/perf/record.py env --profile "$1" --renderer "$2" --virtualization "$3" --runner "$runner"
 }
 
-# The release bundle names its commit and refuses a tree that differs from it.
-# t gives scheduled and dispatched runs the commit as T_COMMIT; the tree is its
-# files, so a repository holding just that commit makes it a clean checkout.
-commit_checkout() {
-  git rev-parse HEAD >/dev/null 2>&1 && return
-  [[ -n ${T_COMMIT:-} ]] || { echo "$group measures a commit: run it on t's schedule or with t dispatch" >&2; exit 2; }
-  git init -q
-  git fetch -q --depth=1 --no-tags https://code.tilo.so/tilo/tilo.git "$T_COMMIT"
-  git reset -q "$T_COMMIT"
-}
-
-# The web entry's bundle, which the run's web-entry-bundle check built for this
-# commit (the bundle records it): the same release build, made once for every
-# consumer instead of again for each measurement.
-desktop_bundle() {
-  local bundle=${TILO_PERF_DESKTOP_BUNDLE:-/target/publish/web-entry/bundle}
-  [[ -f $bundle/index.html ]] || { echo "$group measures the web-entry-bundle check's bundle, not found at $bundle" >&2; exit 2; }
-  printf '%s\n' "$bundle"
-}
-
-chrome() {
-  bash tools/ci/ensure-browser-dependencies.sh
-  npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
-  CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
-  export CHROME
-}
-
 case $group in
   fs)
     cargo test --locked -p tilo-fs --test it --test document_media_footprint --no-run
@@ -196,17 +169,6 @@ case $group in
       --out "$out/run" | tee "$out/server-load.log"
     python3 tools/perf/adapters.py server-load --env-json "$out/env.json" "$out/run/server-load.json" \
       > "$out/server.jsonl"
-    ;;
-  browser)
-    commit_checkout
-    bundle=$(desktop_bundle)
-    chrome
-    env_json release swiftshader kvm > "$out/env.json"
-    node scripts/perf/browser_qualification.mjs "$bundle" --out "$out/browser.json" \
-      --renderer swiftshader --demo-seconds 0 --rounds 1 --activations 10 --typing-keys 16 --scroll-steps 24 --viewport 960x540 \
-      --expect-revision "$(git rev-parse HEAD)" | tee "$out/browser-summary.txt"
-    python3 tools/perf/adapters.py browser-qualification --env-json "$out/env.json" "$out/browser.json" \
-      > "$out/browser.jsonl"
     ;;
   *)
     echo "unknown KPI group: $group" >&2

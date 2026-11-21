@@ -551,24 +551,19 @@ inputs = [
   # benchmarks, and vm-acceptance-perf's groups equal to the
   # budgets' jobs and the A/B groups.
   "tools/ci/perf-scheduled.sh", "tools/ci/perf-compare.sh",
-  # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the check's SLOs
-  # and the WORKSPACE-SWITCH parser equal to the compositor's line.
+  # tools/perf/test_budgets.py holds every budget to a ceiling or a
+  # baseline_only choice, so kpi-budgets.toml loads.
+  # The adapters parse these benchmarks' output, so their format is the suite's.
   "crates/system/fs/tests/performance_timing.rs",
-  # ... the FILES-NAME-INDEX parser equal to the Files search test's line,
-  # ... and the server-load KPI ids equal to the server load bench's.
   "crates/server/tilo-server/examples/server_load/main.rs",
-  # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
+  # scripts/perf/render_bench.py reads the dashboard benchmark's output.
   "crates/dev/ui-examples/examples/dashboard_perf_bench.rs",
-  # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
-  "tools/web/chrome.mjs",
   # tools/perf/test_tapp_size_ratchet.py holds the budgeted apps equal to the
   # default collection.
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
-  # tools/perf/test_adapters.py holds the browser adapter's KPI names equal to
-  # the budgets and its workloads' samples to the qualification's report.
-  "tools/perf/test_adapters.py",
+  "tools/perf/test_budgets.py",
   "tools/perf/test_check_kpi.py",
   "tools/perf/test_image_size.py",
   "tools/perf/test_record.py",
