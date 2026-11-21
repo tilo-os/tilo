@@ -430,6 +430,40 @@ impl Hosted {
         on_page(&mut self.page, action, argument).await
     }
 
+    /// The items her vault keeps beside the key the workspace's model is called with, as her
+    /// own device lists them: that key is an entry of the vault's own ([`Self::start`] links the
+    /// model with it), and no sign-in of hers.
+    pub(super) async fn her_vault(&mut self) -> Vec<serde_json::Value> {
+        let kept = self
+            .on_device(
+                (
+                    person_vault::PROVIDER,
+                    person_vault::RESOURCE,
+                    person_vault::LIST,
+                ),
+                serde_json::Value::Null,
+            )
+            .await;
+        let model_key = |item: &serde_json::Value| {
+            item["kind"] == "key"
+                && item["belongsTo"]
+                    == serde_json::json!(["https://generativelanguage.googleapis.com"])
+        };
+        let items = kept["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("her vault: {kept}"));
+        assert_eq!(
+            items.iter().filter(|item| model_key(item)).count(),
+            1,
+            "the model's key is the vault's: {kept}"
+        );
+        items
+            .iter()
+            .filter(|item| !model_key(item))
+            .cloned()
+            .collect()
+    }
+
     /// What the model was shown of each of its tool calls, one a line.
     pub(super) fn tool_results(&self) -> String {
         self.model

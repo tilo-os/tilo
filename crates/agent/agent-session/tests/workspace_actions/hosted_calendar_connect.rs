@@ -20,7 +20,6 @@ use crate::workspace_actions::hosted_agent_turns::{SCOUT, conversation_part};
 use crate::workspace_actions::hosted_secret_use::{
     Devices, Hosted, Lines, does, files_holding, logged,
 };
-use tilo_actions::remote::person_vault;
 use tilo_server::workspaces::person_model::scripted::Reply;
 use tilo_server_protocol::certify::{ConfirmationAnswer, TypedSecret};
 
@@ -135,39 +134,6 @@ async fn her_accounts(hosted: &mut Hosted) -> Vec<serde_json::Value> {
         .clone()
 }
 
-/// The items her vault keeps beside the workspace model's key, as her own device lists them.
-async fn her_vault(hosted: &mut Hosted) -> Vec<serde_json::Value> {
-    let kept = hosted
-        .on_device(
-            (
-                person_vault::PROVIDER,
-                person_vault::RESOURCE,
-                person_vault::LIST,
-            ),
-            serde_json::Value::Null,
-        )
-        .await;
-    // The workspace's model is called with a key of the vault's own ([`Hosted`] links it), which
-    // is no sign-in of hers.
-    let model_key = |item: &serde_json::Value| {
-        item["kind"] == "key"
-            && item["belongsTo"] == serde_json::json!(["https://generativelanguage.googleapis.com"])
-    };
-    let items = kept["items"]
-        .as_array()
-        .unwrap_or_else(|| panic!("her vault: {kept}"));
-    assert_eq!(
-        items.iter().filter(|item| model_key(item)).count(),
-        1,
-        "the model's key is the vault's: {kept}"
-    );
-    items
-        .iter()
-        .filter(|item| !model_key(item))
-        .cloned()
-        .collect()
-}
-
 /// `typed` reached her calendar server's sign-in and nothing else: no request a model was sent,
 /// no message of the conversation, no log line and no file of the server in the clear.
 async fn it_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines, typed: &str) {
@@ -253,7 +219,7 @@ async fn the_assistant_connects_the_calendar_its_person_tells_it_of_for_reading_
         !told.contains("/dav/calendars/"),
         "no address of a calendar reaches the model: {told}"
     );
-    let vault = her_vault(&mut hosted).await;
+    let vault = hosted.her_vault().await;
     assert_eq!(
         vault[0]["belongsTo"],
         serde_json::json!([place_of(&address)]),
@@ -356,7 +322,7 @@ async fn a_calendar_server_that_refuses_the_password_is_said_so_and_no_item_is_k
          calendar: {told}"
     );
     assert!(
-        her_vault(&mut hosted).await.is_empty(),
+        hosted.her_vault().await.is_empty(),
         "the item she typed is not kept"
     );
     assert!(
@@ -383,7 +349,7 @@ async fn a_mail_address_alone_is_asked_for_at_the_server_of_its_name() {
         "the question names the server her address belongs to: {words}"
     );
     assert!(her_accounts(&mut hosted).await.is_empty());
-    assert!(her_vault(&mut hosted).await.is_empty());
+    assert!(hosted.her_vault().await.is_empty());
     hosted.page.peer.close();
 }
 
@@ -449,6 +415,6 @@ async fn what_a_telling_is_refused_for_asks_nobody_and_connects_nothing() {
         assert_eq!(devices.count(), 0, "{what}: nobody is asked for a password");
     }
     assert!(her_accounts(&mut hosted).await.is_empty());
-    assert!(her_vault(&mut hosted).await.is_empty());
+    assert!(hosted.her_vault().await.is_empty());
     hosted.page.peer.close();
 }

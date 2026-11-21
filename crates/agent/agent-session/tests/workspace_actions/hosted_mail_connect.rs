@@ -182,24 +182,6 @@ async fn her_mail(hosted: &mut Hosted) -> Vec<serde_json::Value> {
         .clone()
 }
 
-/// The items her vault keeps, as her own device lists them.
-async fn her_vault(hosted: &mut Hosted) -> Vec<serde_json::Value> {
-    let kept = hosted
-        .on_device(
-            (
-                person_vault::PROVIDER,
-                person_vault::RESOURCE,
-                person_vault::LIST,
-            ),
-            serde_json::Value::Null,
-        )
-        .await;
-    kept["items"]
-        .as_array()
-        .unwrap_or_else(|| panic!("her vault: {kept}"))
-        .clone()
-}
-
 /// `typed` reached the sign-in and nothing else: no request a model was sent, no message of
 /// the conversation, no log line and no file of the server in the clear.
 async fn it_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines, typed: &str) {
@@ -283,7 +265,7 @@ async fn the_assistant_signs_a_mail_account_in_from_its_address_alone() {
         vec![ADDRESS.to_owned()],
         "her account is signed in with what her vault keeps, once"
     );
-    let vault = her_vault(&mut hosted).await;
+    let vault = hosted.her_vault().await;
     assert_eq!(vault.len(), 1, "{vault:?}");
     assert_eq!(
         vault[0]["belongsTo"],
@@ -343,7 +325,7 @@ async fn a_password_her_mail_server_refuses_is_asked_for_again_by_the_server_its
         "the second question says what was refused: {words}"
     );
     assert!(
-        her_vault(&mut hosted).await.is_empty(),
+        hosted.her_vault().await.is_empty(),
         "the item she mistyped is not kept"
     );
     assert!(her_mail(&mut hosted).await.is_empty(), "no account is kept");
@@ -372,7 +354,7 @@ async fn a_password_her_mail_server_refuses_is_asked_for_again_by_the_server_its
     the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
     assert_eq!(signed_in.lock().unwrap().clone(), vec![ADDRESS.to_owned()]);
     assert_eq!(her_mail(&mut hosted).await.len(), 1);
-    assert_eq!(her_vault(&mut hosted).await.len(), 1, "what she typed last");
+    assert_eq!(hosted.her_vault().await.len(), 1, "what she typed last");
     assert_eq!(
         hosted.model.asked().len(),
         3,
@@ -396,7 +378,7 @@ async fn declining_or_not_answering_signs_nothing_in_and_tells_the_assistant() {
     devices.answer(0, ConfirmationAnswer::Deny);
     let told = the_assistant_is_told(&hosted, "Nothing was signed in.").await;
     assert!(told.contains("declined"), "{told}");
-    assert!(her_vault(&mut hosted).await.is_empty());
+    assert!(hosted.her_vault().await.is_empty());
     assert!(her_mail(&mut hosted).await.is_empty());
     assert!(signed_in.lock().unwrap().is_empty());
     nothing_asks_in_chat(&hosted).await;
@@ -457,7 +439,7 @@ async fn a_server_named_with_its_port_is_signed_in_to_at_that_port() {
     // account at the ports she named.
     she_types(&devices, 0, TYPED);
     the_assistant_is_told(&hosted, "Your mail account is signed in.").await;
-    let vault = her_vault(&mut hosted).await;
+    let vault = hosted.her_vault().await;
     assert_eq!(
         vault[0]["belongsTo"],
         serde_json::json!(OWN_PLACES),
@@ -539,7 +521,7 @@ async fn what_a_telling_is_refused_for_asks_nobody_for_a_password() {
         assert_eq!(devices.count(), 0, "{what}: nobody is asked for a password");
     }
     assert!(her_mail(&mut hosted).await.is_empty());
-    assert!(her_vault(&mut hosted).await.is_empty());
+    assert!(hosted.her_vault().await.is_empty());
     assert!(signed_in.lock().unwrap().is_empty());
     hosted.page.peer.close();
 }
