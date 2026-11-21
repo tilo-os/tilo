@@ -750,16 +750,18 @@ mod cases {
         let n = Notes::new();
         n.titled("Autumn plan");
         let mut view = n.window();
-        // What the editor reports as the note opens, and again as its headings change: each as
-        // its Markdown line, so the level it stands at is in it.
+        // What the editor reports as the note opens, and again as its headings change: each
+        // heading's own words, and the level each stands at beside them.
         let body = of_kind(view.tree(), "ui.BlockEditor")[0].key.clone();
-        let lines = ["## Ship the editor", "### Then", "## Grow the garden"];
+        let lines = ["Ship the editor", "Then", "Grow the garden"];
+        let levels = [2_i64, 3, 2];
         view.fire_with(
             &body,
             "headings",
-            Some(&Value::List(
-                lines.iter().map(|line| Value::text(*line)).collect(),
-            )),
+            Some(&Value::List(vec![
+                Value::List(lines.iter().map(|line| Value::text(*line)).collect()),
+                Value::List(levels.iter().map(|level| Value::Int(*level)).collect()),
+            ])),
         )
         .unwrap();
         view.poll_patches().unwrap();

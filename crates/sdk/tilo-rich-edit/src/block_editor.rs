@@ -2050,9 +2050,10 @@ impl BlockEditor {
         self.dirty = true;
     }
 
-    /// Show the block a view asks for (`reveal: "3:1"`): the place of the block, then the count
-    /// the view changes with each ask, so asking for a block already shown shows it again. The
-    /// caret goes to the block's start and the scroll keeps it in view.
+    /// Show the heading a view asks for (`reveal: "3:1"`): the place of the heading among the
+    /// document's headings, then the count the view changes with each ask, so asking for a heading
+    /// already shown shows it again. The caret goes to the heading's start and the scroll keeps it
+    /// in view.
     pub fn reveal_asked(&mut self, asked: Option<String>) {
         if asked == self.revealed {
             return;
@@ -2061,13 +2062,24 @@ impl BlockEditor {
         let Some(at) = asked.as_deref().and_then(|ask| ask.split(':').next()) else {
             return;
         };
-        let Ok(index) = at.trim().parse::<usize>() else {
+        let Ok(place) = at.trim().parse::<usize>() else {
             return;
         };
-        if index >= self.blocks.len() {
+        let Some(index) = self.heading_block(place) else {
             return;
-        }
+        };
         self.focus_block(index, CursorPlacement::Start);
+    }
+
+    /// The block the heading at `place` among the document's headings (`Self::headings`) stands
+    /// at: a heading's place in an outline is not its block's when other blocks stand between.
+    fn heading_block(&self, place: usize) -> Option<usize> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| matches!(block.kind, BlockKind::Heading(_)))
+            .map(|(index, _)| index)
+            .nth(place)
     }
 
     /// Splitting at byte 0 of an empty block still produces two blocks

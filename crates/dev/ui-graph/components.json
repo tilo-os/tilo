@@ -6199,9 +6199,12 @@
         },
         {
           "name": "headings",
-          "doc": "The document's headings, in the order they stand, each as its Markdown line (`## Title`), so the level it stands at is in it, each time they change.",
+          "doc": "The document's headings, in the order they stand, each time they change: their words, and how deep each stands (1 for `#`). A heading reads as its words, never as the `#`s a writer typed, so a view draws one as it says.",
           "value": {
             "list": "text"
+          },
+          "at": {
+            "list": "int"
           }
         },
         {
@@ -6229,7 +6232,7 @@
       "state": [
         {
           "name": "reveal",
-          "doc": "The block the document shows, asked by the view that places an outline beside it: the place of the block, then a count the view changes every time it asks (`3:1`), so asking for a block already shown shows it again. The editor puts the caret at the block's start and keeps it in view.",
+          "doc": "The heading the document shows, asked by the view that places an outline beside it: the place of the heading among the document's headings (`headings` reports them in that order), then a count the view changes every time it asks (`3:1`), so asking for a heading already shown shows it again. The editor puts the caret at the heading's start and keeps it in view.",
           "type": {
             "option": "text"
           }

@@ -838,9 +838,10 @@ view notebook(nb: Notebook) {
     // The note the window shows, kept by the window: the first note until a person chooses
     // another, and the one a link, a breadcrumb or a search shows.
     state open_note: Option<Note> = nb.notes.first()
-    // The open note's headings, as its editor reports them, and the block a person last chose
+    // The open note's headings, as its editor reports them, and the heading a person last chose
     // in the map of them: what the page shows of them without reading the whole note.
     state heading_lines: List<Text> = []
+    state heading_levels: List<Int> = []
     state reveal: Option<Text> = .none
     on show(x: Note): set(open_note, x)
     std.tree(
@@ -863,20 +864,24 @@ view notebook(nb: Notebook) {
     ) {
         // What the tree cannot hold: the open note's headings under it, and the page beside it.
         below: {
-            note_outline(heading_lines, reveal)
+            note_outline(heading_lines, heading_levels, reveal)
         }
         doc: {
             if let n = open_note {
-                note_page(n, heading_lines, reveal)
+                note_page(n, heading_lines, heading_levels, reveal)
             }
         }
     }
 }
 
-/// The open note's headings, under the tree: choosing one shows that block of the note beside
+/// The open note's headings, under the tree: choosing one shows that heading of the note beside
 /// it. Nothing stands there while the note has no headings.
-view note_outline(headings: List<Text>, reveal: State<Option<Text>>) {
-    std.headings("Outline", headings, reveal)
+view note_outline(
+    headings: List<Text>,
+    levels: List<Int>,
+    reveal: State<Option<Text>>,
+) {
+    std.headings("Outline", headings, levels, reveal)
 }
 
 /// The notebook's controls in the window's bar, given the note open beside the tree: its file
@@ -955,17 +960,24 @@ view note_row(n: Note) {
 /// A note's window of its own: its page, as a document the window is for.
 view note_editor(n: Note) {
     state heading_lines: List<Text> = []
+    state heading_levels: List<Int> = []
     state reveal: Option<Text> = .none
     std.document(n) {
-        note_page(n, heading_lines, reveal)
+        note_page(n, heading_lines, heading_levels, reveal)
     }
 }
 
 /// The open note: its title, where it stands and when it was written, its tags as chips, its
 /// body, what links to it, its discussion and its history. Its body's `[[` writes a link to
-/// another of the notebook's notes. Its editor reports the note's headings, which the window's
-/// map of them is drawn from, and shows the block a person chose there.
-template view note_page(n: Note, headings: State<List<Text>>, reveal: State<Option<Text>>) {
+/// another of the notebook's notes. Its editor reports the note's headings — their words and how
+/// deep each stands — which the window's map of them is drawn from, and shows the heading a
+/// person chose there.
+template view note_page(
+    n: Note,
+    headings: State<List<Text>>,
+    heading_levels: State<List<Int>>,
+    reveal: State<Option<Text>>,
+) {
     let nb = root Notebook
     state linking: Bool = false
     state link_text: Text = ""
@@ -1000,7 +1012,7 @@ template view note_page(n: Note, headings: State<List<Text>>, reveal: State<Opti
             // A picture pasted or dropped into the body is in it already, where the caret was:
             // the note keeps its name beside the address its bytes were kept at.
             on image(picture): keep_image(n, picture)
-            on headings(lines): set(headings, lines)
+            on headings(words, levels): set(headings, words).then(set(heading_levels, levels))
         }
         std.linked(n, compact: true)
         std.after_body {

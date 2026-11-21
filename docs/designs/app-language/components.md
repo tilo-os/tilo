@@ -78,9 +78,10 @@ view contact_row(c: Contact) {
   `links: if linking { nb.notes.matching(text).take(48) } else { [] }`, so a keystroke in the
   document reads no note and the picker reads the page it offers. `commands:` adds the view's
   own `/` commands, each reported as `command` by its label when chosen; `headings` is told the
-  document's headings as they change, each as its Markdown line (`## Ship it`) so the level it
-  stands at is in it, and `reveal` (`"3:1"`: the block's place, then a count the view changes
-  with each ask) shows a block and puts the caret at its start — what a map of the headings
+  document's headings as they change — their words, and the level each stands at beside them, so
+  a heading reads as its words and never as the `#`s a writer typed — and `reveal` (`"3:1"`: the
+  heading's place among the document's headings, then a count the view changes with each ask)
+  shows that heading and puts the caret at its start — what a map of the headings
   beside the document (`std.headings`) asks for when a row is chosen; and a picture the body holds (`tilo-blob://…`) shows
   through the window's own content store, as every described component's pictures do.
 

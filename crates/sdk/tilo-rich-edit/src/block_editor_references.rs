@@ -57,19 +57,21 @@ pub struct BlockEditorProps {
     /// would for a button it placed.
     #[component(event(value = String))]
     pub command: Event,
-    /// The document's headings, in the order they stand, each as its Markdown line (`## Title`),
-    /// so the level it stands at is in it, each time they change.
-    #[component(event(value = Vec<String>))]
+    /// The document's headings, in the order they stand, each time they change: their words, and
+    /// how deep each stands (1 for `#`). A heading reads as its words, never as the `#`s a writer
+    /// typed, so a view draws one as it says.
+    #[component(event(value = Vec<String>, at = Vec<i64>))]
     pub headings: Event,
     /// A picture pasted or dropped into the document, written in at the caret: its name, then the
     /// `tilo-blob://` address its bytes were kept at. What an app that names the pictures its
     /// document shows — an export writing each beside the note — records of one.
     #[component(event(value = Vec<String>))]
     pub image: Event,
-    /// The block the document shows, asked by the view that places an outline beside it: the
-    /// place of the block, then a count the view changes every time it asks (`3:1`), so asking
-    /// for a block already shown shows it again. The editor puts the caret at the block's start
-    /// and keeps it in view.
+    /// The heading the document shows, asked by the view that places an outline beside it: the
+    /// place of the heading among the document's headings (`headings` reports them in that
+    /// order), then a count the view changes every time it asks (`3:1`), so asking for a heading
+    /// already shown shows it again. The editor puts the caret at the heading's start and keeps it
+    /// in view.
     #[component(state)]
     pub reveal: Option<String>,
 }
@@ -90,8 +92,9 @@ pub(super) struct References {
     hits: Vec<(Rect, String)>,
     pub(super) on_open: Option<Box<dyn FnMut(&str)>>,
     headings: Event,
-    /// The headings last reported to it: it is told again only when they change.
-    reported: Option<Vec<String>>,
+    /// The headings last reported to it, their words and levels: it is told again only when they
+    /// change.
+    reported: Option<(Vec<String>, Vec<i64>)>,
     links_open: Event,
     links_query: Event,
     /// What the picker last told the view, which it hears again only when that changes: whether it was
@@ -429,7 +432,7 @@ impl Described for BlockEditor {
         } else {
             self.rebind_body(rich, markdown, &placeholder.unwrap_or_default())
         };
-        // A view that asks for a block again changes its count, so the same block is shown
+        // A view that asks for a heading again changes its count, so the same heading is shown
         // again rather than read as the ask it already answered.
         self.reveal_asked(reveal);
         self.publish_headings();
@@ -507,18 +510,18 @@ impl BlockEditor {
         if self.references.headings.is_none() {
             return;
         }
-        let headings: Vec<String> = self
-            .headings()
-            .into_iter()
-            .map(|(level, text)| format!("{} {text}", "#".repeat(usize::from(level))))
-            .collect();
-        if self.references.reported.as_ref() == Some(&headings) {
+        let headings = self.headings();
+        let texts: Vec<String> = headings.iter().map(|(_, text)| text.clone()).collect();
+        let levels: Vec<i64> = headings.iter().map(|(level, _)| i64::from(*level)).collect();
+        let reported = (texts, levels);
+        if self.references.reported.as_ref() == Some(&reported) {
             return;
         }
-        self.references.reported = Some(headings.clone());
-        self.references.headings.fire(Some(Value::List(
-            headings.into_iter().map(Value::Text).collect(),
-        )));
+        self.references.headings.fire(Some(Value::List(vec![
+            Value::List(reported.0.iter().cloned().map(Value::Text).collect()),
+            Value::List(reported.1.iter().map(|level| Value::Int(*level)).collect()),
+        ])));
+        self.references.reported = Some(reported);
     }
 }
 
@@ -1278,10 +1281,14 @@ mod tests {
                 vec![Fired {
                     key: "b".into(),
                     event: "headings".into(),
-                    value: Some(Value::List(vec![Value::Text("Plan".into())])),
+                    value: Some(Value::List(vec![
+                        Value::List(vec![Value::Text("Plan".into())]),
+                        Value::List(vec![Value::Int(2)]),
+                    ])),
                 gesture: None,
                 }],
-                "the view is told them, to draw an outline of the document"
+                "the view is told the headings' words and the level each stands at, to draw an \
+             outline of the document"
             );
 
             editor.focus_block(0, crate::CursorPlacement::End);
@@ -1298,6 +1305,43 @@ mod tests {
                 fired.take().iter().any(|fired| fired.event == "command"
                     && fired.value == Some(Value::Text("Link to note…".into()))),
                 "the command the person chose, by its label"
+            );
+        }
+
+        phase a_heading_that_only_stands_deeper_is_told_again;
+        {
+            use tilo_ui_graph::rich::{Attr, Block};
+
+            let fired = ui::Intents::<Fired>::default();
+            let heading = |level: i64| RichText {
+                blocks: vec![Block {
+                    kind: "heading".into(),
+                    text: "Plan".into(),
+                    attrs: [("level".to_owned(), Attr::Int(level))].into(),
+                    ..Block::default()
+                }],
+                embeds: Vec::new(),
+            };
+            let props = |rich: RichText| BlockEditorProps {
+                value: Some(rich),
+                headings: Event::View(Intent::new(&fired, "b", "headings")),
+                ..BlockEditorProps::default()
+            };
+            let mut editor = BlockEditor::from_props("b", props(heading(2)));
+            let _ = fired.take();
+            editor.set_props(props(heading(3)));
+            assert_eq!(
+                fired.take(),
+                vec![Fired {
+                    key: "b".into(),
+                    event: "headings".into(),
+                    value: Some(Value::List(vec![
+                        Value::List(vec![Value::Text("Plan".into())]),
+                        Value::List(vec![Value::Int(3)]),
+                    ])),
+                gesture: None,
+                }],
+                "a heading set deeper reads deeper, though its words stay the same"
             );
         }
 

@@ -240,11 +240,13 @@ tilo_test_env::scenario! {
         editor.present_blocks(&blocks);
         editor.focus_block(0, CursorPlacement::End);
 
+        // A map's row names the heading by its place among the document's headings: the third
+        // heading stands at the document's fourth block, with a paragraph before the first.
         editor.reveal_asked(Some("2:0".into()));
         assert_eq!(
             editor.focused_index(),
-            Some(2),
-            "the editor shows the block the view chose"
+            Some(3),
+            "the editor shows the block the heading stands at"
         );
         // The person moves on, and chooses the same heading again: a new ask is answered.
         editor.focus_block(0, CursorPlacement::End);
@@ -257,23 +259,25 @@ tilo_test_env::scenario! {
         editor.reveal_asked(Some("2:1".into()));
         assert_eq!(
             editor.focused_index(),
-            Some(2),
-            "the same block asked again is shown again"
+            Some(3),
+            "the same heading asked again is shown again"
         );
         editor.reveal_asked(Some("9:2".into()));
         assert_eq!(
             editor.focused_index(),
-            Some(2),
-            "a block the document does not hold shows nothing"
+            Some(3),
+            "a heading the document does not hold shows nothing"
         );
 
-        // What a view's map is drawn from: each heading as its Markdown line, so its level is in
-        // it.
-        let published: Vec<String> = editor
-            .headings()
-            .into_iter()
-            .map(|(level, text)| format!("{} {text}", "#".repeat(usize::from(level))))
-            .collect();
-        assert_eq!(published, ["## Ship it", "### Then", "## Grow it"]);
+        // What a map of the document reads: each heading's own words, and the level it stands
+        // at, never the marker a writer typed.
+        assert_eq!(
+            editor.headings(),
+            vec![
+                (2, "Ship it".to_owned()),
+                (3, "Then".to_owned()),
+                (2, "Grow it".to_owned()),
+            ]
+        );
     }
 }

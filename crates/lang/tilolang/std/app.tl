@@ -360,40 +360,42 @@ view outline<T>(
 }
 
 /// The headings of a document, as places under the tree it stands in: each heading a row, nested
-/// under the nearest shallower heading before it, choosing one showing that block. `lines` is
-/// what an editor reports of the document it edits (`on headings`), each heading as its Markdown
-/// line (`## Ship the editor`), and `show` is where a chosen row is kept: the block's place, then
-/// a count that changes with each ask (`3:1`), which is what an editor's `reveal` takes, so the
-/// same heading shows again when it is chosen again. The row a person chose stays chosen while
-/// the document is the one they read.
+/// under the nearest shallower heading before it, choosing one showing that heading. `lines` is
+/// what an editor reports of the document it edits (`on headings`): each heading's own words, and
+/// `levels` how deep each stands (`2` for `##`), one level for each line. `show` is where a chosen
+/// row is kept: the heading's place among the document's headings, then a count that changes with
+/// each ask (`3:1`), which is what an editor's `reveal` takes, so the same heading shows again
+/// when it is chosen again. The row a person chose stays chosen while the document is the one
+/// they read.
 ///
 /// A document with no headings draws nothing: the place is not there to choose from.
-template view headings(name: Text, lines: List<Text>, show: State<Option<Text>>) {
+template view headings(
+    name: Text,
+    lines: List<Text>,
+    levels: List<Int>,
+    show: State<Option<Text>>,
+) {
     // How many times a row was chosen: each ask is told apart from the one before, so a heading
     // chosen twice shows twice.
     state asked: Int = 0
     if not lines.is_empty() {
         let chosen = if let shown = show { shown.split(":").first() }
         ui.NavList(title: name, selected: chosen) {
-            // What a heading's Markdown line says: the `#`s it opens with are how deep it stands,
-            // and what follows the space after them is what it says. A heading stands under the
-            // nearest heading before it that stands shallower; one that skips a level is given no
-            // row made up for the level it skipped.
+            // Each heading's words are its row's, never the marker a writer typed. A heading
+            // stands under the nearest heading before it that stands shallower; one that skips a
+            // level is given no row made up for the level it skipped.
             for line in lines {
                 let at = lines.index_of(line) ?? 0
-                let level = (line.split(" ").first() ?? "").len()
-                let words = if line.len() <= level + 1 {
-                    ""
-                } else {
-                    line.slice(level + 1, line.len())
-                }
+                let level = levels.at(at) ?? 0
                 let above = lines
                     .take(at)
-                    .filter(other -> (other.split(" ").first() ?? "").len() < level)
+                    .filter(
+                        other -> (levels.at(lines.index_of(other) ?? 0) ?? 0) < level,
+                    )
                     .last()
                 ui.NavItem(
                     "{at}",
-                    if words.trim() == "" { phrase("tilolang-untitled") } else { words },
+                    if line.trim() == "" { phrase("tilolang-untitled") } else { line },
                     parent: if let over = above { "{lines.index_of(over) ?? 0}" },
                 ) {
                     on select: set(asked, asked + 1).then(set(show, "{at}:{asked}"))
