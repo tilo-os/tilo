@@ -40,9 +40,8 @@ impl FrameHarness {
         };
         outcome.answer(Ok(()));
         self.poll_control_invocations();
-        // What the outgoing component wrote commits on the store's thread: a window showing the
-        // next document never waits on the disk.
-        let _started_only = durable_store::waiting::forbid_on_this_thread();
+        // A harness is driven by a test or a script, not a window's loop: the outgoing
+        // component's View is saved before it goes, and a save the disk refuses is its report's.
         self.take_component_root(mounted);
     }
 

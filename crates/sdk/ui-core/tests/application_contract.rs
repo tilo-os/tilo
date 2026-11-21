@@ -1289,7 +1289,9 @@ mod save_status_fixture {
         fn resource_save_status(&mut self, status: ResourceSaveStatus) -> bool {
             assert_eq!(self.records.save_status(&self.checkout.id).unwrap(), status);
             DELIVERED.with(|seen| seen.borrow_mut().push(status));
-            false
+            // This root shows the status it is told: presenting it is what the test's window
+            // does with the record becoming durable.
+            true
         }
     }
     fn factory(

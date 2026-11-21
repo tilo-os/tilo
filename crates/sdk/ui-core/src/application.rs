@@ -1168,7 +1168,9 @@ impl ApplicationDefinition {
                     .map_err(LaunchError::Restore)?;
                 // The window remembers the record it shows from the start, not only once it
                 // closes: a session that ends without closing it (a crash, power lost) brings it
-                // back on this record rather than on a new, empty one.
+                // back on this record rather than on a new, empty one. Its first frames never
+                // wait on the disk: the store commits this one on its own thread.
+                let _started_only = durable_store::waiting::forbid_on_this_thread();
                 if shows_existing
                     && let Err(error) = component.context.views.save(
                         &component

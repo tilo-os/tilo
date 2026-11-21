@@ -89,6 +89,8 @@ impl WindowShows {
             shows: Some(path),
             ..saved
         };
+        // The window's frames never wait on the disk: the store commits what it shows.
+        let _started_only = durable_store::waiting::forbid_on_this_thread();
         if let Err(error) = self.views.save(&saved) {
             tracing::warn!(%error, "what the window shows is not remembered");
         }
@@ -110,6 +112,8 @@ impl WindowShows {
             application: Some(application),
             ..saved
         };
+        // The window's frames never wait on the disk: the store commits its view.
+        let _started_only = durable_store::waiting::forbid_on_this_thread();
         if let Err(error) = self.views.save(&saved) {
             tracing::warn!(%error, "the window's view is not remembered");
         }
@@ -390,10 +394,10 @@ impl InstanceViewStore {
             .store
             .write(&key, WriteOp::Replace(bytes), None)
             .map_err(storage_error)?;
-        // Never waits: a View is saved while a window opens or closes, and the store commits it
-        // on its own thread. A later read already sees it, and a caller that must know it
-        // landed asks the returned landing.
-        match self.store.flush_without_waiting(&key) {
+        // Never waits on a frame loop, which marks itself: there the store commits on its own
+        // thread and a later read already sees the saved View. Anywhere else the save is on
+        // disk before it returns, and a refused commit is this call's failure.
+        match self.store.flush_where_allowed(&key) {
             Ok(()) | Err(StoreError::Pending(_)) => {
                 Ok(Some(crate::resource::transfer::Landing::new(key, revision)))
             }
