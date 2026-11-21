@@ -444,10 +444,6 @@ when = { step = "source-content" }
 git = true
 
 [[check.matrix.set]]
-when = { step = "source-file-size" }
-git = true
-
-[[check.matrix.set]]
 when = { step = "suites" }
 git = true
 

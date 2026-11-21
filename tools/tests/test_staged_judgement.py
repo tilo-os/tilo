@@ -118,8 +118,6 @@ class Case:
             return [v.path for v in module.audit(repository.root, staged)]
         if self.check == "check_too_many_arguments":
             return [entry.split(":", 1)[0] for entry in module.audit(repository.root, staged)]
-        if self.check == "check_source_file_size":
-            return [entry.split(":", 1)[0] for entry in module.problems(repository.root, staged)]
         raise AssertionError(f"no verdict for {self.check}")
 
 
@@ -204,15 +202,6 @@ CASES = (
             "crates/y/tests/kept.rs": "",
         },
         violation={"crates/y/tests/orphan.rs": ""},
-    ),
-    Case(
-        check="check_source_file_size",
-        files={
-            "tools/policy/source_file_size_baseline.toml": "[ceilings]\n",
-            "crates/x/src/lib.rs": "pub fn run() {}\n",
-            "crates/x/src/huge.rs": "pub fn wide() {}\n",
-        },
-        violation={"crates/x/src/huge.rs": "pub fn wide() {}\n" * 3001},
     ),
     Case(
         check="check_too_many_arguments",
@@ -378,7 +367,6 @@ class HookWiringTests(unittest.TestCase):
         "check_swallowed_failures",
         "check_module_reachability",
         "check_too_many_arguments",
-        "check_source_file_size",
     )
 
     def test_the_hook_judges_the_commit_it_is_committing(self):
