@@ -19,7 +19,9 @@ difference reaches the proof, and prints it as one JSON document:
 A difference is refused when it would change what the base holds and a layer cannot
 replace: a program the live installer runs (the medium's root is a sealed image, which
 merges no layer), a program of the encrypted root's early boot (the initramfs), or any
-other part of an OS image (os/: units, image files, Containerfiles, the kernel).
+other part of an OS image (os/: units, image files, Containerfiles, the kernel). A session
+component is refused too: it merges through a machine's own session, and the owner's
+session here is one the proof's driver starts, not a tilo-vm account.
 
 A change is attributed per program, not per package: a file that is one program's own
 source (its `[[bin]]` path, or the directory a `main.rs` bin owns) reaches only that
@@ -173,6 +175,12 @@ def select(root: Path, base: str) -> dict:
             # The dev tools themselves: the swap mechanism, not what the proof tests.
             refused.append({"component": name, "programs": sorted(hit),
                             "reason": "it is the layer mechanism itself"})
+            continue
+        if component.get("scope") != "vm":
+            # A session component merges through a machine's own session (the device
+            # account); neither guest of this proof runs one tilo-vmd knows.
+            refused.append({"component": name, "programs": sorted(hit),
+                            "reason": "a session component, and neither guest's session is a tilo-vm account"})
             continue
         chosen.append(name)
         if hit & server_bins:
