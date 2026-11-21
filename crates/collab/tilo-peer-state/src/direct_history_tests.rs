@@ -164,23 +164,35 @@ fn join(parts: usize) -> (Duration, u64, usize) {
 
 #[test]
 fn a_newcomer_to_eighty_parts_takes_each_in_as_fast_as_a_newcomer_to_two() {
-    let (small, small_commits, small_held) = join(2);
-    let (large, large_commits, large_held) = join(80);
-    assert_eq!(small_held, 2, "the newcomer holds both parts");
-    assert_eq!(large_held, 80, "the newcomer holds all eighty parts");
-    let per_part = |took: Duration, parts: u32| took.as_secs_f64() / f64::from(parts);
-    let ratio = per_part(large, 80) / per_part(small, 2);
-    eprintln!(
-        "2 parts: {small:?}, {small_commits} commits; 80 parts: {large:?}, {large_commits} \
-         commits; per part, large/small: {ratio:.2}"
-    );
-    assert!(
-        large_commits < 40,
-        "taking in 80 parts committed the device's workspace {large_commits} times"
-    );
+    // Enough pairs that the median holds while the machine runs other work: a
+    // join takes seconds, so one of them can be slowed by a burst.
+    const PAIRS: usize = 3;
+    let mut ratios: Vec<f64> = Vec::with_capacity(PAIRS);
+    for pair in 0..PAIRS {
+        // A newcomer to eighty parts is timed right after one to two, so a
+        // burst of other work slows the pair alike: the median of the pairs'
+        // ratios is what eighty parts cost a part, whatever the machine did
+        // meanwhile.
+        let (small, small_commits, small_held) = join(2);
+        let (large, large_commits, large_held) = join(80);
+        assert_eq!(small_held, 2, "the newcomer holds both parts");
+        assert_eq!(large_held, 80, "the newcomer holds all eighty parts");
+        assert!(
+            large_commits < 40,
+            "taking in 80 parts committed the device's workspace {large_commits} times"
+        );
+        let per_part = |took: Duration, parts: u32| took.as_secs_f64() / f64::from(parts);
+        let ratio = per_part(large, 80) / per_part(small, 2);
+        eprintln!(
+            "pair {pair}: 2 parts: {small:?}, {small_commits} commits; 80 parts: {large:?}, \
+             {large_commits} commits; per part, large/small: {ratio:.2}"
+        );
+        ratios.push(ratio);
+    }
+    ratios.sort_by(f64::total_cmp);
+    let ratio = ratios[PAIRS / 2];
     assert!(
         ratio < 3.0,
-        "a part of 80 took {ratio:.1} times as long as a part of 2 \
-         (2 parts: {small:?}, 80 parts: {large:?})"
+        "a part of 80 took {ratio:.1} times as long as a part of 2 (pairs' ratios: {ratios:.2?})"
     );
 }
