@@ -60,7 +60,7 @@ fn editor_with_devices(
         .collect();
     let mut native = StatePeer::new(
         workspace,
-        owner.clone(),
+        owner,
         certificates,
         RevocationList::new(),
         now,
