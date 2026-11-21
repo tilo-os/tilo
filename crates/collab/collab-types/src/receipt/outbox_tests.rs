@@ -178,6 +178,22 @@ fn policy() -> WorkspacePolicy {
     policy
 }
 
+/// The workspace's policy with `person` granted the Mail app itself: its mailbox is a private
+/// destination, so a role's grant on the workspace reaches it only through a grant naming the
+/// app.
+fn writes_mail(person: &str) -> WorkspacePolicy {
+    let mut policy = policy();
+    policy.grants.push(Grant::new(
+        format!("{person}-writes-mail"),
+        Grantee::person(person),
+        TreePath::workspace(WORKSPACE).app(APP),
+        tilo_action_policy::KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        Grantee::person("ada"),
+    ));
+    policy
+}
+
 /// How `op` is decided by a receiver holding `held` whose signer is `signer`.
 fn received(
     op: &crate::op::SignedOp,
@@ -249,7 +265,7 @@ tilo_test_env::scenario! {
 
     phase a_member_settles_what_they_sent;
     {
-        let mut policy = policy();
+        let mut policy = writes_mail("bob");
         policy.members.insert("bob".into(), Role::Editor);
         let held = held();
         assert_eq!(
@@ -282,7 +298,7 @@ tilo_test_env::scenario! {
     // entry wrote there, and it queued nothing, while an edit of the outbox
     // itself may have put an entry in it.
     {
-        let mut policy = policy();
+        let mut policy = writes_mail("bob");
         policy.members.insert("bob".into(), Role::Editor);
         let settle = ClaimedAction::Edit {
             kind: KIND.into(),

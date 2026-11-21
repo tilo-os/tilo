@@ -710,7 +710,18 @@ mod tests {
         let newest: FsAuthority =
             serde_json::from_slice(&std::fs::read(seen.join(format!("{last}.json"))).unwrap())
                 .unwrap();
-        assert!(newest.capabilities.is_empty(), "the newest list won");
+        // What the tree's list is now: the revoked app folder is gone, and the
+        // workspace's own boundary outlives it.
+        assert_eq!(
+            newest.capabilities,
+            list(&tree, PERSON, None).capabilities,
+            "the newest list won"
+        );
+        let person = Acting::person(PERSON);
+        assert!(
+            !may_read(&newest, &person, FOLDER),
+            "the revoked grant is gone from what was published"
+        );
     }
 
     #[test]
