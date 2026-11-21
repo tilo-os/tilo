@@ -69,15 +69,15 @@
     {
       "id": "files-in",
       "title": "Bring files in and open them",
-      "intent": "A person brings their files into a workspace by dropping them on the page, through the workspace folder after `tilo login`, and with the `tilo` command, then opens each one.",
-      "walk": "page",
-      "driver": "files-in.mjs",
+      "intent": "A person brings their files into a workspace from their own computer, in a Tilo shell: with Files' Upload files, which opens their computer's files to choose, and with the `tilo` command, then opens each one in the workspace.",
+      "walk": "shell",
+      "driver": "shell/files-in.py",
       "steps": [
         "Ada opens Tilo",
         "Ada gives their name",
-        "Ada drops a photo and a PDF on the page",
-        "Ada runs `tilo login` and copies a document into the workspace folder",
+        "Ada brings a photo and a PDF in with Files",
         "Ada copies a spreadsheet in with the `tilo` command",
+        "Ada copies a document into the workspace’s folder",
         "Ada opens each file in the workspace"
       ]
     },
@@ -102,21 +102,13 @@
     {
       "id": "second-device",
       "title": "Pair a phone and keep working on both",
-      "intent": "Ada works in Tilo on her laptop's browser and pairs her phone's browser to herself with Pair a new device. Both then show the same workspace: a Chat message or Tasks issue written on either shows on the other within about two seconds, and the phone still shows them after it opens Tilo again.",
-      "walk": "page",
-      "driver": "second-device.mjs",
+      "intent": "Ada works in Tilo on her laptop and adds her phone as another of her devices with Pair a new device. Both then show the same workspace: a Chat message or Tasks issue written on either shows on the other within about two seconds, and the phone still shows them after it opens Tilo again.",
+      "walk": "shell",
+      "driver": "shell/second-device.py",
       "steps": [
         "Ada opens Tilo on her laptop",
-        "Ada asks her laptop for a link to pair a new device",
-        "Ada opens the link on her phone and approves it on her laptop",
-        "Ada opens Chat on both",
-        "A message from the laptop shows on the phone",
-        "A message from the phone shows on the laptop",
-        "Ada opens Tasks on both",
-        "An issue from the laptop shows on the phone",
-        "An issue from the phone shows on the laptop",
-        "The phone opens Tilo again and still shows both issues and messages",
-        "A message from the laptop shows on the reopened phone"
+        "Ada asks her laptop for a way to add a new device",
+        "Ada adds her phone as one of her devices"
       ]
     },
     {

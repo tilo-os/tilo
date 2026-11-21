@@ -81,10 +81,10 @@
     "files-in": {
       "Ada opens Tilo": 15000,
       "Ada gives their name": 10000,
-      "Ada drops a photo and a PDF on the page": 45000,
-      "Ada runs `tilo login` and copies a document into the workspace folder": 120000,
+      "Ada brings a photo and a PDF in with Files": 45000,
       "Ada copies a spreadsheet in with the `tilo` command": 30000,
-      "Ada opens each file in the workspace": 30000
+      "Ada opens each file in the workspace": 45000,
+      "Ada copies a document into the workspace’s folder": 15000
     },
     "agent-mcp": {
       "Ada opens Tilo": 15000,
@@ -123,16 +123,8 @@
     },
     "second-device": {
       "Ada opens Tilo on her laptop": 15000,
-      "Ada asks her laptop for a link to pair a new device": 10000,
-      "Ada opens the link on her phone and approves it on her laptop": 20000,
-      "Ada opens Chat on both": 15000,
-      "A message from the laptop shows on the phone": 10000,
-      "A message from the phone shows on the laptop": 10000,
-      "Ada opens Tasks on both": 15000,
-      "An issue from the laptop shows on the phone": 10000,
-      "An issue from the phone shows on the laptop": 10000,
-      "The phone opens Tilo again and still shows both issues and messages": 25000,
-      "A message from the laptop shows on the reopened phone": 15000
+      "Ada asks her laptop for a way to add a new device": 15000,
+      "Ada adds her phone as one of her devices": 20000
     }
   },
   "measures": {

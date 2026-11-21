@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from story import Failed, Person, Story, until, walk  # noqa: E402
+from story import PROFILE, Failed, Person, Story, until, walk  # noqa: E402
 
 WORKSPACE = "Garden club"
 SHELL = "so.tilo.session"
@@ -32,8 +32,6 @@ JOIN_INVITATION = "TILO_SHELL_JOIN_INVITATION_FILE"
 NOTES = "so.tilo.notes"
 # How the top bar's workspace control is named, before the workspace in front.
 SWITCHER = "Switch workspace, now in "
-# How a person's own face in their top bar is named, after their name.
-PROFILE = " (you): your profile"
 # What both computers have: Notes, where Ada writes, and what a person's desktop has besides.
 APPS = "notes file-explorer chat settings"
 
@@ -107,48 +105,6 @@ def notes_listed(one: Person) -> int:
                and t["rect"][2] > 120 and t["rect"][0] < left + 300)
 
 
-def name_self(one: Person, name: str) -> None:
-    """Give `one` the name `name` as a person does: their own face in the top bar opens their
-    profile card, whose field asks for the name. Read back off the top bar and the identity record
-    the card keeps it in."""
-    def open_card():
-        one.press(PROFILE, f"{one.name}'s own face in their top bar", exact=False)
-        return until(f"the name field on {one.name}'s profile card", lambda: next(
-            (label for label in ("Add your name", "Your name") if one.target(label)), None), 15, 0.2)
-
-    # A person types once the caret is in the field. A shell just started may still be showing
-    # its first hint, which takes the first press, and the card closes with it: the person opens
-    # the card again, as anyone whose click was taken would. Each time is kept beside the story.
-    field = open_card()
-    taken = []
-    for attempt in range(3):
-        one.press(field, f"the name field on {one.name}'s profile card")
-        try:
-            until(f"the caret in {one.name}'s name field", lambda: (
-                ((one.session.state_dump() or {}).get("chrome") or {}).get("caret")), 3, 0.1)
-            break
-        except Failed:
-            shot = one.snapshot(one.story.out / "evidence" / f"{one.key}-name-press-{attempt + 1}.png")
-            taken.append({"press": attempt + 1, "card_open": bool(one.target(field)),
-                          "shot": shot and shot.name, "controls": one.names()})
-            one.story.note(f"{one.key}-name-presses-taken", taken)
-            if attempt == 2:
-                raise Failed(f"three presses of the name field on {one.name}'s profile card put no "
-                             f"caret in it (card open after each: "
-                             f"{[t['card_open'] for t in taken]})") from None
-            if not one.target(field):
-                field = open_card()
-    one.session.chord("Control", "a")
-    one.session.type(name)
-    one.session.key("Enter")
-    until(f"{one.name}'s top bar naming them", lambda: one.shows(f"{name}{PROFILE}"), 15, 0.2)
-    record = one.state / "config/tilo/identity/primary.json"
-    kept = json.loads(record.read_text()).get("display_name") if record.is_file() else None
-    if kept != name:
-        raise Failed(f"{one.name}'s identity keeps the name {kept!r}, not {name!r}")
-    one.session.key("Escape")
-
-
 def steps(story: Story) -> None:
     ada, grace = story.person("Ada"), story.person("Grace")
     # Both computers have their apps before anyone opens Tilo.
@@ -176,7 +132,7 @@ def steps(story: Story) -> None:
 
     story.step("Ada opens Tilo again", ada_again, people=[ada])
 
-    story.step("Ada gives their name", lambda: name_self(ada, "Ada"), people=[ada])
+    story.step("Ada gives their name", lambda: ada.name_self("Ada"), people=[ada])
 
     shared = {}
 
@@ -227,7 +183,7 @@ def steps(story: Story) -> None:
         story.timing("Grace's join, to Garden club in front", (time.monotonic() - began) * 1000)
         # A computer new to Tilo knows no name for its person yet: Grace gives hers, once her
         # shell has settled in the workspace (switching closes what the top bar had open).
-        name_self(grace, "Grace")
+        grace.name_self("Grace")
 
     story.step(f"Grace joins {WORKSPACE}", grace_joins)
 

@@ -2442,5 +2442,5 @@ check = "web-node-tests"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-user-stories.sh"
-reason = "walks a fresh tilo.sh stack in fresh browser profiles and judges each recording with a model at Anthropic's API; its checks run on the schedule and by dispatch, not on a change"
-check = "user-stories/files-in"
+reason = "walks people through the product — a fresh tilo.sh stack in browser profiles, or headless Tilo shells — and judges each recording with a model at Anthropic's API; its checks run on the schedule and by dispatch, not on a change"
+check = "user-stories-shell/{story}"

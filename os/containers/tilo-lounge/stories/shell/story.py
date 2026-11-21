@@ -48,6 +48,8 @@ BUDGETS = json.loads((HERE.parent / "budgets.json").read_text())
 # How often a running shell is filmed. A snapshot of a software-rendered shell takes a while of
 # its own, so the pace is what a person watching needs, not a screen's frame rate.
 FRAME_SECONDS = 0.4
+# How a person's own face in their top bar is named, after their name.
+PROFILE = " (you): your profile"
 
 
 def slug(text: str) -> str:
@@ -165,6 +167,50 @@ class Person:
         x, y, width, height = target["rect"]
         self.session.click_at(x + width / 2, y + height / 2)
         return target
+
+    def name_self(self, name: str) -> None:
+        """Give this person the name `name` as a person does: their own face in the top bar opens
+        their profile card, whose field asks for the name. Read back off the top bar and the
+        identity record the card keeps it in."""
+        def open_card():
+            self.press(PROFILE, f"{self.name}'s own face in their top bar", exact=False)
+            return until(f"the name field on {self.name}'s profile card", lambda: next(
+                (label for label in ("Add your name", "Your name") if self.target(label)), None),
+                15, 0.2)
+
+        # A person types once the caret is in the field. A shell just started may still be
+        # showing its first hint, which takes the first press, and the card closes with it: the
+        # person opens the card again, as anyone whose click was taken would. Each time is kept
+        # beside the story.
+        field = open_card()
+        taken = []
+        for attempt in range(3):
+            self.press(field, f"the name field on {self.name}'s profile card")
+            try:
+                until(f"the caret in {self.name}'s name field", lambda: (
+                    ((self.session.state_dump() or {}).get("chrome") or {}).get("caret")), 3, 0.1)
+                break
+            except Failed:
+                shot = self.snapshot(self.story.out / "evidence" /
+                                     f"{self.key}-name-press-{attempt + 1}.png")
+                taken.append({"press": attempt + 1, "card_open": bool(self.target(field)),
+                              "shot": shot and shot.name, "controls": self.names()})
+                self.story.note(f"{self.key}-name-presses-taken", taken)
+                if attempt == 2:
+                    raise Failed(f"three presses of the name field on {self.name}'s profile card "
+                                 f"put no caret in it (card open after each: "
+                                 f"{[t['card_open'] for t in taken]})") from None
+                if not self.target(field):
+                    field = open_card()
+        self.session.chord("Control", "a")
+        self.session.type(name)
+        self.session.key("Enter")
+        until(f"{self.name}'s top bar naming them", lambda: self.shows(f"{name}{PROFILE}"), 15, 0.2)
+        record = self.state / "config/tilo/identity/primary.json"
+        kept = json.loads(record.read_text()).get("display_name") if record.is_file() else None
+        if kept != name:
+            raise Failed(f"{self.name}'s identity keeps the name {kept!r}, not {name!r}")
+        self.session.key("Escape")
 
     def snapshot(self, path: Path) -> Path | None:
         try:
