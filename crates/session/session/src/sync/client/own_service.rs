@@ -12,7 +12,6 @@
 //! service and the device never found two groups under one leaf.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::engine::Engine;
 use neighbour_wire::NeighbourMsg;
@@ -25,12 +24,7 @@ use tilo_endpoint_reachability::Reachability;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_network_actor::own_service::{OwnService, workspace_service};
 use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE};
-use tilo_workspace_keys::KeyProvider;
-use tilo_workspace_service::workspaces::{DeviceKeyGroups, GroupKeys, KeySink};
-
-/// How long the service waits for this device's key service to open a workspace's key group:
-/// longer than the group's own founding wait, so a slow founding is not taken for a refusal.
-const OPEN_WAIT: Duration = Duration::from_secs(30);
+use tilo_workspace_service::workspaces::{DeviceKeyGroups, KeySink};
 
 /// Open this device's workspace service under `engine`'s state, as `identity`, on `endpoint`,
 /// waking the relays `reachability` holds back for the invitations it signs, and serve it
@@ -46,15 +40,17 @@ pub(super) async fn open(
     endpoint: &iroh::Endpoint,
     reachability: &Reachability,
 ) -> Result<Arc<workspace_service::WorkspaceService>, String> {
-    let groups = DeviceKeyGroups {
-        keys: Arc::new(DeviceGroupKeys {
-            keys: engine.keys(),
-            engine: Arc::downgrade(engine),
-        }),
-        sink: Some(Arc::new(DeviceKeySink {
+    let handed = Arc::downgrade(engine);
+    let groups = tilo_workspace_service::apps::own_device::key_groups(
+        engine.keys(),
+        Some(Box::new(move |workspace| {
+            tilo_desktop_model::WorkspaceId::parse(workspace)
+                .and_then(|id| handed.upgrade()?.handed_keys(id))
+        })),
+        Some(Arc::new(DeviceKeySink {
             engine: Arc::downgrade(engine),
         })),
-    };
+    );
     open_with_groups(own, identity, engine, endpoint, reachability, groups).await
 }
 
@@ -71,17 +67,16 @@ pub(crate) async fn open_with_groups(
     let root = engine
         .service_root()
         .ok_or("this session keeps no state, so it opens no workspace service")?;
-    // The service writes under a key of its own, which this device certifies as its workspace
-    // service: the device's engine and the service never number changes from one count.
-    let service_identity = workspace_service::ServiceIdentity::beside_device(
-        &root,
-        &identity.device_cert,
-        &*identity.signer,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    let service = workspace_service::WorkspaceService::open(
-        workspace_service::ServiceConfig {
+    let service = tilo_workspace_service::apps::own_device::open(
+        root,
+        tilo_workspace_service::apps::own_device::Device {
+            cert: &identity.device_cert,
+            signer: &identity.signer,
+        },
+        endpoint.clone(),
+        groups,
+        true,
+        |config| workspace_service::ServiceConfig {
             // The desktop's first frame waits on this service, and its endpoint holds its relays
             // back until something needs the device reachable: the service names its address
             // again once a relay comes, and a desktop never waits on the network to show.
@@ -90,17 +85,8 @@ pub(crate) async fn open_with_groups(
             // its to sign: it wakes these relays and waits up to a net report for one before it
             // does.
             reachability: reachability.clone(),
-            // This device is a member of the workspaces the service holds: what its session
-            // writes there is signed as this device, as its apps' writes are.
-            member: Some(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-                cert: identity.device_cert.clone(),
-                signer: Arc::clone(&identity.signer),
-            })),
-            ..workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none())
+            ..config
         },
-        service_identity,
-        endpoint.clone(),
-        Some(groups),
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -129,45 +115,6 @@ pub(super) async fn note_open_links(engine: &Arc<Engine>) {
                 tracing::warn!(%error, %named, "the links out of a workspace were not listed");
             }
         }
-    }
-}
-
-/// This device's keys, as its workspace service asks for a workspace's: those the workspace's host
-/// handed this device, else its key service's.
-struct DeviceGroupKeys {
-    keys: KeyProvider,
-    engine: std::sync::Weak<Engine>,
-}
-
-impl GroupKeys for DeviceGroupKeys {
-    fn named_readers(
-        &self,
-        workspace: collab_types::WorkspaceId,
-        document: &str,
-    ) -> Option<String> {
-        self.keys.get()?.named_readers(workspace, document)
-    }
-
-    fn group_keys<'a>(
-        &'a self,
-        workspace: &'a str,
-        readers: &'a str,
-        create: bool,
-    ) -> tilo_workspace_service::workspaces::GroupKeysAnswerFuture<'a> {
-        Box::pin(async move {
-            if readers == collab_types::EVERY_MEMBER
-                && let Some(keys) = tilo_desktop_model::WorkspaceId::parse(workspace)
-                    .and_then(|id| self.engine.upgrade()?.handed_keys(id))
-            {
-                return Some(Ok(keys));
-            }
-            if self.keys.get().is_none() {
-                return Some(Err("this device's key service is not up".into()));
-            }
-            self.keys
-                .group_keys(workspace, readers, create, OPEN_WAIT)
-                .await
-        })
     }
 }
 

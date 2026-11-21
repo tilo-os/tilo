@@ -2266,30 +2266,20 @@ impl PeerDocuments {
     /// what the device serving a workspace this device joined sends. Followed until the service
     /// stops.
     pub(crate) fn follow(&self, workspaces: &tilo_workspace_service::workspaces::Workspaces) {
-        let mut writes = workspaces.admitted_writes();
         let documents = self.clone();
-        tokio::spawn(async move {
-            loop {
-                match writes.recv().await {
-                    Ok(write) => {
-                        if let Some(document) =
-                            tilo_workspace_service::apps::collab_inbound::RemoteDocument::admitted(
-                                &write,
-                            )
-                        {
-                            documents.deliver(document);
-                        }
+        let arrivals = self.arrivals.clone();
+        tokio::spawn(
+            tilo_workspace_service::apps::collab_inbound::follow_admitted_writes(
+                workspaces,
+                move |document| documents.deliver(document),
+                // Writes went by unheard: every read waiting for one reads again.
+                move || {
+                    if let Some(arrivals) = &arrivals {
+                        arrivals.landed();
                     }
-                    // Writes went by unheard: every read waiting for one reads again.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        if let Some(arrivals) = &documents.arrivals {
-                            arrivals.landed();
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
+                },
+            ),
+        );
     }
 
     /// Hand one app write the session wrote through this device's workspace service to this

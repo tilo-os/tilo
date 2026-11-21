@@ -21,6 +21,7 @@ pub mod collab_presence;
 pub mod document_content;
 mod evidence_signer;
 pub mod local_document_action;
+pub mod own_device;
 pub mod owner_commits;
 pub mod personal;
 pub mod policy_clock;

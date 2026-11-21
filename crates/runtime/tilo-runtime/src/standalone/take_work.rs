@@ -370,7 +370,7 @@ impl Member {
         let identity =
             tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key.clone());
         let workspaces =
-            super::open_member_service(profile, &key, &cert, identity, endpoint.clone())?;
+            super::open_member_service(profile, &cert, identity, endpoint.clone())?;
         let action_service = action_service(profile, &workspaces, server, None, browsers)?;
         let router = {
             let _entered = tilo_rt::app().handle().enter();

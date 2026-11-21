@@ -62,6 +62,31 @@ impl RemoteDocument {
     }
 }
 
+/// Follow every write of another device the workspaces of `workspaces` take in, from now on:
+/// each app record's write is handed to `deliver`, and `lagged` is told when writes went by
+/// unheard, so what waits for one reads again. Run the answer on the runtime the embedder's
+/// apps are served on.
+pub fn follow_admitted_writes(
+    workspaces: &crate::workspaces::Workspaces,
+    mut deliver: impl FnMut(RemoteDocument) + Send + 'static,
+    mut lagged: impl FnMut() + Send + 'static,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    let mut writes = workspaces.admitted_writes();
+    async move {
+        loop {
+            match writes.recv().await {
+                Ok(write) => {
+                    if let Some(document) = RemoteDocument::admitted(&write) {
+                        deliver(document);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => lagged(),
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+}
+
 /// How far an admitted device's live op may be dated from this clock.
 const MAX_CLOCK_SKEW: Duration = Duration::from_secs(300);
 

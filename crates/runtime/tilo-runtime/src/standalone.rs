@@ -1382,15 +1382,6 @@ fn open_workspaces(profile: &Path, opened: OpenWorkspaces<'_>) -> io::Result<Ope
     let workspace_id = WorkspaceId::parse(&workspace_id_string)
         .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
     let endpoint = listen_endpoint(&key, listen)?;
-    // The device and its service never number changes from one count: the
-    // service writes under a key of its own, which this device certifies.
-    let store = profile.join(HOST_STORE);
-    let service_identity = tilo_rt::app()
-        .handle()
-        .block_on(
-            tilo_workspace_service::service::ServiceIdentity::beside_device(&store, &cert, &key),
-        )
-        .map_err(io::Error::other)?;
     let key_sessions = governs.then(crate::key_sessions::KeySessions::new);
     let identity = tilo_identity::identity_store::DeviceIdentity::held(
         cert.clone(),
@@ -1401,41 +1392,22 @@ fn open_workspaces(profile: &Path, opened: OpenWorkspaces<'_>) -> io::Result<Ope
     );
     let keys = tilo_workspace_service::apps::workspace_keys::KeyProvider::default();
     let inbox = Arc::new(GovernanceInbox::default());
-    let config = tilo_workspace_service::service::ServiceConfig {
-        apps: key_sessions.as_ref().map(|sessions| {
-            Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
-        }),
-        member: Some(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-            cert: cert.clone(),
-            signer: Arc::clone(&identity.signer),
-        })),
-        ..tilo_workspace_service::service::ServiceConfig::new(
-            store,
-            tilo_server_protocol::WorkSetting::none(),
-        )
-    };
-    let device_groups = Some(workspace_keys::DeviceGroupKeys::device(
-        keys.clone(),
-        Arc::clone(&inbox),
-    ));
-    let handle = tilo_rt::app().handle().clone();
-    let opened = if governs {
-        handle.block_on(tilo_workspace_service::service::WorkspaceService::open(
-            config,
-            service_identity,
+    let apps = key_sessions.as_ref().map(|sessions| {
+        Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
+    });
+    let opened = tilo_rt::app()
+        .handle()
+        .block_on(tilo_workspace_service::apps::own_device::open(
+            profile.join(HOST_STORE),
+            tilo_workspace_service::apps::own_device::Device {
+                cert: &cert,
+                signer: &identity.signer,
+            },
             endpoint.clone(),
-            device_groups,
-        ))
-    } else {
-        handle.block_on(
-            tilo_workspace_service::service::WorkspaceService::open_joining(
-                config,
-                service_identity,
-                endpoint.clone(),
-                device_groups,
-            ),
-        )
-    };
+            workspace_keys::device_key_groups(keys.clone(), Arc::clone(&inbox)),
+            governs,
+            |config| tilo_workspace_service::service::ServiceConfig { apps, ..config },
+        ));
     let service = Arc::new(opened.map_err(io::Error::other)?);
     let refused = if governs {
         std::collections::BTreeSet::new()
@@ -1493,46 +1465,33 @@ fn admit_own_device(
 /// of its own.
 pub(in crate::standalone) fn open_member_service(
     profile: &Path,
-    key: &ed25519_dalek::SigningKey,
     cert: &tilo_user_identity::DeviceCert,
     identity: tilo_identity::identity_store::DeviceIdentity,
     endpoint: iroh::Endpoint,
 ) -> io::Result<Arc<ServiceWorkspaces>> {
-    let store = profile.join(HOST_STORE);
-    let service_identity = {
-        // A member opens on whichever thread its embedder calls it from,
-        // a runtime's own included.
-        let (store, cert, key) = (store.clone(), cert.clone(), key.clone());
-        service::block_on_owned(async move {
-            tilo_workspace_service::service::ServiceIdentity::beside_device(&store, &cert, &key)
-                .await
-        })
-        .map_err(io::Error::other)?
-    };
     let keys = tilo_workspace_service::apps::workspace_keys::KeyProvider::default();
     let inbox = Arc::new(GovernanceInbox::default());
-    let config = tilo_workspace_service::service::ServiceConfig {
-        member: Some(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-            cert: cert.clone(),
-            signer: Arc::clone(&identity.signer),
-        })),
-        ..tilo_workspace_service::service::ServiceConfig::new(
-            store,
-            tilo_server_protocol::WorkSetting::none(),
-        )
-    };
-    let device_groups = Some(workspace_keys::DeviceGroupKeys::device(
-        keys.clone(),
-        Arc::clone(&inbox),
-    ));
     let service = {
-        let endpoint = endpoint.clone();
+        // A member opens on whichever thread its embedder calls it from,
+        // a runtime's own included.
+        let (store, cert, signer, endpoint) = (
+            profile.join(HOST_STORE),
+            cert.clone(),
+            Arc::clone(&identity.signer),
+            endpoint.clone(),
+        );
+        let groups = workspace_keys::device_key_groups(keys.clone(), Arc::clone(&inbox));
         service::block_on_owned(async move {
-            tilo_workspace_service::service::WorkspaceService::open_joining(
-                config,
-                service_identity,
+            tilo_workspace_service::apps::own_device::open(
+                store,
+                tilo_workspace_service::apps::own_device::Device {
+                    cert: &cert,
+                    signer: &signer,
+                },
                 endpoint,
-                device_groups,
+                groups,
+                false,
+                |config| config,
             )
             .await
         })

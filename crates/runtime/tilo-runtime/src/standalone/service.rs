@@ -335,23 +335,17 @@ impl ServiceWorkspaces {
         channels: Arc<Mutex<tilo_workspace_service::apps::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
     ) {
-        let mut writes = self.copies().admitted_writes();
-        tilo_rt::app().spawn(async move {
-            loop {
-                let write = match writes.recv().await {
-                    Ok(write) => write,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                };
-                if let Some(document) =
-                    tilo_workspace_service::apps::collab_inbound::RemoteDocument::admitted(&write)
-                {
+        tilo_rt::app().spawn(
+            tilo_workspace_service::apps::collab_inbound::follow_admitted_writes(
+                self.copies(),
+                move |document| {
                     tilo_workspace_service::apps::collab_inbound::deliver(
                         &channels, &fanout, document,
                     );
-                }
-            }
-        });
+                },
+                || {},
+            ),
+        );
     }
 
     /// The record content service of these workspaces, once it is made.
@@ -562,34 +556,23 @@ impl ServiceWorkspaces {
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         let identity = DeviceIdentity::kept(cert.clone(), key.clone());
         let endpoint = test_endpoint(&key).await;
-        let store = directory.path().join("workspace-host");
-        let service_identity =
-            tilo_workspace_service::service::ServiceIdentity::beside_device(&store, &cert, &key)
-                .await
-                .unwrap();
         let keys = KeyProvider::default();
         let inbox = Arc::new(GovernanceInbox::default());
-        let config = tilo_workspace_service::service::ServiceConfig {
+        let service = tilo_workspace_service::apps::own_device::open(
+            directory.path().join("workspace-host"),
+            tilo_workspace_service::apps::own_device::Device {
+                cert: &cert,
+                signer: &identity.signer,
+            },
+            endpoint.clone(),
+            crate::standalone::workspace_keys::device_key_groups(keys.clone(), Arc::clone(&inbox)),
+            true,
             // The fixture's endpoint names no address anywhere: nothing will,
             // so opening does not wait for one.
-            reaching: tilo_workspace_service::Reaching::OnItsOwn,
-            member: Some(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
-                cert: cert.clone(),
-                signer: Arc::clone(&identity.signer),
-            })),
-            ..tilo_workspace_service::service::ServiceConfig::new(
-                store,
-                tilo_server_protocol::WorkSetting::none(),
-            )
-        };
-        let service = tilo_workspace_service::service::WorkspaceService::open(
-            config,
-            service_identity,
-            endpoint.clone(),
-            Some(crate::standalone::workspace_keys::DeviceGroupKeys::device(
-                keys.clone(),
-                Arc::clone(&inbox),
-            )),
+            |config| tilo_workspace_service::service::ServiceConfig {
+                reaching: tilo_workspace_service::Reaching::OnItsOwn,
+                ..config
+            },
         )
         .await
         .unwrap();

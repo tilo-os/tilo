@@ -2,7 +2,7 @@
 //!
 //! In the profile's own workspace, which the workspace host this runtime runs hosts,
 //! the host takes part in the groups as this device's one peer and asks
-//! this service for their keys ([`DeviceGroupKeys`]), so its apps get
+//! this service for their keys ([`device_key_groups`]), so its apps get
 //! their route keys without any network. In a workspace
 //! hosted elsewhere it is one key holder among the workspace's member devices:
 //! it asks them for access over the workspace's server session, follows and
@@ -18,7 +18,6 @@ use std::{
     io,
     path::Path,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::provisioning::IdentityStorage;
@@ -33,19 +32,6 @@ use tilo_workspace_service::apps::{
 /// it (owner-only).
 const GROUP_STATE: &str = "groups";
 const GROUP_STATE_KEY: &str = "group-state.key";
-/// How long a first write to a route's group waits for its group to be
-/// created and admit this device: far more than the wait before this device
-/// creates the group itself
-/// (`tilo_workspace_service::apps::workspace_keys::founding_wait`) and the work a
-/// first write does beside it, so a fresh workspace's first write is not
-/// refused for keys that are about to arrive; keys that have not arrived in
-/// half a minute are not about to.
-const OPEN_WAIT: Duration = Duration::from_secs(30);
-/// A first write must outlast the wait before the group is created here.
-const _: () = assert!(
-    OPEN_WAIT.as_secs() > tilo_workspace_service::apps::workspace_keys::founding_wait().as_secs()
-);
-
 /// The running key service; stops when dropped.
 pub(super) struct KeyService {
     pub(super) keys: KeyProvider,
@@ -162,28 +148,20 @@ impl KeyDirectory for Directory {
     }
 }
 
-/// The workspace host this runtime runs holds no group keys of its own: it
-/// takes part in a workspace's groups as this device's one peer, asking this
-/// device's key service for them ([`tilo_workspace_service::workspaces::GroupKeys`]),
-/// so the host and the device never found two groups under one leaf.
-pub(super) struct DeviceGroupKeys {
+/// This device's key service as the workspace host this runtime runs asks
+/// for it: the keys it opens and seals records with, and the sink the group
+/// governance its members' sessions carry is handed to, since the service runs
+/// here, on this same device. The host holds no group keys of its own, so the
+/// host and the device never found two groups under one leaf.
+pub(super) fn device_key_groups(
     keys: KeyProvider,
-}
-
-impl DeviceGroupKeys {
-    /// This device's key service as the workspace host this runtime runs
-    /// asks for it: the keys it opens and seals records with, and the sink
-    /// the group governance its members' sessions carry is handed to, since
-    /// the service runs here, on this same device.
-    pub(super) fn device(
-        keys: KeyProvider,
-        inbox: Arc<super::service::GovernanceInbox>,
-    ) -> tilo_workspace_service::workspaces::DeviceKeyGroups {
-        tilo_workspace_service::workspaces::DeviceKeyGroups {
-            keys: Arc::new(Self { keys }),
-            sink: Some(Arc::new(DeviceKeySink { inbox })),
-        }
-    }
+    inbox: Arc<super::service::GovernanceInbox>,
+) -> tilo_workspace_service::workspaces::DeviceKeyGroups {
+    tilo_workspace_service::apps::own_device::key_groups(
+        keys,
+        None,
+        Some(Arc::new(DeviceKeySink { inbox })),
+    )
 }
 
 /// Where the workspace host this runtime runs hands the group governance its
@@ -200,29 +178,6 @@ impl tilo_workspace_service::workspaces::KeySink for DeviceKeySink {
     /// Nothing to note: this device's key service reads the workspace's
     /// governance itself, through the session that holds it.
     fn settled(&self, _workspace: &str, _state: tilo_peer_state::StatePeer) {}
-}
-
-impl tilo_workspace_service::workspaces::GroupKeys for DeviceGroupKeys {
-    fn group_keys<'a>(
-        &'a self,
-        workspace: &'a str,
-        readers: &'a str,
-        create: bool,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Option<Result<key_group::ContentKeys, String>>>
-                + Send
-                + 'a,
-        >,
-    > {
-        let keys = self.keys.clone();
-        Box::pin(async move {
-            if keys.get().is_none() {
-                return Some(Err("this device's key service is not running".into()));
-            }
-            keys.group_keys(workspace, readers, create, OPEN_WAIT).await
-        })
-    }
 }
 
 /// The key sealing `workspace`'s group state in `profile`, created once: in the
