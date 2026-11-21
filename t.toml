@@ -4692,7 +4692,7 @@ egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west
 run = "bash tools/ci/publish/os-image.sh dev-packages {arch} /target/os/{arch}/layers/trust/full /target/publish/os-dev-packages/{arch}"
 needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-layer-trust-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev-packages/{arch}/**"]
 timeout_secs = 3600
@@ -4709,7 +4709,7 @@ run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /tar
 needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-image-{arch}", "os-dev-packages-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "model-catalog-dev-{arch}", "signing-tools"]
 env = { TILO_DEV_PACKAGES = "/target/publish/os-dev-packages/{arch}" }
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev/{arch}/**"]
 git = true
@@ -4728,6 +4728,7 @@ name = "bootc-alongside-{arch}"
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash tools/ci/publish/bootc-helper.sh alongside /target/bootc-alongside/{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["arch={arch}"]
 isolation = "vm"
 outputs = ["/target/bootc-alongside/{arch}/bootc"]
 timeout_secs = 3600
@@ -4745,6 +4746,7 @@ name = "bootc-reseal-{arch}"
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash tools/ci/publish/bootc-helper.sh reseal /target/bootc-reseal/{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["arch={arch}"]
 isolation = "vm"
 outputs = ["/target/bootc-reseal/{arch}/bootc"]
 timeout_secs = 3600
@@ -4976,7 +4978,7 @@ egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west
 run = "bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 needs = ["os-dev-image-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev-disk/{arch}/**"]
 git = true
@@ -5006,7 +5008,7 @@ run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /tar
 needs = ["image-rpms-{arch}", "rpm-snapshot-{arch}", "os-image-{arch}", "os-dev-packages-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_DEV_LOOP = "1", TILO_DEV_PACKAGES = "/target/publish/os-dev-packages/{arch}" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev/{arch}/**"]
 timeout_secs = 3600
@@ -5022,7 +5024,7 @@ egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west
 run = "bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 needs = ["os-dev-image-lean-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev-disk/{arch}/**"]
 timeout_secs = 5400
@@ -5038,7 +5040,7 @@ run = "bash tools/ci/publish/os-dev-check.sh {arch} /target/publish/os-dev/{arch
 needs = ["os-dev-image-{arch}", "tilo-vm-binary-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
-requires = ["/dev/kvm", "disk-100g"]
+requires = ["arch={arch}", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-dev-check/{arch}/**"]
 git = true
@@ -5055,7 +5057,7 @@ run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /ta
 needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-disk-{arch}", "tilo-vm-binary-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
-requires = ["/dev/kvm", "disk-100g"]
+requires = ["arch={arch}", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-acceptance/{arch}/**"]
 git = true
@@ -5104,7 +5106,7 @@ run = "bash tools/ci/publish/os-dev-publish.sh image {arch} /target/os/{arch}/im
 # commit has no payload has no Windows support until one is published for it.
 needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-check-{arch}", "sign-dev-os-{arch}", "signing-tools", "publish-windows-compat-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 git = true
 timeout_secs = 3600
@@ -5120,7 +5122,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-dev-publish.sh disk {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-disk-{arch}", "os-acceptance-{arch}", "sign-dev-os-{arch}", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 git = true
 timeout_secs = 3600
@@ -5137,6 +5139,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/sign-boot-loader.sh /target/os/{arch}/release-image /target/publish/os-release/{arch}/boot-loader"
 needs = ["os-release-image-{arch}", "os-assets", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["arch={arch}"]
 env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing" }
 isolation = "vm"
 outputs = ["/target/publish/os-release/{arch}/boot-loader/**"]
@@ -5154,7 +5157,7 @@ needs = ["os-release-image-{arch}", "os-release-image-size-{arch}", "tilo-vm-bin
 optional_needs = ["sign-os-loader-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
-requires = ["/dev/kvm", "disk-100g"]
+requires = ["arch={arch}", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-release/{arch}/sealed/**"]
 git = true
@@ -5171,6 +5174,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-release.sh sign-boot /target/publish/os-release/{arch}/sealed /target/publish/os-release/{arch}/boot-signed"
 needs = ["os-release-seal-{arch}", "os-assets", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+requires = ["arch={arch}"]
 env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing", TILO_PCR_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-pcr-prediction" }
 isolation = "vm"
 outputs = ["/target/publish/os-release/{arch}/boot-signed/**"]
@@ -5186,7 +5190,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-release.sh apply {arch} /target/publish/os-release/{arch}/sealed /target/publish/os-release/{arch}/boot-signed /target/publish/os-release/{arch}"
 needs = ["os-release-seal-{arch}", "sign-os-boot-{arch}", "os-assets", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-release/{arch}/image.oci.tar", "/target/publish/os-release/{arch}/digest", "/target/publish/os-release/{arch}/generation", "/target/publish/os-release/{arch}/sbom.spdx.json", "/target/publish/os-release/{arch}/provenance.json", "/target/publish/os-release/{arch}/install.log"]
 git = true
@@ -5202,6 +5206,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "env -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER -u T_COMPILE_CACHE -u T_COMPILE_CACHE_TOKEN CARGO_TARGET_DIR=$TMPDIR/recompile TILO_COMPILER_CACHE=off bash os/image/compile.sh /target/os/{arch}/recompiled-release"
 needs = ["os-assets", "test-assets"]
 image = { check = "os-builder-{arch}", path = "/target/os/{arch}/builder/builder-base/oci" }
+requires = ["arch={arch}"]
 env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/{arch}/recompiled-release/**"]
 timeout_secs = 10800
@@ -5216,7 +5221,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-release.sh reproduce {arch} /target/os/{arch}/recompiled-release /target/publish/os-release/{arch}/reproduce"
 needs = ["os-release-recompile-{arch}", "os-release-image-{arch}", "image-rpms-{arch}", "os-assets", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-release/{arch}/reproduce/**"]
 git = true
@@ -5232,7 +5237,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/os-release.sh rehearse {arch} /target/publish/os-release/{arch}/sealed /target/publish/os-release/{arch}/rehearsal"
 needs = ["os-release-seal-{arch}", "os-assets", "signing-tools"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/os-release/{arch}/rehearsal/release/receipt.json"]
 git = true
@@ -6279,7 +6284,8 @@ needs = ["os-windows-compat-{arch}"]
 # The OS assembler image: it carries debugfs, which reads the image's labels back before it is
 # offered. The step reaches the package registry alone and can install nothing while it publishes.
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-requires = ["disk-100g"]
+# Its image is the assembler of {arch}, which runs only on a node of that architecture.
+requires = ["arch={arch}", "disk-100g"]
 git = true
 cache = false
 timeout_secs = 3600
