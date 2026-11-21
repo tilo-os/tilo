@@ -62,12 +62,16 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
+use neighbour_wire::NeighbourMsg;
 use neighbour_wire::content::{Span, WANT_TTL_MS, answer_pieces, patience_ms};
+use tilo_broker_core::route::CrdtRoute;
 pub use tilo_content::ContentState;
 use tilo_content::{hash_bytes, valid_hash};
+use tilo_peer_state::peer_handle;
+use tilo_server_protocol::WorkspaceId;
 use tokio::sync::mpsc;
 
-use crate::apps::route::CrdtRoute;
+use crate::workspaces::{ContentKeeper, WorkspaceContent, Workspaces};
 
 pub use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_BYTES, PIECES_PER_ANSWER};
 
@@ -849,6 +853,196 @@ impl RouteContent {
         };
         if let Some(senders) = subscribers.get_mut(scope) {
             senders.retain(|sender| sender.send(news.clone()).is_ok());
+        }
+    }
+}
+
+/// The record-content service of one workspace service's workspaces, and the keeper of what
+/// members answer this device with: both are the embedder's to hold for as long as it serves
+/// them ([`routes_content`]).
+pub struct RouteContentService {
+    /// The content of the workspaces' records, as this device routes it.
+    pub content: Arc<RouteContent>,
+    /// What the service hands the content its members answer this device with. The service
+    /// keeps it weakly: whoever made it holds this.
+    pub keeper: Arc<dyn ContentKeeper>,
+}
+
+/// Route the content the records of `workspaces`' workspaces reference over `shelf`, the
+/// device's content store: a want goes to the device serving a member copy, or, for a workspace
+/// this device governs, to the workspace's host, which asks its members; and the answers come
+/// back the same way, into the record content an app waiting on the want hears of
+/// ([`RouteContent`]).
+///
+/// The service answers its members' wants from the same store. A want that got no content is
+/// asked again by whoever holds the service ([`RouteContent::retry`]), once the patience of its
+/// last answer passed.
+#[must_use]
+pub fn routes_content(
+    workspaces: &Workspaces,
+    shelf: Arc<dyn ContentShelf>,
+) -> RouteContentService {
+    let content = RouteContent::new(
+        Arc::clone(&shelf),
+        Arc::new(MemberPeers(workspaces.clone())),
+    );
+    workspaces.serve_content(Arc::new(ShelfContent(shelf)));
+    let keeper: Arc<dyn ContentKeeper> = Arc::new(MemberContent::new(Arc::clone(&content)));
+    workspaces.keep_content(&keeper);
+    RouteContentService { content, keeper }
+}
+
+/// The workspace's content store, as a host answers its members' wants from it.
+struct ShelfContent(Arc<dyn ContentShelf>);
+
+impl WorkspaceContent for ShelfContent {
+    fn read(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
+        self.0.read(
+            &ContentScope::of(&CrdtRoute::app(app.to_owned(), workspace.to_owned())),
+            hash,
+        )
+    }
+}
+
+/// The workspaces' links as the route of their records' content.
+struct MemberPeers(Workspaces);
+
+impl MemberPeers {
+    fn workspace(route: &CrdtRoute) -> Option<WorkspaceId> {
+        WorkspaceId::parse(&route.cluster_id)
+    }
+}
+
+impl ContentPeers for MemberPeers {
+    fn want(&self, route: &CrdtRoute, hash: &str, have: &[Span]) {
+        let Some(workspace) = Self::workspace(route) else {
+            return;
+        };
+        let message = NeighbourMsg::DocumentContentWant {
+            requester: peer_handle(&self.0.serving_certificate().device_public_key),
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            hash: hash.to_owned(),
+            have: have.to_vec(),
+        };
+        if self.0.member_link(workspace).is_some() {
+            let _ = self.0.send_member(workspace, message);
+            return;
+        }
+        // The workspace this device governs: its host asks the members.
+        let Ok(body) = postcard::to_stdvec(&message) else {
+            return;
+        };
+        let copies = self.0.clone();
+        let cluster = route.cluster_id.clone();
+        tokio::spawn(async move {
+            if let Err(error) = copies.ask_members(&cluster, body).await {
+                tracing::debug!(%cluster, %error, "a workspace's host did not ask its members for content");
+            }
+        });
+    }
+
+    /// The service answers a want on whichever link it arrived on, from the content it is given
+    /// ([`ShelfContent`]).
+    fn answer(&self, _route: &CrdtRoute, _peer: ContentPeer, _piece: ContentPiece) {}
+
+    /// The service answers what it keeps none of itself.
+    fn lacks(&self, _route: &CrdtRoute, _peer: ContentPeer, _hash: &str) {}
+
+    fn sources(&self, route: &CrdtRoute) -> ContentSources {
+        let Some(workspace) = Self::workspace(route) else {
+            return ContentSources::default();
+        };
+        let hosts = self
+            .0
+            .member_material(workspace)
+            .map(|material| peer_handle(&material.hint.host.device_public_key))
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        ContentSources {
+            peers: BTreeSet::new(),
+            hosts,
+        }
+    }
+}
+
+/// The pieces the device serving a member copy answers this device's wants with, taken into the
+/// record content.
+pub struct MemberContent(Arc<RouteContent>);
+
+impl MemberContent {
+    /// Take what members answer this device with into `content`.
+    #[must_use]
+    pub fn new(content: Arc<RouteContent>) -> Self {
+        Self(content)
+    }
+}
+
+impl ContentKeeper for MemberContent {
+    fn piece(&self, _workspace: &str, _from: [u8; 32], frame: &[u8]) {
+        match NeighbourMsg::decode(frame) {
+            Ok(NeighbourMsg::DocumentContentPiece {
+                app_id,
+                cluster_id,
+                hash,
+                total,
+                offset,
+                bytes,
+                ..
+            }) => self.0.peer_piece(
+                &CrdtRoute::app(app_id, cluster_id),
+                &ContentPiece {
+                    hash,
+                    total,
+                    offset,
+                    bytes,
+                },
+            ),
+            Ok(NeighbourMsg::DocumentContentLacks {
+                responder,
+                app_id,
+                cluster_id,
+                hash,
+                ..
+            }) => self
+                .0
+                .peer_lacks(&CrdtRoute::app(app_id, cluster_id), responder, &hash),
+            Ok(NeighbourMsg::DocumentContentRefused {
+                responder,
+                app_id,
+                cluster_id,
+                hash,
+                ..
+            }) => self
+                .0
+                .peer_refused(&CrdtRoute::app(app_id, cluster_id), responder, &hash),
+            _ => {}
+        }
+    }
+
+    fn expects(&self, _workspace: &str, frame: &[u8]) -> bool {
+        match NeighbourMsg::decode(frame) {
+            Ok(
+                NeighbourMsg::DocumentContentPiece {
+                    app_id,
+                    cluster_id,
+                    hash,
+                    ..
+                }
+                | NeighbourMsg::DocumentContentLacks {
+                    app_id,
+                    cluster_id,
+                    hash,
+                    ..
+                }
+                | NeighbourMsg::DocumentContentRefused {
+                    app_id,
+                    cluster_id,
+                    hash,
+                    ..
+                },
+            ) => self.0.expecting(&CrdtRoute::app(app_id, cluster_id), &hash),
+            _ => false,
         }
     }
 }

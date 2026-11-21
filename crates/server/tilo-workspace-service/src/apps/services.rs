@@ -950,7 +950,7 @@ pub struct ProcessServices {
     pub launchable_catalogue: Option<std::path::PathBuf>,
     /// Content records reference, kept here and asked of its route; without it apps' content stays
     /// in their own process.
-    pub document_content: Option<Arc<crate::apps::document_content::RouteContent>>,
+    pub document_content: Option<Arc<crate::content::RouteContent>>,
     /// This device's channel encryption service, which tells each route's endpoint when its
     /// channel keys changed (`groupKeysChanged`).
     pub group_keys: Option<crate::apps::workspace_keys::KeyProvider>,

@@ -45,6 +45,9 @@ pub mod own_device;
 // for them, which a page cannot.
 #[cfg(not(target_arch = "wasm32"))]
 mod connections;
+/// Content a record references, reaching the devices that may read it.
+#[cfg(all(feature = "content", not(target_arch = "wasm32")))]
+pub mod content;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod content_queue;
 #[cfg(not(target_arch = "wasm32"))]

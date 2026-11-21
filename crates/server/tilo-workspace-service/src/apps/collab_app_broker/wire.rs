@@ -432,7 +432,7 @@ impl JoinedChannel {
     /// The device's record-content service, for a route still admitted.
     fn document_content(
         &self,
-    ) -> Result<(CrdtRoute, Arc<crate::apps::document_content::RouteContent>), BrokerError> {
+    ) -> Result<(CrdtRoute, Arc<crate::content::RouteContent>), BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         let route = self.resource_route();
@@ -1471,7 +1471,7 @@ impl JoinedChannel {
     /// News of the record's content from now on.
     pub(super) fn subscribe_content(
         &self,
-    ) -> Result<Feed<crate::apps::document_content::ContentNews>, BrokerError> {
+    ) -> Result<Feed<crate::content::ContentNews>, BrokerError> {
         let (route, content) = self.document_content()?;
         Ok(Feed::new(content.subscribe(&route)))
     }
@@ -2187,7 +2187,7 @@ impl WireConnection {
                             feed,
                             id,
                             frames,
-                            |news: crate::apps::document_content::ContentNews| {
+                            |news: crate::content::ContentNews| {
                                 Some(Event::Content {
                                     hash: news.hash,
                                     state: news.state,

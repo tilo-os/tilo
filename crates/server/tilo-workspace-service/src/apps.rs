@@ -18,7 +18,6 @@ pub use tilo_broker_core::{collab_core, collab_history};
 pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;
-pub mod document_content;
 mod evidence_signer;
 pub mod local_document_action;
 pub mod owner_commits;

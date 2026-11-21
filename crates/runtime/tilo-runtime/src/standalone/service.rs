@@ -20,7 +20,7 @@ use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ReadFuture, Workspaces as PeerWorkspaces};
-use tilo_workspace_service::apps::document_content::RouteContent;
+use tilo_workspace_service::content::RouteContent;
 use tilo_workspace_service::service::WorkspaceService;
 use tilo_workspace_service::workspaces::{SessionAdmission, Workspaces};
 

@@ -346,7 +346,7 @@ impl OriginalWorkspace {
     /// The workspace on a host that keeps record content through `content`:
     /// `workspace` when it is the same workspace another host holds.
     pub fn with_document_content(
-        content: Arc<crate::apps::document_content::RouteContent>,
+        content: Arc<crate::content::RouteContent>,
         workspace: Option<tilo_desktop_model::WorkspaceId>,
     ) -> Self {
         Self::hosting(
@@ -363,7 +363,7 @@ impl OriginalWorkspace {
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
         document_content: Option<(
-            Arc<crate::apps::document_content::RouteContent>,
+            Arc<crate::content::RouteContent>,
             Option<tilo_desktop_model::WorkspaceId>,
         )>,
         current_native: bool,

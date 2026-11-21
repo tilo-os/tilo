@@ -26,7 +26,7 @@ use tilo_broker_core::route::CrdtRoute;
 use tilo_content::hash_bytes;
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
-use tilo_workspace_service::apps::document_content::{ContentSources, ContentState};
+use tilo_workspace_service::content::{ContentSources, ContentState};
 
 use super::ContentService;
 use crate::sync::Cmd;

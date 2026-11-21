@@ -8,7 +8,7 @@ async fn a_picture_one_app_offers_reaches_an_app_on_another_host() {
     use tilo_content::ContentState;
     tokio::task::LocalSet::new()
         .run_until(async {
-            let (content_a, content_b, _) = crate::apps::document_content::tests::pair(true);
+            let (content_a, content_b, _) = crate::content::tests::pair(true);
             let host_a = OriginalWorkspace::with_document_content(content_a, None);
             let workspace = tilo_desktop_model::WorkspaceId::parse(&host_a.route.cluster_id);
             let host_b = OriginalWorkspace::with_document_content(content_b, workspace);
@@ -79,7 +79,7 @@ async fn an_app_hears_its_want_wait_for_an_offline_holder_and_the_picture_arrive
     use tilo_content::ContentState;
     tokio::task::LocalSet::new()
         .run_until(async {
-            let pair = crate::apps::document_content::tests::hosts(false, true);
+            let pair = crate::content::tests::hosts(false, true);
             let host_a = OriginalWorkspace::with_document_content(pair.a.clone(), None);
             let workspace = tilo_desktop_model::WorkspaceId::parse(&host_a.route.cluster_id);
             let host_b = OriginalWorkspace::with_document_content(pair.b.clone(), workspace);

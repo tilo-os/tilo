@@ -36,8 +36,8 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE, OFFER_DEADLINE, RemoteDevice};
 use tilo_peer_state::offload::{OffloadPeers, RanAway};
 use tilo_server_protocol::{Machine, Whose, WorkSetting};
-use tilo_workspace_service::apps::document_content::{ContentState, RouteContent};
 use tilo_workspace_service::apps::route::CrdtRoute;
+use tilo_workspace_service::content::{ContentState, RouteContent};
 
 // A host that keeps the workspaces' content itself implements the media a
 // route binds its inputs from in the same scope the apps' own content is

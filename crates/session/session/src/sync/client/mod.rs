@@ -62,7 +62,7 @@ use tilo_identity::identity_store::DeviceIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::{WorkspaceId, native_ingress};
 #[cfg(target_os = "linux")]
-use tilo_workspace_service::apps::document_content::ContentSources;
+use tilo_workspace_service::content::ContentSources;
 
 #[cfg(target_os = "linux")]
 mod adopt;

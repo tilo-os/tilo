@@ -5,7 +5,7 @@
 //! document ([`tilo_fs::namespace`]), published on the workspace's session by
 //! every device that holds it ([`tilo_fs::tree_document`]), and the bytes its
 //! files are made of, which travel beside the record on the record's own route
-//! ([`tilo_workspace_service::apps::document_content`]). The workspace's host keeps the
+//! ([`tilo_workspace_service::content`]). The workspace's host keeps the
 //! record with the workspace's other records and hands it whole to a device
 //! that joins, and it carries content requests between the members. A device
 //! taking part needs nothing else: no ticket, no peer addresses, no sync protocol
@@ -47,10 +47,8 @@ use tilo_fs::{
     tree_document::FILES_APP,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::{
-    document_content::{ContentState, RouteContent},
-    route::CrdtRoute,
-};
+use tilo_workspace_service::apps::route::CrdtRoute;
+use tilo_workspace_service::content::{ContentState, RouteContent};
 
 use super::{Author, Files, INTERVAL};
 

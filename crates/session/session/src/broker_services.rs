@@ -145,7 +145,7 @@ broker_services! {
     app_resource_kinds: tilo_broker_core::access::AppResourceKindsResolver,
     workspace_grants: Arc<dyn WorkspaceGrants>,
     launchable_catalogue: PathBuf,
-    document_content: Arc<tilo_workspace_service::apps::document_content::RouteContent>,
+    document_content: Arc<tilo_workspace_service::content::RouteContent>,
     group_keys: KeyProvider,
     action_offload: Arc<dyn tilo_actions::offload::ActionOffload>,
     own_device: Arc<dyn OwnDeviceActions>,

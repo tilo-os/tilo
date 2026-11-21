@@ -507,7 +507,7 @@ mod tests {
     use tilo_network_actor::{DeviceIdentity, RecordContentDelivery};
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
     use tilo_user_identity::DeviceCert;
-    use tilo_workspace_service::apps::document_content::ContentState;
+    use tilo_workspace_service::content::ContentState;
 
     use super::*;
     use crate::sync::Cmd;
