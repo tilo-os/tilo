@@ -179,29 +179,57 @@
     {
       "id": "tag",
       "said": "Tag the note",
-      "ops": [
-        {
-          "press_any": [
-            {
-              "rust": {
+      "ops": {
+        "rust": [
+          {
+            "press_any": [
+              {
                 "prefix": "More actions for"
-              },
-              "tl": {
+              }
+            ]
+          },
+          {
+            "actions": "tag"
+          },
+          {
+            "key": "Escape"
+          }
+        ],
+        "tl": [
+          {
+            "press_any": [
+              {
                 "prefix": "More actions"
               }
+            ]
+          },
+          {
+            "wait_for": "Tag…"
+          },
+          {
+            "press_any": [
+              "Tag…"
+            ]
+          },
+          {
+            "form": {
+              "field": "Tag",
+              "text": "travel"
             }
-          ]
-        },
-        {
-          "actions": {
-            "rust": "tag",
-            "tl": "tag"
+          },
+          {
+            "form": {
+              "submit": "Tag"
+            }
+          },
+          {
+            "wait_for": "travel"
+          },
+          {
+            "questions": true
           }
-        },
-        {
-          "key": "Escape"
-        }
-      ]
+        ]
+      }
     },
     {
       "id": "outline",

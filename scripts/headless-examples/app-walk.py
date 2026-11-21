@@ -578,6 +578,32 @@ class Walk:
                 f"{[(row.get('name'), row['rect']) for row in rows]}")
         return {"rows": value["rows"], "left": lefts[0], "rects": [row["rect"] for row in rows]}
 
+    def op_form(self, value) -> dict:
+        """Answer the form the window shows, as a person does: `{"field": "Tag", "text":
+        "travel"}` clicks the field the form asks for and types into it, and `{"submit":
+        "Tag"}` presses the button that takes the answer, at the foot of the sheet, under the
+        field the same words name."""
+        answered = {}
+        if "field" in value:
+            name = value["field"]
+            target = until_value(
+                f"the form's field {name!r}", lambda: control(self.session, name), 30)
+            x, y, w, h = target["rect"]
+            self.session.click_at(x + w / 2, y + h / 2)
+            self.session.type(pick(value["text"], self.variant))
+            answered["field"] = {"name": name, "typed": value["text"]}
+        if "submit" in value:
+            name = value["submit"]
+            def button():
+                found = [t for t in self.session.targets() if t.get("name") == name]
+                return max(found, key=lambda t: t["rect"][1]) if found else None
+
+            target = until_value(f"the form's submit {name!r}", button, 30)
+            x, y, w, h = target["rect"]
+            self.session.click_at(x + w / 2, y + h / 2)
+            answered["submit"] = {"name": name, "rect": target["rect"]}
+        return answered
+
     def op_search(self, value) -> dict:
         """Find a note the way a person does: the system's search, opened on the
         words of the note's title. Its rows are the desktop's own answer, from
