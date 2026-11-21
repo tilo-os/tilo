@@ -310,6 +310,25 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(ntfs["platform"], siblings_rule["platform"])
         self.assertEqual(rules("ci", "ntfs-fixtures"), [],
                          "ci inherits the default profile's NTFS fixtures")
+        # The session's app-open tests start the installed apps and the launcher
+        # itself, and time the session's opening against their manifests' splash
+        # budgets: the run builds each of them first.
+        opened = scripts.pop("app-open-siblings")
+        self.assertEqual(opened["command"], ["bash", "tools/build-sibling-binaries.sh",
+                                             "tasks:tasks", "chat:chat",
+                                             "tilo-runtime:tilo-runtime",
+                                             "passwords:passwords",
+                                             "model-providers:model-providers",
+                                             "launcher:tilo-launcher"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "app-open-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-session) and binary(it) and test(app_open_budget::)",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds the apps the session opens and times",
+            )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
                                  "headless-audio": ["audio"],
@@ -337,6 +356,8 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "test(workspace_agents::))":
                                      "chat-siblings",
                                  "package(tilo-session) and binary(it) and test(closed_tasks::)": "tasks-siblings",
+                                 "package(tilo-session) and binary(it) and "
+                                 "test(app_open_budget::)": "app-open-siblings",
                                  "package(tilo-session) and binary(it) and test(device_branch::)":
                                      "vault-siblings",
                                  "package(tilo-session) and binary(it) and test(lounge_e2e::)": "lounge-siblings",
