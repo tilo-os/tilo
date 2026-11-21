@@ -32,6 +32,9 @@ fn main() -> std::process::ExitCode {
             tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
         ))
         .with_writer(std::io::stderr)
+        // The session reads the host's stderr into its log line by line: colour codes there are
+        // noise a person reads around.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
     let Some(api) = runtime_portal::process_link::take() else {
         // No api to say it on: the session's log of the host's stderr is all there is.

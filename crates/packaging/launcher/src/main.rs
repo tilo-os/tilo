@@ -1461,6 +1461,9 @@ fn init_tracing() {
         .with_env_filter(env)
         .with_target(false)
         .with_writer(std::io::stderr)
+        // The session reads this stream into its log line by line: colour codes only where a
+        // person runs the launcher at a terminal.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         // A launcher relaying a kept app outlives the session reading its standard error: a line
         // it cannot write is dropped, never a panic of the subscriber's own report.
         .log_internal_errors(false)
