@@ -1,6 +1,6 @@
 use super::{
-    Deserialize, DeviceCert, Event, JsError, RefCell, RevocationEntry,
-    RevocationList, Serialize, WorkspaceId, hex32, js_error,
+    Deserialize, DeviceCert, Event, JsError, RefCell, RevocationEntry, RevocationList, Serialize,
+    WorkspaceId, hex32, js_error,
 };
 
 /// `{publish, subscribe}`.
