@@ -443,7 +443,11 @@ fn column_key(sort: SortKey) -> &'static str {
 }
 
 /// One sentence and at most one action for each way the list is empty.
-fn empty_state(kind: Placeholder) -> EmptyState {
+fn empty_state(kind: Placeholder, shared: &Shared) -> EmptyState {
+    let retry = {
+        let shared = shared.clone();
+        move || shared.borrow_mut().push(Request::Refresh)
+    };
     match kind {
         Placeholder::Loading => EmptyState::new("Reading processes"),
         Placeholder::Empty => EmptyState::new("No processes are running"),
@@ -451,12 +455,14 @@ fn empty_state(kind: Placeholder) -> EmptyState {
             "Processes unavailable",
             "This account isn't allowed to read the process list.",
         )
-        .with_action("Try again"),
+        .with_action("Try again")
+        .on_view(retry),
         Placeholder::Unavailable => EmptyState::error(
             "Processes unavailable",
             "The process list couldn't be read.",
         )
-        .with_action("Try again"),
+        .with_action("Try again")
+        .on_view(retry),
         Placeholder::NoMatches => EmptyState::new("No processes match the search"),
     }
 }
@@ -579,7 +585,7 @@ impl ProcessesPane {
 
         let placeholder = bridge.placeholder;
         if self.placeholder.as_ref().map(|(kind, _)| *kind) != placeholder {
-            self.placeholder = placeholder.map(|kind| (kind, empty_state(kind)));
+            self.placeholder = placeholder.map(|kind| (kind, empty_state(kind, &self.shared)));
             self.structure_dirty = true;
         }
         self.layout_dirty = true;
@@ -922,9 +928,6 @@ impl Widget for ProcessesPane {
         };
         if let Some((_, empty)) = &mut self.placeholder {
             empty.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-            if empty.take_action() {
-                self.shared.borrow_mut().push(Request::Refresh);
-            }
         } else {
             self.route_to_table(event, ctx, child);
         }

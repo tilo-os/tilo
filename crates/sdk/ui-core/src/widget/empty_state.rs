@@ -938,7 +938,6 @@ pub struct EmptyState {
     action_enabled: bool,
     handler: Option<Handler>,
     engine: Option<crate::widget::Button>,
-    action_fired: bool,
     rect: Rect,
     action_rect: Rect,
     /// What the action's target must reach to be pressed.
@@ -995,7 +994,6 @@ impl EmptyState {
             action_enabled: true,
             handler: None,
             engine: None,
-            action_fired: false,
             rect: Rect::ZERO,
             action_rect: Rect::ZERO,
             input: InteractionEnvironment::POINTER,
@@ -1250,7 +1248,6 @@ impl EmptyState {
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.handler = Some(Handler::Binding(binding));
-        self.action_fired = false;
         self.rebuild_engine();
         self
     }
@@ -1322,15 +1319,7 @@ impl EmptyState {
     fn fire_action(&mut self, state: &mut crate::widget::Edits<'_>, path: &ObjId) {
         if let Some(engine) = &mut self.engine {
             let _ = engine.perform_action(&crate::a11y::Action::Activate, &[], state, path);
-            return;
         }
-        self.action_fired = true;
-    }
-
-    /// Drain the "action was clicked" signal (fires once per click). The
-    /// host reacts by mutating its own model — e.g. opening a compose sheet.
-    pub fn take_action(&mut self) -> bool {
-        std::mem::take(&mut self.action_fired)
     }
 
     /// The resolved bounds of the action (empty until laid out).

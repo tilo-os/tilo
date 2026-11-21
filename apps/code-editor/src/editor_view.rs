@@ -264,6 +264,8 @@ pub struct EditorView {
     find_current: Option<usize>,
 
     empty: EmptyState,
+    /// The empty state's Open file was pressed, for the app to open one.
+    open_asked: std::rc::Rc<std::cell::Cell<bool>>,
     /// Compact recovery affordance shown only after horizontal scrolling. It
     /// makes the current offset explicit and returns to column zero on click;
     /// Home provides the matching keyboard path.
@@ -287,6 +289,7 @@ impl EditorView {
                 f64::from(theme.tokens.spacing.s3),
             )
         };
+        let open_asked = std::rc::Rc::new(std::cell::Cell::new(false));
         EditorView {
             rect: Rect::ZERO,
             lines: Arc::new(vec![String::new()]),
@@ -333,7 +336,12 @@ impl EditorView {
             find_current: None,
             empty: EmptyState::new("No file open")
                 .with_icon(Icon::FileCode)
-                .with_action("Open file"),
+                .with_action("Open file")
+                .on_view({
+                    let asked = std::rc::Rc::clone(&open_asked);
+                    move || asked.set(true)
+                }),
+            open_asked,
             horizontal_scroll_reset_rect: Rect::ZERO,
             pending_text_edit: None,
             composition: EditCore::new(),
@@ -351,8 +359,8 @@ impl EditorView {
         self.scroll_to_caret();
     }
 
-    pub fn take_empty_action(&mut self) -> bool {
-        self.empty.take_action()
+    pub fn take_empty_action(&self) -> bool {
+        self.open_asked.take()
     }
 
     pub(crate) fn continuation_position(

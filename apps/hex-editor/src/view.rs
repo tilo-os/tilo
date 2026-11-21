@@ -647,10 +647,6 @@ impl Editor {
     fn handle_empty_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.empty.handle_event(event, ctx);
         self.dirty = true;
-        if self.empty.take_action() {
-            self.invoke(&HexEffect::OpenFile { path: None });
-            *ctx.handled = true;
-        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = ctx.logical(position);
         }
@@ -659,11 +655,14 @@ impl Editor {
             button: MouseButton::Left,
             ..
         } = event
-            && !*ctx.handled
-            && self.new_file.contains(self.last_mouse)
         {
-            self.new_empty_file();
-            *ctx.handled = true;
+            if self.empty.action_rect().contains(self.last_mouse) {
+                self.invoke(&HexEffect::OpenFile { path: None });
+                *ctx.handled = true;
+            } else if !*ctx.handled && self.new_file.contains(self.last_mouse) {
+                self.new_empty_file();
+                *ctx.handled = true;
+            }
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed

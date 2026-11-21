@@ -20,7 +20,6 @@ use ui::widget::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use winit::event::WindowEvent;
 
 use crate::CATALOG;
 use crate::app::{Action, Core, Requests, Shared};
@@ -203,14 +202,15 @@ fn facts_row(
 
 /// A fresh library: what a snippet is for, and the one thing to do, create one.
 fn empty_library(requests: &Requests) -> Element {
-    Box::new(EmptyAction {
-        state: EmptyState::new(tr("snippets-empty-library"))
+    let requests = Rc::clone(requests);
+    Box::new(
+        EmptyState::new(tr("snippets-empty-library"))
             .with_icon(Icon::Code)
             .with_message(tr("snippets-empty-library-message"))
             .with_action(tr("snippets-new"))
-            .with_action_id("snippets.library.new-snippet"),
-        requests: Rc::clone(requests),
-    })
+            .with_action_id("snippets.library.new-snippet")
+            .on_view(move || requests.borrow_mut().push(Action::NewSnippet)),
+    )
 }
 
 /// The binding of the open snippet `id`'s field `field` (of `paths`) for a control with
@@ -385,68 +385,6 @@ impl ui::widget::Decorator for LanguagePicker {
 
     fn name(&self) -> &'static str {
         "SnippetLanguage"
-    }
-}
-
-struct EmptyAction {
-    state: EmptyState,
-    requests: Requests,
-}
-
-impl EmptyAction {
-    fn drain(&mut self) {
-        if self.state.take_action() {
-            self.requests.borrow_mut().push(Action::NewSnippet);
-        }
-    }
-}
-
-impl ui::widget::Decorator for EmptyAction {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.state
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.state
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = Widget::build_layout(&mut self.state, taffy, theme, node_map);
-        ui::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.drain();
-        Widget::update(&mut self.state, state, path)
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        Widget::handle_event(&mut self.state, event, ctx);
-        self.drain();
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &ui::a11y::Action,
-        _key_path: &[u64],
-        state: &mut ui::widget::Edits<'_>,
-        root: &ModelPath,
-    ) -> bool {
-        let done = Widget::perform_action(&mut self.state, action, &[], state, root);
-        self.drain();
-        done
-    }
-
-    fn name(&self) -> &'static str {
-        "SnippetsEmpty"
     }
 }
 

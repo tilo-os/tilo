@@ -291,7 +291,8 @@ impl JournalPane {
 
         let placeholder = bridge.placeholder;
         if self.placeholder.as_ref().map(|(kind, _)| *kind) != placeholder {
-            self.placeholder = placeholder.map(|kind| (kind, empty_state(kind, &bridge)));
+            self.placeholder =
+                placeholder.map(|kind| (kind, empty_state(kind, &bridge, &self.shared)));
             self.structure_dirty = true;
         }
         if self.has_entries != bridge.has_entries {
@@ -408,7 +409,7 @@ fn facet_value(value: &str) -> String {
 }
 
 /// One sentence and at most one action for each way the list is empty.
-fn empty_state(kind: Placeholder, bridge: &Bridge) -> EmptyState {
+fn empty_state(kind: Placeholder, bridge: &Bridge, shared: &Shared) -> EmptyState {
     match kind {
         Placeholder::Loading => EmptyState::new("Reading the system journal"),
         Placeholder::Unavailable(error) => {
@@ -420,7 +421,10 @@ fn empty_state(kind: Placeholder, bridge: &Bridge) -> EmptyState {
         }
         Placeholder::Empty => EmptyState::new("The journal has no entries yet"),
         Placeholder::NoMatches => {
-            EmptyState::new("No entries match these filters").with_action("Clear filters")
+            let shared = shared.clone();
+            EmptyState::new("No entries match these filters")
+                .with_action("Clear filters")
+                .on_view(move || shared.borrow_mut().push(Request::ClearFilters))
         }
     }
 }
@@ -592,11 +596,8 @@ impl Widget for JournalPane {
             }
         }
         if let Some(child) = self.nodes.body_child {
-            if let Some((kind, empty)) = &mut self.placeholder {
+            if let Some((_, empty)) = &mut self.placeholder {
                 empty.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-                if *kind == Placeholder::NoMatches && empty.take_action() {
-                    self.shared.borrow_mut().push(Request::ClearFilters);
-                }
             } else {
                 self.table
                     .handle_event(event, &mut ctx.reborrow(ctx.path, child));

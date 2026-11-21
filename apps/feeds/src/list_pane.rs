@@ -131,12 +131,14 @@ pub(crate) struct EmptyList {
 }
 
 impl EmptyList {
-    fn widget(self) -> EmptyState {
+    fn widget(self, core: &Shared) -> EmptyState {
         let state = EmptyState::new(self.title).with_icon(self.icon);
         if self.add_feed {
+            let core = std::rc::Rc::clone(core);
             state
                 .with_action("Add feed")
                 .with_action_id("feeds.empty.add")
+                .on_view(move || core.borrow_mut().open_add_subscription())
         } else {
             state
         }
@@ -616,7 +618,7 @@ impl ListPane {
         let wanted = core.empty_list();
         drop(core);
         if wanted != self.empty.as_ref().map(|(shown, _)| *shown) {
-            self.empty = wanted.map(|empty| (empty, empty.widget()));
+            self.empty = wanted.map(|empty| (empty, empty.widget(&self.core)));
             self.structure_dirty = true;
         }
     }
@@ -721,9 +723,6 @@ impl Widget for ListPane {
         }
         if let (Some((_, empty)), Some(node)) = (self.empty.as_mut(), self.empty_node) {
             empty.handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if empty.take_action() {
-                self.core.borrow_mut().open_add_subscription();
-            }
             if *ctx.handled {
                 return;
             }

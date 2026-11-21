@@ -684,10 +684,13 @@ tilo_test_env::scenario! {
     phase empty_state_action_fires_once_through_pointer_keyboard_and_semantics;
     {
         fn action_pill_click_fires_once() {
+            let fired = Rc::new(std::cell::Cell::new(0));
+            let counted = Rc::clone(&fired);
             let mut es = EmptyState::new("No messages")
                 .with_icon(Icon::Inbox)
                 .with_message("Your inbox is empty")
-                .with_action("Compose");
+                .with_action("Compose")
+                .on_view(move || counted.set(counted.get() + 1));
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
             let target = es.action_rect().center();
@@ -697,12 +700,15 @@ tilo_test_env::scenario! {
                 dispatch(&mut es, &mouse_press()),
                 "click on the action pill is consumed"
             );
-            assert!(es.take_action(), "the action signal fires");
-            assert!(!es.take_action(), "the action signal drains after one read");
+            assert_eq!(crate::testing::answer_controls(&mut es), 1);
+            assert_eq!(fired.get(), 1, "the action runs once per click");
+            assert_eq!(crate::testing::answer_controls(&mut es), 0);
         }
 
         fn click_outside_action_does_not_fire() {
-            let mut es = EmptyState::new("Nothing here").with_action("Add");
+            let mut es = EmptyState::new("Nothing here")
+                .with_action("Add")
+                .on_view(|| panic!("a click away from the pill runs nothing"));
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
             dispatch(&mut es, &cursor(Point::new(2.0, 2.0)));
@@ -710,13 +716,16 @@ tilo_test_env::scenario! {
                 !dispatch(&mut es, &mouse_press()),
                 "click away from the pill is not consumed"
             );
-            assert!(!es.take_action());
+            assert_eq!(crate::testing::answer_controls(&mut es), 0);
         }
 
         fn action_is_keyboard_reachable_and_exposed_as_a_named_button() {
+            let fired = Rc::new(std::cell::Cell::new(false));
+            let seen = Rc::clone(&fired);
             let mut es = EmptyState::new("No notes yet")
                 .with_message("Create one to get started")
-                .with_action("Create note");
+                .with_action("Create note")
+                .on_view(move || seen.set(true));
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
 
@@ -741,7 +750,8 @@ tilo_test_env::scenario! {
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
-            assert!(es.take_action(), "Enter/Space/AT Activate reaches the CTA");
+            assert_eq!(crate::testing::answer_controls(&mut es), 1);
+            assert!(fired.get(), "Enter/Space/AT Activate reaches the CTA");
         }
 
         fn action_path_is_shared_by_pointer_and_accessibility_activation() {
@@ -786,7 +796,7 @@ tilo_test_env::scenario! {
             );
         }
 
-        fn canonical_action_binding_replaces_the_legacy_document_channel() {
+        fn an_action_binding_invokes_the_resource_action() {
             let resource = tilo_actions::ResourceSpec::new("catalog", "catalog", "Catalog")
                 .with_action(
                     tilo_actions::ActionSpec::operation(
@@ -815,10 +825,6 @@ tilo_test_env::scenario! {
                 invocation.address,
                 tilo_actions::ActionAddress::new("catalog", "refresh")
             );
-            assert!(
-                !es.take_action(),
-                "action-bound activation cannot also fire the legacy drain channel"
-            );
             assert!(matches!(
                 crate::widget::controls::control_action_bindings(&es).as_slice(),
                 [crate::widget::ControlBindingMetadata {
@@ -837,14 +843,13 @@ tilo_test_env::scenario! {
             let center = es.get_rect().center();
             dispatch(&mut es, &cursor(center));
             assert!(!dispatch(&mut es, &mouse_press()));
-            assert!(!es.take_action());
         }
 
         action_pill_click_fires_once();
         click_outside_action_does_not_fire();
         action_is_keyboard_reachable_and_exposed_as_a_named_button();
         action_path_is_shared_by_pointer_and_accessibility_activation();
-        canonical_action_binding_replaces_the_legacy_document_channel();
+        an_action_binding_invokes_the_resource_action();
         without_action_paints_no_pill_and_has_no_hit_target();
     }
 
@@ -1017,6 +1022,7 @@ tilo_test_env::scenario! {
         let mut es = EmptyState::new("Podman isn't available")
             .with_message("Install Podman to manage containers here.")
             .with_action("Try again")
+            .on_view(|| panic!("opening details is not the action"))
             .with_details(detail);
         lay_out(&mut es, 600.0, 400.0);
         let _ = draw(&mut es);
@@ -1046,7 +1052,7 @@ tilo_test_env::scenario! {
         dispatch(&mut es, &cursor(toggle.center()));
         assert!(dispatch(&mut es, &mouse_press()), "the click opens it");
         assert!(es.details_open());
-        assert!(!es.take_action(), "opening details is not the action");
+        assert_eq!(crate::testing::answer_controls(&mut es), 0);
         let node = Widget::accessibility(&es).unwrap();
         assert!(
             node.children
