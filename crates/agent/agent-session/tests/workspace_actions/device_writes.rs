@@ -277,7 +277,6 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
 /// the refused one as refused, even after the other was answered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn each_caller_hears_only_its_own_refusal() {
-    use automerge::transaction::Transactable as _;
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let (viewer, _) = tilo_user_identity::UserIdentity::generate("Vic", 1);
     let node = enrol(&owner, "node", DeviceCapabilities::member());
@@ -302,24 +301,24 @@ async fn each_caller_hears_only_its_own_refusal() {
     let mut page = open_admitted_peer(&hosted, &viewer_device, &node, &workspace.workspace).await;
 
     // One caller makes a new tasks resource, which a viewer may not; the
-    // other writes the viewer's own settings, which only they write.
+    // other writes the viewer's own view of the workspace's layout, which a
+    // member writes whatever their role and nobody writes for them.
     let refused_route = page.create(TASKS);
     let own = DocumentRoute {
-        app_id: "so.tilo.settings".into(),
+        app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
         cluster_id: workspace.workspace.clone(),
-        document: collab_types::OwnResource::new(
-            "settings.root",
+        document: tilo_desktop_model::person_view::resource_of(&hex::encode(
             viewer.verifying_key().to_bytes(),
-        )
-        .unwrap()
-        .document_id(),
+        )),
     };
-    let mut settings = automerge::AutoCommit::new();
-    settings.put(automerge::ROOT, "theme", "dark").unwrap();
+    let mut view = automerge::AutoCommit::new();
+    tilo_desktop_model::person_view::PersonView::default()
+        .write(&mut view)
+        .unwrap();
     page.peer
         .write(
             own.clone(),
-            &collab_types::DocumentMutation::Snapshot(settings.save()),
+            &collab_types::DocumentMutation::Snapshot(view.save()),
         )
         .unwrap();
 
