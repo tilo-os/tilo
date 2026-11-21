@@ -1,11 +1,5 @@
 //! Driven scrolling tests for the file list and the grid.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use file_explorer::FileExplorerWidget;
 use file_explorer::model::ViewMode;

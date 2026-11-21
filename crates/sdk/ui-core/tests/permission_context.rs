@@ -1,7 +1,3 @@
-#![allow(
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_ui::permissions::{
     Access, ActionKind, Answer, AppKind, CapDecision, CapOverride, Denial, Grantee, MemberId,

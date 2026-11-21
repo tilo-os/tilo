@@ -1,10 +1,6 @@
 //! End-to-end round trip: serve the `PackageServiceServer` on a Unix socket on its
 //! own thread, connect the Store's client, and drive install → list → pin.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common;
 

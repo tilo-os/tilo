@@ -1,8 +1,9 @@
 #![allow(
     clippy::unwrap_used,
-    clippy::indexing_slicing,
+    clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 #[path = "support/mod.rs"]

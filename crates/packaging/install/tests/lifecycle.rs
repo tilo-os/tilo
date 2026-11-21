@@ -4,11 +4,6 @@
 //!
 //! Every test runs `tilo-install` with `XDG_DATA_HOME` and `XDG_CONFIG_HOME` in a tempdir.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::{Path, PathBuf};
 

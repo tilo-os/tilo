@@ -15,6 +15,13 @@
 //! CPUs it confines itself to, `no_audio_device`, `no_plugins` and `extension_registry`
 //! set the environment `GStreamer` or its audio sink reads once, and `realtime` holds
 //! the latency measurement that is run by its binary's name.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 mod common;
 

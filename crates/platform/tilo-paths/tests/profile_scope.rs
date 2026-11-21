@@ -1,7 +1,13 @@
 //! A thread's scoped profile: every per-user folder resolves below its root
 //! while the guard lives, on that thread only.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
-#![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
 use std::path::Path;
 

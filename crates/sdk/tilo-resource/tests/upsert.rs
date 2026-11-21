@@ -1,6 +1,5 @@
 //! Items addressed by what they hold (`upsert-item`) and places named by a
 //! neighbour (`at`), in every kind of collection.
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use serde_json::json;
 use tilo_resource::{

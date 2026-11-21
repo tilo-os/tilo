@@ -1,11 +1,14 @@
 //! An action over the history budget, made on one replica and decoded on
 //! another: its large parts travel as the record's sealed content, and the
 //! replica that receives the change fetches them on the record's route.
-
 #![allow(
     clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::sync::Arc;
 

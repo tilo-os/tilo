@@ -8,13 +8,6 @@
 //! when FUSE is available.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

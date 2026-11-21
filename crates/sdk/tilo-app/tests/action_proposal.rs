@@ -1,9 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 
 //! A one-shot model answer is shown before it is written: accepting it is one
 //! action on the record — one change, one undo step — and rejecting it writes

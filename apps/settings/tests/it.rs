@@ -1,10 +1,12 @@
-// One test binary instead of one per file; #[path] keeps the files in place.
-
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+// One test binary instead of one per file; #[path] keeps the files in place.
+
 
 /// Each test's app keeps its account stores under a private root, so a
 /// suite run never reads the user's accounts, replays their interrupted

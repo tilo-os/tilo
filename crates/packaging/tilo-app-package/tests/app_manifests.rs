@@ -3,11 +3,6 @@
 //! Every app needs a valid `tilo-app.toml` to be
 //! packable, installable, and launchable at all.
 
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

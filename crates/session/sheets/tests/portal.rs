@@ -3,12 +3,6 @@
 //! the keys each kind takes, typed text kept out of every effect, and
 //! answering left to the person.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_sheets::portal::{
     Body, Device, Dialog, DraftRow, DraftValue, Field, PortalApp, PortalEffect, PortalState,

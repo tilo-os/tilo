@@ -1,12 +1,6 @@
 //! "Delete \<name\>?" as a person, a screen reader and an agent meet it:
 //! what goes with the workspace, and the answer being the person's own.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_sheets::SheetState as _;
 use tilo_sheets::delete_workspace::{

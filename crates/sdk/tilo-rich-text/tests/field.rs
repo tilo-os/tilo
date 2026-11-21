@@ -2,11 +2,14 @@
 //! the owning resource's own action, so undo, history, permissions and
 //! replay are that resource's, and the palette, agents and scripts address
 //! it like any resource.
-
 #![allow(
     clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use serde::{Deserialize, Serialize};
 use tilo_document::{RichText, RichTextAction};

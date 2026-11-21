@@ -30,6 +30,118 @@ files git tracks, tests included, measured on `main` at `d81cc1750ff`
 (2026-11-21). Main holds about 7.48M lines in all, including 807k of
 `vendor/`.
 
+## The design
+
+### Resources
+
+A resource is a thing a person or an agent can name, share, link to and
+open: a note, a task, a mailbox, a calendar, the workspace's folder, its
+member list. It has a kind, which an app declares (a `Note` has a title and
+a body), and a stable id. Resources nest: a task can hold tasks, a mailbox
+holds messages, and the folder holds folders and files. There is no second
+level of "items" inside a resource; a kind is a property of a resource, not a
+level of the tree. Every resource, at any depth, can be shared, granted,
+linked and shown on its own.
+
+A resource is the one unit of everything the system does for it: sync,
+permissions, history and undo, search and views. Its fields are kept in a
+mergeable structure (Automerge), so two people editing at once both keep
+their edits. A very large resource is split into pieces on disk and is still
+one resource to everyone.
+
+### Storage
+
+- A change is a signed fact. A device writes it for a member, signs it,
+  seals it under the keys of the resource's readers and keeps it. Changes
+  are only appended. The current state, and every past state, come from them.
+- Every device runs the same engine. Devices differ only in appetite: how
+  much they keep and which work they take. A server is a device that keeps
+  more. A store holds sealed changes and forwards them, but cannot read them.
+  A workspace held only by one person's computer is complete.
+- Changes move over one link, device to device. Reaching a device through a
+  server means reaching it through a device that is online.
+- Reads and queries go through one index built from the kept changes. It can
+  always be rebuilt from them.
+- Files are resources. The folder is one tree, synced and merged like any
+  other edit. A file's bytes are sealed, content-addressed blobs the tree
+  points at, fetched from any device that has them when they are needed. The
+  mount, the native folder and an app's file list are views of that one tree.
+
+### Addresses
+
+An address is the path to a resource, ending in an action:
+`acme/notes/<note>/update`, `acme/tasks/<task>/<sub-task>/done`,
+`acme/files/projects/plan.md/move`. People and agents use names, and they
+resolve to stable ids, so renaming something keeps links and grants. One
+resolver in `tilo_actions` walks the published tree for every caller.
+
+### Permissions
+
+- One rule. A grant gives a person, a role or an agent Allow, Ask or Deny on a
+  pattern over addresses (`acme/notes/*/update`, `acme/tasks/<list>/**`,
+  `acme/files/projects/**/read`), optionally limited to a kind. The most
+  specific grant wins, a person's own grant beats their role's, and no grant
+  means no. Roles are named sets of grants.
+- Membership and grants are a resource of the workspace, changed by signed
+  actions. No device and no server governs a workspace: every key holder
+  works out the same answer from the same signed list.
+- The rule is enforced three times with the same function: when an action is
+  called (one admission, `admit_invocation`; an agent acting for a person
+  gets the narrower of the two), when a change arrives (every receiver drops
+  a change whose author was not allowed to make it at the time), and through
+  the keys (reading means holding the keys of the resource's readers;
+  resources with the same readers share one key group, and removing a reader
+  rekeys it). What a device already received cannot be taken back.
+- A file action is an action at the file's address. A grant on a folder
+  covers what is below it. The mount is one more caller and decides every
+  open from the replicated member list; a path a person may not see does not
+  exist for them.
+- Privacy between members is a rule on a record: a member's drafts are
+  readable by that member alone and sealed under their keys, in the same
+  workspace. There is no per-person store.
+- What an app's code may reach (paths, devices, network hosts) is a separate
+  grant, given at install or through a picker. An app acting for a person
+  does only what both may.
+
+### Apps
+
+An app is a tilolang package installed in a workspace. It declares kinds of
+resource, actions (verbs with a typed input, a typed result and a kind:
+read, edit or privileged) and views (functions from a resource to UI whose
+controls name fields and actions). Installing it publishes all three into the
+workspace's tree. That tree is the only registry.
+
+An app is never "running". Any device that holds the workspace's keys and
+takes the work runs an action's code, sandboxed, when it is called; an agent
+can complete a task at night with no window open anywhere. Opening an app
+means opening a view of a resource, in a window, a chat or a web page.
+Storage, sync, permissions, history, undo, search, notifications, presence,
+windows and outside effects (sending a mail, calling an API, declared by the
+action and carried out by the system under the workspace's grants) are the
+system's. An app is its kinds, its actions' code and its views.
+
+### Calls
+
+A call is an address, a typed input and who acts. It is admitted the same
+way, runs the same code, returns the same typed result and writes the same
+history entry whoever makes it. Every entry point is a projection of the
+published tree with no code per action: a bound control in a view, a typed
+call from tilolang (`tasks.done(task)`, checked at compile time), `tilo ls`
+and `tilo do`, a few generic MCP tools, and SDK types generated from the
+published types. An action names the view that shows it, so every open view
+of the resource shows the change and who made it, and an agent can attach
+that view to its answer.
+
+### Views
+
+A view is published at an address and takes a resource. Any view can show
+any other by naming it and giving it a resource: a task list in a chat
+message, a calendar week in a note. The shown view runs with its own app's
+code and the viewer's permissions, and edits inside it are calls to its
+app's actions. The shell is a view. A person, or an agent in a chat, writes a
+new view in tilolang from existing views and actions, without a build. One
+view output is drawn as native widgets and as semantic HTML on the web page.
+
 ## The rule for every piece
 
 - One type, one store, one protocol for each concept. A second copy is a
@@ -318,12 +430,17 @@ The copies:
   providers in it, and their descriptions are generated.
 - **One view path**: tilolang view patches, through
   `tilo-app-window::reconcile`, to ui-core widgets. ui-core is the one widget
-  library. A widget's HTML for the web page comes from the same patches, not
-  from a second per-widget path.
-- **One app process**: `tilolang-process`, one per workspace and app, started
-  through `app-launch` and the `launcher` sandbox. It serves every window,
-  every page viewer and every windowless agent launch of that app, and
-  stops when idle. `app-keeper` stays only for programs that are not Tilo
+  library. The web page's HTML comes from the same view output, not from a
+  second per-widget path. Today the page renders the composed widget tree
+  through each widget's `html` (`composition.rs` `HtmlCx`, 277 files); the
+  page entry (`PageShow`, `PageAct`) stays as the seam, and a renderer from
+  view nodes replaces `Page::render` behind it, deleting `HtmlCx` view by
+  view. No new `html` code is written meanwhile.
+- **One sandbox for app code**: `tilolang-process`, started through
+  `app-launch` and the `launcher` sandbox when an action is called or a view
+  is shown, one per workspace and app, serving every window, page viewer and
+  windowless call of that app, and stopped when idle. It is how the system
+  runs app code, not an app being open. `app-keeper` stays only for programs that are not Tilo
   apps.
 - **One undo boundary and one executor in the toolkit**: `LocalDispatch`.
   Widgets change things only through bound actions.
@@ -459,13 +576,18 @@ is one binary that the CLI, a server and tilo.sh all run, with one MCP socket
 locally and `device-mcp` as its remote face. A server differs only in its
 appetite (how much it stores and which work it takes), set per workspace.
 The relay is a mode of that daemon. `tilo-api` reads grants from the
-workspace, not from its own file. Agents and bots on a host are workspace
-work in the service's `workspaces/actions/agents`, not a second
-implementation in `tilo-server`.
+workspace, not from its own file. The agent and bot runner
+(`tilo-server` `workspace_agents` and `workspace_bots`, the only copy) moves
+into the workspace service, so any device whose appetite takes agent work
+runs it. A device's first run needs no server: it creates the person's
+identity and their first workspace, an ordinary workspace whose signed member
+list names them as owner.
 
-What goes: the `tilo-runtime` standalone wrapper, the CLI holder, the
-duplicate agent and bot hosting in `tilo-server` (~10–15k), and the
-separate binaries once their verbs are actions of the daemon. Owner:
+What goes: `tilo-runtime`'s `Standalone` with its self-governed profile
+workspace, `ProfileGrants`, its own device provisioning, `--join` and
+`tilo-runtime-mcp` (the CLI holder moves into `tilo-runtime` as the one
+daemon); `tilo-api`'s grant file; the separate binaries once their verbs are
+actions of the daemon. Owner:
 **hosting** session.
 
 ---

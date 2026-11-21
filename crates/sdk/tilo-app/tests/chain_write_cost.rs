@@ -1,7 +1,6 @@
 //! A write into one part of a chain costs what it touched, not what the
 //! part holds: the chain publishes again only the items that changed, the
 //! same work beside fifty items as beside five hundred.
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, Chained, definition};

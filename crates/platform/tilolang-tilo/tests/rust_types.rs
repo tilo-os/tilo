@@ -6,8 +6,14 @@
 //! published title is a name of its own, found by the client's keyword
 //! ("youtube"). The test is the one the design names: "youtube videos of
 //! <channel>".
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
-#![allow(clippy::expect_used, reason = "test assertions")]
 
 use tilo_actions::ResourceSpec;
 use tilo_resource::{Model, resource};

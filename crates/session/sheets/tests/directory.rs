@@ -1,12 +1,6 @@
 //! "Join a workspace…" as a person, a screen reader and an agent meet it:
 //! what it lists, how search narrows it, what Join, Enter and Escape ask.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::cell::RefCell;
 use std::rc::Rc;

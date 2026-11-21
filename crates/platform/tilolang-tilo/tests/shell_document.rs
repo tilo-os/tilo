@@ -2,12 +2,6 @@
 //! the layouts is one action on it, an agent acting for the person runs the same action, and
 //! undo takes any of it back — one setting changed, and a whole preset at once.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "a test: a failure is a panic"
-)]
 
 use automerge::AutoCommit;
 use tilolang_runtime::origin::OriginWrite;

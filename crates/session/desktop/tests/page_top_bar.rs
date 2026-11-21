@@ -4,11 +4,6 @@
 //! whatever else stands up when they press: search over the windows, or the ask about keeping who
 //! they are folded into the avatar's dot.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 use std::cell::RefCell;
 use std::rc::Rc;
 

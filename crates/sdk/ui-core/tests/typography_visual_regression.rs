@@ -18,12 +18,6 @@
 //! baselines' dimensions without a GPU, so a layout change that needs new
 //! baselines fails in every run rather than only where llvmpipe renders.
 
-#![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

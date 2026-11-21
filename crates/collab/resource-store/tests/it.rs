@@ -1,7 +1,13 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! The index as the store drives it: commits put, move and remove resources, and queries page,
 //! filter, sort and count what the commits left.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;

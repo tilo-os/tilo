@@ -10,7 +10,7 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use std::process::Command;

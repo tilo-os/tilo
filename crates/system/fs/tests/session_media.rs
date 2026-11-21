@@ -16,12 +16,6 @@
 //! with, and the two callers are the launcher's app-scoped connections.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test assertions: a failed step is the assertion"
-)]
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

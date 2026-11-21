@@ -1,7 +1,6 @@
 //! Open Folder asks the host's file picker for a folder to change, and the
 //! folder the person picks becomes the project: its tree is in the sidebar.
 
-#![allow(clippy::panic, reason = "in a test a panic is the assertion")]
 
 use code_editor::CodeEditorShell;
 use ui::framework::testing::TestApp;

@@ -57,6 +57,8 @@ is generic over `ui::widget::Widget`, so any app can reuse the pattern:
 
 ## Running the maps live job
 
+The `nightly-live-maps` check runs it every night; to run it by hand:
+
 ```bash
 # Full plumbing + live-render pixel inspection (needs real network + a GPU).
 # Writes maps-live-{before,after}.png to $MAPS_LIVE_OUT (default apps/maps/live-out/).
@@ -72,23 +74,6 @@ area sweeps.
 Ordinary `cargo test -p maps` compiles these cases but reports them as
 ignored. The job drives the whole app rather than duplicating a weaker raw
 `load_tile` network smoke test.
-
-## Database client live job
-
-The database client proves its production PostgreSQL and MySQL query,
-introspection, truncation, and cancellation paths against disposable services:
-
-```bash
-apps/db-client/tests/run-live.sh
-```
-
-The runner starts rootless-Podman PostgreSQL 16 and MariaDB 11 containers on
-random loopback ports, waits for both servers, selects all four ignored live
-tests, and removes the containers on exit. Override the images with
-`TILO_DB_TEST_POSTGRES_IMAGE` and `TILO_DB_TEST_MARIADB_IMAGE` when validating a
-different server release. Direct execution against existing servers remains
-available through the `TILO_DB_TEST_{PG,MYSQL}_*` connection variables described
-in `apps/db-client/tests/live_roundtrip.rs`.
 
 ## Display configuration live job
 

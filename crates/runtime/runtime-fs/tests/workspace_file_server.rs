@@ -1,5 +1,4 @@
 #![cfg(unix)]
-#![allow(clippy::unwrap_used, reason = "owned integration fixture assertions")]
 use runtime_fs::selected_file::SelectedFileBackend;
 use runtime_fs::workspace_server::{
     WorkspaceBackend, WorkspaceFileBackend, serve_workspace_connected,

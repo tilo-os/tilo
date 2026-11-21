@@ -3,13 +3,6 @@
 //! when the origin writes them again. A change of one reaches the views and leaves no change
 //! behind to be committed, sent or replayed.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 use automerge::AutoCommit;
 use tilo_actions::ActionInvoker;

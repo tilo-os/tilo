@@ -1,7 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};

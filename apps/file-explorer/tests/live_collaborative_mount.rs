@@ -2,6 +2,13 @@
 //! shows, and that it keeps up.
 
 #![cfg(unix)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::sync::{Arc, Mutex};
 

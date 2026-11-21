@@ -1,11 +1,14 @@
 //! The controls of the Store's pages reach the same typed actions an agent
 //! calls: a remote's row action, clearing a search, and the catalogue's
 //! search field.
-
 #![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use store::StoreApp;
 use ui::headless::Framed;

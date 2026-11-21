@@ -3,6 +3,13 @@
 //! sandboxed player whose plugin search missed the system directory once
 //! "played" every video as a two-minute test pattern and never offered the
 //! missing codec.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 #[cfg(feature = "decode")]
 #[test]

@@ -5,12 +5,6 @@
 //! byte-for-byte through the standard Ed25519 path in `collab_types`,
 //! with no special "threshold mode" needed.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::SystemTime;
 

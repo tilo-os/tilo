@@ -16,11 +16,6 @@
 //!    came back during scroll (which inflated dirty bounds) and
 //!    disappeared again on scroll stop.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

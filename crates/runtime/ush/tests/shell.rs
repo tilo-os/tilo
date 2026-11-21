@@ -3,10 +3,6 @@
 //! program that is none of them run on the machine, and a file command
 //! carried out outside a guest, keeping what it replaced.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::Path;
 use std::process::{Command, Output};

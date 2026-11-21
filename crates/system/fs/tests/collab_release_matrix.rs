@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "a failed step is the assertion")]
 
 use std::collections::BTreeSet;
 

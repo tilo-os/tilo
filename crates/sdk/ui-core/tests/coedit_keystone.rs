@@ -14,11 +14,6 @@
 //! through the real `collab_types::validate_admitted_inbound_op` pipeline by
 //! role (`signed_edit_is_permission_guarded`).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};

@@ -3,12 +3,6 @@
 //! member's apps read it with the change that released it. A write the member
 //! let go is read again from the history its host keeps once the member asks
 //! for it on the link.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::{addr, device, localhost_endpoint};
 

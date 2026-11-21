@@ -3,11 +3,6 @@
 //! publishes, found without app-specific knowledge. An app whose record no
 //! published operation changes is a coverage gap and fails here by name.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::fmt::Write as _;
 

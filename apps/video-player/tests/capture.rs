@@ -1,6 +1,9 @@
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
-    reason = "test prerequisites must fail explicitly"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use tilo_test_env::SpawnUnderEnvLock as _;

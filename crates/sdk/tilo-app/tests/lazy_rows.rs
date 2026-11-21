@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -3,13 +3,6 @@
 //! its backtrace is `tilo-session-logging` 's test, the one that keeps its symbol table.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion, and the session is the thing measured"
-)]
 
 use std::io::{BufRead as _, BufReader};
 use std::os::unix::process::CommandExt as _;

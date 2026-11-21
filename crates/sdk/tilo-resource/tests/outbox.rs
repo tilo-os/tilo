@@ -1,7 +1,6 @@
 //! Outbox: entries a verb queues, settled with a typed result by the device
 //! that owns them, forgotten as housekeeping, and the undo of a queueing
 //! verb queueing its compensation.
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use tilo_actions::{Action as _, ActionKind, ChangeKind};
 use tilo_resource::{

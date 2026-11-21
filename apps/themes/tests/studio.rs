@@ -1,6 +1,13 @@
 //! The studio as a person and an agent meet it: the gallery previews every preset, the
 //! editor follows every edit with live contrast findings, and a theme that misses a floor
 //! cannot be applied.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 #![allow(
     clippy::cast_possible_truncation,
@@ -60,10 +67,6 @@ fn names_within(root: &dyn Widget, bounds: Rect, out: &mut Vec<String>) {
     }
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "a test fixture: a gallery that cannot stage fails the test"
-)]
 fn gallery_at(width: u32) -> TestApp<App> {
     TestApp::<App>::capture_at(Some(themes::GALLERY_SCENARIO), (width, 2400))
         .expect("the scenario stages")
@@ -374,10 +377,6 @@ fn bar_enabled(app: &mut TestApp<App>, name: &str) -> Option<bool> {
         .map(|action| action.enabled)
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "a test fixture: a sidebar without its Presets row fails the test"
-)]
 fn leave_for_presets(app: &mut TestApp<App>) {
     let row = app
         .with_widget(|nav: &mut ui::prelude::NavList| nav.row_rect("presets"))

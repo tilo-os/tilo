@@ -3,11 +3,6 @@
 //! the person opened keeps its keys — Enter takes the row under the highlight, Escape closes it —
 //! until they move to the card themselves.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;

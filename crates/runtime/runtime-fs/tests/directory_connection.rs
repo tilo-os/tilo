@@ -1,8 +1,4 @@
 #![cfg(unix)]
-#![allow(
-    clippy::unwrap_used,
-    reason = "owned native connected capability assertions"
-)]
 use runtime_fs::{
     EntryName, FsOwner, FsRight, NativeGrantAuthority, OpenMode,
     directory::DirectoryWorkspaceBackend,

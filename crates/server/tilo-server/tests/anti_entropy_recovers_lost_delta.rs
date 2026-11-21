@@ -17,12 +17,6 @@
 //! applies them and converges — asserted on Automerge documents (B holds
 //! A's heads) through the `Server` / `ServerClient` path.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::Duration;
 use tilo_automerge::ReadTyped as _;

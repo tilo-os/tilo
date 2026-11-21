@@ -1,10 +1,5 @@
 //! Click-driven navigation proof.
 
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use settings::categories::Category;
 use ui::presence::PresenceCtx;

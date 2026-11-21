@@ -1,7 +1,6 @@
 //! One malformed item never makes its record unreadable, the same item id
 //! made on two replicas is one complete item, and a compared write never
 //! stores half an item.
-#![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 
 use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ReadDoc, Value};

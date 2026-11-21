@@ -1,12 +1,6 @@
 //! Two devices of one person converge on the person's own documents directly
 //! over iroh, with no host in between and no workspace anywhere, and a device
 //! of another identity is refused and holds nothing.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::{addr, device, localhost_endpoint};
 

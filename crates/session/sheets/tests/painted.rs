@@ -11,12 +11,6 @@
 //! each, every sheet paid for both. Here one renderer draws frame after
 //! frame, as a window's does.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_sheets::dictation::DictationApp;
 use tilo_sheets::display_confirm::DisplayConfirmApp;

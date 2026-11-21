@@ -1,8 +1,3 @@
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "integration-test setup and assertions"
-)]
 
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;

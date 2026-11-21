@@ -4,12 +4,6 @@
 //! The image's store is built as the image build builds it (`TILO_APPS_DATA_DIR`) and read as the
 //! system store of a session (`TILO_APPS_SYSTEM_DIR`).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::PathBuf;
 use std::process::Command;

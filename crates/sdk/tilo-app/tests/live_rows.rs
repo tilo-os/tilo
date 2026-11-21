@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! One published tree: the edits views and surfaces bind to where the user
 //! is, and the live external rows a surface shows, join the resource's own

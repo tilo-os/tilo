@@ -9,13 +9,14 @@
 //! channel content keys. Only the authority is the test's: it reads the grants
 //! the way a session's authority does from device certificates and the
 //! workspace roster.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion; the scenario is a workspace's live session"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 #![allow(
     clippy::too_many_lines,
     reason = "each test is one workspace session end to end"

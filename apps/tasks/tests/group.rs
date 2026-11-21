@@ -6,14 +6,14 @@
 //! A group is one step where its issues are kept in one part and one step
 //! in each part otherwise, is refused whole when one of its members cannot
 //! be, and does nothing a call for one issue could not.
-
 #![allow(
-    clippy::expect_used,
     clippy::unwrap_used,
-    clippy::indexing_slicing,
+    clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 mod common;
 

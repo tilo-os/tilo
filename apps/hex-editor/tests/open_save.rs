@@ -1,14 +1,14 @@
 //! The file lifecycle through the production paths: a file named on the command line
 //! opens as its own buffer, typing and the palette's actions edit it, and Ctrl+S
 //! writes it back to disk.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use hex_editor::HexEditor;
 use hex_editor::HexEditorShell;

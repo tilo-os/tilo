@@ -3,12 +3,6 @@
 //! for an action: each answers from its own state, the requester ranks the
 //! answers, and a round nobody answers leaves the request where it was
 //! asked.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::{addr, device, localhost_endpoint, workspace};
 

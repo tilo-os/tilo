@@ -5,12 +5,6 @@
 //! `surface.toml` itself there, and the changes it wrote name the hash of those bytes. The update
 //! reads them as they are.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard; one scenario in order"
-)]
 
 use super::api_on_server::{api_on_server, approved_key, headers, json_of};
 use super::*;

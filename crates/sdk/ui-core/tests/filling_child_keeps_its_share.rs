@@ -4,12 +4,6 @@
 //! the parent was given.
 
 #![cfg(test)]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_ui::State;
 use tilo_ui::headless::FrameHarness;

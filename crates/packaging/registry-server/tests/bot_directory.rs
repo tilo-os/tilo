@@ -1,13 +1,6 @@
 //! Bot entries end to end: program uploads, submission checks, review and serving the approved
 //! program as a content-addressed blob.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 

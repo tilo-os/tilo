@@ -7,11 +7,6 @@
 //! away stops dialing as it is closed: a device enters anew under the same key, and a server keeps
 //! one connection per key, so a session left dialing would cut the new one off.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::net::SocketAddr;
 use std::sync::Arc;

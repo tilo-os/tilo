@@ -3,12 +3,6 @@
 //! session holds is read and acted on that way, and nobody stands in front of it to
 //! answer instead.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion"
-)]
 
 use std::sync::{Arc, Mutex};
 

@@ -7,13 +7,6 @@
 //! With `TILO_TASKS_SHOTS=<dir>` the test `shots` writes the board at desktop and phone sizes,
 //! light and dark, before and after a drag.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 use crate::change_marks::Driven as _;
 use tilolang_app::app::TlApp;

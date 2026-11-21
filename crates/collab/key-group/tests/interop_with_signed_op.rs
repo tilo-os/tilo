@@ -10,11 +10,6 @@
 //! Automerge-change-application ingestion path (out of scope here —
 //! `workspace-crypto` doesn't depend on Automerge).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::SystemTime;
 

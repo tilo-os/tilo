@@ -2756,7 +2756,7 @@ fn stream_operations_settle_exactly_once_for_their_request() {
 
 #[cfg(feature = "live")]
 #[test]
-#[ignore = "queries third-party music services; nightly runs it explicitly"]
+#[ignore = "queries third-party music services; the nightly-live-music check runs it"]
 fn live_search_and_stream_resolve_through_the_app() {
     let (mut app, mut doc) = app_with_doc();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

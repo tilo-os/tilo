@@ -1,7 +1,3 @@
-#![allow(
-    clippy::panic,
-    reason = "headless geometry fixture asserts setup failures directly"
-)]
 
 //! The toolbar row's geometry, read off the retained widgets through the
 //! production frame: every control sits on the address field's centre line,

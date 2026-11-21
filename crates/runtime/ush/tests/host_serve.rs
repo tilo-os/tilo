@@ -2,11 +2,6 @@
 //! Terminal, refused until the device owner allowed it once, then a login
 //! shell on a pty.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, OwnedFd};

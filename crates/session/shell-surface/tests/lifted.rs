@@ -1,12 +1,6 @@
 //! A part of a tree that only fades, grows or moves is posed by the compositor: drawn once into a
 //! layer of its own below the rest, and only its pose changes while it animates.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
 
 use std::cell::Cell;
 use std::collections::HashMap;

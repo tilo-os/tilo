@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! A custom surface's own controls are operated by name, the way assistive
 //! technology and agents reach them: its stable id and the semantic targets

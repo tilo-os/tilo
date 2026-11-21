@@ -2,11 +2,6 @@
 //! handoff, then the hello, then requests; a session arrives as its pty and
 //! its own lease.
 
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;

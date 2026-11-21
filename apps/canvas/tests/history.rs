@@ -1,11 +1,6 @@
 //! Working with the artwork's history through the API an agent uses:
 //! catching a bad passage with diff, undoing the run's own steps, looking
 //! at a past version, restoring marks from a checkpoint.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use canvas::App;
 use serde_json::{Value, json};

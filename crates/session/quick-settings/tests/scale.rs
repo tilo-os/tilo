@@ -8,12 +8,6 @@
 //! their targets are where the layout put them at 2×, and that a press at
 //! each changes the device effect the control names.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::rc::Rc;
 

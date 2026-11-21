@@ -1910,6 +1910,7 @@ version = "0.1.0"
 dependencies = [
  "account-credentials",
  "accounts",
+ "app-fleet",
  "calendar-model",
  "fnv",
  "hex",
@@ -1935,6 +1936,7 @@ dependencies = [
  "tilo-timezone-engine",
  "tilo-vello",
  "tilo-winit",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "url",
  "uuid",

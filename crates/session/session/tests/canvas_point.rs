@@ -12,13 +12,6 @@
 //! its step is invoked as the agent, exactly as the broker invokes it for the turn.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::time::Duration;
 

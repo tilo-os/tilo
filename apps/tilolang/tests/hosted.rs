@@ -4,13 +4,6 @@
 //! harness, and in the live `App` a window process runs, fed input as its surface feeds it.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "a test: a failure is a panic"
-)]
-#![allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,

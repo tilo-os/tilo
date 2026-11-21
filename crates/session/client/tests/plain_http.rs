@@ -1,10 +1,6 @@
 //! Local review: the host also serves its browser routes as plain HTTP on a
 //! loopback address, and refuses a plain listener anywhere else.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::sync::Arc;
 use tilo_server::web::{TlsSource, WebConfig};

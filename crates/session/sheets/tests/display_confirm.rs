@@ -2,12 +2,6 @@
 //! agent meet it: a card on every display, Keep with the keyboard, and the
 //! answer going back to the shell.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_sheets::display_confirm::{ConfirmEffect, ConfirmState, DisplayConfirmApp, Question};
 use ui::a11y::Action as A11yAction;

@@ -1,11 +1,6 @@
 //! `app install <file>` and `app update <app> --from <file>`: a package file from an unverified
 //! publisher asks first, and is refused when there is nobody to ask.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};

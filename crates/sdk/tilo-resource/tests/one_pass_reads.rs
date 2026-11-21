@@ -2,10 +2,6 @@
 //! reading it key by key reads: the winning value of a conflict, a counter
 //! with its increments, the id of the op that wrote each key.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "fixture builders shared by the tests: a failing write is a failing test"
-)]
 
 use std::collections::BTreeMap;
 

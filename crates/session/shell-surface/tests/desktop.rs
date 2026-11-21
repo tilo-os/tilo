@@ -3,11 +3,6 @@
 //! around them.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -6,11 +6,6 @@
 //! Fixture: one Note artifact in the default workspace, one author, the role
 //! presets; individual tests mutate it to trip the check they name.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::{Duration, SystemTime};
 

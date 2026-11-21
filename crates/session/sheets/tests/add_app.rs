@@ -2,12 +2,6 @@
 //! the program shown as it will be listed, the move offered only for an
 //! `AppImage`, and the answer going back to the shell.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::PathBuf;
 

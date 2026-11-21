@@ -8,10 +8,6 @@
 //! inside one app has its edit denied, and a grant to one person on one
 //! artifact extends a viewer's authority there only.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::{Duration, SystemTime};
 

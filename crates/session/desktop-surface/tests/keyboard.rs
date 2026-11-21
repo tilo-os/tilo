@@ -5,12 +5,6 @@
 //! typing there, and an app's own search button opens search over its window. What each search
 //! reaches — one app's window, a window group's applications, or the workspace — and where the hit
 //! it offers opens are here too.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
 use std::time::Duration;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};

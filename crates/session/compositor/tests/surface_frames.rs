@@ -3,11 +3,6 @@
 
 #![cfg(target_os = "linux")]
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "a failed step in a test is the assertion"
-)]
-#![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::indexing_slicing,

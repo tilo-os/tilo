@@ -11,10 +11,6 @@
 //! 2, so an in-process test cannot make it fail, and the thing asserted (the
 //! process dies) only a process can show.
 
-#![allow(
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::os::fd::{AsRawFd, IntoRawFd};
 use std::os::unix::process::ExitStatusExt;

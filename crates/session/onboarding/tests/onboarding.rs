@@ -1,13 +1,14 @@
 //! Setup as a person, a screen reader and an agent meet it: every step
 //! renders without a screen, what the person does goes to the shell as an
 //! action, and secrets stay in the shell's buffers.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use tilo_onboarding::{
     OnboardingApp, OnboardingEffect, OnboardingState, Page, Screen, Secrets, TourPage,

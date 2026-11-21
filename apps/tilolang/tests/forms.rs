@@ -6,13 +6,6 @@
 //! With `TILO_FORMS_SHOTS=<dir>` the test `shots` writes the open form at desktop and phone
 //! sizes, light and dark.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 use crate::change_marks::right_click;
 use tilolang_app::app::TlApp;

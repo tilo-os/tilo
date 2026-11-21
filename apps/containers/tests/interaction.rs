@@ -1,13 +1,14 @@
 //! End-to-end interaction and render tests, driven through the production frame host:
 //! real layout, event routing, accessibility and pixels read back from the renderer.
 //! Draft edits run the hosted app, since they go through the framework's dispatcher.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use containers::ContainersShell;
 use containers::app::ContainersApp;

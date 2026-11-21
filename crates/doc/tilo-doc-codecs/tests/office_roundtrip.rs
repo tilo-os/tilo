@@ -16,10 +16,6 @@ const ZIPBOMB_DOCX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/zipbomb.do
 const XXE_DOCX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/xxe.docx"));
 const XXE_ODT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/xxe.odt"));
 
-#[allow(
-    clippy::expect_used,
-    reason = "test fixture helper: a failure here is a broken fixture, and the message says so"
-)]
 fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> Document {
     let mut d = Document::new();
     codec
@@ -59,10 +55,6 @@ fn texts(blocks: &[&BlockView]) -> Vec<String> {
 /// The invariant structure both fixtures share: an H1, a paragraph with
 /// a bold and an italic run, two bullet items, a 2x2 table, and
 /// title/author metadata.
-#[allow(
-    clippy::panic,
-    reason = "test assertion helper: a panic here means a fixture bug, and the message is the fixture's context"
-)]
 fn assert_sample_structure(snap: &DocSnapshot, format: &str) {
     let headings = kinds(snap, "heading");
     assert!(
@@ -192,12 +184,6 @@ fn real_office_files_parse_edit_and_diff_as_crdt() {
 /// and prove both edits + the original structure survive as replayable
 /// CRDT change history (an intermediate version shows the first edit
 /// but not the second).
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test assertion helper: a failure here means a fixture/test bug, and each message says so"
-)]
 fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
     let mut d = import(codec, bytes);
 

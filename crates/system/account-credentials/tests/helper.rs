@@ -1,11 +1,14 @@
 //! The daemon's side of the handoff through the real process boundary: a
 //! `HandoffCredentialSource` whose refresher runs the
 //! `tilo-account-credential` binary against an explicit config root.
-
 #![allow(
     clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::path::Path;
 use std::sync::Arc;

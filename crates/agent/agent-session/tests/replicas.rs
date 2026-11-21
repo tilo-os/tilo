@@ -2,11 +2,6 @@
 //! the changes each takes and the other applies, with no transport between
 //! them.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::catalogue;
 use chat::projection::ChatProjection as _;

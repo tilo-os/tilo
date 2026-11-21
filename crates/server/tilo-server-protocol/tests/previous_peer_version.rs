@@ -11,12 +11,14 @@
 //! version this build works with wrote for each are frozen in
 //! `previous-peer-frames.txt` beside `neighbour-wire`; this test decodes each
 //! with today's types and writes it back, and fails on any byte that differs.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    reason = "in a test an unwrap is the assertion, not a hazard"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::fmt::Write as _;
 

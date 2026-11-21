@@ -4,12 +4,6 @@
 //! can only share as far as the person using it may.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use crate::common::people::{Person, shared_invitation};
 use serde_json::json;

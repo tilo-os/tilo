@@ -8,12 +8,6 @@
 //! fields a view reads are the fields the host holds — never a second reading
 //! of the record made by the app.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test assertions of a known shape"
-)]
 
 use tilo_resource::{Replica, Resource, ResourceKind, state_from_reading};
 

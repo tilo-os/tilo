@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! The history every framework app answers through the action API: undo
 //! and redo of the caller's own steps (an agent's run), history with what

@@ -1,13 +1,14 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 //! What the bridge reads of a real Chat record: the ids a verb created come
 //! back in its answer, and Chat's resources as the resource api reads them are
 //! what the planners read.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use chat::chat::Chat;
 use chat::resource::ChatShell;

@@ -5,12 +5,6 @@
 //! user or an agent reading the tree otherwise sees a blank page whose only
 //! way forward is invisible to them.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::fmt::Write as _;
 

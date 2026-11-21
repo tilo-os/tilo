@@ -1,12 +1,13 @@
 //! `#[view]` declares a view, and the registry finds it by resource kind and name — the lookup a
 //! shell does when a place names a view of a resource of an app written in Rust.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "a failed step in an integration test is the assertion"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use tilo_view::ViewRegistry;
 use tilo_view::ui::{self, Gap};

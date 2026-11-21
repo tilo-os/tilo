@@ -1,4 +1,3 @@
-#![allow(clippy::expect_used, reason = "test assertions")]
 
 use ui::framework::testing::TestApp;
 use ui::widget::Widget as _;

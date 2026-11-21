@@ -13,12 +13,6 @@
 //! The suite is the `tenant_isolation::` module of the server's `it` target.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-#![allow(
     clippy::significant_drop_tightening,
     clippy::too_many_lines,
     reason = "one end-to-end scenario whose server and sessions live until it ends"

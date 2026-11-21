@@ -3,12 +3,6 @@
 //! own pass and left the host idle would open the window whenever an unrelated frame came — and a
 //! person who pressed again meanwhile would have two windows open.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::cell::RefCell;
 use std::rc::Rc;

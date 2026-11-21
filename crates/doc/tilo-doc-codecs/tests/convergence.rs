@@ -128,10 +128,6 @@ fn apply(doc: &mut Document, ops: &[Op]) {
 
 /// The `content.xml` an exported `.odt` carries — a pure function of the model, so
 /// equal materializations must yield byte-identical content.
-#[allow(
-    clippy::unwrap_used,
-    reason = "test fixture helper: a failure here means the codec under test is broken, and proptest reports the failing input"
-)]
 fn content_xml(doc: &Document) -> Vec<u8> {
     let odt = OdtCodec
         .export(doc.as_ref(), &tilo_content::NoContent)

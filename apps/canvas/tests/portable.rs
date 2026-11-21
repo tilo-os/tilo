@@ -4,10 +4,6 @@
 //!
 //! Each app opens on a profile of its own, whose content store never had
 //! what another profile kept.
-#![allow(
-    clippy::unwrap_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use std::io::Read as _;
 

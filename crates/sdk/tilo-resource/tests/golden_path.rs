@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use tilo_resource::{ActionCx, Collection, Id, Invoke, Model, Replica, Resource, resource};
 

@@ -4,13 +4,14 @@
 //! A wrapped layout is keyed by the width it wrapped to, so a layout made at a width the page
 //! never shows is work thrown away — and one made at a width no glyph fits in wraps every
 //! character onto a row of its own, which for a page of prose is thousands of rows.
-
 #![allow(
-    clippy::expect_used,
     clippy::unwrap_used,
+    clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 mod common;
 

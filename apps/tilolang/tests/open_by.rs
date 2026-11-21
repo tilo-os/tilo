@@ -3,13 +3,6 @@
 //! Both are the window's detail level, in the app's plain window with no session
 //! (`tilolang dev`'s) — the same one path a session's window takes.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;

@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 //! `tilo-app build|package --platform android` builds the app's library as a
 //! `cdylib` for the Android triple with the NDK's linker, and assembles,
 //! signs and (for `package`) bundles and packs it with the SDK's tools. Every

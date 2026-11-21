@@ -2,11 +2,6 @@
 //! the bar learns from the stack where it stands, and a press that misses it takes it down — and
 //! stays down for that press.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 use crate::support::layout_tree;
 use crate::support::with_chrome;
 use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};

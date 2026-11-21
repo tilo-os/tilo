@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! A record an app keeps for its whole workspace publishes its verbs beside
 //! the app's own resource, so a member changes it through the published

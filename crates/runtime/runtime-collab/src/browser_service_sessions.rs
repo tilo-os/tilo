@@ -58,8 +58,8 @@ pub enum BrowserServiceSessionCommand {
         setup_binding: String,
     },
     /// Keep `password` as the login of the workspace's account `account` in the workspace's
-    /// vault: signing in as `username` at `servers` (`imap://host:port`, `smtp://host:port`)
-    /// and nowhere else. Only the accounts' keeper (Settings) may; nothing reads it back to
+    /// vault: signing in as `username` at `servers` (`imap://host:port`, `smtp://host:port`, or
+    /// a file server's origin, `https://host:port`) and nowhere else. Only the accounts' keeper (Settings) may; nothing reads it back to
     /// it.
     StoreAccountSecret {
         account: String,
@@ -222,9 +222,12 @@ fn secret(value: &str) -> bool {
 fn item_reference(value: &str) -> bool {
     tilo_actions::remote::person_vault::ItemRef::parse(value).is_some()
 }
-/// A mail server an account's password belongs to: `imap://` or `smtp://`, a name and a
-/// port, and nothing after them.
+/// A server an account's password belongs to: a mail server (`imap://` or `smtp://`, a name and
+/// a port, and nothing after them), or a file server's origin.
 fn item_server(value: &str) -> bool {
+    item_origin(value) || mail_server(value)
+}
+fn mail_server(value: &str) -> bool {
     value.len() <= MAX_ITEM_ORIGIN_BYTES
         && value
             .strip_prefix("imap://")
@@ -533,6 +536,31 @@ mod tests {
                 br#"{"kind":"forget","id":"../foreign","setup_binding":"operation"}"#.as_slice(),
             ] {
                 assert!(super::BrowserServiceSessionCommand::decode(bytes).is_err());
+            }
+        }
+
+        phase an_account_password_is_kept_for_mail_and_file_servers_alone;
+        {
+            let keeping = |servers: &[&str]| super::BrowserServiceSessionCommand::StoreAccountSecret {
+                account: "nextcloud-1".into(),
+                password: zeroize::Zeroizing::new("app-password".into()),
+                username: "ada".into(),
+                servers: servers.iter().map(|&server| server.to_owned()).collect(),
+            };
+            for servers in [
+                &["imap://mail.example:993", "smtp://mail.example:465"][..],
+                &["https://cloud.example"],
+                &["http://127.0.0.1:42559"],
+            ] {
+                assert!(keeping(servers).valid(), "{servers:?}");
+            }
+            for servers in [
+                &[][..],
+                &["https://cloud.example/remote.php"],
+                &["ftp://cloud.example"],
+                &["https://ada@cloud.example"],
+            ] {
+                assert!(!keeping(servers).valid(), "{servers:?}");
             }
         }
 

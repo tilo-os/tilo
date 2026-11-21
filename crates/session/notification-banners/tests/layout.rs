@@ -2,13 +2,14 @@
 //! banners, the machine-wide banners and a call's edge sit in each scenario,
 //! as a capture stages it, and what the published actions ask of the
 //! desktop.
-
 #![allow(
     clippy::unwrap_used,
-    clippy::panic,
     clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use tilo_desktop::notifications::BannerAsk;
 use tilo_notification_banners::{

@@ -2,10 +2,6 @@
 //! vCard files. These tests validate that declaration against the real Tilo
 //! packaging schema.
 
-#![allow(
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_app_package::validate::validate_manifest;
 use tilo_app_package::{Kind, Manifest};

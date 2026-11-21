@@ -3,10 +3,6 @@
 //! runtime lives while that task does, so closing has to wake it and let it end.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::Path;
 

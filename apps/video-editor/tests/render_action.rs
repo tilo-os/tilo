@@ -1,8 +1,14 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 #![cfg(feature = "gst")]
 
 //! `render-timeline`: the timeline rendered on the device into content, through the
 //! same api, permissions and job progress as any other action.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use ui::permissions::{KindSet, PermissionContext, TreePath};
 use ui::prelude::*;

@@ -1,7 +1,13 @@
 //! Each engine's reader against an answer recorded from it (or, where the
 //! live engine refuses this client, written in its shape), and the merge of
 //! several engines' answers.
-#![allow(clippy::unwrap_used, reason = "in a test these are assertions")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::path::Path;
 

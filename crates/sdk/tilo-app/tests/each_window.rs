@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! A long list in a scroll view mounts only the rows near what it shows,
 //! while agents and assistive technology still reach every item.

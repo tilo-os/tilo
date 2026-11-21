@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! An agent adding one item to a long list, every row of which is mounted,
 //! costs the window work for the item, not for the list: the frame that

@@ -4,10 +4,6 @@
 //! model, serialized back, and reopened — proving the model is the source of truth
 //! and that **formulas are preserved, not flattened to their cached value**.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::fmt::Write as _;
 use std::io::{Cursor, Read, Write};
@@ -17,10 +13,6 @@ use tilo_doc_codecs::{OdsCodec, SheetProvider, XlsxCodec};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-#[allow(
-    clippy::unwrap_used,
-    reason = "test fixture builder: a failure here means the test infra itself is broken, not the code under test"
-)]
 fn zip_of(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
     let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -31,10 +23,6 @@ fn zip_of(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
     zw.finish().unwrap().into_inner()
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "test fixture helper: a failure here is a broken fixture, and the message says so"
-)]
 fn imp(codec: &dyn SheetProvider, bytes: &[u8]) -> Workbook {
     let mut wb = Workbook::new();
     codec
@@ -86,11 +74,6 @@ fn sample_ods() -> Vec<u8> {
 
 /// The invariant both fixtures encode: two sheets (Budget, Data), a number, an
 /// inline/plain string, and TWO formulas whose sources survive verbatim.
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "test assertion helper: a panic here means a fixture bug, and the message is the fixture's context"
-)]
 fn assert_sample(snap: &WorkbookSnapshot, fmt: &str, a2_formula: &str, formula_c1: &str) {
     let names: Vec<&str> = snap.sheets.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(

@@ -8,11 +8,6 @@
 //! stored as. Each reads here as the same window, and a tile written again is the same JSON,
 //! so a change to how a tile is written fails here instead of in a layout someone kept.
 
-#![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
 
 use automerge::AutoCommit;
 use tilo_desktop_model::{AppKind, Layout, TileContent, Workspace, WorkspaceId};

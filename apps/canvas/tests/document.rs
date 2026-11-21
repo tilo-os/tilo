@@ -1,7 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use canvas::App;
 use ui::prelude::TestApp;

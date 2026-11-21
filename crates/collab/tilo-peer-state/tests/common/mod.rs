@@ -3,10 +3,6 @@
     dead_code,
     reason = "each test binary uses a different subset of these fixtures"
 )]
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};

@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! What one change of a chain means for the items its other parts keep: a
 //! label renamed in one part is written into every part naming it, as the

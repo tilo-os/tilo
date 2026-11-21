@@ -6,11 +6,6 @@
 //! panic or loop forever. Each must be rejected (or accepted) while this
 //! process lives on and keeps admitting good input.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::io::Write as _;
 use std::time::Duration;

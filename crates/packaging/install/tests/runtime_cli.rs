@@ -3,10 +3,6 @@
 //! `--from` points the bundle producer at a fixture host root, so the tests do not depend on the
 //! runner's `/lib64` layout.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::fs;
 use std::path::Path;

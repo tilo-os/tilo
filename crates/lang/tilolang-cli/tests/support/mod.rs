@@ -1,6 +1,5 @@
 //! What the command's tests share: the packages they build, copied into a scratch directory.
 
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use std::path::{Path, PathBuf};
 

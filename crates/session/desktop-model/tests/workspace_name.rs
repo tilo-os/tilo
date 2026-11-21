@@ -3,11 +3,6 @@
 //! ([`Workspace::named_as`]), never written into the layout's document or its
 //! stored form, so no device's layout holds a second, older name.
 
-#![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
 
 use automerge::AutoCommit;
 use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};

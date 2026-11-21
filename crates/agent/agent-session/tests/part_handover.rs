@@ -7,12 +7,6 @@
 //! A part the worker starts used to come to the host as a saved document, which
 //! the host loaded in a worker and again here; the load here is counted.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use collab_types::DocumentMutation;
 use serde_json::{Value, json};

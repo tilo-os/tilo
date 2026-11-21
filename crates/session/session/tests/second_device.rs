@@ -6,13 +6,6 @@
 //! copy of the workspace, the one its apps read.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::time::{Duration, Instant};
 

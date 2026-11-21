@@ -1,8 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 // A page shows Files through a window of its own, whose resource a workspace decides by the
 // app's committed surface: one missing from it is held by the workspace for good, and every

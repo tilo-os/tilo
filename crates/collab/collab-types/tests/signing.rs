@@ -6,10 +6,6 @@
 //! Validator-level concerns (replay, role lookup, etc.) live in
 //! `validator.rs`.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::{Duration, SystemTime};
 

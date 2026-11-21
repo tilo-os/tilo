@@ -5,13 +5,14 @@
 //! document [`build`] produces, so these tests fail if a dependency bump stops
 //! reading old documents, hashes a change differently, or changes the bytes a
 //! saved document is made of.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::panic,
     clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use automerge::marks::{ExpandMark, Mark};
 use automerge::sync::{self, SyncDoc};
@@ -115,10 +116,6 @@ fn hex_heads(doc: &mut AutoCommit) -> Vec<String> {
     doc.get_heads().iter().map(ChangeHash::to_string).collect()
 }
 
-#[allow(
-    clippy::panic,
-    reason = "test helper: a non-scalar value fails the calling test"
-)]
 fn scalar(doc: &AutoCommit, key: &str) -> ScalarValue {
     match doc.get(ROOT, key).unwrap() {
         Some((Value::Scalar(s), _)) => s.into_owned(),

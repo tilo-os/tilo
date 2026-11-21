@@ -2,11 +2,6 @@
 //! drawn with show where the card stands, in the software path a headless session composes with.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 use std::cell::RefCell;
 use std::rc::Rc;
 

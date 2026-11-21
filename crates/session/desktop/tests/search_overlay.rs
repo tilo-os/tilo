@@ -2,11 +2,6 @@
 //! takes the keys while it is up and stands where the search says it does — over the whole display,
 //! or over the window it was opened from.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 use std::rc::Rc;
 use std::time::Duration;
 

@@ -1,9 +1,4 @@
 #![cfg(unix)]
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "owned integration fixtures and assertion helpers"
-)]
 
 mod support;
 

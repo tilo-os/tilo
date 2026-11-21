@@ -1,9 +1,12 @@
 //! Build a bundle from a fixture host root, verify it, and refuse tampered bundles.
-
 #![allow(
     clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::fs;
 use std::path::Path;

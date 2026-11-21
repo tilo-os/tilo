@@ -1,4 +1,10 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;

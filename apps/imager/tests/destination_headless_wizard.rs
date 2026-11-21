@@ -1,11 +1,13 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 
 //! The installer on the live medium, hosted as the imager app hosts it: its effects
 //! through the app's api.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use imager::ImagerShell;
 use imager::setup::destination::effects::DestinationEffect;

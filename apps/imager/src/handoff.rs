@@ -270,10 +270,6 @@ fn enroll_local_identity(
     local: &LocalIdentity<'_>,
     label: &str,
 ) -> Result<(), String> {
-    let workspaces = tilo_paths::xdg::state_home().map_or_else(
-        || PathBuf::from("/var/lib/tilo/peers/personal-workspaces.json"),
-        |state| state.join("tilo/personal-workspaces.json"),
-    );
     imager_backend::local_enrollment::enroll(
         &imager_backend::local_enrollment::LocalEnrollment {
             target_root: root,
@@ -281,7 +277,6 @@ fn enroll_local_identity(
             local_identity_dir: local.identity_dir,
             local_system: local.system,
             local_home_peers: local.home_peers,
-            local_workspaces: &workspaces,
         },
         &profile.user.full_name,
         label,
@@ -673,12 +668,6 @@ mod tests {
             Some(photo.clone()),
         )
         .unwrap();
-        let state = local_dir.path().join("state");
-        fs::create_dir_all(state.join("tilo")).unwrap();
-        let workspaces = br#"["11111111-1111-4111-8111-111111111111"]"#;
-        fs::write(state.join("tilo/personal-workspaces.json"), workspaces).unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_STATE_HOME", &state);
         let identity_id = hex::encode(local_cert.user_public_key);
         let home_peers = local_dir.path().join("home-peers.json");
         let peer = tilo_server_protocol::HomePeerRegistration {
@@ -702,6 +691,7 @@ mod tests {
             home_peers: &home_peers,
         };
         let dir = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TMPDIR", dir.path());
         let mut profile = InstallProfile {
             wifi_ssid: "studio".into(),
@@ -803,18 +793,6 @@ mod tests {
             .load_reconciled()
             .unwrap();
         assert_eq!(registry.identities[&identity_id].record_path, target_record);
-        let copied_workspaces: Vec<String> = serde_json::from_slice(
-            &fs::read(
-                tilo_server_protocol::home_peer_registry_path(&installed.join("var/lib/tilo"))
-                    .with_file_name("personal-workspaces.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            copied_workspaces,
-            vec!["11111111-1111-4111-8111-111111111111"]
-        );
         let target_fleet =
             tilo_identity::device_fleet::DeviceFleetStore::at(&target_identity, paths)
                 .load(&identity_id)

@@ -3,11 +3,6 @@
 //! desktop is the box the person sees, whatever opened it.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use tilo_session_core::surface::ShellSurface as _;
 use tilo_session_core::surfaces::Published as _;

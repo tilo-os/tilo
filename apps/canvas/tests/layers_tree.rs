@@ -1,12 +1,6 @@
 //! The layer list stands as a tree: grouped layers under their folder, folded away and
 //! opened again, each row choosing what the brush paints.
 
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used,
-    reason = "in a test a panic is the assertion"
-)]
 
 use canvas::App;
 use serde_json::json;

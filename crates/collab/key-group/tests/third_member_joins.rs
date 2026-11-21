@@ -6,10 +6,6 @@
 //! [`KeyGroup::add_member_with_commit`] /
 //! [`KeyGroup::process_commit`] pair.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use collab_types::WorkspaceId;
 use key_group::{KeyGroup, MemberKey};

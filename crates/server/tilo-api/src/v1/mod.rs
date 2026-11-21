@@ -1904,6 +1904,7 @@ mod export_tests {
             role: Some("owner".to_owned()),
             labels: std::collections::BTreeMap::new(),
             unattended: false,
+            address: None,
         }
     }
 

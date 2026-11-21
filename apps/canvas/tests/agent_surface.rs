@@ -4,11 +4,6 @@
 //!
 //! Update after an intended change:
 //! `TILO_UPDATE_GOLDEN=1 cargo test -p canvas --test it agent_surface::`.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use canvas::App;
 use ui::prelude::TestApp;

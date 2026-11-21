@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! A resource nested in another — here a saved query's SQL, plain text in a
 //! text object of the query's document — is edited through a child

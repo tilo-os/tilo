@@ -6,12 +6,6 @@
 //! checker reads the real published parameters and result specs, and the
 //! interpreter holds the real answers to them.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::VecDeque;
 use std::future::Future;

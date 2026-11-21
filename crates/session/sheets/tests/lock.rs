@@ -2,12 +2,6 @@
 //! clock, whose session it is, the password field, what plays, and the
 //! controls each publishes.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::sync::mpsc::Receiver;
 

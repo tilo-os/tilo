@@ -1,7 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 //! A row of Files answers an assistive technology's activation as a double-click opens
 //! it.

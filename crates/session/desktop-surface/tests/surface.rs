@@ -1,11 +1,6 @@
 //! The desktop surface inside the toolkit's real frame pipeline: navigation commands move the model
 //! and the live widgets together.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
 
 use std::cell::Cell;
 use std::rc::Rc;

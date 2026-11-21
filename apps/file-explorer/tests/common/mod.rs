@@ -6,11 +6,6 @@
     reason = "each test binary that includes this harness uses only part of it"
 )]
 #![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-#![allow(
     clippy::arithmetic_side_effects,
     reason = "indices into the few hundred probe heights of one pane"
 )]

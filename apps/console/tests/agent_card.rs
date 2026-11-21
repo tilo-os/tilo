@@ -1,14 +1,14 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 //! An agent's card: the resource Console publishes for each client, the card its face in
 //! the workspace's presence opens, and what that face asks of it (Stop, Revoke) reaching
 //! the MCP server once the card has read it.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use serde_json::json;
 use tilo_console::{App, ConsoleEffect};

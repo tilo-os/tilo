@@ -3,7 +3,6 @@
 //! (`crates/agent/agent-session/tests/workspace_actions/api_programs.rs`), and against a
 //! session's own API in the session's own tests.
 
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use std::path::Path;
 use std::process::{Command, Stdio};

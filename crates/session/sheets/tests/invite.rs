@@ -3,12 +3,6 @@
 //! still work and taking one back, and what it says when this person may not
 //! invite here.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_sheets::SheetState as _;
 use tilo_sheets::invite::{Invite, InviteApp, InviteEffect, InviteState, sample};

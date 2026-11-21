@@ -2,11 +2,6 @@
 //! the objects (whole blobs, or chunk lists and their chunks) into the registry, verified and
 //! within the payload limit, and installers fetch them back from `/blobs/` chunk by chunk.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

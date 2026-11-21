@@ -3,13 +3,6 @@
 //! toolkit's own Vello and text, so a viewer sees the page the window shows.
 
 #![cfg(not(target_arch = "wasm32"))]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed lookup or a wrong message is the assertion"
-)]
 
 use std::cell::RefCell;
 use std::rc::Rc;

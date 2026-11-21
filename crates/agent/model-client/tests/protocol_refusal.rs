@@ -1,7 +1,10 @@
 #![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
-    reason = "fixture and protocol failures must fail the test"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use agent_provider_config::{

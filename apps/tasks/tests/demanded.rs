@@ -1,12 +1,14 @@
 //! Opening an issue of a long tracker reads that issue's description and thread and no other
 //! issue's: the same reads at 40 issues as at 400. The window's list read none of them, and the
 //! page carries no action of the issues it does not show.
-
 #![allow(
-    clippy::expect_used,
     clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use tasks::App;
 use ui::prelude::*;

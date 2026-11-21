@@ -3,12 +3,6 @@
 //! tree, branches or stash list changed: nothing here is a tautology over in-memory
 //! state. Fixtures and checks use libgit2 directly and never shell out to `git`.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::fmt::Write as _;
 use std::fs;

@@ -2,12 +2,6 @@
 //! every step a published action, what it lists and answers reaching the
 //! service through the state, and giving files left to the person.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::{Path, PathBuf};
 

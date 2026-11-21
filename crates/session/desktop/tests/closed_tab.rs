@@ -1,12 +1,6 @@
 //! The desktop's reopen chord on the real chrome: a window the person closed comes back where it
 //! was, and the close is undone once.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::support::group;
 use crate::support::hold;

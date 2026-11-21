@@ -559,6 +559,9 @@ impl Workspaces {
         if envelope.kind != collab_types::OpKind::Compaction {
             return Some(refusal);
         }
+        // Only a host taking part in the record's channels asks to be let into one.
+        #[cfg(not(any(feature = "agents", feature = "web")))]
+        let _ = (app_id, document_id);
         let followed = governed.follow_kept(author, message.clone()).await;
         if let Some(refused) = followed.refused {
             // Kept until the record's keys are here: ask to be let into its channel, so they

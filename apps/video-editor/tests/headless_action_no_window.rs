@@ -1,14 +1,16 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "headless integration fixture asserts setup failures directly"
-)]
 
 //! End-to-end action test without a driving window. A member with no
 //! window — an agent, a script — holds the editor's view of the project,
 //! attached and never drawn, surveys what it may do, and edits it through the
 //! same api the editor's own window uses; the editor shows the result once
 //! the change reaches it.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use tilo_actions::api::{ActionAddress, ApiError};
 use ui::collaboration::DocumentMutation;

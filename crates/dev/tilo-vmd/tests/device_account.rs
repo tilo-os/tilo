@@ -7,10 +7,6 @@
 //! options tilo-vm passes; the stand-in `sudo` accepts only the non-interactive
 //! forms tilo-vm uses (`sudo -n -- CMD`, and the probe's `sudo -n true`), and
 //! refuses like sudo without a grant while a `deny` file exists.
-#![allow(
-    clippy::unwrap_used,
-    reason = "one end-to-end scenario; helpers fail the test on setup errors"
-)]
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

@@ -1,13 +1,6 @@
 //! The `tilolang` command at its edge: what it prints when asked for help, and how each of its
 //! commands refuses arguments it cannot read, before it builds, runs or opens anything.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 
 use std::process::Command;
 

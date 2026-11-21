@@ -1,13 +1,14 @@
 //! The editor driven through its accessible controls against a fake action
 //! host: build a shortcut step by step, see the checker's verdict, review
 //! the grant and save it through the API's `shortcuts#create`.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "test assertions"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use shortcuts::locales::CATALOG;
 use std::sync::Arc;

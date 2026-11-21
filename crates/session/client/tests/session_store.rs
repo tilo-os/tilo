@@ -7,12 +7,6 @@
 //! into one record made that record anew for every file, faster than the computer could give the
 //! memory back, until the holder of the session ran out of it.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::sync::Arc;
 

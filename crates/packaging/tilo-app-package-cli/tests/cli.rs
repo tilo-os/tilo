@@ -3,11 +3,14 @@
 //! Drives the compiled binary via `std::process::Command` (the
 //! cargo test harness exposes the binary under
 //! `target/debug/tilo-app-package`).
-
 #![allow(
     clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::path::PathBuf;
 use std::process::Command;

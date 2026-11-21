@@ -5,10 +5,6 @@
 //! [`InboundState::scrollback_for`]. Live in `tests/` (not unit tests)
 //! because they cover the validator's *public* API.
 
-#![allow(
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::SystemTime;
 

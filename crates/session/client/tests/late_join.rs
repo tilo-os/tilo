@@ -6,11 +6,6 @@
     clippy::significant_drop_tightening,
     reason = "a test holds its fixtures' locks for the length of a step"
 )]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;

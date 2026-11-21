@@ -8,7 +8,7 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use std::io::{BufRead as _, BufReader, Write as _};

@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! The workspace's record an app keeps one of, not on this device when its
 //! window opens: the workspace may hold it, so the window shows what is on

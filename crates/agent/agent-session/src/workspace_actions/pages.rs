@@ -320,15 +320,39 @@ impl Worker {
         })
     }
 
-    /// The workspace's front page: the apps a member opens here, each a link
-    /// to its own page. It shows nothing the workspace holds, so it is the
-    /// same for everyone in it, and nothing is acted on it.
+    /// The workspace's front page: who is in it and who of them is here, and
+    /// the apps a member opens, each a link to its own page.
     fn open_home(&mut self, workspace_id: WorkspaceId) -> Result<OpenedPage, PageRefusal> {
         // The workspace has to be readable here, as an app's page does.
         let state = self
             .refresh(workspace_id, Needs::Workspace)
             .map_err(refused)?;
         state.workspace.as_ref().ok_or(PageRefusal::Elsewhere)?;
+        // Who the workspace has is its own governance; who is here is what the
+        // live session's devices say of themselves. Everyone the roster lists
+        // is a row, those away included, and the ones here carry what they are
+        // doing.
+        let (roster, present) = match self.workspaces.get(&workspace_id) {
+            Some(workspace) => (
+                workspace.member.roster(workspace_id),
+                workspace.member.present(workspace_id),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        // A person's own device and their page say they are here twice: each
+        // person, agent or device counts once.
+        let mut identities: Vec<String> = Vec::new();
+        for shown in &present {
+            let identity = match (&shown.member, &shown.user) {
+                (Some(member), _) => format!("member:{member}"),
+                (None, Some(user)) => format!("user:{user}"),
+                (None, None) => format!("device:{}", shown.publisher),
+            };
+            if !identities.contains(&identity) {
+                identities.push(identity);
+            }
+        }
+        let here = identities.len();
         let mut apps: Vec<_> = self
             .catalogue
             .iter()
@@ -337,8 +361,48 @@ impl Worker {
         apps.sort_by_key(|app| app.title().to_owned());
         let mut body = String::from(
             "<div class=\"tilo-view tilo-home\" data-p=\"0\">\
-             <h1 class=\"tilo-home-title\">Tilo</h1><ul class=\"tilo-home-apps\">",
+             <h1 class=\"tilo-home-title\">Tilo</h1>",
         );
+        let _ = write!(
+            body,
+            "<section class=\"tilo-people\" aria-label=\"People\"><h2 class=\"tilo-people-count\">{here} here</h2><ul class=\"tilo-people-list\">"
+        );
+        let mut rows = roster;
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        for member in rows.into_iter().filter(|member| !member.removed) {
+            // A person is here by the name everyone calls them; an agent a
+            // host speaks for is here by the member its presence names.
+            let shown = present.iter().find(|shown| {
+                shown
+                    .member
+                    .as_ref()
+                    .is_some_and(|named| named.to_string() == member.id.to_string())
+                    || shown.label == member.name
+            });
+            let role = if member.administrator {
+                "owner"
+            } else {
+                match &member.role {
+                    Some(role) => role.name(),
+                    None => "agent",
+                }
+            };
+            let _ = write!(
+                body,
+                "<li class=\"tilo-person\"{present}><span class=\"tilo-person-name\">{name}</span>\
+                 <span class=\"tilo-person-kind\">{role}</span>{what}</li>",
+                present = if shown.is_some() { " data-present" } else { "" },
+                name = escape(&member.name),
+                role = escape(role),
+                what = shown
+                    .and_then(|shown| shown.activity.as_deref())
+                    .map_or_else(String::new, |what| format!(
+                        "<span class=\"tilo-person-what\">{}</span>",
+                        escape(what)
+                    )),
+            );
+        }
+        body.push_str("</ul></section><ul class=\"tilo-home-apps\">");
         for app in apps {
             let name = app
                 .app_id()
@@ -542,6 +606,16 @@ border-radius:14px;color:var(--tilo-text);text-decoration:none;font-size:13px;fo
 .tilo-home-app:active{background:var(--tilo-press);}\
 .tilo-home-app:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
 .tilo-home-app svg{width:52px;height:52px;border-radius:12px;}\
+.tilo-people{display:flex;flex-direction:column;gap:8px;max-width:880px;}\
+.tilo-people-count{margin:0;font-size:13px;font-weight:600;color:var(--tilo-text-dim);}\
+.tilo-people-list{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none;}\
+.tilo-person{display:flex;align-items:baseline;gap:8px;padding:6px 8px;border-radius:8px;font-size:14px;opacity:.55;}\
+.tilo-person[data-present]{opacity:1;}\
+.tilo-person[data-present] .tilo-person-name::before{content:\"\";display:inline-block;width:6px;height:6px;\
+margin-right:8px;border-radius:50%;background:var(--tilo-accent);vertical-align:middle;}\
+.tilo-person-name{font-weight:500;}\
+.tilo-person-kind{font-size:12px;color:var(--tilo-text-tertiary);}\
+.tilo-person-what{margin-left:auto;font-size:13px;color:var(--tilo-text-dim);}\
 .tilo-home-initial{width:52px;height:52px;border-radius:12px;display:grid;place-items:center;\
 background:var(--tilo-raised);color:var(--tilo-text-dim);font-size:22px;font-weight:600;}";
 

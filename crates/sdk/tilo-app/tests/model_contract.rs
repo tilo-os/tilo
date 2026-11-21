@@ -1,4 +1,3 @@
-#![allow(clippy::expect_used, reason = "test assertions")]
 
 //! The resource/action/view contract on the production host path.
 //!

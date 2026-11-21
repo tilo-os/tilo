@@ -2,11 +2,6 @@
 //! field the person types into, and the emoji they pick goes to the session,
 //! which writes it into that field.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 use std::cell::RefCell;
 use std::rc::Rc;
 

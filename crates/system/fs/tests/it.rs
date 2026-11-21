@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 // One test binary: each tests/*.rs file linked the whole crate before. nextest
 // runs each test in its own process, so #[path] keeps the files' isolation.
 

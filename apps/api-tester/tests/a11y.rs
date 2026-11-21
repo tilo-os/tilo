@@ -1,14 +1,14 @@
 //! Accessibility and keyboard proof for the retained API-tester tree: the tests drive the
 //! real app through the framework's test host and assert on the nodes the AccessKit bridge
 //! exports and on keyboard focus traversal.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use api_tester::ApiTesterShell;
 use api_tester::actions::ApiTesterEffect;

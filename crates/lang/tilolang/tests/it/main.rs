@@ -1,9 +1,9 @@
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    clippy::unwrap_used,
-    reason = "integration tests assert by panicking, and the helpers they share live outside `#[test]` functions"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 mod abi_additions;

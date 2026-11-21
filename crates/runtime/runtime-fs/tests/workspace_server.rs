@@ -1,10 +1,6 @@
 //! A host's workspace served read only over a Unix socket, browsed and
 //! read through the ordinary `FsClient`.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

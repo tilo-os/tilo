@@ -2,7 +2,6 @@
 //! only the device an entry names carries it out and records the result,
 //! the settlement is nobody's undo step, and undoing the verb that queued
 //! an entry queues its compensation for the same device.
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use std::cell::{Cell, RefCell};
 

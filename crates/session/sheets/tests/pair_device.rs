@@ -1,12 +1,6 @@
 //! "Add a device": the sheet as a person meets it while a machine asks to
 //! join over the internet — what the machine is, and the answers offered.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::rc::Rc;
 

@@ -81,6 +81,7 @@ fn a_restart_with_a_large_chain_answers_within_two_seconds() {
     let started = std::time::Instant::now();
     let reopened = GovernedWorkspace::open(path, None).unwrap();
     let reopened_in = started.elapsed();
+    println!("a restart of {PARTS} parts of {BYTES} bytes opened in {reopened_in:?}");
     let started = std::time::Instant::now();
     let read = tokio::runtime::Builder::new_current_thread()
         .enable_all()
