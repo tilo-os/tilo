@@ -2359,7 +2359,7 @@ impl Hosted {
             self.record
                 .apply_invoked(&mut self.instance, &action, &invoker, ambient)
                 .map_err(|error| Refused::new("action_failed", error.to_string()))?;
-            let output = returned(&host, &action);
+            let output = returned(&host, &action)?;
             return Ok(self.naming_written(&before, &address.resource, output));
         }
         if address.resource == HOST_RESOURCE
@@ -2912,8 +2912,6 @@ fn api_code(error: &tilo_actions::ApiError) -> &'static str {
     }
 }
 
-/// What the action `action` answers: the resource it returned, by its published id, which a
-/// task's program goes on with.
 /// `wrote` with its blocks named as the window draws the item's text: the resource the window
 /// publishes it under (`tl:app:document/item`), not the item's own id.
 fn published_in(
@@ -2950,14 +2948,17 @@ fn declared_for_file(
     })
 }
 
-fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_actions::ActionOutput {
-    let returned = host
-        .take_returned(&action.action_id)
-        .map(|made| tilolang_tilo::publish::resource_id(&action.app, &made.id_string()));
-    tilo_actions::ActionOutput {
-        value: None,
-        resources: returned.into_iter().collect(),
-    }
+/// What the action `action` returned: the value its declaration carries as data, and the
+/// resource it made, by its published id, which a task's program goes on with.
+fn returned(
+    host: &tilolang_tilo::host::Host,
+    action: &DynAction,
+) -> Result<tilo_actions::ActionOutput, Refused> {
+    let Some(value) = host.take_returned(&action.action_id) else {
+        return Ok(tilo_actions::ActionOutput::default());
+    };
+    host.action_output(&action.app, &action.action_id, &value)
+        .map_err(|error| Refused::new("action_failed", error))
 }
 
 /// Tell the window of `instance` the actions `descriptors` offers: all of them, or, `changed`

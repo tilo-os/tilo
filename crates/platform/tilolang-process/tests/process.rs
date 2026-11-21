@@ -28,6 +28,9 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::document::InstanceDocument;
 use tilolang_tilo::runtime::Value;
 
+/// What an action returns reaches its invoker over its connection.
+#[path = "process/results.rs"]
+mod results;
 /// What an action too large to record whole keeps as content, on its device and its peer's.
 #[path = "process/content.rs"]
 mod content;
