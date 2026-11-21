@@ -289,6 +289,13 @@ impl EGLContext {
 
         context_attributes.push(ffi::egl::NONE as i32);
 
+        // TILO: the client API a context is made for is the calling thread's,
+        // and anything else on this thread (wgpu's GL backend binds
+        // EGL_OPENGL_API) may have changed it since the display bound it, or
+        // the display was made on another thread: bind OpenGL ES here.
+        wrap_egl_call_bool(|| unsafe { ffi::egl::BindAPI(ffi::egl::OPENGL_ES_API) })
+            .map_err(|source| Error::OpenGlesNotSupported(Some(source)))?;
+
         trace!("Creating EGL context...");
         let context = wrap_egl_call_ptr(|| unsafe {
             ffi::egl::CreateContext(

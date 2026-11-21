@@ -22,6 +22,8 @@ mod clipboard;
 mod color_management_protocol;
 #[path = "dnd.rs"]
 mod dnd;
+#[path = "egl_client_api.rs"]
+mod egl_client_api;
 #[path = "gamma.rs"]
 mod gamma;
 #[path = "hdr_surface_colour.rs"]

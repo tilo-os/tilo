@@ -499,3 +499,15 @@ a key. `xdg_surface.ack_configure` in `src/wayland/shell/xdg/handlers/surface.rs
 ack once the surface's role object is gone; there is nothing left to apply it to.
 
 Remove this once upstream tolerates such an ack.
+
+## A context binds OpenGL ES on the thread that makes it
+
+EGL's current client API is per thread, and `EGLDisplay::new` binds OpenGL ES only on the thread
+that makes the display. A context made on another thread, or on one where wgpu's GL backend has
+since bound `EGL_OPENGL_API` for its own adapter, was made for desktop OpenGL: its extension list
+lacks `GL_EXT_texture_format_BGRA8888`, and `GlesRenderer::new` refused it. A headless session in a
+VM without a usable GPU, whose display is made on a thread beside its build, had no compositor.
+`EGLContext::new_internal` in `src/backend/egl/context.rs` binds OpenGL ES right before
+`eglCreateContext`.
+
+Remove this once upstream binds the API where it makes a context.
