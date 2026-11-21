@@ -80,8 +80,9 @@ ref() {  # $1 = channel
   case "$1:$(flavour)" in
     dev:*) printf '%s:%s-ci\n' "$DEV_REPOSITORY" "$(target)" ;;
     # A release image keeps the origin it was installed with; a board's successor is chosen by
-    # tilo-board-successor from there.
-    stable:release) ;;
+    # tilo-board-successor from there. So does a server: its image is the server's own
+    # repository's, and the desktop's release series below is not a server.
+    stable:release | stable:server) ;;
     # From a dev image, the release series of the same device; the release image it installs
     # follows its own origin from then on.
     stable:*)

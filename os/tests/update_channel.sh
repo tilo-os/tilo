@@ -77,6 +77,12 @@ if run pin registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64 2>/dev/null; the
 fi
 expect registry installed
 
+# A server follows stable from the origin it was installed with, never the desktop's series.
+echo server >"$work/root/usr/lib/tilo/image-flavour"
+expect stable list
+expect stable current
+expect '' ref
+
 # A dev image follows dev by default, main's dev image of its architecture or board.
 echo dev >"$work/root/usr/lib/tilo/image-flavour"
 expect $'dev\nstable' list
