@@ -50,7 +50,7 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _, ScalarValueRef, Value, ValueRef};
 use fs::content::Manifest;
-use fs_content::{FORMAT, HEADER_MAGIC};
+use fs_content::{MANIFEST_PREFIX_LEN, begins_manifest};
 use neighbour_wire::content::ContentWants;
 use tilo_lock::MutexRecover as _;
 
@@ -564,8 +564,8 @@ pub(crate) fn missing_pieces(store: &ContentStore, address: &str) -> Vec<String>
     };
     // Content kept whole that is not a file's manifest is never read past its
     // first bytes.
-    let mut header = [0_u8; HEADER_MAGIC.len() + 1];
-    if item.read_exact(&mut header).is_err() || !is_manifest_header(&header) {
+    let mut header = [0_u8; MANIFEST_PREFIX_LEN];
+    if item.read_exact(&mut header).is_err() || !begins_manifest(&header) {
         return Vec::new();
     }
     let Some(bytes) = store.read(address) else {
@@ -583,12 +583,6 @@ pub(crate) fn missing_pieces(store: &ContentStore, address: &str) -> Vec<String>
         .map(|chunk| hex::encode(chunk.hash))
         .filter(|chunk| !store.has(chunk))
         .collect()
-}
-
-/// Whether `bytes` begin a Files manifest header.
-fn is_manifest_header(bytes: &[u8]) -> bool {
-    bytes.get(..HEADER_MAGIC.len()) == Some(&HEADER_MAGIC[..])
-        && bytes.get(HEADER_MAGIC.len()) == Some(&FORMAT)
 }
 
 /// A timer that keeps no backlog: a pass that came late is not made twice.
@@ -720,5 +714,48 @@ mod tests {
         {
             assert!(content_of(PHOTOS, b"not a document").is_err());
         }
+    }
+
+    /// A file kept as chunks names them in its manifest, which a workspace
+    /// whose files are sealed writes in its sealed layout: the host asks for
+    /// the chunks of either, or it would keep the manifest of a large file
+    /// and none of its bytes.
+    #[test]
+    fn the_chunks_a_kept_manifest_lists_and_the_store_lacks_are_asked_for() {
+        use fs_content::{ChunkRef, ChunkTier, SealedChunks};
+        let store = ContentStore::memory();
+        let here = store.put(b"a chunk the host keeps already").unwrap();
+        let mut here_hash = [0_u8; 32];
+        hex::decode_to_slice(&here, &mut here_hash).unwrap();
+        let absent = [0x7e_u8; 32];
+        let chunks = vec![
+            ChunkRef {
+                hash: here_hash,
+                len: 30,
+            },
+            ChunkRef {
+                hash: absent,
+                len: 4096,
+            },
+        ];
+        let sealed = SealedChunks {
+            group: [3; 16],
+            epoch: 1,
+            overhead: 28,
+        };
+        for manifest in [
+            Manifest::new(ChunkTier::Small, chunks.clone()),
+            Manifest::new_sealed(ChunkTier::Small, chunks, sealed),
+        ] {
+            let address = store.put(&manifest.encode()).unwrap();
+            assert_eq!(
+                missing_pieces(&store, &address),
+                [hex::encode(absent)],
+                "sealed: {}",
+                manifest.sealed().is_some()
+            );
+        }
+        assert_eq!(missing_pieces(&store, &"9d".repeat(32)), ["9d".repeat(32)]);
+        assert!(missing_pieces(&store, &here).is_empty());
     }
 }

@@ -57,13 +57,21 @@ impl std::error::Error for DecodeError {}
 /// Whether `bytes` carry a manifest header. Cheap: looks at the first entry
 /// only.
 pub fn is_manifest(bytes: &[u8]) -> bool {
-    bytes.len().is_multiple_of(ENTRY)
-        && bytes.get(..HEADER_MAGIC.len()) == Some(&HEADER_MAGIC[..])
+    bytes.len().is_multiple_of(ENTRY) && begins_manifest(bytes)
+}
+
+/// Whether `bytes`, the first bytes of some content, begin a manifest of
+/// either layout, sealed or clear: [`MANIFEST_PREFIX_LEN`] of them tell.
+pub fn begins_manifest(bytes: &[u8]) -> bool {
+    bytes.get(..HEADER_MAGIC.len()) == Some(&HEADER_MAGIC[..])
         && matches!(
             bytes.get(HEADER_MAGIC.len()),
             Some(&FORMAT | &SEALED_FORMAT)
         )
 }
+
+/// How many leading bytes [`begins_manifest`] reads.
+pub const MANIFEST_PREFIX_LEN: usize = HEADER_MAGIC.len() + 1;
 
 /// The bytes of the file whose content is `content`, as a workspace's tree names a file by the
 /// hash of its manifest: the chunks the manifest lists, each read with `chunk` by its hash and
