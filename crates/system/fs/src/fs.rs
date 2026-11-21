@@ -1619,7 +1619,7 @@ impl QuickFS {
         if tracing {
             eprintln!(
                 "commit of inode {ino}: its bytes in {stored_at:?}, its name in {:?}",
-                began.elapsed() - stored_at
+                began.elapsed().saturating_sub(stored_at)
             );
         }
         self.remember_staged_metadata(ino, stage);

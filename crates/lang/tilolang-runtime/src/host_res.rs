@@ -1289,7 +1289,8 @@ impl Core {
                 "the collection's items have no field `{parent_name}` to stand under"
             ));
         };
-        let Some(read) = FieldRead::of(&parent.id, parent.kind, &parent.ty, parent.default.as_ref())
+        let Some(read) =
+            FieldRead::of(&parent.id, parent.kind, &parent.ty, parent.default.as_ref())
         else {
             return trap(format!("`{parent_name}` is a map, not a parent field"));
         };
@@ -1372,7 +1373,10 @@ impl Core {
 
     /// The row a verb names, when the call names one: an item of this collection, as the id and
     /// type it is.
-    fn row_named(target: &Value, listing: &crate::store::Listing) -> HResult<Option<(ItemId, TypeId)>> {
+    fn row_named(
+        target: &Value,
+        listing: &crate::store::Listing,
+    ) -> HResult<Option<(ItemId, TypeId)>> {
         let referenced = match target {
             Value::Opt(None) | Value::Unit => return Ok(None),
             Value::Opt(Some(held)) => match &**held {
@@ -1610,8 +1614,7 @@ impl Core {
         let mut cursor = Some((id.to_owned(), ty.to_owned()));
         while let Some((at, ty)) = cursor {
             let parent = self.parent_of(ctx, read, &at, &ty)?;
-            if parent.as_ref().map(|(id, _)| id.as_str()) == ours.map(|(id, _)| id.as_str())
-            {
+            if parent.as_ref().map(|(id, _)| id.as_str()) == ours.map(|(id, _)| id.as_str()) {
                 return Ok((at, ty));
             }
             cursor = parent;

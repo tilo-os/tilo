@@ -928,8 +928,9 @@ pub fn asks_for_secret(words: &str) -> bool {
     tokens.iter().any(|token| {
         ALONE.contains(token) || token.ends_with("passwort") || token.ends_with("password")
     }) || tokens
-        .windows(2)
-        .any(|pair| PAIRS.contains(&(pair[0], pair[1])))
+        .iter()
+        .zip(tokens.iter().skip(1))
+        .any(|(first, second)| PAIRS.contains(&(*first, *second)))
 }
 
 /// What a question that asks for a secret is refused with: where to ask instead.

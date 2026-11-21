@@ -105,7 +105,10 @@ fn activate(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
 /// by its scope rather than the words over it, since two installed apps can share a name (the Rust
 /// Notes and the tilolang Notes are both "Notes") and the words would name either.
 fn choose(app: &mut HeadlessApp<WorkspaceSettingsApp>, scope: &str, kind: &str, segment: usize) {
-    press(app, &format!("ws-agent-answer-{scope}-{kind}:segment:{segment}"));
+    press(
+        app,
+        &format!("ws-agent-answer-{scope}-{kind}:segment:{segment}"),
+    );
 }
 
 /// Show `tab` in the sheet, as pressing its tab does, and let the session answer with the tab it

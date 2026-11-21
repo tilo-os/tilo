@@ -943,10 +943,10 @@ impl ChatMessages {
         #[param("What is asked, in words")] text: NonBlank,
         #[param("The answers offered, in order: each an id and what its button says")]
         answers: Option<Vec<Choice>>,
-        #[param("The kind of question; a choice when absent")]
-        kind: Option<String>,
-        #[param("What the kind keeps with the question; leave it out for a choice")]
-        detail: Option<serde_json::Value>,
+        #[param("The kind of question; a choice when absent")] kind: Option<String>,
+        #[param("What the kind keeps with the question; leave it out for a choice")] detail: Option<
+            serde_json::Value,
+        >,
         #[param("The message it answers in a thread")] parent: Option<Id>,
     ) -> Result<(), Refusal> {
         let person = crate::question::asked_person(cx)?;

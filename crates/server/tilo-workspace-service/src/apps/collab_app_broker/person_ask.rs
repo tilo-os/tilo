@@ -108,17 +108,14 @@ impl AppBrokerState {
             }
             error
         };
-        let job = match self.invocation_id.fetch_update(
+        let Ok(job) = self.invocation_id.fetch_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |id| id.checked_add(1),
-        ) {
-            Ok(job) => job,
-            Err(_) => {
-                return Pending::ready(Err(abandon(ActionCallError::Unavailable {
-                    reason: "the invocation handle space is exhausted".into(),
-                })));
-            }
+        ) else {
+            return Pending::ready(Err(abandon(ActionCallError::Unavailable {
+                reason: "the invocation handle space is exhausted".into(),
+            })));
         };
         let question = AppActionConsentRequest {
             handle: format!("{AGENT_ASK}{}", request.invocation.0),
@@ -303,7 +300,7 @@ mod tests {
             .in_new_execution()
     }
 
-    fn request(argument: serde_json::Value) -> InvokeRequest {
+    fn request(argument: &serde_json::Value) -> InvokeRequest {
         InvokeRequest {
             on_behalf_of: None,
             invocation: InvocationId::new(),
@@ -318,7 +315,7 @@ mod tests {
     }
 
     fn question() -> InvokeRequest {
-        request(serde_json::json!({
+        request(&serde_json::json!({
             "question": "Shall I file the budget under Spring?",
             "choices": ["Yes, file it", "Leave it for now"],
         }))
@@ -345,10 +342,10 @@ mod tests {
         id: &InvocationId,
     ) -> InvocationUpdate {
         for _ in 0..500 {
-            if let Some(update) = state.action_observe(caller, id).map(|state| state.update) {
-                if update.is_terminal() {
-                    return update;
-                }
+            if let Some(update) = state.action_observe(caller, id).map(|state| state.update)
+                && update.is_terminal()
+            {
+                return update;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -466,7 +463,7 @@ mod tests {
                 serde_json::json!({"question": "  "}),
                 serde_json::json!({"question": "Shall I?", "choices": ["yes", "yes"]}),
             ] {
-                let asked = request(argument);
+                let asked = request(&argument);
                 assert!(matches!(
                     invoked(&state, &agent, &asked),
                     Err(ActionCallError::Refused { .. })

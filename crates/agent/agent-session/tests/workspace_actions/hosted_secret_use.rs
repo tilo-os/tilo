@@ -612,7 +612,9 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
 
     // The assistant is woken once with the reference her vault keeps it under.
     let told = hosted.woken_with("Thanks, it is in your vault now.").await;
-    let at = told.find("vault.item:").expect("the assistant is told the reference");
+    let at = told
+        .find("vault.item:")
+        .expect("the assistant is told the reference");
     let reference = told[at..at + "vault.item:".len() + 32].to_owned();
     assert!(
         person_vault::ItemRef::parse(&reference).is_some(),

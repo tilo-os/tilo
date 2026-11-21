@@ -238,7 +238,10 @@ async fn laptop_holds(
     state: &std::path::Path,
     server: &Server,
     laptop: &TestDevice,
-) -> (tilo_server::service::WorkspaceService, own_device::KeyService) {
+) -> (
+    tilo_server::service::WorkspaceService,
+    own_device::KeyService,
+) {
     let workspaces = server.workspaces().expect("the server holds workspaces");
     let own_device = workspaces.host_device();
     let hint = workspaces
@@ -317,7 +320,9 @@ async fn held_epoch(keys: &tilo_workspace_keys::SharedKeys, what: &str) -> u64 {
                     Instant::now() < deadline,
                     "the server holds no place in the workspace's key group {what}: {other:?}, \
                      its record keys {record:?}",
-                    record = keys.record_keys(WORKSPACE).map(|held| held.map(|held| held.epoch()))
+                    record = keys
+                        .record_keys(WORKSPACE)
+                        .map(|held| held.map(|held| held.epoch()))
                 );
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -409,7 +414,8 @@ async fn a_restarted_server_keeps_its_place_in_the_key_group_when_its_actions_me
     // The server restarts on the same state, its key service's group state under it. Its
     // endpoint is new — the app action service it ran keeps the old one bound — and a device's
     // place in a key group is its device key, not its address.
-    let server = start_serving_at(state.path(), &alice, &host, "127.0.0.1:0".parse().unwrap()).await;
+    let server =
+        start_serving_at(state.path(), &alice, &host, "127.0.0.1:0".parse().unwrap()).await;
     let keys = server
         .workspace_keys()
         .expect("the restarted server governs its workspaces and holds their keys");

@@ -578,7 +578,8 @@ impl ServerAgents {
                 format!("Nothing was kept: {why}. Tell them so; ask again when they want."),
             ),
         };
-        self.tell_of_password(&open, &asked, (answered, &came)).await;
+        self.tell_of_password(&open, &asked, (answered, &came))
+            .await;
     }
 }
 

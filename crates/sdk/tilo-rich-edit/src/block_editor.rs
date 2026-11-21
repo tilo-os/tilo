@@ -2057,7 +2057,7 @@ impl BlockEditor {
         if asked == self.revealed {
             return;
         }
-        self.revealed = asked.clone();
+        self.revealed.clone_from(&asked);
         let Some(at) = asked.as_deref().and_then(|ask| ask.split(':').next()) else {
             return;
         };

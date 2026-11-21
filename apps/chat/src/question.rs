@@ -206,7 +206,10 @@ pub fn asks_for_no_secret(
     if kind == Some(ACTION) {
         return Ok(());
     }
-    let labels = answers.unwrap_or_default().iter().map(|answer| answer.label.as_str());
+    let labels = answers
+        .unwrap_or_default()
+        .iter()
+        .map(|answer| answer.label.as_str());
     if std::iter::once(text).chain(labels).any(asks_for_secret) {
         return Err(Refusal::new(ASK_INSTEAD));
     }

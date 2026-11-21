@@ -427,10 +427,20 @@ async fn a_folder_waiting_for_its_keys_does_not_count_a_path_as_failing() {
     let deferred = io::Error::other(super::KEYS_NOT_READY);
     assert!(
         folder
-            .carried("photo.png", Err(deferred), (None, None), &mut budget, &mut pass, true)
+            .carried(
+                "photo.png",
+                Err(deferred),
+                (None, None),
+                &mut budget,
+                &mut pass,
+                true
+            )
             .is_none()
     );
-    assert_eq!(pass.failed, 0, "a wait for the workspace is not the path failing");
+    assert_eq!(
+        pass.failed, 0,
+        "a wait for the workspace is not the path failing"
+    );
     assert_eq!(
         folder.unsynced().count(),
         0,
@@ -442,7 +452,14 @@ async fn a_folder_waiting_for_its_keys_does_not_count_a_path_as_failing() {
     let broken = io::Error::other("the disk is full");
     assert!(
         folder
-            .carried("photo.png", Err(broken), (None, None), &mut budget, &mut pass, true)
+            .carried(
+                "photo.png",
+                Err(broken),
+                (None, None),
+                &mut budget,
+                &mut pass,
+                true
+            )
             .is_none()
     );
     assert_eq!(pass.failed, 1);

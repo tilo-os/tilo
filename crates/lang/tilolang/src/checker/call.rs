@@ -1955,12 +1955,15 @@ impl Checker<'_> {
     /// drags ask for, named by the neighbour the view shows.
     fn place_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
         let usage = "write `.place(item, .parent, inside: parent)`, `.place(item, .parent, before: other)`, `.place(item, .parent, after: other)`, `.place(item, .parent, under: over)` (indent), `.place(item, .parent, up: over)` or `.place(item, .parent, down: below)`";
-        let (Some(item), Some(field), Some(place), 3) = (args.first(), args.get(1), args.get(2), args.len())
+        let (Some(item), Some(field), Some(place), 3) =
+            (args.first(), args.get(1), args.get(2), args.len())
         else {
             self.err(
                 "E022",
                 span,
-                format!("`.place` takes the item, the field its tree is by, and where it goes: {usage}"),
+                format!(
+                    "`.place` takes the item, the field its tree is by, and where it goes: {usage}"
+                ),
             );
             for a in args {
                 let _ = self.expr(&a.value, None);
@@ -1977,9 +1980,7 @@ impl Checker<'_> {
             return Ex::error();
         };
         let parent = match &body.kind {
-            ExprKind::Field { base, name }
-                if matches!(&base.kind, ExprKind::Ident(at) if at == &param.name) =>
-            {
+            ExprKind::Field { base, name } if matches!(&base.kind, ExprKind::Ident(at) if at == &param.name) => {
                 name.name.clone()
             }
             _ => {
@@ -2001,7 +2002,11 @@ impl Checker<'_> {
             Some("up") => (4, self.expr_as(&place.value, &opt)),
             Some("down") => (5, self.expr_as(&place.value, &opt)),
             _ => {
-                self.err("E022", place.value.span, format!(".place names where the item goes: {usage}"));
+                self.err(
+                    "E022",
+                    place.value.span,
+                    format!(".place names where the item goes: {usage}"),
+                );
                 let _ = self.expr(&place.value, None);
                 return Ex::error();
             }

@@ -161,9 +161,10 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         // A page keeps no accounts of its own: it reads the ones the host
         // that runs its workspace keeps, through the host's mail session.
         #[cfg(feature = "live")]
-        match cx.shared_person::<PersonAccounts>() {
-            Some(accounts) => window.follow_person_accounts(accounts),
-            None => tracing::warn!("the person's accounts are not open: Mail cannot follow them"),
+        if let Some(accounts) = cx.shared_person::<PersonAccounts>() {
+            window.follow_person_accounts(accounts);
+        } else {
+            tracing::warn!("the person's accounts are not open: Mail cannot follow them");
         }
         window.copies_opener = Some(saved_copies);
         window.open_peer_copies();

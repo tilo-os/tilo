@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_app_launch::Launch;
-use tilo_dialogs::portal::{ContentsOutcome, LaunchOutcome, LaunchRequest, PickRequest, PortalOutcome};
+use tilo_dialogs::portal::{
+    ContentsOutcome, LaunchOutcome, LaunchRequest, PickRequest, PortalOutcome,
+};
 use tilo_dialogs::shell::ShellLink;
 
 use super::{Opens, Served, Serving, serve_at};
@@ -25,7 +27,11 @@ struct Device {
 }
 
 impl Opens for Device {
-    fn open_claimed(&self, workspace: &str, uri: &str) -> Result<Option<()>, tilo_actions::ApiError> {
+    fn open_claimed(
+        &self,
+        workspace: &str,
+        uri: &str,
+    ) -> Result<Option<()>, tilo_actions::ApiError> {
         let browser = desktop_policy::AppCandidate::package(
             "so.tilo.browser".into(),
             "Browser".into(),
@@ -56,7 +62,10 @@ impl Opens for Device {
 fn loop_until(served: &Served, device: &Device, done: impl Fn() -> bool) {
     let deadline = std::time::Instant::now().checked_add(answer()).unwrap();
     while !done() {
-        assert!(std::time::Instant::now() < deadline, "the loop was never asked");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the loop was never asked"
+        );
         served.follow(device);
         std::thread::yield_now();
     }
@@ -69,7 +78,10 @@ fn pending(questions: &tilo_service::Questions) -> tilo_service::Question {
         if let Some(question) = questions.pending().into_iter().next() {
             return question;
         }
-        assert!(std::time::Instant::now() < deadline, "no question was asked");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no question was asked"
+        );
         std::thread::yield_now();
     }
 }
@@ -186,8 +198,15 @@ fn a_pick_is_the_sessions_question_and_answers_the_exported_path() {
     let picker = link.picker(tilo_dialogs::unavailable_picker());
     let picking = picker.pick(PickRequest::open("Import a plan", "Import"));
     let question = pending(&questions);
-    assert_eq!(question.kind, tilo_portal::file_chooser::FILE_CHOOSER_QUESTION);
-    assert_eq!(question.app_id.as_deref(), Some(APP), "the launcher's name, not the app's");
+    assert_eq!(
+        question.kind,
+        tilo_portal::file_chooser::FILE_CHOOSER_QUESTION
+    );
+    assert_eq!(
+        question.app_id.as_deref(),
+        Some(APP),
+        "the launcher's name, not the app's"
+    );
     assert_eq!(question.details["title"], "Import a plan");
     assert!(questions.answer(
         &question.handle,
@@ -210,7 +229,11 @@ fn a_pick_is_the_sessions_question_and_answers_the_exported_path() {
     // The file it was given opens in the app that takes it; one it was not given does not.
     let opening = std::thread::spawn({
         let picker = Arc::clone(&picker);
-        move || picker.launch(LaunchRequest::open(path)).recv_timeout(answer())
+        move || {
+            picker
+                .launch(LaunchRequest::open(path))
+                .recv_timeout(answer())
+        }
     });
     loop_until(&served, &device, || opening.is_finished());
     assert_eq!(
@@ -257,7 +280,10 @@ fn a_choice_of_contents_is_only_the_bytes_the_person_chose() {
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].name, "Lisbon.md");
     assert_eq!(files[0].bytes, markdown.as_bytes());
-    assert_eq!(files[0].location, None, "the app never learns where the file is");
+    assert_eq!(
+        files[0].location, None,
+        "the app never learns where the file is"
+    );
 }
 
 #[test]
@@ -273,7 +299,10 @@ fn a_cancelled_pick_and_an_unserved_chooser_answer_the_app() {
     let picking = picker.pick(PickRequest::open("Open", "Open"));
     let handle = pending(&questions).handle;
     assert!(questions.decline(&handle));
-    assert_eq!(picking.recv_timeout(answer()).unwrap(), PortalOutcome::Cancelled);
+    assert_eq!(
+        picking.recv_timeout(answer()).unwrap(),
+        PortalOutcome::Cancelled
+    );
 
     let (chosen_tx, chosen) = std::sync::mpsc::channel();
     link.choose_app("Paste in apps", move |outcome| {
@@ -301,7 +330,10 @@ fn a_connection_the_launcher_did_not_name_is_closed() {
     stream.set_read_timeout(Some(answer())).unwrap();
     let mut rest = Vec::new();
     stream.read_to_end(&mut rest).unwrap();
-    assert!(rest.is_empty(), "nothing is answered to a connection no launcher named");
+    assert!(
+        rest.is_empty(),
+        "nothing is answered to a connection no launcher named"
+    );
 }
 
 #[derive(Default)]
