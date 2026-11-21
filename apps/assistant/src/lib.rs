@@ -152,10 +152,10 @@ impl Hands {
         }
     }
 
-    /// Make the person's assistant: an agent of the workspace's own document of agents, kept by
-    /// them, through that resource's own `create-agent`, and set to run on the workspace's
-    /// host: an assistant answers while every device of its person is off, so no device runs
-    /// it, wherever it was made. Its model is its keeper's own.
+    /// Make the workspace's assistant: an agent of the workspace's own document of agents,
+    /// through that resource's own `create-agent`, and set to run on the workspace's host: an
+    /// assistant answers while every member's device is off, so no device runs it, wherever it
+    /// was made. Its model is the workspace's choice.
     ///
     /// # Errors
     /// The workspace's agents are not held here, or the workspace's grants refuse.
@@ -168,7 +168,6 @@ impl Hands {
             .invoke(
                 &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                     name,
-                    keeper: None,
                     id: Some(id.clone()),
                     model: None,
                     mcp_client: None,

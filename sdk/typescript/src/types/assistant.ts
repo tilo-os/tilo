@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.assistant@00da61977310623e";
+export const SURFACE = "so.tilo.assistant@3278f28281833894";
 
 export interface Agent {
   id: string;
@@ -147,7 +147,6 @@ export interface Sub {
 /** The arguments of `create-agent`. */
 export interface CreateAgentArgs {
   name: string;
-  keeper?: string;
   id?: string;
   model?: string;
   mcp_client?: string;
@@ -275,7 +274,6 @@ export interface WorkspaceAgent extends tilo.Resource {
   agents: Array<tilo.Entry<Agent>>;
   createAgent(args: {
     name: string;
-    keeper?: string;
     id?: string;
     model?: string;
     mcp_client?: string;

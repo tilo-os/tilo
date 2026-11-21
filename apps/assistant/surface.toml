@@ -68,7 +68,6 @@ id = "create-agent"
 kind = "undoable"
 params = [
   { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "keeper", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "mcp_client", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },

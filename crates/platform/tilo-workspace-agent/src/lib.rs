@@ -6,11 +6,12 @@
 //! answers in, and in the presence its work leaves. Its actor is `agent:<item id>`.
 //!
 //! The record is Assistant's ([`OWNER`]): its actions are decided against Assistant's
-//! committed surface by the workspace's grants. An editor makes agents; the person who
-//! keeps one alone names, bounds and retires it, chooses its model and tells it how to work
-//! for them ([`Agent::instruction`]).
+//! committed surface by the workspace's grants, and by nothing else. The agents are the
+//! workspace's: whoever the grants let change the record (an editor, unless the workspace's
+//! owners narrowed that) makes, names, bounds and retires them, chooses their model and
+//! tells them how to work ([`Agent::instruction`]); a viewer only reads them.
 //!
-//! An agent starts sub-agents for the person who keeps it. Each is an item here too, with what
+//! An agent starts sub-agents for the member it works for. Each is an item here too, with what
 //! it was started for and how it stands ([`sub`]). One whose work a coding harness does in the
 //! workspace's machine is a sub-agent like the others, with that said on it ([`coding`]).
 
@@ -20,8 +21,8 @@ use serde::{Deserialize, Serialize};
 use tilo_resource::items::item_resource_id;
 use tilo_resource::search_index::{IndexKind, IndexPerson};
 use tilo_resource::{
-    ActionCx, Atom, Doc, Id, Identified, JsonSchema, Keyed, Model, ModelError, NonBlank, Refusal,
-    SearchEntry, resource, write_key,
+    ActionCx, Atom, Id, Identified, JsonSchema, Keyed, Model, NonBlank, Refusal, SearchEntry,
+    resource,
 };
 
 pub mod coding;
@@ -91,15 +92,15 @@ types a secret into the protected field, and you use it by its reference.
 asked to be told, and what is important by their own rules. Everything else is in the \
 conversation when they look.";
 
-/// The most a keeper may let an agent spend in a day, in millionths of the
+/// The most a workspace may let an agent spend in a day, in millionths of the
 /// currency: ten thousand, far past what a day's work costs.
 pub const MAX_SPEND_LIMIT_MICROS: u64 = 10_000_000_000;
 
-/// What an agent spent on one day, as its keeper counted it: a later day's first
+/// What an agent spent on one day, as it was counted: a later day's first
 /// charge replaces it, so no reading of an old day is a reading of this one.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Spent {
-    /// The day it counts, `YYYY-MM-DD` by its keeper's clock.
+    /// The day it counts, `YYYY-MM-DD` by the counting device's clock.
     pub day: String,
     /// What it spent that day, in millionths of the currency.
     pub cost_micros: u64,
@@ -191,41 +192,40 @@ pub struct Agent {
     /// Its name, as people read it and search finds it.
     #[model(label)]
     pub name: String,
-    /// Who keeps it: the member whose devices work it and whose credentials pay, and
-    /// who alone chooses its model and what it may spend. For an agent the workspace's
-    /// host runs ([`Self::on_host`]) the keeper still decides both.
+    /// The member who made it, or for whom an agent started it. It is no owner: the agent is
+    /// the workspace's, and the workspace's grants alone decide who changes it.
     pub keeper: String,
     /// Whether the host that governs the workspace runs it, around the clock and on the
-    /// host's model, rather than its keeper's own devices: what a workspace a page
-    /// works in (a page runs no agent) gives a new agent.
+    /// host's model, rather than a member's device: what a workspace a page works in (a
+    /// page runs no agent) gives a new agent.
     pub on_host: bool,
-    /// The model it plans with as `provider/model`; `None` follows the keeper's
-    /// default.
+    /// The model it plans with as `provider/model`, the workspace's choice; `None` follows
+    /// the workspace's default.
     pub model: Option<String>,
-    /// The MCP client it connects as (`Claude Code`); `None` for an agent its
-    /// keeper's device works.
+    /// The MCP client it connects as (`Claude Code`); `None` for an agent a device of the
+    /// workspace works.
     pub mcp_client: Option<String>,
-    /// What it may do, narrowed from its keeper's grants; empty follows the default.
+    /// What it may do, narrowed from the workspace's grants; empty follows the default.
     pub bound: Vec<Bound>,
-    /// The most its keeper lets it spend in a day, in millionths of the currency;
+    /// The most the workspace lets it spend in a day, in millionths of the currency;
     /// `None` spends unmetered.
     pub spend_limit_micros: Option<u64>,
-    /// What it spent on the last day its keeper counted.
+    /// What it spent on the last day counted.
     pub spent: Option<Spent>,
     /// Whether it works here.
     pub state: AgentState,
     /// When it was made, in milliseconds since the Unix epoch.
     pub created_at: i64,
-    /// How it works for its keeper, in the keeper's words: what it is told before every
+    /// How it works in the workspace, in its members' words: what it is told before every
     /// request, beside what every agent is told. `None` for an agent told nothing of its own.
     pub instruction: Option<String>,
     /// What makes it a sub-agent: who started it, for what job, and how it stands
     /// ([`sub`]). `None` for an agent a person made.
     pub sub: Option<Sub>,
     /// How deep the sub-agents under it may go: 1 lets it start sub-agents, 2 lets those
-    /// start their own. Its keeper's to say; `None` follows [`sub::DEFAULT_DEPTH`].
+    /// start their own. The workspace's to say; `None` follows [`sub::DEFAULT_DEPTH`].
     pub sub_depth: Option<u8>,
-    /// How many sub-agents under it may be at work at once. Its keeper's to say; `None`
+    /// How many sub-agents under it may be at work at once. The workspace's to say; `None`
     /// follows [`sub::DEFAULT_AT_ONCE`].
     pub sub_at_once: Option<u32>,
 }
@@ -248,7 +248,7 @@ impl Agent {
         self.state == AgentState::Active
     }
 
-    /// What its keeper told it about how to work for them, when they told it anything.
+    /// What the workspace told it about how to work, when it was told anything.
     #[must_use]
     pub fn told(&self) -> Option<&str> {
         self.instruction
@@ -257,8 +257,8 @@ impl Agent {
             .filter(|instruction| !instruction.is_empty())
     }
 
-    /// What it spent on `day`, in millionths of the currency: nothing on a day its
-    /// keeper has not charged, so a new day starts at zero.
+    /// What it spent on `day`, in millionths of the currency: nothing on a day nothing was
+    /// charged, so a new day starts at zero.
     #[must_use]
     pub fn spent_on(&self, day: &str) -> u64 {
         self.spent
@@ -267,7 +267,7 @@ impl Agent {
             .map_or(0, |spent| spent.cost_micros)
     }
 
-    /// Whether it may still spend on `day`: its keeper's limit is not reached yet, or
+    /// Whether it may still spend on `day`: the workspace's limit is not reached yet, or
     /// there is none.
     #[must_use]
     pub fn within_budget(&self, day: &str) -> bool {
@@ -339,12 +339,6 @@ impl WorkspaceAgents {
                             identity: agent.identity(),
                             agent: true,
                         }])
-                        .kept_by(IndexPerson {
-                            name: String::new(),
-                            anchor: String::new(),
-                            identity: agent.keeper.clone(),
-                            agent: false,
-                        })
                 })
             })
             .collect()
@@ -352,7 +346,7 @@ impl WorkspaceAgents {
 }
 
 impl WorkspaceAgents {
-    /// What the record holds: each agent's name, the member who keeps it and its model. It answers through [`fields`](tilo_resource::read::fields), so a
+    /// What the record holds: each agent's name, who made it and its model. It answers through [`fields`](tilo_resource::read::fields), so a
     /// caller with no window open reads it like any app's record.
     pub fn read_document(
         &self,
@@ -368,19 +362,18 @@ impl WorkspaceAgents {
     read_content = WorkspaceAgents::read_document
 )]
 impl WorkspaceAgents {
-    /// Make an agent: a name people read (at most 64 characters), and optionally a model as
-    /// `provider/model`. Whoever makes it keeps it: a keeper it
-    /// names is refused unless it is the one who makes it.
+    /// Make an agent of the workspace: a name people read (at most 64 characters), and
+    /// optionally a model as `provider/model`. Who made it is recorded with it; the agent is
+    /// the workspace's, changed by whoever the workspace's grants let change its agents.
     #[action(did = "added the agent")]
     pub fn create_agent(
         &mut self,
         cx: &mut ActionCx,
         #[param("Its name, as people read it")] name: NonBlank,
-        #[param("Who keeps it: whoever makes it, and no one else")] keeper: Option<String>,
         #[param("Its id: one already in use elsewhere; none to mint one")] id: Option<String>,
-        #[param("The model it plans with, as provider/model; none for the keeper's default")]
+        #[param("The model it plans with, as provider/model; none for the workspace's default")]
         model: Option<String>,
-        #[param("The MCP client it connects as; none for an agent its keeper's device runs")]
+        #[param("The MCP client it connects as; none for an agent a device of the workspace runs")]
         mcp_client: Option<String>,
     ) -> Result<(), Refusal> {
         self.not_by_sub_agent(cx)?;
@@ -390,22 +383,7 @@ impl WorkspaceAgents {
             )));
         }
         let name = clean_name(&name)?;
-        // Whoever makes an agent keeps it. The keeper pays for its work with their own model and
-        // answers for what it does, so nobody is made one by a name somebody else wrote.
-        let me = author(cx)?;
-        let named = keeper
-            .as_deref()
-            .map(str::trim)
-            .filter(|named| !named.is_empty());
-        if let Some(named) = named
-            && named != me
-            && person(named)? != me
-        {
-            return Err(Refusal::new(
-                "an agent is kept by whoever makes it: its keeper makes it themselves",
-            ));
-        }
-        let keeper = me;
+        let keeper = author(cx)?;
         let id = match id.as_deref().map(str::trim) {
             None | Some("") => cx.id().to_string(),
             Some(id) => {
@@ -444,8 +422,7 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// Set the most an agent may spend in a day. Its keeper's to choose, as the model
-    /// is: their credentials pay. Zero stops it working until the keeper raises it;
+    /// Set the most an agent may spend in a day. Zero stops it working until it is raised;
     /// none spends unmetered.
     #[action(item = agents)]
     pub fn set_agent_spend_limit(
@@ -458,21 +435,16 @@ impl WorkspaceAgents {
         limit_micros: Option<u64>,
     ) -> Result<(), Refusal> {
         self.not_by_sub_agent(cx)?;
-        let me = author(cx)?;
+        author(cx)?;
         let found = self
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new(
-                "only the agent's keeper sets the most it may spend in a day",
-            ));
-        }
         found.spend_limit_micros = checked_limit(limit_micros)?;
         Ok(())
     }
 
-    /// Charge what an agent spent to the day's counter, written by its keeper from what
+    /// Charge what an agent spent to the day's counter, written by a member in person from what
     /// the model gateway charged: an agent never counts its own spending. A later day
     /// starts the counter again, and an earlier one changes nothing.
     #[action(item = agents)]
@@ -480,20 +452,15 @@ impl WorkspaceAgents {
         &mut self,
         cx: &mut ActionCx,
         #[param("The agent")] agent: Id,
-        #[param("The day counted, YYYY-MM-DD by its keeper's clock")] day: String,
+        #[param("The day counted, YYYY-MM-DD by the counting device's clock")] day: String,
         #[param("What it spent that day, in millionths of the currency")] cost_micros: u64,
     ) -> Result<(), Refusal> {
-        let me = keeping(cx)?;
+        in_person(cx)?;
         let day = checked_day(&day)?;
         let found = self
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new(
-                "only the agent's keeper counts what it spends",
-            ));
-        }
         let counted = match &found.spent {
             Some(spent) if spent.day == day => Some(Spent {
                 day,
@@ -507,8 +474,8 @@ impl WorkspaceAgents {
     }
 
     /// Choose where an agent runs: on the workspace's host, around the clock and on the host's
-    /// model, or on its keeper's own devices. Its keeper's to choose, as its model is; an agent an
-    /// MCP client connects as runs where that client does.
+    /// model, or on a member's device. Chosen by a member in person; an agent an MCP client
+    /// connects as runs where that client does.
     #[action(item = agents)]
     pub fn set_agent_on_host(
         &mut self,
@@ -516,16 +483,11 @@ impl WorkspaceAgents {
         #[param("The agent")] agent: Id,
         #[param("Whether the workspace's host runs it")] on_host: bool,
     ) -> Result<(), Refusal> {
-        let me = keeping(cx)?;
+        in_person(cx)?;
         let found = self
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new(
-                "only the agent's keeper chooses where it runs",
-            ));
-        }
         if on_host && found.mcp_client.is_some() {
             return Err(Refusal::new(
                 "an agent an MCP client connects as runs where that client does",
@@ -544,72 +506,58 @@ impl WorkspaceAgents {
         #[param("Its new name, as people read it")] name: NonBlank,
     ) -> Result<(), Refusal> {
         self.not_by_sub_agent(cx)?;
-        // Its keeper's alone, and theirs in person: a name is what a mention binds to and what
-        // its person reads over its words, so no other member and no agent, the agent itself
-        // included, gives it another.
-        let me = keeping(cx)?;
+        // A member's, in person: a name is what a mention binds to and what people read over
+        // its words, so no agent, the agent itself included, gives it another.
+        in_person(cx)?;
         let name = clean_name(&name)?;
         let found = self
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new("only the agent's keeper names it"));
-        }
         found.name = name;
         Ok(())
     }
 
-    /// Choose the model an agent plans with, the keeper's alone: their devices run the
-    /// agent and their credentials pay.
+    /// Choose the model an agent plans with: the workspace's choice, kept on its record.
     #[action(item = agents)]
     pub fn set_agent_model(
         &mut self,
         cx: &mut ActionCx,
         #[param("The agent")] agent: Id,
-        #[param("The model, as provider/model; none to follow the keeper's default")] model: Option<
-            String,
-        >,
+        #[param("The model, as provider/model; none to follow the workspace's default")]
+        model: Option<String>,
     ) -> Result<(), Refusal> {
         self.not_by_sub_agent(cx)?;
-        let me = author(cx)?;
+        author(cx)?;
         let found = self
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new(
-                "only the agent's keeper chooses the model it plans with",
-            ));
-        }
         found.model = chosen_model(model)?;
         Ok(())
     }
 
-    /// Tell an agent how to work for its keeper: what it is told before every request, in the
-    /// keeper's own words. The keeper's alone, and theirs in person: an agent writes no
-    /// instruction, its own included, or what it reads could rewrite what it is told.
+    /// Tell an agent how to work: what it is told before every request, in a member's own
+    /// words. A member's, in person: an agent writes no instruction, its own included, or what
+    /// it reads could rewrite what it is told.
     #[action(item = agents)]
     pub fn set_agent_instruction(
         &mut self,
         cx: &mut ActionCx,
         #[param("The agent")] agent: Id,
-        #[param("How it works for its keeper; none to tell it nothing of its own")]
+        #[param("How it works here; none to tell it nothing of its own")]
         instruction: Option<String>,
     ) -> Result<(), Refusal> {
-        let me = keeping(cx)?;
+        in_person(cx)?;
         let found = self
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new("only the agent's keeper tells it how to work"));
-        }
         found.instruction = told_instruction(instruction)?;
         Ok(())
     }
 
-    /// Bound what an agent may do: the rules narrow what its keeper's grants allow, and
+    /// Bound what an agent may do: the rules narrow what the workspace's grants allow, and
     /// none follows the default.
     #[action(item = agents)]
     pub fn set_agent_bound(
@@ -619,9 +567,9 @@ impl WorkspaceAgents {
         #[param("The rules: node, kinds and answer; none for the default")] bound: Vec<Bound>,
     ) -> Result<(), Refusal> {
         self.not_by_sub_agent(cx)?;
-        // The keeper's alone, and theirs in person: an agent bounds none, itself included, or
-        // it could take off what narrows it.
-        let me = keeping(cx)?;
+        // A member's, in person: an agent bounds none, itself included, or it could take off
+        // what narrows it.
+        in_person(cx)?;
         if bound.len() > MAX_BOUND {
             return Err(Refusal::new(format!(
                 "a bound holds at most {MAX_BOUND} rules"
@@ -639,11 +587,6 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new(
-                "only the agent's keeper bounds what it may do",
-            ));
-        }
         found.bound = bound;
         Ok(())
     }
@@ -657,15 +600,12 @@ impl WorkspaceAgents {
         #[param("The agent")] agent: Id,
     ) -> Result<(), Refusal> {
         self.not_by_sub_agent(cx)?;
-        // Its keeper's alone, and theirs in person: no agent retires one, itself included.
-        let me = keeping(cx)?;
+        // A member's, in person: no agent retires one, itself included.
+        in_person(cx)?;
         let found = self
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new("only the agent's keeper retires it"));
-        }
         if found.state == AgentState::Retired {
             return Err(Refusal::new("that agent is retired already"));
         }
@@ -789,14 +729,14 @@ impl WorkspaceAgents {
 
     /// Say how many sub-agents an agent may have.
     ///
-    /// Its keeper's alone, in person: how deep the sub-agents under it go (1 lets it start
+    /// A member's, in person: how deep the sub-agents under it go (1 lets it start
     /// sub-agents, 2 lets those start their own) and how many work at once. None follows the
     /// default.
     #[action(item = agents)]
     pub fn set_sub_agent_limits(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The agent a person keeps")] agent: Id,
+        #[param("The agent a person made")] agent: Id,
         #[param("How deep its sub-agents go; none for the default")] depth: Option<u8>,
         #[param("How many work at once; none for the default")] at_once: Option<u32>,
     ) -> Result<(), Refusal> {
@@ -870,42 +810,6 @@ impl WorkspaceAgents {
 
     pub fn active(&self) -> impl Iterator<Item = &Agent> {
         self.agents.iter().filter(|agent| agent.is_active())
-    }
-
-    /// The agents `keeper` keeps here that still work: every one of theirs that is
-    /// active, sub-agents included.
-    fn working_for<'a>(&'a self, keeper: &'a str) -> impl Iterator<Item = &'a Agent> + 'a {
-        self.active().filter(move |agent| agent.keeper == keeper)
-    }
-
-    /// End every agent `keeper` keeps in `doc` that still works, as the workspace's
-    /// governance does when they stop being a member: an agent acts for its keeper,
-    /// so it does not outlive their place. Each item comes to say what `retire-agent`
-    /// makes it say, and nothing else of it changes. Answers how many ended.
-    ///
-    /// The workspace's governor writes this, not the keeper: a person removed from
-    /// the workspace may not write its resources any more, and the change stands as
-    /// the governor's like any other of its own.
-    ///
-    /// # Errors
-    /// The document could not be read or written.
-    pub fn retire_kept_in(doc: &mut Doc, keeper: &str) -> Result<usize, ModelError> {
-        use automerge::{ROOT, ReadDoc as _};
-        use tilo_resource::Resource as _;
-        let Some((_, agents)) = doc.get(&ROOT, "agents")? else {
-            return Ok(0);
-        };
-        let ended: Vec<Id> = Self::read(doc)?
-            .working_for(keeper)
-            .map(|agent| Id::from_raw(agent.id.0.clone()))
-            .collect();
-        for id in &ended {
-            let (_, item) = doc.get(&agents, id.as_str())?.ok_or_else(|| {
-                ModelError::invalid(format!("no agent {:?} where it is listed", id.as_str()))
-            })?;
-            write_key(doc, &item, "state", &AgentState::Retired)?;
-        }
-        Ok(ended.len())
     }
 
     /// The agents people made that work here: every active agent that is no sub-agent. What
@@ -990,20 +894,22 @@ fn author(cx: &ActionCx) -> Result<String, Refusal> {
         .ok_or_else(|| Refusal::new("an agent is always made by someone"))
 }
 
-/// The person invoking, when they act themselves and nothing acts for them: an agent acting for
-/// its keeper never counts its own spending, moves itself or writes its own instruction, so what
-/// its keeper set holds against it. Nor does anything else that names the keeper as whom it acts
-/// for: a bot they installed, an automation they set up or one an agent of theirs works, an app
-/// acting by itself. Whatever an agent can reach could otherwise do in its keeper's name what
-/// the agent is refused.
-fn keeping(cx: &ActionCx) -> Result<String, Refusal> {
+/// Refuses unless a person invokes, themselves, with nothing acting for them: an agent never
+/// counts its own spending, moves itself or writes its own instruction, so what the workspace's
+/// members set holds against it. Nor does anything else that acts in a member's name: a bot they
+/// installed, an automation they set up or one an agent works, an app acting by itself.
+/// Whatever an agent can reach could otherwise do in a member's name what the agent is refused.
+/// Which members may is the workspace's grants' to decide, before the record is reached.
+fn in_person(cx: &ActionCx) -> Result<(), Refusal> {
     let themselves = cx
         .invoked_by()
         .is_some_and(|acting| acting.is_person() && acting.acted_for.is_empty());
     if !themselves {
-        return Err(Refusal::new("only the agent's keeper does this"));
+        return Err(Refusal::new(
+            "a member does this in person, not an agent or anything acting for them",
+        ));
     }
-    author(cx)
+    author(cx).map(drop)
 }
 
 fn person(id: &str) -> Result<String, Refusal> {
@@ -1060,7 +966,7 @@ fn chosen_model(model: Option<String>) -> Result<Option<String>, Refusal> {
     Ok(Some(model))
 }
 
-/// An instruction as it is kept: its text, or `None` where the keeper tells the agent nothing.
+/// An instruction as it is kept: its text, or `None` where the agent is told nothing of its own.
 fn told_instruction(instruction: Option<String>) -> Result<Option<String>, Refusal> {
     let Some(instruction) = instruction.map(|instruction| instruction.trim().to_owned()) else {
         return Ok(None);
@@ -1103,7 +1009,7 @@ fn checked_day(day: &str) -> Result<String, Refusal> {
     let shaped = digits == [4, 2, 2] && day.chars().all(|c| c.is_ascii_digit() || c == '-');
     if !shaped {
         return Err(Refusal::new(
-            "a day is counted as YYYY-MM-DD, by the keeper's clock",
+            "a day is counted as YYYY-MM-DD, by the counting device's clock",
         ));
     }
     Ok(day.to_owned())

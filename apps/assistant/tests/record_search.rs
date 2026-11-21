@@ -45,7 +45,6 @@ fn an_agent_is_found_from_the_workspace_resource() {
         .apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: NonBlank::parse("Ada").expect("a name"),
-                keeper: None,
                 id: None,
                 model: None,
                 mcp_client: None,
@@ -78,5 +77,4 @@ fn an_agent_is_found_from_the_workspace_resource() {
         hits[0]["people"][0]["agent"].as_bool().unwrap_or(false),
         "an agent's row shows the agent itself"
     );
-    assert_eq!(hits[0]["keeper"]["identity"], "u_ada");
 }

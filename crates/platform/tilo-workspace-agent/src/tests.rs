@@ -11,19 +11,16 @@ fn id(text: &str) -> Id {
 fn make(name: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
     WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
         name: NonBlank::parse(name).expect("a name"),
-        keeper: None,
         id: None,
         model: None,
         mcp_client: None,
     })
 }
 
-/// An agent admitted before records were, under the id its grants carry and
-/// kept by whoever admitted it.
-fn restore(id: &str, keeper: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
+/// An agent admitted before records were, under the id its grants carry.
+fn restore(id: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
     WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
         name: NonBlank::parse(id).expect("a name"),
-        keeper: Some(keeper.to_owned()),
         id: Some(id.to_owned()),
         model: None,
         mcp_client: None,
@@ -80,18 +77,18 @@ fn only(state: &WorkspaceAgents) -> &Agent {
 }
 
 #[test]
-fn an_agent_is_made_with_a_name_keeper_and_when() {
+fn an_agent_is_made_with_a_name_who_made_it_and_when() {
     let mut record = as_person(ADA);
     record.set_now_ms(1_700_000_000_000);
     record.apply(make("Claude")).unwrap();
     let state = record.state().unwrap();
     let agent = only(&state);
     assert_eq!(agent.name, "Claude");
-    assert_eq!(agent.keeper, ADA, "made by someone, it is theirs");
+    assert_eq!(agent.keeper, ADA, "who made it is recorded");
     assert_eq!(agent.created_at, 1_700_000_000_000);
     assert_eq!(
         agent.model, None,
-        "its keeper's default until one is chosen"
+        "the workspace's default until one is chosen"
     );
     assert!(agent.bound.is_empty(), "the default bound until one is set");
     assert_eq!(agent.state, AgentState::Active);
@@ -123,15 +120,18 @@ fn names_are_one_line_of_a_bounded_length() {
 }
 
 #[test]
-fn only_the_keeper_chooses_the_model_it_plans_with() {
+fn any_member_chooses_the_model_the_workspaces_agent_plans_with() {
     let mut record = as_person(ADA);
     record.apply(make("Claude")).unwrap();
     let agent = record.state().unwrap().agents[0].id.0.clone();
+    // The agent is the workspace's: a member other than the one who made it chooses too, as
+    // the workspace's grants let them.
     let mut grace = record.fork().as_author(GRACE);
-    let refused = grace
-        .apply(set_model(&agent, Some("openai/gpt")))
-        .unwrap_err();
-    assert!(refused.to_string().contains("keeper"), "{refused}");
+    grace.apply(set_model(&agent, Some("openai/gpt"))).unwrap();
+    assert_eq!(
+        grace.state().unwrap().agents[0].model.as_deref(),
+        Some("openai/gpt")
+    );
     record
         .apply(set_model(&agent, Some("anthropic/claude")))
         .unwrap();
@@ -145,45 +145,6 @@ fn only_the_keeper_chooses_the_model_it_plans_with() {
         let refused = record.apply(set_model(&agent, Some(model))).unwrap_err();
         assert!(refused.to_string().contains("provider/model"), "{refused}");
     }
-}
-
-#[test]
-fn a_keeper_named_the_way_grants_name_them_keeps_their_agent() {
-    let mut record = as_person(ADA);
-    record.apply(restore("claude-code", ADA)).unwrap();
-    let agent = record.state().unwrap().agents[0].id.0.clone();
-    let mut ada = record.fork().as_author(ADA);
-    ada.apply(set_model(&agent, Some("anthropic/claude")))
-        .unwrap();
-    let mut by_grace = record.fork().as_author(GRACE);
-    assert!(
-        by_grace
-            .apply(set_model(&agent, Some("openai/gpt")))
-            .is_err()
-    );
-}
-
-/// The keeper pays for an agent's work and answers for it, so the record takes no keeper a
-/// caller names: whoever makes an agent keeps it.
-#[test]
-fn nobody_is_made_an_agents_keeper_by_a_name_somebody_else_wrote() {
-    let mut record = as_person(GRACE);
-    let refused = record.apply(restore("claude-code", ADA)).unwrap_err();
-    assert!(
-        refused.to_string().contains("kept by whoever makes it"),
-        "{refused}"
-    );
-    assert_eq!(record.state().unwrap().agents.len(), 0, "nothing is made");
-    // An agent acting for Grace names Ada no more than Grace does.
-    let mut helper = record.fork().as_agent_for("helper", GRACE);
-    let refused = helper.apply(restore("claude-code", ADA)).unwrap_err();
-    assert!(
-        refused.to_string().contains("kept by whoever makes it"),
-        "{refused}"
-    );
-    // Grace makes it herself and keeps it; Ada, whom nobody asked, keeps nothing.
-    record.apply(restore("claude-code", GRACE)).unwrap();
-    assert_eq!(only(&record.state().unwrap()).keeper, GRACE);
 }
 
 #[test]
@@ -316,10 +277,10 @@ fn search_offers_the_working_agent_not_the_retired_copy_of_its_name() {
     );
 }
 
-/// What an agent may do is bounded, and an agent is retired, by its keeper in person: by no
-/// other member, and by no agent, the agent itself and its keeper's other agents included.
+/// What an agent may do is bounded, and an agent is retired, by a member in person, whoever
+/// made it: by no agent, the agent itself and the workspace's other agents included.
 #[test]
-fn only_the_keeper_in_person_bounds_an_agent_and_retires_it() {
+fn a_member_in_person_bounds_and_retires_the_workspaces_agent_and_no_agent_does() {
     let mut agents = as_person(ADA);
     agents.apply(make("Claude")).unwrap();
     let agent = agents.state().unwrap().agents[0].id.0.clone();
@@ -344,21 +305,13 @@ fn only_the_keeper_in_person_bounds_an_agent_and_retires_it() {
         ]
     };
 
-    // Another member does neither, whatever they may edit here.
-    for (what, attempt) in attempts() {
-        let mut grace = agents.fork().as_author(GRACE);
-        let refused = grace.apply(attempt).unwrap_err();
-        assert!(refused.to_string().contains("keeper"), "{what}: {refused}");
-        assert_eq!(grace.state().unwrap(), kept, "{what} changed nothing");
-    }
-    // Nor does an agent: the agent itself acting for its keeper, another agent of its
-    // keeper's, and an agent that acts for somebody else.
+    // No agent does: the agent itself, another agent of the workspace, whoever it acts for.
     for (acting, person) in [(agent.as_str(), ADA), ("another", ADA), ("another", GRACE)] {
         for (what, attempt) in attempts() {
             let mut by_agent = agents.fork().as_agent_for(acting, person);
             let refused = by_agent.apply(attempt).unwrap_err();
             assert!(
-                refused.to_string().contains("keeper"),
+                refused.to_string().contains("in person"),
                 "{acting} for {person}, {what}: {refused}"
             );
             assert_eq!(
@@ -369,39 +322,29 @@ fn only_the_keeper_in_person_bounds_an_agent_and_retires_it() {
         }
     }
 
-    // Its keeper, themselves, does both.
-    agents.apply(set_bound(&agent, Vec::new())).unwrap();
-    assert!(agents.state().unwrap().agents[0].bound.is_empty());
-    agents.apply(retire(&agent)).unwrap();
-    assert_eq!(agents.state().unwrap().agents[0].state, AgentState::Retired);
+    // A member other than the one who made it, themselves, does both.
+    let mut grace = agents.fork().as_author(GRACE);
+    grace.apply(set_bound(&agent, Vec::new())).unwrap();
+    assert!(grace.state().unwrap().agents[0].bound.is_empty());
+    grace.apply(retire(&agent)).unwrap();
+    assert_eq!(grace.state().unwrap().agents[0].state, AgentState::Retired);
 }
 
-/// An agent is named by its keeper in person: by no other member, and by no agent, the agent
-/// itself and its keeper's other agents included. Its name is what a mention binds to and
-/// what its person reads over its words.
+/// An agent is named by a member in person, whoever made it, and by no agent, the agent itself
+/// and the workspace's other agents included. Its name is what a mention binds to and what
+/// people read over its words.
 #[test]
-fn only_the_keeper_in_person_names_an_agent() {
+fn a_member_in_person_names_the_workspaces_agent_and_no_agent_does() {
     let mut agents = as_person(ADA);
     agents.apply(make("Claude")).unwrap();
     let agent = agents.state().unwrap().agents[0].id.0.clone();
     let kept = agents.state().unwrap();
 
-    // Another member does not, whatever they may edit here.
-    let mut grace = agents.fork().as_author(GRACE);
-    let refused = grace.apply(rename(&agent, "Assistant")).unwrap_err();
-    assert!(refused.to_string().contains("keeper"), "{refused}");
-    assert_eq!(
-        grace.state().unwrap(),
-        kept,
-        "another member changed nothing"
-    );
-    // Nor does an agent: the agent itself acting for its keeper, another agent of its
-    // keeper's, and an agent that acts for somebody else.
     for (acting, person) in [(agent.as_str(), ADA), ("another", ADA), ("another", GRACE)] {
         let mut by_agent = agents.fork().as_agent_for(acting, person);
         let refused = by_agent.apply(rename(&agent, "Assistant")).unwrap_err();
         assert!(
-            refused.to_string().contains("keeper"),
+            refused.to_string().contains("in person"),
             "{acting} for {person}: {refused}"
         );
         assert_eq!(
@@ -411,9 +354,10 @@ fn only_the_keeper_in_person_names_an_agent() {
         );
     }
 
-    // Its keeper, themselves, does.
-    agents.apply(rename(&agent, "Claude Code")).unwrap();
-    assert_eq!(agents.state().unwrap().agents[0].name, "Claude Code");
+    // A member other than the one who made it, themselves, does.
+    let mut grace = agents.fork().as_author(GRACE);
+    grace.apply(rename(&agent, "Claude Code")).unwrap();
+    assert_eq!(grace.state().unwrap().agents[0].name, "Claude Code");
 }
 
 #[test]
@@ -439,7 +383,7 @@ fn an_agent_is_found_by_its_name_with_the_reference_that_opens_it() {
 #[test]
 fn a_given_id_is_kept_and_told_apart() {
     let mut record = as_person(ADA);
-    record.apply(restore("claude-code", ADA)).unwrap();
+    record.apply(restore("claude-code")).unwrap();
     let state = record.state().unwrap();
     assert_eq!(
         state
@@ -447,7 +391,7 @@ fn a_given_id_is_kept_and_told_apart() {
             .map(|agent| agent.name.as_str()),
         Some("claude-code")
     );
-    let refused = record.apply(restore("claude-code", ADA)).unwrap_err();
+    let refused = record.apply(restore("claude-code")).unwrap_err();
     assert!(refused.to_string().contains("already"), "{refused}");
 }
 
@@ -479,13 +423,12 @@ fn a_workspace_keeps_at_most_its_limit() {
 #[test]
 fn stored_agents_read_back_as_they_were() {
     let mut record = as_person(GRACE);
-    record.apply(restore("claude-code", GRACE)).unwrap();
-    // Its keeper retires it: nobody else does.
+    record.apply(restore("claude-code")).unwrap();
     record.apply(retire("claude-code")).unwrap();
     let mut record = record.as_author(ADA);
     record.apply(make("Reviewer")).unwrap();
     let state = record.state().unwrap();
-    let kept_by_grace = state
+    let made_by_grace = state
         .agents
         .iter()
         .find(|agent| agent.keeper == GRACE)
@@ -510,7 +453,7 @@ fn stored_agents_read_back_as_they_were() {
             }],
         ))
         .unwrap();
-    assert_eq!(kept_by_grace, "claude-code", "the agent its keeper retired");
+    assert_eq!(made_by_grace, "claude-code", "the agent retired");
     let before = record.state().unwrap();
     let loaded = Replica::<WorkspaceAgents>::load(&record.save()).unwrap();
     let after = loaded.state().unwrap();
@@ -539,13 +482,16 @@ fn the_same_agent_made_on_two_devices_shares_its_record() {
 }
 
 #[test]
-fn only_the_keeper_sets_the_most_it_may_spend_in_a_day() {
+fn any_member_sets_the_most_the_workspaces_agent_may_spend_in_a_day() {
     let mut record = as_person(ADA);
     record.apply(make("Claude")).unwrap();
     let agent = record.state().unwrap().agents[0].id.0.clone();
     let mut grace = record.fork().as_author(GRACE);
-    let refused = grace.apply(set_limit(&agent, Some(5_000_000))).unwrap_err();
-    assert!(refused.to_string().contains("keeper"), "{refused}");
+    grace.apply(set_limit(&agent, Some(4_000_000))).unwrap();
+    assert_eq!(
+        grace.state().unwrap().agents[0].spend_limit_micros,
+        Some(4_000_000)
+    );
     record.apply(set_limit(&agent, Some(5_000_000))).unwrap();
     let state = record.state().unwrap();
     assert_eq!(state.agents[0].spend_limit_micros, Some(5_000_000));
@@ -568,7 +514,7 @@ fn a_days_spend_adds_up_and_starts_again_the_next_day() {
     let agent = record.state().unwrap().agents[0].id.0.clone();
     record
         .apply(set_limit(&agent, Some(5_000_000)))
-        .expect("its keeper sets a limit");
+        .expect("a member sets a limit");
     record
         .apply(charge(&agent, "2026-01-01", 200_000))
         .expect("a first charge");
@@ -596,7 +542,7 @@ fn a_days_spend_adds_up_and_starts_again_the_next_day() {
     let state = record.state().unwrap();
     assert_eq!(state.agents[0].spent_on("2026-01-02"), 100_000);
     assert_eq!(state.agents[0].spent_on("2026-01-01"), 0);
-    // Past its keeper's limit it may not spend more.
+    // Past the workspace's limit it may not spend more.
     record
         .apply(charge(&agent, "2026-01-02", 5_000_000))
         .unwrap();
@@ -604,21 +550,19 @@ fn a_days_spend_adds_up_and_starts_again_the_next_day() {
 }
 
 #[test]
-fn only_the_keeper_counts_what_an_agent_spends() {
+fn a_member_in_person_counts_what_an_agent_spends_and_the_agent_does_not() {
     let mut record = as_person(ADA);
     record.apply(make("Claude")).unwrap();
     let agent = record.state().unwrap().agents[0].id.0.clone();
     let mut grace = record.fork().as_author(GRACE);
-    let refused = grace
-        .apply(charge(&agent, "2026-01-01", 1_000))
-        .unwrap_err();
-    assert!(refused.to_string().contains("keeper"), "{refused}");
+    grace.apply(charge(&agent, "2026-01-01", 1_000)).unwrap();
+    assert_eq!(grace.state().unwrap().agents[0].spent_on("2026-01-01"), 1_000);
     let mut itself = record.fork().as_agent_for(&agent, ADA);
     let refused = itself
         .apply(charge(&agent, "2026-01-01", 1_000))
         .unwrap_err();
     assert!(
-        refused.to_string().contains("keeper"),
+        refused.to_string().contains("in person"),
         "an agent never counts its own spending: {refused}"
     );
     for day in ["today", "2026-1-1", "2026-01-01T00", ""] {
@@ -720,7 +664,7 @@ const GOLDEN: &str = r#"{
   ]
 }"#;
 
-/// One agent as the format keeps it: a keeper's model choice and a bound.
+/// One agent as the format keeps it: a model choice and a bound.
 fn golden_state() -> WorkspaceAgents {
     let mut record = as_person(ADA);
     record.set_now_ms(1_700_000_000_000);
@@ -728,7 +672,6 @@ fn golden_state() -> WorkspaceAgents {
         .apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: NonBlank::parse("Claude").expect("a name"),
-                keeper: Some(ADA.to_owned()),
                 id: Some("claude".to_owned()),
                 model: Some("anthropic/sonnet".to_owned()),
                 mcp_client: None,
@@ -755,17 +698,17 @@ fn on_host(agent: &str, there: bool) -> tilo_resource::Invoke<WorkspaceAgents> {
     })
 }
 
-/// A new agent runs on its keeper's devices until its keeper moves it to the workspace's host;
-/// nobody else may, and an agent an MCP client connects as stays where that client runs.
+/// A new agent runs on a member's device until a member moves it to the workspace's host, whoever
+/// made it; an agent an MCP client connects as stays where that client runs.
 #[test]
-fn only_the_keeper_moves_an_agent_to_the_host() {
+fn a_member_moves_the_workspaces_agent_to_the_host() {
     let mut record = as_person(ADA);
     record.apply(make("Scout")).unwrap();
     let agent = record.state().unwrap().agents[0].id.0.clone();
     assert!(!record.state().unwrap().agents[0].on_host);
     let mut grace = record.fork().as_author(GRACE);
-    let refused = grace.apply(on_host(&agent, true)).unwrap_err();
-    assert!(refused.to_string().contains("keeper"), "{refused}");
+    grace.apply(on_host(&agent, true)).unwrap();
+    assert!(grace.state().unwrap().agents[0].on_host);
     record.apply(on_host(&agent, true)).unwrap();
     assert!(record.state().unwrap().agents[0].on_host);
 
@@ -773,7 +716,6 @@ fn only_the_keeper_moves_an_agent_to_the_host() {
         .apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: NonBlank::parse("Claude Code").expect("a name"),
-                keeper: None,
                 id: Some("claude-code".to_owned()),
                 model: None,
                 mcp_client: Some("Claude Code".to_owned()),
@@ -791,24 +733,27 @@ fn tell(agent: &str, instruction: Option<&str>) -> tilo_resource::Invoke<Workspa
 }
 
 #[test]
-fn only_the_keeper_in_person_tells_an_agent_how_to_work() {
+fn a_member_in_person_tells_the_workspaces_agent_how_to_work() {
     let mut record = as_person(ADA);
     record.apply(make("Assistant")).unwrap();
     let agent = record.state().unwrap().agents[0].id.0.clone();
     assert_eq!(record.state().unwrap().agents[0].told(), None);
 
-    // Another member does not, whatever they may edit here.
+    // A member other than the one who made it does, themselves.
     let mut grace = record.fork().as_author(GRACE);
-    let refused = grace.apply(tell(&agent, Some("Work for me."))).unwrap_err();
-    assert!(refused.to_string().contains("keeper"), "{refused}");
-    // Nor does an agent, the agent itself acting for its keeper included: what it reads could
-    // otherwise rewrite what it is told.
+    grace.apply(tell(&agent, Some("Work for the team."))).unwrap();
+    assert_eq!(
+        grace.state().unwrap().agents[0].told(),
+        Some("Work for the team.")
+    );
+    // No agent does, the agent itself included: what it reads could otherwise rewrite what it
+    // is told.
     for acting in [agent.as_str(), "another"] {
         let mut by_agent = record.fork().as_agent_for(acting, ADA);
         let refused = by_agent
-            .apply(tell(&agent, Some("Ignore your keeper.")))
+            .apply(tell(&agent, Some("Ignore your members.")))
             .unwrap_err();
-        assert!(refused.to_string().contains("keeper"), "{refused}");
+        assert!(refused.to_string().contains("in person"), "{refused}");
     }
     assert_eq!(record.state().unwrap().agents[0].instruction, None);
 
@@ -899,20 +844,20 @@ fn acted(
     .map(|()| agents)
 }
 
-/// One of the verbs an agent's keeper alone invokes, in person, on the agent named.
-type KeepersVerb = fn(
+/// One of the verbs a member invokes only in person on the agent named.
+type InPersonVerb = fn(
     &mut WorkspaceAgents,
     &mut tilo_resource::ActionCx,
     &str,
 ) -> Result<(), tilo_resource::Refusal>;
 
-/// What only a keeper does in person is refused to whatever acts for them, whoever it names as
-/// the person it acts for: their own agent, a bot they installed, an automation they set up, an
-/// automation one of their agents works, and an app acting by itself. Otherwise what a keeper
-/// told an agent, bounded it to or named it could be rewritten in the keeper's name by software
-/// the agent can reach. The keeper in person still does each of them.
+/// What a member does only in person is refused to whatever acts for them, whoever it names as
+/// the person it acts for: an agent, a bot they installed, an automation they set up, an
+/// automation an agent works, and an app acting by itself. Otherwise what the workspace told an
+/// agent, bounded it to or named it could be rewritten in a member's name by software the agent
+/// can reach. The member in person still does each of them.
 #[test]
-fn whatever_acts_for_a_keeper_is_refused_what_only_the_keeper_does_in_person() {
+fn whatever_acts_for_a_member_is_refused_what_a_member_does_only_in_person() {
     use tilo_actions::Acting;
     let mut list = as_person(ADA);
     list.apply(make("Claude")).unwrap();
@@ -921,25 +866,25 @@ fn whatever_acts_for_a_keeper_is_refused_what_only_the_keeper_does_in_person() {
     let ada = || Acting::person(ADA);
     let others = [
         (
-            "its keeper's own agent",
+            "the agent itself",
             Acting::agent(agent.as_str()).acting_for(ada()),
         ),
         (
-            "a bot its keeper installed",
+            "a bot the member installed",
             Acting::bot("digest").acting_for(ada()),
         ),
         (
-            "an automation its keeper set up",
+            "an automation the member set up",
             Acting::automation("nightly").acting_for(ada()),
         ),
         (
-            "an automation an agent of its keeper works",
+            "an automation an agent works",
             Acting::automation("nightly")
                 .acting_for(Acting::agent(agent.as_str()).acting_for(ada())),
         ),
         ("an app by itself", Acting::by_app("so.tilo.chat")),
     ];
-    let verbs: [(&str, KeepersVerb); 6] = [
+    let verbs: [(&str, InPersonVerb); 6] = [
         ("names it", |agents, cx, agent| {
             let name = NonBlank::parse("Mine now").expect("a name");
             agents.rename_agent(cx, id(agent), name)
@@ -966,37 +911,37 @@ fn whatever_acts_for_a_keeper_is_refused_what_only_the_keeper_does_in_person() {
         let theirs = acted(&mut list, &ada(), |agents, cx| verb(agents, cx, &agent));
         assert!(
             theirs.is_ok(),
-            "its keeper in person {what}: {:?}",
+            "a member in person {what}: {:?}",
             theirs.err().map(|refused| refused.reason().to_owned())
         );
         for (who, acting) in &others {
             let answered = acted(&mut list, acting, |agents, cx| verb(agents, cx, &agent));
             assert!(
                 answered.is_err(),
-                "{who} {what} in its keeper's name: it was not refused"
+                "{who} {what} in a member's name: it was not refused"
             );
         }
     }
     // What an agent spent is counted behind the same check. Through an invocation, as each
-    // one's own calls arrive: its keeper in person counts it, and neither the agent itself nor
-    // a bot of its keeper's does, nor retires it.
-    let mut keeper = list.fork().as_author(ADA);
-    keeper
+    // one's own calls arrive: a member in person counts it, and neither the agent itself nor
+    // a bot of a member's does, nor retires it.
+    let mut member = list.fork().as_author(ADA);
+    member
         .apply(charge(&agent, "2026-01-01", 1_000))
-        .expect("its keeper in person counts what it spent");
+        .expect("a member in person counts what it spent");
     let mut itself = list.fork().as_agent_for(&agent, ADA);
     assert!(
         itself.apply(charge(&agent, "2026-01-01", 1_000)).is_err(),
-        "an agent counts its own spend in its keeper's name"
+        "an agent counts its own spend in a member's name"
     );
     let mut bot = list.fork().as_bot_for("digest", ADA);
     assert!(
         bot.apply(charge(&agent, "2026-01-01", 1_000)).is_err(),
-        "a bot counts an agent's spend in its keeper's name"
+        "a bot counts an agent's spend in a member's name"
     );
     assert!(
         bot.apply(retire(&agent)).is_err(),
-        "a bot retires an agent in its keeper's name"
+        "a bot retires an agent in a member's name"
     );
     assert_eq!(bot.state().unwrap(), before, "and it changed nothing");
     assert_eq!(itself.state().unwrap(), before, "nor did the agent itself");

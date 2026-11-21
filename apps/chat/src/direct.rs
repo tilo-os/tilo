@@ -273,14 +273,14 @@ impl ChatApp {
             .collect()
     }
 
-    /// The conversations with this person's own agents that hold nothing yet, by the agent's
-    /// name and who it is: an agent a person keeps is someone they talk to from the start, so it
-    /// is listed before its first message, where a conversation with anyone else is listed once
-    /// it holds one.
-    pub(crate) fn own_agents_unlisted(&self) -> Vec<(Id, String, MemberId)> {
-        let Some(mine) = self.me.id.person_id() else {
+    /// The conversations with the workspace's agents that hold nothing yet, by the agent's name
+    /// and who it is: an agent of the workspace is someone each member talks to from the start,
+    /// so it is listed before its first message, where a conversation with anyone else is listed
+    /// once it holds one.
+    pub(crate) fn agents_unlisted(&self) -> Vec<(Id, String, MemberId)> {
+        if self.me.id.person_id().is_none() {
             return Vec::new();
-        };
+        }
         let Some(agents) = self.agents.as_ref().and_then(|opener| {
             opener.open(&ui::resource::workspace::document_id(
                 ui::tilo_workspace_agent::KIND,
@@ -292,7 +292,6 @@ impl ChatApp {
         agents
             .get()
             .made_by_people()
-            .filter(|agent| agent.keeper == mine)
             .filter_map(|agent| {
                 let member = MemberId::agent(agent.id.0.clone());
                 let id = Chat::direct_id([self.me.id.clone(), member.clone()]);

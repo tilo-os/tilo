@@ -21,7 +21,6 @@ fn open_agent(app: &mut TestApp<ChatShell>) {
         .invoke(
             &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: NonBlank::parse("Assistant").expect("a name"),
-                keeper: None,
                 id: Some("assistant".to_owned()),
                 model: None,
                 mcp_client: None,
@@ -128,7 +127,6 @@ fn a_window_opened_at_an_agent_shows_the_conversation_with_it() {
         .invoke(
             &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: NonBlank::parse("Assistant").expect("a name"),
-                keeper: None,
                 id: Some("assistant".to_owned()),
                 model: None,
                 mcp_client: None,
@@ -168,7 +166,6 @@ fn a_persons_own_agent_is_listed_before_its_first_message() {
         .invoke(
             &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: NonBlank::parse("Assistant").expect("a name"),
-                keeper: None,
                 id: Some("assistant".to_owned()),
                 model: None,
                 mcp_client: None,

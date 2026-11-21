@@ -17,7 +17,7 @@ agent-step-read = { $what } gelesen
 
 agent-cancel-thinking = Während des Nachdenkens abgebrochen
 
-agent-fail-spend-limit = { $agent } hat das heutige { $spent } aufgebraucht; bitte die Person, die es verwaltet, das Limit zu erhöhen
+agent-fail-spend-limit = { $agent } hat das heutige { $spent } aufgebraucht; bitte die Eigentümer des Arbeitsbereichs, das Limit zu erhöhen
 
 # Was ein fehlgeschlagener Modellaufruf in der Antwort hinterlässt, die eine
 # Person liest: ein Satz dazu, was geschehen ist, in ihren Worten, und wenn es

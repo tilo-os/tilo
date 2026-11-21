@@ -363,6 +363,104 @@ fn the_keepers_window_offers_the_workspaces_agents_to_callers_from_outside() {
     );
 }
 
+/// The agents are the workspace's, whoever made one: the workspace's grants alone decide who
+/// changes them. An editor names, chooses the model of, limits and retires an agent another
+/// member made, through the record's own actions as any caller reaches them; a viewer is offered
+/// none of those changes, and one asked for all the same is refused.
+#[test]
+fn an_editor_manages_an_agent_another_member_made_and_a_viewer_does_not() {
+    use tilo_app::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents};
+    const CHANGES: [&str; 4] = [
+        "rename-agent",
+        "set-agent-model",
+        "set-agent-spend-limit",
+        "retire-agent",
+    ];
+
+    let mut editor = TestApp::<KeepingAgentsApp>::with_role(tilo_app::Role::Editor).unwrap();
+    let agents = editor
+        .shared_workspace::<WorkspaceAgents>(workspace_agent::OWNER)
+        .unwrap();
+    // Grace made it: the record says so, and nothing more follows from it.
+    agents
+        .invoke_as(
+            &tilo_actions::ActionInvoker::person("grace"),
+            &WorkspaceAgents::CREATE_AGENT.with(workspace_agent::workspace_agents::CreateAgent {
+                name: tilo_app::tilo_resource::NonBlank::parse("Scout").expect("a name"),
+                id: Some("scout".to_owned()),
+                model: None,
+                mcp_client: None,
+            }),
+        )
+        .unwrap();
+    assert_eq!(agents.get().agents[0].keeper, "grace");
+    // What the window offers on the agents and on each of them.
+    let on_agents = |app: &mut TestApp<KeepingAgentsApp>| -> Vec<String> {
+        app.actions()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|action| action.address.resource.as_str().starts_with(AGENTS))
+            .map(|action| action.address.action)
+            .collect()
+    };
+    let offered_to_editor = on_agents(&mut editor);
+    for change in CHANGES {
+        assert!(
+            offered_to_editor.iter().any(|action| action == change),
+            "{change} in {offered_to_editor:?}"
+        );
+    }
+    editor
+        .call_on(
+            AGENTS,
+            "rename-agent",
+            serde_json::json!({ "agent": "scout", "name": "Researcher" }),
+        )
+        .unwrap();
+    editor
+        .call_on(
+            AGENTS,
+            "set-agent-model",
+            serde_json::json!({ "agent": "scout", "model": "anthropic/sonnet" }),
+        )
+        .unwrap();
+    editor
+        .call_on(
+            AGENTS,
+            "set-agent-spend-limit",
+            serde_json::json!({ "agent": "scout", "limit_micros": 5_000_000 }),
+        )
+        .unwrap();
+    let changed = agents.get();
+    let scout = &changed.agents[0];
+    assert_eq!(scout.name, "Researcher");
+    assert_eq!(scout.model.as_deref(), Some("anthropic/sonnet"));
+    assert_eq!(scout.spend_limit_micros, Some(5_000_000));
+    editor
+        .call_on(AGENTS, "retire-agent", serde_json::json!({ "agent": "scout" }))
+        .unwrap();
+    assert!(!agents.get().agents[0].is_active(), "the editor retired it");
+
+    // A viewer reads the agents and changes none of them.
+    let mut viewer = TestApp::<KeepingAgentsApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    let offered_to_viewer = on_agents(&mut viewer);
+    for change in CHANGES {
+        assert!(
+            !offered_to_viewer.iter().any(|action| action == change),
+            "{change} in {offered_to_viewer:?}"
+        );
+    }
+    assert!(
+        viewer
+            .call_on(
+                AGENTS,
+                "rename-agent",
+                serde_json::json!({ "agent": "scout", "name": "Mine" }),
+            )
+            .is_err()
+    );
+}
+
 /// The keeping app's view of one of its documents where no window is open, as a workspace's
 /// server holds it for whoever reaches the workspace from outside.
 fn attached<A: ResourceApp<Resource = Note>>(
@@ -714,7 +812,6 @@ fn a_part_that_read_a_workspaces_document_as_not_here_shows_it_when_it_arrives()
             .invoke(
                 &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                     name: tilo_app::tilo_resource::NonBlank::parse("Scout").expect("a name"),
-                    keeper: None,
                     id: None,
                     model: None,
                     mcp_client: None,

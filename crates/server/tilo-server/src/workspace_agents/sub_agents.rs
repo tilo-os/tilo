@@ -1326,7 +1326,6 @@ mod tests {
         list.set_now_ms(1_700_000_000_000);
         list.apply(WorkspaceAgents::CREATE_AGENT.with(CreateAgent {
             name: tilo_resource::NonBlank::parse("Assistant").expect("a name"),
-            keeper: None,
             id: Some("main".to_owned()),
             model: None,
             mcp_client: None,

@@ -269,9 +269,10 @@ impl Agents {
         }
     }
 
-    /// The agent `person` keeps in `workspace`, as `(id, name)`: whoever the record lists first, by
-    /// its own order — the agent the canvas asks (shell.md §8.1). `None` where they keep none.
-    pub(crate) fn kept(
+    /// The workspace's own agent in `workspace`, as `(id, name)`, read as `person`: the one no MCP
+    /// client connects as that the record lists first, by its own order — the agent the canvas
+    /// asks (shell.md §8.1). `None` where the workspace has none.
+    pub(crate) fn assistant(
         &self,
         workspace: &str,
         policy: &WorkspacePolicy,
@@ -283,7 +284,7 @@ impl Agents {
         let state = record.get();
         state
             .made_by_people()
-            .find(|agent| agent.mcp_client.is_none() && agent.keeper == person)
+            .find(|agent| agent.mcp_client.is_none())
             .map(|agent| (agent.id.0.clone(), agent.name.clone()))
     }
 

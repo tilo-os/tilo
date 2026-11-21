@@ -33,10 +33,10 @@ pub struct Agent {
     /// What it is asked for by.
     pub key: String,
     pub name: String,
-    /// Who keeps it, in one plain line.
+    /// Who added it, in one plain line.
     pub status: String,
-    /// What it spent of the day its keeper allows, as the line under that one;
-    /// empty where its keeper set no day, or it spent nothing of one yet.
+    /// What it spent of the day the workspace allows, as the line under that one;
+    /// empty where no limit is set, or it spent nothing of one yet.
     pub spend: String,
     /// The model it plans with, as the row's quiet fact; empty for a service,
     /// which has none.
@@ -115,14 +115,14 @@ pub struct Models {
     /// What it plans with now.
     pub summary: String,
     pub choices: Vec<ModelChoice>,
-    /// Whether the person may choose: only an agent's keeper may.
+    /// Whether the person may choose: whoever the workspace's grants let change its agents.
     pub can_choose: bool,
     /// Who chooses, where it is not the person here.
     pub note: Option<String>,
 }
 
-/// What an agent may spend a day, as its review shows it: the keeper's
-/// limit, what it spent of it, and the way its keeper sets it.
+/// What an agent may spend a day, as its review shows it: the workspace's
+/// limit, what it spent of it, and the way to set it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Limit {
     pub title: String,
@@ -135,7 +135,7 @@ pub struct Limit {
     /// What the field says while it is empty.
     pub placeholder: String,
     pub set: String,
-    /// Whether the person here sets it: only the agent's keeper does.
+    /// Whether the person here sets it: whoever the workspace's grants let change its agents.
     pub can_choose: bool,
 }
 
@@ -320,7 +320,7 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
         .with_rhythm(Rhythm::Related)
         .push(Box::new(field));
 
-    // Its model: one of this device's Settings, or its keeper's default. Where this device offers
+    // Its model: one of this device's Settings, or the workspace's default. Where this device offers
     // none (a page, whose agents run on the workspace's server) there is nothing to choose.
     let offered: Vec<(String, String)> = agents
         .models
@@ -373,7 +373,7 @@ fn colour_of(key: &str) -> Color {
     ui::Theme::dark().tokens.colors.presence.hue(hue)
 }
 
-/// One agent: its face in its own colour, name, keeper and the model it
+/// One agent: its face in its own colour, name, who added it and the model it
 /// plans with, with Review access and Remove.
 fn agent_row(agents: &Agents, agent: &Agent, parts: &Parts) -> Element {
     let (review, remove) = (agent.key.clone(), agent.key.clone());
@@ -645,7 +645,7 @@ fn kind_line(review: &AgentReview, app: &AccessApp, line: &KindLine, parts: &Par
 
 /// The agent's model: what it plans with, who chooses it, and the default
 /// and every model offered, the one in use marked and each other with Use
-/// for its keeper.
+/// for whoever may change it.
 fn models_section(review: &AgentReview, models: &Models, parts: &Parts) -> Element {
     let mut column = Column::new()
         .with_no_padding()
@@ -688,7 +688,7 @@ fn models_section(review: &AgentReview, models: &Models, parts: &Parts) -> Eleme
 }
 
 /// What an agent may spend a day: what it is, what it spent of it, and for
-/// its keeper the way to set it — a number of dollars, taken by Set.
+/// whoever may change it the way to set it — a number of dollars, taken by Set.
 fn limit_section(review: &AgentReview, limit: &Limit, parts: &Parts) -> Element {
     let mut column = Column::new()
         .with_no_padding()
@@ -847,7 +847,7 @@ pub(super) fn sample_review() -> AgentReview {
         agent: "claude".to_owned(),
         name: "Claude".to_owned(),
         status: "Can read and change, asks before acting outside".to_owned(),
-        tag: Some("Yours".to_owned()),
+        tag: None,
         back: "All agents".to_owned(),
         note: "Sending, publishing and deleting for good still ask you first, unless you allowed that action for good.".to_owned(),
         editable: true,
@@ -900,13 +900,13 @@ pub(super) fn sample_review() -> AgentReview {
                 },
             ],
             can_choose: true,
-            note: Some("You choose the model it runs on your devices".to_owned()),
+            note: None,
         }),
         limit: Some(Limit {
             title: "Daily limit".to_owned(),
             summary: "$5 a day".to_owned(),
             today: "$0.42 today".to_owned(),
-            note: "Only you set what it may spend a day. It stops there and tells you when a run reaches it.".to_owned(),
+            note: "It stops at this limit and tells you when a run reaches it.".to_owned(),
             placeholder: "Dollars a day".to_owned(),
             set: "Set".to_owned(),
             can_choose: true,

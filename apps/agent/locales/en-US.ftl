@@ -20,7 +20,7 @@ agent-step-read = Read { $what }
 
 agent-cancel-thinking = Cancelled while thinking
 
-agent-fail-spend-limit = { $agent } has used today's { $spent }; ask its keeper to raise it
+agent-fail-spend-limit = { $agent } has used today's { $spent }; ask the workspace's owners to raise its limit
 
 # What a failed model call leaves in the reply a person reads: one sentence
 # of what happened, in their own terms, and where there is a setting to look

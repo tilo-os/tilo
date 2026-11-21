@@ -2425,7 +2425,6 @@ async fn list_agent(
                             tilo_workspace_agent::workspace_agents::CreateAgent {
                                 mcp_client: Some(name.as_str().to_owned()),
                                 name,
-                                keeper: None,
                                 id: Some(agent),
                                 model: None,
                             },

@@ -25,7 +25,6 @@ pub(super) fn with_main() -> Replica<WorkspaceAgents> {
         .apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: NonBlank::parse("Assistant").expect("a name"),
-                keeper: None,
                 id: Some(MAIN.to_owned()),
                 model: None,
                 mcp_client: None,
@@ -195,7 +194,7 @@ fn an_agent_starts_a_sub_agent_with_its_job_its_role_and_its_kind_of_work() {
 }
 
 #[test]
-fn only_an_agent_starts_one_and_only_for_the_person_who_keeps_it() {
+fn only_an_agent_of_the_workspace_starts_one_for_the_member_it_works_for() {
     let mut record = with_main();
     // The person themselves: they ask their own agent, which picks the role and the model.
     let mut ada = record.fork().as_author(ADA);
@@ -204,14 +203,16 @@ fn only_an_agent_starts_one_and_only_for_the_person_who_keeps_it() {
         refused.to_string().contains("ask your own agent"),
         "{refused}"
     );
-    // The agent acting for somebody who does not keep it.
+    // The workspace's agent works for any member: for Grace, whom it was not made by, it starts
+    // one that works for her.
     let mut for_grace = record.fork().as_agent_for(MAIN, GRACE);
-    let refused = for_grace
+    for_grace
         .apply(start("Research", "Find the deck"))
-        .unwrap_err();
-    assert!(
-        refused.to_string().contains("the person who keeps it"),
-        "{refused}"
+        .unwrap();
+    assert_eq!(
+        for_grace.state().unwrap().sub_agents_of(GRACE).count(),
+        1,
+        "started for Grace"
     );
     // An agent this workspace does not know, and one that was retired.
     let mut stranger = record.fork().as_agent_for("stranger", ADA);
@@ -301,7 +302,7 @@ fn fifty_at_once_is_ordinary_and_the_person_says_how_many() {
 
     // More at once is the person's to allow, in person: their agent is refused.
     let refused = record.apply(limits(MAIN, None, Some(60))).unwrap_err();
-    assert!(refused.to_string().contains("keeper"), "{refused}");
+    assert!(refused.to_string().contains("in person"), "{refused}");
     let mut record = record.fork().as_author(ADA);
     record.apply(limits(MAIN, None, Some(60))).unwrap();
     let refused = record.apply(limits(MAIN, None, Some(251))).unwrap_err();
@@ -356,7 +357,7 @@ fn a_sub_agent_starts_its_own_only_as_deep_as_the_person_allows() {
     assert!(refused.to_string().contains("2 deep"), "{refused}");
     let mut record = record.fork().as_author(ADA);
     let refused = record.apply(limits("lead", Some(3), None)).unwrap_err();
-    assert!(refused.to_string().contains("person keeps"), "{refused}");
+    assert!(refused.to_string().contains("person made"), "{refused}");
     let refused = record
         .apply(limits(MAIN, Some(MAX_DEPTH + 1), None))
         .unwrap_err();
@@ -415,11 +416,11 @@ fn whoever_started_one_gives_it_notes_and_nobody_below_or_beside_it_does() {
     let mut ada = record.fork().as_author(ADA);
     let refused = ada.apply(note("lead", "Do this instead.")).unwrap_err();
     assert!(refused.to_string().contains("by an agent"), "{refused}");
+    // The workspace's agent steers what it started whichever member it works for now.
     let mut for_grace = record.fork().as_agent_for(MAIN, GRACE);
-    let refused = for_grace
+    for_grace
         .apply(note("lead", "Do this instead."))
-        .unwrap_err();
-    assert!(refused.to_string().contains("works for"), "{refused}");
+        .unwrap();
 
     // The record keeps the newest; each is in the conversation once it was carried there.
     let mut main = record.fork().as_agent_for(MAIN, ADA);
@@ -437,7 +438,7 @@ fn whoever_started_one_gives_it_notes_and_nobody_below_or_beside_it_does() {
 }
 
 #[test]
-fn its_person_or_whoever_steers_it_stops_one_and_new_work_starts_it_again() {
+fn a_member_or_whoever_steers_it_stops_one_and_new_work_starts_it_again() {
     let mut record = team();
     let mut ada = record.fork().as_author(ADA);
     ada.set_now_ms(THEN + 10);
@@ -475,22 +476,25 @@ fn its_person_or_whoever_steers_it_stops_one_and_new_work_starts_it_again() {
         Stands::Stopped
     );
 
-    // Not one beside it or below it, not another person, not software that only acts for
-    // its person.
+    // Not one beside it or below it, not software that only acts for a member.
     for by in ["other", "worker"] {
         let mut asking = record.fork().as_agent_for(by, ADA);
         let refused = asking.apply(stop("lead")).unwrap_err();
         assert!(refused.to_string().contains("steers"), "{by}: {refused}");
     }
-    let mut grace = record.fork().as_author(GRACE);
-    let refused = grace.apply(stop("lead")).unwrap_err();
-    assert!(refused.to_string().contains("works for"), "{refused}");
     let mut bot = record.fork().as_bot_for("b_events", ADA);
     let refused = bot.apply(stop("lead")).unwrap_err();
-    assert!(refused.to_string().contains("its person"), "{refused}");
+    assert!(refused.to_string().contains("a member"), "{refused}");
     assert_eq!(
         sub_of(&record.state().unwrap(), "lead").stands,
         Stands::Working
+    );
+    // Another member, themselves, does: the team is the workspace's.
+    let mut grace = record.fork().as_author(GRACE);
+    grace.apply(stop("lead")).unwrap();
+    assert_eq!(
+        sub_of(&grace.state().unwrap(), "lead").stands,
+        Stands::Stopped
     );
 
     // One that ended stays as it ended.
@@ -578,7 +582,6 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
             "make an agent nothing binds",
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: NonBlank::parse("Free").expect("a name"),
-                keeper: None,
                 id: None,
                 model: None,
                 mcp_client: None,
@@ -620,7 +623,7 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
         let refused = lead.apply(attempt).unwrap_err();
         let why = refused.to_string();
         assert!(
-            why.contains("its own team") || why.contains("keeper"),
+            why.contains("its own team") || why.contains("in person"),
             "{what}: {why}"
         );
         assert_eq!(
@@ -629,11 +632,11 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
             "{what} changed nothing"
         );
     }
-    // Nor does the agent that started it take a bound off: what an agent may do is its keeper's
+    // Nor does the agent that started it take a bound off: what an agent may do is a member's
     // to say, in person.
     let mut main = record.fork().as_agent_for(MAIN, ADA);
     let refused = main.apply(unbound.clone()).unwrap_err();
-    assert!(refused.to_string().contains("keeper"), "{refused}");
+    assert!(refused.to_string().contains("in person"), "{refused}");
     let mut ada = main.fork().as_author(ADA);
     ada.apply(unbound).unwrap();
 }
@@ -663,12 +666,6 @@ fn an_agents_team_is_those_it_started_and_theirs_and_nobody_above_or_beside_it()
             "{alone} started nobody, and reads nobody above or beside it"
         );
     }
-    // Another person's agent of the same id as a starter reads nothing of this team.
-    let foreign = Agent {
-        keeper: GRACE.to_owned(),
-        ..state.get(&id(MAIN)).unwrap().clone()
-    };
-    assert!(state.team_of(&foreign).is_empty());
 
     let mut ada = list.fork().as_author(ADA);
     ada.apply(

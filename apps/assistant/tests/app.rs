@@ -294,7 +294,6 @@ fn a_window_opened_before_the_agents_arrive_shows_them_when_they_do() {
             .invoke(
                 &WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                     name: NonBlank::parse("Assistant").expect("a name"),
-                    keeper: None,
                     id: Some("assistant".to_owned()),
                     model: None,
                     mcp_client: None,

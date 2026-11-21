@@ -5054,12 +5054,6 @@
             "pattern": "\\S",
             "type": "string"
           },
-          "keeper": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "id": {
             "type": [
               "string",

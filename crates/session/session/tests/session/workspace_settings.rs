@@ -710,8 +710,8 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the row names the agent the record keeps"
     );
     assert_eq!(
-        row.status, "Kept by you",
-        "the row says who keeps it, in one line"
+        row.status, "Added by you",
+        "the row says who added it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
     press(&mut app, "ws-agents-review-helper");
@@ -784,14 +784,14 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "{bound:?}"
     );
 
-    // The model it plans with is the keeper's to choose, from this device's Settings, and the
+    // change its agents, and the review says it chose.
     // review says it chose.
     assert!(
         review
             .models
             .as_ref()
             .is_some_and(|models| models.can_choose),
-        "the person who keeps it chooses the model"
+        "a member who may change the workspace's agents chooses the model"
     );
     press(&mut app, "ws-agent-use-local/sonnet");
     settle(&mut session, &mut app);
@@ -1280,7 +1280,7 @@ fn make_agent(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>
 }
 
 /// The Agents tab makes an agent named in its field, where Chat's record keeps it, admits it to the
-/// workspace, and its keeper chooses the model it plans with.
+/// workspace, and a member chooses the model it plans with.
 #[test]
 fn workspace_settings_makes_the_workspaces_agents() {
     let _settled = ui::motion::testing::settled();
@@ -1296,11 +1296,11 @@ fn workspace_settings_makes_the_workspaces_agents() {
     let row = listed_agent(&session, "analyst");
     assert_eq!(row.name, "Analyst");
     assert_eq!(
-        row.status, "Kept by you",
-        "the row says who keeps it, in one line"
+        row.status, "Added by you",
+        "the row says who added it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
-    // Its keeper chooses the model it plans with, and the row says which.
+    // A member chooses the model it plans with, and the row says which.
     press(&mut app, "ws-agents-review-analyst");
     settle(&mut session, &mut app);
     press(&mut app, "ws-agent-use-local/sonnet");
@@ -1376,8 +1376,8 @@ fn workspace_settings_retires_the_workspaces_agents() {
     assert_eq!(live, 0, "the workspace holds nothing of the agent again");
 }
 
-/// An agent's keeper sets what it may spend a day from its review: the record keeps the limit, and
-/// the row counts the day against it.
+/// A member sets what the workspace's agent may spend a day from its review: the record keeps
+/// the limit, and the row counts the day against it.
 #[test]
 fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     let _settled = ui::motion::testing::settled();
@@ -1394,7 +1394,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     let limit = shown_review(&session).limit.expect("the day's limit");
     assert_eq!(limit.summary, "No limit", "nobody set a day yet");
     assert_eq!(limit.today, "$0 today");
-    assert!(limit.can_choose, "the person here keeps it");
+    assert!(limit.can_choose, "the person here may change the workspace's agents");
     app.harness()
         .perform_named(
             "ws-agent-limit-field",
@@ -1430,7 +1430,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     let row = listed_agent(&session, "analyst");
     assert_eq!(
         row.spend, "$0 of $5 today",
-        "the row counts the day against what the keeper allows, under who keeps it"
+        "the row counts the day against what the workspace allows"
     );
     crate::common::app_shot(&mut app, "workspace-settings-agents-spend");
     let held = held_agents(&mut session, &workspace, |held| {
@@ -1448,10 +1448,10 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     );
 }
 
-/// An agent the person here admitted to the workspace before Chat kept agents of its own is
-/// listed in its place when they open the tab: under the id its grants carry, numbered around the
-/// names the workspace uses. Whoever admits an agent keeps it and pays for its work, so another
-/// member's admission is left for that member's own device.
+/// An agent admitted to the workspace before Chat kept agents of its own is listed in its place
+/// when a member who may change the workspace's agents opens the tab: under the id its grants
+/// carry, numbered around the names the workspace uses. The agents are the workspace's, so
+/// another member's admission is listed as well as the person's own.
 #[test]
 fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     let _settled = ui::motion::testing::settled();
@@ -1461,8 +1461,8 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     own_workspace(&session, &["ada"]);
     let workspace = front_workspace(&session);
     // The admissions as workspaces stored them before Chat kept agents of its own: grants naming
-    // each agent, held by the workspace, given by the person who admitted it. One is the person's
-    // here; ada's is hers to give an agent of its own.
+    // each agent, held by the workspace, given by the person who admitted it: one the person's
+    // here, one ada's.
     let mut tree = session.handle().read(Clone::clone);
     let front = tree.active_workspace_mut().expect("a workspace in front");
     for (agent, admitted_by) in [("helper", PERSON), ("analyst", "ada")] {
@@ -1488,21 +1488,25 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     );
 
     let held = held_agents(&mut session, &workspace, |held| {
-        held.is_some_and(|agents| {
-            agents
-                .iter()
-                .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active)
-        })
+        held.is_some_and(|agents| agents.len() == 2)
     });
     let held = held.expect("Chat's agents in the workspace");
+    let mut ids: Vec<&str> = held.iter().map(|(id, ..)| id.as_str()).collect();
+    ids.sort_unstable();
     assert_eq!(
-        held.len(),
-        1,
-        "only the person's own admission is given an agent here: {held:?}"
+        ids,
+        ["analyst", "helper"],
+        "each admission is given an agent of the workspace's, whoever gave it: {held:?}"
+    );
+    let mut names: Vec<&str> = held.iter().map(|(_, name, ..)| name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["Agent 1", "Agent 2"],
+        "Chat numbers the admitted agents around the names here: {held:?}"
     );
     assert!(
-        held.iter()
-            .any(|(id, name, _, active, ..)| id == "helper" && name == "Agent 1" && *active),
-        "Chat names the admitted agent, under its id and numbered around the names here: {held:?}"
+        held.iter().all(|(_, _, _, active, ..)| *active),
+        "{held:?}"
     );
 }

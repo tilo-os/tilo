@@ -418,7 +418,7 @@ pub(crate) fn check(agent: &Agent) -> Result<(), Refusal> {
 }
 
 impl WorkspaceAgents {
-    /// A person's sub-agents that work here, newest first.
+    /// The sub-agents started for `person` that work here, newest first.
     pub fn sub_agents_of<'a>(&'a self, person: &'a str) -> impl Iterator<Item = &'a Agent> {
         let mut theirs: Vec<&Agent> = self
             .agents
@@ -477,9 +477,7 @@ impl WorkspaceAgents {
             .agents
             .iter()
             .filter(|agent| {
-                agent.is_active()
-                    && agent.keeper == above.keeper
-                    && self.started_under(agent, &above.id.0)
+                agent.is_active() && self.started_under(agent, &above.id.0)
             })
             .collect();
         team.sort_by(|one, other| {
@@ -512,8 +510,8 @@ impl WorkspaceAgents {
         Ok(())
     }
 
-    /// The sub-agent `agent` that `person` keeps and that works here.
-    fn kept_sub(&self, agent: &Id, person: &str) -> Result<&Agent, Refusal> {
+    /// The sub-agent `agent` that works here.
+    fn working_sub(&self, agent: &Id) -> Result<&Agent, Refusal> {
         let found = self
             .agents
             .find(agent)
@@ -521,21 +519,16 @@ impl WorkspaceAgents {
         if found.sub.is_none() {
             return Err(not_a_sub_agent(agent));
         }
-        if found.keeper != person {
-            return Err(Refusal::new(
-                "a sub-agent is steered for the person it works for",
-            ));
-        }
         if !found.is_active() {
             return Err(Refusal::new("that sub-agent was dismissed"));
         }
         Ok(found)
     }
 
-    /// Refuses unless the agent `by`, acting for `person`, steers the sub-agent `agent`: it
-    /// started it, or one above it.
-    fn steered_by(&self, agent: &Id, by: &str, person: &str) -> Result<(), Refusal> {
-        let found = self.kept_sub(agent, person)?;
+    /// Refuses unless the agent `by` steers the sub-agent `agent`: it started it, or one above
+    /// it.
+    fn steered_by(&self, agent: &Id, by: &str) -> Result<(), Refusal> {
+        let found = self.working_sub(agent)?;
         if !self.started_under(found, by) {
             return Err(Refusal::new(
                 "only the agent that started a sub-agent, or one above it, steers it",
@@ -545,19 +538,19 @@ impl WorkspaceAgents {
     }
 
     /// The sub-agent `agent`'s own record of being one, when it is `agent` itself that
-    /// invokes, for the person who keeps it: what only its own runner writes is written
+    /// invokes: what only its own runner writes is written
     /// through this, by every verb that is the runner's.
     ///
     /// # Errors
     /// Anyone else invokes, or `agent` is no sub-agent that works here.
     pub fn as_itself(&mut self, cx: &ActionCx, agent: &Id) -> Result<&mut Sub, Refusal> {
-        let (by, person) = agent_acting(cx)?;
+        let (by, _) = agent_acting(cx)?;
         if by != agent.as_str() {
             return Err(Refusal::new(
                 "only a sub-agent's own runner says how it stands",
             ));
         }
-        self.kept_sub(agent, &person)?;
+        self.working_sub(agent)?;
         self.sub_mut(agent)
     }
 
@@ -648,11 +641,6 @@ impl WorkspaceAgents {
             .find(&Id::from_raw(starter.clone()))
             .filter(|by| by.is_active())
             .ok_or_else(|| Refusal::new("only an agent that works here starts a sub-agent"))?;
-        if by.keeper != person {
-            return Err(Refusal::new(
-                "an agent starts sub-agents for the person who keeps it",
-            ));
-        }
         let depth = self.place_under(by)?;
         let name = new.name.trim().to_owned();
         crate::check_name(&name)?;
@@ -734,9 +722,9 @@ impl WorkspaceAgents {
         agent: &Id,
         text: &str,
     ) -> Result<(), Refusal> {
-        let (by, person) = agent_acting(cx)?;
+        let (by, _) = agent_acting(cx)?;
         let text = plain(text, MAX_NOTE, "a note")?;
-        self.steered_by(agent, &by, &person)?;
+        self.steered_by(agent, &by)?;
         let (id, at) = (cx.id().to_string(), cx.now_ms());
         let sub = self.sub_mut(agent)?;
         sub.notes.push(Note { id, by, text, at });
@@ -748,15 +736,15 @@ impl WorkspaceAgents {
     pub(crate) fn stop_sub(&mut self, cx: &ActionCx, agent: &Id) -> Result<(), Refusal> {
         let acting = cx.invoked_by().ok_or_else(by_an_agent)?;
         let by = if acting.is_agent() {
-            let (by, person) = agent_acting(cx)?;
-            self.steered_by(agent, &by, &person)?;
+            let (by, _) = agent_acting(cx)?;
+            self.steered_by(agent, &by)?;
             format!("agent:{by}")
         } else {
-            // Its person themselves, and nothing that only acts for them.
+            // A member themselves, and nothing that only acts for them.
             let person = acting.person_id().ok_or_else(|| {
-                Refusal::new("a sub-agent is stopped by its person, or by the agent that steers it")
+                Refusal::new("a sub-agent is stopped by a member, or by the agent that steers it")
             })?;
-            self.kept_sub(agent, person)?;
+            self.working_sub(agent)?;
             format!("person:{person}")
         };
         let now = cx.now_ms();
@@ -801,7 +789,7 @@ impl WorkspaceAgents {
         depth: Option<u8>,
         at_once: Option<u32>,
     ) -> Result<(), Refusal> {
-        let me = crate::keeping(cx)?;
+        crate::in_person(cx)?;
         if depth.is_some_and(|depth| depth > MAX_DEPTH) {
             return Err(Refusal::new(format!(
                 "sub-agents go at most {MAX_DEPTH} deep"
@@ -816,14 +804,9 @@ impl WorkspaceAgents {
             .agents
             .find_mut(agent)
             .ok_or_else(|| crate::no_such(agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new(
-                "only the agent's keeper says how many sub-agents it may have",
-            ));
-        }
         if found.sub.is_some() {
             return Err(Refusal::new(
-                "the limits are set on the agent a person keeps, and hold for every sub-agent \
+                "the limits are set on the agent a person made, and hold for every sub-agent \
                  under it",
             ));
         }

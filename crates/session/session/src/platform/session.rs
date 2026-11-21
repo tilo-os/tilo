@@ -497,7 +497,7 @@ impl Session {
                     tree.active_workspace()
                         .map(|held| (held.id().to_string(), held.policy.clone()))
                 })?;
-                let to = crate::agents::agent_recipient(agents.kept(&workspace, &policy, &person));
+                let to = crate::agents::agent_recipient(agents.assistant(&workspace, &policy, &person));
                 let arguments = serde_json::json!({
                     "to": [to],
                     "text": text,

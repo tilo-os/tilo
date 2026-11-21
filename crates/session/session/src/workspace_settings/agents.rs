@@ -8,13 +8,10 @@
 //! nothing of its own.
 //! What an agent may do, app by app, is still the workspace's grants: the tab reads them beside the
 //! record. An agent a person admitted to the workspace before records were is made one of the
-//! record's when that person's tab opens it ([`Agents::settle`]), under the id its grants name and
-//! kept by them, so the roster, the name a person reads and the search find the agents that worked
-//! here. Nobody makes the record of an agent somebody else admitted: whoever makes one keeps it.
-//! The model an agent plans with is the keeper's to choose, alone: their devices run it and their
-//! credentials pay. This device applies the keeper's choice to its own Settings when the tab is
-//! open ([`agent_access::choose_agent_model`]), which is where the agent runner reads it from; the
-//! record is the one truth the tab shows.
+//! record's when a member's tab opens it ([`Agents::settle`]), under the id its grants name, so
+//! the roster, the name a person reads and the search find the agents that worked here.
+//! The agents are the workspace's, not any one member's: their model and what they may spend a day
+//! are the record's, and whoever the workspace's grants let change the record chooses them.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -37,8 +34,8 @@ use ui::resource::workspace::WorkspaceResources;
 /// How workspace settings' history names where a change came from.
 const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
 /// Whether an agent made here runs on the workspace's host: a page runs no agent, so one made in a
-/// browser works on the host around the clock; one made on a computer runs there, on its keeper's
-/// devices and models.
+/// browser works on the host around the clock; one made on a computer runs on a device of the
+/// workspace.
 const RUNS_ON_HOST: bool = cfg!(target_arch = "wasm32");
 
 /// Where the tab opens the workspace's records, and what it knows of the person there: a
@@ -106,7 +103,7 @@ pub(crate) struct Agents {
     open: RefCell<Option<Open>>,
     /// What the tab last drew: the list's revision. The tab is shown again at each change.
     shown: RefCell<Option<Seen>>,
-    /// The record whose admitted agents and keeper's choices this device was last brought in step
+    /// The record whose admitted agents this device was last brought in step
     /// with: its workspace and revision.
     #[cfg(target_os = "linux")]
     settled: RefCell<Option<(String, u64)>>,
@@ -234,7 +231,7 @@ impl Agents {
             .map(|agent| sheet::Agent {
                 key: agent.id.0.clone(),
                 name: agent.name.clone(),
-                status: keeper_line(names, workspace, record, &agent.keeper),
+                status: added_by(names, workspace, record, &agent.keeper),
                 spend: spend_line(agent),
                 model: if agent.on_host {
                     t("workspace-settings-agent-on-host")
@@ -378,12 +375,10 @@ impl Agents {
         } = *review;
         let state = record.get();
         let kept = state.get(&Id::from_raw(agent.to_owned()))?;
-        // An entry whose keeper is no person's root key, which no device of ours writes, is
-        // not shown.
+        // An entry made by no person's root key, which no device of ours writes, is not shown.
         MemberId::parsed_person(&kept.keeper)?;
         let name = kept.name.clone();
-        let status = keeper_line(names, workspace, record, &kept.keeper);
-        let tag = (kept.keeper == record.me().id()).then(|| t("workspace-settings-agent-yours"));
+        let status = added_by(names, workspace, record, &kept.keeper);
         // What the turn admits it to, before the answers the person set for its apps: the cap's
         // grants, narrowed by the bound its record keeps.
         let mut admission = tilo_action_policy::Acting::handed_agent(agent, kept.keeper.as_str())
@@ -396,28 +391,12 @@ impl Agents {
         let rows = agent_access::agent_access_rows(workspace, agent, &admission, apps);
         let exceptions =
             agent_access::agent_exceptions(&kept.bound_rules().unwrap_or_default(), apps);
-        // What an agent plans with is its keeper's to choose, alone, and the record holds the
-        // choice.
+        // What it plans with, what it may spend and what it may do are the record's: whoever the
+        // workspace's grants let change the record changes them, and nobody else.
         let offered = agent_access::agent_models(config, agent);
-        let keeps = kept.keeper == record.me().id();
-        // What it may do here is the bound its list entry keeps: whoever looks after the workspace's agents,
-        // and its keeper, set it.
-        let editable = may.manage || keeps;
-        let keeper = domain::member_row_name(
-            names,
-            workspace,
-            record.me().id(),
-            &MemberId::person(&kept.keeper),
-        );
-        let limit = limit_of(kept, keeps, &keeper);
-        let note = if keeps {
-            t("workspace-settings-agent-model-keeper-you")
-        } else {
-            t_args(
-                "workspace-settings-agent-model-keeper",
-                &[("name", keeper.into())],
-            )
-        };
+        let editable = record.may("set-agent-bound");
+        let limit = limit_of(kept, record.may("set-agent-spend-limit"));
+        let can_choose = record.may("set-agent-model");
         let chosen = kept.model.as_deref();
         let models = sheet::Models {
             title: t("workspace-settings-agent-model"),
@@ -426,18 +405,18 @@ impl Agents {
                 |model| model_label(offered.as_ref(), model),
             ),
             choices: model_choices(offered.as_ref(), chosen),
-            can_choose: keeps,
-            note: Some(note),
+            can_choose,
+            note: (!can_choose).then(|| t("workspace-settings-agent-model-view-only")),
         };
         Some(sheet::AgentReview {
             agent: agent.to_owned(),
             name,
             status,
-            tag,
+            tag: None,
             back: t("workspace-settings-agent-access-back"),
             note: t("workspace-settings-agent-access-note"),
             editable,
-            can_retire: may.manage,
+            can_retire: may.manage || record.may("retire-agent"),
             retire: t("workspace-settings-retire-agent"),
             answers: [
                 t("workspace-settings-answer-allow"),
@@ -447,7 +426,7 @@ impl Agents {
             reset: t("workspace-settings-agent-access-reset"),
             custom: t("workspace-settings-agent-access-set-here"),
             apps: Self::access_apps(&rows),
-            // The keeper chooses the model on their own devices, which run it: a page runs none.
+            // A page runs no agent, so it offers no model of its own to choose.
             models: (!RUNS_ON_HOST).then_some(models),
             limit: Some(limit),
             use_model: t("workspace-settings-agent-model-use"),
@@ -532,8 +511,7 @@ impl Agents {
     }
 
     /// Take up what the record owes this device while the tab is up: one
-    /// record for every agent the workspace admitted before records were,
-    /// and the keeper's model choice applied to this device's Settings.
+    /// record for every agent the workspace admitted before records were.
     ///
     /// Nothing happens until the tab opened the record here: no other tab
     /// reads it.
@@ -558,24 +536,22 @@ impl Agents {
             return;
         }
         let config = agent_provider_config::ProviderConfig::load();
-        Self::record_admitted(workspace, person, &record, &config);
-        Self::project_model(person, &record, &config);
+        Self::record_admitted(workspace, &record, &config);
         *self.settled.borrow_mut() = Some((workspace_id, record.revision()));
     }
 
-    /// Make the record name every agent `person` admitted to `workspace`: one made for each of
-    /// their admissions that has none, under the id its grants carry, so the roster, the names
-    /// people read and the search find the agents that worked here before records were. Whoever
-    /// admitted an agent keeps it, and only they make its record: another member's admission
-    /// gets its record on a device of that member.
+    /// Make the record name every agent admitted to `workspace`: one made for each admission that
+    /// has none, under the id its grants carry, so the roster, the names people read and the
+    /// search find the agents that worked here before records were. Any member the workspace's
+    /// grants let change the record makes it; a device whose member may not leaves it to one who
+    /// may.
     /// An admission names no name of its own — its id is no name a person reads — so each is
     /// numbered, in id order, around the names the workspace already uses.
-    /// A model chosen for the agent on this device before the record held one is its keeper's
-    /// choice, and goes into the record with it.
+    /// A model chosen for the agent on this device before the record held one goes into the
+    /// record with it.
     #[cfg(target_os = "linux")]
     fn record_admitted(
         workspace: &Workspace,
-        person: &UserId,
         record: &WorkspaceResource<Record>,
         config: &agent_provider_config::ProviderConfig,
     ) {
@@ -586,18 +562,15 @@ impl Agents {
             if state.get(&Id::from_raw(agent.clone())).is_some() {
                 continue;
             }
-            // Its admission names who gave it: an agent admitted by someone is kept by them. A
-            // service's membership is no agent here.
+            // A person admitted it: a service's membership is no agent here.
             let prefix = format!("agent-member:{agent}:");
-            let keeper = workspace
+            let by_a_person = workspace
                 .policy
                 .grants
                 .iter()
                 .filter(|grant| grant.id.as_str().starts_with(&prefix))
-                .find_map(|grant| grant.granted_by.person_id().map(str::to_owned));
-            // Whoever admitted it makes its record, on a device of their own: the record takes no
-            // keeper a caller names, so another member's admission waits for that member.
-            if keeper.is_none_or(|keeper| keeper != *person) {
+                .any(|grant| grant.granted_by.person_id().is_some());
+            if !by_a_person {
                 continue;
             }
             let name = loop {
@@ -618,7 +591,6 @@ impl Agents {
                 .and_then(|models| models.chosen.map(|chosen| chosen.key()));
             let made = record.invoke(&Record::CREATE_AGENT.with(actions::CreateAgent {
                 name,
-                keeper: None,
                 id: Some(agent.clone()),
                 model,
                 mcp_client: None,
@@ -630,41 +602,6 @@ impl Agents {
                     "the tab lists the agent from its grants until Chat's grants let the record be made",
                     tracing::debug!(%agent, %refusal, "an admitted agent has no record here yet")
                 );
-            }
-        }
-    }
-
-    /// Apply the record's choice of model to this device's Settings, for the agents this person
-    /// keeps: once per change of the record.
-    #[cfg(target_os = "linux")]
-    fn project_model(
-        person: &UserId,
-        record: &WorkspaceResource<Record>,
-        config: &agent_provider_config::ProviderConfig,
-    ) {
-        let state = record.get();
-        for agent in state.active() {
-            if agent.keeper != *person {
-                continue;
-            }
-            let held = agent_access::agent_models(config, &agent.id.0)
-                .and_then(|models| models.chosen.map(|chosen| chosen.key()));
-            if held == agent.model {
-                continue;
-            }
-            let chosen = agent.model.as_ref().and_then(|model| {
-                agent_access::agent_models(config, &agent.id.0)?
-                    .offered
-                    .into_iter()
-                    .find(|option| &option.key() == model)
-            });
-            match agent_access::choose_agent_model(&agent.id.0, chosen) {
-                Ok(_) => {
-                    tracing::debug!(agent = %agent.id.0, "the keeper's model choice is applied here");
-                }
-                Err(error) => {
-                    tracing::warn!(agent = %agent.id.0, %error, "the keeper's model choice is not applied here");
-                }
             }
         }
     }
@@ -686,7 +623,7 @@ impl Agents {
         Some(match effect {
             Ask::AddAgent { name, model } => {
                 // The record is the admission: the agent works here because Chat's record names
-                // it and this person keeps it.
+                // it.
                 match self.create(workspace, person, (name.as_str(), None), model) {
                     Ok(_) => Answered::Done,
                     Err(reason) => Answered::Refused(reason),
@@ -780,7 +717,6 @@ impl Agents {
         record
             .invoke(&Record::CREATE_AGENT.with(actions::CreateAgent {
                 name: name.clone(),
-                keeper: None,
                 id: Some(id.clone()),
                 model: (!model.is_empty()).then(|| model.to_owned()),
                 mcp_client: mcp_client.map(str::to_owned),
@@ -870,11 +806,11 @@ impl Agents {
             .map_err(|error| error.to_string())
     }
 
-    /// Choose the model the agent `agent` plans with, as its keeper.
+    /// Choose the model the agent `agent` plans with.
     ///
     /// # Errors
-    /// The workspace's agents could not be opened here, Chat's grants refuse
-    /// the change, or the person does not keep the agent.
+    /// The workspace's agents could not be opened here, or Chat's grants refuse
+    /// the change.
     pub(crate) fn set_model(
         &self,
         workspace: Option<&Workspace>,
@@ -893,12 +829,11 @@ impl Agents {
             .map_err(|error| error.to_string())
     }
 
-    /// Set what the agent `agent` may spend a day, as its keeper: `None`
-    /// spends unmetered.
+    /// Set what the agent `agent` may spend a day: `None` spends unmetered.
     ///
     /// # Errors
-    /// The workspace's agents could not be opened here, Chat's grants refuse
-    /// the change, or the person does not keep the agent.
+    /// The workspace's agents could not be opened here, or Chat's grants refuse
+    /// the change.
     pub(crate) fn set_limit(
         &self,
         workspace: Option<&Workspace>,
@@ -937,20 +872,14 @@ fn moderation_row(workspace: &Workspace, may: May) -> sheet::Moderation {
     }
 }
 
-/// Today, as a day's counter keeps it: this device's clock, which is its keeper's on the device
-/// that runs the agent.
+/// Today, as a day's counter keeps it: this device's clock.
 fn today() -> String {
     ui::clock::today().to_string()
 }
 
-/// What an agent may spend a day, as its review shows it: its keeper's limit,
-/// what it spent of it, and — for its keeper, `keeps`, `keeper` being who
-/// keeps it — the way to set it.
-fn limit_of(
-    agent: &tilo_app::tilo_workspace_agent::Agent,
-    keeps: bool,
-    keeper: &str,
-) -> sheet::Limit {
+/// What an agent may spend a day, as its review shows it: the workspace's limit, what it spent of
+/// it, and — where the person here may change it, `can_choose` — the way to set it.
+fn limit_of(agent: &tilo_app::tilo_workspace_agent::Agent, can_choose: bool) -> sheet::Limit {
     sheet::Limit {
         title: t("workspace-settings-agent-limit"),
         summary: limit_summary(agent.spend_limit_micros),
@@ -958,22 +887,19 @@ fn limit_of(
             "workspace-settings-agent-limit-today",
             &[("spent", ui::format::money(agent.spent_on(&today())).into())],
         ),
-        note: if keeps {
-            t("workspace-settings-agent-limit-keeper-you")
+        note: if can_choose {
+            t("workspace-settings-agent-limit-note")
         } else {
-            t_args(
-                "workspace-settings-agent-limit-keeper",
-                &[("name", keeper.into())],
-            )
+            t("workspace-settings-agent-limit-view-only")
         },
         placeholder: t("workspace-settings-agent-limit-placeholder"),
         set: t("workspace-settings-agent-limit-set"),
-        can_choose: keeps,
+        can_choose,
     }
 }
 
-/// What `agent` spends against its keeper's day, as its row reads it: the money it spent today
-/// beside what it may, or only the money where its keeper set no limit.
+/// What `agent` spends of its day, as its row reads it: the money it spent today beside what it
+/// may, or only the money where no limit is set.
 fn spend_line(agent: &tilo_app::tilo_workspace_agent::Agent) -> String {
     let spent = ui::format::money(agent.spent_on(&today()));
     match agent.spend_limit_micros {
@@ -1004,21 +930,21 @@ fn limit_summary(limit_micros: Option<u64>) -> String {
     )
 }
 
-/// Who keeps `agent` , as its row reads it: the person whose devices run it.
-fn keeper_line(
+/// Who added an agent, as its row reads it: `made_by`, the member its record names.
+fn added_by(
     names: &PeopleNames,
     workspace: &Workspace,
     record: &WorkspaceResource<Record>,
-    keeper: &str,
+    made_by: &str,
 ) -> String {
-    if keeper == record.me().id() {
-        return t("workspace-settings-agent-keeper-you");
+    if made_by == record.me().id() {
+        return t("workspace-settings-agent-added-by-you");
     }
-    let Some(member) = MemberId::parsed_person(keeper) else {
-        return keeper.to_owned();
+    let Some(member) = MemberId::parsed_person(made_by) else {
+        return made_by.to_owned();
     };
     t_args(
-        "workspace-settings-agent-keeper",
+        "workspace-settings-agent-added-by",
         &[(
             "name",
             domain::member_row_name(names, workspace, record.me().id(), &member).into(),
@@ -1026,8 +952,8 @@ fn keeper_line(
     )
 }
 
-/// The model `agent` plans with, as its row reads it: the one its keeper chose, or that none is
-/// chosen yet.
+/// The model `agent` plans with, as its row reads it: the one the workspace chose, or that none
+/// is chosen yet.
 fn model_line(
     config: &agent_provider_config::ProviderConfig,
     agent: &str,

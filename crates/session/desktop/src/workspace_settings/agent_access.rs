@@ -343,36 +343,6 @@ pub fn agent_models(
     })
 }
 
-/// Have `agent` plan with `model`, or the default with `None`, in the
-/// person's Settings, unless Settings changed meanwhile. Answers the
-/// settings as saved.
-///
-/// # Errors
-///
-/// The message to show when the settings could not be written, or changed
-/// while the choice was being made.
-pub fn choose_agent_model(
-    agent: &str,
-    model: Option<AgentModelOption>,
-) -> Result<agent_provider_config::ProviderConfig, String> {
-    let read = agent_provider_config::ProviderConfig::load();
-    let mut config = read.clone();
-    config.set_agent_model(
-        agent,
-        model.map(|model| agent_provider_config::AgentModel {
-            profile: model.profile,
-            model: model.model,
-        }),
-    )?;
-    if !config
-        .compare_save(&read)
-        .map_err(|error| error.to_string())?
-    {
-        return Err("Settings changed meanwhile; choose again".into());
-    }
-    Ok(config)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

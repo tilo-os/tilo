@@ -323,7 +323,6 @@ async fn set_under_agents(
                         .apply(
                             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                                 name: NonBlank::parse("Claude").unwrap(),
-                                keeper: None,
                                 id: Some("claude".into()),
                                 model: None,
                                 mcp_client: None,

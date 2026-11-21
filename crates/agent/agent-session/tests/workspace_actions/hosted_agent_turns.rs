@@ -102,7 +102,6 @@ pub(super) async fn make_agent(
     made.apply(
         WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
             name: ui::tilo_resource::NonBlank::parse("Scout").unwrap(),
-            keeper: None,
             id: Some(SCOUT.into()),
             model: None,
             mcp_client: None,

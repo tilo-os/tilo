@@ -155,7 +155,7 @@ impl ChatApp {
                 item
             })
             .chain(
-                self.own_agents_unlisted()
+                self.agents_unlisted()
                     .into_iter()
                     .map(|(id, name, agent)| {
                         NavItem::new(channel_place(id.as_str()), &name)

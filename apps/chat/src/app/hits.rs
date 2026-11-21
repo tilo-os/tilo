@@ -15,7 +15,7 @@ use super::{ChatApp, MenuAction};
 pub(crate) enum Hit {
     ModelStream(String),
     /// Choose the model the agent whose conversation is in view answers with;
-    /// `None` follows its keeper's default again.
+    /// `None` follows the workspace's default again.
     AgentModel(Option<String>),
     Channel(Id),
     /// Make a channel in a category.

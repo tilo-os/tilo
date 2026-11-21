@@ -162,7 +162,6 @@ class Sub(TypedDict):
 
 CreateAgentArgs = TypedDict("CreateAgentArgs", {
     "name": "str",
-    "keeper": NotRequired["str | None"],
     "id": NotRequired["str | None"],
     "model": NotRequired["str | None"],
     "mcp_client": NotRequired["str | None"],
@@ -275,17 +274,16 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Window(Resource):
     """Assistant window — `assistant.window`."""
-    __surface__ = "so.tilo.assistant@00da61977310623e"
+    __surface__ = "so.tilo.assistant@3278f28281833894"
 
 class WorkspaceAgent(Resource):
     """Agents — `tilo.workspace.agent`."""
-    __surface__ = "so.tilo.assistant@00da61977310623e"
+    __surface__ = "so.tilo.assistant@3278f28281833894"
     agents: list[Entry[Agent]]
 
     def create_agent(self,
         *,
         name: str,
-        keeper: str | None = None,
         id: str | None = None,
         model: str | None = None,
         mcp_client: str | None = None,
@@ -293,8 +291,6 @@ class WorkspaceAgent(Resource):
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["name"] = name
-        if keeper is not None:
-            args["keeper"] = keeper
         if id is not None:
             args["id"] = id
         if model is not None:

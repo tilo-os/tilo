@@ -2141,10 +2141,7 @@ impl Workspaces {
         self.found_retained(workspace, &state, &retained).await;
         let mut governed = state.lock().await;
         self.recall_retained(&mut governed, retained).await;
-        let mut gone = std::collections::BTreeSet::new();
-        self.retry_held(&mut governed, &mut gone).await;
-        drop(governed);
-        self.retire_kept_agents(workspace, &gone).await;
+        self.retry_held(&mut governed).await;
     }
 
     /// Ask the key holders of `app`'s `record`'s channel in `workspace` to
@@ -2444,31 +2441,21 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut workspace = workspace.lock().await;
-        let mut gone = std::collections::BTreeSet::new();
-        if !self
-            .take_topology(&mut workspace, author, message, &mut gone)
-            .await?
-        {
+        if !self.take_topology(&mut workspace, author, message).await? {
             // Held back for history this device lacks: the history the
             // server keeps is taken in again, and the change with it.
             self.replay_soon(workspace.workspace().to_owned());
             return Ok(());
         }
-        self.retry_held(&mut workspace, &mut gone).await;
-        let identity = workspace.workspace().to_owned();
+        self.retry_held(&mut workspace).await;
         drop(workspace);
-        self.retire_kept_agents(&identity, &gone).await;
         Ok(())
     }
 
     /// Try again the changes held back for history (`take_topology`), now
     /// that something landed: those whose history arrived are taken in, the
-    /// others held on. The people those changes removed are added to `gone`.
-    async fn retry_held(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        gone: &mut std::collections::BTreeSet<[u8; 32]>,
-    ) {
+    /// others held on.
+    async fn retry_held(&self, workspace: &mut GovernedWorkspace) {
         loop {
             let held = workspace.holders.take_held();
             if held.is_empty() {
@@ -2476,7 +2463,7 @@ impl Workspaces {
             }
             let mut took = false;
             for (author, message) in held {
-                match self.take_topology(workspace, author, message, gone).await {
+                match self.take_topology(workspace, author, message).await {
                     Ok(taken) => took |= taken,
                     Err(error) => {
                         tracing::warn!(workspace = %workspace.workspace(), %error, "a change held back for its history was refused");
@@ -2495,14 +2482,12 @@ impl Workspaces {
     /// builds on history this device lacks is held back
     /// ([`holding::Holders::hold`]) until that history arrives, and the
     /// workspace's copy status says so; a member's windows built on a
-    /// history the workspace started over from are refused. The people the
-    /// change removed from the workspace are added to `removed`.
+    /// history the workspace started over from are refused.
     async fn take_topology(
         &self,
         workspace: &mut GovernedWorkspace,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
-        gone: &mut std::collections::BTreeSet<[u8; 32]>,
     ) -> Result<bool, String> {
         let host = &self.inner.host;
         if let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message {
@@ -2574,7 +2559,6 @@ impl Workspaces {
         }
         let removed = removed.into_inner();
         workspace.keep_out_removed(&removed, author_person, tilo_clock::unix_now_ns())?;
-        gone.extend(removed);
         self.settle(workspace).await?;
         Ok(true)
     }

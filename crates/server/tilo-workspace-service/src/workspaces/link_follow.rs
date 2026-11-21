@@ -460,13 +460,9 @@ impl Workspaces {
         workspace: &mut GovernedWorkspace,
         windows: Vec<([u8; 32], NeighbourMsg)>,
     ) {
-        let mut gone = std::collections::BTreeSet::new();
         let mut taken = 0_usize;
         for (author, message) in windows {
-            match self
-                .take_topology(workspace, author, message, &mut gone)
-                .await
-            {
+            match self.take_topology(workspace, author, message).await {
                 Ok(true) => taken = taken.saturating_add(1),
                 Ok(false) => {}
                 Err(error) => {
@@ -476,10 +472,6 @@ impl Workspaces {
         }
         if taken > 0 {
             tracing::info!(workspace = %workspace.workspace(), taken, "the governor took in members' changes it kept but had not committed");
-        }
-        if !gone.is_empty() {
-            let (workspaces, identity) = (self.clone(), workspace.workspace().to_owned());
-            tokio::spawn(async move { workspaces.retire_kept_agents(&identity, &gone).await });
         }
     }
 

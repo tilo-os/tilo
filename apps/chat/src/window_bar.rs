@@ -301,7 +301,7 @@ impl ChatApp {
     }
 
     /// The agent `id` of the workspace's agents resource, once this
-    /// window holds it: what answers the conversation, its keeper and its
+    /// window holds it: what answers the conversation, who added it and its
     /// model.
     pub(crate) fn agent(&self, id: &str) -> Option<Agent> {
         let agents = self.agents.as_ref()?.open(&agents_document())?;
@@ -331,9 +331,15 @@ impl ChatApp {
             .label(chosen)
             .or_else(|| chosen.map(str::to_owned))
             .unwrap_or_else(|| crate::i18n::t("chat-agent-model"));
-        let mine = self.me.id.person_id() == Some(agent.keeper.as_str());
+        // The model is the workspace's choice for its agent: whoever the workspace's grants let
+        // change its agents chooses it.
+        let may_choose = self
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.open(&agents_document()))
+            .is_some_and(|agents| agents.may("set-agent-model"));
         let mut items = Vec::new();
-        if mine {
+        if may_choose {
             let current = chosen
                 .and_then(|named| self.models.find(named))
                 .or_else(|| {
@@ -394,8 +400,8 @@ impl ChatApp {
     }
 
     /// Choose the model the agent of the conversation in view answers with,
-    /// through the workspace's agents resource: `None` follows its
-    /// keeper's default again.
+    /// through the workspace's agents resource: `None` follows the
+    /// workspace's default again.
     pub(crate) fn choose_agent_model(&self, model: Option<String>) {
         let Some(agent) = self.conversation_agent() else {
             return;
@@ -499,7 +505,6 @@ mod tests {
         agents
             .invoke(&WorkspaceAgents::CREATE_AGENT.with(CreateAgent {
                 name: NonBlank::parse("Assistant").expect("a name"),
-                keeper: None,
                 id: Some("assistant".to_owned()),
                 model: None,
                 mcp_client: None,

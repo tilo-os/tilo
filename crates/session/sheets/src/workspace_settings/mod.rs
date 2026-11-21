@@ -178,7 +178,7 @@ pub enum WorkspaceSettingsEffect {
     AddAgent {
         #[param("The new agent's name, as people read it")]
         name: String,
-        #[param("The model it plans with; empty for the keeper's default")]
+        #[param("The model it plans with; empty for the workspace's default")]
         model: String,
     },
     /// Show what an agent may do in the workspace, app by app
@@ -893,7 +893,7 @@ struct Parts {
     role_name: LocalState<String>,
     /// The model a new agent plans with as chosen.
     new_model: LocalState<String>,
-    /// What an agent may spend a day as its keeper typed it.
+    /// What an agent may spend a day, as typed.
     limit: LocalState<String>,
     /// The site another server is added by, as typed.
     server_origin: LocalState<String>,

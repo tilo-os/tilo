@@ -32,7 +32,6 @@ pub(super) async fn keeps_an_assistant(
         made.apply(
             WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
                 name: tilo_resource::NonBlank::parse("Assistant").unwrap(),
-                keeper: None,
                 id: Some(ASSISTANT.into()),
                 model: None,
                 mcp_client: None,

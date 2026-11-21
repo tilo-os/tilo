@@ -27,15 +27,15 @@ pub(crate) struct Assistant {
     /// Its id in the workspace's agents; its actor is `agent:<id>`.
     pub(crate) id: String,
     pub(crate) name: String,
-    /// The model its keeper chose for it, as `provider/model`; `None` follows the keeper's
-    /// choice for each kind of work.
+    /// The model the workspace chose for it, as `provider/model`; `None` follows the
+    /// workspace's choice for each kind of work.
     pub(crate) model: Option<String>,
     /// What it spent today, in millionths of the currency.
     pub(crate) spent_micros: u64,
     /// The most it may spend in a day; `None` is unmetered.
     pub(crate) limit_micros: Option<u64>,
-    /// Whether the workspace's host runs it, around the clock, rather than its keeper's own
-    /// devices while one of them is on.
+    /// Whether the workspace's host runs it, around the clock, rather than a member's device
+    /// while one is on.
     pub(crate) on_host: bool,
 }
 
@@ -52,13 +52,12 @@ impl Assistant {
     }
 }
 
-/// The person's assistant among the workspace's `agents`: the agent `me` keeps that no MCP
-/// client connects as, working here, the one made first. A person who keeps none has none.
-pub(crate) fn assistant(agents: &WorkspaceAgents, me: &MemberId, day: &str) -> Option<Assistant> {
-    let person = me.person_id()?;
+/// The workspace's assistant among its `agents`: the agent no MCP client connects as, working
+/// here, the one made first. A workspace that has none has none.
+pub(crate) fn assistant(agents: &WorkspaceAgents, day: &str) -> Option<Assistant> {
     agents
         .made_by_people()
-        .filter(|agent| agent.keeper == person && agent.mcp_client.is_none())
+        .filter(|agent| agent.mcp_client.is_none())
         .min_by(|a, b| {
             a.created_at
                 .cmp(&b.created_at)
@@ -185,7 +184,6 @@ pub(crate) struct Reads {
     /// read: a document still on its way when the window opened is read once it is here, by
     /// every part of the view and every effect.
     agents: ui::framework::ResourceOpener<WorkspaceAgents>,
-    me: Option<MemberId>,
 }
 
 impl Reads {
@@ -193,7 +191,6 @@ impl Reads {
         Self {
             staged: cx.fixture::<Staged>(),
             agents: cx.resource_opener(workspace_agent::OWNER),
-            me: cx.me().cloned(),
         }
     }
 
@@ -203,16 +200,16 @@ impl Reads {
             .open(&ui::resource::workspace::document_id(workspace_agent::KIND))
     }
 
-    /// The person's assistant in this workspace; `Here(None)` when they keep none.
+    /// The workspace's assistant; `Here(None)` when it has none.
     pub(crate) fn assistant(&self) -> Read<Option<Assistant>> {
         if let Some(staged) = &self.staged {
             return Read::Here(staged.assistant.clone());
         }
-        let (Some(agents), Some(me)) = (self.agents(), &self.me) else {
+        let Some(agents) = self.agents() else {
             return Read::NotHere;
         };
         let day = ui::clock::today().to_string();
-        Read::Here(assistant(&agents.get(), me, &day))
+        Read::Here(assistant(&agents.get(), &day))
     }
 
     /// The sub-agents the main agent started, read from the workspace's agents document.
@@ -220,12 +217,12 @@ impl Reads {
         if let Some(staged) = &self.staged {
             return Read::Here(staged.sub_agents.clone());
         }
-        let (Some(agents), Some(me)) = (self.agents(), &self.me) else {
+        let Some(agents) = self.agents() else {
             return Read::NotHere;
         };
         let state = agents.get();
         let day = ui::clock::today().to_string();
-        let Some(main) = assistant(&state, me, &day) else {
+        let Some(main) = assistant(&state, &day) else {
             return Read::Here(Vec::new());
         };
         let listed = state
@@ -313,44 +310,29 @@ mod tests {
     }
 
     #[test]
-    fn the_assistant_is_the_first_agent_the_person_keeps_that_no_client_connects_as() {
-        let me = MemberId::person(ME.repeat(32));
+    fn the_assistant_is_the_workspaces_first_agent_no_client_connects_as() {
         let mine = ME.repeat(32);
         let other = "bb".repeat(32);
         let mut client = agent("claude-code", &mine, 1);
         client.mcp_client = Some("Claude Code".to_owned());
         let mut retired = agent("old", &mine, 2);
         retired.state = AgentState::Retired;
-        let mut paid = agent("assistant", &mine, 5);
+        // Made by another member: it is the workspace's all the same.
+        let mut paid = agent("assistant", &other, 5);
         paid.spend_limit_micros = Some(10_000_000);
         paid.spent = Some(workspace_agent::Spent {
             day: "2026-11-17".to_owned(),
             cost_micros: 3_120_000,
         });
-        let record = agents(vec![
-            agent("theirs", &other, 0),
-            client,
-            retired,
-            agent("later", &mine, 9),
-            paid,
-        ]);
-        let found = assistant(&record, &me, "2026-11-17").expect("the person keeps one");
+        let record = agents(vec![client, retired, agent("later", &mine, 9), paid]);
+        let found = assistant(&record, "2026-11-17").expect("the workspace has one");
         assert_eq!(found.id, "assistant");
         assert_eq!(found.spent_micros, 3_120_000);
         assert_eq!(found.limit_micros, Some(10_000_000));
         // Another day starts at nothing spent.
-        let next = assistant(&record, &me, "2026-11-18").expect("the person keeps one");
+        let next = assistant(&record, "2026-11-18").expect("the workspace has one");
         assert_eq!(next.spent_micros, 0);
-        // Someone who keeps none has none, and an agent is nobody's keeper.
-        let nobody = MemberId::person("cc".repeat(32));
-        assert_eq!(assistant(&record, &nobody, "2026-11-17"), None);
-        assert_eq!(
-            assistant(
-                &record,
-                &MemberId::agent("assistant".to_owned()),
-                "2026-11-17"
-            ),
-            None
-        );
+        // A workspace with no agent of its own has none.
+        assert_eq!(assistant(&agents(Vec::new()), "2026-11-17"), None);
     }
 }
