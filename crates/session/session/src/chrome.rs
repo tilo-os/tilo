@@ -655,9 +655,13 @@ impl ChromeSource for SessionChrome {
     /// A workspace that exists comes on the shell once this device's engine holds it: entered
     /// from the person's list or joined by an invitation, the session puts it there itself. One
     /// it holds nothing of would be founded here afresh under the existing workspace's id.
+    ///
+    /// A session that takes no part in the peer network holds none of a workspace it joined and
+    /// reaches no host to hand it one: it shows the workspace with what this computer keeps of
+    /// it, as a join here has always left it, and nothing of it leaves this machine.
     fn may_open_workspace(&self, workspace: tilo_desktop_model::WorkspaceId) -> Result<(), String> {
         match &self.engine {
-            Some(engine) if !engine.holds(workspace) => {
+            Some(engine) if self.sync.is_some() && !engine.holds(workspace) => {
                 Err(tilo_desktop_surface::i18n::t("desktop-workspace-not-held"))
             }
             _ => Ok(()),
