@@ -224,13 +224,8 @@ impl DeviceWrites for HeldDocuments {
     fn write(
         &self,
         workspace: &str,
-        app: &str,
-        document: &str,
-        readers: Option<&str>,
         changes: &[u8],
-        founding: bool,
-        snapshot: bool,
-        sealed: Option<&key_group::ContentKeys>,
+        writing: tilo_peer_state::workspace_documents::DocumentWriting<'_>,
     ) -> DocumentWrite {
         let Some(signer) = self.signer.clone() else {
             return Box::pin(async {
@@ -253,13 +248,13 @@ impl DeviceWrites for HeldDocuments {
             signer,
             workspace,
             tilo_peer_state::owner::LocalWrite {
-                app,
-                document,
-                readers,
+                app: writing.app,
+                document: writing.document,
+                readers: writing.readers,
                 changes,
-                founding,
-                snapshot,
-                sealed,
+                founding: writing.founding,
+                snapshot: writing.snapshot,
+                sealed: writing.sealed,
                 now: tilo_clock::wall(),
             },
         )
@@ -459,13 +454,15 @@ mod tests {
         let (change, _) = write_front(&current, &SigningKey::from_bytes(&[2; 32]), "Mine");
         let written = futures::executor::block_on(holder.write(
             WORKSPACE,
-            DESKTOP_APP,
-            DESKTOP_DOCUMENT,
-            None,
             &change,
-            false,
-            false,
-            None,
+            tilo_peer_state::workspace_documents::DocumentWriting {
+                app: DESKTOP_APP,
+                document: DESKTOP_DOCUMENT,
+                readers: None,
+                founding: false,
+                snapshot: false,
+                sealed: None,
+            },
         ));
         assert!(
             written.is_ok(),
@@ -503,13 +500,15 @@ mod tests {
         checkpointed.commit();
         let written = futures::executor::block_on(holder.write(
             WORKSPACE,
-            DESKTOP_APP,
-            DESKTOP_DOCUMENT,
-            None,
             &checkpointed.save(),
-            false,
-            true,
-            None,
+            tilo_peer_state::workspace_documents::DocumentWriting {
+                app: DESKTOP_APP,
+                document: DESKTOP_DOCUMENT,
+                readers: None,
+                founding: false,
+                snapshot: true,
+                sealed: None,
+            },
         ));
         assert!(
             written.is_ok(),

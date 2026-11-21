@@ -126,36 +126,42 @@ pub type DocumentServing =
 pub type DocumentServing =
     std::pin::Pin<Box<dyn std::future::Future<Output = DocumentServed> + 'static>>;
 
+/// What a write names besides the workspace and the changes themselves: the record it is of, who
+/// reads it, and how it carries its changes there.
+#[derive(Clone, Copy)]
+pub struct DocumentWriting<'a> {
+    /// The app whose record this is.
+    pub app: &'a str,
+    /// The document of that app.
+    pub document: &'a str,
+    /// The members who read it, where only some do.
+    pub readers: Option<&'a str>,
+    /// Whether this is the document's founding write: the whole document, which the workspace
+    /// must not hold yet.
+    pub founding: bool,
+    /// Whether what is written is the whole document: a founding, or a checkpoint of one the
+    /// workspace holds already.
+    pub snapshot: bool,
+    /// The keys of the document's group, where the workspace seals its documents.
+    pub sealed: Option<&'a key_group::ContentKeys>,
+}
+
 /// The documents of the workspaces a device's service holds, written as that device itself: what
 /// the session's own roles write on work of their own, without an app or a peer asking.
 ///
 /// A write is signed and sealed as the device the service serves, so the workspace keeps it as
 /// any of that device's writes and carries it to the workspace's other devices.
 pub trait DeviceWrites: collab_types::signer::MaybeSendSync + 'static {
-    /// Write `changes` to `app`'s `document` of `workspace`: the document's founding write when
-    /// `founding` (the whole document, which the workspace must not hold yet), a change of it
-    /// otherwise; the whole document when `snapshot` (a founding, or a checkpoint of one the
-    /// workspace holds already), its changes otherwise; kept for `readers` where only some members
-    /// read it, sealed under `sealed` (the keys of the document's group) where the workspace seals
-    /// its documents.
+    /// Write `changes` to `workspace`'s document of [`DocumentWriting`]: its founding write when
+    /// `writing.founding` (the whole document, which the workspace must not hold yet), a change
+    /// of it otherwise; the whole document when `writing.snapshot` (a founding, or a checkpoint
+    /// of one the workspace holds already), its changes otherwise; kept for `writing.readers`
+    /// where only some members read it, sealed under `writing.sealed` (the keys of the document's
+    /// group) where the workspace seals its documents.
     ///
     /// Answers the write as this device's apps take a member's: the signed op its holder admitted,
     /// and the author's access in the workspace.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one write names the record, its readers, its changes and how it carries them"
-    )]
-    fn write(
-        &self,
-        workspace: &str,
-        app: &str,
-        document: &str,
-        readers: Option<&str>,
-        changes: &[u8],
-        founding: bool,
-        snapshot: bool,
-        sealed: Option<&key_group::ContentKeys>,
-    ) -> DocumentWrite;
+    fn write(&self, workspace: &str, changes: &[u8], writing: DocumentWriting<'_>) -> DocumentWrite;
 
     /// The wait for the device serving `workspace` to answer every write this device made to
     /// `documents` — each an app and a document of it — before this call: the wait answers `Ok`

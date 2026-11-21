@@ -130,13 +130,15 @@ async fn write_front(workspaces: &Workspaces, what: &str, want: &str) {
     ServiceWrites::of(workspaces.clone())
         .write(
             &WORKSPACE.to_string(),
-            DESKTOP_APP,
-            DESKTOP_DOCUMENT,
-            None,
             &changes,
-            founding,
-            founding,
-            Some(&sealed),
+            tilo_peer_state::workspace_documents::DocumentWriting {
+                app: DESKTOP_APP,
+                document: DESKTOP_DOCUMENT,
+                readers: None,
+                founding,
+                snapshot: founding,
+                sealed: Some(&sealed),
+            },
         )
         .await
         .unwrap_or_else(|refusal| panic!("{what}: {refusal:?}"));
@@ -344,13 +346,15 @@ async fn write_note(workspaces: &Workspaces, note: &str, title: &str) {
         ServiceWrites::of(workspaces.clone())
             .write(
                 &WORKSPACE.to_string(),
-                NOTES,
-                note,
-                None,
                 &changes,
-                founding,
-                founding,
-                Some(&sealed),
+                tilo_peer_state::workspace_documents::DocumentWriting {
+                    app: NOTES,
+                    document: note,
+                    readers: None,
+                    founding,
+                    snapshot: founding,
+                    sealed: Some(&sealed),
+                },
             )
             .await
             .unwrap_or_else(|refusal| panic!("the note {note}: {refusal:?}"));

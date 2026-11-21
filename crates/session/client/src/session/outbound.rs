@@ -384,13 +384,15 @@ impl Task {
             .document_writes()
             .write(
                 &route.cluster_id,
-                &route.app_id,
-                &route.document,
-                None,
                 changes,
-                founding,
-                snapshot,
-                Some(&keys),
+                tilo_peer_state::workspace_documents::DocumentWriting {
+                    app: &route.app_id,
+                    document: &route.document,
+                    readers: None,
+                    founding,
+                    snapshot,
+                    sealed: Some(&keys),
+                },
             )
             .await;
         match written {

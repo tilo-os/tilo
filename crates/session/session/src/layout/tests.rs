@@ -495,24 +495,19 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
     fn write(
         &self,
         workspace: &str,
-        app: &str,
-        document: &str,
-        readers: Option<&str>,
         changes: &[u8],
-        founding: bool,
-        snapshot: bool,
-        sealed: Option<&key_group::ContentKeys>,
+        writing: tilo_peer_state::workspace_documents::DocumentWriting<'_>,
     ) -> tilo_peer_state::workspace_documents::DocumentWrite {
         let hold = Arc::clone(&self.hold);
         let inner = Arc::clone(&self.inner);
         let (workspace, app, document, changes, sealed) = (
             workspace.to_owned(),
-            app.to_owned(),
-            document.to_owned(),
+            writing.app.to_owned(),
+            writing.document.to_owned(),
             changes.to_vec(),
-            sealed.cloned(),
+            writing.sealed.cloned(),
         );
-        let readers = readers.map(str::to_owned);
+        let readers = writing.readers.map(str::to_owned);
         Box::pin(async move {
             std::future::poll_fn(move |context| {
                 if hold.held() {
@@ -530,13 +525,15 @@ impl tilo_peer_state::workspace_documents::DeviceWrites for HeldWrites {
             inner
                 .write(
                     &workspace,
-                    &app,
-                    &document,
-                    readers.as_deref(),
                     &changes,
-                    founding,
-                    snapshot,
-                    sealed.as_ref(),
+                    tilo_peer_state::workspace_documents::DocumentWriting {
+                        app: &app,
+                        document: &document,
+                        readers: readers.as_deref(),
+                        founding: writing.founding,
+                        snapshot: writing.snapshot,
+                        sealed: sealed.as_ref(),
+                    },
                 )
                 .await
         })

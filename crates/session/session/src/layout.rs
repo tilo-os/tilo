@@ -454,13 +454,15 @@ impl Save {
         let took = writes
             .write(
                 &workspace_id.to_string(),
-                DESKTOP_APP,
-                DESKTOP_DOCUMENT,
-                None,
                 &changes,
-                founding,
-                founding,
-                Some(&sealed),
+                tilo_peer_state::workspace_documents::DocumentWriting {
+                    app: DESKTOP_APP,
+                    document: DESKTOP_DOCUMENT,
+                    readers: None,
+                    founding,
+                    snapshot: founding,
+                    sealed: Some(&sealed),
+                },
             )
             .await;
         Laid::Wrote(Box::new(Taken {
@@ -2317,13 +2319,15 @@ impl Layouts {
             writes
                 .write(
                     &workspace,
-                    app,
-                    &document,
-                    None,
                     &changes,
-                    founding,
-                    founding,
-                    Some(&sealed),
+                    tilo_peer_state::workspace_documents::DocumentWriting {
+                        app,
+                        document: &document,
+                        readers: None,
+                        founding,
+                        snapshot: founding,
+                        sealed: Some(&sealed),
+                    },
                 )
                 .await
         });

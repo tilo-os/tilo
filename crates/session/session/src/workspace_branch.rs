@@ -184,13 +184,15 @@ async fn found(
     writes
         .write(
             &workspace.to_string(),
-            app,
-            document,
-            None,
             changes,
-            true,
-            true,
-            sealed.as_ref(),
+            tilo_peer_state::workspace_documents::DocumentWriting {
+                app,
+                document,
+                readers: None,
+                founding: true,
+                snapshot: true,
+                sealed: sealed.as_ref(),
+            },
         )
         .await
         .map(|_| ())
@@ -1534,13 +1536,8 @@ mod tests {
         fn write(
             &self,
             _: &str,
-            _: &str,
-            _: &str,
-            _: Option<&str>,
             _: &[u8],
-            _: bool,
-            _: bool,
-            _: Option<&key_group::ContentKeys>,
+            _: tilo_peer_state::workspace_documents::DocumentWriting<'_>,
         ) -> tilo_peer_state::workspace_documents::DocumentWrite {
             Box::pin(async {
                 Err(tilo_peer_state::owner::WriteRefusal::Refused(
@@ -1652,13 +1649,15 @@ mod tests {
                 .expect("the app runtime")
                 .block_on(self.service.writes().write(
                     &workspace.to_string(),
-                    app,
-                    record,
-                    None,
                     &doc.save_after(&[]),
-                    true,
-                    true,
-                    Some(&keys),
+                    tilo_peer_state::workspace_documents::DocumentWriting {
+                        app,
+                        document: record,
+                        readers: None,
+                        founding: true,
+                        snapshot: true,
+                        sealed: Some(&keys),
+                    },
                 ))
                 .expect("the app runtime runs the write")
                 .expect("the workspace takes the record");

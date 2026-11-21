@@ -198,13 +198,15 @@ async fn write_front(workspaces: &tilo_server::workspaces::Workspaces, what: &st
     ServiceWrites::of(workspaces.clone())
         .write(
             &WORKSPACE.to_string(),
-            DESKTOP_APP,
-            DESKTOP_DOCUMENT,
-            None,
             &changes,
-            founding,
-            founding,
-            Some(&sealed),
+            tilo_peer_state::workspace_documents::DocumentWriting {
+                app: DESKTOP_APP,
+                document: DESKTOP_DOCUMENT,
+                readers: None,
+                founding,
+                snapshot: founding,
+                sealed: Some(&sealed),
+            },
         )
         .await
         .unwrap_or_else(|refusal| panic!("{what}: {refusal:?}"));

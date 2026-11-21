@@ -33,13 +33,8 @@ impl DeviceWrites for EngineWrites {
     fn write(
         &self,
         workspace: &str,
-        app: &str,
-        document: &str,
-        readers: Option<&str>,
         changes: &[u8],
-        founding: bool,
-        snapshot: bool,
-        sealed: Option<&key_group::ContentKeys>,
+        writing: tilo_peer_state::workspace_documents::DocumentWriting<'_>,
     ) -> DocumentWrite {
         let Some(workspace_id) = WorkspaceId::parse(workspace) else {
             let named = workspace.to_owned();
@@ -63,13 +58,13 @@ impl DeviceWrites for EngineWrites {
             Arc::clone(&identity.signer),
             workspace,
             LocalWrite {
-                app,
-                document,
-                readers,
+                app: writing.app,
+                document: writing.document,
+                readers: writing.readers,
                 changes,
-                founding,
-                snapshot,
-                sealed,
+                founding: writing.founding,
+                snapshot: writing.snapshot,
+                sealed: writing.sealed,
                 now: crate::clock::system_time(tilo_clock::unix_now_ns()),
             },
         )

@@ -578,13 +578,15 @@ impl Worker {
             };
             let write = writes.write(
                 &route.cluster_id,
-                &route.app_id,
-                &route.document,
-                None,
                 &changes,
-                founding,
-                snapshot,
-                sealed.as_ref(),
+                tilo_peer_state::workspace_documents::DocumentWriting {
+                    app: &route.app_id,
+                    document: &route.document,
+                    readers: None,
+                    founding,
+                    snapshot,
+                    sealed: sealed.as_ref(),
+                },
             );
             self.own_device
                 .runtime

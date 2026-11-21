@@ -635,13 +635,15 @@ impl Inner {
                 writes
                     .write(
                         &writing_key.0,
-                        &writing_key.1,
-                        &writing_key.2,
-                        None,
                         &changes,
-                        founding,
-                        founding,
-                        sealed.as_ref(),
+                        tilo_peer_state::workspace_documents::DocumentWriting {
+                            app: &writing_key.1,
+                            document: &writing_key.2,
+                            readers: None,
+                            founding,
+                            snapshot: founding,
+                            sealed: sealed.as_ref(),
+                        },
                     )
                     .await
             });
@@ -756,13 +758,15 @@ impl Inner {
                     writes
                         .write(
                             &writing_key.0,
-                            &writing_key.1,
-                            &writing_key.2,
-                            None,
                             &changes,
-                            founding,
-                            snapshot,
-                            sealed.as_ref(),
+                            tilo_peer_state::workspace_documents::DocumentWriting {
+                                app: &writing_key.1,
+                                document: &writing_key.2,
+                                readers: None,
+                                founding,
+                                snapshot,
+                                sealed: sealed.as_ref(),
+                            },
                         )
                         .await
                 });
