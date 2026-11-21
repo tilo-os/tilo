@@ -1,14 +1,13 @@
 use super::*;
-
 use tilo_enrollment::approval::{ApprovalOptions, register_home_peer};
 use tilo_enrollment::protocol::{
-    Approver, Response, ResponseRoute, decrypt_pair_offer, decrypt_request, encrypt_response,
-    make_finalized, v2_body, verify_ack,
+    Approver, Response, ResponseRoute, decrypt_pair_offer, decrypt_request, decrypt_response,
+    encrypt_response, make_finalized, v2_body, verify_ack,
 };
 
 use tilo_enrollment::ISSUANCE_CLOCK_ALLOWANCE_NS;
-use tilo_enrollment::response_statement_digest;
 use tilo_enrollment::sign_response;
+use tilo_enrollment::{open_answer, response_statement_digest, verify_response};
 use tilo_identity::certification_ceremony::pairing_code;
 use tilo_server::HomePeerRegistration;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -1941,20 +1940,27 @@ tilo_test_env::scenario! {
         let (bytes, response_secret) =
             encrypt_request(&sample_request(), issuer.verifying_key().to_bytes()).unwrap();
         assert_eq!(&bytes[..8], b"TLOENRL\x02");
-        let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
+        let (mut request, route) = decrypt_request(&bytes, &issuer).unwrap();
         assert_eq!(request.token, "bearer");
-        let signed = sign_response(payload(&root), Approver::Root(&root)).unwrap();
+        let token = token(&root);
+        let mut payload = payload(&root);
+        payload.recipient_device_public_key = request.device_public_key;
+        payload.cert = root_signed(
+            &root,
+            request.device_public_key,
+            &request.label,
+            token.capabilities.clone(),
+            1,
+        );
+        let signed = sign_response(payload, Approver::Root(&root)).unwrap();
         let response =
-            encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route).unwrap();
+            encrypt_response(&signed, token.nonce, request.device_public_key, route).unwrap();
         assert!(v2_body(&response).is_some());
-        let opened = decrypt_response(
-            &response,
-            [3; 16],
-            device.verifying_key().to_bytes(),
-            &response_secret,
-        )
-        .unwrap();
-        verify_response(&opened, &token(&root)).unwrap();
+        let (opened, approver) = open_answer(&response, &token, &request, &response_secret).unwrap();
+        assert_eq!(opened.cert.device_public_key, request.device_public_key);
+        assert_eq!(approver, token.user_public_key);
+        request.server_node_id = [13; 32];
+        assert!(open_answer(&response, &token, &request, &response_secret).is_err());
         let other = tilo_seal::SecretKey::generate().unwrap();
         assert!(
             decrypt_response(

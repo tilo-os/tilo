@@ -330,6 +330,36 @@ pub fn verify_response(
     Ok((response.payload, issuer.device_public_key))
 }
 
+/// Open the answer to this device's enrollment request and verify the resulting certificate.
+///
+/// # Errors
+/// The answer cannot be opened, names another request or device, or has an invalid signature
+/// or certificate.
+pub fn open_answer(
+    bytes: &[u8],
+    token: &tilo_user_identity::EnrollmentToken,
+    request: &Request,
+    response_secret: &tilo_seal::SecretKey,
+) -> anyhow::Result<(ResponsePayload, [u8; 32])> {
+    let this_device = request.device_public_key;
+    let (payload, approver) =
+        protocol::decrypt_response(bytes, token.nonce, this_device, response_secret)
+            .and_then(|plaintext| verify_response(&plaintext, token))
+            .context("the approving device's answer did not verify")?;
+    let answers_this_request =
+        payload.nonce == token.nonce && payload.server_node_id == request.server_node_id;
+    let addressed_to_this_device = payload.recipient_device_public_key == this_device
+        && payload.cert.device_public_key == this_device;
+    let certifies_the_token = payload.cert.user_public_key == token.user_public_key
+        && payload.cert.capabilities == token.capabilities;
+    if !(answers_this_request && addressed_to_this_device && certifies_the_token) {
+        bail!("enrollment answer does not match this request");
+    }
+    tilo_user_identity::verify_device_cert_at(&payload.cert, now_ns()?)
+        .context("verify enrolled device certificate validity")?;
+    Ok((payload, approver))
+}
+
 /// A window in which no machine or device answered.
 #[derive(Debug)]
 pub struct WindowClosed(pub &'static str);

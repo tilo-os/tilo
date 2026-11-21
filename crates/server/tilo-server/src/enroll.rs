@@ -35,8 +35,8 @@ use tilo_enrollment::approval::{
 };
 use tilo_enrollment::protocol::{
     EnrollmentKind, MAX_PACKET, NEARBY_PORT, PAIR_MAGIC, PairCandidate, PairSolicitation, Request,
-    ResponsePayload, decrypt_pair_offer, decrypt_response, encrypt_pair_offer, encrypt_request,
-    make_ack, verify_finalized,
+    ResponsePayload, decrypt_pair_offer, encrypt_pair_offer, encrypt_request, make_ack,
+    verify_finalized,
 };
 use tilo_enrollment::root::{RootSigner, load_root};
 use tilo_enrollment::transport;
@@ -44,7 +44,7 @@ use tilo_enrollment::{
     WindowClosed, deadline_after, fleet_store, hardware_summary, now_ns, personal_devices_of,
     public_identity_document, read_bounded_json, remember_personal_devices,
     restore_owner_from_parent, share_directory_like_parent, sign_root_cert, socket_timeout,
-    valid_solicitation, validity_start_ns, verify_response,
+    valid_solicitation, validity_start_ns,
 };
 use tilo_identity::enrollment::NonceStore;
 
@@ -1138,28 +1138,6 @@ fn prepare_join(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result<Pr
     })
 }
 
-/// Whether `payload` is this exchange's answer: it names this request, this
-/// device and this token's identity and capabilities, and its certificate is
-/// valid now.
-fn verify_answer(
-    payload: &ResponsePayload,
-    token: &tilo_user_identity::EnrollmentToken,
-    request: &Request,
-) -> anyhow::Result<()> {
-    let this_device = request.device_public_key;
-    let answers_this_request =
-        payload.nonce == token.nonce && payload.server_node_id == request.server_node_id;
-    let addressed_to_this_device = payload.recipient_device_public_key == this_device
-        && payload.cert.device_public_key == this_device;
-    let certifies_the_token = payload.cert.user_public_key == token.user_public_key
-        && payload.cert.capabilities == token.capabilities;
-    if !(answers_this_request && addressed_to_this_device && certifies_the_token) {
-        bail!("enrollment answer does not match this request");
-    }
-    verify_device_cert_at(&payload.cert, now_ns()?)
-        .context("verify enrolled device certificate validity")
-}
-
 /// What this machine installs once its signed answer arrived, whatever carried
 /// it: the home-peer configuration, its staged personal enrollment, and — once
 /// `confirm` has sent the acknowledgement and checked the approver's Finalized —
@@ -1372,18 +1350,11 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
             Ok((len, sender)) => {
                 let response_bytes = received_packet(&reply, len)?.to_vec();
                 validate_requester(requester_lease)?;
-                let Ok((payload, approver_public_key)) = decrypt_response(
-                    &response_bytes,
-                    token.nonce,
-                    device.verifying_key().to_bytes(),
-                    response_secret,
-                )
-                .and_then(|plaintext| verify_response(&plaintext, token)) else {
+                let Ok((payload, approver_public_key)) =
+                    tilo_enrollment::open_answer(&response_bytes, token, request, response_secret)
+                else {
                     continue;
                 };
-                if verify_answer(&payload, token, request).is_err() {
-                    continue;
-                }
                 let mut confirm = |ack: &[u8]| -> anyhow::Result<()> {
                     socket.set_read_timeout(Some(Duration::from_millis(300)))?;
                     // The approver commits (durable writes) before it sends

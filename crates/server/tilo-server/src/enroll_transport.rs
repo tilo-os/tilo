@@ -12,17 +12,14 @@ use tilo_user_identity::Dial;
 use anyhow::{Context, bail};
 
 use tilo_enrollment::protocol::{
-    PAIR_MAGIC, PairSolicitation, decrypt_pair_offer, decrypt_response, verify_finalized,
+    PAIR_MAGIC, PairSolicitation, decrypt_pair_offer, verify_finalized,
 };
 use tilo_enrollment::transport::{
     ALPN, address_of, dial_of, endpoint_for, parse_relay, receive, runtime, send,
 };
 use tilo_enrollment::{WindowClosed, socket_timeout};
 
-use crate::{
-    JoinOptions, PreparedJoin, install_answer, pairing_code, prepare_join, verify_answer,
-    verify_response,
-};
+use crate::{JoinOptions, PreparedJoin, install_answer, pairing_code, prepare_join};
 
 /// Enroll this machine over iroh, using `token_text`'s signed addresses: dial
 /// the person's devices in the order the token names them until one answers.
@@ -92,15 +89,8 @@ fn join_one(
         Ok::<_, anyhow::Error>((endpoint, connection, answered))
     })?;
     let (endpoint, connection, response_bytes) = connection;
-    let (payload, approver_public_key) = decrypt_response(
-        &response_bytes,
-        token.nonce,
-        device.verifying_key().to_bytes(),
-        response_secret,
-    )
-    .and_then(|plaintext| verify_response(&plaintext, token))
-    .context("the approving device's answer did not verify")?;
-    verify_answer(&payload, token, request)?;
+    let (payload, approver_public_key) =
+        tilo_enrollment::open_answer(&response_bytes, token, request, response_secret)?;
     let mut confirm = |ack: &[u8]| -> anyhow::Result<()> {
         let finalized = runtime.block_on(async {
             send(&connection, ack).await?;
@@ -196,15 +186,8 @@ pub(super) fn wait_for_approval(
             .map_err(|_| anyhow::anyhow!("the approving device did not answer"))??;
         Ok::<_, anyhow::Error>(answered)
     })?;
-    let (payload, approver_public_key) = decrypt_response(
-        &response_bytes,
-        token.nonce,
-        device.verifying_key().to_bytes(),
-        response_secret,
-    )
-    .and_then(|plaintext| verify_response(&plaintext, token))
-    .context("the approving device's answer did not verify")?;
-    verify_answer(&payload, token, request)?;
+    let (payload, approver_public_key) =
+        tilo_enrollment::open_answer(&response_bytes, token, request, response_secret)?;
     let mut confirm = |ack: &[u8]| -> anyhow::Result<()> {
         let finalized = runtime.block_on(async {
             send(&connection, ack).await?;
