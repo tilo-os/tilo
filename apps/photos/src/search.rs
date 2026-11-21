@@ -591,7 +591,7 @@ mod tests {
         LibraryPhoto::from_image(OpenImage::fixture(&format!("/pictures/{name}"), side, side))
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[allow(clippy::too_many_lines, reason = "several named cases of one scenario share its setup")]
     #[test]
     fn photo_search_is_unicode_safe_and_hits_resolve_to_canonical_resources() {
         let doc = open_doc("München-夏.png");
@@ -933,7 +933,7 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[allow(clippy::too_many_lines, reason = "several named cases of one scenario share its setup")]
     #[test]
     fn collection_and_late_search_hits_materialize_their_exact_resources() {
         let mut doc = crate::test_doc::new_doc();
