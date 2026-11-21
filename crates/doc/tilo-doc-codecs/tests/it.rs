@@ -16,8 +16,6 @@ static HEAP: heap::ThreadCounting = heap::ThreadCounting;
 
 #[path = "binary_inputs.rs"]
 mod binary_inputs;
-#[path = "codec_scaling.rs"]
-mod codec_scaling;
 #[path = "convergence.rs"]
 mod convergence;
 #[path = "docx_header_footer.rs"]

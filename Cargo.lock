@@ -22111,7 +22111,6 @@ dependencies = [
 name = "tilo-segment"
 version = "0.1.0"
 dependencies = [
- "image",
  "rten",
  "rten-tensor",
  "thiserror 2.0.21",

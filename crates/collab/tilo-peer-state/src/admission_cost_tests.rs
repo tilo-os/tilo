@@ -118,16 +118,6 @@ pub(crate) fn crowd(members: u32) -> (StatePeer, SigningKey, SystemTime) {
     (peer, authority, now)
 }
 
-fn time<T>(label: &str, members: u32, run: impl FnOnce() -> T) -> T {
-    let _ = crate::governance_work::take();
-    let started = Instant::now();
-    let value = run();
-    let took = started.elapsed();
-    let work = crate::governance_work::take();
-    eprintln!("COST members={members} {label} {took:?} {work:?}");
-    value
-}
-
 tilo_test_env::scenario! {
     #[allow(clippy::arithmetic_side_effects, reason = "test arithmetic in a phase's closure")]
     fn a_crowded_workspaces_governance_is_read_and_stored_by_what_changed;
@@ -257,48 +247,6 @@ tilo_test_env::scenario! {
             rebased >= 1 && rebased * 2 < 37,
             "a base is saved anew now and then, not with every change: {rebased} of 37"
         );
-    }
-}
-
-#[test]
-#[ignore = "a measurement: run with --ignored --nocapture"]
-fn admission_cost_breakdown() {
-    for members in [30, 300] {
-        let (peer, authority, now) = crowd(members);
-        let redemption = redemption(&peer, &authority, members, now_ns(now));
-        let mut next = time("clone", members, || peer.clone());
-        time("admit_invited_member", members, || {
-            next.governance_mut()
-                .admit_invited_member(&redemption, &authority, now)
-                .unwrap()
-        });
-        time("name_person", members, || {
-            next.governance_mut()
-                .name_person(
-                    redemption.certificate().user_public_key,
-                    "Newcomer",
-                    &authority,
-                    now,
-                )
-                .unwrap()
-        });
-        time("governed_access", members, || {
-            next.governance().governed_access(now).unwrap()
-        });
-        time("governed_access again", members, || {
-            next.governance().governed_access(now).unwrap()
-        });
-        time("governed_device_access", members, || {
-            next.governance().governed_device_access(now).unwrap()
-        });
-        time("governed_members", members, || {
-            next.governance().governed_members(now).unwrap()
-        });
-        time("permissions", members, || {
-            next.permissions(redemption.certificate().device_public_key, now)
-                .unwrap()
-        });
-        time("durable_parts", members, || next.durable_parts().unwrap());
     }
 }
 

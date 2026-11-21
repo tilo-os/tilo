@@ -544,8 +544,8 @@ tilo_test_env::scenario! {
 
     phase classifying_a_change_does_the_same_work_however_large_the_document;
     {
-        let (_, small) = classify_newest(50);
-        let (_, large) = classify_newest(20_000);
+        let small = classify_newest(50);
+        let large = classify_newest(20_000);
         assert_eq!(
             small,
             (1, 1),
@@ -558,10 +558,9 @@ tilo_test_env::scenario! {
     }
 }
 
-/// How long classifying the newest change of a document holding `count`
-/// marks takes, at best of several reads, and the operations and root-key
-/// lookups one classification does.
-fn classify_newest(count: usize) -> (std::time::Duration, (usize, usize)) {
+/// The operations and root-key lookups classifying the newest change of a
+/// document holding `count` marks does.
+fn classify_newest(count: usize) -> (usize, usize) {
     let mut doc = document();
     doc.set_actor(ActorId::from(ALICE));
     let map = marks(&mut doc);
@@ -577,26 +576,5 @@ fn classify_newest(count: usize) -> (std::time::Duration, (usize, usize)) {
     let document = doc.committed_document();
     KIND_WORK.with(|work| work.set((0, 0)));
     assert!(matches!(kind_in(document, &newest), Kind::Edit));
-    let work = KIND_WORK.with(std::cell::Cell::get);
-    let fastest = (0..5)
-        .map(|_| {
-            let start = std::time::Instant::now();
-            assert!(matches!(kind_in(document, &newest), Kind::Edit));
-            start.elapsed()
-        })
-        .min()
-        .unwrap();
-    (fastest, work)
-}
-
-#[test]
-#[ignore = "measurement; run with --ignored --nocapture"]
-fn classifying_a_change_costs_the_same_however_large_the_document() {
-    let (small, _) = classify_newest(50);
-    let (large, _) = classify_newest(20_000);
-    eprintln!("classifying one recolour: {small:?} beside 50 marks, {large:?} beside 20,000");
-    assert!(
-        large <= small * 4 + std::time::Duration::from_micros(200),
-        "classifying one recolour took {large:?} beside 20,000 marks and {small:?} beside 50"
-    );
+    KIND_WORK.with(std::cell::Cell::get)
 }

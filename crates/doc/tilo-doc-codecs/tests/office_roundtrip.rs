@@ -370,7 +370,7 @@ fn hostile_office_inputs_are_rejected() {
 /// insert — asserted **structurally** (a scan counter, order-key
 /// lengths) so a regression fails in a plain debug `cargo test`. The
 /// release build also round-trips the full book and reports its times;
-/// `codec_scaling` is the wall-clock measurement.
+/// The `codec_scaling` example is the wall-clock measurement.
 #[test]
 fn large_document_parse_and_serialize_does_constant_order_work() {
     use std::time::Instant;

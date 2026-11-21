@@ -13,7 +13,7 @@
 )]
 
 use std::io::Write as _;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc};
@@ -413,40 +413,6 @@ tilo_test_env::scenario! {
         }
         still_admits(&isolate);
     }
-}
-
-#[test]
-#[ignore = "timing, run by hand"]
-fn admission_latency() {
-    let isolate = isolate();
-    let mut doc = AutoCommit::new();
-    let list = doc.put_object(ROOT, "messages", ObjType::List).unwrap();
-    for i in 0..10_000 {
-        let m = doc.insert_object(&list, i, ObjType::Map).unwrap();
-        doc.put(
-            &m,
-            "text",
-            format!("message {i} with a realistic amount of text"),
-        )
-        .unwrap();
-        doc.commit();
-    }
-    let mut samples = Vec::new();
-    for round in 0..200 {
-        let change = remote_change(&mut doc, &format!("k{round}"));
-        let started = Instant::now();
-        isolate
-            .apply(&mut doc, &change, Dependencies::RequireComplete)
-            .unwrap();
-        samples.push(started.elapsed());
-    }
-    let first = samples[0];
-    samples.sort();
-    println!(
-        "10k-message document: first admission {first:?} (worker start and full rebuild), then median {:?}, p99 {:?}",
-        samples[samples.len() / 2],
-        samples[samples.len() * 99 / 100]
-    );
 }
 
 /// A list `[1]` by actor `aa`: the list is op 1, its item op 2.
