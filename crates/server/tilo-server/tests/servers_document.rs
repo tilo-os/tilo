@@ -676,18 +676,25 @@ async fn a_servers_workspace_founded_in_its_persons_name_is_founded_again_under_
         assert_eq!(founder(hosted, &admin).await, Some(alice.user_pk));
     }
 
+    // The other holder takes the new copy, its founder and its records in, before the founder
+    // names it among the copy's holders: that entry carries the address the holder answered the
+    // hand-over with, and reaches the holder after its copy. Each device holds the new founding
+    // once both have.
     tilo_test_env::within(
-        "both copies to be one founding of the first holder",
+        "both copies to be one founding of the first holder, which names both devices its holders",
         async {
             loop {
                 let mut founders = Vec::new();
                 let mut named = Vec::new();
+                let mut holding = Vec::new();
                 for hosted in [&one, &other] {
                     founders.push(founder(hosted, &admin).await);
                     named.push(named_servers(hosted).await);
+                    holding.push(servers::holds_admin(hosted.host.workspaces()).await);
                 }
                 if founders == [Some(first), Some(first)]
                     && named.iter().all(|named| named == &["desktop", "laptop"])
+                    && holding == [true, true]
                 {
                     break;
                 }
@@ -696,12 +703,6 @@ async fn a_servers_workspace_founded_in_its_persons_name_is_founded_again_under_
         },
     )
     .await;
-    for hosted in [&one, &other] {
-        assert!(
-            servers::holds_admin(hosted.host.workspaces()).await,
-            "each device holds the new founding"
-        );
-    }
 }
 
 /// The person's Servers workspace has one founder, the device that made it,
