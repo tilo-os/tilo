@@ -1751,10 +1751,6 @@ by = "os/tests/test_tls_registry_fixture.py"
 # or deleted, never listed here.
 
 [[unrequired]]
-suite = "tools/ci/test_airdrop_sender.py"
-reason = "needs the unmodified GPL-3.0 OpenDrop checkout at the exact revision it names (11fe7ba7), its Python dependencies, system libarchive/OpenSSL and loopback TLS sockets. The pinned upstream is gone: github.com/spieglt/OpenDrop answers 404, so no job can fetch the oracle; run it where that checkout is kept"
-
-[[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
 check = "image-web-entry"
