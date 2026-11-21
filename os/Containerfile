@@ -710,7 +710,8 @@ RUN --mount=type=secret,id=publisher_identity \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/tilo-runtime-account-capability /out/thin-apps/* \
-      && if [ -f /out/app-plan.json ] && [ "$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("tilolang", [])))' /out/app-plan.json)" != 0 ]; then \
+      && tilolang_packages="$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("tilolang", [])))' /out/app-plan.json 2>/dev/null || echo 0)" \
+      && if [ "$tilolang_packages" != 0 ]; then \
            . /build/tools/apps/tilolang_packages.sh \
            && tilolang_version="$(tilolang_runtime_version /out)" \
            && tilolang_bake_runtime /out/tilo-runtime-bundle /out/thin-apps/tilolang-app \
