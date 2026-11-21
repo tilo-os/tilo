@@ -32,6 +32,7 @@ use tilo_server::certify::ApproverDecision;
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig};
 use tilo_server_client::Approver;
+use std::sync::Arc;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
     sign_device_cert,
@@ -100,7 +101,7 @@ async fn main() {
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
-            wait_list: Default::default(),
+            wait_list: Arc::default(),
             link: None,
             site: None,
         })

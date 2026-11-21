@@ -8,6 +8,7 @@
 
 use tilo_server::web::{TlsSource, WebConfig};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::support::{enrol, start_host_plain};
@@ -58,7 +59,7 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
             plain_listen: Some("0.0.0.0:0".parse().unwrap()),
             public_origin: None,
             fetch_proxy: None,
-            wait_list: Default::default(),
+            wait_list: Arc::default(),
             link: None,
             site: None,
         })
