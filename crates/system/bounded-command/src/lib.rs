@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::time::Duration;
-use tilo_clock::time::Instant;
 
 use thiserror::Error;
 use zeroize::Zeroizing;
@@ -70,10 +69,9 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
         // SAFETY: the child was placed in its own pid-named process group; a
         // negative pid targets exactly that group.
         unsafe { libc::kill(group, libc::SIGTERM) };
-        let deadline = tilo_clock::now()
-            .checked_add(grace)
-            .unwrap_or_else(Instant::now);
-        while tilo_clock::now() < deadline {
+        // A grace past what the clock can name waits for the tree, as a timeout does.
+        let deadline = tilo_clock::now().checked_add(grace);
+        while deadline.is_none_or(|deadline| tilo_clock::now() < deadline) {
             // The leader exiting is not enough: a worker it started may still
             // be winding down in the group. Signal 0 only probes for one.
             // SAFETY: as above; signal 0 delivers nothing.
