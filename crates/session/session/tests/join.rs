@@ -356,6 +356,7 @@ fn settings_lists_shortcuts(
                 revision: None,
                 wait_ms: Some(5_000),
                 appearance: None,
+                signed: None,
             }),
         )
         .await;

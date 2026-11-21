@@ -501,6 +501,7 @@ pub fn record_invocation(
         on_behalf_of: None,
         wait_ms: Some(u32::try_from(MAX_REMOTE_WAIT.as_millis()).unwrap_or(u32::MAX)),
         appearance: None,
+        signed: None,
     }
 }
 

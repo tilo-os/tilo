@@ -58,6 +58,7 @@ async fn approval_publication_is_target_scoped_and_rejects_republish_and_peer_re
                     wait_ms: None,
                     appearance: None,
                     on_behalf_of: None,
+                    signed: None,
                 };
                 let binding = || {
                     fixture.state.approval_binding(

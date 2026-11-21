@@ -935,6 +935,7 @@ mod tests {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             },
         )
         .wait_timeout(tilo_test_env::hang_bound())
@@ -1189,6 +1190,7 @@ mod tests {
                             revision: None,
                             wait_ms: None,
                             appearance: None,
+                            signed: None,
                         },
                     )
                     .wait_timeout(tilo_test_env::hang_bound())
@@ -1288,6 +1290,7 @@ mod tests {
                 wait_ms: None,
                 appearance: None,
                 on_behalf_of: None,
+                signed: None,
             };
             let binding = state.approval_binding(&tilo_actions::MemberId::agent("scribe"), &workspace, &request);
             let approved = state.approval_confirmation(&binding).unwrap();
@@ -1992,6 +1995,7 @@ mod tests {
                     revision: None,
                     wait_ms: None,
                     appearance: None,
+                    signed: None,
                 },
             )
             .wait_timeout(tilo_test_env::hang_bound())
@@ -2774,6 +2778,7 @@ mod tests {
                     revision: None,
                     wait_ms: None,
                     appearance: None,
+                    signed: None,
                 },
             );
             wait_for_parked_launches(&state, &launches, 1);
@@ -2815,6 +2820,7 @@ mod tests {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             },
         )
     }

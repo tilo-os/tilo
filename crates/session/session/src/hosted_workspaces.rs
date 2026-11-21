@@ -652,6 +652,7 @@ fn record_request(
         revision: None,
         wait_ms: Some(20_000),
         appearance: None,
+        signed: None,
     }
 }
 

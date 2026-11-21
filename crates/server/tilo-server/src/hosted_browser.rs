@@ -2787,6 +2787,7 @@ mod tests {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             assert!(opens_browser(&open(
                 "app.so.tilo.browser",
@@ -2823,6 +2824,7 @@ mod tests {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             assert_eq!(
                 opens_linux_app(&open("app.so.tilo.linux", Some("org.gnome.TextEditor"))),

@@ -402,6 +402,7 @@ mod tests {
                 on_behalf_of: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             }))
             .expect("the session speaks");
         let event = peer.poll().into_iter().next().expect("an event");

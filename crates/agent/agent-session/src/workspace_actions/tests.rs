@@ -72,6 +72,7 @@ fn a_read_is_no_invocation_of_the_workspace() {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let read = request("read");
     let write = request("append-paragraph");
@@ -123,6 +124,7 @@ fn a_full_log_forgets_only_settled_invocations() {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let mut log = super::InvocationLog::default();
     let pending = request().invocation;
@@ -255,6 +257,7 @@ fn a_pending_write_settles_as_its_save_does() {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let log = Arc::new(Mutex::new(super::InvocationLog::default()));
     // Each write: its save's outcome, sent, dropped (`None`) or never said
@@ -391,6 +394,7 @@ fn a_request_waits_for_the_record_its_provider_names() {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let listing = |provider: Option<&str>| CatalogueQuery {
         provider: provider.map(str::to_owned),
@@ -771,6 +775,7 @@ fn a_follow_is_held_until_the_invocation_moves() {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         assert!(service.log().insert(&caller, request));
     };
@@ -871,6 +876,7 @@ fn a_write_answered_pending_is_done_only_once_it_is_saved() {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let log = Arc::new(Mutex::new(super::InvocationLog::default()));
     {

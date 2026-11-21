@@ -48,6 +48,7 @@ async fn take_on(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let Some(answer) = events.serve(
         workspace,
@@ -94,6 +95,7 @@ async fn take_as_turn(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     match events
         .invoke(workspace, caller, &Authority::Turn, &request)

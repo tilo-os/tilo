@@ -447,6 +447,7 @@ fn to_window(
         on_behalf_of: None,
         wait_ms: Some(HOLD_MS),
         appearance: None,
+        signed: None,
     }
 }
 

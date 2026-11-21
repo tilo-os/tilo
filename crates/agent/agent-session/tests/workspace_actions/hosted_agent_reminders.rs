@@ -107,6 +107,7 @@ impl Up {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let workspace = WorkspaceId::parse(workspace).unwrap();
         let receipt = match self

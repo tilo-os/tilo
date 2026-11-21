@@ -72,6 +72,7 @@ fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

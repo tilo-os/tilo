@@ -212,6 +212,7 @@ impl HostAsks {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let receipt = match host.invoke(&self.caller, request).await {
             Some(Ok(receipt)) => receipt,
@@ -1292,6 +1293,7 @@ fn answer(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

@@ -500,6 +500,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             assert!(matches!(
                 rig.state

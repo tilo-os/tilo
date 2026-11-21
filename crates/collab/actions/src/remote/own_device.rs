@@ -145,6 +145,7 @@ impl Checked {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }
     }
 }
@@ -252,6 +253,7 @@ mod tests {
                 revision: None,
                 wait_ms: Some(1),
                 appearance: None,
+                signed: None,
             };
             let forwarded = checked.forwarded("workspace-1", &original);
             assert_eq!(forwarded.invocation, original.invocation);

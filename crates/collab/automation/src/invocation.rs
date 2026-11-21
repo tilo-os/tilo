@@ -1923,6 +1923,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 revision: None,
                 wait_ms: None,
                 appearance,
+                signed: None,
             },
             result: descriptor.contract.result.clone(),
         })

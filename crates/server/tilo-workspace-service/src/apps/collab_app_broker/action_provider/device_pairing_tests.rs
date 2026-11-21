@@ -83,6 +83,7 @@ fn request(step: &str, confirmation: Option<Confirmation>) -> InvokeRequest {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

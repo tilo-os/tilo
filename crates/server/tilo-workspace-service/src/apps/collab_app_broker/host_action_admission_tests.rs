@@ -53,6 +53,7 @@ fn request(descriptor: &ActionDescriptor) -> InvokeRequest {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

@@ -477,6 +477,7 @@ impl Page {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }));
         let answered = self.receipt(invocation).await;
         let receipt = self.settle(answered).await;

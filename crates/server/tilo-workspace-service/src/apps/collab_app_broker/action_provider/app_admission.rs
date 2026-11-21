@@ -136,6 +136,7 @@ mod own_view_lookup_tests {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             let record = "record:so.tilo.notes:";
             let app = "application:workspace-1:so.tilo.notes:uuid:1";
@@ -238,6 +239,7 @@ mod invitation_request_tests {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }
     }
 
@@ -386,6 +388,7 @@ mod own_history_request_tests {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         })
     }
 

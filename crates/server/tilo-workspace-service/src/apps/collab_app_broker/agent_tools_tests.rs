@@ -136,6 +136,7 @@ fn step(id: u128, action: &str, argument: &serde_json::Value) -> InvokeRequest {
         on_behalf_of: None,
         appearance: None,
         wait_ms: None,
+        signed: None,
     }
 }
 

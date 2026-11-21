@@ -7119,6 +7119,7 @@ impl FrameHarness {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             },
         )?;
         self.invalidate_local();

@@ -415,6 +415,7 @@ fn ask(server: &str, operation: &ServerOperation) -> Result<ServerOperationResul
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     });
     let frame = RemoteActionFrame::new(message).encode()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -153,6 +153,7 @@ pub fn bridge_requests(workspace: &str, token: &str, server: &Server) -> [Invoke
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let mut secret = serde_json::Map::new();
     secret.insert("app".into(), crate::APP_ID.into());

@@ -1028,6 +1028,7 @@ impl Surfaces {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }));
         Some(id)
     }

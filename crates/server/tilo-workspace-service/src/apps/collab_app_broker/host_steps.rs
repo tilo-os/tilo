@@ -1123,6 +1123,7 @@ mod identity_admin_tests {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }
     }
 
@@ -1584,6 +1585,7 @@ mod settings_documents_tests {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }
     }
 

@@ -185,6 +185,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let mut pending = provider.invoke(&owner, request.clone());
     assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
@@ -633,6 +634,7 @@ fn the_session_hands_its_broker_the_round_its_workspaces_devices_answer() {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let run_here = |route: &Arc<dyn tilo_actions::offload::ActionOffload>, workspace: &str| {
         let answer = tilo_rt::app()

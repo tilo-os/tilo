@@ -107,6 +107,7 @@ fn broker_with_tree(
         wait_ms: None,
         appearance: None,
         on_behalf_of: None,
+        signed: None,
     };
     (
         state,

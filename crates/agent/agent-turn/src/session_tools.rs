@@ -51,6 +51,7 @@ impl<H: ActionProvider + Send + Sync> SessionTools<H> {
             on_behalf_of: None,
             appearance: None,
             wait_ms: Some(WAIT_MS),
+            signed: None,
         };
         let receipt: Option<Result<InvocationReceipt, _>> =
             self.provider.invoke(&self.caller, request).await;

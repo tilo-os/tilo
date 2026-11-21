@@ -1738,6 +1738,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let Some(answered) = self.host.invoke(&self.caller, request).await else {
             return Err("the workspace did not answer".to_owned());

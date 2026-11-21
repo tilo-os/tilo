@@ -1029,6 +1029,7 @@ async fn leaves_who_is_here(ending: Ending) {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             let receipt = api
                 .invoke(&Caller::local_person("ada"), request)

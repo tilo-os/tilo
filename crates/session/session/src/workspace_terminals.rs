@@ -135,6 +135,7 @@ async fn open_on(host: &TerminalHost, request: &Request) -> Result<(String, Stri
         revision: None,
         wait_ms: Some(WAIT_MS),
         appearance: None,
+        signed: None,
     };
     let receipt = host
         .actions

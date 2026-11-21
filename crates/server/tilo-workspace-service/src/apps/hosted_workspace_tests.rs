@@ -158,6 +158,7 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
                     on_behalf_of: None,
                     wait_ms: None,
                     appearance: None,
+                    signed: None,
                 };
             let person =
                 Caller::local_person("fixture-owner").in_workspace(fixture.cluster_id.clone());

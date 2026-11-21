@@ -20,6 +20,7 @@ fn observed_launch_request(
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 
@@ -507,6 +508,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                         revision: Some("original-r1".into()),
                         wait_ms: None,
                         appearance: None,
+                        signed: None,
                     },
                 );
                 rig.state.take_turn(&rig.directories);

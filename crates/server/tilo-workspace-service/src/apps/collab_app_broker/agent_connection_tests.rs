@@ -189,6 +189,7 @@ fn append_request(invocation: u128) -> InvokeRequest {
         revision: None,
         appearance: None,
         wait_ms: None,
+        signed: None,
     }
 }
 

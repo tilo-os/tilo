@@ -52,6 +52,7 @@ fn asking(action: &str, argument: Value) -> InvokeRequest {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

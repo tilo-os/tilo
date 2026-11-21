@@ -606,6 +606,7 @@ impl Initiative {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let receipt = self
             .events()?
@@ -1145,6 +1146,7 @@ impl Initiative {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         // An example that is not kept changes nothing a member decided.
         let Ok(events) = self.events() else {

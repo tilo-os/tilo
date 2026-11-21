@@ -46,6 +46,7 @@ fn invoke_request(invocation: tilo_actions::InvocationId) -> InvokeRequest {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

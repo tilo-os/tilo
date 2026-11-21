@@ -53,6 +53,7 @@ async fn asks(
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let mut receipt = tilo_test_env::within("the server answers", session.invoke(caller, request))
         .await
@@ -354,6 +355,7 @@ async fn a_page_following_the_accounts_hears_one_added_and_removed_elsewhere() {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             },
         ),
     )

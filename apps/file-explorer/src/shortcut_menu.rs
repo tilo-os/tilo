@@ -193,6 +193,7 @@ impl ShortcutMenuState {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             }),
         });
         self.running.push((invocation, label.clone()));

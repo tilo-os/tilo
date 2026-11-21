@@ -111,6 +111,7 @@ fn append(invocation: u128, on_behalf_of: uuid::Uuid) -> InvokeRequest {
         on_behalf_of: Some(tilo_actions::InvocationId(on_behalf_of)),
         appearance: None,
         wait_ms: None,
+        signed: None,
     }
 }
 

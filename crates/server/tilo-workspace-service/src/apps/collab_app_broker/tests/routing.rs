@@ -55,6 +55,7 @@ async fn ordinary_person_requested_uuid_survives_actual_delivery_and_completion(
             revision: None, on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let pending = fixture.state.action_invoke(&caller, None, None, &request);
         let receipt = fixture

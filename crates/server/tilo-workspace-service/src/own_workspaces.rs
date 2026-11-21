@@ -155,6 +155,7 @@ fn invocation(target: RemoteActionTarget, arguments: Map<String, Value>) -> Invo
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

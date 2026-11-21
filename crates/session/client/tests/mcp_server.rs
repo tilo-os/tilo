@@ -56,6 +56,7 @@ fn ask(api: &SessionActions, action: &str, argument: InvokeArgument) -> (Invocat
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             },
         )
         .wait_timeout(Duration::from_secs(30))

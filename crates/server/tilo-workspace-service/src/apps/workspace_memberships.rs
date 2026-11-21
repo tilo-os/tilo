@@ -1695,6 +1695,7 @@ mod tests {
                     wait_ms: None,
                     appearance: None,
                     on_behalf_of: None,
+                    signed: None,
                 };
                 for (resource, action) in [
                     (governance_resource(&workspace), "call"),

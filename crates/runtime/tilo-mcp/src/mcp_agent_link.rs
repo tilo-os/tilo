@@ -334,6 +334,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let receipt = match self.host().invoke(&self.caller(), request).await {
             Some(Ok(receipt)) => receipt,

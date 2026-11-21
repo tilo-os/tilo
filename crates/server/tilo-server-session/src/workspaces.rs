@@ -97,6 +97,7 @@ pub async fn enter_invitation(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let entered: EnteredWorkspace = match ask_host(client, invoke).await? {
         ReceiptStatus::Completed { output } => {

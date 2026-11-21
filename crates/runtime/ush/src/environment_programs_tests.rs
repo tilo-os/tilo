@@ -73,6 +73,7 @@ fn asking(target: RemoteActionTarget, asked: &impl serde::Serialize) -> InvokeRe
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

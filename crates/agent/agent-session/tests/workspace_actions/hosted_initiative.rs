@@ -52,6 +52,7 @@ async fn take_of(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let answering = initiative.invoking(
         WorkspaceId::parse(workspace).unwrap(),

@@ -550,6 +550,7 @@ impl Apps {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         // The delivery outlives this pass: its answer runs on the thread that completed it, and
         // wakes this loop, which reports what a person's own action could not do.

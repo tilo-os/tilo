@@ -944,6 +944,7 @@ async fn outside_a_turn(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let caller = caller.clone();
     tokio::task::spawn_blocking(move || {

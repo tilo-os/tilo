@@ -199,6 +199,7 @@ async fn page_tells(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let mut receipt = tilo_test_env::within("the server answers", api.invoke(&caller, request))
         .await

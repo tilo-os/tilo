@@ -1728,6 +1728,7 @@ mod tests {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         for own in ["Studio", "studio", "studio-id"] {
             assert!(

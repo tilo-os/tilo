@@ -2017,6 +2017,7 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     // The person at this device's own actions are theirs; a program inside an app acts as that app, and the
     // broker's per-action permissions decide for it.

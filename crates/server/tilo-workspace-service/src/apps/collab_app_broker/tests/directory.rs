@@ -375,6 +375,7 @@ async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
                 on_behalf_of: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             let pending = fixture.state.action_invoke(&caller, None, None, &request);
             let admitted = fixture.drive(pending).await;

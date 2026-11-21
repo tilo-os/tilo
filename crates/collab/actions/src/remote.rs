@@ -44,6 +44,8 @@ pub mod environment_device;
 pub mod linux_apps;
 pub mod mcp_server;
 pub use caller::{Caller, device_agent_id};
+pub mod signed_invocation;
+pub use signed_invocation::SignedInvocation;
 mod catalogue;
 mod changes;
 mod confirmation;
@@ -449,6 +451,13 @@ pub struct InvokeRequest {
     /// ([`crate::appearance::refuse_here`]) rather than dropping the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<crate::Appearance>,
+    /// The caller's own signature over who asks for which action on which
+    /// resource with which arguments ([`SignedInvocation`]). A host that runs
+    /// an invocation for a caller on another device requires it and acts as
+    /// its verified signer; a request that never leaves its device (an app
+    /// asking its own session) carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed: Option<Box<SignedInvocation>>,
 }
 
 impl InvokeRequest {
@@ -481,6 +490,9 @@ impl InvokeRequest {
             on_behalf_of,
             wait_ms: _,
             appearance,
+            // Evidence of who asked, checked on its own: a retry the caller
+            // signed again is still a retry.
+            signed: _,
         } = self;
         *invocation == other.invocation
             && *target == other.target
@@ -2244,6 +2256,7 @@ mod tests {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }
     }
 

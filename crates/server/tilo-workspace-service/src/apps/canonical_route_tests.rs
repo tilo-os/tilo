@@ -107,6 +107,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                     on_behalf_of: None,
                     wait_ms: None,
                     appearance: None,
+                    signed: None,
                 };
                 let pending = api.invoke(&caller, request);
                 workspace.state.take_turn(&workspace.directories);
@@ -188,6 +189,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
                 on_behalf_of: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             let receipt = canonical_pending(&workspace, api.invoke(&caller, request.clone()))
                 .await
@@ -553,6 +555,7 @@ async fn a_finished_invocation_stream_hands_over_what_it_holds_and_takes_no_more
                 on_behalf_of: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             canonical_pending(&workspace, api.invoke(&caller, request.clone()))
                 .await

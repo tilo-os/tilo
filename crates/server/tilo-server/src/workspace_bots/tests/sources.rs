@@ -92,6 +92,7 @@ impl Hers {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let workspace = WorkspaceId::parse(&self.workspace).unwrap();
         match events
@@ -453,6 +454,7 @@ async fn an_event_keeps_to_the_account_and_sender_it_names_and_to_nothing_that_c
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let caller = Caller::authenticated(hers.person(), hers.cert.device_public_key)
         .in_workspace(hers.workspace.clone());

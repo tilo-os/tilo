@@ -180,6 +180,7 @@ impl Session {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let unanswered = || failed("unavailable", "the workspace did not answer", "try again");
         let receipt = connection

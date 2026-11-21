@@ -114,6 +114,7 @@ fn run_request(session: &str, command: &str) -> InvokeRequest {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 
@@ -356,6 +357,7 @@ fn program_request(target: RemoteActionTarget, asked: &impl serde::Serialize) ->
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

@@ -644,6 +644,7 @@ impl Device {
                 revision: None,
                 wait_ms: Some(ANSWERING),
                 appearance: None,
+                signed: None,
             },
         )
         .await?;

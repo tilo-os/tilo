@@ -87,6 +87,7 @@ pub(crate) fn start_application_launch(
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         },
     )
 }

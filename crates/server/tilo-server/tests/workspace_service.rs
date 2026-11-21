@@ -67,6 +67,7 @@ async fn host_action<T: serde::de::DeserializeOwned>(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     let status = tilo_test_env::within("the host answers its action", ask_host(client, invoke))
         .await

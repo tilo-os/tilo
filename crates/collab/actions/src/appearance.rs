@@ -395,6 +395,7 @@ mod tests {
                 on_behalf_of: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             assert_eq!(refuse_here(&request), Ok(()));
             request.appearance = Some(Appearance::new("alice", None, None).unwrap());

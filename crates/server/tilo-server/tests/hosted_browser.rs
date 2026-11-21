@@ -205,6 +205,7 @@ fn page(invocation: InvocationId, action: &str) -> RemoteActionMessage {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     })
 }
 
@@ -227,6 +228,7 @@ fn page_with(
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     })
 }
 
@@ -1957,6 +1959,7 @@ async fn an_environment_answers_a_page_action_and_never_calls_one() {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             })),
         })
         .unwrap();
@@ -2104,6 +2107,7 @@ fn held(correlation: u64, id: u32) -> RemoteActionMessage {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }),
     }
 }
@@ -2278,6 +2282,7 @@ fn asks_about_itself(
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     })
 }
 

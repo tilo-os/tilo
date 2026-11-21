@@ -561,6 +561,33 @@ separation.
 Content is encrypted to the group; routing metadata stays clear so a server can do its job without
 reading anything. The group key rotates on **every** membership change, including removal.
 
+### 7.5 Signed invocations
+
+An action a host runs for someone is asked by them, under their own key. The caller's device (a
+person's computer, a browser tab's key, an agent's grant, a key another key minted) signs each
+invocation it sends a host: the workspace, the invocation id, the target (provider, resource,
+action), a BLAKE3 hash of the canonical arguments, the invocation it continues, the issue time and
+the signing key. The envelope carries the signer's certificate, with the certificate that issued
+it when another key minted it, so it checks against the person's root with nothing else at hand.
+The host never signs an invocation in a caller's place.
+
+The host verifies the signature, that it covers the request it came with, the certificate chain,
+its revocation, a grant's workspace scope and the issue time's freshness, then admits and decides
+the action **as the verified signer**: the workspace's member list and the signer's grants, never the
+connection's say. A denial stays a denial. One invocation id names one request: the same id signed
+again for the same request is a retry, answered with what the first did; for anything else it is
+refused.
+
+What a peer can check from a signed invocation:
+
+- **Who asked for which action on which resource.** The signer's key and certificate chain, the
+  workspace, the target and the invocation id are all under the signature.
+- **The arguments, if it can read them.** A peer that can read a sealed resource's content can hash
+  the arguments it sees and compare them against the signed hash. A peer that cannot read the
+  resource has nothing to compare: the hash tells it nothing about the arguments.
+- **Not that the host ran it faithfully.** The envelope proves who asked, not what the executor did
+  with the request. A change the executor writes is still checked as its own operation (§7.2).
+
 ---
 
 ## 8. Attestation between people

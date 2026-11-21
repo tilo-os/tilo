@@ -2276,6 +2276,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             revision,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let mut edited = None;
         let admitting = timing_start();

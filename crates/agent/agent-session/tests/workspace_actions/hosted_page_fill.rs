@@ -106,6 +106,7 @@ fn asks(fill: InvocationId, item: &str, origin: &str) -> (InvocationId, RemoteAc
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }),
     )
 }

@@ -1580,6 +1580,7 @@ fn an_agent_is_refused_a_role(
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             },
         )
         .wait_timeout(tilo_test_env::hang_bound())

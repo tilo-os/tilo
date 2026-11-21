@@ -254,6 +254,7 @@ impl Session {
             on_behalf_of: Some(run.invocation),
             appearance: None,
             wait_ms: follow.then_some(FOLLOW_MS),
+            signed: None,
         };
         let actions = self.actions.clone();
         let caller = self.caller();

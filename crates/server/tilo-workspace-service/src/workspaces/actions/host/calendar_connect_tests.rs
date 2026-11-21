@@ -52,6 +52,7 @@ impl Hers {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         self.workspaces
             .connect_calendar_for_turn(turn, &request, Value::Null)

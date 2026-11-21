@@ -48,6 +48,7 @@ fn child_request(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

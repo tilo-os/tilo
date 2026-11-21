@@ -178,6 +178,7 @@ fn field_edit(section: &str, field: &str, value: &Value, confirmed: bool) -> Inv
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

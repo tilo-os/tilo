@@ -61,6 +61,7 @@ fn asking(command: &str) -> InvokeRequest {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 
@@ -277,6 +278,7 @@ fn opening(material: &str) -> InvokeRequest {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 
@@ -378,6 +380,7 @@ fn machine_request(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

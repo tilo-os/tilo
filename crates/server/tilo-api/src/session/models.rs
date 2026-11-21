@@ -72,6 +72,7 @@ impl Session {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let receipt = actions
             .invoke(&caller, asked)

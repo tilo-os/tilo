@@ -136,6 +136,7 @@ mod tests {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }
     }
 

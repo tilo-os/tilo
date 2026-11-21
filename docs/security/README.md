@@ -11,7 +11,7 @@ specific areas.
 | File | What it is | Read it when |
 |---|---|---|
 | [threat-model.md](threat-model.md) | As-built adversaries, trust boundaries, abuse cases, evidence levels, residual risk and priority gaps. | Making or reviewing a security claim |
-| [architecture.md](architecture.md) | The security concept. Threat model, identity spine, boot chain, runtime hardening, permissions, collaboration authority, attestation. Ends with what we do **not** claim, and a verified-versus-only-built split. | Always first |
+| [architecture.md](architecture.md) | The security concept. Threat model, identity spine, boot chain, runtime hardening, permissions, collaboration authority (signed invocations included: what a peer can check of who asked for an action), attestation. Ends with what we do **not** claim, and a verified-versus-only-built split. | Always first |
 | [boot-chain.md](boot-chain.md) | How the machine boots and what that buys. Owner-enrolled Secure Boot, the unified kernel image, the sealed root. | Touching `os/`, the kernel, or signing |
 | [device-certificate-renewal.md](device-certificate-renewal.md) | How a device certificate that expires is renewed — locally by a device holding the account key, through the person's other devices for one that holds none. | Changing certificate lifetimes, issuance or a device's identity tree |
 | [sign-in.md](sign-in.md) | One secret per person: the system unlocks itself on a verified boot, personal data unlocks with the login, and fingerprints, security keys and other devices stand in for the password. Includes development machines that sign what they boot. | Touching login, lock, disk unlock, factors or personal storage |

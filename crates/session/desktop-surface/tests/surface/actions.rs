@@ -981,6 +981,7 @@ fn note_link() -> ui::tilo_actions::remote::InvokeRequest {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

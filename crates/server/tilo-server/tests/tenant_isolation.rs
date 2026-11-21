@@ -171,6 +171,7 @@ fn invocation(
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     })
 }
 
@@ -290,6 +291,7 @@ fn invite_action(workspace: &str) -> RemoteActionMessage {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     })
 }
 

@@ -111,6 +111,7 @@ fn watch(id: InvocationId) -> InvokeRequest {
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

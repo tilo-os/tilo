@@ -140,6 +140,7 @@ impl Session {
             on_behalf_of: None,
             wait_ms: Some(ANSWERING_MS),
             appearance: None,
+            signed: None,
         };
         let receipt = connection
             .device

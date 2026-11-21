@@ -383,6 +383,7 @@ fn fill_request(window: &Window, fill: &TurnFill) -> InvokeRequest {
         on_behalf_of: None,
         wait_ms: Some(ANSWER_HOLD_MS),
         appearance: None,
+        signed: None,
     }
 }
 

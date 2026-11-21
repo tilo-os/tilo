@@ -233,6 +233,7 @@ impl Fleet {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let caller = Caller::local_app("tilo.server");
         let (shells, placed) = (Arc::clone(&self.shells), workspace.to_owned());

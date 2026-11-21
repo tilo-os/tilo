@@ -461,6 +461,7 @@ impl AppBrokerState {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             origin = self
                 .native_local_person_certificate(caller)

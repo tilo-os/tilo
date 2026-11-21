@@ -162,6 +162,7 @@ impl Files {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }))
         .encode()
         .expect("an invocation encodes");

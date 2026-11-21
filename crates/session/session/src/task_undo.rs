@@ -139,6 +139,7 @@ pub(crate) fn undo_task_run(
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         match api.run(caller, request, deadline) {
             Ok(()) => undone = undone.saturating_add(1),

@@ -415,6 +415,7 @@ fn launch_request(
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

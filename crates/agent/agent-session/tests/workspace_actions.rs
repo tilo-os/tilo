@@ -902,6 +902,7 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

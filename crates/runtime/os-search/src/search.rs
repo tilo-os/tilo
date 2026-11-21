@@ -212,6 +212,7 @@ impl OsSearch {
                 revision: Some(resolved.revision),
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             },
         ))
         .await??;

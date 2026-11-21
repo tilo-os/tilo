@@ -133,6 +133,7 @@ pub(super) fn request(workspace: &str, verb: &str, argument: Value) -> InvokeReq
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

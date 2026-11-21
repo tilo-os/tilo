@@ -1980,6 +1980,7 @@ impl Hosted {
                 on_behalf_of: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
             if let Err(error) = self

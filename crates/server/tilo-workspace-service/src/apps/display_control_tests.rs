@@ -266,6 +266,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             // The previous normal host api really admitted this action but
             // supplied no original ownership. The generic API still cannot

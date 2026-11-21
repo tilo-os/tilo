@@ -105,6 +105,7 @@ fn open_app_request(
         revision: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

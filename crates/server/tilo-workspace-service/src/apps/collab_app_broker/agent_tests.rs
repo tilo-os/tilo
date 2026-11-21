@@ -970,6 +970,7 @@ fn stray_invoke(
                 on_behalf_of: None,
                 appearance: None,
                 wait_ms: None,
+                signed: None,
             },
         )
         .wait_timeout(tilo_test_env::hang_bound())

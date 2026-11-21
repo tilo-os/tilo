@@ -57,6 +57,7 @@ tilo_test_env::scenario! {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         let destination = state.admit_launchable(&owner, &request).expect("admitted");
         let picked = state

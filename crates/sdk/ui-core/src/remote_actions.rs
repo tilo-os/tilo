@@ -483,6 +483,7 @@ impl RemoteActions {
             revision: None,
             wait_ms: Some(INVOKE_WAIT_MS),
             appearance: None,
+            signed: None,
         };
         self.lock().invocations.insert(
             request.invocation,
@@ -529,6 +530,7 @@ impl RemoteActions {
             // result arrives on the observe that follows it.
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         self.lock().invocations.insert(
             invocation,

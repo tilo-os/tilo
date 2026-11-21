@@ -176,6 +176,7 @@ fn request(app: &str, resource: &str, action: &str) -> InvokeRequest {
         revision: None,
         on_behalf_of: None,
         wait_ms: None,
+        signed: None,
     }
 }
 

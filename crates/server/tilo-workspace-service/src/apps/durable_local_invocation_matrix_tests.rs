@@ -364,6 +364,7 @@ mod durable_local_matrix {
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         }
     }
     /// Ask the rig's application (peer 903) for its action as `handle`'s

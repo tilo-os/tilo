@@ -445,6 +445,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
                 on_behalf_of: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             };
             for (id, _, stream) in &pages {
                 let page = local_host_answer(host.query(&caller, canonical(id)))

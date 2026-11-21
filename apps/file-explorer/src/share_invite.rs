@@ -30,6 +30,7 @@ impl ShareInvite {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             }),
         });
         self.asking = Some(invocation);

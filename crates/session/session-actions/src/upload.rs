@@ -245,6 +245,7 @@ pub fn landing_request(
         on_behalf_of: None,
         wait_ms: u32::try_from(MAX_REMOTE_WAIT.as_millis()).ok(),
         appearance: None,
+        signed: None,
     })
 }
 

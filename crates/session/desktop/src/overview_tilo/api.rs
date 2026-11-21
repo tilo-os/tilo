@@ -125,6 +125,7 @@ fn request(invocation: InvocationId, action: &str, argument: InvokeArgument) -> 
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 

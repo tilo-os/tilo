@@ -43,6 +43,7 @@ async fn from_the_page(hosted: &mut Hosted, verb: &str, arguments: Value) -> Val
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     };
     match hosted.page.invoke_settled(request).await.status {
         ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),

@@ -1,0 +1,437 @@
+//! One invocation as its caller signed it: who asked for which action, on
+//! which resource of which workspace, with which arguments.
+//!
+//! A host runs an action for a caller; the signature is what makes that
+//! claim checkable by anyone, not only by the host that read the caller's
+//! connection. The caller's key signs a statement binding the workspace, the
+//! invocation id, the target (provider, resource and action), a BLAKE3 hash
+//! of the canonical arguments, the invocation it continues
+//! ([`InvokeRequest::on_behalf_of`]), the issue time and the signing key. The
+//! envelope carries the signer's certificate (with the certificate that
+//! issued it, for a key another key minted), so the statement checks against
+//! the person's root and their revocations with nothing else at hand.
+//!
+//! This module holds the statement and its exact bytes. Signing with a device
+//! key and checking the certificate are the identity layer's
+//! (`tilo_server_protocol::invocation`): this crate sits below it.
+
+use super::{InvokeArgument, InvokeRequest, RemoteActionTarget};
+use crate::InvocationId;
+use serde::{Deserialize, Serialize};
+
+/// Domain separator for a caller's signature over one invocation.
+pub const INVOCATION_SIGNATURE_DOMAIN: &[u8] = b"tilo-invocation-v1\0";
+
+/// How far a signed invocation's issue time may lie from the verifier's
+/// clock, either way. Wide enough for a retry after a reconnect and for the
+/// clocks of a phone and a server to disagree; an older statement is refused
+/// as stale, and within the window the invocation id names the one run.
+pub const INVOCATION_SIGNATURE_TOLERANCE_NS: u64 = 5 * 60 * 1_000_000_000;
+
+/// The largest signer certificate an envelope carries: a certificate and
+/// its issuer's, with room for long labels.
+pub const MAX_SIGNER_CERT_BYTES: usize = 4 * 1024;
+
+/// What the caller's key states about one invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationStatement {
+    /// The workspace the invocation acts in, as its id's text.
+    pub workspace: String,
+    pub invocation: InvocationId,
+    pub target: RemoteActionTarget,
+    /// [`argument_hash`] of the request's argument.
+    pub arguments: [u8; 32],
+    pub on_behalf_of: Option<InvocationId>,
+    /// The signer's clock when it signed, in ns since the epoch.
+    pub issued_at_ns: u64,
+    /// The key that signs: the one the carried certificate certifies.
+    pub signer: [u8; 32],
+}
+
+/// Which part of a request its signed statement does not cover.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StatementMismatch {
+    #[error("the signed invocation names another workspace")]
+    Workspace,
+    #[error("the signed invocation names another invocation")]
+    Invocation,
+    #[error("the signed invocation names another action")]
+    Target,
+    #[error("the request's arguments are not the ones signed")]
+    Arguments,
+    #[error("the signed invocation continues another invocation")]
+    OnBehalfOf,
+}
+
+impl InvocationStatement {
+    /// The statement `signer` makes at `issued_at_ns` about `request` in
+    /// `workspace`.
+    #[must_use]
+    pub fn of(
+        workspace: &str,
+        request: &InvokeRequest,
+        issued_at_ns: u64,
+        signer: [u8; 32],
+    ) -> Self {
+        Self {
+            workspace: workspace.to_owned(),
+            invocation: request.invocation,
+            target: request.target.clone(),
+            arguments: argument_hash(&request.argument),
+            on_behalf_of: request.on_behalf_of,
+            issued_at_ns,
+            signer,
+        }
+    }
+
+    /// Whether this statement covers `request` in `workspace`, and if not,
+    /// the first part that differs.
+    ///
+    /// # Errors
+    ///
+    /// The [`StatementMismatch`] naming that part.
+    pub fn covers(
+        &self,
+        workspace: &str,
+        request: &InvokeRequest,
+    ) -> Result<(), StatementMismatch> {
+        if self.workspace != workspace {
+            return Err(StatementMismatch::Workspace);
+        }
+        if self.invocation != request.invocation {
+            return Err(StatementMismatch::Invocation);
+        }
+        if self.target != request.target {
+            return Err(StatementMismatch::Target);
+        }
+        if self.arguments != argument_hash(&request.argument) {
+            return Err(StatementMismatch::Arguments);
+        }
+        if self.on_behalf_of != request.on_behalf_of {
+            return Err(StatementMismatch::OnBehalfOf);
+        }
+        Ok(())
+    }
+
+    /// The bytes the signer's key signs: the domain separator and the BLAKE3
+    /// hash of the statement's exact encoding.
+    #[must_use]
+    pub fn signing_message(&self) -> Vec<u8> {
+        let mut message = INVOCATION_SIGNATURE_DOMAIN.to_vec();
+        message.extend_from_slice(blake3::hash(&self.encode()).as_bytes());
+        message
+    }
+
+    /// Whether the issue time is within [`INVOCATION_SIGNATURE_TOLERANCE_NS`]
+    /// of `now_ns`.
+    #[must_use]
+    pub const fn fresh_at(&self, now_ns: u64) -> bool {
+        self.issued_at_ns.abs_diff(now_ns) <= INVOCATION_SIGNATURE_TOLERANCE_NS
+    }
+
+    /// The statement's one encoding: every field in order, each text length
+    /// prefixed, so two statements encode alike only when they are alike.
+    fn encode(&self) -> Vec<u8> {
+        fn text(out: &mut Vec<u8>, text: &str) {
+            out.extend_from_slice(&u64::try_from(text.len()).unwrap_or(u64::MAX).to_le_bytes());
+            out.extend_from_slice(text.as_bytes());
+        }
+        let mut out = Vec::with_capacity(256);
+        text(&mut out, &self.workspace);
+        out.extend_from_slice(self.invocation.0.as_bytes());
+        text(&mut out, &self.target.provider);
+        text(&mut out, &self.target.address.resource);
+        text(&mut out, &self.target.address.action);
+        out.extend_from_slice(&self.arguments);
+        match self.on_behalf_of {
+            None => out.push(0),
+            Some(original) => {
+                out.push(1);
+                out.extend_from_slice(original.0.as_bytes());
+            }
+        }
+        out.extend_from_slice(&self.issued_at_ns.to_le_bytes());
+        out.extend_from_slice(&self.signer);
+        out
+    }
+}
+
+/// The BLAKE3 hash of an invocation's argument in its canonical form: a tag
+/// for which form it takes, then the text as is, or the argument object as JSON with
+/// every object's keys sorted, so the same arguments hash alike however a
+/// transport ordered them.
+#[must_use]
+pub fn argument_hash(argument: &InvokeArgument) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"tilo-invocation-arguments-v1\0");
+    match argument {
+        InvokeArgument::None => {
+            hasher.update(&[0]);
+        }
+        InvokeArgument::Text(text) => {
+            hasher.update(&[1]);
+            hasher.update(text.as_bytes());
+        }
+        InvokeArgument::Json(object) => {
+            hasher.update(&[2]);
+            let mut canonical = String::new();
+            canonical_object(&mut canonical, object);
+            hasher.update(canonical.as_bytes());
+        }
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn canonical_value(out: &mut String, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => canonical_object(out, object),
+        serde_json::Value::Array(values) => {
+            out.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                canonical_value(out, value);
+            }
+            out.push(']');
+        }
+        // Scalars as serde_json writes them: a number reads back as the same
+        // number, so its text is stable across a transport.
+        scalar => out.push_str(&scalar.to_string()),
+    }
+}
+
+fn canonical_object(out: &mut String, object: &serde_json::Map<String, serde_json::Value>) {
+    let mut keys: Vec<&String> = object.keys().collect();
+    keys.sort_unstable();
+    out.push('{');
+    for (index, key) in keys.into_iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&serde_json::Value::String(key.clone()).to_string());
+        out.push(':');
+        canonical_value(out, &object[key]);
+    }
+    out.push('}');
+}
+
+/// An invocation's [`InvocationStatement`], the signer's signature over it,
+/// and the signer's certificate. Decoded, it is only what it claims: nothing
+/// in it is trusted until the identity layer verified the signature, the
+/// certificate, its revocation and its freshness.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SignedWire", into = "SignedWire")]
+pub struct SignedInvocation {
+    statement: InvocationStatement,
+    signature: [u8; 64],
+    signer_cert: Vec<u8>,
+}
+
+impl SignedInvocation {
+    /// `statement` with the `signature` its signer made over
+    /// [`InvocationStatement::signing_message`], and `signer_cert`, the
+    /// signer's certificate in its binary encoding.
+    #[must_use]
+    pub const fn new(
+        statement: InvocationStatement,
+        signature: [u8; 64],
+        signer_cert: Vec<u8>,
+    ) -> Self {
+        Self {
+            statement,
+            signature,
+            signer_cert,
+        }
+    }
+
+    /// What the signer claims to have asked. Trust it only once verified.
+    #[must_use]
+    pub const fn statement(&self) -> &InvocationStatement {
+        &self.statement
+    }
+
+    #[must_use]
+    pub const fn signature(&self) -> &[u8; 64] {
+        &self.signature
+    }
+
+    /// The signer's certificate in its binary encoding, its issuer's within.
+    #[must_use]
+    pub fn signer_cert(&self) -> &[u8] {
+        &self.signer_cert
+    }
+}
+
+/// The envelope on the wire: the statement's fields, the signature and the
+/// certificate, the byte strings as lower-case hex so the envelope reads the
+/// same in every encoding a frame travels in.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignedWire {
+    workspace: String,
+    invocation: InvocationId,
+    target: RemoteActionTarget,
+    arguments: String,
+    on_behalf_of: Option<InvocationId>,
+    issued_at_ns: u64,
+    signer: String,
+    signature: String,
+    signer_cert: String,
+}
+
+impl From<SignedInvocation> for SignedWire {
+    fn from(signed: SignedInvocation) -> Self {
+        let InvocationStatement {
+            workspace,
+            invocation,
+            target,
+            arguments,
+            on_behalf_of,
+            issued_at_ns,
+            signer,
+        } = signed.statement;
+        Self {
+            workspace,
+            invocation,
+            target,
+            arguments: hex::encode(arguments),
+            on_behalf_of,
+            issued_at_ns,
+            signer: hex::encode(signer),
+            signature: hex::encode(signed.signature),
+            signer_cert: hex::encode(signed.signer_cert),
+        }
+    }
+}
+
+impl TryFrom<SignedWire> for SignedInvocation {
+    type Error = String;
+
+    fn try_from(wire: SignedWire) -> Result<Self, Self::Error> {
+        fn bytes<const N: usize>(text: &str, what: &str) -> Result<[u8; N], String> {
+            let mut out = [0; N];
+            hex::decode_to_slice(text, &mut out)
+                .map_err(|_| format!("a signed invocation's {what} is not {N} hex bytes"))?;
+            Ok(out)
+        }
+        if wire.signer_cert.len() > 2 * MAX_SIGNER_CERT_BYTES {
+            return Err("a signed invocation's certificate is too large".into());
+        }
+        let signer_cert = hex::decode(&wire.signer_cert)
+            .map_err(|_| "a signed invocation's certificate is not hex".to_owned())?;
+        Ok(Self {
+            statement: InvocationStatement {
+                workspace: wire.workspace,
+                invocation: wire.invocation,
+                target: wire.target,
+                arguments: bytes(&wire.arguments, "argument hash")?,
+                on_behalf_of: wire.on_behalf_of,
+                issued_at_ns: wire.issued_at_ns,
+                signer: bytes(&wire.signer, "signer")?,
+            },
+            signature: bytes(&wire.signature, "signature")?,
+            signer_cert,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ActionAddress;
+
+    fn request(argument: InvokeArgument) -> InvokeRequest {
+        InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: "so.tilo.notes".into(),
+                address: ActionAddress::new("note:1", "rename"),
+            },
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
+    fn object(json: &str) -> InvokeArgument {
+        match serde_json::from_str(json).unwrap() {
+            serde_json::Value::Object(object) => InvokeArgument::Json(object),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn arguments_hash_alike_in_any_key_order_and_unlike_once_a_value_changes() {
+        let one = object(r#"{"title":"Plan","tags":["a",{"z":1,"y":2.5}]}"#);
+        let reordered = object(r#"{"tags":["a",{"y":2.5,"z":1}],"title":"Plan"}"#);
+        let changed = object(r#"{"title":"Plan!","tags":["a",{"z":1,"y":2.5}]}"#);
+        assert_eq!(argument_hash(&one), argument_hash(&reordered));
+        assert_ne!(argument_hash(&one), argument_hash(&changed));
+        // A text and an object with the same characters are not one argument.
+        assert_ne!(
+            argument_hash(&InvokeArgument::Text("{}".into())),
+            argument_hash(&object("{}"))
+        );
+        assert_ne!(
+            argument_hash(&InvokeArgument::None),
+            argument_hash(&InvokeArgument::Text(String::new()))
+        );
+    }
+
+    #[test]
+    fn a_statement_covers_its_request_and_names_the_first_part_another_changes() {
+        let asked = request(object(r#"{"title":"Plan"}"#));
+        let statement = InvocationStatement::of("w1", &asked, 7, [3; 32]);
+        assert_eq!(statement.covers("w1", &asked), Ok(()));
+        assert_eq!(
+            statement.covers("w2", &asked),
+            Err(StatementMismatch::Workspace)
+        );
+        let mut other = asked.clone();
+        other.target.address.action = "delete".into();
+        assert_eq!(
+            statement.covers("w1", &other),
+            Err(StatementMismatch::Target)
+        );
+        let mut other = asked.clone();
+        other.argument = object(r#"{"title":"Other"}"#);
+        assert_eq!(
+            statement.covers("w1", &other),
+            Err(StatementMismatch::Arguments)
+        );
+        let mut other = asked;
+        other.on_behalf_of = Some(InvocationId::new());
+        assert_eq!(
+            statement.covers("w1", &other),
+            Err(StatementMismatch::OnBehalfOf)
+        );
+        // Each field reaches the signed bytes.
+        let mut later = statement.clone();
+        later.issued_at_ns += 1;
+        assert_ne!(statement.signing_message(), later.signing_message());
+    }
+
+    #[test]
+    fn the_envelope_reads_back_the_same_from_json_and_postcard() {
+        let statement = InvocationStatement::of("w1", &request(InvokeArgument::None), 9, [5; 32]);
+        let signed = SignedInvocation::new(statement, [7; 64], vec![1, 2, 3]);
+        let json = serde_json::to_string(&signed).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SignedInvocation>(&json).unwrap(),
+            signed
+        );
+        let binary = postcard::to_allocvec(&signed).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<SignedInvocation>(&binary).unwrap(),
+            signed
+        );
+        let short = json.replace(&hex::encode([7u8; 64]), "07");
+        assert!(serde_json::from_str::<SignedInvocation>(&short).is_err());
+    }
+}

@@ -1091,6 +1091,7 @@ impl App {
                 revision: None,
                 wait_ms: None,
                 appearance: None,
+                signed: None,
             },
         );
         Ok(crate::widget::ResourceOperationStart::Accepted)
@@ -2051,6 +2052,7 @@ impl App {
             revision: None,
             wait_ms: None,
             appearance: None,
+            signed: None,
         };
         self.actions
             .broker_requests

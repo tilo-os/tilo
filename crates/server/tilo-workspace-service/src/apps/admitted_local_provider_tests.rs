@@ -44,6 +44,7 @@ fn local_host_request(directory: bool) -> tilo_actions::remote::InvokeRequest {
         on_behalf_of: None,
         wait_ms: None,
         appearance: None,
+        signed: None,
     }
 }
 
