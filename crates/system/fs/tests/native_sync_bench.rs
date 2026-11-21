@@ -728,11 +728,15 @@ impl Pair {
         let serving = started.elapsed();
         self.peer = Some(peer);
         let mount = self.peer_mount();
+        // What the host's root lists: the joiner lists the workspace when it lists as much.
+        // A scenario that writes one folder has one entry at its root, and waiting for a
+        // fixed number of them waited out the deadline instead of the tree.
+        let expected = std::fs::read_dir(&self.host.mount).map_or(1, |entries| entries.count());
         let deadline = Instant::now() + TIMEOUT;
         loop {
             self.host.alive();
             self.peer.as_mut().expect("the peer is serving").alive();
-            if std::fs::read_dir(&mount).is_ok_and(|entries| entries.count() >= 3) {
+            if std::fs::read_dir(&mount).is_ok_and(|entries| entries.count() >= expected.max(1)) {
                 break;
             }
             assert!(
