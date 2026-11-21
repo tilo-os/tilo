@@ -1,11 +1,10 @@
 //! Client side of server-mediated device certification
 //! ([`tilo_server_protocol::certify`]).
 //!
-//! [`certify`] is what a device without a certificate runs: it signs one
-//! request, presents it to its server and waits for a root holder to hand over
-//! a certificate. [`request_certification`] is the same conversation over an
-//! endpoint the caller already has, [`Approver`] what a root-holding device
-//! runs to list and answer pending requests, and [`MemberServer`] where a
+//! [`request_certification_at`] delivers a signed request to its server and
+//! waits for a checked response. [`request_certification`] runs the same
+//! conversation over an endpoint the caller already has. A root-holding device
+//! uses [`Approver`] to list and answer pending requests. [`MemberServer`] is where a
 //! page holding a member's root does the same for that member's own devices:
 //! over the session it holds, or [`MemberApprover`] before it holds one.
 
@@ -25,8 +24,7 @@ use tilo_server_protocol::certify::{
 };
 use tilo_server_protocol::web::LINK_CERTIFY_KEPT;
 use tilo_user_identity::{
-    CERTIFICATION_CLOCK_ALLOWANCE_NS, CERTIFICATION_SCHEMA_VERSION, CertificationPolicy,
-    CertificationRequest, DeviceCapabilities, DeviceCert, RevocationList, verify_device_cert_at,
+    CertificationPolicy, CertificationRequest, DeviceCert, RevocationList, verify_device_cert_at,
     verify_issued_cert,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -35,9 +33,8 @@ use crate::error::CertifyError;
 use crate::frame::{read_frame, write_frame};
 use crate::host::ServerAddress;
 use crate::link::{Dialer, Link, Purpose};
-use crate::signer::DeviceSigner;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::signer::signed_ack2;
+use crate::signer::{DeviceSigner, signed_ack2};
 
 /// Longest a certification request waits for an approver.
 pub const CERTIFICATION_WAIT_NS: u64 = 5 * 60 * 1_000_000_000;
@@ -105,27 +102,18 @@ async fn write<T: serde::Serialize + Sync>(
     Ok(())
 }
 
-/// Ask the server at `server` to certify the device behind `signer` as one of
-/// `user_public_key`'s devices, labeled `label`, answering the pairing invite
-/// `invite` ([0; 16] when none). `on_pending` receives the pairing code to
-/// show while the person's other device answers. Resolves to this device's
-/// certificate, the server's to pin, and the name the server gave the device (the
-/// one asked for, or the next free numbered one).
+/// Send a signed certification request to the server and wait for its checked
+/// answer. The dialer chooses the carrier for this address and pins it.
+/// `on_pending` receives the pairing code once the server queues the request.
 ///
 /// # Errors
 ///
-/// The server was not reached or refused, nobody answered in time
-/// ([`CertifyError::Expired`]), or what it issued is not a certificate for
-/// this device ([`request_certification`] checks it).
-pub async fn certify(
+/// The server could not be reached, the exchange failed, or the answer was invalid.
+pub async fn request_certification_at(
     server: &ServerAddress,
-    user_public_key: [u8; 32],
-    label: &str,
-    invite: [u8; 16],
-    signer: &dyn DeviceSigner,
+    request: CertificationRequest,
     on_pending: impl FnOnce(&str),
-) -> Result<(DeviceCert, DeviceCert, String), CertifyError> {
-    let request = signed_request(user_public_key, label, invite, signer).await?;
+) -> Result<CertificationOutcome, CertifyError> {
     let dialer = Dialer::new(server.clone(), None);
     let outcome = async {
         let link = dialer.link(Purpose::Certify).await?;
@@ -136,56 +124,7 @@ pub async fn certify(
     }
     .await;
     dialer.close().await;
-    match outcome? {
-        CertificationOutcome::Issued {
-            cert,
-            server_cert,
-            label,
-        } => Ok((cert, server_cert, label)),
-        CertificationOutcome::Denied(reason) => Err(CertifyError::Denied(reason)),
-        CertificationOutcome::Expired => Err(CertifyError::Expired),
-    }
-}
-
-/// The request a device without a certificate signs.
-///
-/// It is dated [`CERTIFICATION_CLOCK_ALLOWANCE_NS`] before this device's
-/// clock. A server from before servers allowed the clocks of a pairing to differ
-/// checks the date exactly, and refused a request dated now whenever its own
-/// clock ran a little behind this device's; such a server stays in use while
-/// its pages move on. The wait for an approver is counted from now, as
-/// before, so the request lasts that much longer than the wait, well inside
-/// the longest a request may. With a server that has the allowance, a device
-/// up to twice that far ahead still pairs; the expiry is exact everywhere.
-async fn signed_request(
-    user_public_key: [u8; 32],
-    label: &str,
-    invite: [u8; 16],
-    signer: &dyn DeviceSigner,
-) -> Result<CertificationRequest, CertifyError> {
-    let now = tilo_clock::unix_now_ns();
-    let unsigned = CertificationRequest {
-        version: CERTIFICATION_SCHEMA_VERSION,
-        user_public_key,
-        device_public_key: signer.device_public_key(),
-        device_label: label.to_owned(),
-        requested: DeviceCapabilities::member(),
-        nonce: rand::random(),
-        invite,
-        issued_at_ns: now.saturating_sub(CERTIFICATION_CLOCK_ALLOWANCE_NS),
-        expires_at_ns: now.saturating_add(CERTIFICATION_WAIT_NS),
-        signature: [0; 64],
-    };
-    let digest = unsigned
-        .signing_digest()
-        .map_err(|error| CertifyError::Request(error.to_string()))?;
-    let signature = signer
-        .sign(digest.to_vec())
-        .await
-        .map_err(|error| CertifyError::Request(error.0))?;
-    unsigned
-        .with_signature(signature)
-        .map_err(|error| CertifyError::Request(error.to_string()))
+    outcome
 }
 
 /// When to check a certificate issued at `issued_at_ns`, reading `now_ns`.

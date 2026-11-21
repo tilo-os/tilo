@@ -110,7 +110,9 @@ web-sys = { version = "=0.3.85", features = [
 # The certified peer over WebTransport, its live session and the member's client.
 tilo-session-client = { version = "0.1.0", path = "../../session/client", features = ["toolkit"] }
 tilo-session-actions = { version = "0.1.0", path = "../../session/session-actions" }
-# The identity layer's device side: certification, pairing, the sign-in proof.
+# The device requester uses the same enrollment as the native CLI.
+tilo-enrollment = { version = "0.1.0", path = "../../collab/tilo-enrollment" }
+# The identity layer's device side: certification transport, pairing, the sign-in proof.
 tilo-server-client = { version = "0.1.0", path = "../../server/tilo-server-client", features = ["dial"] }
 tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }
 # The channel engine's vault namespace: the page keeps its channel vault key

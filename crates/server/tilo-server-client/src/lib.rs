@@ -7,12 +7,11 @@
 //!   through the same functions;
 //! - [`coedit`] — the co-edit payloads carried through the server; the iroh
 //!   session speaking them is `tilo_server_session::coedit::ServerCoeditSession`;
-//! - [`certify`] — ask a server for a `DeviceCert`, or approve such requests
-//!   as a root-holding device or as a member's root;
+//! - [`certify`] — transport signed certification requests, check responses,
+//!   and carry approvals from root-holding devices and members;
 //! - [`pairing`] — the pairing ceremony a member's root answers, and the
 //!   certificates a person's root issues;
-//! - [`login`] — a computer signing in as one of the person's devices, the
-//!   login code it reads, and the two ways into the workspace it names;
+//! - [`login`] — the pairing link, the signed-in device, and the workspace entry;
 //! - [`sign_in`] — a device proving its person to a service that asks;
 //! - [`invite`] — joining a workspace another server governs, with no session
 //!   there;
@@ -72,7 +71,7 @@ pub use certify::{Approver, request_certification};
 #[cfg(feature = "dial")]
 pub use certify::{
     CERTIFICATION_WAIT_NS, CertificationOutcome, KeptAsks, MemberApprover, MemberServer,
-    ask_member, certify,
+    ask_member, request_certification_at,
 };
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 pub use error::{CertifyError, LinkError};

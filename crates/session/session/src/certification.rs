@@ -1647,7 +1647,7 @@ mod tests {
             async move {
                 let client = tilo_workspace_directory::client().unwrap();
                 let at = tilo_server_client::https::Origin::new(&client, &link.host_origin);
-                tilo_server_client::login::sign_in(&at, &link, "phone", "Phone", &phone, |code| {
+                tilo_enrollment::requester::sign_in(&at, &link, "phone", "Phone", &phone, |code| {
                     let _ = code_shown.send(code.to_owned());
                 })
                 .await

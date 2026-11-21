@@ -98,6 +98,8 @@ default = []
 toolkit = []
 
 [dev-dependencies]
+# The requester exercised against the production server.
+tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 # An invitation read as a device that follows its link reads it: the server it names, from it alone.
 tilo-workspace-join = { path = "../../collab/workspace-join" }
 # A synced folder's tree written through a session, as a computer's folder writes it.

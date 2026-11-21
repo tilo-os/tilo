@@ -1,17 +1,6 @@
-//! Signing a computer in as one of a person's devices, and the two ways into
-//! the workspace with it.
-//!
-//! A page opened a one-time pairing invite and copied a link
-//! ([`PairingLink`]). This computer makes its own device key, asks the
-//! workspace's server to have the person's root certify it ([`sign_in`]), and is
-//! then a device of theirs: a member for thirty days, the server pinned, no root
-//! anywhere here.
-//!
-//! Reading the code and signing in are a computer's work: a page writes the
-//! code and never reads one. The ways into the workspace a signed-in device
-//! takes — its site's entry ([`Entry`]) and an invitation, both entered on the
-//! device's session ([`tilo_server_protocol::entering`]) — are a page's as much
-//! as a computer's, so only the first part is native.
+//! The pairing link a computer reads, the device it names after sign-in, and
+//! the entry and admission records a workspace uses on a device's session
+//! ([`tilo_server_protocol::entering`]).
 
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_reference::link::{Link, Mode, Scope, WebEntries, WebEntry};
@@ -21,15 +10,7 @@ use tilo_user_identity::DeviceCert;
 use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::error::CertifyError;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::host::ServerAddress;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::https;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::https::HttpClient;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::signer::DeviceSigner;
 use collab_types::WorkspaceId;
 
 /// A person's user root, hex, in `?pair=`.
@@ -225,20 +206,6 @@ pub fn site_entry(entry: &serde_json::Value, host_origin: &str) -> Option<(Strin
     Some((format!("{scheme}://{authority}"), path.to_owned()))
 }
 
-/// The entry of the site at `site` to its workspace on the server at
-/// `host_origin`, as its `entry.json` names it. A computer reads a site's
-/// `entry.json` through its own HTTPS client; a page's entry names its entry.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn entry_at(site: &https::Origin, host_origin: &str) -> Option<Entry> {
-    let (status, body) = site.get("/entry.json").await.ok()?;
-    if status != 200 {
-        return None;
-    }
-    let entry: serde_json::Value = serde_json::from_slice(&body).ok()?;
-    let (_, path) = site_entry(&entry, host_origin)?;
-    Some(Entry { path })
-}
-
 /// A computer that is now one of the person's devices.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct SignIn {
@@ -258,54 +225,6 @@ pub struct SignIn {
     pub server_cert: DeviceCert,
 }
 
-/// Ask `link`'s server to have the person's root certify `signer`'s device as
-/// the agent `agent` on the computer labeled `label`. `on_pending` receives
-/// the pairing code to show while the person's other device answers.
-///
-/// # Errors
-///
-/// The person declined or nobody answered in time ([`CertifyError::Expired`]),
-/// the server was not reached or refused, or what it issued is not a certificate
-/// for this device.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn sign_in(
-    client: &dyn HttpClient,
-    link: &PairingLink,
-    agent: &str,
-    label: &str,
-    signer: &dyn DeviceSigner,
-    on_pending: impl FnOnce(&str),
-) -> Result<SignIn, CertifyError> {
-    let info = https::server_info(client).await?;
-    let server = match &info.address {
-        Some(address) => ServerAddress::published(address),
-        None => {
-            return Err(CertifyError::Denied(
-                "This workspace's server takes no device connections, so no computer can sign in to it."
-                    .to_owned(),
-            ));
-        }
-    };
-    let invite = link.invite.unwrap_or([0; 16]);
-    let (cert, server_cert, label) = crate::certify::certify(
-        &server,
-        link.user_public_key,
-        label,
-        invite,
-        signer,
-        on_pending,
-    )
-    .await?;
-    Ok(SignIn {
-        link: link.clone(),
-        agent: agent.to_owned(),
-        label,
-        server,
-        cert,
-        server_cert,
-    })
-}
-
 /// What a workspace said as it admitted a device.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Admission {
@@ -319,7 +238,7 @@ pub struct Admission {
     pub role: tilo_server_protocol::workspaces::Role,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::PairingLink;
 

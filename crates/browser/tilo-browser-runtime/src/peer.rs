@@ -583,7 +583,7 @@ pub async fn certify_device(
     };
     let host = server_at(&address)?;
     let (cert, server_cert, label) =
-        tilo_server_client::certify(&host, user, &label, invite, &signer, |code| {
+        tilo_enrollment::requester::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
         })
         .await

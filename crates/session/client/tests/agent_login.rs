@@ -1,7 +1,7 @@
 //! Logging an agent's computer in with the code a person's tab copied
 //! ("Set up with your agent"): the code is a pairing link to that tab, the
 //! computer makes a device key of its own and asks the workspace's host to
-//! have the person's root certify it (`login::sign_in`), the tab approves
+//! have the person's root certify it (`tilo_enrollment::requester::sign_in`), the tab approves
 //! the one request naming its invite, and the computer enters the workspace
 //! as that person (`login::enter`), its session the agent's run. The root
 //! never leaves the tab.
@@ -19,9 +19,10 @@ use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use tilo_enrollment::requester::sign_in;
 use tilo_server_client::invite::guest_certificate;
+use tilo_server_client::login::Entry;
 use tilo_server_client::login::PairingLink;
-use tilo_server_client::login::{Entry, sign_in};
 use tilo_server_client::{CertifyError, answer_pairing, pending_pairings};
 use tilo_server_protocol::web::API_PREFIX;
 use tilo_session_client::device::{Device, session_as_agent};

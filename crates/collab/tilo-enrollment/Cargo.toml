@@ -13,10 +13,17 @@ name = "tilo_enrollment"
 path = "src/lib.rs"
 
 [dependencies]
+rand.workspace = true
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-server-client = { version = "0.1.0", path = "../../server/tilo-server-client" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 anyhow.workspace = true
 blake3.workspace = true
 collab-types = { path = "../collab-types" }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+getrandom.workspace = true
 hex.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
@@ -24,23 +31,18 @@ libc.workspace = true
 postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-device-identity = { path = "../tilo-device-identity" }
+tilo-files = { path = "../../platform/tilo-files" }
 fs = { package = "tilo-fs", path = "../../system/fs" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
-tilo-user-identity = { path = "../tilo-user-identity" }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "io-util", "macros"] }
 toml.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 workspace-hack = { version = "0.1" }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-getrandom.workspace = true
-tilo-files = { path = "../../platform/tilo-files" }
 rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
