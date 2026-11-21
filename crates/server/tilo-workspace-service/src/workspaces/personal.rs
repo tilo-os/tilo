@@ -738,6 +738,7 @@ impl Workspaces {
                 role: listed.role.clone(),
                 labels: listed.labels.clone(),
                 unattended: listed.unattended,
+                enter_at: None,
                 made_at_ms: listed.made_at_ms,
             });
         }

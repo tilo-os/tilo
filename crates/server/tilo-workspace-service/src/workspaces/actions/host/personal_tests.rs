@@ -183,6 +183,49 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
         "the person's order, each workspace here as this host knows it"
     );
 
+    // Asked for one workspace it keeps, the host signs where it is entered, and the entry's
+    // address still names no other device: a hint there is a device that keeps it.
+    let ask_one = |workspace: &str| {
+        let workspace = workspace.to_owned();
+        let host = &host;
+        let desktop = &desktop;
+        async move {
+            serde_json::from_value::<PersonalList>(
+                invoke(
+                    host,
+                    desktop,
+                    LIST_PERSONAL,
+                    json!({"workspace": workspace}),
+                )
+                .await
+                .unwrap(),
+            )
+            .unwrap()
+        }
+    };
+    let one = ask_one(here).await;
+    assert_eq!(one.workspaces.len(), 1, "{one:?}");
+    assert_eq!(one.workspaces[0].host.as_ref().unwrap().hint, None);
+    let signed: tilo_peer_state::join::TransportHint =
+        postcard::from_bytes(&hex::decode(one.workspaces[0].enter_at.as_ref().unwrap()).unwrap())
+            .unwrap();
+    let (signer, _) =
+        tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::authenticate_transport_hint(
+            &signed,
+        )
+        .unwrap();
+    assert_eq!(signer.workspace_id.to_string(), *here);
+    assert_eq!(
+        signer.device_certificate.device_public_key,
+        workspaces.serving_certificate().device_public_key,
+        "it is this host's own address"
+    );
+    let elsewhere = ask_one(SHELL).await;
+    assert_eq!(
+        elsewhere.workspaces[0].enter_at, None,
+        "a workspace another device keeps is entered there"
+    );
+
     // A grant for one workspace reads that one alone.
     let listed = read(&host, &pinned).await;
     assert_eq!(

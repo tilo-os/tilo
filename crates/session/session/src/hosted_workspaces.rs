@@ -36,7 +36,7 @@ use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::device_admin;
 use tilo_lock::MutexRecover as _;
-use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalList, WorkspaceLabels};
+use tilo_server_session::workspaces::{PersonalList, WorkspaceLabels};
 use tilo_session_actions::SessionActions;
 use tilo_session_client::device::Device;
 use tilo_session_client::{Cmd, Outbox as _};
@@ -414,17 +414,19 @@ async fn read_list(hosted: &Inner, host: &ServerAddress, on: &(String, Workspace
         if held.contains(&workspace) {
             continue;
         }
-        let signed = if address.hint.is_some() {
-            Some(address)
-        } else {
-            host.device
+        // A hint the list carries is the device that keeps it; else the host that answered keeps
+        // it, and signs where it does when asked for that workspace alone.
+        let signed = match address.hint {
+            Some(hint) => Some(hint),
+            None => host
+                .device
                 .personal_list_in(entered, &WorkspaceLabels::new(), Some(&entry.workspace))
                 .await
                 .ok()
                 .and_then(|one| one.workspaces.into_iter().next())
-                .and_then(|one| one.host)
+                .and_then(|one| one.enter_at),
         };
-        let Some(hint) = signed.and_then(|address| signed_hint(&address, workspace)) else {
+        let Some(hint) = signed.and_then(|hint| signed_hint(&hint, workspace)) else {
             tracing::debug!(%workspace, "a listed workspace's host signed no address for it");
             continue;
         };
@@ -440,13 +442,10 @@ async fn read_list(hosted: &Inner, host: &ServerAddress, on: &(String, Workspace
     kept
 }
 
-/// The signed address `address` names for `workspace`, when it is one: signed by the host it
-/// names, for that workspace.
-fn signed_hint(
-    address: &KeepingDeviceAddress,
-    workspace: WorkspaceId,
-) -> Option<tilo_peer_state::join::TransportHint> {
-    let bytes = hex::decode(address.hint.as_deref()?).ok()?;
+/// The signed address `hint` (postcard in hex) is for `workspace`, when it is one: signed by the
+/// host it names, for that workspace.
+fn signed_hint(hint: &str, workspace: WorkspaceId) -> Option<tilo_peer_state::join::TransportHint> {
+    let bytes = hex::decode(hint).ok()?;
     let hint: tilo_peer_state::join::TransportHint = postcard::from_bytes(&bytes).ok()?;
     let (host, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).ok()?;
     (host.workspace_id == workspace).then_some(hint)

@@ -868,16 +868,20 @@ impl Workspaces {
     }
 
     /// Name, in each workspace of `list` this host keeps, its own signed
-    /// address for it: what a device of the person's that asks for one
-    /// workspace dials to be taken in as their further device. A whole list
-    /// leaves them out, so a person with hundreds of workspaces here waits on
-    /// no signing; one asked alone is what a device enters.
+    /// address for it ([`PersonalWorkspace::enter_at`]): what a device of the
+    /// person's that asks for one workspace dials to be taken in as their
+    /// further device. A whole list leaves them out, so a person with
+    /// hundreds of workspaces here waits on no signing; one asked alone is
+    /// what a device enters.
+    ///
+    /// [`PersonalWorkspace::enter_at`]: tilo_server_session::workspaces::PersonalWorkspace::enter_at
     async fn sign_own_addresses(&self, list: &mut PersonalList) {
         let own = self.inner.host.cert.device_public_key;
         for entry in &mut list.workspaces {
-            let Some(host) = entry.host.as_mut().filter(|host| host.hint.is_none()) else {
+            // A hint in the entry names another device that keeps it.
+            if entry.host.as_ref().is_none_or(|host| host.hint.is_some()) {
                 continue;
-            };
+            }
             let Ok(hints) = self.hosts(&entry.workspace).await else {
                 continue;
             };
@@ -888,7 +892,7 @@ impl Workspaces {
                 continue;
             };
             match postcard::to_allocvec(&hint) {
-                Ok(bytes) => host.hint = Some(hex::encode(bytes)),
+                Ok(bytes) => entry.enter_at = Some(hex::encode(bytes)),
                 Err(error) => {
                     tracing::warn!(%error, workspace = %entry.workspace, "this host's address did not encode");
                 }

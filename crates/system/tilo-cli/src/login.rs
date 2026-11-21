@@ -1627,7 +1627,12 @@ pub(crate) fn choose_workspace(
         listed
             .iter()
             .filter(|found| !own || found.role.as_deref() == Some("owner"))
-            .min_by_key(|found| (found.made_at_ms.unwrap_or(i64::MAX), found.workspace.clone()))
+            .min_by_key(|found| {
+                (
+                    found.made_at_ms.unwrap_or(i64::MAX),
+                    found.workspace.clone(),
+                )
+            })
     };
     first(true)
         .or_else(|| first(false))
@@ -1692,6 +1697,7 @@ mod tests {
             labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
             made_at_ms: Some(made_at_ms),
             unattended: false,
+            enter_at: None,
         }
     }
 
@@ -1703,7 +1709,10 @@ mod tests {
             listed("notes", "owner", 20),
         ];
         assert_eq!(choose_workspace(&several, None).unwrap().0, "notes");
-        assert_eq!(choose_workspace(&several, Some("STUDIO")).unwrap().0, "studio");
+        assert_eq!(
+            choose_workspace(&several, Some("STUDIO")).unwrap().0,
+            "studio"
+        );
         let invited = [listed("lounge", "editor", 5), listed("club", "viewer", 2)];
         assert_eq!(choose_workspace(&invited, None).unwrap().0, "club");
         assert!(choose_workspace(&[], None).is_err());

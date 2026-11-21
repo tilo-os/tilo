@@ -259,7 +259,7 @@ pub const PERSONAL_DEVICE_NAME: &str = "workspace.personal.name";
 /// [`PersonalBrowser`]): they join the person's devices, and the list marks
 /// them as that browser's. Asked for one workspace (argument `workspace`),
 /// the host names its own signed address for it
-/// ([`KeepingDeviceAddress::hint`]): where a device of the person's that
+/// ([`PersonalWorkspace::enter_at`]): where a device of the person's that
 /// does not hold it yet asks to be taken in.
 pub const LIST_PERSONAL: &str = "workspace.personal";
 /// The most workspaces a kept list names.
@@ -373,6 +373,14 @@ pub struct PersonalWorkspace {
     /// ([`RUN_UNATTENDED`]), when the host that answers keeps it for them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unattended: bool,
+    /// The answering host's own signed address for it
+    /// (`tilo_peer_state::join::TransportHint`, postcard in hex), when the
+    /// host keeps it and the reader asked for this workspace alone: where a
+    /// device of the person's that holds none of it asks to be taken in.
+    /// [`Self::host`] stays as the list has it, so a hint there still names
+    /// another device that keeps it, never the host that answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter_at: Option<String>,
 }
 
 /// Where a workspace is hosted, as a device dials it.
@@ -384,10 +392,9 @@ pub struct KeepingDeviceAddress {
     /// The host's own signed address for the workspace
     /// (`tilo_peer_state::join::TransportHint`), postcard in hex: what a
     /// device dials, checked against the host's certificate it carries.
-    /// `None` for a workspace the host that answered the list keeps itself,
-    /// unless the reader asked for that workspace alone: the reader reaches
-    /// it where it asked, and a person with hundreds of them there reads
-    /// their list in one answer.
+    /// `None` for a workspace the host that answered the list keeps itself:
+    /// the reader reaches it where it asked, and a person with hundreds of
+    /// them there reads their list in one answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
 }
