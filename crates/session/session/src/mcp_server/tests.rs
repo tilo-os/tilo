@@ -40,58 +40,108 @@ fn an_answer_remembered_for_a_program_covers_each_instance_of_it() {
     );
 }
 
-/// The login's shell runtime is the image's executable in its own unit of the session's
-/// service manager; the same executable run anywhere else, or another program in that unit,
-/// is not it.
+/// The login's shell runtime, hidden from the session, is told from a sandboxed program by its
+/// proof that it holds the device identity: made with the device's key, over the statement of the
+/// very process that connected, for the request it makes. A proof made with another device's key,
+/// for another request, by another process or by one that has ended, or none at all, is not it;
+/// nor is any proof when the session itself holds no device identity to check it with.
 #[test]
-fn the_shell_runtime_is_its_executable_in_its_unit_of_this_login() {
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = dir.path().join("tilo-ush");
-    std::fs::write(&runtime, b"runtime").unwrap();
-    let other = dir.path().join("other");
-    std::fs::write(&other, b"other").unwrap();
-    let exe = runtime.to_str().unwrap();
-    // As a booted box has them: the session in its login's scope, the runtime in its unit.
-    let unit = "0::/user.slice/user-1001.slice/user@1001.service/app.slice/tilo-ush.service\n";
-    assert!(shell_runtime_at(&runtime, exe, unit, 1001));
-    let below =
-        "0::/user.slice/user-1001.slice/user@1001.service/app.slice/tilo-ush.service/run-1\n";
+fn the_shell_runtime_proves_it_holds_the_device_identity() {
+    use runtime_portal::holder_proof::statement;
+    let device = CallerKey::for_session(&[7; 32]).unwrap();
+    let other_device = CallerKey::for_session(&[8; 32]).unwrap();
+    let store = CallerKey::derive(&[7; 32]).unwrap();
+    let mut runtime = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = runtime.id();
+    let op = runtime_portal::workspace_terminal::OP;
+    let proof = |key: &CallerKey, of: u32, op: &str| {
+        hex::encode(key.prove(&statement(of).unwrap(), op, b"").unwrap())
+    };
+    let made = proof(&device, pid, op);
+    assert!(holds_device_identity(Some(&device), pid, op, Some(&made)));
     assert!(
-        shell_runtime_at(&runtime, exe, below, 1001),
-        "a group of the unit's own"
+        !holds_device_identity(Some(&device), pid, op, None),
+        "no proof"
     );
     assert!(
-        !shell_runtime_at(&runtime, other.to_str().unwrap(), unit, 1001),
-        "another program in the unit"
-    );
-    let app =
-        "0::/user.slice/user-1001.slice/user@1001.service/app.slice/app-so.tilo.terminal.scope\n";
-    assert!(
-        !shell_runtime_at(&runtime, exe, app, 1001),
-        "the executable run by an app"
-    );
-    let session = "0::/user.slice/user-1001.slice/session-81.scope\n";
-    assert!(
-        !shell_runtime_at(&runtime, exe, session, 1001),
-        "the executable run in the login's scope"
+        !holds_device_identity(None, pid, op, Some(&made)),
+        "a session holding no device identity"
     );
     assert!(
-        !shell_runtime_at(&runtime, exe, unit, 1002),
-        "another account's runtime"
-    );
-    let named = "0::/user.slice/user-1001.slice/session-81.scope/tilo-ush.service\n";
-    assert!(
-        !shell_runtime_at(&runtime, exe, named, 1001),
-        "a group named like the unit elsewhere"
+        !holds_device_identity(Some(&device), pid, op, Some(&proof(&other_device, pid, op))),
+        "another device's key"
     );
     assert!(
-        !shell_runtime_at(&runtime, "/nonexistent", unit, 1001),
-        "a process that is gone"
+        !holds_device_identity(Some(&device), pid, op, Some(&proof(&store, pid, op))),
+        "a proof made for the Secret Service"
     );
     assert!(
-        !shell_runtime_at(&runtime, exe, "", 1001),
-        "no cgroup to read"
+        !holds_device_identity(
+            Some(&device),
+            pid,
+            runtime_portal::environment_socket::OP,
+            Some(&made)
+        ),
+        "a proof made for another request"
     );
+    assert!(
+        !holds_device_identity(Some(&device), other.id(), op, Some(&made)),
+        "the proof of another process"
+    );
+    assert!(
+        !holds_device_identity(Some(&device), pid, op, Some("not hex")),
+        "a garbled proof"
+    );
+    let _ = runtime.kill();
+    let _ = runtime.wait();
+    assert!(
+        !holds_device_identity(Some(&device), pid, op, Some(&made)),
+        "a process that has ended"
+    );
+    let _ = other.kill();
+    let _ = other.wait();
+}
+
+/// A process that loads the device key makes itself non-dumpable, and the kernel then hides its
+/// namespaces from the session: such a peer is hidden, which is not a peer sharing the session's
+/// namespaces, and a process the session can look at is not hidden.
+#[test]
+fn a_process_holding_the_device_key_is_hidden_from_the_session() {
+    let mut shown = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    assert_eq!(shares_security_namespaces(shown.id()), Some(true));
+    let _ = shown.kill();
+    let _ = shown.wait();
+
+    let mut ready = [0_i32; 2];
+    // SAFETY: a pipe into a buffer of two descriptors.
+    assert_eq!(unsafe { libc::pipe(ready.as_mut_ptr()) }, 0);
+    // SAFETY: the child only makes itself non-dumpable, says so on the pipe and waits to be
+    // killed: async-signal-safe calls, no allocation and no lock after the fork.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork failed");
+    if pid == 0 {
+        // SAFETY: as above.
+        unsafe {
+            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+            libc::write(ready[1], b"r".as_ptr().cast(), 1);
+            loop {
+                libc::pause();
+            }
+        }
+    }
+    let mut byte = [0_u8; 1];
+    // SAFETY: one byte into a buffer of one, from the pipe this test made.
+    assert_eq!(unsafe { libc::read(ready[0], byte.as_mut_ptr().cast(), 1) }, 1);
+    let hidden = shares_security_namespaces(u32::try_from(pid).unwrap());
+    // SAFETY: the child this test forked, and the pipe it made.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+        libc::waitpid(pid, std::ptr::null_mut(), 0);
+        libc::close(ready[0]);
+        libc::close(ready[1]);
+    }
+    assert_eq!(hidden, None);
 }
 
 /// An agent works in one workspace: the shell's windows of another, and windows the shell no
@@ -156,6 +206,7 @@ fn the_peer_must_be_this_accounts_own_process_in_its_namespaces() {
         peer_decision(&Peer {
             uid,
             shares_namespaces: namespaces,
+            hidden: false,
         })
     };
     assert_eq!(shares(own, true), Ok(()));

@@ -7,6 +7,9 @@
 pub mod agent_transport;
 #[cfg(unix)]
 pub mod environment_socket;
+/// How the device's shell runtime shows the session it holds the device identity.
+#[cfg(unix)]
+pub mod holder_proof;
 /// What a process says first on its connection to its session's services:
 /// the launch it is, written on a Unix socket. Only a broker attests it
 /// (its own side reads `/proc`), so writing one is available wherever the

@@ -3,7 +3,8 @@
 //!
 //! The session's own server serves only programs outside every sandbox, so the
 //! supervisor asks the session for a server bound to this environment
-//! ([`runtime_portal::environment_socket`]), binds it into the guest at
+//! ([`runtime_portal::environment_socket`]), proving it holds the device identity
+//! ([`holder_proof`]), binds it into the guest at
 //! [`tilo_paths::login::GUEST_AGENT_SOCKET`] and names it in
 //! [`tilo_paths::login::AGENT_SOCKET_ENV`]. The server belongs to the lease: it closes
 //! when the session ends. Outside a Tilo login, or when the session refuses, the guest
@@ -60,10 +61,9 @@ pub fn open_at(server: &Path, store: &Store, id: &str, environment: &Environment
         return None;
     }
     let workspace = workspace_of(store, id);
-    match open(
-        server,
-        &Request::new(id, &environment.name, workspace.as_deref()),
-    ) {
+    let request = Request::new(id, &environment.name, workspace.as_deref());
+    let proof = holder_proof(&request.op);
+    match open(server, &request.proved(proof)) {
         Ok(lease) => {
             tracing::info!(
                 environment = id,
@@ -78,6 +78,22 @@ pub fn open_at(server: &Path, store: &Store, id: &str, environment: &Environment
             None
         }
     }
+}
+
+/// That this process holds the device identity, for a request `op` to the session, which
+/// cannot look at this process ([`runtime_portal::holder_proof`]): `None` when it holds none.
+#[cfg(target_os = "linux")]
+pub(crate) fn holder_proof(op: &str) -> Option<String> {
+    let statement = runtime_portal::holder_proof::statement(std::process::id())?;
+    let key = tilo_secrets::device_session_key()?;
+    let proof = key.prove(&statement, op, b"").ok()?;
+    Some(hex::encode(proof))
+}
+
+/// Only Linux hides a process that holds the device key from the session.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn holder_proof(_op: &str) -> Option<String> {
+    None
 }
 
 pub const CONNECT_COMMANDS: [&str; 2] = ["tilo-runtime", "tilo-runtime-mcp"];

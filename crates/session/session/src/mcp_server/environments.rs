@@ -597,6 +597,7 @@ mod tests {
         let peer = super::super::Peer {
             uid: rustix::process::geteuid().as_raw(),
             shares_namespaces: true,
+            hidden: false,
         };
         assert_eq!(
             environment_decision(&peer, child.id(), &environment(own)),
@@ -609,6 +610,7 @@ mod tests {
         let other = super::super::Peer {
             uid: rustix::process::geteuid().as_raw().saturating_add(1),
             shares_namespaces: false,
+            hidden: false,
         };
         assert_eq!(
             environment_decision(&other, child.id(), &environment(own)),

@@ -78,6 +78,8 @@ pub(super) fn serve_hosted(
         (*cols, *rows),
         host_session.as_deref(),
     );
+    let proof = crate::mcp_server::holder_proof(&request.op);
+    let request = request.proved(proof);
     let mut told = Ok(());
     let route = ask(&socket, &request, || {
         told = reply(writer, &ServeResponse::Waiting, None);

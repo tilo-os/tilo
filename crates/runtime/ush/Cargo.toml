@@ -64,6 +64,9 @@ semver.workspace = true
 # fleet says which other devices' images are trusted.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 hex.workspace = true
+# Holding that key is what the session's MCP server, which cannot look at this
+# non-dumpable process, is shown instead (`mcp_server::holder_proof`).
+tilo-secrets.workspace = true
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }

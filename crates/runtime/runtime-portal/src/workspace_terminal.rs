@@ -54,6 +54,10 @@ pub struct Request {
     /// The host's session to come back to, by the id an earlier open answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attach: Option<String>,
+    /// That the runtime asking holds the device identity, for a session that cannot look at it
+    /// ([`crate::holder_proof`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<String>,
 }
 
 impl Request {
@@ -71,7 +75,15 @@ impl Request {
             cols: cols.clamp(1, MAX_SIDE),
             rows: rows.clamp(1, MAX_SIDE),
             attach: attach.map(str::to_owned),
+            proof: None,
         }
+    }
+
+    /// This request with `proof` ([`crate::holder_proof`]).
+    #[must_use]
+    pub fn proved(mut self, proof: Option<String>) -> Self {
+        self.proof = proof;
+        self
     }
 
     /// The request `line` is, when it is a well-formed one.
@@ -85,7 +97,11 @@ impl Request {
             && plain(&request.record, 512)
             && (1..=MAX_SIDE).contains(&request.cols)
             && (1..=MAX_SIDE).contains(&request.rows)
-            && request.attach.as_deref().is_none_or(is_session_id))
+            && request.attach.as_deref().is_none_or(is_session_id)
+            && request
+                .proof
+                .as_deref()
+                .is_none_or(crate::holder_proof::well_formed))
         .then_some(request)
     }
 }
@@ -217,6 +233,8 @@ mod tests {
             let request = Request::new("w1", "uuid:1", (120, 40), Some(session));
             let line = serde_json::to_vec(&request).unwrap();
             assert_eq!(Request::of(&line), Some(request));
+            let proved = Request::new("w1", "", (80, 24), None).proved(Some("0f".repeat(32)));
+            assert_eq!(Request::of(&serde_json::to_vec(&proved).unwrap()), Some(proved));
             assert_eq!(Request::new("w1", "", (0, 5000), None).cols, 1);
             assert_eq!(Request::new("w1", "", (0, 5000), None).rows, MAX_SIDE);
             for refused in [
@@ -224,6 +242,7 @@ mod tests {
                 Request::new("w\n1", "", (80, 24), None),
                 Request::new("w1", "a\nb", (80, 24), None),
                 Request::new("w1", "", (80, 24), Some("not-a-session")),
+                Request::new("w1", "", (80, 24), None).proved(Some("a proof".into())),
             ] {
                 assert_eq!(Request::of(&serde_json::to_vec(&refused).unwrap()), None, "{refused:?}");
             }

@@ -25868,6 +25868,7 @@ dependencies = [
  "tilo-process",
  "tilo-resource",
  "tilo-sandbox-core",
+ "tilo-secrets",
  "tilo-server-account",
  "tilo-test-env",
  "tilo-user-identity",

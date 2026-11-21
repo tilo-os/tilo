@@ -47,6 +47,7 @@ use tilo_compositor::ReadableWatch;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::session_api::{Consent, Hello};
+use tilo_seal::secret_service::CallerKey;
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
 use tilo_workspace_service::apps::collab_app_broker::{AgentConnection, AppBrokerState};
@@ -608,10 +609,11 @@ impl Loop {
             let pressed = identify(&stream).and_then(|(pid, peer)| {
                 let from = match peer_decision(&peer) {
                     Ok(()) => From::Login(pid),
-                    // The login's confined shell runtime runs in a mount namespace systemd made
-                    // for it: it is let in to ask for its environments' sockets, and for nothing
-                    // else (`serve_connection`).
-                    Err(PeerRefusal::Sandboxed) if is_shell_runtime(pid) => From::ShellRuntime(pid),
+                    // The login's shell runtime holds the device key, so the kernel hides it from
+                    // this session: it is let in to prove that it holds the device identity, and to
+                    // ask for its environments' sockets and its workspaces' terminals, and for
+                    // nothing else (`serve_shell_runtime`).
+                    Err(PeerRefusal::Sandboxed) if peer.hidden => From::ShellRuntime(pid),
                     Err(refusal) => return Err(refusal),
                 };
                 // Only a program the server would serve is told that it is full.
@@ -1032,6 +1034,9 @@ pub(crate) struct Peer {
     uid: libc::uid_t,
     /// Whether it shares this session's user and mount namespaces.
     shares_namespaces: bool,
+    /// Whether the kernel would not say which namespaces it is in: a process that made itself
+    /// non-dumpable, as one does that loads the device key.
+    hidden: bool,
 }
 
 /// Why a connection was refused before anyone was asked.
@@ -1106,73 +1111,47 @@ pub(crate) fn identify(stream: &UnixStream) -> Result<(u32, Peer), PeerRefusal> 
         .ok()
         .filter(|pid| *pid != 0)
         .ok_or(PeerRefusal::Unidentified)?;
+    let shares = shares_security_namespaces(pid);
     Ok((
         pid,
         Peer {
             uid: credentials.uid,
-            shares_namespaces: shares_security_namespaces(pid),
+            shares_namespaces: shares == Some(true),
+            hidden: shares.is_none(),
         },
     ))
 }
 
-/// The image's confined shell runtime, and the unit of the login's own service manager it runs
-/// in (os/usr/lib/systemd/user/tilo-ush.service).
-const SHELL_RUNTIME: &str = "/usr/libexec/tilo-ush";
-const SHELL_RUNTIME_UNIT: &str = "tilo-ush.service";
-
-/// Whether `pid`, a process of this account outside this login's namespaces, is the login's own
-/// confined shell runtime: the image's `tilo-ush` executable, running in the `tilo-ush.service`
-/// unit of this account's own service manager. systemd starts it in a mount namespace of its own
-/// (`PrivateTmp=`), so the namespace check alone takes it for a sandboxed program; these are the
-/// kernel's facts that tell it apart from one, as no sandbox moves a program into another unit's
-/// cgroup.
-fn is_shell_runtime(pid: u32) -> bool {
-    shell_runtime_at(
-        Path::new(SHELL_RUNTIME),
-        &format!("/proc/{pid}/exe"),
-        &std::fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap_or_default(),
-        rustix::process::geteuid().as_raw(),
-    )
-}
-
-/// [`is_shell_runtime`] of a process whose executable is at `exe` and whose cgroups are
-/// `cgroups`, for the account `uid`, with the runtime installed at `runtime`.
-fn shell_runtime_at(runtime: &Path, exe: &str, cgroups: &str, uid: u32) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-    let same_file = match (std::fs::metadata(exe), std::fs::metadata(runtime)) {
-        (Ok(exe), Ok(runtime)) => exe.dev() == runtime.dev() && exe.ino() == runtime.ino(),
-        // A process that cannot be read is not one this server knows.
-        _ => false,
-    };
-    // The unified hierarchy's line (`0::/path`): the unit in this account's service manager,
-    // `/user.slice/user-<uid>.slice/user@<uid>.service/.../tilo-ush.service[/...]`.
-    let Some(path) = cgroups.lines().find_map(|line| line.strip_prefix("0::")) else {
+/// Whether `proof` shows that the process `pid` holds the device identity, checked with `key`,
+/// the session's own ([`tilo_secrets::device_session_key`]): made over that process's own
+/// statement ([`runtime_portal::holder_proof::statement`]) for the request `op`.
+///
+/// That is how the login's shell runtime is told from a sandboxed program, although the kernel
+/// shows the session neither its namespaces nor its executable: it reads the device key (its
+/// tool builder signs with it), which makes it non-dumpable, and no sandbox hands a program that
+/// key. A proof is the process's alone: one copied to another process, or kept past its end,
+/// proves nothing there.
+fn holds_device_identity(key: Option<&CallerKey>, pid: u32, op: &str, proof: Option<&str>) -> bool {
+    let (Some(key), Some(proof)) = (key, proof) else {
         return false;
     };
-    let parts: Vec<&str> = path.split('/').collect();
-    let slice = format!("user-{uid}.slice");
-    let manager = format!("user@{uid}.service");
-    let in_manager = parts.get(1) == Some(&"user.slice")
-        && parts.get(2) == Some(&slice.as_str())
-        && parts.get(3) == Some(&manager.as_str());
-    let in_unit = parts.iter().skip(4).any(|part| *part == SHELL_RUNTIME_UNIT);
-    same_file && in_manager && in_unit
+    let Some(statement) = runtime_portal::holder_proof::statement(pid) else {
+        return false;
+    };
+    hex::decode(proof).is_ok_and(|proof| key.verify(&statement, op, b"", &proof))
 }
 
 /// Whether `pid` runs in this process's user and mount namespaces: what tells a program of this
-/// login from one a sandbox put elsewhere.
-fn shares_security_namespaces(pid: u32) -> bool {
+/// login from one a sandbox put elsewhere. `None` when the kernel does not show them to this
+/// process, which is no program this server knows by its namespaces.
+fn shares_security_namespaces(pid: u32) -> Option<bool> {
     use std::os::unix::fs::MetadataExt as _;
     let same = |space: &str| {
-        let ours = std::fs::metadata(format!("/proc/self/ns/{space}"));
-        let theirs = std::fs::metadata(format!("/proc/{pid}/ns/{space}"));
-        match (ours, theirs) {
-            (Ok(ours), Ok(theirs)) => ours.dev() == theirs.dev() && ours.ino() == theirs.ino(),
-            // A process that cannot be read is not one this server knows.
-            _ => false,
-        }
+        let ours = std::fs::metadata(format!("/proc/self/ns/{space}")).ok()?;
+        let theirs = std::fs::metadata(format!("/proc/{pid}/ns/{space}")).ok()?;
+        Some(ours.dev() == theirs.dev() && ours.ino() == theirs.ino())
     };
-    same("user") && same("mnt")
+    Some(same("user")? && same("mnt")?)
 }
 
 /// What the person is shown about the connection from `pid`, which came in by `entrance`.
@@ -2452,8 +2431,10 @@ enum From {
     Environment(u32, Arc<environments::Environment>),
     /// Another of the person's devices, over iroh ([`crate::device_mcp`]).
     Device(Box<tilo_device_mcp::Origin>),
-    /// The login's confined shell runtime, by the pid that opened it ([`is_shell_runtime`]): it
-    /// asks for its environments' sockets, and is served nothing else.
+    /// A process of this account the kernel hides from the session, by the pid that opened it:
+    /// the login's shell runtime once it proves it holds the device identity
+    /// ([`holds_device_identity`]), served its environments' sockets and its workspaces'
+    /// terminals and nothing else.
     ShellRuntime(u32),
 }
 
@@ -2576,17 +2557,25 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     );
 }
 
-/// The login's shell runtime, by `pid`: it asks, in `first`, for an environment's socket, and is
-/// served nothing else.
+/// The login's shell runtime, by `pid`, which the kernel hides from the session: it asks, in
+/// `first`, for an environment's socket or a workspace's terminal, proving it holds the device
+/// identity, and is served nothing else.
 fn serve_shell_runtime(stream: UnixStream, first: &[u8], pid: u32, serving: &Serving) {
-    if let Some(request) = runtime_portal::environment_socket::Request::of(first) {
+    let key = tilo_secrets::device_session_key();
+    let proven =
+        |op: &str, proof: &Option<String>| holds_device_identity(key.as_ref(), pid, op, proof.as_deref());
+    if let Some(request) = runtime_portal::environment_socket::Request::of(first)
+        && proven(&request.op, &request.proof)
+    {
         environments::open(stream, request, pid, serving.clone());
-    } else if let Some(request) = runtime_portal::workspace_terminal::Request::of(first) {
+    } else if let Some(request) = runtime_portal::workspace_terminal::Request::of(first)
+        && proven(&request.op, &request.proof)
+    {
         crate::workspace_terminals::open(stream, request, serving.hosting.clone());
     } else {
         tracing::info!(
             pid,
-            "MCP server: the shell runtime asked for something other than an environment's socket"
+            "MCP server: a hidden process proved no device identity for an environment's socket or a workspace's terminal"
         );
         refuse(stream, &PeerRefusal::Sandboxed);
     }
