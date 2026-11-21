@@ -95,7 +95,8 @@
       "The agent writes a note": 45000,
       "The agent posts in Chat": 45000,
       "Ada sees each change under the agent’s name": 60000,
-      "The agent asks Ada a question, and Ada answers it": 60000
+      "The agent asks Ada a question": 30000,
+      "Ada answers the agent’s question": 60000
     },
     "big-folder": {
       "Ada copies the folder into their workspace folder": 120000,

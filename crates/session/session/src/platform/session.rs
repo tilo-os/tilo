@@ -1292,6 +1292,10 @@ impl Session {
             broker.set_app_action_consent(std::sync::Arc::new(crate::step_questions::Sheet::new(
                 questions,
                 std::sync::Arc::clone(&agent_sessions),
+                app_wire.as_ref().map(|app_wire| {
+                    std::sync::Arc::clone(&app_wire.layout)
+                        as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>
+                }),
             )));
         }
         // Every service this session serves, from the one table that says who serves each: the

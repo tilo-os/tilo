@@ -205,7 +205,12 @@ impl Keys {
                 self.parts.next_page();
             }
             Key::Named(NamedKey::Enter) => match dialog.body {
-                Body::Answers { .. } => self.parts.answer(dialog.selected),
+                // Only an answer the keyboard is on: with none chosen yet (an agent's own
+                // choices, none suggested), Enter gives no answer by accident.
+                Body::Answers { ref choices, .. } if dialog.selected < choices.len() => {
+                    self.parts.answer(dialog.selected);
+                }
+                Body::Answers { .. } => {}
                 _ => self.parts.confirm(),
             },
             Key::Named(NamedKey::Escape) => self.parts.cancel(),

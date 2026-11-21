@@ -335,9 +335,10 @@ def steps(story: Story) -> None:
 
     story.step("Ada sees each change under the agent’s name", under_its_name)
 
-    def asks():
-        answer: dict = {}
+    answer: dict = {}
+    asking: list[threading.Thread] = []
 
+    def asks():
         def ask():
             try:
                 answer["text"] = work.call("tilo_ask", {"question": QUESTION,
@@ -345,20 +346,32 @@ def steps(story: Story) -> None:
             except Failed as error:
                 answer["error"] = str(error)
 
-        asking = threading.Thread(target=ask, daemon=True)
-        asking.start()
+        asking.append(threading.Thread(target=ask, daemon=True))
+        asking[0].start()
         until("the agent's question on Ada's shell", lambda: ada.shows(QUESTION), 30, 0.25)
-        # The question as Ada sees it, before she answers: the step's own shot is taken after.
+        # The question as Ada sees it, before anything is pressed on it.
         story.shot(ada, "question")
+        # The sheet's own answers and the system's ("Ask me later", "Don't answer") read apart.
+        names = ada.names()
+        missing = [name for name in (ANSWER, "Leave it for now", "Ask me later", "Don't answer")
+                   if name not in names]
+        if missing:
+            raise Failed(f"the question's sheet offers no {', '.join(missing)}")
+        ids = [name for name in names if re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-", name)]
+        if ids:
+            raise Failed(f"the question's sheet shows a raw id, not a name: {ids[0]!r}")
+
+    def answers():
         ada.press(ANSWER, "the answer Ada picks")
-        asking.join(60)
+        asking[0].join(60)
         if "text" not in answer:
             raise Failed(f"the agent was not told her answer: {answer.get('error', 'no answer')}")
         if ANSWER not in answer["text"]:
             raise Failed(f"the agent was told {answer['text']!r}, not her answer")
 
     try:
-        story.step("The agent asks Ada a question, and Ada answers it", asks)
+        story.step("The agent asks Ada a question", asks)
+        story.step("Ada answers the agent’s question", answers)
     finally:
         story.note("agent-calls", work.said)
 

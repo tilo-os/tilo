@@ -1265,7 +1265,7 @@ fn asking_now(session: &Session, handle: &str) -> bool {
 }
 
 #[test]
-fn not_now_leaves_an_agents_question_open_and_decline_declines_it() {
+fn ask_me_later_leaves_an_agents_question_open_and_dont_answer_declines_it() {
     let _settled = ui::motion::testing::settled();
     let (mut session, questions) = asking(Vec::new());
     let _later = agent_ask(&questions, "agent-ask:later", &["Berlin", "Munich"]);
@@ -1273,8 +1273,8 @@ fn not_now_leaves_an_agents_question_open_and_decline_declines_it() {
         asking_now(session, "agent-ask:later")
     });
     let shown = dialog(&session);
-    assert_eq!(shown.defer_label.as_deref(), Some("Not now"));
-    assert_eq!(shown.cancel_label, "Decline");
+    assert_eq!(shown.defer_label.as_deref(), Some("Ask me later"));
+    assert_eq!(shown.cancel_label, "Don't answer");
 
     press(
         &mut session,

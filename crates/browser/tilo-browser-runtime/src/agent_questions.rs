@@ -5,8 +5,8 @@
 //! each question on the native question sheet over the desktop
 //! ([`tilo_sheets::portal`]), in its words. Allow once runs that one
 //! invocation, Deny refuses it; a question the agent words itself is answered
-//! with one of its choices or what the person types, Decline tells the agent
-//! no, and Not now leaves it open: the sheet goes, the question waits among
+//! with one of its choices, Don't answer tells the agent no answer comes, and
+//! Ask me later leaves it open: the sheet goes, the question waits among
 //! the notifications, and choosing it there asks it again. A question the
 //! server withdraws, or that expires, takes the sheet away. While the tab is
 //! out of view, a notification says an agent waits (the person did not cause

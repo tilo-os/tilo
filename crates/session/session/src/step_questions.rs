@@ -60,16 +60,41 @@ pub(crate) struct Sheet {
     /// Whether the person lets such agents act without asking here, as this device's settings
     /// say when a step asks.
     unasked: fn() -> bool,
+    /// The shell's workspaces, which name the workspace an agent's question is asked in.
+    workspaces: Option<Arc<dyn tilo_broker_core::services::WorkspaceAuthority>>,
 }
 
 impl Sheet {
-    /// The sheet over `questions`, knowing the agent sessions `sessions`.
-    pub(crate) fn new(questions: Questions, sessions: Arc<AgentSessions>) -> Self {
+    /// The sheet over `questions`, knowing the agent sessions `sessions` and the shell's
+    /// `workspaces`.
+    pub(crate) fn new(
+        questions: Questions,
+        sessions: Arc<AgentSessions>,
+        workspaces: Option<Arc<dyn tilo_broker_core::services::WorkspaceAuthority>>,
+    ) -> Self {
         Self {
             questions,
             sessions,
             unasked: crate::device_mcp::DeviceAgents::acts_without_asking,
+            workspaces,
         }
+    }
+
+    /// The workspace `id` by the name the person gave it, for a sheet to say where it asks;
+    /// empty where it is the only workspace on this device, so naming it says nothing, or where
+    /// the shell does not know it.
+    fn workspace_named(&self, id: &str) -> String {
+        let mut named = String::new();
+        if let Some(workspaces) = &self.workspaces {
+            let _ = workspaces.with_tree(&mut |tree| {
+                if tree.workspaces.len() > 1
+                    && let Some(workspace) = tilo_broker_core::services::workspace_in(tree, id)
+                {
+                    named.clone_from(&workspace.name);
+                }
+            });
+        }
+        named
     }
 
     /// The setting's answer to `request` in the person's place: allowed once, with no sheet, when
@@ -116,7 +141,7 @@ impl Sheet {
             label: agent.clone(),
             details: serde_json::to_value(AgentQuestion {
                 agent,
-                workspace: request.workspace.clone(),
+                workspace: self.workspace_named(&request.workspace),
                 ask: Some(AgentAsk {
                     question: ask.question.clone(),
                     choices: ask.choices.clone(),
@@ -284,7 +309,7 @@ mod tests {
 
     async fn answered(choice: Option<usize>, scope: Option<&str>) -> Option<AppActionAnswer> {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), AgentSessions::new());
+        let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
         let answer = sheet.ask(request(scope)).expect("asked");
         let pending = questions.pending();
         assert_eq!(pending.len(), 1, "the sheet is up");
@@ -306,6 +331,60 @@ mod tests {
         answer.await.ok()
     }
 
+    /// The shell's workspaces, as many as `names` gives, the first of them the one asked in.
+    struct Shell(tilo_desktop_model::Layout);
+
+    impl tilo_broker_core::services::WorkspaceAuthority for Shell {
+        fn with_tree(
+            &self,
+            read: &mut dyn FnMut(&tilo_desktop_model::Layout),
+        ) -> Result<(), String> {
+            read(&self.0);
+            Ok(())
+        }
+    }
+
+    fn shell(names: &[&str]) -> Arc<dyn tilo_broker_core::services::WorkspaceAuthority> {
+        let workspaces: Vec<_> = (1_u128..)
+            .zip(names)
+            .map(|(id, name)| {
+                tilo_desktop_model::Workspace::new(
+                    tilo_desktop_model::WorkspaceId::from_u128(id),
+                    *name,
+                )
+            })
+            .collect();
+        Arc::new(Shell(tilo_desktop_model::Layout {
+            active: workspaces[0].id(),
+            workspaces,
+            ..tilo_desktop_model::Layout::default()
+        }))
+    }
+
+    /// The sheet names the workspace an agent asks in by the name the person gave it, never by
+    /// its id, and says nothing of it where it is the only workspace on the device.
+    #[tokio::test]
+    async fn an_agents_question_names_its_workspace_only_among_several() {
+        for (names, said) in [
+            (&["Applicant: Jane Doe", "Home"][..], "Applicant: Jane Doe"),
+            (&["Applicant: Jane Doe"][..], ""),
+        ] {
+            let questions = Questions::new();
+            let sheet = Sheet::new(questions.clone(), AgentSessions::new(), Some(shell(names)));
+            let mut question = request(Some("Claude Code"));
+            question.handle = "agent-ask:i1".into();
+            question.workspace = tilo_desktop_model::WorkspaceId::from_u128(1).to_string();
+            question.ask = Some(tilo_actions::remote::PersonAsk {
+                question: "Shall I file the budget under Spring?".into(),
+                choices: vec!["Yes, file it".into()],
+            });
+            let _answered = sheet.ask(question).expect("asked");
+            let pending = questions.pending();
+            let shown: AgentQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
+            assert_eq!(shown.workspace, said, "{names:?}");
+        }
+    }
+
     /// An agent's question in its own words goes on the sheet a workspace host
     /// asks it on: the person picks a choice, words typed are no answer, and
     /// decline answers nothing.
@@ -313,7 +392,7 @@ mod tests {
     async fn an_agents_question_is_asked_with_its_choices_and_answered_with_what_they_pick() {
         async fn asked(answer: tilo_service::Answer) -> Option<AppActionAnswer> {
             let questions = Questions::new();
-            let sheet = Sheet::new(questions.clone(), AgentSessions::new());
+            let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
             let mut question = request(Some("Claude Code"));
             question.handle = "agent-ask:i1".into();
             question.ask = Some(tilo_actions::remote::PersonAsk {
@@ -326,7 +405,10 @@ mod tests {
             assert_eq!(pending[0].kind, crate::network::AGENT_QUESTION);
             let shown: AgentQuestion = serde_json::from_value(pending[0].details.clone()).unwrap();
             assert_eq!(shown.agent, "Claude Code");
-            assert_eq!(shown.workspace, "w1");
+            assert_eq!(
+                shown.workspace, "",
+                "a shell that names no workspace says none"
+            );
             let ask = shown.ask.expect("the question in the agent's words");
             assert_eq!(ask.question, "Shall I file the budget under Spring?");
             assert_eq!(ask.choices, ["Yes, file it", "Leave it for now"]);
@@ -358,7 +440,7 @@ mod tests {
 
         // Declining (or Escape) is no answer at all.
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), AgentSessions::new());
+        let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
         let mut question = request(Some("Claude Code"));
         question.handle = "agent-ask:i2".into();
         question.ask = Some(tilo_actions::remote::PersonAsk {
@@ -422,6 +504,7 @@ mod tests {
                 questions: questions.clone(),
                 sessions: Arc::clone(&sessions),
                 unasked,
+                workspaces: None,
             };
             (sheet, questions)
         };
@@ -463,7 +546,7 @@ mod tests {
     #[tokio::test]
     async fn a_question_nobody_waits_for_leaves_the_sheet() {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), AgentSessions::new());
+        let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
         let answer = sheet.ask(request(None)).expect("asked");
         assert_eq!(questions.pending().len(), 1);
         drop(answer);
@@ -501,7 +584,7 @@ mod tests {
     #[tokio::test]
     async fn an_apps_change_of_another_app_is_asked_on_the_sheet() {
         let questions = Questions::new();
-        let sheet = Sheet::new(questions.clone(), AgentSessions::new());
+        let sheet = Sheet::new(questions.clone(), AgentSessions::new(), None);
         for (handle, always) in [("app-action:i1", true), ("confirm:i2", false)] {
             let mut asked = request(None);
             asked.handle = handle.into();

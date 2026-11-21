@@ -96,7 +96,8 @@
         "The agent writes a note",
         "The agent posts in Chat",
         "Ada sees each change under the agent’s name",
-        "The agent asks Ada a question, and Ada answers it"
+        "The agent asks Ada a question",
+        "Ada answers the agent’s question"
       ]
     },
     {

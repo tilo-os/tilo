@@ -243,7 +243,15 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
         let _ = page;
         sheet = sheet.tertiary_action(t("portal-back"), move || back.back());
     }
-    // A sheet whose choices are its answers has no button of its own.
+    // A sheet whose choices are its answers has no button of its own, and with none of them
+    // suggested (an agent's own choices) its ways out step back behind them.
+    if let Body::Answers {
+        choices, suggested, ..
+    } = &dialog.body
+        && *suggested >= choices.len()
+    {
+        sheet = sheet.with_quiet_footer();
+    }
     if !matches!(dialog.body, Body::Answers { .. }) {
         let label = if dialog.reviewing_more() {
             t("portal-continue")
@@ -356,29 +364,7 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                         .checkbox_view(remember.on, move |_| press.remember()),
                 ));
             }
-            // The answers in one row on the words' own edge, wrapping when they do not fit: with
-            // none suggested, only the one under the pointer takes the primary face, while the
-            // keyboard's place wears the focus ring alone.
-            let mut answers = Row::new()
-                .with_id("portal-answers")
-                .with_rhythm(Rhythm::Related)
-                .align_start();
-            for (at, choice) in choices.iter().enumerate() {
-                let press = parts.clone();
-                let mut button = Button::new(&format!("portal-answer-{at}"), choice)
-                    .role(if at == *suggested {
-                        ButtonRole::Primary
-                    } else {
-                        ButtonRole::Secondary
-                    })
-                    .on_own_device_effect(move || press.answer(at));
-                if *suggested >= choices.len() {
-                    button = button.primary_on_hover();
-                }
-                button.set_focus(at == dialog.selected);
-                answers = answers.push(Box::new(button));
-            }
-            column = column.push(Box::new(answers));
+            column = column.push(Box::new(answer_buttons(dialog, choices, *suggested, parts)));
         }
         Body::Devices(devices) => {
             for (at, device) in devices.iter().enumerate() {
@@ -438,6 +424,38 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
         }
     }
     Box::new(column)
+}
+
+/// The answers in one row on the words' own edge, wrapping when they do not fit: with none
+/// suggested, only the one under the pointer takes the primary face, while the keyboard's place
+/// wears the focus ring alone.
+fn answer_buttons(dialog: &Dialog, choices: &[String], suggested: usize, parts: &Parts) -> Row {
+    let mut answers = Row::new()
+        .with_id("portal-answers")
+        .with_rhythm(Rhythm::Related)
+        .align_start();
+    for (at, choice) in choices.iter().enumerate() {
+        let press = parts.clone();
+        let mut button = Button::new(&format!("portal-answer-{at}"), choice)
+            .role(if at == suggested {
+                ButtonRole::Primary
+            } else {
+                ButtonRole::Secondary
+            })
+            .on_own_device_effect(move || press.answer(at));
+        if suggested >= choices.len() {
+            button = button.primary_on_hover();
+            // The first answer is where the keyboard starts, but Enter answers nothing until the
+            // person moves onto one (the Keys decorator answers only what is selected): no answer
+            // is the default, so none is given by accident.
+            if at == 0 {
+                button = button.with_default_focus();
+            }
+        }
+        button.set_focus(at == dialog.selected);
+        answers = answers.push(Box::new(button));
+    }
+    answers
 }
 
 /// One row per choice, the highlighted one checked.

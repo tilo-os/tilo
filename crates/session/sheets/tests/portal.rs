@@ -229,6 +229,93 @@ fn at_most_one_answer_wears_the_primary_face_when_the_pointer_is_on_another() {
     }
 }
 
+/// An agent's own question: its choices come first and lead, the keyboard
+/// starts on the first of them but Enter answers nothing until the person
+/// moves onto one, and the system's two ways out ("Ask me later", "Don't
+/// answer") step back, plain, below them. A device with one workspace names
+/// none.
+#[test]
+fn an_agents_own_choices_lead_and_enter_gives_no_answer_by_accident() {
+    use tilo_sheets::portal::{AgentAsk, AgentQuestion};
+    let asked = AgentQuestion {
+        agent: "Claude Code".into(),
+        ask: Some(AgentAsk {
+            question: "Shall I file the budget under Spring?".into(),
+            choices: vec!["Yes, file it".into(), "Leave it for now".into()],
+            secret: false,
+        }),
+        ..AgentQuestion::default()
+    };
+    let shown = asked.dialog("request-1");
+    assert!(
+        shown.facts.is_empty(),
+        "one workspace on the device goes unsaid"
+    );
+    for (name, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        let (mut app, state) = mounted(shown.clone());
+        app.harness().set_theme(theme.clone());
+        app.harness()
+            .send(&ui::synthetic_input::cursor_moved(10.0, 10.0));
+        app.settle();
+        keep_the_frame(&mut app, &format!("agent-ask-{name}"));
+
+        let focused = app.harness().a11y_focus().map(|(_, node)| node);
+        assert_eq!(
+            focused.as_ref().and_then(|node| node.label()),
+            Some("Yes, file it"),
+            "{name}: the keyboard starts on the agent's first choice"
+        );
+        let targets = app.harness().targets();
+        let first = targets["portal-answer-0"];
+        let later = targets["portal-sheet.secondary"];
+        let decline = targets["portal-sheet.tertiary"];
+        assert!(
+            first.y1 <= later.y0 && first.y1 <= decline.y0,
+            "{name}: the choices come before the system's ways out"
+        );
+        let labels: Vec<String> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == ui::accesskit::Role::Button)
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        for label in [
+            "Yes, file it",
+            "Leave it for now",
+            "Ask me later",
+            "Don't answer",
+        ] {
+            assert!(
+                labels.iter().any(|l| l == label),
+                "{name}: {label} is offered"
+            );
+        }
+        let choice = face_fill(&mut app, "portal-answer-0");
+        for way_out in ["portal-sheet.secondary", "portal-sheet.tertiary"] {
+            let fill = face_fill(&mut app, way_out);
+            assert_ne!(
+                fill, choice,
+                "{name}: {way_out} steps back behind the choices"
+            );
+            assert_ne!(
+                fill,
+                primary_fill(&theme, false),
+                "{name}: {way_out} is never filled"
+            );
+        }
+
+        key(&mut app, "Enter");
+        assert!(
+            !state
+                .take_asked()
+                .iter()
+                .any(|asked| matches!(asked, PortalEffect::Answer { .. })),
+            "{name}: Enter on a sheet just opened answers nothing"
+        );
+    }
+}
+
 tilo_test_env::scenario! {
     /// The keys each kind of question takes, and what each asks the shell.
     fn the_keyboard_answers_a_question_by_its_kind;

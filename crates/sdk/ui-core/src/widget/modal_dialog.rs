@@ -88,6 +88,9 @@ pub struct ModalAction<'a> {
     pub hovered: bool,
     pub pressed: bool,
     pub focused: bool,
+    /// A way out that steps back behind answers the sheet's body offers: a secondary or
+    /// alternate action drawn plain, never filled or outlined.
+    pub quiet: bool,
 }
 
 impl<'a> ModalAction<'a> {
@@ -114,7 +117,13 @@ impl<'a> ModalAction<'a> {
             hovered: false,
             pressed: false,
             focused: false,
+            quiet: false,
         }
+    }
+    #[must_use]
+    pub fn quiet(mut self, v: bool) -> Self {
+        self.quiet = v;
+        self
     }
     #[must_use]
     pub fn enabled(mut self, v: bool) -> Self {
@@ -480,6 +489,9 @@ pub fn paint_actions(
         let face = ButtonFace::new(rect, a.label);
         let face = match a.emphasis {
             ModalEmphasis::Primary => face.role(ButtonRole::Primary),
+            ModalEmphasis::Secondary | ModalEmphasis::Alternate if a.quiet => {
+                face.role(ButtonRole::Plain)
+            }
             ModalEmphasis::Secondary | ModalEmphasis::Alternate => face.role(ButtonRole::Secondary),
             ModalEmphasis::Danger => face.role(ButtonRole::Destructive).confirming(),
             ModalEmphasis::AlternateDanger => face.role(ButtonRole::Destructive),
@@ -842,6 +854,7 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     secondary_action: Option<DialogAction>,
     tertiary_action: Option<DialogAction>,
     tertiary_destructive: bool,
+    quiet_footer: bool,
     primary_enabled: bool,
     primary_check: Option<Box<dyn Fn(&dyn Widget) -> bool>>,
     dismiss: Option<super::dismissal::Dismissal>,
@@ -905,6 +918,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             secondary_action: None,
             tertiary_action: None,
             tertiary_destructive: false,
+            quiet_footer: false,
             primary_enabled: true,
             primary_check: None,
             dismiss: None,
@@ -1120,6 +1134,14 @@ impl<C: Widget + 'static> ModalDialog<C> {
     #[must_use]
     pub fn dismiss_on_scrim(mut self, dismisses: bool) -> Self {
         self.dismiss_on_scrim = dismisses;
+        self
+    }
+
+    /// For a sheet whose answers are in its body (an agent's own choices): the footer's ways out
+    /// step back, drawn plain, so the body's answers lead.
+    #[must_use]
+    pub fn with_quiet_footer(mut self) -> Self {
+        self.quiet_footer = true;
         self
     }
 
@@ -1351,15 +1373,18 @@ impl ModalDialog<dyn Widget> {
         let mut actions = Vec::new();
         let mut slots = Vec::new();
         if let Some(a) = &self.secondary_action {
-            actions.push(ModalAction::secondary(&a.label));
+            actions.push(ModalAction::secondary(&a.label).quiet(self.quiet_footer));
             slots.push(Slot::Secondary);
         }
         if let Some(a) = &self.tertiary_action {
-            actions.push(if self.tertiary_destructive {
-                ModalAction::alternate_danger(&a.label)
-            } else {
-                ModalAction::alternate(&a.label)
-            });
+            actions.push(
+                if self.tertiary_destructive {
+                    ModalAction::alternate_danger(&a.label)
+                } else {
+                    ModalAction::alternate(&a.label)
+                }
+                .quiet(self.quiet_footer),
+            );
             slots.push(Slot::Tertiary);
         }
         if let Some(a) = &self.primary_action {

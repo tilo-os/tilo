@@ -32,7 +32,8 @@ pub struct AgentQuestion {
     /// Whether Undo takes it back.
     #[serde(default)]
     pub undoable: bool,
-    /// The workspace it acts in.
+    /// The name of the workspace it acts in; empty where the device holds only one, which then
+    /// goes unsaid.
     pub workspace: String,
     /// The page the question is about, by its origin, when it asks about one:
     /// what leaves goes from there.
@@ -70,8 +71,10 @@ pub struct AgentAsk {
 }
 
 impl AgentAsk {
-    /// The sheet asking it: each choice a button of its own, and Send. Not
-    /// now leaves it waiting, unanswered; Decline tells the agent no.
+    /// The sheet asking it: each choice a button of its own, first and foremost, then the
+    /// system's two set back below them. Ask me later leaves it waiting, unanswered; Don't
+    /// answer tells the agent no answer comes. The workspace is named only where the device
+    /// holds more than one (`workspace` empty otherwise).
     fn dialog(&self, handle: &str, asked: &AgentQuestion) -> Dialog {
         if self.secret {
             return self.secret_dialog(handle, asked);
@@ -86,7 +89,11 @@ impl AgentAsk {
             title: words("agent-ask-title", &[("agent", &asked.agent)]),
             heading: asked.title.clone(),
             detail: self.question.clone(),
-            facts: vec![(word("agent-ask-workspace"), asked.workspace.clone())],
+            facts: if asked.workspace.is_empty() {
+                Vec::new()
+            } else {
+                vec![(word("agent-ask-workspace"), asked.workspace.clone())]
+            },
             body,
             confirm_label: word("agent-ask-send"),
             cancel_label: word("agent-ask-decline"),
@@ -98,7 +105,7 @@ impl AgentAsk {
     }
 
     /// The sheet asking for a secret: who asks and for what, in the host's words, then the
-    /// protected field and Sign in. Decline tells the agent no.
+    /// protected field and Sign in. Don't answer tells the agent no.
     fn secret_dialog(&self, handle: &str, asked: &AgentQuestion) -> Dialog {
         let prompt = Prompt {
             icon: Some(ui::icons::Icon::Shield),
