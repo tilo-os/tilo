@@ -100,8 +100,14 @@ fi
 
 mkdir -p "$out"
 medium="$out/disk.qcow2"
-installer_output="$out/installer"
-rm -rf "$medium" "$medium.sha256" "$medium.hardware.json" "$out/source.json" "$installer_output"
+# The disk step's raw disk, its mounts, its log and its scratch live on a local filesystem,
+# not in $out: a job's build directory is a virtiofs share, which a loop-mounted raw disk
+# crosses for every block and where a long-held log descriptor has gone bad mid-install.
+# Only the finished medium is moved into $out.
+work="$(mktemp -d "${TILO_MEDIUM_WORK_DIR:-/var/tmp}/tilo-installer-medium.XXXXXX")" \
+  || die "could not make the medium's working directory"
+installer_output="$work/installer"
+rm -rf "$medium" "$medium.sha256" "$medium.hardware.json" "$out/source.json" "$out/installer" "$out/build" "$out/tmp"
 
 # An optional preloaded target makes this that image's installer: any image the
 # same run built, staged as the unsigned development transport the VM installer
@@ -156,7 +162,7 @@ tag="dev-installer-medium-$arch-${actual_digest:7:12}"
 export TILO_DISTROBOX=
 export TILO_LOCAL_TAG=$tag
 export TILO_IMAGE="localhost/tilo:$tag"
-export TILO_OUTPUT="$out/build"
+export TILO_OUTPUT="$work/build"
 export TILO_INSTALLER_IMAGE="localhost/tilo-installer:$tag"
 export TILO_INSTALLER_OUTPUT=$installer_output
 export TILO_INSTALLER_DISK="$installer_output/qcow2/disk.qcow2"
@@ -176,7 +182,7 @@ export TILO_REQUIRE_PCR_PREDICTION=0 TILO_ALLOW_LOCAL_PCR_SIGNING=0
 # `tilo-vm scenario install` with TILO_UNVERIFIED_VM_INSTALL=1); on hardware the
 # preflight still runs and refuses.
 export TILO_UNVERIFIED_VM_INSTALL=1
-export TMPDIR="$out/tmp"
+export TMPDIR="$work/tmp"
 mkdir -p "$TMPDIR"
 podman tag "$id" "$TILO_IMAGE"
 
@@ -196,7 +202,7 @@ fi
   || die "the installer disk step produced no media provenance"
 mv "$TILO_INSTALLER_DISK" "$medium"
 mv "$TILO_INSTALLER_DISK.hardware.json" "$medium.hardware.json"
-rm -rf "$installer_output" "$TILO_OUTPUT" "$TMPDIR"
+rm -rf "$work"
 
 # The canonical provenance validator reads the finished qcow2 again and names its installer
 # image and update origin. It records build provenance, never a signature or boot proof.
