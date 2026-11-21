@@ -10,6 +10,7 @@ pub mod btrfs_resize;
 pub mod capacity_probe;
 pub mod fat;
 pub mod final_bootnext;
+pub mod layout;
 pub mod prepared_setup;
 pub mod process;
 pub mod protocol;

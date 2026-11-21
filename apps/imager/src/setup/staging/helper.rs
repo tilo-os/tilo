@@ -59,14 +59,11 @@ pub struct Request {
     pub development_layers: Option<String>,
 }
 
-/// Where a staged plan's machine finds its single-use enrollment token in the
-/// live installer's own filesystem, owner-only.
-pub const STAGED_TOKEN_PATH: &str = "/etc/tilo/enrollment-token.txt";
+/// Where a staged plan's machine finds its single-use enrollment token and the prebuilt layers a
+/// development install applies before its first boot, owner-only.
+pub use imager_backend::staging::layout::{STAGED_DEVELOPMENT_LAYERS_DIR, STAGED_TOKEN_PATH};
 /// A token longer than this is not one the enrollment issues.
 const MAX_TOKEN_BYTES: u64 = 16 * 1024;
-/// Where a staged plan's machine finds the prebuilt layers a development
-/// install applies before its first boot, owner-only.
-pub const STAGED_DEVELOPMENT_LAYERS_DIR: &str = "/etc/tilo/development-layers";
 /// The most layers one staging carries.
 pub(crate) const MAX_DEVELOPMENT_LAYERS: usize = 16;
 /// The most those layers may come to together.
