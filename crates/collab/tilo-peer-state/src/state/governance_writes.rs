@@ -79,9 +79,20 @@ impl StatePeer {
         let unrecorded = doc.get_heads();
         // An admission names the device row it writes itself
         // ([`workspace::membership::admit_operations`]).
-        let admits = matches!(
-            membership,
-            Some(crate::members::MembershipOpCommand::Admit { .. })
+        let admitted = match &membership {
+            Some(crate::members::MembershipOpCommand::Admit { person, .. }) => Some(*person),
+            _ => None,
+        };
+        let admits = admitted.is_some();
+        // The agents whose delegation the change withdraws, read before the membership operation
+        // is written: it writes no identity row, and the document read with it still open is read
+        // whole.
+        let withdrawn = crate::standing::newly_withdrawn(
+            self.core
+                .workspace_doc
+                .as_deref()
+                .ok_or("missing workspace")?,
+            &doc,
         );
         if let Some(membership) = membership {
             self.record_membership(&mut doc, key, now, membership)?;
@@ -115,7 +126,7 @@ impl StatePeer {
         if admits {
             rows.retain(|row| *row != crate::workspace::GovernanceRow::Identities);
         }
-        if self.cut_standing_taken(&mut doc, before, key)?
+        if self.cut_standing_taken(&mut doc, before, key, (admitted, &withdrawn))?
             && !rows.contains(&crate::workspace::GovernanceRow::Standing)
         {
             rows.push(crate::workspace::GovernanceRow::Standing);
@@ -148,12 +159,14 @@ impl StatePeer {
     /// each person it takes ownership, a role, an assigned role or a grant
     /// from, or gives a refusal, with what this copy had taken of each device
     /// of theirs; of each server it no longer has keep the workspace; and of
-    /// each agent whose delegation it withdraws. Whether it wrote any.
+    /// each agent whose delegation it withdraws (`withdrawn`). `admitted` is
+    /// the person an admission lets in. Whether it wrote any.
     fn cut_standing_taken(
         &self,
         doc: &mut CachedDocument,
         before: &[automerge::ChangeHash],
         key: &dyn DeviceSigner,
+        (admitted, withdrawn): (Option<[u8; 32]>, &BTreeSet<[u8; 32]>),
     ) -> Result<bool, String> {
         use crate::standing::{self, Standing};
         let held = self
@@ -163,7 +176,20 @@ impl StatePeer {
             .ok_or("missing workspace")?;
         let workspace = &self.core.workspace;
         let was = Standing::all(held.workspace_policy(workspace));
-        let is = Standing::all(&crate::members::replay(doc, workspace));
+        // An admission gives standing to the person it admits and takes none from anyone: of a
+        // newcomer it cuts nothing, and the membership it leaves is not replayed to find that
+        // out, which would read every member's operation for each one let in.
+        let newcomer = admitted.is_some_and(|person| !was.contains_key(&hex::encode(person)));
+        let lost: Vec<(String, Standing)> = if newcomer {
+            Vec::new()
+        } else {
+            let is = Standing::all(&crate::members::replay(doc, workspace));
+            was.into_iter()
+                .filter(|(person, prior)| {
+                    !prior.kept_by(&is.get(person).cloned().unwrap_or_default())
+                })
+                .collect()
+        };
         let id = |subject: &[u8; 32]| {
             let mut hasher = blake3::Hasher::new_derive_key("tilo standing cut v1");
             for head in before {
@@ -174,10 +200,7 @@ impl StatePeer {
             hex::encode(&hasher.finalize().as_bytes()[..16])
         };
         let mut wrote = false;
-        for (person, prior) in was {
-            if prior.kept_by(&is.get(&person).cloned().unwrap_or_default()) {
-                continue;
-            }
+        for (person, prior) in lost {
             let Ok(bytes) = hex::decode(&person) else {
                 tracing::warn!(
                     person = %person,
@@ -219,8 +242,7 @@ impl StatePeer {
             standing::write(doc, &server, &id(&server), &Standing::default(), &taken)?;
             wrote = true;
         }
-        let had = standing::withdrawn(held);
-        for agent in standing::withdrawn(doc).difference(&had) {
+        for agent in withdrawn {
             let taken = std::collections::BTreeMap::from([(*agent, self.taken_from(agent))]);
             standing::write(doc, agent, &id(agent), &Standing::default(), &taken)?;
             wrote = true;

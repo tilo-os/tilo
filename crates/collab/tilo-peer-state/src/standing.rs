@@ -394,23 +394,21 @@ pub fn subjects_cut(before: &AutoCommit, after: &AutoCommit) -> Result<BTreeSet<
         .collect())
 }
 
-/// The devices whose delegation `doc` holds withdrawn: agents that act on
-/// nothing since.
-pub(crate) fn withdrawn(doc: &AutoCommit) -> BTreeSet<[u8; 32]> {
-    crate::workspace::policy::read(doc)
-        .identities
-        .values()
-        .filter_map(
-            |bytes| match crate::state::GovernedIdentity::decode(bytes) {
-                Ok(identity) => Some(identity),
-                // An agent the row withdrew for would act with its standing if the row were
-                // read as one that withdrew nothing, so a row that does not decode is said.
-                Err(error) => {
-                    tracing::warn!(%error, "a governance identity row does not decode; its withdrawn delegation is not read");
-                    None
-                }
-            },
-        )
+/// The agents whose delegation the change from `before` to `after` withdraws:
+/// those whose identity row `after` holds withdrawn and `before` did not. Only
+/// the rows the change wrote are read, so a change in a workspace of many
+/// members decodes no more than one in a small one.
+pub(crate) fn newly_withdrawn(before: &AutoCommit, after: &AutoCommit) -> BTreeSet<[u8; 32]> {
+    let withdrawn = |bytes: &[u8]| {
+        match crate::state::GovernedIdentity::decode(bytes) {
+            Ok(identity) => Some(identity),
+            // An agent the row withdrew for would act with its standing if the row were
+            // read as one that withdrew nothing, so a row that does not decode is said.
+            Err(error) => {
+                tracing::warn!(%error, "a governance identity row does not decode; its withdrawn delegation is not read");
+                None
+            }
+        }
         .filter(|identity| {
             identity
                 .delegate
@@ -418,6 +416,18 @@ pub(crate) fn withdrawn(doc: &AutoCommit) -> BTreeSet<[u8; 32]> {
                 .is_some_and(|delegate| delegate.withdrawn_at_ns.is_some())
         })
         .map(|identity| identity.device_cert.device_public_key)
+    };
+    let was = crate::workspace::policy::read(before);
+    crate::workspace::policy::read(after)
+        .identities
+        .iter()
+        .filter(|(key, bytes)| was.identities.get(*key) != Some(*bytes))
+        .filter(|(key, _)| {
+            was.identities
+                .get(*key)
+                .is_none_or(|bytes| withdrawn(bytes).is_none())
+        })
+        .filter_map(|(_, bytes)| withdrawn(bytes))
         .collect()
 }
 
@@ -441,9 +451,10 @@ pub fn taken_from(workspace: &str, before: &AutoCommit, after: &AutoCommit) -> B
         .into_iter()
         .map(|hint| hint.host.device_public_key)
         .filter(|server| !kept.contains(server));
-    let had = withdrawn(before);
-    let agents = withdrawn(after).into_iter().filter(|agent| !had.contains(agent));
-    people.chain(servers).chain(agents).collect()
+    people
+        .chain(servers)
+        .chain(newly_withdrawn(before, after))
+        .collect()
 }
 
 /// Check that `after` keeps every cut `before` holds: none is erased, changed
