@@ -34,14 +34,28 @@ DeleteArgs = TypedDict("DeleteArgs", {
 class Comment(Resource):
     """Comment — `tl.so.tilo.lang.discussion.Comment`."""
     __surface__ = "so.tilo.lang.discussion@8c3d67619c6ad945"
-    _5q4mbecw: str  # text
+    @property
+    def _5q4mbecw(self) -> str:
+        """text (`5q4mbecw` on the wire)."""
+        return self.fields["5q4mbecw"]
+
+    @_5q4mbecw.setter
+    def _5q4mbecw(self, value: str) -> None:
+        self.edit("5q4mbecw", value=value)
 
     # the app's `edit` action is the SDK's own: run it with `action("edit")`.
 
 class Comments(Resource):
     """Comments — `tl.so.tilo.lang.discussion.Comments`."""
     __surface__ = "so.tilo.lang.discussion@8c3d67619c6ad945"
-    _3g3duquj: list[Entry[Comment]]  # items
+    @property
+    def _3g3duquj(self) -> list[Entry[Comment]]:
+        """items (`3g3duquj` on the wire)."""
+        return self.fields["3g3duquj"]
+
+    @_3g3duquj.setter
+    def _3g3duquj(self, value: list[Entry[Comment]]) -> None:
+        self.edit("3g3duquj", value=value)
 
     def comment(self, *, text: str) -> Comment:
         """Says something about the resource the comment is made from: the thread under a task, a note or a mail says it with `.made_from(r)`, so the comment records what it is about. An agent says something the same way, its comment its own as any person's is."""

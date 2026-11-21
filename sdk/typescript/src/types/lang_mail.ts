@@ -116,15 +116,15 @@ export interface DiscardArgs {
 
 /** Account — `tl.so.tilo.lang.mail.Account`. */
 export interface Account extends tilo.Resource {
-  yujnud5c: string;  # key
-  4lo3ei5n: string;  # address
-  j6nqqrit: string;  # name
-  b5k7mvka: string;  # trouble
-  33f3rqw2: boolean;  # online
-  hzbwof46: string;  # fetched
-  jxc5rufs: string;  # signature
-  ehmoyzk2: Array<tilo.Entry<Mailbox>>;  # mailboxes
-  qybqg4dl: Array<tilo.Entry<Thread>>;  # threads
+  yujnud5c: string;  // key
+  "4lo3ei5n": string;  // address
+  j6nqqrit: string;  // name
+  b5k7mvka: string;  // trouble
+  "33f3rqw2": boolean;  // online
+  hzbwof46: string;  // fetched
+  jxc5rufs: string;  // signature
+  ehmoyzk2: Array<tilo.Entry<Mailbox>>;  // mailboxes
+  qybqg4dl: Array<tilo.Entry<Thread>>;  // threads
   /** Sets or clears the workspace account's signature. */
   set_signature(args: {
     signature: string;
@@ -152,11 +152,11 @@ export function account(ws: tilo.Workspace, path: string): Account {
 
 /** Mailbox — `tl.so.tilo.lang.mail.Mailbox`. */
 export interface Mailbox extends tilo.Resource {
-  mh47w3p6: string;  # key
-  tlasysm5: string;  # name
-  xhiqdk3p: string;  # role
-  dtd4czyv: number;  # unread
-  rxoe5vzb: number;  # total
+  mh47w3p6: string;  // key
+  tlasysm5: string;  // name
+  xhiqdk3p: string;  // role
+  dtd4czyv: number;  // unread
+  rxoe5vzb: number;  // total
 }
 
 /** The actions `Mailbox` reaches before it is read: `ws` calls them without a
@@ -170,20 +170,20 @@ export function mailbox(ws: tilo.Workspace, path: string): Mailbox {
 
 /** Thread — `tl.so.tilo.lang.mail.Thread`. */
 export interface Thread extends tilo.Resource {
-  ecmpoary: string;  # key
-  zu23m2dm: string;  # account
-  u732lnuk: string;  # subject
-  o3knjgos: string;  # latest
-  sxcvmlon: string;  # snippet
-  vyc7aj7v: string;  # senders
-  izafodav: number;  # count
-  56lwowdg: boolean;  # unread
-  abe6c5jl: boolean;  # flagged
-  3vusnp7i: string[];  # boxes
-  ueyfpzep: Array<tilo.Entry<Message>>;  # messages
-  gy7z7du3: string[];  # labels
-  bdoh33hs: string;  # snoozed_until
-  z7qxz544: boolean;  # muted
+  ecmpoary: string;  // key
+  zu23m2dm: string;  // account
+  u732lnuk: string;  // subject
+  o3knjgos: string;  // latest
+  sxcvmlon: string;  // snippet
+  vyc7aj7v: string;  // senders
+  izafodav: number;  // count
+  "56lwowdg": boolean;  // unread
+  abe6c5jl: boolean;  // flagged
+  "3vusnp7i": string[];  // boxes
+  ueyfpzep: Array<tilo.Entry<Message>>;  // messages
+  gy7z7du3: string[];  // labels
+  bdoh33hs: string;  // snoozed_until
+  z7qxz544: boolean;  // muted
   /** Answers the conversation's newest message, to whoever wrote it, quoting it under what is written. */
   reply(): Promise<Draft>;
   /** Answers the conversation's newest message, to everyone it went to, quoting it. */
@@ -268,7 +268,7 @@ export function thread(ws: tilo.Workspace, path: string): Thread {
 
 /** Label — `tl.so.tilo.lang.mail.Label`. */
 export interface Label extends tilo.Resource {
-  ammoua3h: string;  # name
+  ammoua3h: string;  // name
 }
 
 /** The actions `Label` reaches before it is read: `ws` calls them without a
@@ -282,22 +282,22 @@ export function label(ws: tilo.Workspace, path: string): Label {
 
 /** Message — `tl.so.tilo.lang.mail.Message`. */
 export interface Message extends tilo.Resource {
-  kzjq6hvc: string;  # key
-  kdxoo3c6: string;  # account
-  ntqgnz4f: string;  # subject
-  l3nc65iv: string;  # from
-  mo6l36a3: string;  # from_name
-  46k23iwq: string;  # to
-  bgzxugi5: string;  # cc
-  tfxwkfn2: string;  # received
-  sbrol5fc: string;  # snippet
-  4bchz3ch: string;  # body
-  anuds3qt: string;  # message_id
-  asu6ymha: string;  # references
-  4zhzrkne: string;  # attachments
-  ubfcf6ep: boolean;  # unread
-  vxxb4sqr: boolean;  # flagged
-  xlejsz5j: string;  # mailbox
+  kzjq6hvc: string;  // key
+  kdxoo3c6: string;  // account
+  ntqgnz4f: string;  // subject
+  l3nc65iv: string;  // from
+  mo6l36a3: string;  // from_name
+  "46k23iwq": string;  // to
+  bgzxugi5: string;  // cc
+  tfxwkfn2: string;  // received
+  sbrol5fc: string;  // snippet
+  "4bchz3ch": string;  // body
+  anuds3qt: string;  // message_id
+  asu6ymha: string;  // references
+  "4zhzrkne": string;  // attachments
+  ubfcf6ep: boolean;  // unread
+  vxxb4sqr: boolean;  // flagged
+  xlejsz5j: string;  // mailbox
   /** Answers one message of the conversation, to whoever wrote it, quoting it. */
   reply_to(): Promise<Draft>;
   /** Answers one message of the conversation, to everyone it went to but the person answering. */
@@ -317,16 +317,16 @@ export function message(ws: tilo.Workspace, path: string): Message {
 
 /** Draft — `tl.so.tilo.lang.mail.Draft`. */
 export interface Draft extends tilo.Resource {
-  m2g6zrle: string;  # from
-  hd3o4gkq: string;  # to
-  cwukhrvn: string;  # cc
-  tyxmravh: string;  # subject
-  d5u2c7jm: string;  # body
-  w6twdkob: string;  # in_reply_to
-  w26tzvt4: string;  # references
-  yfyt2cfh: boolean;  # sent
-  lgrwf5yf: string;  # send_at
-  h2nvr2op: boolean;  # recalled
+  m2g6zrle: string;  // from
+  hd3o4gkq: string;  // to
+  cwukhrvn: string;  // cc
+  tyxmravh: string;  // subject
+  d5u2c7jm: string;  // body
+  w6twdkob: string;  // in_reply_to
+  w26tzvt4: string;  // references
+  yfyt2cfh: boolean;  // sent
+  lgrwf5yf: string;  // send_at
+  h2nvr2op: boolean;  // recalled
   /** Brings a message back to the outbox: it was sent to go at a moment still to come, and it is a draft again, whatever the moment. */
   cancel_later(): Promise<void>;
   /** Sends the message at a moment instead of now: it waits in the outbox until then, as the person's hold makes a message wait, and goes with no window open. Until it goes it can be taken back, and bringing it back leaves it a draft. */
@@ -358,14 +358,14 @@ export function draft(ws: tilo.Workspace, path: string): Draft {
 
 /** Mail — `tl.so.tilo.lang.mail.Mail`. */
 export interface Mail extends tilo.Resource {
-  blig7xcq: Array<tilo.Entry<Account>>;  # accounts
-  gkuo27e6: Array<tilo.Entry<Draft>>;  # drafts
-  z3zcztpz: Array<tilo.Entry<Label>>;  # labels
-  bag7bf25: Array<tilo.Entry<Thread>>;  # recovered_mail
-  fezdozrd: string[];  # recovered_conversations
-  swilesl6: string[];  # recovered_signatures
-  5upxgb6g: string[];  # recovered_drafts
-  4ow5ydy5: number;  # hold
+  blig7xcq: Array<tilo.Entry<Account>>;  // accounts
+  gkuo27e6: Array<tilo.Entry<Draft>>;  // drafts
+  z3zcztpz: Array<tilo.Entry<Label>>;  // labels
+  bag7bf25: Array<tilo.Entry<Thread>>;  // recovered_mail
+  fezdozrd: string[];  // recovered_conversations
+  swilesl6: string[];  // recovered_signatures
+  "5upxgb6g": string[];  // recovered_drafts
+  "4ow5ydy5": number;  // hold
   /** Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait at all at zero. */
   set_hold(args: {
     seconds: number;

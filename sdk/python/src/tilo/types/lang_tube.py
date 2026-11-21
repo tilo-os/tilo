@@ -70,15 +70,36 @@ EndSearchArgs = TypedDict("EndSearchArgs", {
 class Channel(Resource):
     """Channel — `tl.so.tilo.lang.tube.Channel`."""
     __surface__ = "so.tilo.lang.tube@c5f7fa1a0518787f"
-    _26ctwf34: str  # key
+    @property
+    def _26ctwf34(self) -> str:
+        """key (`26ctwf34` on the wire)."""
+        return self.fields["26ctwf34"]
+
+    @_26ctwf34.setter
+    def _26ctwf34(self, value: str) -> None:
+        self.edit("26ctwf34", value=value)
     ya2u4cw6: str  # name
     woyix7h2: str  # handle
     ah5nkqv7: int  # subscribers
-    _2qxzpxur: str  # avatar
+    @property
+    def _2qxzpxur(self) -> str:
+        """avatar (`2qxzpxur` on the wire)."""
+        return self.fields["2qxzpxur"]
+
+    @_2qxzpxur.setter
+    def _2qxzpxur(self, value: str) -> None:
+        self.edit("2qxzpxur", value=value)
     d4mzmvrr: str  # banner
     rzhtvjsv: str  # description
     lfopp7e7: bool  # verified
-    _2ap24kjm: str  # found_for
+    @property
+    def _2ap24kjm(self) -> str:
+        """found_for (`2ap24kjm` on the wire)."""
+        return self.fields["2ap24kjm"]
+
+    @_2ap24kjm.setter
+    def _2ap24kjm(self, value: str) -> None:
+        self.edit("2ap24kjm", value=value)
 
     def subscribe(self,
         *,
@@ -117,10 +138,24 @@ class Video(Resource):
     irzy3c7m: str  # key
     fpxk5w7b: str  # title
     mhkply6c: str  # channel_key
-    _2mklwbfq: str  # channel_name
+    @property
+    def _2mklwbfq(self) -> str:
+        """channel_name (`2mklwbfq` on the wire)."""
+        return self.fields["2mklwbfq"]
+
+    @_2mklwbfq.setter
+    def _2mklwbfq(self, value: str) -> None:
+        self.edit("2mklwbfq", value=value)
     lfky4erv: str  # channel_avatar
     txtos5p6: int  # views
-    _2ruyhh5f: str  # published
+    @property
+    def _2ruyhh5f(self) -> str:
+        """published (`2ruyhh5f` on the wire)."""
+        return self.fields["2ruyhh5f"]
+
+    @_2ruyhh5f.setter
+    def _2ruyhh5f(self, value: str) -> None:
+        self.edit("2ruyhh5f", value=value)
     mvlf65b5: int  # duration
     pfdoae2w: str  # description
     ddfiordt: int  # likes
@@ -129,8 +164,22 @@ class Video(Resource):
     jfam7tjf: bool  # live
     bifohbpv: bool  # liked
     vvtm26ea: bool  # watch_later
-    _4mojz3hw: bool  # trending
-    _5o5fpqgh: str  # found_for
+    @property
+    def _4mojz3hw(self) -> bool:
+        """trending (`4mojz3hw` on the wire)."""
+        return self.fields["4mojz3hw"]
+
+    @_4mojz3hw.setter
+    def _4mojz3hw(self, value: bool) -> None:
+        self.edit("4mojz3hw", value=value)
+    @property
+    def _5o5fpqgh(self) -> str:
+        """found_for (`5o5fpqgh` on the wire)."""
+        return self.fields["5o5fpqgh"]
+
+    @_5o5fpqgh.setter
+    def _5o5fpqgh(self, value: str) -> None:
+        self.edit("5o5fpqgh", value=value)
 
     def like(self,
         *,
@@ -192,8 +241,22 @@ class Playlist(Resource):
     ljyc7mx2: str  # title
     bzfmd6pg: str  # channel_key
     zvfpfva3: str  # channel_name
-    _6cllrl7x: int  # video_count
-    _4xvzshd7: str  # thumbnail
+    @property
+    def _6cllrl7x(self) -> int:
+        """video_count (`6cllrl7x` on the wire)."""
+        return self.fields["6cllrl7x"]
+
+    @_6cllrl7x.setter
+    def _6cllrl7x(self, value: int) -> None:
+        self.edit("6cllrl7x", value=value)
+    @property
+    def _4xvzshd7(self) -> str:
+        """thumbnail (`4xvzshd7` on the wire)."""
+        return self.fields["4xvzshd7"]
+
+    @_4xvzshd7.setter
+    def _4xvzshd7(self, value: str) -> None:
+        self.edit("4xvzshd7", value=value)
     p3yw6p2h: str  # found_for
 
 

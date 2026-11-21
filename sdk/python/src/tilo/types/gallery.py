@@ -80,7 +80,14 @@ class Item(Resource):
     n5clkmib: str  # title
     znpp3agb: str  # notes
     xttl6aec: str  # stage
-    _44yujnht: dict[str, list[str]]  # reactions
+    @property
+    def _44yujnht(self) -> dict[str, list[str]]:
+        """reactions (`44yujnht` on the wire)."""
+        return self.fields["44yujnht"]
+
+    @_44yujnht.setter
+    def _44yujnht(self, value: dict[str, list[str]]) -> None:
+        self.edit("44yujnht", value=value)
 
     def finish(self) -> None:
         """Marks an item done."""
@@ -112,10 +119,31 @@ class Gallery(Resource):
     gfaekx4h: bool  # controls_by_email
     wqgo62si: bool  # controls_repeating
     ljvsyqet: bool  # controls_locked
-    _4a4siddd: float  # controls_margin
-    _3aihctss: float  # controls_share
+    @property
+    def _4a4siddd(self) -> float:
+        """controls_margin (`4a4siddd` on the wire)."""
+        return self.fields["4a4siddd"]
+
+    @_4a4siddd.setter
+    def _4a4siddd(self, value: float) -> None:
+        self.edit("4a4siddd", value=value)
+    @property
+    def _3aihctss(self) -> float:
+        """controls_share (`3aihctss` on the wire)."""
+        return self.fields["3aihctss"]
+
+    @_3aihctss.setter
+    def _3aihctss(self, value: float) -> None:
+        self.edit("3aihctss", value=value)
     bfnlu2pr: str  # controls_room
-    _5rd763gr: Urgency  # controls_urgency
+    @property
+    def _5rd763gr(self) -> Urgency:
+        """controls_urgency (`5rd763gr` on the wire)."""
+        return self.fields["5rd763gr"]
+
+    @_5rd763gr.setter
+    def _5rd763gr(self, value: Urgency) -> None:
+        self.edit("5rd763gr", value=value)
     tov7hrtu: str | None  # controls_owner
     pwg7s3ul: str | None  # controls_reviewer
     jg35gcbg: str  # controls_starts
@@ -128,18 +156,46 @@ class Gallery(Resource):
     jxnozq52: str  # controls_notes
     h42gcfal: str  # controls_signed
     fqnths44: bool  # controls_background
-    _6fezt7u6: bool  # controls_lettering
-    _5fbblehc: list[Entry[Item]]  # backlog_items
+    @property
+    def _6fezt7u6(self) -> bool:
+        """controls_lettering (`6fezt7u6` on the wire)."""
+        return self.fields["6fezt7u6"]
+
+    @_6fezt7u6.setter
+    def _6fezt7u6(self, value: bool) -> None:
+        self.edit("6fezt7u6", value=value)
+    @property
+    def _5fbblehc(self) -> list[Entry[Item]]:
+        """backlog_items (`5fbblehc` on the wire)."""
+        return self.fields["5fbblehc"]
+
+    @_5fbblehc.setter
+    def _5fbblehc(self, value: list[Entry[Item]]) -> None:
+        self.edit("5fbblehc", value=value)
     rbbe5kqg: str  # backlog_draft
     frzefp4n: list[Entry[Item]]  # release_items
     upmpqtnv: list[Entry[Row]]  # data_rows
     oj2bybhm: list[Entry[Node]]  # data_files
     emr3i6eu: list[Entry[Message]]  # data_messages
-    _6jhjiv7f: list[Entry[Card]]  # data_cards
+    @property
+    def _6jhjiv7f(self) -> list[Entry[Card]]:
+        """data_cards (`6jhjiv7f` on the wire)."""
+        return self.fields["6jhjiv7f"]
+
+    @_6jhjiv7f.setter
+    def _6jhjiv7f(self, value: list[Entry[Card]]) -> None:
+        self.edit("6jhjiv7f", value=value)
     a3frzqb4: list[Entry[Change]]  # data_changes
     mo2q5faz: list[Entry[Photo]]  # media_photos
     qd46u3ke: float  # media_at
-    _3tdz6w5q: str  # media_source
+    @property
+    def _3tdz6w5q(self) -> str:
+        """media_source (`3tdz6w5q` on the wire)."""
+        return self.fields["3tdz6w5q"]
+
+    @_3tdz6w5q.setter
+    def _3tdz6w5q(self, value: str) -> None:
+        self.edit("3tdz6w5q", value=value)
     wivzmqm3: list[Entry[Pinned]]  # chrome_apps
 
     def add_item(self) -> None:
@@ -193,7 +249,14 @@ class Node(Resource):
     sartpsxo: str  # title
     iqq34vjp: Node | None  # parent
     jd5rkocy: bool  # folder
-    _5dlddfkg: int  # size
+    @property
+    def _5dlddfkg(self) -> int:
+        """size (`5dlddfkg` on the wire)."""
+        return self.fields["5dlddfkg"]
+
+    @_5dlddfkg.setter
+    def _5dlddfkg(self, value: int) -> None:
+        self.edit("5dlddfkg", value=value)
 
 
 class Message(Resource):
@@ -223,9 +286,23 @@ class Change(Resource):
 class Photo(Resource):
     """Photo — `tl.so.tilo.lang.gallery.Photo`."""
     __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
-    _6zq4etzb: str  # title
+    @property
+    def _6zq4etzb(self) -> str:
+        """title (`6zq4etzb` on the wire)."""
+        return self.fields["6zq4etzb"]
+
+    @_6zq4etzb.setter
+    def _6zq4etzb(self, value: str) -> None:
+        self.edit("6zq4etzb", value=value)
     s74gxrkc: str  # place
-    _5d3oxbry: str  # picture
+    @property
+    def _5d3oxbry(self) -> str:
+        """picture (`5d3oxbry` on the wire)."""
+        return self.fields["5d3oxbry"]
+
+    @_5d3oxbry.setter
+    def _5d3oxbry(self, value: str) -> None:
+        self.edit("5d3oxbry", value=value)
     lb2wi6nq: bool  # tall
 
 
@@ -233,7 +310,14 @@ class Pinned(Resource):
     """Pinned — `tl.so.tilo.lang.gallery.Pinned`."""
     __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     ciwf3kva: str  # title
-    _5tfi5mod: Kind  # kind
+    @property
+    def _5tfi5mod(self) -> Kind:
+        """kind (`5tfi5mod` on the wire)."""
+        return self.fields["5tfi5mod"]
+
+    @_5tfi5mod.setter
+    def _5tfi5mod(self, value: Kind) -> None:
+        self.edit("5tfi5mod", value=value)
 
 
 class LangGallery(Resource):

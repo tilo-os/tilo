@@ -37,7 +37,14 @@ DecrementArgs = TypedDict("DecrementArgs", {
 class Counter(Resource):
     """Counter — `tl.so.tilo.lang.counter.Counter`."""
     __surface__ = "so.tilo.lang.counter@66ec89f1ef1e00a7"
-    _3wkdueca: int  # value
+    @property
+    def _3wkdueca(self) -> int:
+        """value (`3wkdueca` on the wire)."""
+        return self.fields["3wkdueca"]
+
+    @_3wkdueca.setter
+    def _3wkdueca(self, value: int) -> None:
+        self.edit("3wkdueca", value=value)
 
     def increment(self) -> None:
         """Add one to the counter."""

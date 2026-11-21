@@ -34,7 +34,7 @@ export interface DecrementArgs {
 
 /** Counter — `tl.so.tilo.lang.counter.Counter`. */
 export interface Counter extends tilo.Resource {
-  3wkdueca: number;  # value
+  "3wkdueca": number;  // value
   /** Add one to the counter. */
   increment(): Promise<void>;
   /** Runs `increment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */

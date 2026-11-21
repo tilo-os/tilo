@@ -47,9 +47,9 @@ export interface RenameColumnArgs {
 
 /** Card — `tl.so.tilo.lang.board.Card`. */
 export interface Card extends tilo.Resource {
-  acqkumvl: string;  # title
-  6hfpfyn7: string;  # notes
-  4oqrwuyr: Column;  # column
+  acqkumvl: string;  // title
+  "6hfpfyn7": string;  // notes
+  "4oqrwuyr": Column;  // column
   /** Moves a card to the foot of a column. */
   move_to(args: {
     col: Column;
@@ -69,8 +69,8 @@ export function card(ws: tilo.Workspace, path: string): Card {
 
 /** Column — `tl.so.tilo.lang.board.Column`. */
 export interface Column extends tilo.Resource {
-  3vw7cjrp: string;  # title
-  k24oebin: Array<tilo.Entry<Card>>;  # cards
+  "3vw7cjrp": string;  // title
+  k24oebin: Array<tilo.Entry<Card>>;  // cards
   /** Adds a card at the foot of a column, under the title typed in the entry that adds there: a card is named where it is made, not left 'Untitled'. An entry with nothing but space in it makes no card: it never runs this. */
   new_card(args?: {
     title?: string;
@@ -107,8 +107,8 @@ export function column(ws: tilo.Workspace, path: string): Column {
 
 /** Board — `tl.so.tilo.lang.board.Board`. */
 export interface Board extends tilo.Resource {
-  hpfol33z: Array<tilo.Entry<Column>>;  # columns
-  tuoyjxa6: Array<tilo.Entry<Card>>;  # cards
+  hpfol33z: Array<tilo.Entry<Column>>;  // columns
+  tuoyjxa6: Array<tilo.Entry<Card>>;  // cards
   /** Adds a column at the right of the board. */
   new_column(): Promise<Column>;
 }

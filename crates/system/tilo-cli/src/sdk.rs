@@ -750,6 +750,16 @@ fn comment(title: &str) -> String {
     }
 }
 
+/// [`comment`] as TypeScript writes one: `//` after a field, never Python's `#`.
+fn typescript_comment(title: &str) -> String {
+    let title = one_line(title);
+    if title.is_empty() {
+        String::new()
+    } else {
+        format!("  // {title}")
+    }
+}
+
 fn doc(out: &mut String, text: &str, indent: usize) {
     let text = one_line(text);
     if text.is_empty() {
@@ -769,6 +779,20 @@ fn comment_block(out: &mut String, lines: &[&str]) {
         }
     }
     out.push_str(" */\n");
+}
+
+/// `name` as a TypeScript property may be written: an identifier as it is, and one that is not
+/// (a tilolang record's field id, `2od7mwir`) as the quoted string it is on the wire.
+fn typescript_name(name: &str) -> String {
+    let identifier = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
+    if identifier {
+        name.to_owned()
+    } else {
+        format!("\"{name}\"")
+    }
 }
 
 fn python_name(name: &str) -> String {
@@ -1089,15 +1113,32 @@ fn python_fields(out: &mut String, class: &Class) -> Vec<String> {
             continue;
         }
         taken.push(name.clone());
-        if field.readonly {
+        if field.readonly || name != field.wire {
+            // A read-only field is a property; so is one whose wire name Python cannot hold (a
+            // tilolang record keeps its fields under ids, some of them starting with a digit):
+            // the property reads the key the wire has, so `note.updated` and `note._2od7mwir`
+            // both reach the field the app keeps.
             let _ = writeln!(out, "    @property");
             let _ = writeln!(out, "    def {name}(self) -> {}:", python_type(&field.ty));
-            if field.title.is_empty() {
-                doc(out, "Read only.", 2);
+            let said = if field.title.is_empty() {
+                "Read only.".to_owned()
+            } else if name == field.wire {
+                field.title.clone()
             } else {
-                doc(out, &field.title, 2);
-            }
+                format!("{} (`{}` on the wire).", field.title, field.wire)
+            };
+            doc(out, &said, 2);
             let _ = writeln!(out, "        return self.fields[\"{}\"]", field.wire);
+            if !field.readonly {
+                let _ = writeln!(out);
+                let _ = writeln!(out, "    @{name}.setter");
+                let _ = writeln!(
+                    out,
+                    "    def {name}(self, value: {}) -> None:",
+                    python_type(&field.ty)
+                );
+                let _ = writeln!(out, "        self.edit(\"{}\", value=value)", field.wire);
+            }
         } else {
             let _ = writeln!(
                 out,
@@ -1472,9 +1513,9 @@ fn typescript_declaration(out: &mut String, declaration: &Declaration) {
                 let _ = writeln!(
                     out,
                     "  {}: {};{}",
-                    field.name,
+                    typescript_name(&field.name),
                     typescript_type(&field.ty),
-                    comment(&field.title)
+                    typescript_comment(&field.title)
                 );
             }
             out.push_str("}\n\n");
@@ -1584,9 +1625,9 @@ fn typescript_fields(out: &mut String, class: &Class) -> Vec<String> {
             out,
             "  {}{}: {};{}",
             if field.readonly { "readonly " } else { "" },
-            field.name,
+            typescript_name(&field.name),
             typescript_type(&field.ty),
-            comment(&field.title)
+            typescript_comment(&field.title)
         );
     }
     taken
@@ -1967,6 +2008,34 @@ mod tests {
             assert!(!python.contains("    def edit_text(self"), "{python}");
             let ts = typescript_of(&notes);
             assert!(ts.contains("  pin("), "{ts}");
+        }
+
+        phase a_tilolang_records_fields_are_written_as_each_language_allows;
+        // A tilolang record keeps its fields under the ids its document stores them by, and some
+        // start with a digit: neither language can name one that way. Python reaches it through a
+        // property that reads the wire's key, TypeScript quotes it, and both say the app's word.
+        {
+            let notes = app("so.tilo.lang.notes");
+            let ts = typescript_of(&notes);
+            assert!(!ts.contains("  # "), "no Python comment in a .ts file:\n{ts}");
+            assert!(
+                ts.lines()
+                    .any(|line| line.starts_with("  \"") && line.contains(";  // ")),
+                "a field id that is no identifier is quoted:\n{ts}"
+            );
+            let python = python_of(&notes);
+            assert!(
+                python
+                    .lines()
+                    .any(|line| line.starts_with("    def _") && line.contains("(self) -> ")),
+                "a field id Python cannot name is a property:\n{python}"
+            );
+            assert!(
+                !python
+                    .lines()
+                    .any(|line| line.starts_with("    ") && line.trim_start().starts_with(|c: char| c.is_ascii_digit())),
+                "no annotation starts with a digit:\n{python}"
+            );
         }
 
         phase two_apps_of_one_name_get_a_module_each;

@@ -31,7 +31,7 @@ export interface DeleteArgs {
 
 /** Comment — `tl.so.tilo.lang.discussion.Comment`. */
 export interface Comment extends tilo.Resource {
-  5q4mbecw: string;  # text
+  "5q4mbecw": string;  // text
   // the app's `edit` action is the SDK's own: run it with `action("edit")`.
 }
 
@@ -46,7 +46,7 @@ export function comment(ws: tilo.Workspace, path: string): Comment {
 
 /** Comments — `tl.so.tilo.lang.discussion.Comments`. */
 export interface Comments extends tilo.Resource {
-  3g3duquj: Array<tilo.Entry<Comment>>;  # items
+  "3g3duquj": Array<tilo.Entry<Comment>>;  // items
   /** Says something about the resource the comment is made from: the thread under a task, a note or a mail says it with `.made_from(r)`, so the comment records what it is about. An agent says something the same way, its comment its own as any person's is. */
   comment(args: {
     text: string;

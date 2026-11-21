@@ -60,10 +60,10 @@ export interface SeekToArgs {
 
 /** Item — `tl.so.tilo.lang.gallery.Item`. */
 export interface Item extends tilo.Resource {
-  n5clkmib: string;  # title
-  znpp3agb: string;  # notes
-  xttl6aec: string;  # stage
-  44yujnht: Record<string, string[]>;  # reactions
+  n5clkmib: string;  // title
+  znpp3agb: string;  // notes
+  xttl6aec: string;  // stage
+  "44yujnht": Record<string, string[]>;  // reactions
   /** Marks an item done. */
   finish(): Promise<void>;
   /** Runs `finish` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -87,41 +87,41 @@ export function item(ws: tilo.Workspace, path: string): Item {
 
 /** Gallery — `tl.so.tilo.lang.gallery.Gallery`. */
 export interface Gallery extends tilo.Resource {
-  bmdkc22s: string;  # name
-  cbwtcaei: string;  # basics_note
-  kwuh65ek: string;  # controls_title
-  gfaekx4h: boolean;  # controls_by_email
-  wqgo62si: boolean;  # controls_repeating
-  ljvsyqet: boolean;  # controls_locked
-  4a4siddd: number;  # controls_margin
-  3aihctss: number;  # controls_share
-  bfnlu2pr: string;  # controls_room
-  5rd763gr: Urgency;  # controls_urgency
-  tov7hrtu: string | null;  # controls_owner
-  pwg7s3ul: string | null;  # controls_reviewer
-  jg35gcbg: string;  # controls_starts
-  ncm2bwon: string;  # controls_clock
-  hy2q7by2: string | null;  # controls_ends
-  izjturst: string;  # controls_accent
-  jggqxsf4: string;  # controls_shortcut
-  icvcwg6u: string;  # controls_recipient
-  socb2mg5: string;  # controls_note
-  jxnozq52: string;  # controls_notes
-  h42gcfal: string;  # controls_signed
-  fqnths44: boolean;  # controls_background
-  6fezt7u6: boolean;  # controls_lettering
-  5fbblehc: Array<tilo.Entry<Item>>;  # backlog_items
-  rbbe5kqg: string;  # backlog_draft
-  frzefp4n: Array<tilo.Entry<Item>>;  # release_items
-  upmpqtnv: Array<tilo.Entry<Row>>;  # data_rows
-  oj2bybhm: Array<tilo.Entry<Node>>;  # data_files
-  emr3i6eu: Array<tilo.Entry<Message>>;  # data_messages
-  6jhjiv7f: Array<tilo.Entry<Card>>;  # data_cards
-  a3frzqb4: Array<tilo.Entry<Change>>;  # data_changes
-  mo2q5faz: Array<tilo.Entry<Photo>>;  # media_photos
-  qd46u3ke: number;  # media_at
-  3tdz6w5q: string;  # media_source
-  wivzmqm3: Array<tilo.Entry<Pinned>>;  # chrome_apps
+  bmdkc22s: string;  // name
+  cbwtcaei: string;  // basics_note
+  kwuh65ek: string;  // controls_title
+  gfaekx4h: boolean;  // controls_by_email
+  wqgo62si: boolean;  // controls_repeating
+  ljvsyqet: boolean;  // controls_locked
+  "4a4siddd": number;  // controls_margin
+  "3aihctss": number;  // controls_share
+  bfnlu2pr: string;  // controls_room
+  "5rd763gr": Urgency;  // controls_urgency
+  tov7hrtu: string | null;  // controls_owner
+  pwg7s3ul: string | null;  // controls_reviewer
+  jg35gcbg: string;  // controls_starts
+  ncm2bwon: string;  // controls_clock
+  hy2q7by2: string | null;  // controls_ends
+  izjturst: string;  // controls_accent
+  jggqxsf4: string;  // controls_shortcut
+  icvcwg6u: string;  // controls_recipient
+  socb2mg5: string;  // controls_note
+  jxnozq52: string;  // controls_notes
+  h42gcfal: string;  // controls_signed
+  fqnths44: boolean;  // controls_background
+  "6fezt7u6": boolean;  // controls_lettering
+  "5fbblehc": Array<tilo.Entry<Item>>;  // backlog_items
+  rbbe5kqg: string;  // backlog_draft
+  frzefp4n: Array<tilo.Entry<Item>>;  // release_items
+  upmpqtnv: Array<tilo.Entry<Row>>;  // data_rows
+  oj2bybhm: Array<tilo.Entry<Node>>;  // data_files
+  emr3i6eu: Array<tilo.Entry<Message>>;  // data_messages
+  "6jhjiv7f": Array<tilo.Entry<Card>>;  // data_cards
+  a3frzqb4: Array<tilo.Entry<Change>>;  // data_changes
+  mo2q5faz: Array<tilo.Entry<Photo>>;  // media_photos
+  qd46u3ke: number;  // media_at
+  "3tdz6w5q": string;  // media_source
+  wivzmqm3: Array<tilo.Entry<Pinned>>;  // chrome_apps
   /** Adds what the backlog's line says as an item to do, and clears the line. */
   add_item(): Promise<void>;
   /** Runs `add_item` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -157,9 +157,9 @@ export function gallery(ws: tilo.Workspace, path: string): Gallery {
 
 /** Row — `tl.so.tilo.lang.gallery.Row`. */
 export interface Row extends tilo.Resource {
-  od2pk6d3: string;  # title
-  jqhagvfx: string;  # state
-  pu34cefb: number;  # size
+  od2pk6d3: string;  // title
+  jqhagvfx: string;  // state
+  pu34cefb: number;  // size
 }
 
 /** The actions `Row` reaches before it is read: `ws` calls them without a
@@ -173,10 +173,10 @@ export function row(ws: tilo.Workspace, path: string): Row {
 
 /** Node — `tl.so.tilo.lang.gallery.Node`. */
 export interface Node extends tilo.Resource {
-  sartpsxo: string;  # title
-  iqq34vjp: Node | null;  # parent
-  jd5rkocy: boolean;  # folder
-  5dlddfkg: number;  # size
+  sartpsxo: string;  // title
+  iqq34vjp: Node | null;  // parent
+  jd5rkocy: boolean;  // folder
+  "5dlddfkg": number;  // size
 }
 
 /** The actions `Node` reaches before it is read: `ws` calls them without a
@@ -190,11 +190,11 @@ export function node(ws: tilo.Workspace, path: string): Node {
 
 /** Message — `tl.so.tilo.lang.gallery.Message`. */
 export interface Message extends tilo.Resource {
-  lcfap66g: string;  # title
-  ssylkjtu: string;  # from
-  vyexrz4i: string;  # body
-  thqsnyuw: string;  # at
-  wavjxiov: boolean;  # mine
+  lcfap66g: string;  // title
+  ssylkjtu: string;  // from
+  vyexrz4i: string;  // body
+  thqsnyuw: string;  // at
+  wavjxiov: boolean;  // mine
 }
 
 /** The actions `Message` reaches before it is read: `ws` calls them without a
@@ -208,8 +208,8 @@ export function message(ws: tilo.Workspace, path: string): Message {
 
 /** Card — `tl.so.tilo.lang.gallery.Card`. */
 export interface Card extends tilo.Resource {
-  y5gdkqew: string;  # title
-  ii4dp5pl: number;  # count
+  y5gdkqew: string;  // title
+  ii4dp5pl: number;  // count
 }
 
 /** The actions `Card` reaches before it is read: `ws` calls them without a
@@ -223,8 +223,8 @@ export function card(ws: tilo.Workspace, path: string): Card {
 
 /** Change — `tl.so.tilo.lang.gallery.Change`. */
 export interface Change extends tilo.Resource {
-  dmejdwow: string;  # title
-  kbnmru3y: string;  # summary
+  dmejdwow: string;  // title
+  kbnmru3y: string;  // summary
 }
 
 /** The actions `Change` reaches before it is read: `ws` calls them without a
@@ -238,10 +238,10 @@ export function change(ws: tilo.Workspace, path: string): Change {
 
 /** Photo — `tl.so.tilo.lang.gallery.Photo`. */
 export interface Photo extends tilo.Resource {
-  6zq4etzb: string;  # title
-  s74gxrkc: string;  # place
-  5d3oxbry: string;  # picture
-  lb2wi6nq: boolean;  # tall
+  "6zq4etzb": string;  // title
+  s74gxrkc: string;  // place
+  "5d3oxbry": string;  // picture
+  lb2wi6nq: boolean;  // tall
 }
 
 /** The actions `Photo` reaches before it is read: `ws` calls them without a
@@ -255,8 +255,8 @@ export function photo(ws: tilo.Workspace, path: string): Photo {
 
 /** Pinned — `tl.so.tilo.lang.gallery.Pinned`. */
 export interface Pinned extends tilo.Resource {
-  ciwf3kva: string;  # title
-  5tfi5mod: Kind;  # kind
+  ciwf3kva: string;  // title
+  "5tfi5mod": Kind;  // kind
 }
 
 /** The actions `Pinned` reaches before it is read: `ws` calls them without a

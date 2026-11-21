@@ -323,14 +323,35 @@ class Shell(Resource):
     """Shell — `tl.so.tilo.shell.Shell`."""
     __surface__ = "so.tilo.shell@481d50e8bec6f47b"
     qsrjrjkd: ChromePreset  # preset
-    _2se66uzq: ChromePreset  # based_on
+    @property
+    def _2se66uzq(self) -> ChromePreset:
+        """based_on (`2se66uzq` on the wire)."""
+        return self.fields["2se66uzq"]
+
+    @_2se66uzq.setter
+    def _2se66uzq(self, value: ChromePreset) -> None:
+        self.edit("2se66uzq", value=value)
     nt6y5bk3: bool  # tuned
     kqnswwzm: bool  # bar_shown
     mi3yni2m: Edge  # bar_edge
     la4yrobd: Fit  # bar_fit
-    _6ujrnpej: Finish  # bar_finish
+    @property
+    def _6ujrnpej(self) -> Finish:
+        """bar_finish (`6ujrnpej` on the wire)."""
+        return self.fields["6ujrnpej"]
+
+    @_6ujrnpej.setter
+    def _6ujrnpej(self, value: Finish) -> None:
+        self.edit("6ujrnpej", value=value)
     b2fcmpwg: Showing  # bar_showing
-    _773tn644: Size  # bar_size
+    @property
+    def _773tn644(self) -> Size:
+        """bar_size (`773tn644` on the wire)."""
+        return self.fields["773tn644"]
+
+    @_773tn644.setter
+    def _773tn644(self, value: Size) -> None:
+        self.edit("773tn644", value=value)
     voqg5seo: list[Entry[BarPart]]  # bar_parts
     b7grsgnv: bool  # dock_shown
     o6tdqxq3: Edge  # dock_edge
@@ -341,11 +362,32 @@ class Shell(Resource):
     hx5alotd: list[Entry[DockItem]]  # dock_items
     ffa2ohzm: bool  # dock_running
     h5oo7js2: bool  # dock_launcher
-    _5n4s55tz: bool  # dock_zoom
-    _4zknrelh: bool  # settings_open
+    @property
+    def _5n4s55tz(self) -> bool:
+        """dock_zoom (`5n4s55tz` on the wire)."""
+        return self.fields["5n4s55tz"]
+
+    @_5n4s55tz.setter
+    def _5n4s55tz(self, value: bool) -> None:
+        self.edit("5n4s55tz", value=value)
+    @property
+    def _4zknrelh(self) -> bool:
+        """settings_open (`4zknrelh` on the wire)."""
+        return self.fields["4zknrelh"]
+
+    @_4zknrelh.setter
+    def _4zknrelh(self, value: bool) -> None:
+        self.edit("4zknrelh", value=value)
     dwct4abs: bool  # strips_tabs
     gfmzi3qr: bool  # frames_snap
-    _6bamt22e: bool  # canvas_asked
+    @property
+    def _6bamt22e(self) -> bool:
+        """canvas_asked (`6bamt22e` on the wire)."""
+        return self.fields["6bamt22e"]
+
+    @_6bamt22e.setter
+    def _6bamt22e(self, value: bool) -> None:
+        self.edit("6bamt22e", value=value)
 
     def asked_on_canvas(self) -> None:
         """The person asked on the canvas: the hint the empty canvas says until then has been said (`Shell.canvas_asked`), and stays away from now on."""
@@ -674,9 +716,23 @@ class DockItem(Resource):
     __surface__ = "so.tilo.shell@481d50e8bec6f47b"
     rfsefuzv: str  # key
     qsnrl2gk: str  # title
-    _6gyb7csc: str  # icon
+    @property
+    def _6gyb7csc(self) -> str:
+        """icon (`6gyb7csc` on the wire)."""
+        return self.fields["6gyb7csc"]
+
+    @_6gyb7csc.setter
+    def _6gyb7csc(self, value: str) -> None:
+        self.edit("6gyb7csc", value=value)
     k376lylv: bool  # pinned
-    _5vpgvzqb: bool  # running
+    @property
+    def _5vpgvzqb(self) -> bool:
+        """running (`5vpgvzqb` on the wire)."""
+        return self.fields["5vpgvzqb"]
+
+    @_5vpgvzqb.setter
+    def _5vpgvzqb(self, value: bool) -> None:
+        self.edit("5vpgvzqb", value=value)
     mgcmvxjx: int  # badge
     e7ft4mly: bool  # attention
 
@@ -686,10 +742,31 @@ class Layout(Resource):
     __surface__ = "so.tilo.shell@481d50e8bec6f47b"
     uykuo63i: str  # person
     yb7sokzs: list[Entry[LayoutPerson]]  # people
-    _7n7jrcg3: list[Entry[LayoutWorkspace]]  # workspaces
+    @property
+    def _7n7jrcg3(self) -> list[Entry[LayoutWorkspace]]:
+        """workspaces (`7n7jrcg3` on the wire)."""
+        return self.fields["7n7jrcg3"]
+
+    @_7n7jrcg3.setter
+    def _7n7jrcg3(self, value: list[Entry[LayoutWorkspace]]) -> None:
+        self.edit("7n7jrcg3", value=value)
     hqul2vwj: list[Entry[LayoutRow]]  # rows
-    _7lq6xkzz: list[Entry[LayoutStrip]]  # strips
-    _2ug5q5cq: list[Entry[LayoutPlace]]  # places
+    @property
+    def _7lq6xkzz(self) -> list[Entry[LayoutStrip]]:
+        """strips (`7lq6xkzz` on the wire)."""
+        return self.fields["7lq6xkzz"]
+
+    @_7lq6xkzz.setter
+    def _7lq6xkzz(self, value: list[Entry[LayoutStrip]]) -> None:
+        self.edit("7lq6xkzz", value=value)
+    @property
+    def _2ug5q5cq(self) -> list[Entry[LayoutPlace]]:
+        """places (`2ug5q5cq` on the wire)."""
+        return self.fields["2ug5q5cq"]
+
+    @_2ug5q5cq.setter
+    def _2ug5q5cq(self, value: list[Entry[LayoutPlace]]) -> None:
+        self.edit("2ug5q5cq", value=value)
     dt4vnrqa: list[Entry[LayoutQuery]]  # queries
     fqirvfzw: list[Entry[LayoutRef]]  # refs
 
@@ -769,7 +846,14 @@ class Layout(Resource):
 class LayoutQuery(Resource):
     """LayoutQuery — `tl.so.tilo.shell.LayoutQuery`."""
     __surface__ = "so.tilo.shell@481d50e8bec6f47b"
-    _6jget5cg: str  # key
+    @property
+    def _6jget5cg(self) -> str:
+        """key (`6jget5cg` on the wire)."""
+        return self.fields["6jget5cg"]
+
+    @_6jget5cg.setter
+    def _6jget5cg(self, value: str) -> None:
+        self.edit("6jget5cg", value=value)
     iwuvfj66: str  # text
     ybpst64r: str  # in_app
     ibasoiis: str  # kind
@@ -784,13 +868,27 @@ class LayoutRef(Resource):
     vdsinb5l: str  # query
     vj5mgxi6: str  # address
     pnom4n55: str  # title
-    _7giiatvv: str  # kind
+    @property
+    def _7giiatvv(self) -> str:
+        """kind (`7giiatvv` on the wire)."""
+        return self.fields["7giiatvv"]
+
+    @_7giiatvv.setter
+    def _7giiatvv(self, value: str) -> None:
+        self.edit("7giiatvv", value=value)
 
 
 class LayoutWorkspace(Resource):
     """LayoutWorkspace — `tl.so.tilo.shell.LayoutWorkspace`."""
     __surface__ = "so.tilo.shell@481d50e8bec6f47b"
-    _5zibpqs6: str  # key
+    @property
+    def _5zibpqs6(self) -> str:
+        """key (`5zibpqs6` on the wire)."""
+        return self.fields["5zibpqs6"]
+
+    @_5zibpqs6.setter
+    def _5zibpqs6(self, value: str) -> None:
+        self.edit("5zibpqs6", value=value)
     b2vzzczj: str  # name
     hwfwvs3f: bool  # current
 
@@ -798,14 +896,35 @@ class LayoutWorkspace(Resource):
 class LayoutPerson(Resource):
     """LayoutPerson — `tl.so.tilo.shell.LayoutPerson`."""
     __surface__ = "so.tilo.shell@481d50e8bec6f47b"
-    _3rpmhtjf: str  # key
-    _6a7urcxy: str  # name
+    @property
+    def _3rpmhtjf(self) -> str:
+        """key (`3rpmhtjf` on the wire)."""
+        return self.fields["3rpmhtjf"]
+
+    @_3rpmhtjf.setter
+    def _3rpmhtjf(self, value: str) -> None:
+        self.edit("3rpmhtjf", value=value)
+    @property
+    def _6a7urcxy(self) -> str:
+        """name (`6a7urcxy` on the wire)."""
+        return self.fields["6a7urcxy"]
+
+    @_6a7urcxy.setter
+    def _6a7urcxy(self, value: str) -> None:
+        self.edit("6a7urcxy", value=value)
 
 
 class LayoutRow(Resource):
     """LayoutRow — `tl.so.tilo.shell.LayoutRow`."""
     __surface__ = "so.tilo.shell@481d50e8bec6f47b"
-    _3xc5xbon: str  # key
+    @property
+    def _3xc5xbon(self) -> str:
+        """key (`3xc5xbon` on the wire)."""
+        return self.fields["3xc5xbon"]
+
+    @_3xc5xbon.setter
+    def _3xc5xbon(self, value: str) -> None:
+        self.edit("3xc5xbon", value=value)
     v5ef7tkv: str  # workspace
     iqgu3ggi: str  # name
     sm4scdu2: bool  # current
@@ -818,10 +937,31 @@ class LayoutStrip(Resource):
     dufcke3u: str  # key
     x42tiiqe: str  # workspace
     dvberkpa: str  # row
-    _7ekq6qgi: int  # width
-    _2cbikm5m: bool  # maximized
+    @property
+    def _7ekq6qgi(self) -> int:
+        """width (`7ekq6qgi` on the wire)."""
+        return self.fields["7ekq6qgi"]
+
+    @_7ekq6qgi.setter
+    def _7ekq6qgi(self, value: int) -> None:
+        self.edit("7ekq6qgi", value=value)
+    @property
+    def _2cbikm5m(self) -> bool:
+        """maximized (`2cbikm5m` on the wire)."""
+        return self.fields["2cbikm5m"]
+
+    @_2cbikm5m.setter
+    def _2cbikm5m(self, value: bool) -> None:
+        self.edit("2cbikm5m", value=value)
     yk2oxjrj: str  # active
-    _44lq6lon: bool  # placed
+    @property
+    def _44lq6lon(self) -> bool:
+        """placed (`44lq6lon` on the wire)."""
+        return self.fields["44lq6lon"]
+
+    @_44lq6lon.setter
+    def _44lq6lon(self, value: bool) -> None:
+        self.edit("44lq6lon", value=value)
     vbv2zrob: int  # canvas_x
     jvrwsckz: int  # canvas_y
     m75kjoue: int  # canvas_width
@@ -834,7 +974,14 @@ class LayoutPlace(Resource):
     """LayoutPlace — `tl.so.tilo.shell.LayoutPlace`."""
     __surface__ = "so.tilo.shell@481d50e8bec6f47b"
     ba3kyokq: str  # key
-    _7dno3n47: str  # strip
+    @property
+    def _7dno3n47(self) -> str:
+        """strip (`7dno3n47` on the wire)."""
+        return self.fields["7dno3n47"]
+
+    @_7dno3n47.setter
+    def _7dno3n47(self, value: str) -> None:
+        self.edit("7dno3n47", value=value)
     jpzk4cli: str  # shows
     nprpusuo: str  # shown_as
     ofkshr4v: str  # resource
@@ -848,7 +995,14 @@ class Viewing(Resource):
     """Viewing — `tl.so.tilo.shell.Viewing`."""
     __surface__ = "so.tilo.shell@481d50e8bec6f47b"
     kna5sco4: str  # style
-    _6b2coqll: str  # focused
+    @property
+    def _6b2coqll(self) -> str:
+        """focused (`6b2coqll` on the wire)."""
+        return self.fields["6b2coqll"]
+
+    @_6b2coqll.setter
+    def _6b2coqll(self, value: str) -> None:
+        self.edit("6b2coqll", value=value)
 
     def show_style(self, *, style: str) -> None:
         """Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`). Switching keeps the layout: the same places stand where they were, drawn another way."""

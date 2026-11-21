@@ -150,7 +150,14 @@ class Note(Resource):
     yzessjhr: str  # service
     zex2vawx: str  # page
     rnhwkv6z: str  # created
-    _2od7mwir: str  # updated
+    @property
+    def _2od7mwir(self) -> str:
+        """updated (`2od7mwir` on the wire)."""
+        return self.fields["2od7mwir"]
+
+    @_2od7mwir.setter
+    def _2od7mwir(self, value: str) -> None:
+        self.edit("2od7mwir", value=value)
 
     def pin(self,
         *,

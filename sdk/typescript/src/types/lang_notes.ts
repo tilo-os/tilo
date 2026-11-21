@@ -118,19 +118,19 @@ export interface ImportDroppedArgs {
 
 /** Note — `tl.so.tilo.lang.notes.Note`. */
 export interface Note extends tilo.Resource {
-  dpj7scfe: string;  # title
-  olsyp3aw: string;  # body
-  pmjerv63: Record<string, string>;  # images
-  ssu2tbnf: Note | null;  # parent
-  gfk6rqxp: boolean;  # pinned
-  xcpasjg7: string[];  # tags
-  erijxfd3: string;  # source
-  uquoltho: string;  # origin
-  eo4enwxh: string;  # by
-  yzessjhr: string;  # service
-  zex2vawx: string;  # page
-  rnhwkv6z: string;  # created
-  2od7mwir: string;  # updated
+  dpj7scfe: string;  // title
+  olsyp3aw: string;  // body
+  pmjerv63: Record<string, string>;  // images
+  ssu2tbnf: Note | null;  // parent
+  gfk6rqxp: boolean;  // pinned
+  xcpasjg7: string[];  // tags
+  erijxfd3: string;  // source
+  uquoltho: string;  // origin
+  eo4enwxh: string;  // by
+  yzessjhr: string;  // service
+  zex2vawx: string;  // page
+  rnhwkv6z: string;  // created
+  "2od7mwir": string;  // updated
   /** Pins or unpins a note. */
   pin(args?: {
     pinned?: boolean;
@@ -210,7 +210,7 @@ export function note(ws: tilo.Workspace, path: string): Note {
 
 /** Notebook — `tl.so.tilo.lang.notes.Notebook`. */
 export interface Notebook extends tilo.Resource {
-  tmqqtkeb: Array<tilo.Entry<Note>>;  # notes
+  tmqqtkeb: Array<tilo.Entry<Note>>;  // notes
   /** Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the caller knows them already. Started from the notebook both are empty: what is typed first names it. */
   new_note(args?: {
     title?: string;

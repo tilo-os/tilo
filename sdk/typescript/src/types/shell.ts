@@ -262,30 +262,30 @@ export interface QueryRetryArgs {
 
 /** Shell — `tl.so.tilo.shell.Shell`. */
 export interface Shell extends tilo.Resource {
-  qsrjrjkd: ChromePreset;  # preset
-  2se66uzq: ChromePreset;  # based_on
-  nt6y5bk3: boolean;  # tuned
-  kqnswwzm: boolean;  # bar_shown
-  mi3yni2m: Edge;  # bar_edge
-  la4yrobd: Fit;  # bar_fit
-  6ujrnpej: Finish;  # bar_finish
-  b2fcmpwg: Showing;  # bar_showing
-  773tn644: Size;  # bar_size
-  voqg5seo: Array<tilo.Entry<BarPart>>;  # bar_parts
-  b7grsgnv: boolean;  # dock_shown
-  o6tdqxq3: Edge;  # dock_edge
-  dq6kzv2v: Fit;  # dock_fit
-  y5rlj3v3: Finish;  # dock_finish
-  nz74n3iu: Showing;  # dock_showing
-  wx25jsef: Size;  # dock_size
-  hx5alotd: Array<tilo.Entry<DockItem>>;  # dock_items
-  ffa2ohzm: boolean;  # dock_running
-  h5oo7js2: boolean;  # dock_launcher
-  5n4s55tz: boolean;  # dock_zoom
-  4zknrelh: boolean;  # settings_open
-  dwct4abs: boolean;  # strips_tabs
-  gfmzi3qr: boolean;  # frames_snap
-  6bamt22e: boolean;  # canvas_asked
+  qsrjrjkd: ChromePreset;  // preset
+  "2se66uzq": ChromePreset;  // based_on
+  nt6y5bk3: boolean;  // tuned
+  kqnswwzm: boolean;  // bar_shown
+  mi3yni2m: Edge;  // bar_edge
+  la4yrobd: Fit;  // bar_fit
+  "6ujrnpej": Finish;  // bar_finish
+  b2fcmpwg: Showing;  // bar_showing
+  "773tn644": Size;  // bar_size
+  voqg5seo: Array<tilo.Entry<BarPart>>;  // bar_parts
+  b7grsgnv: boolean;  // dock_shown
+  o6tdqxq3: Edge;  // dock_edge
+  dq6kzv2v: Fit;  // dock_fit
+  y5rlj3v3: Finish;  // dock_finish
+  nz74n3iu: Showing;  // dock_showing
+  wx25jsef: Size;  // dock_size
+  hx5alotd: Array<tilo.Entry<DockItem>>;  // dock_items
+  ffa2ohzm: boolean;  // dock_running
+  h5oo7js2: boolean;  // dock_launcher
+  "5n4s55tz": boolean;  // dock_zoom
+  "4zknrelh": boolean;  // settings_open
+  dwct4abs: boolean;  // strips_tabs
+  gfmzi3qr: boolean;  // frames_snap
+  "6bamt22e": boolean;  // canvas_asked
   /** The person asked on the canvas: the hint the empty canvas says until then has been said (`Shell.canvas_asked`), and stays away from now on. */
   asked_on_canvas(): Promise<void>;
   /** Runs `asked_on_canvas` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -483,8 +483,8 @@ export function shell(ws: tilo.Workspace, path: string): Shell {
 
 /** BarPart — `tl.so.tilo.shell.BarPart`. */
 export interface BarPart extends tilo.Resource {
-  fjzbw5un: BarPartKind;  # kind
-  pbly7ymy: boolean;  # shown
+  fjzbw5un: BarPartKind;  // kind
+  pbly7ymy: boolean;  // shown
 }
 
 /** The actions `BarPart` reaches before it is read: `ws` calls them without a
@@ -498,13 +498,13 @@ export function barPart(ws: tilo.Workspace, path: string): BarPart {
 
 /** DockItem — `tl.so.tilo.shell.DockItem`. */
 export interface DockItem extends tilo.Resource {
-  rfsefuzv: string;  # key
-  qsnrl2gk: string;  # title
-  6gyb7csc: string;  # icon
-  k376lylv: boolean;  # pinned
-  5vpgvzqb: boolean;  # running
-  mgcmvxjx: number;  # badge
-  e7ft4mly: boolean;  # attention
+  rfsefuzv: string;  // key
+  qsnrl2gk: string;  // title
+  "6gyb7csc": string;  // icon
+  k376lylv: boolean;  // pinned
+  "5vpgvzqb": boolean;  // running
+  mgcmvxjx: number;  // badge
+  e7ft4mly: boolean;  // attention
 }
 
 /** The actions `DockItem` reaches before it is read: `ws` calls them without a
@@ -518,14 +518,14 @@ export function dockItem(ws: tilo.Workspace, path: string): DockItem {
 
 /** Layout — `tl.so.tilo.shell.Layout`. */
 export interface Layout extends tilo.Resource {
-  uykuo63i: string;  # person
-  yb7sokzs: Array<tilo.Entry<LayoutPerson>>;  # people
-  7n7jrcg3: Array<tilo.Entry<LayoutWorkspace>>;  # workspaces
-  hqul2vwj: Array<tilo.Entry<LayoutRow>>;  # rows
-  7lq6xkzz: Array<tilo.Entry<LayoutStrip>>;  # strips
-  2ug5q5cq: Array<tilo.Entry<LayoutPlace>>;  # places
-  dt4vnrqa: Array<tilo.Entry<LayoutQuery>>;  # queries
-  fqirvfzw: Array<tilo.Entry<LayoutRef>>;  # refs
+  uykuo63i: string;  // person
+  yb7sokzs: Array<tilo.Entry<LayoutPerson>>;  // people
+  "7n7jrcg3": Array<tilo.Entry<LayoutWorkspace>>;  // workspaces
+  hqul2vwj: Array<tilo.Entry<LayoutRow>>;  // rows
+  "7lq6xkzz": Array<tilo.Entry<LayoutStrip>>;  // strips
+  "2ug5q5cq": Array<tilo.Entry<LayoutPlace>>;  // places
+  dt4vnrqa: Array<tilo.Entry<LayoutQuery>>;  // queries
+  fqirvfzw: Array<tilo.Entry<LayoutRef>>;  // refs
   /** Adds a workspace, with one row, to `a`, and returns the row's key. */
   a_workspace(args: {
     name: string;
@@ -585,12 +585,12 @@ export function layout(ws: tilo.Workspace, path: string): Layout {
 
 /** LayoutQuery — `tl.so.tilo.shell.LayoutQuery`. */
 export interface LayoutQuery extends tilo.Resource {
-  6jget5cg: string;  # key
-  iwuvfj66: string;  # text
-  ybpst64r: string;  # in_app
-  ibasoiis: string;  # kind
-  a6ewjjom: string;  # state
-  xsjcdedm: string;  # reason
+  "6jget5cg": string;  // key
+  iwuvfj66: string;  // text
+  ybpst64r: string;  // in_app
+  ibasoiis: string;  // kind
+  a6ewjjom: string;  // state
+  xsjcdedm: string;  // reason
 }
 
 /** The actions `LayoutQuery` reaches before it is read: `ws` calls them without a
@@ -604,11 +604,11 @@ export function layoutQuery(ws: tilo.Workspace, path: string): LayoutQuery {
 
 /** LayoutRef — `tl.so.tilo.shell.LayoutRef`. */
 export interface LayoutRef extends tilo.Resource {
-  k652vouu: string;  # key
-  vdsinb5l: string;  # query
-  vj5mgxi6: string;  # address
-  pnom4n55: string;  # title
-  7giiatvv: string;  # kind
+  k652vouu: string;  // key
+  vdsinb5l: string;  // query
+  vj5mgxi6: string;  // address
+  pnom4n55: string;  // title
+  "7giiatvv": string;  // kind
 }
 
 /** The actions `LayoutRef` reaches before it is read: `ws` calls them without a
@@ -622,9 +622,9 @@ export function layoutRef(ws: tilo.Workspace, path: string): LayoutRef {
 
 /** LayoutWorkspace — `tl.so.tilo.shell.LayoutWorkspace`. */
 export interface LayoutWorkspace extends tilo.Resource {
-  5zibpqs6: string;  # key
-  b2vzzczj: string;  # name
-  hwfwvs3f: boolean;  # current
+  "5zibpqs6": string;  // key
+  b2vzzczj: string;  // name
+  hwfwvs3f: boolean;  // current
 }
 
 /** The actions `LayoutWorkspace` reaches before it is read: `ws` calls them without a
@@ -638,8 +638,8 @@ export function layoutWorkspace(ws: tilo.Workspace, path: string): LayoutWorkspa
 
 /** LayoutPerson — `tl.so.tilo.shell.LayoutPerson`. */
 export interface LayoutPerson extends tilo.Resource {
-  3rpmhtjf: string;  # key
-  6a7urcxy: string;  # name
+  "3rpmhtjf": string;  // key
+  "6a7urcxy": string;  // name
 }
 
 /** The actions `LayoutPerson` reaches before it is read: `ws` calls them without a
@@ -653,11 +653,11 @@ export function layoutPerson(ws: tilo.Workspace, path: string): LayoutPerson {
 
 /** LayoutRow — `tl.so.tilo.shell.LayoutRow`. */
 export interface LayoutRow extends tilo.Resource {
-  3xc5xbon: string;  # key
-  v5ef7tkv: string;  # workspace
-  iqgu3ggi: string;  # name
-  sm4scdu2: boolean;  # current
-  bowkspu3: string;  # shell
+  "3xc5xbon": string;  // key
+  v5ef7tkv: string;  // workspace
+  iqgu3ggi: string;  // name
+  sm4scdu2: boolean;  // current
+  bowkspu3: string;  // shell
 }
 
 /** The actions `LayoutRow` reaches before it is read: `ws` calls them without a
@@ -671,19 +671,19 @@ export function layoutRow(ws: tilo.Workspace, path: string): LayoutRow {
 
 /** LayoutStrip — `tl.so.tilo.shell.LayoutStrip`. */
 export interface LayoutStrip extends tilo.Resource {
-  dufcke3u: string;  # key
-  x42tiiqe: string;  # workspace
-  dvberkpa: string;  # row
-  7ekq6qgi: number;  # width
-  2cbikm5m: boolean;  # maximized
-  yk2oxjrj: string;  # active
-  44lq6lon: boolean;  # placed
-  vbv2zrob: number;  # canvas_x
-  jvrwsckz: number;  # canvas_y
-  m75kjoue: number;  # canvas_width
-  s3lpes2e: number;  # canvas_height
-  s6rivl3a: boolean;  # canvas_hugs
-  pznsxbgq: string;  # shell
+  dufcke3u: string;  // key
+  x42tiiqe: string;  // workspace
+  dvberkpa: string;  // row
+  "7ekq6qgi": number;  // width
+  "2cbikm5m": boolean;  // maximized
+  yk2oxjrj: string;  // active
+  "44lq6lon": boolean;  // placed
+  vbv2zrob: number;  // canvas_x
+  jvrwsckz: number;  // canvas_y
+  m75kjoue: number;  // canvas_width
+  s3lpes2e: number;  // canvas_height
+  s6rivl3a: boolean;  // canvas_hugs
+  pznsxbgq: string;  // shell
 }
 
 /** The actions `LayoutStrip` reaches before it is read: `ws` calls them without a
@@ -697,15 +697,15 @@ export function layoutStrip(ws: tilo.Workspace, path: string): LayoutStrip {
 
 /** LayoutPlace — `tl.so.tilo.shell.LayoutPlace`. */
 export interface LayoutPlace extends tilo.Resource {
-  ba3kyokq: string;  # key
-  7dno3n47: string;  # strip
-  jpzk4cli: string;  # shows
-  nprpusuo: string;  # shown_as
-  ofkshr4v: string;  # resource
-  qqcejiim: string;  # title
-  jeatudax: string;  # name
-  vkbhstef: boolean;  # pinned
-  soy4vimv: string;  # shell
+  ba3kyokq: string;  // key
+  "7dno3n47": string;  // strip
+  jpzk4cli: string;  // shows
+  nprpusuo: string;  // shown_as
+  ofkshr4v: string;  // resource
+  qqcejiim: string;  // title
+  jeatudax: string;  // name
+  vkbhstef: boolean;  // pinned
+  soy4vimv: string;  // shell
 }
 
 /** The actions `LayoutPlace` reaches before it is read: `ws` calls them without a
@@ -719,8 +719,8 @@ export function layoutPlace(ws: tilo.Workspace, path: string): LayoutPlace {
 
 /** Viewing — `tl.so.tilo.shell.Viewing`. */
 export interface Viewing extends tilo.Resource {
-  kna5sco4: string;  # style
-  6b2coqll: string;  # focused
+  kna5sco4: string;  // style
+  "6b2coqll": string;  // focused
   /** Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`). Switching keeps the layout: the same places stand where they were, drawn another way. */
   show_style(args: {
     style: string;

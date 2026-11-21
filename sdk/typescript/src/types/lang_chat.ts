@@ -60,7 +60,7 @@ export interface ChatDeleteArgs {
 
 /** Conversations — `tl.so.tilo.lang.chat.Conversations`. */
 export interface Conversations extends tilo.Resource {
-  5kzdptyg: Array<tilo.Entry<Category | Direct | TextChannel>>;  # channels
+  "5kzdptyg": Array<tilo.Entry<Category | Direct | TextChannel>>;  // channels
   /** Adds a text channel to the sidebar. */
   new_channel(args?: {
     name?: string;
@@ -86,8 +86,8 @@ export function conversations(ws: tilo.Workspace, path: string): Conversations {
 
 /** Category — `tl.so.tilo.lang.chat.Category`. */
 export interface Category extends tilo.Resource {
-  hbhrds5c: string;  # name
-  hvqgmwrk: Array<tilo.Entry<TextChannel>>;  # channels
+  hbhrds5c: string;  // name
+  hvqgmwrk: Array<tilo.Entry<TextChannel>>;  // channels
   /** Adds a text channel to a category. */
   add_channel(args?: {
     name?: string;
@@ -105,10 +105,10 @@ export function category(ws: tilo.Workspace, path: string): Category {
 
 /** TextChannel — `tl.so.tilo.lang.chat.TextChannel`. */
 export interface TextChannel extends tilo.Resource {
-  x3haugpo: string;  # name
-  u6b35mgm: string;  # topic
-  ksuxpopi: Array<tilo.Entry<Message>>;  # messages
-  ztou5nin: Array<tilo.Entry<Thread>>;  # threads
+  x3haugpo: string;  // name
+  u6b35mgm: string;  // topic
+  ksuxpopi: Array<tilo.Entry<Message>>;  // messages
+  ztou5nin: Array<tilo.Entry<Thread>>;  // threads
   /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. */
   send(args: {
     to: Direct | TextChannel | Thread;
@@ -147,13 +147,13 @@ export function textChannel(ws: tilo.Workspace, path: string): TextChannel {
 
 /** Message — `tl.so.tilo.lang.chat.Message`. */
 export interface Message extends tilo.Resource {
-  xfrqdy3y: string;  # body
-  4uwxpnw2: Message | null;  # reply_to
-  kxekobh6: Thread | null;  # thread
-  mwily5kw: Array<tilo.Entry<Part>>;  # parts
-  4zr7hti6: boolean;  # pinned
-  ofad24rc: Record<string, string[]>;  # reactions
-  dh6346no: string;  # sent_view
+  xfrqdy3y: string;  // body
+  "4uwxpnw2": Message | null;  // reply_to
+  kxekobh6: Thread | null;  // thread
+  mwily5kw: Array<tilo.Entry<Part>>;  // parts
+  "4zr7hti6": boolean;  // pinned
+  ofad24rc: Record<string, string[]>;  // reactions
+  dh6346no: string;  // sent_view
   // the app's `edit` action is the SDK's own: run it with `action("edit")`.
   /** Pins a message to its channel, or unpins it. */
   pin(args?: {
@@ -180,9 +180,9 @@ export function message(ws: tilo.Workspace, path: string): Message {
 
 /** Thread — `tl.so.tilo.lang.chat.Thread`. */
 export interface Thread extends tilo.Resource {
-  xuvfifa5: string;  # name
-  ijy454g6: Array<tilo.Entry<Message>>;  # messages
-  2ki7h2z5: boolean;  # archived
+  xuvfifa5: string;  // name
+  ijy454g6: Array<tilo.Entry<Message>>;  // messages
+  "2ki7h2z5": boolean;  // archived
   /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. */
   send(args: {
     to: Direct | TextChannel | Thread;
@@ -215,10 +215,10 @@ export function thread(ws: tilo.Workspace, path: string): Thread {
 
 /** Direct — `tl.so.tilo.lang.chat.Direct`. */
 export interface Direct extends tilo.Resource {
-  5stv6ro7: string;  # name
-  ycadyqh5: string;  # person
-  y65whtrn: Array<tilo.Entry<Message>>;  # messages
-  3p73kpuw: Array<tilo.Entry<Thread>>;  # threads
+  "5stv6ro7": string;  // name
+  ycadyqh5: string;  // person
+  y65whtrn: Array<tilo.Entry<Message>>;  // messages
+  "3p73kpuw": Array<tilo.Entry<Thread>>;  // threads
   /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. */
   send(args: {
     to: Direct | TextChannel | Thread;
@@ -257,8 +257,8 @@ export function direct(ws: tilo.Workspace, path: string): Direct {
 
 /** Part — `tl.so.tilo.lang.chat.Part`. */
 export interface Part extends tilo.Resource {
-  zevnbs3i: string;  # kind
-  3hkzkqvr: string;  # body
+  zevnbs3i: string;  // kind
+  "3hkzkqvr": string;  // body
 }
 
 /** The actions `Part` reaches before it is read: `ws` calls them without a

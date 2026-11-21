@@ -55,8 +55,22 @@ class Card(Resource):
     """Card — `tl.so.tilo.lang.board.Card`."""
     __surface__ = "so.tilo.lang.board@23413559facb82ea"
     acqkumvl: str  # title
-    _6hfpfyn7: str  # notes
-    _4oqrwuyr: Column  # column
+    @property
+    def _6hfpfyn7(self) -> str:
+        """notes (`6hfpfyn7` on the wire)."""
+        return self.fields["6hfpfyn7"]
+
+    @_6hfpfyn7.setter
+    def _6hfpfyn7(self, value: str) -> None:
+        self.edit("6hfpfyn7", value=value)
+    @property
+    def _4oqrwuyr(self) -> Column:
+        """column (`4oqrwuyr` on the wire)."""
+        return self.fields["4oqrwuyr"]
+
+    @_4oqrwuyr.setter
+    def _4oqrwuyr(self, value: Column) -> None:
+        self.edit("4oqrwuyr", value=value)
 
     def move_to(self, *, col: Column) -> None:
         """Moves a card to the foot of a column."""
@@ -74,7 +88,14 @@ class Card(Resource):
 class Column(Resource):
     """Column — `tl.so.tilo.lang.board.Column`."""
     __surface__ = "so.tilo.lang.board@23413559facb82ea"
-    _3vw7cjrp: str  # title
+    @property
+    def _3vw7cjrp(self) -> str:
+        """title (`3vw7cjrp` on the wire)."""
+        return self.fields["3vw7cjrp"]
+
+    @_3vw7cjrp.setter
+    def _3vw7cjrp(self, value: str) -> None:
+        self.edit("3vw7cjrp", value=value)
     k24oebin: list[Entry[Card]]  # cards
 
     def new_card(self,

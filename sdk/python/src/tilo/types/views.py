@@ -57,10 +57,31 @@ MakeDefaultArgs = TypedDict("MakeDefaultArgs", {
 class WrittenView(Resource):
     """WrittenView — `tl.so.tilo.lang.views.WrittenView`."""
     __surface__ = "so.tilo.lang.views@d4680cb5c8c73003"
-    _2fxqftu3: str  # title
+    @property
+    def _2fxqftu3(self) -> str:
+        """title (`2fxqftu3` on the wire)."""
+        return self.fields["2fxqftu3"]
+
+    @_2fxqftu3.setter
+    def _2fxqftu3(self, value: str) -> None:
+        self.edit("2fxqftu3", value=value)
     fdxj35iu: str  # question
-    _3pj7zyxo: str  # definition
-    _3eioszed: str  # author
+    @property
+    def _3pj7zyxo(self) -> str:
+        """definition (`3pj7zyxo` on the wire)."""
+        return self.fields["3pj7zyxo"]
+
+    @_3pj7zyxo.setter
+    def _3pj7zyxo(self, value: str) -> None:
+        self.edit("3pj7zyxo", value=value)
+    @property
+    def _3eioszed(self) -> str:
+        """author (`3eioszed` on the wire)."""
+        return self.fields["3eioszed"]
+
+    @_3eioszed.setter
+    def _3eioszed(self, value: str) -> None:
+        self.edit("3eioszed", value=value)
     loizxjpf: bool  # kept
     bckibjl6: str  # shows
 
@@ -88,16 +109,37 @@ class WrittenView(Resource):
 class Default(Resource):
     """Default — `tl.so.tilo.lang.views.Default`."""
     __surface__ = "so.tilo.lang.views@d4680cb5c8c73003"
-    _2atmuo4h: str  # shows
+    @property
+    def _2atmuo4h(self) -> str:
+        """shows (`2atmuo4h` on the wire)."""
+        return self.fields["2atmuo4h"]
+
+    @_2atmuo4h.setter
+    def _2atmuo4h(self, value: str) -> None:
+        self.edit("2atmuo4h", value=value)
     h6n4gvgn: Device  # device
-    _7rv6o4rt: WrittenView  # chosen
+    @property
+    def _7rv6o4rt(self) -> WrittenView:
+        """chosen (`7rv6o4rt` on the wire)."""
+        return self.fields["7rv6o4rt"]
+
+    @_7rv6o4rt.setter
+    def _7rv6o4rt(self, value: WrittenView) -> None:
+        self.edit("7rv6o4rt", value=value)
 
 
 class Views(Resource):
     """Views — `tl.so.tilo.lang.views.Views`."""
     __surface__ = "so.tilo.lang.views@d4680cb5c8c73003"
     bweal36x: list[Entry[WrittenView]]  # items
-    _2tnozirr: list[Entry[Default]]  # defaults
+    @property
+    def _2tnozirr(self) -> list[Entry[Default]]:
+        """defaults (`2tnozirr` on the wire)."""
+        return self.fields["2tnozirr"]
+
+    @_2tnozirr.setter
+    def _2tnozirr(self, value: list[Entry[Default]]) -> None:
+        self.edit("2tnozirr", value=value)
 
     def answer(self,
         *,

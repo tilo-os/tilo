@@ -49,12 +49,12 @@ export interface MakeDefaultArgs {
 
 /** WrittenView — `tl.so.tilo.lang.views.WrittenView`. */
 export interface WrittenView extends tilo.Resource {
-  2fxqftu3: string;  # title
-  fdxj35iu: string;  # question
-  3pj7zyxo: string;  # definition
-  3eioszed: string;  # author
-  loizxjpf: boolean;  # kept
-  bckibjl6: string;  # shows
+  "2fxqftu3": string;  // title
+  fdxj35iu: string;  // question
+  "3pj7zyxo": string;  // definition
+  "3eioszed": string;  // author
+  loizxjpf: boolean;  // kept
+  bckibjl6: string;  // shows
   /** Keeps a view among the person's own. */
   keep(): Promise<void>;
   /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -78,9 +78,9 @@ export function writtenView(ws: tilo.Workspace, path: string): WrittenView {
 
 /** Default — `tl.so.tilo.lang.views.Default`. */
 export interface Default extends tilo.Resource {
-  2atmuo4h: string;  # shows
-  h6n4gvgn: Device;  # device
-  7rv6o4rt: WrittenView;  # chosen
+  "2atmuo4h": string;  // shows
+  h6n4gvgn: Device;  // device
+  "7rv6o4rt": WrittenView;  // chosen
 }
 
 /** The actions `Default` reaches before it is read: `ws` calls them without a
@@ -94,8 +94,8 @@ export function default(ws: tilo.Workspace, path: string): Default {
 
 /** Views — `tl.so.tilo.lang.views.Views`. */
 export interface Views extends tilo.Resource {
-  bweal36x: Array<tilo.Entry<WrittenView>>;  # items
-  2tnozirr: Array<tilo.Entry<Default>>;  # defaults
+  bweal36x: Array<tilo.Entry<WrittenView>>;  // items
+  "2tnozirr": Array<tilo.Entry<Default>>;  // defaults
   /** Records the view an agent answered with, under the name of whoever asked. It opens beside what the person pointed at; until they keep it, it is the agent's answer. */
   answer(args: {
     title: string;

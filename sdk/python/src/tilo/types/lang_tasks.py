@@ -185,11 +185,32 @@ class Task(Resource):
     qadph346: str | None  # at
     aeilucpg: str | None  # remind
     ftjnco6i: str  # notes
-    _2eyau2d6: str | None  # assignee
+    @property
+    def _2eyau2d6(self) -> str | None:
+        """assignee (`2eyau2d6` on the wire)."""
+        return self.fields["2eyau2d6"]
+
+    @_2eyau2d6.setter
+    def _2eyau2d6(self, value: str | None) -> None:
+        self.edit("2eyau2d6", value=value)
     fbioszhs: Project | None  # project
     v56iknh2: Section | None  # section
-    _4sriymst: Priority  # priority
-    _3pf74ifm: Task | None  # parent
+    @property
+    def _4sriymst(self) -> Priority:
+        """priority (`4sriymst` on the wire)."""
+        return self.fields["4sriymst"]
+
+    @_4sriymst.setter
+    def _4sriymst(self, value: Priority) -> None:
+        self.edit("4sriymst", value=value)
+    @property
+    def _3pf74ifm(self) -> Task | None:
+        """parent (`3pf74ifm` on the wire)."""
+        return self.fields["3pf74ifm"]
+
+    @_3pf74ifm.setter
+    def _3pf74ifm(self, value: Task | None) -> None:
+        self.edit("3pf74ifm", value=value)
 
     def check(self,
         *,

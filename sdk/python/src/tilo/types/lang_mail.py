@@ -143,10 +143,24 @@ class Account(Resource):
     """Account — `tl.so.tilo.lang.mail.Account`."""
     __surface__ = "so.tilo.lang.mail@75c79c95f9de22c7"
     yujnud5c: str  # key
-    _4lo3ei5n: str  # address
+    @property
+    def _4lo3ei5n(self) -> str:
+        """address (`4lo3ei5n` on the wire)."""
+        return self.fields["4lo3ei5n"]
+
+    @_4lo3ei5n.setter
+    def _4lo3ei5n(self, value: str) -> None:
+        self.edit("4lo3ei5n", value=value)
     j6nqqrit: str  # name
     b5k7mvka: str  # trouble
-    _33f3rqw2: bool  # online
+    @property
+    def _33f3rqw2(self) -> bool:
+        """online (`33f3rqw2` on the wire)."""
+        return self.fields["33f3rqw2"]
+
+    @_33f3rqw2.setter
+    def _33f3rqw2(self, value: bool) -> None:
+        self.edit("33f3rqw2", value=value)
     hzbwof46: str  # fetched
     jxc5rufs: str  # signature
     ehmoyzk2: list[Entry[Mailbox]]  # mailboxes
@@ -201,9 +215,23 @@ class Thread(Resource):
     sxcvmlon: str  # snippet
     vyc7aj7v: str  # senders
     izafodav: int  # count
-    _56lwowdg: bool  # unread
+    @property
+    def _56lwowdg(self) -> bool:
+        """unread (`56lwowdg` on the wire)."""
+        return self.fields["56lwowdg"]
+
+    @_56lwowdg.setter
+    def _56lwowdg(self, value: bool) -> None:
+        self.edit("56lwowdg", value=value)
     abe6c5jl: bool  # flagged
-    _3vusnp7i: list[str]  # boxes
+    @property
+    def _3vusnp7i(self) -> list[str]:
+        """boxes (`3vusnp7i` on the wire)."""
+        return self.fields["3vusnp7i"]
+
+    @_3vusnp7i.setter
+    def _3vusnp7i(self, value: list[str]) -> None:
+        self.edit("3vusnp7i", value=value)
     ueyfpzep: list[Entry[Message]]  # messages
     gy7z7du3: list[str]  # labels
     bdoh33hs: str  # snoozed_until
@@ -366,14 +394,35 @@ class Message(Resource):
     ntqgnz4f: str  # subject
     l3nc65iv: str  # from
     mo6l36a3: str  # from_name
-    _46k23iwq: str  # to
+    @property
+    def _46k23iwq(self) -> str:
+        """to (`46k23iwq` on the wire)."""
+        return self.fields["46k23iwq"]
+
+    @_46k23iwq.setter
+    def _46k23iwq(self, value: str) -> None:
+        self.edit("46k23iwq", value=value)
     bgzxugi5: str  # cc
     tfxwkfn2: str  # received
     sbrol5fc: str  # snippet
-    _4bchz3ch: str  # body
+    @property
+    def _4bchz3ch(self) -> str:
+        """body (`4bchz3ch` on the wire)."""
+        return self.fields["4bchz3ch"]
+
+    @_4bchz3ch.setter
+    def _4bchz3ch(self, value: str) -> None:
+        self.edit("4bchz3ch", value=value)
     anuds3qt: str  # message_id
     asu6ymha: str  # references
-    _4zhzrkne: str  # attachments
+    @property
+    def _4zhzrkne(self) -> str:
+        """attachments (`4zhzrkne` on the wire)."""
+        return self.fields["4zhzrkne"]
+
+    @_4zhzrkne.setter
+    def _4zhzrkne(self, value: str) -> None:
+        self.edit("4zhzrkne", value=value)
     ubfcf6ep: bool  # unread
     vxxb4sqr: bool  # flagged
     xlejsz5j: str  # mailbox
@@ -451,8 +500,22 @@ class Mail(Resource):
     bag7bf25: list[Entry[Thread]]  # recovered_mail
     fezdozrd: list[str]  # recovered_conversations
     swilesl6: list[str]  # recovered_signatures
-    _5upxgb6g: list[str]  # recovered_drafts
-    _4ow5ydy5: int  # hold
+    @property
+    def _5upxgb6g(self) -> list[str]:
+        """recovered_drafts (`5upxgb6g` on the wire)."""
+        return self.fields["5upxgb6g"]
+
+    @_5upxgb6g.setter
+    def _5upxgb6g(self, value: list[str]) -> None:
+        self.edit("5upxgb6g", value=value)
+    @property
+    def _4ow5ydy5(self) -> int:
+        """hold (`4ow5ydy5` on the wire)."""
+        return self.fields["4ow5ydy5"]
+
+    @_4ow5ydy5.setter
+    def _4ow5ydy5(self, value: int) -> None:
+        self.edit("4ow5ydy5", value=value)
 
     def set_hold(self, *, seconds: int) -> None:
         """Sets how many seconds a sent message waits before it goes, so it can be taken back: no wait at all at zero."""

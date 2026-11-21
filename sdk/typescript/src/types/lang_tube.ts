@@ -57,15 +57,15 @@ export interface EndSearchArgs {
 
 /** Channel — `tl.so.tilo.lang.tube.Channel`. */
 export interface Channel extends tilo.Resource {
-  26ctwf34: string;  # key
-  ya2u4cw6: string;  # name
-  woyix7h2: string;  # handle
-  ah5nkqv7: number;  # subscribers
-  2qxzpxur: string;  # avatar
-  d4mzmvrr: string;  # banner
-  rzhtvjsv: string;  # description
-  lfopp7e7: boolean;  # verified
-  2ap24kjm: string;  # found_for
+  "26ctwf34": string;  // key
+  ya2u4cw6: string;  // name
+  woyix7h2: string;  // handle
+  ah5nkqv7: number;  // subscribers
+  "2qxzpxur": string;  // avatar
+  d4mzmvrr: string;  // banner
+  rzhtvjsv: string;  // description
+  lfopp7e7: boolean;  // verified
+  "2ap24kjm": string;  // found_for
   /** Subscribes to the channel, or unsubscribes: the button says which it will do. */
   subscribe(args?: {
     subscribed?: boolean;
@@ -91,23 +91,23 @@ export function channel(ws: tilo.Workspace, path: string): Channel {
 
 /** Video — `tl.so.tilo.lang.tube.Video`. */
 export interface Video extends tilo.Resource {
-  irzy3c7m: string;  # key
-  fpxk5w7b: string;  # title
-  mhkply6c: string;  # channel_key
-  2mklwbfq: string;  # channel_name
-  lfky4erv: string;  # channel_avatar
-  txtos5p6: number;  # views
-  2ruyhh5f: string;  # published
-  mvlf65b5: number;  # duration
-  pfdoae2w: string;  # description
-  ddfiordt: number;  # likes
-  l25oorez: string;  # thumbnail
-  pkbzjs7l: string;  # stream
-  jfam7tjf: boolean;  # live
-  bifohbpv: boolean;  # liked
-  vvtm26ea: boolean;  # watch_later
-  4mojz3hw: boolean;  # trending
-  5o5fpqgh: string;  # found_for
+  irzy3c7m: string;  // key
+  fpxk5w7b: string;  // title
+  mhkply6c: string;  // channel_key
+  "2mklwbfq": string;  // channel_name
+  lfky4erv: string;  // channel_avatar
+  txtos5p6: number;  // views
+  "2ruyhh5f": string;  // published
+  mvlf65b5: number;  // duration
+  pfdoae2w: string;  // description
+  ddfiordt: number;  // likes
+  l25oorez: string;  // thumbnail
+  pkbzjs7l: string;  // stream
+  jfam7tjf: boolean;  // live
+  bifohbpv: boolean;  // liked
+  vvtm26ea: boolean;  // watch_later
+  "4mojz3hw": boolean;  // trending
+  "5o5fpqgh": string;  // found_for
   /** Likes the video, or takes the like back. */
   like(args?: {
     liked?: boolean;
@@ -145,13 +145,13 @@ export function video(ws: tilo.Workspace, path: string): Video {
 
 /** Playlist — `tl.so.tilo.lang.tube.Playlist`. */
 export interface Playlist extends tilo.Resource {
-  ow7glfos: string;  # key
-  ljyc7mx2: string;  # title
-  bzfmd6pg: string;  # channel_key
-  zvfpfva3: string;  # channel_name
-  6cllrl7x: number;  # video_count
-  4xvzshd7: string;  # thumbnail
-  p3yw6p2h: string;  # found_for
+  ow7glfos: string;  // key
+  ljyc7mx2: string;  // title
+  bzfmd6pg: string;  // channel_key
+  zvfpfva3: string;  // channel_name
+  "6cllrl7x": number;  // video_count
+  "4xvzshd7": string;  // thumbnail
+  p3yw6p2h: string;  // found_for
 }
 
 /** The actions `Playlist` reaches before it is read: `ws` calls them without a
@@ -165,8 +165,8 @@ export function playlist(ws: tilo.Workspace, path: string): Playlist {
 
 /** Subscription — `tl.so.tilo.lang.tube.Subscription`. */
 export interface Subscription extends tilo.Resource {
-  slhmwv67: string;  # key
-  ynf67l6e: string;  # name
+  slhmwv67: string;  // key
+  ynf67l6e: string;  // name
 }
 
 /** The actions `Subscription` reaches before it is read: `ws` calls them without a
@@ -180,11 +180,11 @@ export function subscription(ws: tilo.Workspace, path: string): Subscription {
 
 /** WatchEntry — `tl.so.tilo.lang.tube.WatchEntry`. */
 export interface WatchEntry extends tilo.Resource {
-  noppuxpb: string;  # key
-  stuii7l7: string;  # title
-  j37y2bbw: string;  # channel_name
-  dmm6f63t: string;  # watched
-  omff5ciz: number;  # progress
+  noppuxpb: string;  // key
+  stuii7l7: string;  // title
+  j37y2bbw: string;  // channel_name
+  dmm6f63t: string;  // watched
+  omff5ciz: number;  // progress
 }
 
 /** The actions `WatchEntry` reaches before it is read: `ws` calls them without a
@@ -198,18 +198,18 @@ export function watchEntry(ws: tilo.Workspace, path: string): WatchEntry {
 
 /** YouTube — `tl.so.tilo.lang.tube.YouTube`. */
 export interface YouTube extends tilo.Resource {
-  olrung72: string;  # title
-  ihhzrm3f: Array<tilo.Entry<Channel>>;  # channels
-  qnfjkti5: Array<tilo.Entry<Video>>;  # videos
-  v5sh2bpr: Array<tilo.Entry<Playlist>>;  # playlists
-  iputtmua: Array<tilo.Entry<Subscription>>;  # subscriptions
-  hv25j74h: Array<tilo.Entry<WatchEntry>>;  # history
-  bqesicxq: string;  # search_text
-  hcmy6dp7: string;  # search_state
-  zjw3anaz: string;  # search_trouble
-  nnvco6w3: string;  # feed_state
-  r3ksw6bn: string;  # trouble
-  qv7t2mza: boolean;  # online
+  olrung72: string;  // title
+  ihhzrm3f: Array<tilo.Entry<Channel>>;  // channels
+  qnfjkti5: Array<tilo.Entry<Video>>;  // videos
+  v5sh2bpr: Array<tilo.Entry<Playlist>>;  // playlists
+  iputtmua: Array<tilo.Entry<Subscription>>;  // subscriptions
+  hv25j74h: Array<tilo.Entry<WatchEntry>>;  // history
+  bqesicxq: string;  // search_text
+  hcmy6dp7: string;  // search_state
+  zjw3anaz: string;  // search_trouble
+  nnvco6w3: string;  // feed_state
+  r3ksw6bn: string;  // trouble
+  qv7t2mza: boolean;  // online
   /** Deletes the watch history: everything the person watched. */
   delete_history(): Promise<void>;
   /** Runs `delete_history` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */

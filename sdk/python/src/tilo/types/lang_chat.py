@@ -73,7 +73,14 @@ ChatDeleteArgs = TypedDict("ChatDeleteArgs", {
 class Conversations(Resource):
     """Conversations — `tl.so.tilo.lang.chat.Conversations`."""
     __surface__ = "so.tilo.lang.chat@6169eae5899c5b33"
-    _5kzdptyg: list[Entry[Category | Direct | TextChannel]]  # channels
+    @property
+    def _5kzdptyg(self) -> list[Entry[Category | Direct | TextChannel]]:
+        """channels (`5kzdptyg` on the wire)."""
+        return self.fields["5kzdptyg"]
+
+    @_5kzdptyg.setter
+    def _5kzdptyg(self, value: list[Entry[Category | Direct | TextChannel]]) -> None:
+        self.edit("5kzdptyg", value=value)
 
     def new_channel(self,
         *,
@@ -191,10 +198,24 @@ class Message(Resource):
     """Message — `tl.so.tilo.lang.chat.Message`."""
     __surface__ = "so.tilo.lang.chat@6169eae5899c5b33"
     xfrqdy3y: str  # body
-    _4uwxpnw2: Message | None  # reply_to
+    @property
+    def _4uwxpnw2(self) -> Message | None:
+        """reply_to (`4uwxpnw2` on the wire)."""
+        return self.fields["4uwxpnw2"]
+
+    @_4uwxpnw2.setter
+    def _4uwxpnw2(self, value: Message | None) -> None:
+        self.edit("4uwxpnw2", value=value)
     kxekobh6: Thread | None  # thread
     mwily5kw: list[Entry[Part]]  # parts
-    _4zr7hti6: bool  # pinned
+    @property
+    def _4zr7hti6(self) -> bool:
+        """pinned (`4zr7hti6` on the wire)."""
+        return self.fields["4zr7hti6"]
+
+    @_4zr7hti6.setter
+    def _4zr7hti6(self, value: bool) -> None:
+        self.edit("4zr7hti6", value=value)
     ofad24rc: dict[str, list[str]]  # reactions
     dh6346no: str  # sent_view
 
@@ -231,7 +252,14 @@ class Thread(Resource):
     __surface__ = "so.tilo.lang.chat@6169eae5899c5b33"
     xuvfifa5: str  # name
     ijy454g6: list[Entry[Message]]  # messages
-    _2ki7h2z5: bool  # archived
+    @property
+    def _2ki7h2z5(self) -> bool:
+        """archived (`2ki7h2z5` on the wire)."""
+        return self.fields["2ki7h2z5"]
+
+    @_2ki7h2z5.setter
+    def _2ki7h2z5(self, value: bool) -> None:
+        self.edit("2ki7h2z5", value=value)
 
     def send(self,
         *,
@@ -276,10 +304,24 @@ class Thread(Resource):
 class Direct(Resource):
     """Direct — `tl.so.tilo.lang.chat.Direct`."""
     __surface__ = "so.tilo.lang.chat@6169eae5899c5b33"
-    _5stv6ro7: str  # name
+    @property
+    def _5stv6ro7(self) -> str:
+        """name (`5stv6ro7` on the wire)."""
+        return self.fields["5stv6ro7"]
+
+    @_5stv6ro7.setter
+    def _5stv6ro7(self, value: str) -> None:
+        self.edit("5stv6ro7", value=value)
     ycadyqh5: str  # person
     y65whtrn: list[Entry[Message]]  # messages
-    _3p73kpuw: list[Entry[Thread]]  # threads
+    @property
+    def _3p73kpuw(self) -> list[Entry[Thread]]:
+        """threads (`3p73kpuw` on the wire)."""
+        return self.fields["3p73kpuw"]
+
+    @_3p73kpuw.setter
+    def _3p73kpuw(self, value: list[Entry[Thread]]) -> None:
+        self.edit("3p73kpuw", value=value)
 
     def send(self,
         *,
@@ -339,7 +381,14 @@ class Part(Resource):
     """Part — `tl.so.tilo.lang.chat.Part`."""
     __surface__ = "so.tilo.lang.chat@6169eae5899c5b33"
     zevnbs3i: str  # kind
-    _3hkzkqvr: str  # body
+    @property
+    def _3hkzkqvr(self) -> str:
+        """body (`3hkzkqvr` on the wire)."""
+        return self.fields["3hkzkqvr"]
+
+    @_3hkzkqvr.setter
+    def _3hkzkqvr(self, value: str) -> None:
+        self.edit("3hkzkqvr", value=value)
 
 
 class Chat(Resource):

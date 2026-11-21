@@ -148,17 +148,17 @@ export interface RemoveProjectArgs {
 
 /** Task — `tl.so.tilo.lang.tasks.Task`. */
 export interface Task extends tilo.Resource {
-  oidkt4g5: string;  # title
-  fgvmlm5n: boolean;  # done
-  g6kykjp2: string | null;  # due
-  qadph346: string | null;  # at
-  aeilucpg: string | null;  # remind
-  ftjnco6i: string;  # notes
-  2eyau2d6: string | null;  # assignee
-  fbioszhs: Project | null;  # project
-  v56iknh2: Section | null;  # section
-  4sriymst: Priority;  # priority
-  3pf74ifm: Task | null;  # parent
+  oidkt4g5: string;  // title
+  fgvmlm5n: boolean;  // done
+  g6kykjp2: string | null;  // due
+  qadph346: string | null;  // at
+  aeilucpg: string | null;  // remind
+  ftjnco6i: string;  // notes
+  "2eyau2d6": string | null;  // assignee
+  fbioszhs: Project | null;  // project
+  v56iknh2: Section | null;  // section
+  "4sriymst": Priority;  // priority
+  "3pf74ifm": Task | null;  // parent
   /** Checks a task off with every task under it, or opens it again with the tasks it is under. */
   check(args?: {
     done?: boolean;
@@ -273,8 +273,8 @@ export function task(ws: tilo.Workspace, path: string): Task {
 
 /** Project — `tl.so.tilo.lang.tasks.Project`. */
 export interface Project extends tilo.Resource {
-  sgnau7vd: string;  # name
-  c5pgzhqt: string;  # notes
+  sgnau7vd: string;  // name
+  c5pgzhqt: string;  // notes
   /** Adds a section at the end of a project's board. */
   new_section(): Promise<Section>;
   /** Adds a task to a project, at the end of the list `s` of its board (none for the first). It is the project's primary action, so its key brings the person to the entry that adds there. */
@@ -301,8 +301,8 @@ export function project(ws: tilo.Workspace, path: string): Project {
 
 /** Section — `tl.so.tilo.lang.tasks.Section`. */
 export interface Section extends tilo.Resource {
-  yfd266wj: string;  # name
-  ohbjjsu7: Project;  # project
+  yfd266wj: string;  // name
+  ohbjjsu7: Project;  // project
   /** Renames a section. */
   rename_section(args: {
     name: string;
@@ -326,9 +326,9 @@ export function section(ws: tilo.Workspace, path: string): Section {
 
 /** Tasks — `tl.so.tilo.lang.tasks.Tasks`. */
 export interface Tasks extends tilo.Resource {
-  lg5gedbh: Array<tilo.Entry<Task>>;  # items
-  mdhllpbo: Array<tilo.Entry<Project>>;  # projects
-  nk5542m7: Array<tilo.Entry<Section>>;  # sections
+  lg5gedbh: Array<tilo.Entry<Task>>;  // items
+  mdhllpbo: Array<tilo.Entry<Project>>;  // projects
+  nk5542m7: Array<tilo.Entry<Section>>;  // sections
   /** Adds a task to the inbox or to `p`, in the list `s` of its board: the entry at a list's end fills `title` with the words nothing else there takes, and the day, moment and person they name, so 'Call the landlord fri 10am @Bo' is a task due Friday at ten, for Bo. */
   new_task(args?: {
     p?: Project;
