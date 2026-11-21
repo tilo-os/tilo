@@ -111,6 +111,21 @@ pub fn surface(package_id: &str) -> Option<&'static str> {
         .map(|(_, surface)| *surface)
 }
 
+/// Every package that ships a surface, by its id, with the name people call it: the apps of
+/// [`apps`] and the services whose resources and actions the workspace holds all the same (the
+/// on-screen keyboard's, the launcher's). What `tilo sdk gen` writes types for and the API's
+/// description describes, so neither leaves out an action a program may invoke.
+#[cfg(feature = "surfaces")]
+pub fn surfaced() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {
+    generated::SURFACES.iter().map(|(id, surface)| {
+        let name = generated::SURFACE_NAMES
+            .iter()
+            .find(|(named, _)| named == id)
+            .map_or(*id, |(_, name)| *name);
+        (*id, name, *surface)
+    })
+}
+
 /// Whose a record of `kind` kept by `package_id` is, as the app's manifest declares it
 /// (`[resources] own`): each member's own, or the workspace's. Read from a table apart from
 /// [`apps`], so a host that asks only this links none of the rest.

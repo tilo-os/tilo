@@ -22399,6 +22399,145 @@
       "notes.pages.write-note.Result": {
         "type": "object"
       },
+      "osk.keyboard.set-layout.Arguments": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "description": ""
+      },
+      "osk.keyboard.set-size.Arguments": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "description": ""
+      },
+      "osk.keyboard.set-suggestions.Arguments": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "description": ""
+      },
+      "osk.keyboard.set-autocorrect.Arguments": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "description": ""
+      },
+      "osk.keyboard.set-typing-language.Arguments": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "description": ""
+      },
+      "osk.keyboard.set-personalization.Arguments": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "description": ""
+      },
+      "osk.keyboard.set-emoji-recents.Arguments": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "description": ""
+      },
+      "osk.learned.learn.Arguments": {
+        "type": "object",
+        "properties": {
+          "lesson": {
+            "additionalProperties": false,
+            "properties": {
+              "kept": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "language": {
+                "type": "string"
+              },
+              "touch": {
+                "items": {
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "transitions": {
+                "items": {
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "type": "array"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "language",
+              "transitions",
+              "kept",
+              "touch"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "lesson"
+        ],
+        "description": ""
+      },
+      "osk.learned.forget.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "passwords.vault.deny-access.Arguments": {
         "type": "object",
         "properties": {
@@ -43364,6 +43503,60 @@
       "resource": "notes.pages",
       "action": "write-note",
       "arguments": "#/components/schemas/notes.pages.write-note.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "osk.keyboard",
+      "action": "set-layout",
+      "arguments": "#/components/schemas/osk.keyboard.set-layout.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "osk.keyboard",
+      "action": "set-size",
+      "arguments": "#/components/schemas/osk.keyboard.set-size.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "osk.keyboard",
+      "action": "set-suggestions",
+      "arguments": "#/components/schemas/osk.keyboard.set-suggestions.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "osk.keyboard",
+      "action": "set-autocorrect",
+      "arguments": "#/components/schemas/osk.keyboard.set-autocorrect.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "osk.keyboard",
+      "action": "set-typing-language",
+      "arguments": "#/components/schemas/osk.keyboard.set-typing-language.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "osk.keyboard",
+      "action": "set-personalization",
+      "arguments": "#/components/schemas/osk.keyboard.set-personalization.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "osk.keyboard",
+      "action": "set-emoji-recents",
+      "arguments": "#/components/schemas/osk.keyboard.set-emoji-recents.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "osk.learned",
+      "action": "learn",
+      "arguments": "#/components/schemas/osk.learned.learn.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "osk.learned",
+      "action": "forget",
+      "arguments": "#/components/schemas/osk.learned.forget.Arguments"
     },
     {
       "app": "so.tilo.passwords",

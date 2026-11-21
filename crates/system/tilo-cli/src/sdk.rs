@@ -8,9 +8,10 @@
 //! is the SDK's `Resource`, so `document.read_form_fields()` runs `read-form-fields` there.
 //!
 //! Which apps' types are written: `-w` names a hosted workspace, whose own read of an app
-//! answers its surface; without it, every app this build ships, native and tilolang alike, from
-//! the fleet's compiled-in manifests (`app_fleet`) — the same list the desktop's search and the
-//! Store read, so the SDK, those apps and a workspace's programs agree on one surface.
+//! answers its surface; without it, every package this build ships that publishes a surface —
+//! native and tilolang apps, and the services whose actions are the workspace's too — from the
+//! fleet's compiled-in manifests (`app_fleet`), the list the desktop's search and the Store read,
+//! so the SDK, those apps and a workspace's programs agree on one surface.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -153,19 +154,17 @@ fn surfaces(reach: crate::api::Reach<'_>, workspace: Option<&str>) -> Result<Vec
     }
 }
 
-/// Every app this build ships, native or tilolang, from the fleet's compiled-in manifests
-/// (`app_fleet`): its id, its name and the surface its package publishes.
+/// Every package this build ships that publishes a surface — native apps, tilolang packages and
+/// the services whose actions a workspace holds (the on-screen keyboard's) — from the fleet's
+/// compiled-in manifests (`app_fleet`): its id, its name and the surface its package publishes.
 fn fleet() -> Result<Vec<App>> {
-    app_fleet::apps()
-        .iter()
-        .map(|app| {
-            let file = app_fleet::surface(app.id)
-                .ok_or_else(|| anyhow!("{}: ships no surface to write its types from", app.id))?;
-            let (_, surface) = SurfaceFile::kept(file.as_bytes())
-                .map_err(|error| anyhow!("{}: {error}", app.id))?;
+    app_fleet::surfaced()
+        .map(|(id, name, file)| {
+            let (_, surface) =
+                SurfaceFile::kept(file.as_bytes()).map_err(|error| anyhow!("{id}: {error}"))?;
             Ok(App {
-                id: app.id.to_owned(),
-                title: app.name.to_owned(),
+                id: id.to_owned(),
+                title: name.to_owned(),
                 surface,
             })
         })
@@ -656,16 +655,15 @@ fn module_names(apps: &[App]) -> BTreeMap<String, String> {
     });
     let mut names: BTreeMap<String, String> = BTreeMap::new();
     for app in order {
-        let segments: Vec<String> = app
-            .id
-            .rsplit('.')
-            .map(|segment| module_name(segment))
-            .collect();
-        let mut name = segments[0].clone();
-        let mut written = 1;
-        while written < segments.len() && names.values().any(|used| used == &name) {
-            name = format!("{}_{name}", segments[written]);
-            written += 1;
+        let segments: Vec<String> = app.id.rsplit('.').map(module_name).collect();
+        let mut parts = segments.iter();
+        let mut name = parts.next().cloned().unwrap_or_default();
+        // Grow the name towards the left until no app before it holds it.
+        for part in parts {
+            if !names.values().any(|used| used == &name) {
+                break;
+            }
+            name = format!("{part}_{name}");
         }
         names.insert(app.id.clone(), name);
     }
@@ -826,7 +824,10 @@ pub fn python_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
     let modules = module_names(apps);
     for app in apps {
         let types = types_of(app)?;
-        let module = modules.get(&app.id).cloned().unwrap_or_else(|| module_name(&app.id));
+        let module = modules
+            .get(&app.id)
+            .cloned()
+            .unwrap_or_else(|| module_name(&app.id));
         files.push((
             PathBuf::from(format!("{module}.py")),
             python_module(app, &types),
