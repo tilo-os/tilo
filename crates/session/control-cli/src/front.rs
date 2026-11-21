@@ -967,10 +967,33 @@ fn invoke(
 ) -> Result<serde_json::Value, String> {
     let request =
         crate::client::invoke_wire(&action.provider, &action.id, args, None, Some(RUN_WAIT_MS));
-    let answer = desktop
+    let mut answer = desktop
         .request(&request)
         .map_err(|why| sentence(&Failure::Unreachable(why), spelling))?;
+    // An action that takes longer than one wait is followed until it ends: a
+    // command that printed "still going" and exited as if it had worked would
+    // leave the person, or the script after it, without its answer.
+    while let Some(number) = still_going(&answer) {
+        let status = serde_json::json!({
+            "op": "actions_status", "invocation_id": number, "wait_ms": RUN_WAIT_MS,
+        });
+        answer = desktop
+            .request(&status)
+            .map_err(|why| sentence(&Failure::Unreachable(why), spelling))?;
+    }
     typed(&answer, action, spelling)
+}
+
+/// The desktop's number for the invocation `answer` names while it has not
+/// ended yet; `None` once it ended, or when the answer is a refusal.
+fn still_going(answer: &serde_json::Value) -> Option<u64> {
+    let receipt = answer.pointer("/answer/receipt")?;
+    let state = receipt
+        .pointer("/update/state")
+        .and_then(serde_json::Value::as_str)?;
+    matches!(state, "accepted" | "progress")
+        .then(|| receipt.get("broker_invocation_id")?.as_u64())
+        .flatten()
 }
 
 /// The desktop's `answer` to an invocation of `action`, as Tilo's API answers
