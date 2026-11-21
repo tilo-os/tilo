@@ -360,17 +360,13 @@ action indent(t: Task, above: Option<Task> (above)) uses time (
 ) {
     applies above != .none and above != t.parent "Nothing over it to move under"
     tasks.items.place(t, .parent, under: above)
-    if not t.done and tasks.items.ancestors(t, .parent).any(a -> a.done) {
-        check(t, false)
-    }
+    if not t.done and tasks.items.ancestors(t, .parent).any(a -> a.done) { check(t, false) }
 }
 
 /// Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline.
 action outdent(t: Task) (label: "Outdent", icon: .arrow_left, key: "Ctrl+[", group: "Move") {
     applies t.parent != .none "It is at the top level already"
-    if let p = t.parent {
-        tasks.items.place(t, .parent, after: p)
-    }
+    if let p = t.parent { tasks.items.place(t, .parent, after: p) }
 }
 
 /// Copies a task, with every task under it, just after the one it copies.

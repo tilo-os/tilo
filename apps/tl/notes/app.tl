@@ -71,11 +71,7 @@ primary action new_note(nb: Notebook, title: Text = "", body: Text = "") -> Note
 /// open too, so a person writing one starts the note it stands under without finding its row.
 /// It is `n`'s action, so the window offers it for the note it shows and a person reaches it by
 /// the shortcut or the note's row.
-action new_child(n: Note) -> Note (
-    icon: .plus,
-    label: "New sub-note",
-    key: "Ctrl+Shift+N",
-) {
+action new_child(n: Note) -> Note (icon: .plus, label: "New sub-note", key: "Ctrl+Shift+N") {
     let made = notebook.notes.insert(Note(title: "", parent: n))
     if let last = notebook.notes.filter(x -> x.parent == n and x != made).last() {
         notebook.notes.move(made, after: last)
@@ -97,10 +93,7 @@ migration action carry_native_notebook(nb: Notebook) {
     }
     // Siblings stand in the order of their ranks, the same rank by id; a notebook kept before
     // pages had ranks keeps them in the order of its collection.
-    let pages = earlier
-        .filter(e -> e.of == "pages")
-        .sort_by(e -> e.id)
-        .sort_by(e -> placed(e))
+    let pages = earlier.filter(e -> e.of == "pages").sort_by(e -> e.id).sort_by(e -> placed(e))
     let parents: Map<Text> = Map<Text>()
     for page in pages {
         parents.put(page.id, page.texts.get("parent") ?? "")
@@ -109,7 +102,8 @@ migration action carry_native_notebook(nb: Notebook) {
     let shown = [
         native_tree(pages, ""),
         pages.filter(e -> chain_end(parents, e.id, steps) == "circle"),
-    ].flat_map(x -> x)
+    ]
+        .flat_map(x -> x)
     // The pictures the native app kept beside its pages, by the digest a page names each by,
     // each now a file of this device's content store.
     let pictures: Map<File> = Map<File>()
@@ -137,7 +131,9 @@ migration action carry_native_notebook(nb: Notebook) {
         let made = if end == "gone" {
             nb.set_aside.insert(Note(title: title, body: body), id: page.id)
         } else {
-            let parent = if end == "top" { carried.get(page.texts.get("parent") ?? "") } else { .none }
+            let parent = if end == "top" {
+                carried.get(page.texts.get("parent") ?? "")
+            } else { .none }
             nb.notes.insert(Note(title: title, body: body, parent: parent), id: page.id)
         }
         for tag in page.lists.get("tags") ?? [] {
@@ -173,7 +169,9 @@ migration action carry_native_notebook(nb: Notebook) {
 fn picture_sources(markdown: Text, pictures: Map<File>) -> Map<Text> {
     let sources: Map<Text> = Map<Text>()
     for digest in asset_digests(markdown) {
-        if let picture = pictures.get(digest) { sources.put("asset:{digest}", picture.url) }
+        if let picture = pictures.get(digest) {
+            sources.put("asset:{digest}", picture.url)
+        }
     }
     sources
 }
@@ -217,9 +215,7 @@ fn chain_end(parents: Map<Text>, id: Text, left: Int) -> Text {
     if let parent = parents.get(id) {
         if parent == "" {
             "top"
-        } else if left <= 0 {
-            "circle"
-        } else { chain_end(parents, parent, left - 1) }
+        } else if left <= 0 { "circle" } else { chain_end(parents, parent, left - 1) }
     } else { "gone" }
 }
 
@@ -508,10 +504,10 @@ fn page_path(n: Note, pages: Map<Text>) -> Text {
 action import_markdown(nb: Notebook, file: File) -> Note (
     icon: .file_plus,
     did: "imported a note",
-    // A Markdown or plain-text file opens in the notebook with this: Files and the person's own
-    // file system hand the file over as the file it is.
     opens: ["text/markdown", "text/plain", .md, .markdown, .txt],
 ) {
+    // A Markdown or plain-text file opens in the notebook with this: Files and the person's own
+    // file system hand the file over as the file it is.
     import_page(nb, file, "", "", "", "", "")
 }
 
@@ -528,12 +524,8 @@ action import_page(
     page: Text,
     created: Text = "",
     updated: Text = "",
-) -> Note (
-    icon: .file_plus,
-    label: "Import a page from a service",
-    did: "imported a note",
-) {
-    if let imported = nb.notes.find(n -> n.source == file.url or (page != "" and n.page == page)) {
+) -> Note (icon: .file_plus, label: "Import a page from a service", did: "imported a note") {
+    if let imported = nb.notes.find(n -> n.source == file.url or page != "" and n.page == page) {
         return imported
     }
     let named = page_name(file.name)
@@ -589,9 +581,9 @@ action import_page(
 action import_archive(nb: Notebook, file: File) (
     icon: .file_plus,
     did: "imported a notebook",
-    // An archive of pages opens in the notebook with this, as one holding a notebook does.
     opens: ["application/zip", .zip],
 ) {
+    // An archive of pages opens in the notebook with this, as one holding a notebook does.
     match file.files() {
         .ok(files) => {
             let names = files.map(f -> f.name)
@@ -675,8 +667,8 @@ action import_archive(nb: Notebook, file: File) (
                     for database in csv_beside(page.name, names) {
                         if let data = files.find(f -> f.name == database) {
                             let csv = match data.text() {
-                                .ok(text) => text
-                                .err(_) => ""
+                                .ok(text) => text,
+                                .err(_) => "",
                             }
                             if let table = csv_table(csv) {
                                 made.body = RichText(made.body, RichText.from_markdown(table))
@@ -759,7 +751,7 @@ fn record_field(line: Text, at: Int) -> Text {
 /// there since is still the same note.
 fn note_of(nb: Notebook, page: File, came_from: Map<Text>) -> Option<Note> {
     let address = record_field(came_from.get(page.name) ?? "", 4)
-    nb.notes.find(n -> n.source == page.url or (address != "" and n.page == address))
+    nb.notes.find(n -> n.source == page.url or address != "" and n.page == address)
 }
 
 /// The note a page of an import stands under: the note of the page its record says it stood
@@ -813,9 +805,7 @@ action import_dropped(nb: Notebook, files: List<File>) (
     for file in files {
         if file.media == "application/zip" {
             import_archive(nb, file)
-        } else {
-            import_markdown(nb, file)
-        }
+        } else { import_markdown(nb, file) }
     }
 }
 
@@ -858,10 +848,10 @@ view notebook(nb: Notebook) {
         path: n -> meta(n).title,
         row: note_node,
         head: notebook_head,
-        // A file dropped anywhere on the notebook comes in as a note or as the pages of an
-        // archive it holds.
         drop_files: files -> import_dropped(nb, files),
     ) {
+        // A file dropped anywhere on the notebook comes in as a note or as the pages of an
+        // archive it holds.
         // What the tree cannot hold: the open note's headings under it, and the page beside it.
         below: {
             note_outline(heading_lines, heading_levels, reveal)
@@ -876,11 +866,7 @@ view notebook(nb: Notebook) {
 
 /// The open note's headings, under the tree: choosing one shows that heading of the note beside
 /// it. Nothing stands there while the note has no headings.
-view note_outline(
-    headings: List<Text>,
-    levels: List<Int>,
-    reveal: State<Option<Text>>,
-) {
+view note_outline(headings: List<Text>, levels: List<Int>, reveal: State<Option<Text>>) {
     std.headings("Outline", headings, levels, reveal)
 }
 
@@ -1245,7 +1231,7 @@ fn csv_beside(page: Text, names: List<Text>) -> List<Text> {
     let beside = names.filter(
         n -> folder_of(n) == folder
             and extension_of(n).lower() == ".csv"
-            and database_of(stem_of(n), stem)
+            and database_of(stem_of(n), stem),
     )
     beside.sort_by(n -> n)
 }
