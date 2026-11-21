@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.chat@6169eae5899c5b33";
+export const SURFACE = "so.tilo.lang.chat@0dbbc212308d237f";
 
 /** The arguments of `delete`. */
 export interface DeleteArgs {
@@ -154,6 +154,9 @@ export interface Message extends tilo.Resource {
   "4zr7hti6": boolean;  // pinned
   ofad24rc: Record<string, string[]>;  // reactions
   dh6346no: string;  // sent_view
+  tz5yw5dt: string;  // by
+  mmlcexsa: number;  // written
+  jcgolgdf: string;  // reacted
   // the app's `edit` action is the SDK's own: run it with `action("edit")`.
   /** Pins a message to its channel, or unpins it. */
   pin(args?: {
