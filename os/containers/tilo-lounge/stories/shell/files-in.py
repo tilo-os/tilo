@@ -136,17 +136,19 @@ def steps(story: Story) -> None:
         ada.session.answering("file-explorer", deadline=120)
         until("Files' window bar", lambda: ada.shows("New folder"), 30, 0.25)
         # Upload files is the bar's own action where it fits, and behind More actions where the
-        # bar folds it, as a person finds it.
+        # bar folds it, as a person finds it. The menu a press opens takes its frame, as any
+        # menu does: what the person sees is the row, once it is drawn.
         if not ada.target("Upload files", exact=False):
             ada.press("More actions", "the window bar's More actions")
         story.note("files-window-before", ada.names())
-        if not ada.target("Upload files", exact=False):
+        try:
+            until("Upload files in the window bar, or in its More menu",
+                  lambda: ada.target("Upload files", exact=False), 10, 0.25)
+        except Failed:
             raise Failed(
-                "Files cannot put the photo and the PDF into the workspace. Its window bar "
-                "folds Upload files behind More actions, whose menu a press does not open; and "
-                "the window lists Home, the computer's own folder, because this session runs no "
-                "files service to show the workspace's files. Nothing in this shell has a "
-                "workspace folder for a file to land in.")
+                "Files cannot put the photo and the PDF into the workspace: its window bar "
+                "folds Upload files behind More actions, and that menu shows no Upload files "
+                "once it is open.") from None
         ada.press("Upload files", "Files' Upload files", exact=False)
         for name, also in ((PHOTO, False), (PDF, True)):
             row = until(f"{name} in the chooser", lambda: ada.target(name, exact=False), 30, 0.25)
