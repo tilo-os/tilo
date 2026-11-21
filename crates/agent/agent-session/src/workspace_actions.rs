@@ -2300,7 +2300,9 @@ impl Worker {
         // thread, and this request takes its answer when it is applied again.
         let revision = source.revision;
         let read = {
-            let (wanted, first, route) = (wanted.clone(), first.clone(), route.clone());
+            let (wanted, first) = (wanted.clone(), first.clone());
+            #[cfg(feature = "test-support")]
+            let route = route.clone();
             move || -> Result<(Vec<_>, Vec<_>), ActionCallError> {
                 #[cfg(feature = "test-support")]
                 crate::workspace_actions::slowed::wait(&route.cluster_id, &route.app_id);
