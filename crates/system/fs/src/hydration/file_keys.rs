@@ -1,5 +1,6 @@
 //! Sealing file content with the same access as the workspace's Files tree.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,37 @@ use crate::tree_document::{FILES_APP, connect_identity, document_id};
 use super::Hydrator;
 
 type ReadKeys = dyn Fn() -> Result<ContentKeys> + Send + Sync;
+
+/// Each workspace's content keys as one run of saves and reads on a thread holds them
+/// ([`Hydrator::key_run`]): fetched when the run first needs them, checked once when it ends.
+type KeyRun = BTreeMap<WorkspaceId, (FileKeys, ContentKeys)>;
+
+thread_local! {
+    /// The key run this thread is in, if any. A run is a thread's own: a save on another thread
+    /// (a mount's writer beside a folder pass) never seals under keys a run it is not part of
+    /// will check.
+    static RUN: RefCell<Option<KeyRun>> = const { RefCell::new(None) };
+}
+
+/// The keys this thread's run holds for `workspace`; `Err(())` when the thread is in no run.
+fn run_keys(workspace: WorkspaceId) -> std::result::Result<Option<ContentKeys>, ()> {
+    RUN.with_borrow(|run| {
+        run.as_ref()
+            .map(|run| run.get(&workspace).map(|(_, keys)| keys.clone()))
+            .ok_or(())
+    })
+}
+
+/// Keep `keys`, just fetched from `source`, for the rest of this thread's run; the first keys
+/// kept for a workspace are the ones the run's end checks.
+fn keep_in_run(source: &FileKeys, keys: &ContentKeys) {
+    RUN.with_borrow_mut(|run| {
+        if let Some(run) = run {
+            run.entry(source.workspace)
+                .or_insert_with(|| (source.clone(), keys.clone()));
+        }
+    });
+}
 
 /// The key authority for the Files endpoint's workspace.
 #[derive(Clone)]
@@ -90,6 +122,18 @@ impl FileKeys {
         manifest: &Manifest,
         source: impl tokio::io::AsyncRead + Unpin,
     ) -> Result<Hash> {
+        // In a run, the keys it holds seal the file, and the run's end checks them once for all
+        // it sealed.
+        if let Ok(held) = run_keys(self.workspace) {
+            let keys = if let Some(keys) = held {
+                keys
+            } else {
+                let keys = self.access().await?;
+                keep_in_run(self, &keys);
+                keys
+            };
+            return write_sealed_chunks(store, &keys, self.workspace, manifest, source).await;
+        }
         let keys = self.access().await?;
         let hash = write_sealed_chunks(store, &keys, self.workspace, manifest, source).await?;
         let current = self.access().await?;
@@ -189,6 +233,41 @@ impl FileDecoder {
 }
 
 impl Hydrator {
+    /// Runs `apply` with each workspace's content keys fetched once for everything it seals or
+    /// opens on this thread, and checked once when it ends, rather than fetched before and after
+    /// every file it seals. Answers whether they moved meanwhile, or could not be checked: what
+    /// `apply` sealed is then under keys the workspace may no longer use, and must be sealed
+    /// again. A run inside another is part of it; the outer one checks.
+    pub fn key_run<T>(&self, apply: impl FnOnce() -> T) -> (T, bool) {
+        /// Ends this thread's run however `apply` returns, a panic included.
+        struct Ends;
+        impl Drop for Ends {
+            fn drop(&mut self) {
+                RUN.with_borrow_mut(Option::take);
+            }
+        }
+        if RUN.with_borrow(Option::is_some) {
+            return (apply(), false);
+        }
+        RUN.with_borrow_mut(|run| *run = Some(BTreeMap::new()));
+        let ends = Ends;
+        let value = apply();
+        let held = RUN.with_borrow_mut(Option::take).unwrap_or_default();
+        drop(ends);
+        let moved = held.into_values().any(|(source, keys)| {
+            match self.block_on(source.access()) {
+                Ok(current) => {
+                    (current.workspace(), current.epoch()) != (keys.workspace(), keys.epoch())
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the Files keys a run sealed with could not be checked");
+                    true
+                }
+            }
+        });
+        (value, moved)
+    }
+
     /// Use the workspace key for each governed folder of the managed Files mount.
     #[must_use]
     pub fn with_scoped_file_keys(
@@ -284,8 +363,17 @@ impl Hydrator {
             (None, Some(scopes), Some(workspace)) => scopes.source(workspace, Access::Read)?,
             _ => return Err(anyhow!("this mount has no key authority for that file")),
         };
-        let keys = source.access().await?;
         let metadata = source.metadata(sealed);
+        let keys = match run_keys(source.workspace) {
+            Ok(Some(keys)) if keys.holds_key_for(&metadata) => keys,
+            held => {
+                let keys = source.access().await?;
+                if held.is_ok() {
+                    keep_in_run(&source, &keys);
+                }
+                keys
+            }
+        };
         ensure!(
             keys.holds_key_for(&metadata),
             "this workspace holds no key for that file"

@@ -34,6 +34,14 @@
 //! [`LAST_RETRY`]), unless it changes meanwhile; a pass that only fails stops
 //! early. What cannot sync is said once, with why ([`SyncFolder::unsynced`]).
 //!
+//! A pass in a workspace with keys of its own seals what it writes under one
+//! fetch of them, checked once when it ends ([`QuickFS::key_run`]), not two
+//! fetches for every file; a file sealed while they moved (a member came or
+//! went) is sealed again by the next pass, at once. It fetches the content of
+//! everything it exports together before writing any ([`QuickFS::fetch_paths`]),
+//! so a folder that receives a clone waits on the network once a pass, not once
+//! a file.
+//!
 //! [`SyncFolder::watch`] runs passes on change: `FSEvents` on macOS, `inotify`
 //! on Linux, and a periodic pass that picks up workspace changes.
 
@@ -229,6 +237,8 @@ pub struct SyncFolder {
     failing: HashMap<String, Failing>,
     /// Paths that newly failed in this pass, said once at its end.
     unreported: Vec<String>,
+    /// Files this pass wrote into the workspace, sealed under the keys its run holds.
+    sealed: Vec<String>,
 }
 
 impl SyncFolder {
@@ -249,6 +259,7 @@ impl SyncFolder {
             commit,
             failing: HashMap::new(),
             unreported: Vec::new(),
+            sealed: Vec::new(),
         })
     }
 
@@ -297,8 +308,25 @@ impl SyncFolder {
             .collect();
         self.failing.retain(|path, _| paths.contains(path));
         let fs = Arc::clone(&self.fs);
-        let (mut next, mut removals) =
-            fs.changeset(|| self.carry(&paths, &local, &remote, &mut pass));
+        let ((mut next, mut removals), keys_moved) =
+            fs.changeset(|| fs.key_run(|| self.carry(&paths, &local, &remote, &mut pass)));
+        let sealed = std::mem::take(&mut self.sealed);
+        if keys_moved && !sealed.is_empty() {
+            // What this pass sealed is under keys the workspace moved from: the next pass, at
+            // once, seals it again under the keys it uses now.
+            tracing::info!(
+                files = sealed.len(),
+                folder = %self.root.display(),
+                "the workspace's file keys changed while this pass sealed files; sealing them again"
+            );
+            for path in sealed {
+                match self.baseline.entries.get(&path) {
+                    Some(base) => next.insert(path, *base),
+                    None => next.remove(&path),
+                };
+                pass.deferred = pass.deferred.saturating_add(1);
+            }
+        }
         self.report_failures();
         removals.sort_by_key(|(path, _, _)| std::cmp::Reverse(depth(path)));
         let removed_remotely: BTreeSet<&str> = removals
@@ -341,6 +369,7 @@ impl SyncFolder {
         pass: &mut Pass,
     ) -> (BTreeMap<String, Synced>, Vec<(String, bool, Synced)>) {
         let now = Instant::now();
+        self.fetch_exports(paths, local, remote, now);
         let mut budget = Budget::new();
         let mut next = BTreeMap::new();
         let mut removals = Vec::new();
@@ -408,6 +437,34 @@ impl SyncFolder {
         (next, removals)
     }
 
+    /// Fetches the content of every file this pass exports at once, before it writes any: the
+    /// pass then writes each from what is here, rather than waiting on the network for one file
+    /// after another, and content that is not to be had yet holds the pass up once, not once per
+    /// file.
+    fn fetch_exports(
+        &self,
+        paths: &BTreeSet<String>,
+        local: &BTreeMap<String, LocalEntry>,
+        remote: &BTreeMap<String, RemoteEntry>,
+        now: Instant,
+    ) {
+        let mut budget = Budget::new();
+        let exports = paths.iter().filter(|path| {
+            let (l, r) = (local.get(*path), remote.get(*path));
+            let Some(RemoteEntry {
+                mark: Mark::Content { size, .. },
+                ..
+            }) = r
+            else {
+                return false;
+            };
+            decide(l, r, self.baseline.entries.get(*path)) == Step::Export
+                && !self.waits(path, (l.map(|l| l.stamp), r.map(|r| r.mark)), now)
+                && budget.take(*size)
+        });
+        self.fs.fetch_paths(exports.map(|path| rel(path)));
+    }
+
     /// Whether `path`, which failed before, still waits to be tried again:
     /// neither side changed since, and its wait is not over.
     fn waits(&self, path: &str, seen: (Option<local::Stamp>, Option<Mark>), now: Instant) -> bool {
@@ -430,6 +487,9 @@ impl SyncFolder {
         match outcome {
             Ok(Some(synced)) => {
                 budget.outcome(true);
+                if import && !synced.dir {
+                    self.sealed.push(path.to_owned());
+                }
                 let count = if import {
                     &mut pass.imported
                 } else {

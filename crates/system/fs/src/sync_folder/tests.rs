@@ -19,9 +19,27 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with(|hydrator| hydrator).await
+    }
+
+    /// A workspace whose files are sealed under the keys `read` hands over, each time it is asked.
+    async fn sealed(
+        read: impl Fn() -> anyhow::Result<key_group::ContentKeys> + Send + Sync + 'static,
+    ) -> Self {
+        let workspace = collab_types::WorkspaceId::new();
+        Self::with(move |hydrator| {
+            hydrator.with_file_keys(crate::hydration::FileKeys::from_session(workspace, read))
+        })
+        .await
+    }
+
+    async fn with(keys: impl FnOnce(Hydrator) -> Hydrator) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = test_server::direct_endpoint().await;
-        let hydrator = Arc::new(Hydrator::new(endpoint, Arc::new(ContentStore::memory())));
+        let hydrator = Arc::new(keys(Hydrator::new(
+            endpoint,
+            Arc::new(ContentStore::memory()),
+        )));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
         let actor = FileActor {
             person: Ed25519PublicKey([1; 32]),
@@ -464,4 +482,103 @@ async fn a_folder_waiting_for_its_keys_does_not_count_a_path_as_failing() {
     );
     assert_eq!(pass.failed, 1);
     assert_eq!(folder.unsynced().count(), 1);
+}
+
+/// Content keys of a group of their own: another group's keys are keys the workspace moved to.
+fn group_keys() -> key_group::ContentKeys {
+    key_group::KeyGroup::create(
+        collab_types::WorkspaceId::new(),
+        key_group::MemberKey::generate("member").unwrap(),
+    )
+    .unwrap()
+    .content_keys()
+    .unwrap()
+}
+
+/// The keys group the content of the workspace's `path` is sealed under.
+async fn sealed_under(fx: &Fixture, path: &str) -> [u8; 16] {
+    let hash = fx.fs.entry_at(Path::new(path)).unwrap().hash.unwrap();
+    fx.fs
+        .hydrator
+        .store
+        .manifest(hash)
+        .await
+        .unwrap()
+        .sealed()
+        .unwrap()
+        .group
+}
+
+/// A pass that writes many files into a workspace with keys of its own asks for the keys once,
+/// and once more to check they held, rather than before and after every file.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pass_seals_every_file_under_one_fetch_of_the_keys() {
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let keys = group_keys();
+    let fx = Fixture::sealed({
+        let asked = Arc::clone(&asked);
+        move || {
+            asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(keys.clone())
+        }
+    })
+    .await;
+    let mut folder = fx.folder();
+    std::fs::create_dir_all(fx.local("src")).unwrap();
+    for file in 0..40_u32 {
+        std::fs::write(fx.local(&format!("src/m{file}.rs")), bytes(file, 900)).unwrap();
+    }
+
+    assert_eq!(folder.reconcile().unwrap(), pass(41, 0, 0, 0));
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 2);
+    for file in 0..40_u32 {
+        assert_eq!(
+            fx.remote(&format!("src/m{file}.rs")).unwrap(),
+            bytes(file, 900)
+        );
+    }
+}
+
+/// Files a pass sealed while the workspace moved to new keys (a member came or went) are sealed
+/// again under the new keys by the pass that follows at once, not after a wait, and none is
+/// counted as failing.
+#[tokio::test(flavor = "multi_thread")]
+async fn files_sealed_while_the_keys_moved_are_sealed_again_at_once() {
+    let (before, after) = (group_keys(), group_keys());
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // The first pass fetches `before`; by the time it checks, the workspace uses `after`.
+    let fx = Fixture::sealed({
+        let (before, after, asked) = (before.clone(), after.clone(), Arc::clone(&asked));
+        move || {
+            let first = asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0;
+            Ok(if first { before.clone() } else { after.clone() })
+        }
+    })
+    .await;
+    let mut folder = fx.folder();
+    for file in 0..5_u32 {
+        std::fs::write(fx.local(&format!("f{file}.txt")), bytes(file, 700)).unwrap();
+    }
+
+    let started = Instant::now();
+    let first = folder.reconcile().unwrap();
+    assert_eq!((first.imported, first.deferred, first.failed), (5, 5, 0));
+    assert!(first.more(), "the files are sealed again straight away");
+    assert_eq!(
+        sealed_under(&fx, "f0.txt").await,
+        *before.workspace().as_uuid().as_bytes()
+    );
+    assert_eq!(folder.reconcile().unwrap(), pass(5, 0, 0, 0));
+    assert!(started.elapsed() < super::FIRST_RETRY);
+    assert_eq!(folder.reconcile().unwrap(), Pass::default());
+    for file in 0..5_u32 {
+        let path = format!("f{file}.txt");
+        assert_eq!(fx.remote(&path).unwrap(), bytes(file, 700));
+        assert_eq!(
+            sealed_under(&fx, &path).await,
+            *after.workspace().as_uuid().as_bytes(),
+            "{path} is sealed under the keys the workspace uses"
+        );
+    }
+    assert_eq!(folder.unsynced().count(), 0);
 }

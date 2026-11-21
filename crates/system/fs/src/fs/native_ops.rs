@@ -487,6 +487,46 @@ impl QuickFS {
         value
     }
 
+    /// [`crate::hydration::Hydrator::key_run`] for this mount's workspace content: `apply` seals
+    /// and opens files under one fetch of each workspace's keys. Answers whether they moved while
+    /// it ran, so what it sealed must be sealed again.
+    pub fn key_run<T>(&self, apply: impl FnOnce() -> T) -> (T, bool) {
+        self.hydrator.key_run(apply)
+    }
+
+    /// Makes the content of the files at `paths` local, many at a time, so the reads that follow
+    /// find it here rather than each waiting on the network in turn. What cannot be had now is
+    /// left to the read of it, which says why.
+    pub fn fetch_paths<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
+        /// Files fetched at once: enough to keep a slow route busy, few enough that the first
+        /// of them arrive while the rest are asked for.
+        const AT_ONCE: usize = 32;
+        let wanted: Vec<Hash> = paths
+            .into_iter()
+            .filter_map(|rel| {
+                let ino = self.ino_at(&path_components(rel).ok()?)?;
+                self.check_access(ino, Access::Read).ok()?;
+                if self.stage(ino).is_some() {
+                    return None;
+                }
+                self.ns().hash_for(ino)
+            })
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        let hydrator = &self.hydrator;
+        self.hydrator.block_on(futures_util::StreamExt::for_each_concurrent(
+            futures_util::stream::iter(wanted),
+            AT_ONCE,
+            |hash| async move {
+                let _ = hydrator
+                    .hydrate_range(hash, 0, u64::MAX, crate::hydration::Priority::Foreground)
+                    .await;
+            },
+        ));
+    }
+
     /// Makes every new version of the file at `rel` fail with `errno`, or none when `None`.
     #[cfg(test)]
     pub(crate) fn fail_versions_at(&self, rel: &Path, errno: Option<i32>) {
