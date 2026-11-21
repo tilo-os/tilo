@@ -670,50 +670,6 @@ fn disabled_faces_are_neutral_and_reject_input() {
         }
     }
 
-    /// Writes a small disabled-button matrix for human visual review. The
-    /// controls intentionally carry hover/focus input too: disabled state
-    /// must win over stale pointer/focus state and never recover a semantic
-    /// action colour or focus ring.
-    #[ignore = "developer visual audit writes /tmp/tilo-button-disabled-audit"]
-    fn disabled_button_visual_audit() {
-        use std::path::Path;
-
-        let output = Path::new("/tmp/tilo-button-disabled-audit");
-        std::fs::create_dir_all(output).expect("visual-audit output directory");
-        for (name, theme) in [
-            ("light", Theme::light()),
-            ("dark", Theme::dark()),
-            ("high-contrast", Theme::high_contrast()),
-        ] {
-            let mut scene = Scene::new();
-            let mut text = TextRenderer::new();
-            let faces = [
-                (ButtonRole::Primary, "Primary", None),
-                (ButtonRole::Secondary, "Secondary", None),
-                (ButtonRole::Destructive, "Destructive", None),
-                (ButtonRole::Primary, "", Some(crate::icons::Icon::Check)),
-            ];
-            for (index, (style, label, icon)) in faces.into_iter().enumerate() {
-                let y = 88.0 + f64::from(u32::try_from(index).expect("four audit rows")) * 86.0;
-                let mut face = ButtonFace::new(Rect::new(80.0, y, 360.0, y + 52.0), label)
-                    .role(style)
-                    .disabled(true)
-                    .hovered(true)
-                    .focused(true);
-                if let Some(icon) = icon {
-                    face = face.icon(icon).accessible_name("Confirm");
-                }
-                Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
-            }
-            let mut renderer = crate::offscreen::OffscreenRenderer::new(440, 480);
-            renderer.render_png(
-                &scene,
-                theme.tokens.colors.surfaces.content,
-                output.join(format!("{name}.png")),
-            );
-        }
-    }
-
     fn with_enabled_false_is_reported_by_is_enabled() {
         let b = Button::new("id", "Go").with_enabled(false);
         assert!(!Widget::is_enabled(&b));
@@ -784,7 +740,6 @@ fn disabled_faces_are_neutral_and_reject_input() {
 
     disabled_faces_are_neutral_bordered_and_readable_in_every_theme();
     a_disabled_face_dims_its_edge_with_it();
-    disabled_button_visual_audit();
     with_enabled_false_is_reported_by_is_enabled();
     disabled_button_rejects_input();
 }

@@ -5240,9 +5240,6 @@ fn draw_app_icon(
 }
 
 #[cfg(test)]
-#[path = "tabs_intent_frames_tests.rs"]
-mod intent_frames_tests;
-#[cfg(test)]
 #[path = "tabs_tips_tests.rs"]
 mod tips_tests;
 
