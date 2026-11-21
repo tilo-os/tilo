@@ -1059,9 +1059,9 @@ mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/upd
 src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/$(lsblk -snro NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 gen=$(cat /usr/lib/tilo/generation)
-tilo-rollback enroll --device "$dev" --generation "$gen" \
+/usr/libexec/tilo/tilo-rollback enroll --device "$dev" --generation "$gen" \
   --predictions /mnt/update/predictions --recovery-key-file /mnt/update/recovery.key --automatic
-tilo-rollback status --device "$dev"
+/usr/libexec/tilo/tilo-rollback status --device "$dev"
 '
 ./os/dev/vm.sh stop >/dev/null 2>&1 || true
 boot_vm
@@ -1108,9 +1108,9 @@ set -eu
 mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/\$(lsblk -snro NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
-tilo-rollback enroll --device \"\$dev\" --generation 0 \
+/usr/libexec/tilo/tilo-rollback enroll --device \"\$dev\" --generation 0 \
   --predictions /mnt/update/older-predictions --recovery-key-file /mnt/update/recovery.key --automatic
-tilo-rollback status --device \"\$dev\"
+/usr/libexec/tilo/tilo-rollback status --device \"\$dev\"
 "
 # The floor moves by a signed, single-use approval per increment: requested on
 # the machine, issued by the authority (the throwaway PCR key, here on the
@@ -1119,7 +1119,7 @@ request=$(as_root '
 set -eu
 src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/$(lsblk -snro NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
-tilo-rollback floor-request --device "$dev" | base64 -w0
+/usr/libexec/tilo/tilo-rollback floor-request --device "$dev" | base64 -w0
 ') || die 'the machine could not write a floor request'
 printf '%s' "$request" | base64 -d > "$work/floor-request.json" \
   || die 'the floor request did not survive the console'
@@ -1142,11 +1142,11 @@ mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/upd
 src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/\$(lsblk -snro NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
 gen=\$(cat /usr/lib/tilo/generation)
-tilo-rollback --retain \$((gen + 1)) --predictions /mnt/update/predictions \
+/usr/libexec/tilo/tilo-rollback --retain \$((gen + 1)) --predictions /mnt/update/predictions \
   confirm --device \"\$dev\" --generation \"\$gen\" --floor-at-least \"\$gen\" \
   --recovery-key-file /mnt/update/recovery.key
-tilo-rollback status --device \"\$dev\"
-tilo-rollback status --device \"\$dev\" --json
+/usr/libexec/tilo/tilo-rollback status --device \"\$dev\"
+/usr/libexec/tilo/tilo-rollback status --device \"\$dev\" --json
 "
 grep -q "\"floor_generation\":$n" "$out/the floor moves to this generation, with the approvals.txt" \
   || die "the floor did not move to generation $n"
@@ -1185,8 +1185,8 @@ refuse 'the floor still permits the running generation and refuses the older one
 set -eu
 src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/$(lsblk -snro NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
-tilo-rollback status --device "$dev"
-tilo-rollback status --device "$dev" --json | grep -q "\"floor_generation\":$(cat /usr/lib/tilo/generation)" \
+/usr/libexec/tilo/tilo-rollback status --device "$dev"
+/usr/libexec/tilo/tilo-rollback status --device "$dev" --json | grep -q "\"floor_generation\":$(cat /usr/lib/tilo/generation)" \
   || { echo "the floor is not at the running generation"; exit 1; }
 '
 
