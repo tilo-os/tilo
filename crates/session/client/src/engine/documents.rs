@@ -71,6 +71,7 @@ impl DeviceWrites for EngineDocuments {
         let identity = self.0.identity();
         tilo_peer_state::owner::admit_local_write(
             replica,
+            Some(self.0.owner().clone()),
             identity.device_cert.device_public_key,
             Arc::clone(&identity.signer),
             workspace,

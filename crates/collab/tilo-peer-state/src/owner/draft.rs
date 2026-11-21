@@ -11,6 +11,7 @@ use std::sync::Arc;
 use collab_types::signer::DeviceSigner;
 use collab_types::{ContentRetention, DocumentMutation, document_artifact_id};
 use tilo_action_policy::MemberAccess;
+use tilo_desktop_model::WorkspaceId;
 use web_time::SystemTime;
 
 use crate::owner::{AppWrite, WriteRefusal};
@@ -174,10 +175,18 @@ pub fn draft_local_write(
 /// into `replica` as that device's own write: the write a device holds, ready to be published as
 /// it was signed.
 ///
+/// A sealed record's history has a bound. Where the holder is given the `owner` this device's
+/// replica belongs to, it compacts a history that has used most of that bound before the write,
+/// and one a write would overflow, then writes: the checkpoint is drafted, sealed, signed and
+/// admitted as the key holder's own, and published through the same ownership as the write. A
+/// replica held without an owner cannot compact, and answers [`WriteRefusal::HistoryFull`] for
+/// its caller to keep the write.
+///
 /// The write is drafted against the replica as it stands and signed outside its lock: a page's
 /// signer answers through a promise, and no link admits in between the draft and the admission.
 pub fn admit_local_write(
     replica: Replica,
+    owner: Option<super::NativeWorkspaceOwner>,
     device: [u8; 32],
     signer: Arc<dyn DeviceSigner>,
     workspace: &str,
@@ -185,49 +194,106 @@ pub fn admit_local_write(
 ) -> DocumentWrite {
     let write = write.owned(workspace);
     Box::pin(async move {
-        let drafted = replica.read(StatePeer::clone);
-        let (mut request, author) = draft_local_write(&drafted, &write.workspace, &device, write.borrowed())?;
-        let CommitOperation::Document { envelope, own, .. } = &mut request.operation else {
-            return Err(WriteRefusal::Refused(
-                "a local write is a document write".to_owned(),
-            ));
-        };
-        let bytes = envelope
-            .signing_bytes()
-            .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
-        // The write is drafted against the replica as it stands and signed outside its lock: a
-        // page's signer answers through a promise, and no link admits in between the draft and
-        // the admission.
-        drop(drafted);
-        let signature = signer
-            .sign(bytes)
-            .await
-            .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
-        envelope.signature = collab_types::Signature(signature);
-        let (envelope, own) = ((**envelope).clone(), own.clone());
-        replica
-            .write(|peer| {
-                peer.admit_new_local_document_read_by(
-                    (&write.app, &write.document),
-                    write.readers.as_deref(),
-                    envelope.clone(),
-                    write.now,
-                )
-            })
-            .map_err(|refused| match refused {
-                NotAdmitted::Waiting(prerequisite) => WriteRefusal::Waiting(prerequisite),
-                NotAdmitted::Refused(reason) => WriteRefusal::Refused(reason),
-                NotAdmitted::ChangeRefused(change) => WriteRefusal::ChangeRefused(change),
-            })?;
-        Ok(AppWrite {
-            peer: neighbour_wire::peer_handle(&device),
-            app_id: write.app,
-            cluster_id: write.workspace,
-            document_id: write.document,
-            author,
-            replayed: false,
-            envelope,
-            own,
+        let workspace_id = WorkspaceId::parse(&write.workspace).ok_or_else(|| {
+            WriteRefusal::Refused(format!("{} is not a workspace", write.workspace))
+        })?;
+        // A history that used most of its bound is compacted before every write, as the owner
+        // did when the session drafted its writes itself.
+        if let Some(owner) = &owner
+            && let Err(error) = owner
+                .compact_outgoing(workspace_id, signer.as_ref(), write.now)
+                .await
+        {
+            tracing::warn!(%error, "sealed histories stay uncompacted before a write");
+        }
+        match signed_local_write(&replica, device, signer.as_ref(), &write).await {
+            // One write that overfills a record: the record is compacted now, and the write
+            // drafted again against what the compaction left.
+            Err(full @ WriteRefusal::HistoryFull { .. }) => {
+                let Some(owner) = &owner else {
+                    return Err(full);
+                };
+                if let Err(error) = owner
+                    .compact_document(
+                        workspace_id,
+                        (&write.app, &write.document),
+                        signer.as_ref(),
+                        write.now,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, app = %write.app, record = %write.document,
+                        "a full sealed history stays uncompacted");
+                }
+                signed_local_write(&replica, device, signer.as_ref(), &write).await
+            }
+            written => written,
+        }
+    })
+}
+
+/// The write `write` signed by `device` by `signer` and admitted into `replica`: the draft, the
+/// signature, and the admission, once.
+async fn signed_local_write(
+    replica: &Replica,
+    device: [u8; 32],
+    signer: &dyn DeviceSigner,
+    write: &OwnedWrite,
+) -> Result<AppWrite, WriteRefusal> {
+    let drafted = replica.read(StatePeer::clone);
+    let (mut request, author) = draft_local_write(
+        &drafted,
+        &write.workspace,
+        &device,
+        write.borrowed(),
+    )?;
+    let CommitOperation::Document { envelope, own, .. } = &mut request.operation else {
+        return Err(WriteRefusal::Refused(
+            "a local write is a document write".to_owned(),
+        ));
+    };
+    let bytes = envelope
+        .signing_bytes()
+        .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
+    // The write is drafted against the replica as it stands and signed outside its lock: a page's
+    // signer answers through a promise, and no link admits in between the draft and the admission.
+    drop(drafted);
+    let signature = signer
+        .sign(bytes)
+        .await
+        .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
+    envelope.signature = collab_types::Signature(signature);
+    let (envelope, own) = ((**envelope).clone(), own.clone());
+    replica
+        .write(|peer| {
+            peer.admit_new_local_document_read_by(
+                (&write.app, &write.document),
+                write.readers.as_deref(),
+                envelope.clone(),
+                write.now,
+            )
         })
+        .map_err(|refused| match refused {
+            NotAdmitted::Waiting(prerequisite) => WriteRefusal::Waiting(prerequisite),
+            NotAdmitted::Refused(reason)
+                if reason.contains("sealed record history is full") =>
+            {
+                WriteRefusal::HistoryFull {
+                    app: write.app.clone(),
+                    record: write.document.clone(),
+                }
+            }
+            NotAdmitted::Refused(reason) => WriteRefusal::Refused(reason),
+            NotAdmitted::ChangeRefused(change) => WriteRefusal::ChangeRefused(change),
+        })?;
+    Ok(AppWrite {
+        peer: neighbour_wire::peer_handle(&device),
+        app_id: write.app.clone(),
+        cluster_id: write.workspace.clone(),
+        document_id: write.document.clone(),
+        author,
+        replayed: false,
+        envelope,
+        own,
     })
 }

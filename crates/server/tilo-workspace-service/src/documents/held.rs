@@ -248,6 +248,7 @@ impl DeviceWrites for HeldDocuments {
         }
         tilo_peer_state::owner::admit_local_write(
             self.replica.clone(),
+            None,
             self.device,
             signer,
             workspace,
