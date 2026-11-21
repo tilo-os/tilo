@@ -262,7 +262,7 @@ So bib's gap is plumbing, not a missing primitive. Two ways out:
   systemd-repart partitioning into `bootc install` itself and raising the default
   ESP to 2GB for composefs — so this path is converging on being built in.
 
-Tilo then used bib in `os/build.sh`, `os/build-host.sh`, `os/verify-test.sh`,
+Tilo then used bib in `os/build.sh`, `os/build-host.sh`,
 `os/dev/build-image.sh`, `os/dev/build-installer.sh` and
 `os/dev/build-custom-installer.sh`. This was the work item to size, and it was the
 honest cost of the decision; it has since been paid (`os/dev/disk-image.sh`).
