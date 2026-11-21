@@ -1537,6 +1537,7 @@ doc = false
 "ush" = { path = "../../../crates/runtime/ush", default-features = false, features = [] }
 "ush-shell" = { path = "../../../crates/runtime/ush-shell", default-features = false, features = [] }
 "ush-tilo" = { path = "../../../crates/runtime/ush-tilo", default-features = false, features = [] }
+"ush-wasi" = { path = "../../../crates/runtime/ush-wasi", default-features = false, features = [] }
 "usvg-0_47_0" = { package = "usvg", version = "^0.47.0", default-features = false, features = ["default", "fontdb", "memmap-fonts", "rustybuzz", "system-fonts", "text", "ttf-parser", "unicode-bidi", "unicode-script", "unicode-vo"] }
 "utf-8-0_7_6" = { package = "utf-8", version = "^0.7.6", default-features = false, features = [] }
 "utf16_iter-1_0_5" = { package = "utf16_iter", version = "^1.0.5", default-features = false, features = [] }
