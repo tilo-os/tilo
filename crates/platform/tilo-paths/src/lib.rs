@@ -131,16 +131,6 @@ pub fn matching<'a>(
         .or_else(|| candidates.position(|candidate| language_of(candidate) == language))
 }
 
-#[cfg(windows)]
-mod legacy {
-    pub fn data_home() -> Option<std::path::PathBuf> {
-        super::env_dir("LOCALAPPDATA")
-    }
-}
-
-#[cfg(not(windows))]
-mod legacy {}
-
 /// The user's home directory: `$HOME` when set and non-empty, the account
 /// database's entry when `$HOME` is unset (on Unix), and `None` for an empty
 /// `$HOME` — an empty value names no directory, and resolving relative to the

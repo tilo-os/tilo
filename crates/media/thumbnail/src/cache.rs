@@ -181,7 +181,6 @@ impl ThumbCache {
     ) -> std::io::Result<Self> {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)?;
-        forget_flat_layout(dir);
         Self::with_store(
             ContentStore::new(DirBackend::new(dir.join("content")).regenerable()),
             dir.join("index"),
@@ -298,21 +297,6 @@ impl ThumbCache {
         // A store that governs its own retention reports unsupported; the
         // index is still bounded.
         let _ = self.store.collect_unreferenced(&live);
-    }
-}
-
-/// Earlier caches kept `<hex>-<edge>.png` files directly in the cache
-/// directory. They are unreachable under the content-store layout; remove them
-/// so an upgrade does not strand the old bytes.
-fn forget_flat_layout(dir: &Path) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in rd.filter_map(Result::ok) {
-        let path = entry.path();
-        if path.extension().is_some_and(|x| x == "png") && path.is_file() {
-            let _ = std::fs::remove_file(path);
-        }
     }
 }
 
@@ -454,14 +438,5 @@ mod tests {
         cache.put(&key, vec![4, 5, 6]);
         assert_eq!(cache.get(&key).unwrap().as_slice(), &[4, 5, 6]);
         assert!(cache.contains(&key));
-    }
-
-    #[test]
-    fn the_flat_layout_is_forgotten_on_open() {
-        let dir = tmpdir();
-        let legacy = dir.path().join(format!("{}-256.png", "ab".repeat(32)));
-        std::fs::write(&legacy, [1, 2, 3]).unwrap();
-        ThumbCache::open(dir.path()).unwrap();
-        assert!(!legacy.exists());
     }
 }
