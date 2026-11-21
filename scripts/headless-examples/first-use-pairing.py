@@ -115,13 +115,16 @@ def verify(owner, phone, outcome, output):
     code = waiting["verification_code"]
     if not re.fullmatch(r"\d{6}", code):
         raise Failed("the requester did not report six digits")
-    approve = f"Approve {code}"
-    until("the owner to show the same code", lambda: target(owner, approve), 15)
+    approve = f"Approve ada-phone with code {code}"
+    until("the same code in Add a device", lambda: target(owner, approve), 15)
+    if target(owner, f"Approve {code}") or target(owner, "Waiting for a device to ask."):
+        raise Failed("a pending pairing request showed a duplicate approval or an empty state")
     child = until("the leased requester process", lambda: helper(phone), 5)
     no_identity(phone.profile)
     shot(phone, output, outcome + "-waiting")
 
     if outcome == "approve":
+        shot(owner, output, "approve-owner-inline")
         click(owner, approve)
         until("the requester to report a completed install",
               lambda: requester_progress(phone, status, "complete"), 15)
@@ -132,7 +135,7 @@ def verify(owner, phone, outcome, output):
         if (phone.profile / CERTIFICATE).read_bytes() == (owner.profile / CERTIFICATE).read_bytes():
             raise Failed("the device retained the owner's device certificate")
     elif outcome == "refuse":
-        click(owner, "Deny")
+        click(owner, "Deny ada-phone")
         until("the requester to report a refusal",
               lambda: requester_progress(phone, status, "failed"), 15)
         until("the refused requester to exit", lambda: not Path(f"/proc/{child}").exists(), 10)
@@ -144,6 +147,11 @@ def verify(owner, phone, outcome, output):
         until("Back to reopen the pairing field", lambda: target(phone, "Device pairing link"), 10)
         no_identity(phone.profile)
     else:
+        click(owner, "Close")
+        approve = f"Approve {code}"
+        until("the same request outside Add a device", lambda: target(owner, approve), 15)
+        if target(owner, f"Approve ada-phone with code {code}"):
+            raise Failed("the inline approval survived closing Add a device")
         if outcome == "cancel":
             click(phone, "Cancel")
             until("Cancel to revoke the requester", lambda: not Path(f"/proc/{child}").exists(), 10)
@@ -171,7 +179,8 @@ def main(binary, output, outcomes):
                                     env=env, log=output / (outcome + "-owner.log"))
             subprocess.run([str(binary), "--provision-identity"], env=owner.env(), check=True)
             phone = ScriptedSession(binary, profile=root / outcome,
-                                    env=env, log=output / (outcome + ".log"))
+                                    env={**env, "HOSTNAME": "ada-phone"},
+                                    log=output / (outcome + ".log"))
             with owner, phone:
                 try:
                     verify(owner, phone, outcome, output)

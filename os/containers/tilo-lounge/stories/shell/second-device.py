@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from story import Failed, Story, until, walk  # noqa: E402
+from story import PROFILE, Failed, Story, until, walk  # noqa: E402
 from real_apps import BUILD  # noqa: E402
 
 SHELL = "so.tilo.session"
@@ -27,6 +27,7 @@ def steps(story: Story) -> None:
 
     def laptop_opens():
         took = laptop.start(apps=APPS)
+        laptop.name_self("Ada")
         story.timing("Ada's session start, to its first frame", took["tookMs"])
         story.timing("Ada's session start, to its first frame, with the development launcher's installing", took["launcherMs"])
         return {"tookMs": took["tookMs"]}
@@ -71,19 +72,27 @@ def steps(story: Story) -> None:
                 str(SESSION), "--pair-device-link-file", str(link_file),
             ], stdout=log, stderr=subprocess.STDOUT, env={
                 **os.environ,
+                "HOSTNAME": "ada-phone",
                 "XDG_CONFIG_HOME": str(phone.state / "config"),
                 "TILO_IDENTITY_ROOT": str(phone.state / "identity"),
             })
         code = until("the phone to show a pairing code", shown_code, 5, 0.1)
-        until(f"the laptop to ask about the same code {code}",
-              lambda: laptop.target(f"Approve {code}"), 12, 0.15)
+        approval = f"Approve ada-phone with code {code}"
+        def inline_request():
+            names = laptop.names()
+            if approval in names and "Deny ada-phone" in names:
+                return names
+            return None
+
+        names = until("the phone's request in Add a device", inline_request, 12, 0.15)
+        if {f"Approve {code}", "Device approval", "Waiting for a device to ask."} & set(names):
+            raise Failed("the live request appeared beside another approval or an empty state")
         if (phone.state / "identity/device/cert.bin").exists():
             raise Failed("the phone was enrolled before Ada approved")
         story.note("pairing-code-matched", True)
         laptop.snapshot(story.out / "shots/03-pairing-approval-ada-s-laptop.png")
 
-        # Approve the matching code in the foreground New machine dialog.
-        laptop.press(f"Approve {code}", "Approve the phone in New machine waiting", deadline=5)
+        laptop.press(approval, "Approve the phone in Add a device", deadline=5)
         if joining is None or joining.wait(timeout=10) != 0:
             raise Failed(f"The native requester did not complete: {log_path.read_text(errors='replace')}")
         laptop_identity = laptop.state / "identity"
@@ -98,6 +107,7 @@ def steps(story: Story) -> None:
         took = phone.start(apps=APPS)
         if (phone_identity / root).read_bytes() != (laptop_identity / root).read_bytes():
             raise Failed("the phone’s shell opened under a different person")
+        until("Ada’s name on the phone", lambda: phone.shows(f"Ada{PROFILE}"), 5, 0.1)
         return {"tookMs": elapsed + took["tookMs"]}
 
     try:

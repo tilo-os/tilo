@@ -186,7 +186,6 @@ impl Adding {
             .map(|machine| tilo_sheets::pair_device::WaitingMachine {
                 ask: machine.ask.clone(),
                 label: machine.label.clone(),
-                hardware: machine.hardware.clone(),
                 code: machine.code.clone(),
             })
             .collect()
@@ -235,23 +234,20 @@ impl Adding {
         resolved
     }
 
-    /// Withdraw the question for a machine whose ask went.
-    pub(crate) fn forget(&self, ask: &str) {
-        self.parked.borrow_mut().remove(ask);
-    }
-
-    /// The asks the person was told of and that no longer wait.
-    pub(crate) fn gone(&self, waiting: &[crate::enrollment::Waiting]) -> Vec<String> {
-        let mut told = self.told.borrow_mut();
-        let gone: Vec<String> = told
-            .iter()
-            .filter(|ask| !waiting.iter().any(|machine| &machine.ask == *ask))
-            .cloned()
-            .collect();
-        for ask in &gone {
-            told.remove(ask);
-        }
-        gone
+    /// Withdraw retired questions and any notices the open sheet now presents inline.
+    fn retire(&self, waiting: &[crate::enrollment::Waiting], inline: bool) -> Vec<String> {
+        let pending = |ask: &str| waiting.iter().any(|machine| machine.ask == ask);
+        self.parked.borrow_mut().retain(|ask, _| pending(ask));
+        let mut withdrawn = Vec::new();
+        self.told.borrow_mut().retain(|ask| {
+            if inline || !pending(ask) {
+                withdrawn.push(ask.clone());
+                false
+            } else {
+                true
+            }
+        });
+        withdrawn
     }
 
     /// Carry out what the person pressed in the sheet, and say the link is on the clipboard when it
@@ -312,11 +308,16 @@ impl crate::Shared {
         let Some(state) = self.pair_device.as_ref() else {
             return;
         };
-        self.follow_enrolling();
-        let now = ui::time::unix_now_ms();
-        state.show(self.pairing_device(now));
         state.presentation().open(false);
+        self.follow_enrolling();
+        state.show(self.pairing_device(ui::time::unix_now_ms()));
         self.wait_for_new_device();
+    }
+
+    pub(crate) fn pair_device_open(&self) -> bool {
+        self.pair_device
+            .as_ref()
+            .is_some_and(|state| state.presentation().is_open())
     }
 
     /// Keep the sheet current while it is up: the link that admits a device, renewed once the one
@@ -325,11 +326,20 @@ impl crate::Shared {
         crate::pair_device::follow(
             self.pair_device.as_ref(),
             &self.adding,
-            |ask, approve| self.answer_enrolling(ask, approve),
+            |ask, approve| {
+                if let Some(questions) = self.asker.questions() {
+                    let handle = crate::enrollment::question_handle(ask);
+                    if approve {
+                        questions.answer(&handle, tilo_service::Answer::default());
+                    } else {
+                        questions.decline(&handle);
+                    }
+                }
+            },
             || self.pairing_device(ui::time::unix_now_ms()),
         );
-        self.wait_for_new_device();
         self.follow_enrolling();
+        self.wait_for_new_device();
     }
 
     /// Put each machine that asks to join to the person once, and take back the asks that are
@@ -341,6 +351,10 @@ impl crate::Shared {
             return;
         };
         let held = crate::enrollment::held(personal.sync());
+        let inline = self.pair_device_open();
+        for ask in self.adding.retire(&held.waiting, inline) {
+            self.telling().withdraw(&crate::enrollment::tag(&ask));
+        }
         self.adding.holding(held.waiting.clone());
         if let Some(questions) = self.asker.questions() {
             for machine in &held.waiting {
@@ -352,17 +366,15 @@ impl crate::Shared {
                 }
             }
         }
-        for (ask, answer) in self.adding.answers() {
-            self.answer_enrolling(&ask, crate::enrollment::admits(answer.as_ref()));
-        }
-        for machine in &held.waiting {
-            if self.adding.note_told(&machine.ask) {
-                self.telling().show(&crate::enrollment::notice(machine));
+        if !inline {
+            for machine in &held.waiting {
+                if self.adding.note_told(&machine.ask) {
+                    self.telling().show(&crate::enrollment::notice(machine));
+                }
             }
         }
-        for ask in self.adding.gone(&held.waiting) {
-            self.adding.forget(&ask);
-            self.telling().withdraw(&crate::enrollment::tag(&ask));
+        for (ask, answer) in self.adding.answers() {
+            self.answer_enrolling(&ask, crate::enrollment::admits(answer.as_ref()));
         }
     }
 
@@ -386,6 +398,7 @@ impl crate::Shared {
             .flatten();
         if let Err(error) = crate::enrollment::answer(personal.sync(), ask, approve) {
             tracing::warn!(%error, "a machine was not answered");
+            return;
         }
         if let Some(machine) = planned {
             self.admit_planned(&machine);

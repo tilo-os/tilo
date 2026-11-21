@@ -337,6 +337,10 @@ fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
         held(&serve_store).waiting.is_empty(),
         "an answered machine waits no more on the serving device either"
     );
+    assert!(
+        answer(&serve_store, &ask, false).is_err(),
+        "a stale answer cannot reverse the other device's approval"
+    );
 
     let cert = joining.join().expect("the machine's exchange");
     assert_eq!(cert.device_public_key, machine_key);

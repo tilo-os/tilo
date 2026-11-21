@@ -129,21 +129,23 @@ fn write(
     personal: &PersonalSync,
     write: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
 ) -> Result<(), String> {
-    let held = personal.read(|store| store.person_resource(ENROLLMENT_KIND));
-    let mut doc = match held.as_deref().map(AutoCommit::load) {
-        Some(Ok(doc)) => doc,
-        Some(Err(error)) => return Err(format!("the machines waiting do not read: {error}")),
-        None => AutoCommit::new(),
-    };
-    let base = doc.get_heads();
-    write(&mut doc)?;
-    let mutation = if held.is_some() {
-        DocumentMutation::Incremental(doc.save_after(&base))
-    } else {
-        DocumentMutation::Snapshot(doc.save())
-    };
     personal
         .publish(|store, key, now| {
+            let held = store.person_resource(ENROLLMENT_KIND);
+            let mut doc = match held.as_deref().map(AutoCommit::load) {
+                Some(Ok(doc)) => doc,
+                Some(Err(error)) => {
+                    return Err(format!("the machines waiting do not read: {error}"));
+                }
+                None => AutoCommit::new(),
+            };
+            let base = doc.get_heads();
+            write(&mut doc)?;
+            let mutation = if held.is_some() {
+                DocumentMutation::Incremental(doc.save_after(&base))
+            } else {
+                DocumentMutation::Snapshot(doc.save())
+            };
             store.publish_person_resource(ENROLLMENT_KIND, &mutation, key, now)
         })
         .map(drop)
@@ -171,8 +173,12 @@ pub(crate) fn enter(personal: &PersonalSync, machine: &WaitingMachine) -> Result
 pub(crate) fn answer(personal: &PersonalSync, ask: &str, approve: bool) -> Result<(), String> {
     let value = if approve { "approve" } else { "decline" };
     write(personal, |doc| {
-        // The ask is answered: it leaves every device's screen at once.
-        let _ = doc.delete(automerge::ROOT, format!("request:{ask}"));
+        let request = format!("request:{ask}");
+        if text_of(doc, &request).is_none() {
+            return Err("this device request is no longer pending".to_owned());
+        }
+        doc.delete(automerge::ROOT, request)
+            .map_err(|error| error.to_string())?;
         put(doc, &format!("answer:{ask}"), value)
     })
 }
@@ -371,12 +377,16 @@ pub(crate) fn tag(ask: &str) -> String {
 /// The kind the session's question sheet reads a machine asking to join as.
 pub(crate) const KIND: &str = "network.machine-enrol";
 
+pub(crate) fn question_handle(ask: &str) -> String {
+    format!("machine-enrol:{ask}")
+}
+
 /// The question resource a machine's ask is published as while it waits: the
 /// same ask as its notice, so an agent answers it where it answers a disk
 /// unlock, through the question's own `answer` and `cancel` actions.
 pub(crate) fn question(machine: &Waiting) -> Question {
     Question {
-        handle: format!("machine-enrol:{}", machine.ask),
+        handle: question_handle(&machine.ask),
         kind: KIND.to_owned(),
         app_id: None,
         label: machine.label.clone(),
@@ -427,16 +437,10 @@ pub(crate) fn review_of(action: &str) -> Option<String> {
 /// What a machine waiting to join is called in the person's words: its name,
 /// what it is, and the code both sides show.
 pub(crate) fn described(machine: &Waiting) -> String {
-    let key = if machine.hardware.is_empty() {
-        "machines-waiting-body"
-    } else {
-        "machines-waiting-body-hardware"
-    };
     t_args(
-        key,
+        "machines-waiting-body",
         &[
             ("machine", machine.label.clone().into()),
-            ("hardware", machine.hardware.clone().into()),
             ("code", machine.code.clone().into()),
         ],
     )
@@ -505,7 +509,7 @@ mod tests {
             assert_eq!(read, machine());
             let said = described(&read);
             assert!(said.contains("Home server"), "{said}");
-            assert!(said.contains("Fedora Linux 44"), "{said}");
+            assert!(!said.contains("Fedora Linux 44"), "{said}");
             assert!(said.contains("482913"), "{said}");
         }
 

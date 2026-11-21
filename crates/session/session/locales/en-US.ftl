@@ -564,12 +564,11 @@ so-tilo-desktop-window-menu-choose = Choose a row
 so-tilo-desktop-window-menu-close = Close the window menu
 so-tilo-desktop-window-menu-open = Open the window menu
 machines-waiting-source = Your devices
-machines-waiting-title = New machine waiting
-machines-waiting-body = { $machine } wants to join, showing code { $code }
-machines-waiting-body-hardware = { $machine } ({ $hardware }) wants to join, showing code { $code }
-machines-waiting-review = See what will join
+machines-waiting-title = Device approval
+machines-waiting-body = { $machine } is asking to join. Compare code { $code } on both devices.
+machines-waiting-review = Review request
 machines-waiting-approve = Approve { $code }
-machines-waiting-decline = Decline
+machines-waiting-decline = Deny
 
 ## A declared action's parameter description is read as `<label>-<argument>`.
 

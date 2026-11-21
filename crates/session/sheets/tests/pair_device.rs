@@ -45,7 +45,6 @@ fn machine() -> WaitingMachine {
     WaitingMachine {
         ask: "ab".repeat(16),
         label: "Home server".into(),
-        hardware: "8 cores · 16 GB memory · Fedora Linux 44".into(),
         code: "482913".into(),
     }
 }
@@ -60,17 +59,17 @@ tilo_test_env::scenario! {
         let mut device = AddDevice::of("https://tilo.coffee/#/@eu1/w/ws?pair=abab", 9);
         device.waiting = vec![machine()];
         assert!(says(&device, "", "Home server"), "{device:?}");
-        assert!(says(&device, "", "8 cores · 16 GB memory"), "{device:?}");
+        assert!(!says(&device, "", &device.waiting_nothing), "{device:?}");
         assert!(says(&device, "", "482913"), "{device:?}");
-        assert!(says(&device, "", &device.approve), "{device:?}");
-        assert!(says(&device, "", &device.decline), "{device:?}");
+        assert!(says(&device, "", "Approve Home server with code 482913"), "{device:?}");
+        assert!(says(&device, "", "Deny Home server"), "{device:?}");
     }
 
     phase a_sheet_with_no_machine_says_so_and_teaches_the_line;
     {
         let device = AddDevice::of("https://tilo.coffee/#/@eu1/w/ws?pair=abab", 9);
         assert!(says(&device, "", &device.waiting_nothing), "{device:?}");
-        assert!(says(&device, "", "tilo://enroll?"), "{device:?}");
+        assert!(says(&device, "", &device.link_field), "{device:?}");
         assert!(says(&device, "tilo://enroll?endpoint=ab&code=1", &device.link_use), "{device:?}");
     }
 }

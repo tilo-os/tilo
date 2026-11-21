@@ -280,6 +280,7 @@ impl Asker {
     pub(crate) fn follow(
         &self,
         notifications: &Rc<RefCell<crate::notifications::SessionNotifications>>,
+        shown_inline: impl Fn(&Question) -> bool,
     ) {
         let Some(questions) = &self.questions else {
             return;
@@ -288,7 +289,7 @@ impl Asker {
             .get_or_init(|| crate::notifications::RoleNotices::tagged(notifications, LATER_TAG));
         self.settle(questions);
         self.recall(questions);
-        self.retire(questions);
+        self.retire(questions, &shown_inline);
         // The sheet saying what was granted makes way for a question that arrived meanwhile.
         if self.shown.borrow().is_some() && !questions.pending().is_empty() {
             let granted_shown = self
@@ -307,7 +308,7 @@ impl Asker {
         let showing = questions
             .pending()
             .into_iter()
-            .filter(|question| !later.contains(&question.handle))
+            .filter(|question| !shown_inline(question) && !later.contains(&question.handle))
             .find_map(|question| {
                 let kind = question.kind.clone();
                 self.show(question).then_some(kind)
@@ -519,7 +520,7 @@ impl Asker {
 
     /// Take the sheet down when its question is gone from under it, or show it again when its
     /// service changed what it asks.
-    fn retire(&self, questions: &Questions) {
+    fn retire(&self, questions: &Questions, shown_inline: impl Fn(&Question) -> bool) {
         let current = self.shown.borrow().as_ref().map(Shown::state);
         let Some((handle, sheet, details)) = current else {
             return;
@@ -527,7 +528,10 @@ impl Asker {
         let Some(handle) = handle else {
             return;
         };
-        let Some(question) = questions.question(&handle) else {
+        let Some(question) = questions
+            .question(&handle)
+            .filter(|question| !shown_inline(question))
+        else {
             self.shown.borrow_mut().take();
             self.take_down(sheet);
             return;

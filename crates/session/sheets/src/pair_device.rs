@@ -71,8 +71,6 @@ pub struct WaitingMachine {
     /// Names the machine in the person's answer.
     pub ask: String,
     pub label: String,
-    /// What the machine is, in its own words.
-    pub hardware: String,
     /// The code both sides show.
     pub code: String,
 }
@@ -111,8 +109,6 @@ pub struct AddDevice {
     /// what the button beside it says.
     pub link_field: String,
     pub link_use: String,
-    /// What the field is for, for a person who has not seen such a line.
-    pub link_hint: String,
 }
 
 impl AddDevice {
@@ -146,7 +142,6 @@ impl AddDevice {
             decline: word("pair-device-waiting-decline"),
             link_field: word("pair-device-link-field"),
             link_use: word("pair-device-link-use"),
-            link_hint: word("pair-device-link-hint"),
             ..Self::default()
         }
     }
@@ -184,11 +179,18 @@ pub fn sheet(
         .with_intrinsic_height()
         .with_no_padding()
         .with_rhythm(Rhythm::Section);
+    let has_request = !device.waiting.is_empty();
+    if has_request {
+        body = body.push(waiting(device, ask));
+    }
     match &device.refusal {
         Some(reason) => body = body.push(Box::new(Text::new(reason).with_role(TextRole::Body))),
         None => body = body.push(code(device, link, ask)),
     }
-    body = body.push(waiting(device, typed, ask));
+    if !has_request {
+        body = body.push(waiting(device, ask));
+    }
+    body = body.push(device_link(device, typed, ask));
     let dismissed = ask.clone();
     let escaped = ask.clone();
     Box::new(presented(
@@ -247,9 +249,8 @@ fn code(device: &AddDevice, link: &LocalState<String>, ask: &Ask) -> Element {
 /// What the sheet asks for, as a press in it hands it back.
 pub type Ask = Rc<dyn Fn(PairDeviceEffect)>;
 
-/// The machines that asked to join over the internet, each with what it is and
-/// the code both sides show, and the field for a machine's own line.
-fn waiting(device: &AddDevice, typed: &LocalState<String>, ask: &Ask) -> Element {
+/// Each device asking to join and the code both sides show.
+fn waiting(device: &AddDevice, ask: &Ask) -> Element {
     let mut rows: Vec<Element> = vec![caption(&device.waiting_title)];
     if device.waiting.is_empty() {
         rows.push(Box::new(
@@ -261,17 +262,29 @@ fn waiting(device: &AddDevice, typed: &LocalState<String>, ask: &Ask) -> Element
         let declining = ask.clone();
         let approved_ask = machine.ask.clone();
         let declined_ask = machine.ask.clone();
-        let mut what = TextStack::new(&machine.label);
-        if !machine.hardware.is_empty() {
-            what = what.secondary(&machine.hardware);
-        }
-        what = what.tertiary(&machine.code);
+        let verification = crate::t_args(
+            "pair-device-waiting-code",
+            &[("code", machine.code.clone().into())],
+        );
+        let what = TextStack::new(&machine.label).secondary(&verification);
+        let approval = crate::t_args(
+            "pair-device-waiting-approve-code",
+            &[
+                ("device", machine.label.clone().into()),
+                ("code", machine.code.clone().into()),
+            ],
+        );
+        let denial = crate::t_args(
+            "pair-device-waiting-deny-device",
+            &[("device", machine.label.clone().into())],
+        );
         rows.push(Box::new(
             Row::new()
                 .with_rhythm(Rhythm::Tight)
                 .push(Box::new(what))
                 .push(Box::new(
                     Button::new("pair-device-approve", &device.approve)
+                        .with_accessible_name(&approval)
                         .role(ButtonRole::Primary)
                         .on_view(move || {
                             approving(PairDeviceEffect::Approve {
@@ -280,35 +293,43 @@ fn waiting(device: &AddDevice, typed: &LocalState<String>, ask: &Ask) -> Element
                         }),
                 ))
                 .push(Box::new(
-                    Button::new("pair-device-decline", &device.decline).on_view(move || {
-                        declining(PairDeviceEffect::Decline {
-                            ask: declined_ask.clone(),
-                        });
-                    }),
+                    Button::new("pair-device-decline", &device.decline)
+                        .with_accessible_name(&denial)
+                        .on_view(move || {
+                            declining(PairDeviceEffect::Decline {
+                                ask: declined_ask.clone(),
+                            });
+                        }),
                 )),
         ));
     }
+    Box::new(Section::new(rows))
+}
+
+/// A device can also give the person a link to paste here.
+fn device_link(device: &AddDevice, typed: &LocalState<String>, ask: &Ask) -> Element {
     let linking = ask.clone();
     let field = typed.clone();
-    rows.push(caption(&device.link_hint));
-    rows.push(Box::new(
-        Row::new()
-            .with_rhythm(Rhythm::Tight)
-            .push(Box::new(
-                TextInput::from_state(typed)
-                    .with_id("pair-device-machine-link")
-                    .with_accessible_name(device.link_field.clone()),
-            ))
-            .push(Box::new(
-                Button::new("pair-device-link-use", &device.link_use).on_view(move || {
-                    let link = field.get();
-                    if !link.trim().is_empty() {
-                        linking(PairDeviceEffect::Link { link });
-                    }
-                }),
-            )),
-    ));
-    Box::new(Section::new(rows))
+    Box::new(Section::new(vec![
+        caption(&device.link_field),
+        Box::new(
+            Row::new()
+                .with_rhythm(Rhythm::Tight)
+                .push(Box::new(
+                    TextInput::from_state(typed)
+                        .with_id("pair-device-machine-link")
+                        .with_accessible_name(device.link_field.clone()),
+                ))
+                .push(Box::new(
+                    Button::new("pair-device-link-use", &device.link_use).on_view(move || {
+                        let link = field.get();
+                        if !link.trim().is_empty() {
+                            linking(PairDeviceEffect::Link { link });
+                        }
+                    }),
+                )),
+        ),
+    ]))
 }
 
 /// What the shell lends the sheet: whether it is up, what it shows, and where its requests go.

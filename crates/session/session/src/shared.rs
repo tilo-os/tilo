@@ -503,7 +503,10 @@ impl Shared {
             );
         }
         self.tell_agent_bindings_lost();
-        self.asker.follow(&self.notifications);
+        let pairing_open = self.pair_device_open();
+        self.asker.follow(&self.notifications, |question| {
+            pairing_open && question.kind == crate::enrollment::KIND
+        });
         self.follow_reach();
         self.shortcut_guide.follow();
         self.app_sheets.follow(self.downloaded_apps().as_ref());
