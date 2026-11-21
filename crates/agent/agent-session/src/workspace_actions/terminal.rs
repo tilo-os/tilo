@@ -41,7 +41,7 @@ use std::time::Instant;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::api::ActionAddress;
-use tilo_actions::remote::environment_commands::CommandOutput;
+use tilo_actions::remote::environment_commands::{CommandOutput, Person};
 use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{Caller, InvocationReceipt, InvocationState, InvokeRequest};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
@@ -79,8 +79,10 @@ pub struct Watching<'a> {
 pub trait WorkspaceShell: Send + Sync {
     /// Run `command` in `workspace`'s Terminal session `session`; `agent`
     /// when an agent asked, whose output is rendered for it and whose
-    /// refused program is not waited for. `watching` shows the caller what
-    /// the command prints while it runs, and stops it when the caller asks.
+    /// refused program is not waited for. `person` is who it runs as, whose
+    /// name and address the workspace's VM programs record as the author of
+    /// what they make. `watching` shows the caller what the command prints
+    /// while it runs, and stops it when the caller asks.
     ///
     /// # Errors
     ///
@@ -91,6 +93,7 @@ pub trait WorkspaceShell: Send + Sync {
         session: &str,
         command: &str,
         agent: bool,
+        person: Option<&Person>,
         watching: Watching<'_>,
     ) -> Result<ShellRan, String>;
 
@@ -101,6 +104,40 @@ pub trait WorkspaceShell: Send + Sync {
         let _ = (workspace, output);
         None
     }
+}
+
+/// Who a command `caller` asks for in `workspace` runs as: an agent by its own name, else the
+/// person it acts for, as `names` (the workspace's member list) calls them. `host` is the
+/// address the workspace is reached by, which their address is at (`<name>@<host>`). `None`
+/// when the caller is neither a person nor an agent the workspace names.
+#[must_use]
+pub fn person_of(
+    caller: &Caller,
+    names: &[(tilo_actions::MemberId, String)],
+    host: &str,
+) -> Option<Person> {
+    let acting = caller.acting();
+    if let Some(agent) = acting
+        .member_id()
+        .and_then(tilo_actions::MemberId::agent_id)
+    {
+        let name = names
+            .iter()
+            .find(|(member, _)| member.agent_id() == Some(agent))
+            .map(|(_, name)| name.as_str())
+            .or_else(|| caller.agent_name())
+            .unwrap_or(agent);
+        return Some(Person::of(name, agent, host));
+    }
+    let person = acting
+        .person_id()
+        .filter(|id| !id.is_empty())
+        .or_else(|| acting.acted_for_person())?;
+    let name = names
+        .iter()
+        .find(|(member, _)| member.person_id() == Some(person))
+        .map_or("", |(_, name)| name.as_str());
+    Some(Person::of(name, person, host))
 }
 
 /// How a command line went in a host's shell.
@@ -140,6 +177,8 @@ struct Started {
     session: String,
     command: String,
     agent: bool,
+    /// Who the command runs as: the person the workspace names it by.
+    person: Option<Person>,
     /// What a cancel of the command, or a Ctrl+C in its session, sets.
     stop: Arc<AtomicBool>,
     ended: Ended,
@@ -157,6 +196,7 @@ impl Started {
             session,
             command,
             agent,
+            person,
             stop,
             ended,
         } = self;
@@ -187,7 +227,14 @@ impl Started {
                     seen: Some(&printing),
                     stop: Some(&stopping),
                 };
-                let ran = shell.run(&workspace, &session, &command, agent, watching);
+                let ran = shell.run(
+                    &workspace,
+                    &session,
+                    &command,
+                    agent,
+                    person.as_ref(),
+                    watching,
+                );
                 let _ = jobs.send((Instant::now(), Job::Ran(Box::new(Ended { ran, ..ended }))));
             })
             .map(drop)
@@ -282,6 +329,11 @@ impl Worker {
             shell,
             jobs,
             shared: Arc::clone(&self.shared),
+            person: self
+                .shared
+                .link
+                .get()
+                .and_then(|link| link.person(&workspace, caller)),
             workspace,
             session,
             command,
@@ -720,5 +772,55 @@ mod tests {
         assert_eq!(value["exit"], 126);
         assert_eq!(value["refusal"]["reason"], "no_payment_method");
         assert_eq!(value["cwd"], "/w");
+    }
+
+    #[test]
+    fn a_command_runs_as_the_agent_that_asked_or_the_person_it_acts_for() {
+        use tilo_actions::MemberId;
+        let names = vec![
+            (MemberId::person("ab12"), "Ada Lovelace".to_owned()),
+            (MemberId::agent("Scout"), "Scout".to_owned()),
+        ];
+        // A person is named as the workspace names them, at its host.
+        let person = Caller::local_person("ab12");
+        assert_eq!(
+            person_of(&person, &names, "https://eu1.tilo.sh"),
+            Some(Person {
+                name: "Ada Lovelace".into(),
+                address: "ada-lovelace@eu1.tilo.sh".into(),
+            })
+        );
+        // An agent is its own member, never the person it acts for.
+        let agent = Caller::delegated_agent("Scout", [0xab; 32], [1; 32]);
+        assert_eq!(
+            person_of(&agent, &names, "eu1.tilo.sh"),
+            Some(Person {
+                name: "Scout".into(),
+                address: "scout@eu1.tilo.sh".into(),
+            })
+        );
+        // An agent the workspace has not called anything is named by the key its person made it.
+        let unnamed = Caller::local_agent("reviewer-1").named("Review Bot");
+        assert_eq!(
+            person_of(&unnamed, &[], "eu1.tilo.sh"),
+            Some(Person {
+                name: "Review Bot".into(),
+                address: "review-bot@eu1.tilo.sh".into(),
+            })
+        );
+        // A person the workspace has not named is still someone to sign as.
+        let stranger = Caller::local_person("cd34");
+        assert_eq!(
+            person_of(&stranger, &[], "eu1.tilo.sh"),
+            Some(Person {
+                name: "cd34".into(),
+                address: "cd34@eu1.tilo.sh".into(),
+            })
+        );
+        // Software acting by itself runs as nobody.
+        assert_eq!(
+            person_of(&Caller::local_app("so.tilo.sheets"), &names, "eu1.tilo.sh"),
+            None
+        );
     }
 }

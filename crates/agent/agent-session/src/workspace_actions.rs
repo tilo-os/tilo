@@ -113,7 +113,7 @@ pub use link::{
     AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, PackagedCall, ViewDocument,
     ViewReadPolicy, WorkspaceDocumentsLink,
 };
-pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
+pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell, person_of};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::Ordering;

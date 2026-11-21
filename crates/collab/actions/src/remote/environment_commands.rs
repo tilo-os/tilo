@@ -75,6 +75,10 @@ pub struct CommandRequest {
     /// environment besides the shell's variables.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets: Vec<VmSecret>,
+    /// Who the command runs as: the person or agent the host runs it for,
+    /// when it names them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<Person>,
 }
 
 /// One secret a program in the workspace's VM starts with: an environment
@@ -94,6 +98,84 @@ impl std::fmt::Debug for VmSecret {
             .field("variable", &self.variable)
             .finish_non_exhaustive()
     }
+}
+
+/// Who a command runs as in a workspace's VM: an agent's or a person's name,
+/// as the workspace names them, and their address there. A program that
+/// records who made a change — git's author and committer — records them, so
+/// one VM and one shell serving a workspace's people and agents in turn never
+/// put one actor's name on another's work.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Person {
+    pub name: String,
+    pub address: String,
+}
+
+impl Person {
+    /// The actor `key`, called `name` in the workspace whose host is `host`:
+    /// their address there is what their name makes at the host,
+    /// `<name>@<host>`. An actor the workspace has not named is named by the
+    /// start of their key, and a host with no name of its own is `tilo`, so a
+    /// program that signs its work is never refused an identity.
+    #[must_use]
+    pub fn of(name: &str, key: &str, host: &str) -> Self {
+        let address = slug(name, &['.', '_']);
+        let address = if address.is_empty() {
+            let start: String = slug(key, &[]).chars().take(12).collect();
+            if start.is_empty() {
+                "tilo".to_owned()
+            } else {
+                start
+            }
+        } else {
+            address
+        };
+        let host = slug(host_name(host), &['.']);
+        let host = if host.is_empty() {
+            "tilo".to_owned()
+        } else {
+            host
+        };
+        let name = name.trim().to_owned();
+        let name = if name.is_empty() {
+            address.clone()
+        } else {
+            name
+        };
+        Self {
+            name,
+            address: format!("{address}@{host}"),
+        }
+    }
+}
+
+/// The host part of `host`, which may be written as a URL (`https://eu1.tilo.sh/`,
+/// `http://eu1.tilo.sh:8080`).
+fn host_name(host: &str) -> &str {
+    let host = host.trim();
+    let host = host.split_once("://").map_or(host, |(_, rest)| rest);
+    let host = host.split('/').next().unwrap_or(host);
+    match host.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => host,
+    }
+}
+
+/// `text` as the part of an address: lowercased, its words joined by `-`,
+/// only letters, digits and `keep` left (up to 63 characters).
+fn slug(text: &str, keep: &[char]) -> String {
+    let mut out = String::new();
+    for c in text.trim().chars().flat_map(char::to_lowercase) {
+        if out.len() >= 63 {
+            break;
+        }
+        if c.is_ascii_alphanumeric() || keep.contains(&c) {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_owned()
 }
 
 /// What a running command printed so far.
@@ -168,5 +250,22 @@ mod tests {
             live.tail.len() <= LIVE_TAIL + 3,
             "a cut character is replaced, not kept"
         );
+    }
+
+    #[test]
+    fn a_person_is_addressed_by_their_name_at_their_workspaces_host() {
+        let ada = Person::of("Ada Lovelace", "c0ffee", "https://eu1.tilo.sh/");
+        assert_eq!(ada.name, "Ada Lovelace");
+        assert_eq!(ada.address, "ada-lovelace@eu1.tilo.sh");
+        let with_port = Person::of("Ada", "c0ffee", "http://eu1.tilo.sh:8080");
+        assert_eq!(with_port.address, "ada@eu1.tilo.sh");
+        // A person the workspace has not named is named by their key, and a
+        // host with no name is the default one: a program is never without an
+        // identity to sign its work with.
+        let unnamed = Person::of("  ", "0123456789abcdef0123", "");
+        assert_eq!(unnamed.name, "0123456789ab");
+        assert_eq!(unnamed.address, "0123456789ab@tilo");
+        let odd = Person::of("Ada  O'Neil!!", "x", "Ada's server");
+        assert_eq!(odd.address, "ada-o-neil@ada-s-server");
     }
 }

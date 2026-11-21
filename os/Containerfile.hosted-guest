@@ -284,6 +284,25 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       zlib-ng-compat \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/libdnf5
+# git commits as whoever asked for the command (the host hands each command
+# line the running person's GIT_AUTHOR_* and GIT_COMMITTER_*), and takes an
+# https credential from TILO_GIT_TOKEN for TILO_GIT_HOST alone, so a vault
+# grant that names the token clones and pushes without the token being kept in
+# the VM. The build runs both answers the helper gives, so a broken one fails
+# here rather than in somebody's workspace.
+COPY --chmod=0755 os/hosted-guest/git-credential-tilo /usr/libexec/tilo/git-credential-tilo
+COPY os/hosted-guest/gitconfig /etc/gitconfig
+RUN set -eu; \
+    sh -n /usr/libexec/tilo/git-credential-tilo; \
+    answered=$(printf 'protocol=https\nhost=code.tilo.so\n\n' \
+      | TILO_GIT_TOKEN=the-token TILO_GIT_HOST=code.tilo.so \
+        /usr/libexec/tilo/git-credential-tilo get); \
+    printf '%s\n' "$answered" | grep -qx 'password=the-token'; \
+    [ -z "$(printf 'protocol=https\nhost=elsewhere.test\n\n' \
+      | TILO_GIT_TOKEN=the-token TILO_GIT_HOST=code.tilo.so \
+        /usr/libexec/tilo/git-credential-tilo get)" ]; \
+    [ -z "$(printf 'protocol=https\nhost=code.tilo.so\n\n' \
+      | /usr/libexec/tilo/git-credential-tilo get)" ]
 # sudo without a password because the VM is theirs and nobody else is in it.
 RUN printf 'tilo ALL=(ALL:ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/tilo \
  && chmod 0440 /etc/sudoers.d/tilo

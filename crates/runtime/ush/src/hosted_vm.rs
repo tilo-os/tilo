@@ -17,7 +17,8 @@
 //!
 //! A program starts with the shell's variables and, set over them, the secrets the run carries
 //! ([`HostedPrograms::carrying_secrets`]): items of the workspace's vault its VM may use. They
-//! travel to the VM's agent in the launch alone.
+//! travel to the VM's agent in the launch alone. It also records who the run is for, a person
+//! or an agent, as git's author and committer ([`HostedPrograms::carrying_identity`]).
 //!
 //! Its `~` is the workspace's files, the folder the shell's `~` names, so what a program or a
 //! coding agent writes there is the workspace's, versioned and bounded by its grant. What is the
@@ -144,6 +145,7 @@ pub struct HostedPrograms {
     terminal: HeldTerminal,
     refusals: Option<std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>>,
     secrets: Option<crate::workspace_shell::Secrets>,
+    identity: Option<crate::workspace_shell::Identity>,
     /// Who serves the machine's agent socket to the programs, and the session they are of.
     agents: Option<(std::sync::Arc<dyn MachineAgents>, String)>,
 }
@@ -169,6 +171,7 @@ impl HostedPrograms {
             terminal: HeldTerminal::default(),
             refusals: None,
             secrets: None,
+            identity: None,
             agents: None,
         }
     }
@@ -194,16 +197,18 @@ impl HostedPrograms {
             session.clone(),
         );
         let agents = std::sync::Arc::clone(agents);
-        Some(std::sync::Arc::new(move |caller: client::AgentCaller, stream| {
-            let from = AgentConnection {
-                workspace: workspace.clone(),
-                environment: environment.clone(),
-                session: session.clone(),
-                agent,
-                program: caller.program,
-            };
-            agents.serve(from, stream);
-        }))
+        Some(std::sync::Arc::new(
+            move |caller: client::AgentCaller, stream| {
+                let from = AgentConnection {
+                    workspace: workspace.clone(),
+                    environment: environment.clone(),
+                    session: session.clone(),
+                    agent,
+                    program: caller.program,
+                };
+                agents.serve(from, stream);
+            },
+        ))
     }
 
     /// Start each program with what `secrets` holds when it starts, set over the shell's
@@ -211,6 +216,14 @@ impl HostedPrograms {
     #[must_use]
     pub(crate) fn carrying_secrets(mut self, secrets: crate::workspace_shell::Secrets) -> Self {
         self.secrets = Some(secrets);
+        self
+    }
+
+    /// Start each program as whoever `identity` holds when it starts: the person or agent the
+    /// run is for, which its programs record as git's author and committer.
+    #[must_use]
+    pub(crate) fn carrying_identity(mut self, identity: crate::workspace_shell::Identity) -> Self {
+        self.identity = Some(identity);
         self
     }
 
@@ -249,9 +262,10 @@ impl HostedPrograms {
     /// shell's `~` names, and the caches, toolchains and build output that belong to the machine
     /// rather than to the workspace stay on the VM's disk, in the tenant's folders there. The
     /// toolchain is the one the image ships, so `cargo` and `rustup` work as they do for the
-    /// tenant's own login there.
+    /// tenant's own login there. Whoever the run is for signs what its programs make, by the
+    /// name and address the workspace gives them.
     fn machine_environment(&self) -> Vec<(&'static str, String)> {
-        vec![
+        let mut machine = vec![
             ("HOME", self.home.display().to_string()),
             ("XDG_CACHE_HOME", format!("{GUEST_HOME}/.cache")),
             ("XDG_DATA_HOME", format!("{GUEST_HOME}/.local/share")),
@@ -259,7 +273,27 @@ impl HostedPrograms {
             ("RUSTUP_HOME", format!("{GUEST_HOME}/.rustup")),
             ("NPM_CONFIG_CACHE", format!("{GUEST_HOME}/.npm")),
             ("CARGO_TARGET_DIR", GUEST_TARGET.to_owned()),
-        ]
+        ];
+        // One VM and one shell serve the workspace's people and agents in turn, so git's
+        // identity is the run's own: the actor this command line is asked for.
+        let person = self.identity.as_ref().and_then(|kept| {
+            kept.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        });
+        if let Some(person) = person.as_ref() {
+            let name = person.name.trim();
+            let address = person.address.trim();
+            if !name.is_empty() && !address.is_empty() {
+                for key in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
+                    machine.push((key, name.to_owned()));
+                }
+                for key in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
+                    machine.push((key, address.to_owned()));
+                }
+            }
+        }
+        machine
     }
 
     /// Tell `refusals` each refusal that ends a program, so the caller can
@@ -1495,7 +1529,10 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
             ],
             &[
                 ("HOME".into(), "/root".into()),
-                ("XDG_CACHE_HOME".into(), files.join(".cache").display().to_string()),
+                (
+                    "XDG_CACHE_HOME".into(),
+                    files.join(".cache").display().to_string(),
+                ),
             ],
             &files,
             &io,

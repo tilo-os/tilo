@@ -342,12 +342,13 @@ impl WorkspaceShell for HostShells {
         session: &str,
         command: &str,
         agent: bool,
+        person: Option<&tilo_actions::remote::environment_commands::Person>,
         watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
         let shells = match self {
             Self::Here(shells) => shells,
             Self::Placed(placed) => {
-                return placed.run(workspace, session, command, agent, watching);
+                return placed.run(workspace, session, command, agent, person, watching);
             }
         };
         let ran = shells
@@ -357,6 +358,7 @@ impl WorkspaceShell for HostShells {
                 command,
                 agent,
                 ush::workspace_shell::RunWith {
+                    person,
                     stopping: watching.stop,
                     seen: watching.seen,
                     ..ush::workspace_shell::RunWith::default()
@@ -1086,6 +1088,28 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             }
             named
         })
+    }
+
+    /// Who `caller` runs commands as in `workspace`: an agent by its own name, else the person it
+    /// acts for, as the workspace's member list names them, at the address the workspace is
+    /// reached by (`eu1.tilo.sh`, the origin the host published for its Browser). A commit made
+    /// in the workspace's VM names whoever asked for it as the workspace does.
+    fn person(
+        &self,
+        workspace: &str,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Option<tilo_actions::remote::environment_commands::Person> {
+        let workspaces = self.workspaces.as_ref()?;
+        let origin = self
+            .browser_origin
+            .read()
+            .ok()
+            .and_then(|held| held.as_ref().cloned());
+        let host = origin.map_or_else(
+            || workspaces.serving_certificate().device_label.clone(),
+            |origin| (*origin).clone(),
+        );
+        tilo_agent_session::workspace_actions::person_of(caller, &self.members(workspace), &host)
     }
 
     fn view_document(

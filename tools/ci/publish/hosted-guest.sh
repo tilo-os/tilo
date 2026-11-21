@@ -244,6 +244,8 @@ case ${1:-} in
     test -x "$root/usr/libexec/tilo/browser-session"
     test -x "$root/usr/libexec/tilo/apps-session"
     test -x "$root/usr/local/bin/t"
+    test -x "$root/usr/libexec/tilo/git-credential-tilo"
+    test -s "$root/etc/gitconfig"
     test -x "$root/usr/bin/Xwayland"
     test -x "$root/home/tilo/.local/share/claude-code/$(claude_code_version)/bin/claude"
     test -L "$root/usr/local/bin/claude"

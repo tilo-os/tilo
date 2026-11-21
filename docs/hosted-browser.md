@@ -77,6 +77,29 @@ the answer only when it is the program itself: a server that answers a browser
 login fails the first call with a message naming the header it must accept,
 and nothing is cached.
 
+### git
+
+`git` in the VM commits as whoever asked for the command, a person or an
+agent: the programs a command line runs record them as their author and
+committer, by the name the workspace names them by and their address in it,
+`<name>@<host>` (`ada@eu1.tilo.sh` for a workspace on `eu1.tilo.sh`). Two
+people sharing the workspace's machine and its shell commit as themselves,
+and an agent's own commits name the agent.
+
+Cloning or pushing over https needs a token. git takes it from the
+environment (`os/hosted-guest/git-credential-tilo`, set system-wide in
+`/etc/gitconfig`), so the token is never written into the VM:
+
+| Variable | What it is | Without it |
+| :--- | :--- | :--- |
+| `TILO_GIT_TOKEN` | A token for the host, granted from the workspace's vault by its owners (`TILO_GIT_TOKEN_FILE` names a file holding it instead) | git is left to its own prompt |
+| `TILO_GIT_HOST` | The host the token is for (`code.tilo.so`) | the helper answers no host, so no token is offered anywhere |
+| `TILO_GIT_USER` | The username the token is used with | `git` |
+
+The helper answers a `get` for `TILO_GIT_HOST` alone: a repository at any
+other https host is never handed the token, and git then prompts for one as
+on a device.
+
 ## Linux apps
 
 The same VM runs the workspace's Linux programs with windows: a Fedora

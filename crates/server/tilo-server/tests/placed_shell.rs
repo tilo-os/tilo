@@ -103,6 +103,7 @@ fn run_request(session: &str, command: &str) -> InvokeRequest {
         account: "acct-1".into(),
         size: "small".into(),
         secrets: Vec::new(),
+        person: None,
     })
     .unwrap();
     let serde_json::Value::Object(argument) = argument else {
@@ -207,7 +208,14 @@ async fn run(placed: &Arc<Placed>, session: &str, command: &str) -> Result<Shell
     let (shells, workspace) = (Arc::clone(&placed.shells), placed.workspace.clone());
     let (session, command) = (session.to_owned(), command.to_owned());
     tokio::task::spawn_blocking(move || {
-        shells.run(&workspace, &session, &command, true, Watching::default())
+        shells.run(
+            &workspace,
+            &session,
+            &command,
+            true,
+            None,
+            Watching::default(),
+        )
     })
     .await
     .unwrap()
@@ -313,7 +321,14 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         .workspace;
     let (shells, asked_later) = (Arc::clone(&placed.shells), later.clone());
     let ran = tokio::task::spawn_blocking(move || {
-        shells.run(&asked_later, "run:1", "pwd", true, Watching::default())
+        shells.run(
+            &asked_later,
+            "run:1",
+            "pwd",
+            true,
+            None,
+            Watching::default(),
+        )
     })
     .await
     .unwrap()
@@ -482,7 +497,7 @@ async fn only_the_server_makes_the_member_enter_a_workspace() {
     // The server's own run is what enters it.
     let (shells, asked) = (Arc::clone(&placed.shells), later.clone());
     let ran = tokio::task::spawn_blocking(move || {
-        shells.run(&asked, "run:1", "pwd", true, Watching::default())
+        shells.run(&asked, "run:1", "pwd", true, None, Watching::default())
     })
     .await
     .unwrap()
@@ -516,6 +531,7 @@ async fn a_runs_output_reaches_the_caller_before_it_ends() {
             "run:1",
             "echo first && sleep 3 && echo second",
             true,
+            None,
             Watching {
                 seen: Some(&watch),
                 stop: None,
@@ -559,6 +575,7 @@ async fn a_cancel_ends_the_command_on_the_member() {
             "run:1",
             "echo started && sleep 120 && echo never",
             true,
+            None,
             Watching {
                 seen: Some(&watch),
                 stop: Some(&stop),

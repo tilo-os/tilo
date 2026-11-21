@@ -24,6 +24,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use linux_vm_protocol::TerminalSize;
+use tilo_actions::remote::environment_commands::Person;
 
 pub use crate::environment_programs::LEFT_AFTER;
 use crate::workspace_shell::{Interactive, Payer, WorkspaceShells};
@@ -124,9 +125,9 @@ impl EnvironmentTerminals {
     }
 
     /// A stream on `workspace`'s Terminal session `session` running interactively, its window
-    /// `size`: the session's shell started on a new terminal, paid for by `payer`, its runs
-    /// marked with `runs_key`; or, when that session is already kept on a terminal, a new
-    /// stream on it, superseding the one it had.
+    /// `size`: the session's shell started on a new terminal, paid for by `payer`, as `person`,
+    /// its runs marked with `runs_key`; or, when that session is already kept on a terminal, a
+    /// new stream on it, superseding the one it had.
     ///
     /// # Errors
     ///
@@ -136,6 +137,7 @@ impl EnvironmentTerminals {
         workspace: &str,
         session: &str,
         payer: Option<&Payer>,
+        person: Option<&Person>,
         size: TerminalSize,
         runs_key: Option<String>,
     ) -> io::Result<TerminalStream> {
@@ -150,7 +152,7 @@ impl EnvironmentTerminals {
         let (master, slave) = pty(size)?;
         let shell = self
             .shells
-            .interactive(workspace, session, payer, slave, runs_key)?;
+            .interactive(workspace, session, payer, person, slave, runs_key)?;
         let reading = master.try_clone()?;
         let mut id = [0_u8; 16];
         getrandom::fill(&mut id).map_err(io::Error::other)?;

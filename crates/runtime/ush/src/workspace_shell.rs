@@ -25,6 +25,10 @@
 //! same name. The shell itself never holds them: `echo $NAME` and `env` among its own commands
 //! do not see them, they are not kept between runs, and nothing the run answers carries them
 //! unless a program prints its own environment.
+//!
+//! A run is asked for by someone ([`RunWith::person`]): a person or an agent, named as the
+//! workspace names them. Every program the command starts in the VM records them as git's
+//! author and committer, and the shell keeps no identity for its next command line.
 
 use std::collections::HashMap;
 use std::io;
@@ -34,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use collab_types::caps::CapOverride;
-use tilo_actions::remote::environment_commands::{CommandOutput, VmSecret};
+use tilo_actions::remote::environment_commands::{CommandOutput, Person, VmSecret};
 use tilo_actions::remote::server_account::Refusal;
 use ush_shell::commands::Render;
 use ush_shell::{Output, Run, Shell, Stdio};
@@ -42,7 +46,7 @@ use ush_tilo::{Acted, Environment, Keeping, NativeFiles, NoPrograms, Place, Prog
 
 use crate::content::EnvironmentContent;
 use crate::file_actions::{FileAction, Recoverable};
-use crate::hosted_vm::{HostedPrograms, HostedTarget, HeldTerminal, shares_of};
+use crate::hosted_vm::{HeldTerminal, HostedPrograms, HostedTarget, shares_of};
 use crate::machine_programs::MachinePrograms;
 use crate::policy::Policy;
 
@@ -106,6 +110,10 @@ pub struct RunWith<'a> {
     /// Who pays for the VM rather than this host's own account (the first run of a
     /// workspace's session decides it).
     pub payer: Option<&'a Payer>,
+    /// Who the command runs as, a person or an agent: the name and address the VM's
+    /// programs record as the author of what they make. `None` where the host cannot name
+    /// them.
+    pub person: Option<&'a Person>,
     /// What the programs the command starts in the VM get in their environment, this run
     /// only.
     pub secrets: &'a [VmSecret],
@@ -117,6 +125,10 @@ pub struct RunWith<'a> {
 
 /// The secrets the run in progress hands the programs it starts in the VM.
 pub(crate) type Secrets = Arc<Mutex<Vec<VmSecret>>>;
+
+/// Who the run in progress is for: the person or agent its programs record as git's author
+/// and committer, and nobody between runs.
+pub(crate) type Identity = Arc<Mutex<Option<Person>>>;
 
 const SEEN_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -135,6 +147,7 @@ struct Session {
     /// editor find it here.
     terminal: HeldTerminal,
     secrets: Secrets,
+    identity: Identity,
 }
 
 /// A session's shell running interactively on a terminal ([`WorkspaceShells::interactive`]).
@@ -284,8 +297,9 @@ impl WorkspaceShells {
         self.run_for(workspace, session, command, agent, RunWith::default())
     }
 
-    /// [`Self::run`], with what `with` says: who pays for the VM, the secrets its programs
-    /// get, when to stop, and what the caller is shown of the command while it runs.
+    /// [`Self::run`], with what `with` says: who pays for the VM, who the command runs as
+    /// (whose git identity its programs record), the secrets its programs get, when to stop,
+    /// and what the caller is shown of the command while it runs.
     ///
     /// # Errors
     ///
@@ -309,6 +323,9 @@ impl WorkspaceShells {
     /// by `payer` the same way; `runs_key` marks its runs for Terminal ([`ush_shell::Session`]).
     /// The session ends with the shell: a later run starts a new one.
     ///
+    /// `person` is who the shell runs as for as long as it is on this terminal: whoever asks
+    /// for the stream is one actor, and a commit typed at the prompt names them.
+    ///
     /// # Errors
     ///
     /// The workspace's directory could not be made, or the terminal could not be shared.
@@ -317,9 +334,11 @@ impl WorkspaceShells {
         workspace: &str,
         session: &str,
         payer: Option<&Payer>,
+        person: Option<&Person>,
         terminal: OwnedFd,
         runs_key: Option<String>,
     ) -> io::Result<Interactive> {
+        let person = person.cloned();
         let key = (workspace.to_owned(), session.to_owned());
         let shared = self.session(workspace, session, payer)?;
         let stopped = Arc::clone(
@@ -345,7 +364,7 @@ impl WorkspaceShells {
             .spawn(move || {
                 let status = {
                     let mut session = shared.lock().unwrap_or_else(PoisonError::into_inner);
-                    session.interactive(terminal, io, runs_key)
+                    session.interactive(terminal, io, runs_key, person.as_ref())
                 };
                 let mut sessions = sessions.lock().unwrap_or_else(PoisonError::into_inner);
                 if sessions
@@ -445,6 +464,7 @@ impl WorkspaceShells {
         let refused = Arc::new(Mutex::new(None));
         let terminal = HeldTerminal::default();
         let secrets = Secrets::default();
+        let identity = Identity::default();
         let programs: Arc<dyn Programs> = match target {
             Some(target) => {
                 let shared = files.clone();
@@ -457,7 +477,8 @@ impl WorkspaceShells {
                 )
                 .reporting_refusals(Arc::clone(&refused))
                 .on_terminal_of(Arc::clone(&terminal))
-                .carrying_secrets(Arc::clone(&secrets));
+                .carrying_secrets(Arc::clone(&secrets))
+                .carrying_identity(Arc::clone(&identity));
                 Arc::new(match &self.agents {
                     Some(agents) => programs.serving_agents(Arc::clone(agents), session),
                     None => programs,
@@ -496,12 +517,19 @@ impl WorkspaceShells {
             stopped,
             terminal,
             secrets,
+            identity,
         })
     }
 }
 
 impl Session {
-    fn interactive(&mut self, terminal: OwnedFd, io: Stdio, runs_key: Option<String>) -> i32 {
+    fn interactive(
+        &mut self,
+        terminal: OwnedFd,
+        io: Stdio,
+        runs_key: Option<String>,
+        person: Option<&Person>,
+    ) -> i32 {
         let held = || self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
         *held() = Some(terminal);
         self.stopped.store(false, Ordering::SeqCst);
@@ -509,7 +537,12 @@ impl Session {
         self.shell.set_render(Render::Text);
         // The terminal is a real one now: programs may draw on it.
         self.shell.set_var("TERM", TERMINAL);
+        // Whoever is at the terminal is the one the whole session runs as: every command line
+        // typed at the prompt, and every program it starts, records them as an author, and
+        // nobody once the terminal is gone.
+        *self.identity.lock().unwrap_or_else(PoisonError::into_inner) = person.cloned();
         let status = self.shell.interactive(&ush_shell::Session { runs_key });
+        *self.identity.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.shell.set_stdio(Stdio::null());
         *held() = None;
         status
@@ -517,6 +550,7 @@ impl Session {
 
     fn run(&mut self, command: &str, agent: bool, with: RunWith<'_>) -> ShellRun {
         let RunWith {
+            person,
             secrets,
             stopping,
             seen,
@@ -539,11 +573,16 @@ impl Session {
             id: format!("{started_ms:x}"),
             label: command.to_owned(),
         }));
+        // Who this command line runs as is whoever asked for it, a person or
+        // an agent, and only this one: the shell goes on as it was, and the
+        // next run records its own actor.
+        *self.identity.lock().unwrap_or_else(PoisonError::into_inner) = person.cloned();
         let exit = if stopping.is_none() && seen.is_none() {
             self.shell.run_script(command)
         } else {
             self.run_watched(command, stopping, seen)
         };
+        *self.identity.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.shell.set_run(None);
         self.secrets
             .lock()

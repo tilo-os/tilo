@@ -299,6 +299,7 @@ impl Inner {
                 asked.agent,
                 RunWith {
                     payer: Some(&payer),
+                    person: asked.person.as_ref(),
                     secrets: &asked.secrets,
                     stopping: Some(&stopping),
                     seen: Some(&seen),

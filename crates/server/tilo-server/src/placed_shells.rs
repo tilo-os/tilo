@@ -260,6 +260,7 @@ impl PlacedShells {
         session: &str,
         command: &str,
         agent: bool,
+        person: Option<&tilo_actions::remote::environment_commands::Person>,
         watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
         let (action_service, endpoint) = self.asking()?;
@@ -279,6 +280,7 @@ impl PlacedShells {
             account: self.account.clone(),
             size: self.size.as_str().to_owned(),
             secrets: Vec::new(),
+            person: person.cloned(),
         };
         let mut ran = run_on(&device, &asked, watching)?;
         if let Some(words) = waited {

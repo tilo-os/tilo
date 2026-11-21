@@ -38,11 +38,17 @@ impl Host {
     }
 
     fn open(&self) -> TerminalStream {
+        self.open_as(None)
+    }
+
+    /// A stream on the session as `person` (nobody, when `None`).
+    fn open_as(&self, person: Option<&Person>) -> TerminalStream {
         self.terminals
             .open(
                 "ws1",
                 "s1",
                 None,
+                person,
                 TerminalSize {
                     cols: 100,
                     rows: 30,
@@ -137,6 +143,20 @@ tilo_test_env::scenario! {
         reason = "fixture arithmetic in test bodies, which the lint skips in a plain test"
     )]
     fn a_workspace_shell_runs_on_a_terminal_its_stream_carries;
+
+    phase a_command_typed_at_the_prompt_commits_as_the_person_at_it;
+    {
+        let host = Host::start(LEFT_AFTER);
+        let ada = Person {
+            name: "Ada Lovelace".into(),
+            address: "ada@eu1.tilo.sh".into(),
+        };
+        let mut screen = screen(host.open_as(Some(&ada)));
+        screen.type_at_prompt(
+            "sh -c 'echo au\"\"thor=$GIT_AUTHOR_NAME at $GIT_COMMITTER_EMAIL'\r",
+        );
+        screen.until("author=Ada Lovelace at ada@eu1.tilo.sh");
+    }
 
     phase what_is_typed_reaches_a_program_in_the_vm_on_a_terminal;
     {

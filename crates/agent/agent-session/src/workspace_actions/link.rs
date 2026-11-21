@@ -135,6 +135,17 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn members(&self, _workspace: &str) -> Vec<(ui::permissions::MemberId, String)> {
         Vec::new()
     }
+    /// Who `caller` runs commands as in `workspace`: an agent by its own name, else the person
+    /// it acts for, as the workspace's member list names them, and their address in the
+    /// workspace, which the VM's programs record as the author of what they make. `None` where
+    /// this device knows no address for them, and the programs record none.
+    fn person(
+        &self,
+        _workspace: &str,
+        _caller: &Caller,
+    ) -> Option<tilo_actions::remote::environment_commands::Person> {
+        None
+    }
     /// The formats and the zone the person `caller` is, or acts for, reads dates in, where
     /// this device keeps them for its people: a view rendered for the caller shows their dates
     /// and clocks as their own windows do. `None` renders in this device's own, which on a

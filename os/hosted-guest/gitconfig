@@ -1,0 +1,10 @@
+# The tenant's git, set up once for every program the workspace's VM runs.
+# Nothing here is per actor: a person's or an agent's name and address arrive
+# with each command line, as GIT_AUTHOR_* and GIT_COMMITTER_*, because one VM
+# and one shell serve the workspace's people and agents in turn.
+#
+# The credential helper answers https from TILO_GIT_TOKEN, for TILO_GIT_HOST
+# alone: the variable the workspace's vault puts in a program's environment
+# when its owners grant the token (os/hosted-guest/git-credential-tilo).
+[credential]
+	helper = /usr/libexec/tilo/git-credential-tilo

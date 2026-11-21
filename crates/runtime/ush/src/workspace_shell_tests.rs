@@ -229,3 +229,122 @@ fn a_runs_secrets_reach_its_programs_in_the_vm_and_nothing_else() {
         assert!(!text(ran).contains(VALUE), "{}", text(ran));
     }
 }
+
+tilo_test_env::scenario! {
+    /// A workspace's shell on a host that runs VMs, with the real guest agent standing in for the
+    /// machine's.
+    fn a_commands_programs_commit_as_the_actor_who_asked_for_it;
+
+    phase the_identity_rides_the_vms_launch_and_the_shell_keeps_none;
+    {
+        let (shells, state) = hosted(VmSize::default());
+        let ran = shells
+            .run_for(
+                "ws-1",
+                "s1",
+                "sh -c 'echo \"$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>\"'",
+                true,
+                with(Some(&ada())),
+            )
+            .unwrap();
+        assert_eq!(ran.exit, 0, "{}", text(&ran));
+        assert_eq!(text(&ran).trim(), "Ada Lovelace <ada@eu1.tilo.sh>");
+        // The committer signs as the author, and the shell carries no identity into the next
+        // command line: whoever runs one next is not recorded as Ada.
+        let next = shells
+            .run_for(
+                "ws-1",
+                "s1",
+                "sh -c 'echo \"${GIT_AUTHOR_NAME-unset} ${GIT_COMMITTER_NAME-unset} \
+                 ${GIT_AUTHOR_EMAIL-unset} ${GIT_COMMITTER_EMAIL-unset}\"'",
+                true,
+                with(None),
+            )
+            .unwrap();
+        assert_eq!(text(&next).trim(), "unset unset unset unset");
+        drop(state);
+    }
+
+    phase two_actors_asking_in_one_shell_each_commit_as_themselves;
+    {
+        let (shells, state) = hosted(VmSize::default());
+        let who = "sh -c 'echo \"$GIT_AUTHOR_NAME <$GIT_COMMITTER_EMAIL>\"'";
+        let first = shells
+            .run_for("ws-1", "s1", who, true, with(Some(&ada())))
+            .unwrap();
+        assert_eq!(text(&first).trim(), "Ada Lovelace <ada@eu1.tilo.sh>");
+        let scout = Person {
+            name: "Scout".into(),
+            address: "scout@eu1.tilo.sh".into(),
+        };
+        let second = shells
+            .run_for("ws-1", "s1", who, true, with(Some(&scout)))
+            .unwrap();
+        assert_eq!(text(&second).trim(), "Scout <scout@eu1.tilo.sh>");
+        // The actor who asked first is still themselves when they ask again.
+        let again = shells
+            .run_for("ws-1", "s1", who, true, with(Some(&ada())))
+            .unwrap();
+        assert_eq!(text(&again).trim(), "Ada Lovelace <ada@eu1.tilo.sh>");
+        drop(state);
+    }
+
+    phase an_actor_who_set_their_own_identity_keeps_it_after_the_run;
+    {
+        let (shells, state) = hosted(VmSize::default());
+        let set = shells
+            .run_for(
+                "ws-1",
+                "s1",
+                "export GIT_AUTHOR_NAME=mine",
+                true,
+                with(Some(&ada())),
+            )
+            .unwrap();
+        assert_eq!(set.exit, 0, "{}", text(&set));
+        let kept = shells
+            .run_for(
+                "ws-1",
+                "s1",
+                "sh -c 'echo \"$GIT_AUTHOR_NAME\"'",
+                true,
+                with(None),
+            )
+            .unwrap();
+        assert_eq!(text(&kept).trim(), "mine");
+        drop(state);
+    }
+}
+
+/// Ada, as the workspace names her and where it is reached.
+fn ada() -> Person {
+    Person {
+        name: "Ada Lovelace".into(),
+        address: "ada@eu1.tilo.sh".into(),
+    }
+}
+
+/// A hosted workspace's shells in front of the real guest agent, run in this process as the
+/// test's own user, and the directory that keeps both.
+fn hosted(size: VmSize) -> (WorkspaceShells, tempfile::TempDir) {
+    let state = tempfile::tempdir().unwrap();
+    let vm = crate::hosted_vm::testing::fake_vm(state.path());
+    let target = HostedTarget {
+        socket: crate::hosted_vm::testing::fake_service(state.path(), vm),
+        account: "acct-1".into(),
+        size,
+        plans: None,
+    };
+    (
+        WorkspaceShells::new(state.path().join("shells"), Some(target)),
+        state,
+    )
+}
+
+/// One command line asked of the workspace's shell as `person` (nobody, when `None`).
+fn with(person: Option<&Person>) -> RunWith<'_> {
+    RunWith {
+        person,
+        ..RunWith::default()
+    }
+}
