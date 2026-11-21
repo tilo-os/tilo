@@ -2,3 +2,6 @@
 
 #[path = "record_search.rs"]
 mod record_search;
+
+#[path = "native_chat_fixture.rs"]
+mod native_chat_fixture;
