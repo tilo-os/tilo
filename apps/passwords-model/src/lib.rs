@@ -5,7 +5,19 @@ use tilo_resource::{self, Atom, Collection, Id, Model, Refusal, Set, resource};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Passwords {}
 
-#[resource(kind = "passwords.vault")]
+impl Passwords {
+    /// What the record holds: nothing of its own. Its entries are the
+    /// sealed document beside it, which a reader opens under its keys; a
+    /// caller with no window open still learns that the record is there.
+    pub fn read_document(
+        &self,
+        item: Option<&tilo_resource::Id>,
+    ) -> Result<serde_json::Value, String> {
+        tilo_resource::read::fields(self, item)
+    }
+}
+
+#[resource(kind = "passwords.vault", read_content = Passwords::read_document)]
 impl Passwords {}
 
 /// The vault's published document. The reader presents decrypted entries only while it has
