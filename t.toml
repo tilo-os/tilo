@@ -717,7 +717,7 @@ heavy = true
 
 [[check]]
 name = "changes"
-run = "base=$(git rev-parse main)\nif [ \"$base\" = \"$(git rev-parse HEAD)\" ]; then base=$(git rev-parse HEAD^); fi\npython3 tools/policy/check_commit_policy.py \"$base\"\npython3 tools/policy/check_interfaces.py against \"$base\"\npython3 tools/policy/check_format_migrations.py against \"$base\"\npython3 tools/policy/check_resource_placement.py against \"$base\"\npython3 tools/policy/check_wire_enums.py against \"$base\"\npython3 tools/perf/tapp_size_ratchet.py check-budget --base \"$base\"\npython3 tools/perf/runtime_size_ratchet.py check-budget --base \"$base\"\npython3 -I tools/web/wasm_size_ratchet.py check-budget --base \"$base\"\n"
+run = "base=$(git rev-parse main)\nif [ \"$base\" = \"$(git rev-parse HEAD)\" ]; then base=$(git rev-parse HEAD^); fi\npython3 tools/policy/check_commit_policy.py \"$base\"\npython3 tools/policy/check_interfaces.py against \"$base\"\npython3 tools/policy/check_format_migrations.py against \"$base\"\npython3 tools/policy/check_resource_placement.py against \"$base\"\npython3 tools/policy/check_wire_enums.py against \"$base\"\npython3 tools/perf/tapp_size_ratchet.py check-budget --base \"$base\"\npython3 tools/perf/runtime_size_ratchet.py check-budget --base \"$base\"\n"
 git = true
 
 [[check]]
@@ -1057,8 +1057,8 @@ secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
 
 [[check]]
 name = "sdk-policy"
-run = "python3 -I tools/web/generate_web_desktop.py --check\npython3 -I tools/apps/generate_catalogue_fleet.py --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
-fix = "python3 -I tools/web/generate_web_desktop.py && python3 -I tools/apps/generate_catalogue_fleet.py"
+run = "python3 -I tools/apps/generate_catalogue_fleet.py --check\npython3 -I tools/sdk/publish_check.py --report-only\n"
+fix = "python3 -I tools/apps/generate_catalogue_fleet.py"
 
 [[check]]
 name = "sdk-linux"
@@ -1068,38 +1068,14 @@ on = ["dispatch", "idle"]
 heavy = true
 
 # The web desktop's start module, measured against its budget on every head: the one the page waits
-# for before anything shows (tools/web/wasm-size-budget/budget.toml).
+# for before anything shows.
 #
 # The bundle records the commit it was built from in `build.json`, which a person reading the bundle
 # looks at and the measurement never reads. A check that reads Git is keyed by the commit and reruns
 # on every one, which a page's whole wasm build cannot afford; the module's size follows the tree's
 # sources, which t keys by already. So this check has no Git view, and the bundle takes its revision
 # from `TILO_SOURCE_REVISION` when a build farm names one.
-[[check]]
-name = "sdk-web-size"
-# Heavy: an app's size budget, a release wasm build of 15 minutes; on main's newest head with the
-# room main's heads leave (`idle`), bisected to the commit that broke it as a default check is.
-on = ["idle"]
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 -I tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\n"
-needs = ["test-assets"]
-env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
-# The splitter's record of what the start module was made of: `parts desktop BUNDLE` writes
-# tools/web/wasm-size-budget/parts/desktop.json from it.
-outputs = ["/target/release-web/tilo-app/web/calculator/bundle/pkg/split.json"]
-
 # The same bundle qualified in Chromium: when dispatched, and when there is room.
-[[check]]
-name = "sdk-web-qualify"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "cargo build --locked -p tilo-app-cli --bin tilo-app\napp=$CARGO_TARGET_DIR/debug/tilo-app\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \"$bundle\" \"$TMPDIR/compute-qualification\"\n"
-needs = ["test-assets"]
-env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
-git = true
-on = ["dispatch", "idle"]
-heavy = true
-
 [[check]]
 name = "model-providers-web"
 # The node has no GPU, so the page draws through a software rasteriser: its steps are a
@@ -1716,7 +1692,7 @@ name = "perf-browser"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/perf-scheduled.sh browser"
-needs = ["web-desktop-bundle"]
+needs = ["web-entry-bundle"]
 env = { npm_config_cache = "/tmp/npm-cache" }
 requires = ["arch=x86_64"]
 outputs = ["/target/perf/browser/**"]
@@ -2580,57 +2556,24 @@ on = ["main"]
 id_token = ["registry.tilo.so"]
 
 [[check]]
-name = "web-desktop-wasm"
+name = "web-entry-wasm"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop/wasm"
-# The apps it builds embed image fixtures whose build script fetches them: a
-# node has no network, so the seeded cache is the only source (`test-assets`).
-#
-# What it writes is mostly the compiler cache storing the units it compiles, at
-# 10-30 MB each (an app's rlib is the framework instantiated for that app; the
-# UI framework alone is 268 MB of rlib and metadata). A run that finds every unit
-# cached writes about 630 MB; a run that catches up with the wasm crates other
-# commits moved compiles about a hundred units and writes 1.5-2.1 GB. The same
-# commit writes both, so a run past this check's disk envelope says what was
-# stale, not what changed in the bundle: that is the same 126 MB either way.
+run = "bash tools/ci/publish/web-entry-bundle.sh wasm /target/publish/web-entry/wasm"
+# The page's modules the fonts come from are fixture-built: a node has no
+# network, so the seeded cache is the only source (`test-assets`).
 needs = ["test-assets"]
 env = { CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/web-desktop/wasm/**"]
+outputs = ["/target/publish/web-entry/wasm/**"]
 default = false
 
 [[check]]
-name = "web-desktop-bundle"
+name = "web-entry-bundle"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/web-desktop-bundle.sh bundle /target/publish/web-desktop/bundle /target/publish/web-desktop/wasm"
-needs = ["web-desktop-wasm"]
+run = "bash tools/ci/publish/web-entry-bundle.sh bundle /target/publish/web-entry/bundle /target/publish/web-entry/wasm"
+needs = ["web-entry-wasm"]
 requires = ["arch=x86_64"]
-outputs = ["/target/publish/web-desktop/bundle/**"]
-git = true
-default = false
-
-# The same bundle for the local tilo.sh stack (os/containers/tilo-sh/stack.sh), built as
-# `lounge-check-binaries` builds its programs: release optimisation without the whole-program link
-# (Cargo.toml's `wasm-split-check`), so a change to one app compiles that app and relinks instead of
-# running fat LTO over every app in one codegen unit. Split and optimized as the shipped bundle is;
-# what ships, and what the page checks drive, stays `web-desktop-bundle`.
-[[check]]
-name = "web-desktop-check-wasm"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop-check/wasm check"
-needs = ["test-assets"]
-env = { CARGO_BUILD_JOBS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets" }
-requires = ["arch=x86_64"]
-outputs = ["/target/publish/web-desktop-check/wasm/**"]
-default = false
-
-[[check]]
-name = "web-desktop-check-bundle"
-egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/publish/web-desktop-bundle.sh bundle /target/publish/web-desktop-check/bundle /target/publish/web-desktop-check/wasm check"
-needs = ["web-desktop-check-wasm"]
-requires = ["arch=x86_64"]
-outputs = ["/target/publish/web-desktop-check/bundle/**"]
+outputs = ["/target/publish/web-entry/bundle/**"]
 git = true
 default = false
 
@@ -3247,8 +3190,8 @@ default = false
 name = "web-typing-latency"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode tools/web/html-renderer/typing-budget.mjs /target/publish/web-desktop/bundle --render dom --keys 60 --attempts 3 --budget\n"
-needs = ["web-desktop-bundle"]
+run = "set -euo pipefail\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nnode tools/web/html-renderer/typing-budget.mjs /target/publish/web-entry/bundle --render dom --keys 60 --attempts 3 --budget\n"
+needs = ["web-entry-bundle"]
 env = { npm_config_cache = "/tmp/npm-cache" }
 requires = ["arch=x86_64"]
 timeout_secs = 1800
@@ -3267,22 +3210,6 @@ requires = ["arch=x86_64"]
 timeout_secs = 3600
 on = ["idle"]
 
-# The web desktop driven in a real browser, as a person presses it: a secondary click, a Mac's
-# Control-click, the Menu key and Shift+F10 open the text's menu in the word processor and never the
-# browser's own (crates/browser/tilo-web-desktop/scripts/context-menu.mjs), and Mail's link to Settings
-# goes to the Settings window that is open, opening one only when none is (app-link.mjs). Both
-# always run, and each keeps a picture of what it saw.
-[[check]]
-name = "web-desktop-menus-and-links"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -euo pipefail\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nfailed=0\nfor page in context-menu app-link; do\n  node crates/browser/tilo-web-desktop/scripts/$page.mjs /target/publish/web-desktop-check/bundle /target/web-desktop-pages || failed=1\ndone\nexit $failed\n"
-needs = ["web-desktop-check-bundle"]
-env = { npm_config_cache = "/tmp/npm-cache" }
-requires = ["arch=x86_64"]
-outputs = ["/target/web-desktop-pages/**"]
-timeout_secs = 1800
-on = ["idle"]
 
 # The tilolang apps laid out headlessly at the standard window sizes: 320x568 and 390x844, a
 # phone's, and 1280x800, a laptop's. What `tilolang layout-check` finds is the check's verdict (a
@@ -6309,8 +6236,8 @@ on = ["idle"]
 name = "run-web"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "cargo run --locked -q -p tilo-local -- web --check --bundle /target/publish/web-desktop/bundle"
-needs = ["web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "cli-x86_64"]
+run = "cargo run --locked -q -p tilo-local -- web --check --bundle /target/publish/web-entry/bundle"
+needs = ["web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "cli-x86_64"]
 # openssl signs the stack's own releases, as the release key signs production's.
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
@@ -6375,8 +6302,8 @@ on = ["dispatch"]
 
 [[check]]
 name = "image-web-entry-context"
-run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context /target/publish/web-desktop/bundle /target/docs/site"
-needs = ["web-desktop-bundle", "docs-site"]
+run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context /target/publish/web-entry/bundle /target/docs/site"
+needs = ["web-entry-bundle", "docs-site"]
 outputs = ["/target/publish/web-entry/context/**"]
 git = true
 requires = ["arch=x86_64"]
@@ -6603,8 +6530,8 @@ on = ["idle"]
 # and Caddy are its needs'. Its sandbox refuses a router search (UPnP, 239.255.255.250:1900, as
 # iroh's endpoints make) and DNS lookups: with the open network the same flows failed as without
 # it, so none of them needs either.
-run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-entry/bundle /target/e2e"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
@@ -6632,8 +6559,8 @@ timeout_secs = 1800
 [[check]]
 name = "onboarding"
 # No egress: the entry, the stack and the people's browsers meet on loopback alone.
-run = "bash os/containers/tilo-lounge/test-onboarding.sh /target/publish/web-desktop/bundle /target/onboarding"
-needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+run = "bash os/containers/tilo-lounge/test-onboarding.sh /target/publish/web-entry/bundle /target/onboarding"
+needs = ["lounge-check-cli", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
@@ -6660,8 +6587,8 @@ name = "tilo-sh-admits-a-page"
 # it and the release-profile builds it needs cost about 2 core-hours of the node's (11-14).
 on = ["idle"]
 # No egress: as e2e, the page and the stack meet on loopback alone.
-run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/entry entry"
-needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-entry/bundle /target/entry entry"
+needs = ["lounge-check-cli", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
@@ -6682,8 +6609,8 @@ timeout_secs = 600
 [[check]]
 name = "e2e-reloads"
 # No egress: as e2e, it meets the stack on loopback alone; see e2e.
-run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-desktop/bundle /target/e2e-reloads reloads"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-entry/bundle /target/e2e-reloads reloads"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
@@ -6701,8 +6628,8 @@ default = false
 name = "page-tour"
 # No egress: as e2e, the tour meets its Lounge on loopback (direct-lounge.sh) and its programs and
 # fonts are its needs'.
-run = "mkdir -p /target/page-tour-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/page-tour-cli tilo\nTILO_TOUR_IN_LOG=1 bash os/containers/tilo-lounge/test-page-tour.sh /target/publish/web-desktop/bundle /target/page-tour"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-desktop-bundle", "cli-x86_64"]
+run = "mkdir -p /target/page-tour-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/page-tour-cli tilo\nTILO_TOUR_IN_LOG=1 bash os/containers/tilo-lounge/test-page-tour.sh /target/publish/web-entry/bundle /target/page-tour"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle", "cli-x86_64"]
 env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
 requires = ["arch=x86_64"]
 outputs = ["/target/page-tour/tour/**", "/target/page-tour/*.log"]
@@ -6719,8 +6646,8 @@ default = false
 name = "page-notes"
 # No egress: as page-tour, the walk meets its Lounge on loopback (direct-lounge.sh) and its
 # programs and fonts are its needs'.
-run = "TILO_PAGE_NOTES_IN_LOG=1 bash os/containers/tilo-lounge/test-page-notes.sh /target/publish/web-desktop/bundle /target/page-notes"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-desktop-bundle"]
+run = "TILO_PAGE_NOTES_IN_LOG=1 bash os/containers/tilo-lounge/test-page-notes.sh /target/publish/web-entry/bundle /target/page-notes"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
 env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
 requires = ["arch=x86_64"]
 outputs = ["/target/page-notes/**"]
@@ -6736,8 +6663,8 @@ default = false
 [[check]]
 name = "wait-list"
 # No egress: the page, the entry, its mail sink and the security it serves meet on loopback.
-run = "bash os/containers/tilo-lounge/test-wait-list.sh /target/publish/web-desktop/bundle /target/wait-list"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-desktop-bundle"]
+run = "bash os/containers/tilo-lounge/test-wait-list.sh /target/publish/web-entry/bundle /target/wait-list"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
 env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
 requires = ["arch=x86_64"]
 outputs = ["/target/wait-list/**"]
@@ -6753,8 +6680,8 @@ on = ["dispatch"]
 name = "page-reopen"
 # No egress: as page-notes, the walk meets its Lounge on loopback (direct-lounge.sh) and its
 # programs and fonts are its needs'.
-run = "TILO_PAGE_REOPEN_IN_LOG=1 bash os/containers/tilo-lounge/test-page-reopen.sh /target/publish/web-desktop/bundle /target/page-reopen"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-desktop-bundle"]
+run = "TILO_PAGE_REOPEN_IN_LOG=1 bash os/containers/tilo-lounge/test-page-reopen.sh /target/publish/web-entry/bundle /target/page-reopen"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
 env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
 requires = ["arch=x86_64"]
 outputs = ["/target/page-reopen/**"]
@@ -6778,7 +6705,7 @@ on = ["schedule:0 6 * * *", "dispatch"]
 # The judge's model, at Anthropic's API; the stack itself meets its people on loopback.
 egress = { to = ["api.anthropic.com:443"] }
 run = "bash os/containers/tilo-lounge/test-user-stories.sh /target/user-stories/{story} {story}"
-needs = ["lounge-check-cli", "web-desktop-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+needs = ["lounge-check-cli", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest builds Fedora's updates repository holds, and pip
 # the newest Anthropic SDK, from hosts no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx python3-pip openssl ffmpeg-free && dnf clean all && python3 -m pip install --no-cache-dir anthropic", egress = { to = ["0.0.0.0/0", "::/0"] } }

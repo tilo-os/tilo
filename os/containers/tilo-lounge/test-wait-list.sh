@@ -7,7 +7,7 @@
 # through the server's entry, the workspace's wait list and the mail out.
 #
 # usage: test-wait-list.sh BUNDLE WORK
-# BUNDLE is the web desktop bundle (tools/ci/publish/web-desktop-bundle.sh);
+# BUNDLE is the web desktop bundle (tools/ci/publish/web-entry-bundle.sh);
 # WORK keeps what it found: the screenshots, the tab's console, the report,
 # the mails the entry sent and the Lounge's log. Needs node, chromium, curl,
 # TILO_SERVER_BIN and TILO_CRYPTO_BIN naming built programs, and TILO_FONTS_DIR

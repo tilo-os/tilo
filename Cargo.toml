@@ -95,7 +95,6 @@ members = [
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
     "crates/browser/content-blocker",
-    "crates/browser/tilo-web-desktop",
     # Core product surfaces
     "crates/sdk/ui-core",
 

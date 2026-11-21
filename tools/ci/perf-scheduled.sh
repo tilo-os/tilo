@@ -42,7 +42,7 @@ commit_checkout() {
 # web-desktop-bundle check built for this commit (the bundle records it): the same release
 # build, made once for every consumer instead of again for each measurement.
 desktop_bundle() {
-  local bundle=${TILO_PERF_DESKTOP_BUNDLE:-/target/publish/web-desktop/bundle}
+  local bundle=${TILO_PERF_DESKTOP_BUNDLE:-/target/publish/web-entry/bundle}
   [[ -f $bundle/index.html ]] || { echo "$group measures the web-desktop-bundle check's bundle, not found at $bundle" >&2; exit 2; }
   printf '%s\n' "$bundle"
 }

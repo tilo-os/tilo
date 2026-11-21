@@ -11,4 +11,4 @@ export CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web
 bundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle
 mkdir -p "$CARGO_TARGET_DIR/../htmlrenderer/size"
 ls -l "$bundle/pkg" | tee "$CARGO_TARGET_DIR/../htmlrenderer/size/pkg.txt"
-python3 tools/web/wasm_size_ratchet.py measure desktop "$bundle" 2>&1 | head -5 | tee -a "$CARGO_TARGET_DIR/../htmlrenderer/size/pkg.txt" || true
+echo "the html renderer measure has no budget since the web desktop went"

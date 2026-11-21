@@ -1415,7 +1415,6 @@ doc = false
 "tilo-wallpapers" = { path = "../../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
 "tilo-wasm-host" = { path = "../../../crates/runtime/tilo-wasm-host", default-features = false, features = ["wasmtime"] }
 "tilo-wayland-ext" = { path = "../../../crates/session/wayland-ext", default-features = false, features = ["test-support"] }
-"tilo-web-desktop" = { path = "../../../crates/browser/tilo-web-desktop", default-features = false, features = [] }
 "tilo-web-search" = { path = "../../../crates/platform/tilo-web-search", default-features = false, features = ["fixture-servers"] }
 "tilo-webview" = { path = "../../../crates/sdk/tilo-webview", default-features = false, features = ["local-daemons", "webview-adblock"] }
 "tilo-wet-media" = { path = "../../../crates/media/wet-media", default-features = false, features = [] }
@@ -4032,7 +4031,6 @@ doc = false
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
 "tilo-wayland-ext" = { path = "../../../crates/session/wayland-ext", default-features = false, features = [] }
-"tilo-web-desktop" = { path = "../../../crates/browser/tilo-web-desktop", default-features = false, features = [] }
 "tilo-web-search" = { path = "../../../crates/platform/tilo-web-search", default-features = false, features = ["fixture-servers"] }
 "tilo-wet-media" = { path = "../../../crates/media/wet-media", default-features = false, features = [] }
 "tilo-window-menu" = { path = "../../../crates/session/window-menu", default-features = false, features = [] }

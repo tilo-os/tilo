@@ -18,7 +18,7 @@
 #
 # usage: test-onboarding.sh BUNDLE WORK
 # BUNDLE is the web desktop bundle the stack's site serves
-# (tools/ci/publish/web-desktop-bundle.sh). WORK keeps what it found: every
+# (tools/ci/publish/web-entry-bundle.sh). WORK keeps what it found: every
 # page's screenshots and console, the report, the mails the entry sent, and the
 # stack's logs. Needs node, chromium, curl, bwrap and the stack's environment:
 # TILO_SH_PROGRAMS, TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY and

@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # Build the browser runtime bundle into an empty directory:
 #   pkg/                wasm-bindgen output (--target web)
-#   *.mjs, index.html   page host and the desktop entry page
+#   *.mjs, index.html   the entry's pages and the modules they load
 #   app/index.html      the full-tab app entry page (web-routing.md)
 #   apple-touch-icon.png  the entry pages' home-screen icon (Safari takes no SVG)
 #   manifest.json, icon.svg  the web app manifest that makes the site
 #                       installable as an app window, and its icon
 #   locales/            the entry pages' arrival lines (web/arrival.mjs)
 #   fonts/, fonts.json  canonical product fonts, their manifest and licences
-#   data/, data.json    application data fetched on request (desktop bundle:
+#   data/, data.json    application data fetched on request (an app bundle:
 #                       the Typst editor's fonts), with sizes and hashes
 #   build.json          revision, tools, profile and output hashes
 #
 # usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt] [--names]
-#                 [--bundle runtime|desktop] [--no-split] [--update]
+#                 [--bundle runtime|app] [--no-split] [--update]
 #                 [--wasm-only | --wasm-from WASM_DIR] [--wasm-steps auto|builder|local]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
 # wasm-opt (binaryen) unless `--no-wasm-opt`; `dev` skips it unless `--wasm-opt`.
@@ -23,12 +23,12 @@
 # is the development loop's: Cargo's `wasm-dev` profile (no debug
 # information, light optimisation), whose much smaller module wasm-bindgen
 # and the splitter get through in half the time, and no wasm-opt.
-# `check` (desktop bundle only) is `release` without its whole-program link
+# `check` (a bundle built from source only) is `release` without its whole-program link
 # (Cargo's `wasm-split-check`, as `lounge-check` is to the native release): the
 # same opt-level, split and wasm-opt, so a change to one app compiles that app
 # and relinks rather than running fat LTO over every app in one codegen unit.
-# The web-desktop-check-bundle check builds it; what ships stays `release`.
-# `local` (desktop bundle only) is the local tilo.sh stack's
+# A check that reads the site's files builds it; what ships stays `release`.
+# `local` (a bundle built from source only) is the local tilo.sh stack's
 # (os/containers/tilo-sh/stack.sh): `check`'s code, compiled incrementally
 # (Cargo's `wasm-split-local`) in a build directory that stays, split as
 # `check` is, and not wasm-opt'd unless `--wasm-opt`. It takes `--update`, so
@@ -38,12 +38,9 @@
 # (bind-patch.sh). A one-line app change then costs the compile, that patch
 # and the split, not a minute of optimisation a page on this machine's
 # loopback does not notice.
-# `--bundle desktop` builds crates/browser/tilo-web-desktop instead: the same
-# runtime with every web-capable app registered from its manifest, under the
-# runtime's module name so the page host loads it unchanged, plus apps.json;
-# its module is split (tools/web/wasm-split/split.sh) into a start module and
-# one module per app, fetched when the app first opens. `--no-split` (dev and
-# quick only) leaves it whole, for a loop that is not about loading apps.
+# The runtime bundle is the web entry's: the pages the site serves and the
+# module a browser gets into a workspace with. No app is linked into it — a
+# page's app is the server's, rendered as HTML.
 # `--bundle app` builds an app's own bundle: the runtime with that one app
 # linked and registered, from the crate `tilo-app build --platform web`
 # generates for it (`--manifest-path`, built with the target directory named by
@@ -58,7 +55,7 @@
 # copied again, and fonts, data and the compute module are kept. A loop that
 # edits only web/*.mjs takes seconds; one that edits Rust,
 # the compile, wasm-bindgen and, unless `--no-split`, the split.
-# `--names` (desktop bundle) keeps the modules' function names (their wasm
+# `--names` (a bundle built from source) keeps the modules' function names (their wasm
 # name section), which a shipped bundle strips: a profile of the page then
 # names the functions it spends its time in rather than numbering them. It is
 # otherwise the same build, compiled, split and optimized alike, so it
@@ -90,7 +87,7 @@ set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop|app] [--manifest-path FILE --apps-json FILE] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|app] [--manifest-path FILE --apps-json FILE] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
 out=${1:?$usage}
 shift
 profile=release
@@ -164,15 +161,13 @@ esac
 # same linked module (its .made-from), as a build on the builder does: the
 # caller ran that build itself (os/containers/tilo-sh/stack.sh) and hands its
 # output over.
-# The runtime bundle's profile strips the symbols at link time; the desktop's
-# keeps them for its splitter.
-[[ $names == 0 || $bundle == desktop ]] || { echo '--names is for the desktop bundle' >&2; exit 2; }
-[[ $profile != check && $profile != local || $bundle == desktop ]] || { echo "--profile $profile is for the desktop bundle" >&2; exit 2; }
-# The local stack's bundle loads its apps as the shipped one does.
-[[ $profile != local || $split == 1 ]] || { echo '--no-split is for dev and quick bundles' >&2; exit 2; }
+# The runtime bundle is the web entry's: the pages the site serves, and the
+# module that gets a browser into a workspace. The apps' own code is not in
+# it — the page asks the server for them.
+[[ $names == 0 ]] || { echo '--names is for a bundle built from source, not the entry' >&2; exit 2; }
+[[ $profile != check && $profile != local ]] || { echo "--profile $profile is for a bundle built from source" >&2; exit 2; }
 case "$bundle" in
   runtime) package=tilo-browser-runtime ;;
-  desktop) package=tilo-web-desktop ;;
   app) ;;
   *) echo "unsupported bundle: $bundle" >&2; exit 2 ;;
 esac
@@ -197,17 +192,7 @@ else
     echo '--manifest-path and --apps-json are for --bundle app' >&2; exit 2;
   }
 fi
-# The splitter reads the linked module's symbol table, which `wasm-release`
-# and `wasm-assert` strip; `wasm-split` and `wasm-assert-split` are those
-# profiles with the table kept.
 bindgen_flags=()
-if [[ $bundle == desktop ]]; then
-  case $profile in
-    release) cargo_profile=wasm-split ;;
-    assert) cargo_profile=wasm-assert-split ;;
-  esac
-  bindgen_flags=(--keep-lld-exports --no-demangle)
-fi
 # Cargo writes a profile's output under the profile's own name, but dev's
 # under `debug`.
 artifact=$cargo_profile
@@ -292,12 +277,9 @@ if [[ $wasm_only == 0 ]]; then
   fi
 fi
 
-# What Cargo compiles: pkg/ (the runtime's module, split for the desktop, and
-# the compute module), data/ and apps.json, and the tools that made them.
+# What Cargo compiles: pkg/ (the runtime's module and the compute module) and
+# the tools that made them.
 build_wasm() {
-if [[ $bundle == desktop ]]; then
-  python3 tools/web/generate_web_desktop.py --check
-fi
 # An app bundle compiles the crate `tilo-app` generated for it: a workspace of
 # its own, whose lock file cargo writes, so it is named rather than `-p`, and
 # built without `--locked` and without `--offline`.
@@ -385,59 +367,12 @@ else
     fi
   fi
   [[ $bind_input == "$linked" ]] || rm -f "$bind_input"
-  # What the patch made of every function, when it wrote the module again
-  # with functions renumbered: the splitter reads its kept plan and bodies
-  # through it (wasm-split's analysis.rs, plan.rs).
-  local renumber=
-  if [[ -f $bind_cache/renumber.bin ]]; then renumber=$bind_cache/renumber.bin; fi
-  began=$SECONDS
-  if [[ $bundle == desktop && $split == 1 ]]; then
-    # The local bundle keeps the modules each split emitted in the build
-    # directory, by what each was emitted from: a change to one app emits
-    # that app's modules again and reads the rest back (the splitter's
-    # cache.rs), byte for byte what emitting them writes.
-    local split_cache=
-    if [[ $profile == local ]]; then
-      split_cache=$target_dir/wasm-split-cache/$bundle-$profile
-      [[ $names == 0 ]] || split_cache+=-names
-    fi
-    WASM_SPLIT_CACHE=$split_cache WASM_SPLIT_RENUMBER=$renumber \
-      RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-16} \
-      bash "$repo/tools/web/wasm-split/split.sh" "$linked" "$next"
-  elif [[ $bundle == desktop ]]; then
-    bash "$repo/tools/web/wasm-split/split.sh" --unsplit "$next"
-  fi
-  [[ $bundle != desktop ]] || took split "$began"
   if [[ -d "$out/pkg/compute" ]]; then mv "$out/pkg/compute" "$next/compute"; fi
   # A release or qualification bundle ships exactly what it was built from; no
   # stamp.
   if [[ $profile != release && $profile != assert && $profile != check && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
   rm -rf "$out/pkg"
   mv "$next" "$out/pkg"
-fi
-if [[ -n $apps_json ]]; then
-  cp "$apps_json" "$out/apps.json"
-elif [[ $bundle == desktop ]]; then
-  cp "$repo/crates/browser/tilo-web-desktop/apps.json" "$out/apps.json"
-fi
-if [[ $bundle == desktop ]] && ! kept data/typst; then
-  # The Typst editor's fonts, which only native builds embed; the editor asks
-  # for them by name when it opens (crates/platform/tilo-typst-fonts).
-  # The sources the build above compiled typst-assets from, as its dep-info
-  # names them. Not `cargo metadata`: that reads every package the lockfile
-  # names, for every platform, so offline it fails on any the build never
-  # fetched.
-  typst_assets=$(python3 "$repo/tools/web/crate_source.py" typst-assets \
-    "$target_dir/wasm32-unknown-unknown/$artifact" "$repo/Cargo.lock")
-  mkdir -p "$out/data/typst"
-  cp "$typst_assets"/files/fonts/*.otf "$typst_assets"/files/fonts/*.ttf "$out/data/typst/"
-  cp "$typst_assets/NOTICE" "$out/data/typst/NOTICE.txt"
-  python3 - "$repo/crates/platform/tilo-typst-fonts/src/lib.rs" "$out/data/typst" <<'PY'
-import pathlib, re, sys
-wanted = set(re.findall(r'"typst/([^"]+)"', pathlib.Path(sys.argv[1]).read_text()))
-shipped = {p.name for p in pathlib.Path(sys.argv[2]).iterdir() if p.suffix in ('.otf', '.ttf')}
-assert wanted == shipped, f'tilo_typst_fonts::HOST_FONTS and typst-assets differ: {sorted(wanted ^ shipped)}'
-PY
 fi
 # What the app SDK's own web build passes wasm-opt, so the module a size check
 # measures is the module the site serves (tools/web/wasm-opt-flags).

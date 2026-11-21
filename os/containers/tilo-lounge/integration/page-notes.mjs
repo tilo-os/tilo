@@ -62,6 +62,8 @@ try {
   const resetWire = () => { wire.doc = 0; wire.script = 0; wire.other = 0; wire.requests = []; wire.track = new Map(); };
 
   // The entry offers the way in on its card, pressed as a person presses it.
+  // Once the browser is a device of the workspace the entry hands it to the
+  // page, so a person lands on the workspace itself.
   const arrive = async ({context, label}) => {
     tab = await browser.tab({context});
     await tab.send('Network.enable', {}).catch(() => {});
@@ -70,23 +72,32 @@ try {
     // a desktop sees every column beside the others.
     await sized(WIDE);
     tab.log.length = 0;
-    // What the entry itself costs to read, before it hands the browser over:
-    // the web build's own size, as a first visit pays it.
+    // What the entry itself costs to read, before it hands the browser over.
     resetWire();
     await tab.navigate(site);
+    let handed = null;
+    let arrival = null;
     for (let i = 0; i < 960; i++) {
       const state = await tab.evaluate(`(() => {
-        if (['done', 'stopped'].includes(document.documentElement.dataset.arrival)) return document.documentElement.dataset.arrival;
+        if (location.pathname.startsWith('/w/')) return 'handed';
+        const arrival = document.documentElement.dataset.arrival;
+        if (arrival === 'stopped') return 'stopped';
+        if (arrival === 'done') return 'done';
         const join = [...document.querySelectorAll('button')].find(b => /^(Join|Join Tilo|Continue|Accept|Open)$/i.test(b.textContent.trim()));
         if (join && !join.disabled && !join.dataset.pressed) { join.dataset.pressed = '1'; join.click(); }
         return '';
       })()`).catch(() => '');
-      if (state === 'done' || state === 'stopped') { step(`${label}: arrival`, {state, ms: i * 250}); break; }
+      if (state === 'handed') { handed = i * 250; break; }
+      if (state === 'stopped' || state === 'done') { arrival = state; break; }
       await sleep(250);
     }
-    step(`${label}: what the entry costs`, {
-      documentBytes: wire.doc, scriptBytes: wire.script, otherBytes: wire.other, requests: wire.requests.length,
+    step(`${label}: arrival`, {
+      handed,
+      arrival,
+      path: await tab.evaluate('location.pathname').catch(() => null),
+      entry: {documentBytes: wire.doc, scriptBytes: wire.script, otherBytes: wire.other, requests: wire.requests.length},
     });
+    if (handed === null) problems.push(`${label}: the entry did not hand the browser to the page`);
     step(`${label}: devices this browser kept`, {
       kept: await tab.evaluate(`(() => { try { return Object.keys(JSON.parse(localStorage.getItem('tilo-browser-devices') ?? '{}')?.exact ?? {}).length; } catch { return 0; } })()`),
     });

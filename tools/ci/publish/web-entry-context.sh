@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The web entry image's build context (crates/browser/tilo-browser-runtime/container): the
-# desktop bundle (web-desktop-bundle.sh, the web-desktop-bundle check's output) laid out under
+# desktop bundle (web-entry-bundle.sh, the web-desktop-bundle check's output) laid out under
 # its content version, the developer docs (tools/docs/build-site.sh, the docs-site check's output)
 # under docs/, and the server's files.
 # usage: web-entry-context.sh OUT BUNDLE DOCS

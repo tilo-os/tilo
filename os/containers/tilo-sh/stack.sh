@@ -33,7 +33,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
       incrementally, and only the files that changed come back), run as
       plain processes, each with its own state and runtime directory under
       the stack's state. TILO_SH_BUILD=t builds them with t's checks
-      instead (tilo-sh-programs, web-desktop-check-bundle): what the checks
+      instead (tilo-sh-programs, web-entry-bundle): what the checks
       run, wasm-opt and all, slower. Each takes
       its environment from the same place its image does: the image's
       entrypoint and ENV, and the manifest's variables below.
@@ -209,7 +209,7 @@ as the shipped one, without wasm-opt), both built on the build server by the
 cargo drop-in TILO_SH_CARGO names (default \$CARGO) in a build directory that
 stays, and only what changed brought back; a drop-in that runs no program
 there has the bundle bound and split here. TILO_SH_BUILD=t takes them from
-t's checks instead (tilo-sh-programs, lounge-check; web-desktop-check-bundle,
+t's checks instead (tilo-sh-programs, lounge-check; web-entry-bundle,
 optimized), which start from an empty build directory: what the checks
 run, for a rehearsal of it. Caddy is
 the one TILO_SH_CADDY names, else the one on PATH, else a pinned release
@@ -1747,13 +1747,13 @@ lay_out_lounge() {
 # split again, and only the files that changed come back. The site the web
 # entry serves is laid out from it afterwards (lay_out_web), so a build that
 # stops halfway is never served. With TILO_SH_BUILD=t, t's
-# web-desktop-check-bundle. TILO_SH_BUNDLE_NAMES=1 builds it with its function
+# web-entry-bundle. TILO_SH_BUNDLE_NAMES=1 builds it with its function
 # names kept (build.sh --names), for profiling the page.
 build_bundle() {
   if [[ -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_SITE:-} ]]; then return; fi
   local began=$SECONDS names=() out=$native/bundle-local
   if from_t && [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]]; then
-    t_build 'the desktop bundle' web-desktop-check-bundle
+    t_build 'the desktop bundle' web-entry-bundle
     t_bundle
     say "bundle built ($((SECONDS - began))s)"
     return
@@ -1786,7 +1786,7 @@ bundle_whole() {
 # -- t's builds ---------------------------------------------------------------
 # With TILO_SH_BUILD=t the programs and the desktop bundle are what t's
 # checks build: tilo-sh-programs (every program, in one lounge-check
-# build), lounge-fonts (the server's font catalog) and web-desktop-check-bundle
+# build), lounge-fonts (the server's font catalog) and web-entry-bundle
 # (the bundle without its whole-program link: the compile, wasm-bindgen, the
 # split and wasm-opt, all on t). Each check is cached by what it read, so a
 # change reruns the checks it reaches and nothing else, and this machine only
@@ -1823,7 +1823,7 @@ t_build() {
 # The bundle as its build.json lists it: t's fetch keeps files an earlier
 # bundle had, which this one must not serve.
 t_bundle() {
-  local from=$t_fetched/target/publish/web-desktop-check/bundle next=$native/bundle.next
+  local from=$t_fetched/target/publish/web-entry/bundle next=$native/bundle.next
   bundle_whole "$from" || die "t's outputs hold no whole desktop bundle ($from)"
   rm -rf "$next"
   mkdir -p "$next"

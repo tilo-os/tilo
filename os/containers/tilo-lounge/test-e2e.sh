@@ -78,7 +78,7 @@
 #
 # usage: test-e2e.sh BUNDLE WORK [FLOW…]
 # BUNDLE is the web desktop bundle the wait list's Lounge serves
-# (tools/ci/publish/web-desktop-bundle.sh); the stack's site is
+# (tools/ci/publish/web-entry-bundle.sh); the stack's site is
 # TILO_SH_SITE's. WORK keeps what each flow found under WORK/<flow>/ and its
 # output in WORK/<flow>.log, and the stack's state in WORK/state. FLOW names
 # the flows to run (default: all but `reloads`; E2E_FLOWS, space separated,
