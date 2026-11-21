@@ -2064,6 +2064,18 @@ fn a_workspace_of_files_on_a_size_ladder() {
     });
     let open_small = started.elapsed();
     assert_eq!(small.len(), 4096);
+    // A second file the device has never fetched either: what a first read costs once the route
+    // is up, which tells the one-time setup apart from the per-file cost.
+    let started = Instant::now();
+    let second = read_range(&m2.join("flat").join("f0000001"), 0, 4096).unwrap();
+    let open_small_again = started.elapsed();
+    assert_eq!(second.len(), 4096);
+    report(
+        rung.as_str(),
+        "peer_open_small_again_s",
+        open_small_again.as_secs_f64(),
+        "s",
+    );
     let huge_target = m2.join("huge01.bin");
     let started = Instant::now();
     let first = read_range(&huge_target, 0, 65_536).unwrap();
