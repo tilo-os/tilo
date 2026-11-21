@@ -190,7 +190,9 @@ pub fn dom_scrolled(id: u64, path: &str, offset: f64) -> Result<bool, JsValue> {
 
 /// The pictures of the widgets at `paths` of mount `id`, each of which shows
 /// its own paint ([`ui::composition::Own::Painted`]), at `scale` device
-/// pixels per CSS pixel: for each, `[width, height, straight RGBA]`, or null.
+/// pixels per CSS pixel: for each, `[width, height, offset, length]`, where its
+/// straight RGBA stands in the module's memory (the list's `memory`) until the
+/// next call, or null.
 ///
 /// # Errors
 ///

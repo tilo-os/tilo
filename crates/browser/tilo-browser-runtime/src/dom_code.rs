@@ -93,22 +93,51 @@ fn picture(scene: &vello::Scene, width: u32, height: u32) -> Option<Vec<u8>> {
     Some(rgba)
 }
 
-/// The pictures of the widgets at `paths` of `m`, at `scale` device pixels
-/// per logical pixel: for each, `[width, height, pixels]`, or null when the
-/// page's composition has no widget at the path or it paints nothing.
-fn paint(m: &mut crate::browser::Mount, paths: &[String], scale: f64) -> JsValue {
-    let out = js_sys::Array::new();
-    for painted in crate::browser::paint_composed(m, paths, scale) {
-        out.push(&painted.map_or(JsValue::NULL, |(scene, rect)| shown(&scene, rect, scale)));
-    }
-    out.into()
+thread_local! {
+    /// The pixels of the pictures the page was last handed, which it reads where they stand:
+    /// kept until it asks for the next ones.
+    static HANDED: std::cell::RefCell<Vec<Vec<u8>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// `scene`, painted over `rect`, as the page's `[width, height, pixels]` at
-/// `scale`, or null when it paints nothing.
-fn shown(scene: &vello::Scene, rect: [f64; 4], scale: f64) -> JsValue {
+/// The pictures of the widgets at `paths` of `m`, at `scale` device pixels
+/// per logical pixel: for each, `[width, height, offset, length]`, where its
+/// straight RGBA stands in this module's memory (the list's `memory`), or null
+/// when the page's composition has no widget at the path or it paints nothing.
+///
+/// The page reads the pixels where they stand rather than a copy of them: a frame of a resize
+/// repaints every chart it shows, and copying each into the page cost as much as putting it on
+/// its canvas. They stay there until the next call.
+fn paint(m: &mut crate::browser::Mount, paths: &[String], scale: f64) -> JsValue {
+    let painted: Vec<Option<(u32, u32, Vec<u8>)>> = crate::browser::paint_composed(m, paths, scale)
+        .into_iter()
+        .map(|painted| painted.and_then(|(scene, rect)| shown(&scene, rect, scale)))
+        .collect();
+    HANDED.with_borrow_mut(|handed| {
+        handed.clear();
+        let out = js_sys::Array::new();
+        for picture in painted {
+            let Some((width, height, rgba)) = picture else {
+                out.push(&JsValue::NULL);
+                continue;
+            };
+            let one = js_sys::Array::new();
+            one.push(&JsValue::from(width));
+            one.push(&JsValue::from(height));
+            one.push(&JsValue::from(rgba.as_ptr() as usize));
+            one.push(&JsValue::from(rgba.len()));
+            out.push(&one.into());
+            handed.push(rgba);
+        }
+        let _ = js_sys::Reflect::set(&out, &JsValue::from_str("memory"), &wasm_bindgen::memory());
+        out.into()
+    })
+}
+
+/// `scene`, painted over `rect`, as `(width, height, pixels)` at `scale`, or `None` when it paints
+/// nothing.
+fn shown(scene: &vello::Scene, rect: [f64; 4], scale: f64) -> Option<(u32, u32, Vec<u8>)> {
     if scene.encoding().is_empty() {
-        return JsValue::NULL;
+        return None;
     }
     let size = |side: f64| (side * scale).ceil().clamp(1.0, 4096.0);
     #[expect(
@@ -117,14 +146,7 @@ fn shown(scene: &vello::Scene, rect: [f64; 4], scale: f64) -> JsValue {
         reason = "clamped to 1..=4096 just above"
     )]
     let (width, height) = (size(rect[2]) as u32, size(rect[3]) as u32);
-    let Some(rgba) = picture(scene, width, height) else {
-        return JsValue::NULL;
-    };
-    let out = js_sys::Array::new();
-    out.push(&JsValue::from(width));
-    out.push(&JsValue::from(height));
-    out.push(&js_sys::Uint8ClampedArray::from(rgba.as_slice()).into());
-    out.into()
+    picture(scene, width, height).map(|rgba| (width, height, rgba))
 }
 
 /// The HTML presentation's code: what the module a page fetches hands over.

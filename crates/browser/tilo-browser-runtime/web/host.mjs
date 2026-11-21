@@ -340,7 +340,9 @@ export async function mountDesktop(target,options={}) {
       },
       picture:(paths,scale)=>{
         if(id===undefined||closed)return null;
-        try{return runtime.dom_pictures(id,paths,scale);}catch(error){report({domPicture:String(error)});return null;}
+        // Each picture's pixels are read where the runtime painted them, before the module is
+        // called again: the page puts them on their canvases at once.
+        try{const shown=runtime.dom_pictures(id,paths,scale),buffer=shown.memory.buffer;return Array.from(shown,one=>one&&[one[0],one[1],new Uint8ClampedArray(buffer,one[2],one[3])]);}catch(error){report({domPicture:String(error)});return null;}
       },
       semantic:(path,target,action,value,anchor,focus)=>{
         if(id===undefined||closed)return;
