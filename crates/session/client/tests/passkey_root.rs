@@ -17,9 +17,8 @@ use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_server_client::{
-    DeviceSigner, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
-};
+use tilo_enrollment::certification::{IssuedRole, certify_with_root, issue_device_cert};
+use tilo_server_client::{DeviceSigner, SignError, SignFuture};
 use tilo_user_identity::DeviceCapabilities;
 use tilo_user_identity::root_envelope::{RecoveryKey, RootEnvelope};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};

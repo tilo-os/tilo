@@ -213,10 +213,14 @@ async fn a_device_an_invitation_let_in_certifies_itself_again_and_is_back_in_the
     entered_peer.close();
 
     // The server is Alice's, the root Bob's: the root certifies Bob's own device all the same.
-    let (again, answered) =
-        tilo_server_client::certify_with_root(&*alices.https(), &bob, &page, "Firefox on Linux")
-            .await
-            .unwrap();
+    let (again, answered) = tilo_enrollment::certification::certify_with_root(
+        &*alices.https(),
+        &bob,
+        &page,
+        "Firefox on Linux",
+    )
+    .await
+    .unwrap();
     assert_eq!(answered, server_cert);
     assert_eq!(again.user_public_key, user);
     assert_eq!(again.device_public_key, page.verifying_key().to_bytes());

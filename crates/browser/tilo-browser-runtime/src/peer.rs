@@ -652,12 +652,12 @@ pub async fn issue_device_cert(
     role: String,
 ) -> Result<String, JsError> {
     let role = match role.as_str() {
-        "browser" => tilo_server_client::IssuedRole::Browser,
-        "node" | "session" => tilo_server_client::IssuedRole::Device,
+        "browser" => tilo_enrollment::certification::IssuedRole::Browser,
+        "node" | "session" => tilo_enrollment::certification::IssuedRole::Device,
         _ => return Err(js_error("role must be browser, node or session")),
     };
     let root = PageSigner::from_js(&root)?;
-    let cert = tilo_server_client::issue_device_cert(
+    let cert = tilo_enrollment::certification::issue_device_cert(
         &root,
         device_key(&device_public_key_hex)?,
         &label,
@@ -980,7 +980,7 @@ pub async fn certify_with_root(
     let root = PageSigner::from_js(&root)?;
     let signer = PageSigner::from_js(&device_key)?;
     let (cert, server_cert) =
-        tilo_server_client::certify_with_root(&PageHttp(post), &root, &signer, &label)
+        tilo_enrollment::certification::certify_with_root(&PageHttp(post), &root, &signer, &label)
             .await
             .map_err(js_error)?;
     serde_json::to_string(&Certified {

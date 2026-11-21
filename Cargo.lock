@@ -17882,6 +17882,7 @@ dependencies = [
  "tilo-clock",
  "tilo-device-mcp",
  "tilo-endpoint-reachability",
+ "tilo-enrollment",
  "tilo-files",
  "tilo-mcp",
  "tilo-net",

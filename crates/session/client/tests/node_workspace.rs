@@ -39,6 +39,7 @@ use neighbour_wire::NeighbourMsg;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tilo_device_identity::{IdentityPaths, persist};
+use tilo_enrollment::certification::{IssuedRole, certify_with_root, issue_device_cert};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::ServerConfig;
 use tilo_server::daemon::{Server, ServerIdentity};
@@ -46,10 +47,7 @@ use tilo_server::web::install::{InstallListener, SessionDevice};
 use tilo_server::web::{TlsSource, WebConfig};
 use tilo_server_client::https::invitation as invitation_offer;
 use tilo_server_client::invite::guest_certificate;
-use tilo_server_client::{
-    DeviceSigner, IssuedRole, ServerAddress, SignError, SignFuture, certify_with_root,
-    issue_device_cert,
-};
+use tilo_server_client::{DeviceSigner, ServerAddress, SignError, SignFuture};
 use tilo_server_protocol::workspaces::{
     JoinReply, PreAdmission, Role, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
 };
