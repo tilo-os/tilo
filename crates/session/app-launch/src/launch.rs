@@ -52,8 +52,14 @@ pub enum Launch {
         record: String,
         visitor: bool,
     },
-    /// A Tilo app opening content, by content address hash.
-    Content { app: String, hash: String },
+    /// A Tilo app opening content, by content address hash: what it shows read from the content
+    /// store, with the name of the file it is where the one handing it over knew it (`plan.md`) —
+    /// the name says what bytes cannot, that text is a note rather than a table.
+    Content {
+        app: String,
+        hash: String,
+        name: Option<String>,
+    },
     /// The notice a crashed app leaves behind: the app it names, nothing to
     /// start until the person asks for it again.
     Crashed { app: String },
@@ -87,12 +93,19 @@ impl Launch {
         }
         if let Some(rest) = launch.strip_prefix(CONTENT_PREFIX) {
             let (app, content) = rest.split_once(':')?;
-            // A window that handed over a file may name it after the hash (`:plan.txt`); the
-            // process opens the content by its hash alone.
-            let hash = content.split_once(':').map_or(content, |(hash, _)| hash);
+            // A window that handed over a file names it after the hash (`:plan.txt`): the app
+            // opens the content by its hash, under the name it is the file of.
+            let (hash, name) = match content.split_once(':') {
+                Some((hash, name)) => (
+                    hash,
+                    Some(name).filter(|name| tilo_actions::remote::valid_file_name(name)),
+                ),
+                None => (content, None),
+            };
             return (!app.is_empty() && !hash.is_empty()).then(|| Self::Content {
                 app: app.to_owned(),
                 hash: hash.to_owned(),
+                name: name.map(str::to_owned),
             });
         }
         if let Some(app) = launch.strip_prefix(CRASHED_PREFIX) {
@@ -157,7 +170,10 @@ impl Launch {
             Self::Host { desktop_id, .. } => format!("{HOST_PREFIX}{desktop_id}"),
             Self::Window { id } => format!("{WINDOW_PREFIX}{id}"),
             Self::Record { app, record, .. } => format!("{RESOURCE_PREFIX}{app}:{record}"),
-            Self::Content { app, hash } => format!("{CONTENT_PREFIX}{app}:{hash}"),
+            Self::Content { app, hash, name } => match name {
+                Some(name) => format!("{CONTENT_PREFIX}{app}:{hash}:{name}"),
+                None => format!("{CONTENT_PREFIX}{app}:{hash}"),
+            },
             Self::Crashed { app } => format!("{CRASHED_PREFIX}{app}"),
         }
     }
@@ -205,16 +221,18 @@ mod tests {
                 Launch::parse(&format!("content:so.tilo.photos:{}", "0".repeat(64))),
                 Some(Launch::Content {
                     app: "so.tilo.photos".into(),
-                    hash: "0".repeat(64)
+                    hash: "0".repeat(64),
+                    name: None
                 })
             );
             assert_eq!(
                 Launch::parse(&format!("content:so.tilo.photos:{}:sunset.png", "0".repeat(64))),
                 Some(Launch::Content {
                     app: "so.tilo.photos".into(),
-                    hash: "0".repeat(64)
+                    hash: "0".repeat(64),
+                    name: Some("sunset.png".into())
                 }),
-                "a file handed over by its name opens by its hash"
+                "a file handed over by its name opens under it"
             );
             assert_eq!(
                 Launch::crashed("so.tilo.canvas"),
@@ -237,6 +255,7 @@ mod tests {
                 "window:41",
                 "record:so.tilo.sheets:budget",
                 "crashed:so.tilo.canvas",
+                &format!("content:so.tilo.photos:{}:sunset.png", "0".repeat(64)),
             ] {
                 let parsed = Launch::parse(launch).expect("a launch");
                 assert_eq!(parsed.id(), launch, "{launch} is asked for again as it was");

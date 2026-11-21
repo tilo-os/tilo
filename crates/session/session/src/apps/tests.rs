@@ -717,3 +717,41 @@ fn a_stop_the_person_asked_for_before_the_window_came_closes_its_tab() {
         "the tab held for the window is closed: {shown:?}"
     );
 }
+
+/// A hosted window's instance is handed the file its launch opened as the content it is: the same
+/// `File` a chooser gives the app, its hash and its name, never a path its process has nowhere to
+/// read.
+#[test]
+fn a_hosted_window_opens_a_file_by_its_content_and_name() {
+    let hash = "ab".repeat(32);
+    let launch = Launch::parse(&format!("content:so.tilo.lang.notes:{hash}:plan.md"))
+        .expect("a content launch");
+    let opens = window_opens(&launch, None, true).expect("a hosted window opens a file");
+    assert_eq!(
+        opens.content,
+        Some(tilo_app_launch::ContentOpen {
+            hash: hash.clone(),
+            name: Some("plan.md".into()),
+        })
+    );
+    assert_eq!(
+        opens.open, None,
+        "an app with no path of its own is handed none"
+    );
+    // A window that holds its app's data opens the path itself, and no content.
+    assert_eq!(
+        window_opens(&launch, None, false)
+            .expect("a window of an app that holds its data")
+            .content,
+        None
+    );
+    // A path is no file for a hosted window: nothing in its process could read it.
+    let path = Launch::Package {
+        app: "so.tilo.lang.notes".into(),
+        open: Some(tilo_app_launch::Open::File("plan.md".into())),
+    };
+    assert!(
+        window_opens(&path, None, true).is_err(),
+        "a hosted window is handed no path"
+    );
+}

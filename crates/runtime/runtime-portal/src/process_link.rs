@@ -158,6 +158,18 @@ pub struct AppAccess {
     pub access: Option<MemberAccess>,
 }
 
+/// A file an instance was opened with: the hash its content has in the session's content store,
+/// and the name of the file it is where the one handing it over knew it (`plan.md`). The instance
+/// reads the bytes by the hash and hands the action the same `File` value a chooser gives it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenedFile {
+    pub hash: String,
+    /// The name of the file, where the app that handed it over knew it: the bytes alone say an
+    /// image is a PNG, never that text is a note rather than a table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// A later build of one app the process runs ([`ToProcess::Build`]): its instances take it over.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppBuild {
@@ -201,6 +213,12 @@ pub struct InstanceRequest {
     /// a window asked for another is refused rather than shown that one.
     pub document: Option<String>,
     pub reveal: Option<String>,
+    /// The file the app was opened with, when its launch named one: the instance runs the action
+    /// its package declares for the file's kind with it, as a chooser hands a file to an action.
+    /// The instance reads the bytes from the content store by their hash; a session that opens no
+    /// files leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<OpenedFile>,
     /// The tilolang apps installed here, by id, each with the id its documents are kept under: a
     /// package the app uses that is one of them is another app, whose documents the instance reads
     /// from that app's own document and whose changes it asks of that app's link. A package it uses
@@ -596,6 +614,10 @@ mod tests {
             language: "de-DE".into(),
             document: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
             reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
+            open: Some(OpenedFile {
+                hash: "ab".repeat(32),
+                name: Some("plan.md".into()),
+            }),
             installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
             access: Some(MemberAccess::person(
                 tilo_action_policy::WorkspacePolicy::new(

@@ -45,7 +45,7 @@ use std::sync::{Arc, Mutex};
 
 use launcher::run::tilolang_process::VerifiedInstance;
 use runtime_portal::process_link::{
-    AppBuild, FromProcess, InstanceFds, InstanceRequest, Packet as _, ToProcess,
+    AppBuild, FromProcess, InstanceFds, InstanceRequest, OpenedFile, Packet as _, ToProcess,
 };
 
 /// Hand the process behind `socket` the instance `request` with its connections, keeping them
@@ -462,6 +462,10 @@ impl Processes {
             language: ui::i18n::preferred_language().unwrap_or_default(),
             document: instance.opens.record,
             reveal: instance.opens.reveal,
+            open: instance.opens.content.map(|content| OpenedFile {
+                hash: content.hash,
+                name: content.name,
+            }),
             installed: if uses_packages {
                 installed_apps()
             } else {

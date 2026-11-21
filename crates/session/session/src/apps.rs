@@ -1838,6 +1838,16 @@ impl Apps {
             .map_err(|error| failed(error.to_string()))?;
         let launch = launch.as_ref();
         let opens = window_opens(launch, reveal, hosted).map_err(failed)?;
+        // A hosted app's file reaches its window's instance as content, never its command line: the
+        // process it starts is the app's, and the file rides with the instance.
+        let planned_launch = match (hosted, launch) {
+            (true, Launch::Content { app, .. }) => Launch::Package {
+                app: app.clone(),
+                open: None,
+            },
+            _ => launch.clone(),
+        };
+        let planned_launch = &planned_launch;
         // A window of a hosted app whose tab this session named itself, which happens only in a
         // session with no shell behind it: the tab is the window's instance, and it is the only
         // name the window has.
@@ -1845,7 +1855,8 @@ impl Apps {
             (Some(links), true) => instance.or_else(|| Some(links.next_instance())),
             _ => instance,
         };
-        let mut planned = self.planned_or_failed(launch, workspace, new_window, instance, timed)?;
+        let mut planned =
+            self.planned_or_failed(planned_launch, workspace, new_window, instance, timed)?;
         tilo_startup_metrics::launch_phase(app, "planned");
         self.told_what_to_show(&mut planned, reveal, hosted);
         let asked = launch.id();
@@ -2123,23 +2134,18 @@ impl Apps {
     }
 }
 
-/// What the window `launch` starts shows: the record it names and the item it opens on
-/// (`reveal`). A hosted window's instance is handed both, the first window's as every later
-/// one's; its app opens no file or link, only its records, so a `hosted` launch naming one is
-/// refused.
+/// What the window `launch` starts shows: the record it names, the item it opens on (`reveal`),
+/// and the file it opens. A hosted window's instance is handed all three, the first window's as
+/// every later one's: a file it opens is the content the app's process reads, never a path it has
+/// none of, so a `hosted` launch naming a path is refused.
 fn window_opens(
     launch: &Launch,
     reveal: Option<&str>,
     hosted: bool,
 ) -> Result<tilo_app_launch::Opens, String> {
-    if hosted
-        && matches!(
-            launch,
-            Launch::Package { open: Some(_), .. } | Launch::Content { .. }
-        )
-    {
+    if hosted && matches!(launch, Launch::Package { open: Some(_), .. }) {
         return Err(format!(
-            "{} opens no file or link: its windows show its records",
+            "{} opens no file of this device's: its windows show its records and their content",
             launch.app()
         ));
     }
@@ -2158,6 +2164,13 @@ fn window_opens(
                 open: Some(tilo_app_launch::Open::Uri(uri)),
                 ..
             } => Some(uri.clone()),
+            _ => None,
+        },
+        content: match launch {
+            Launch::Content { hash, name, .. } if hosted => Some(tilo_app_launch::ContentOpen {
+                hash: hash.clone(),
+                name: name.clone(),
+            }),
             _ => None,
         },
     })

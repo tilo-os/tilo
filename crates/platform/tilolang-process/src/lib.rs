@@ -211,6 +211,9 @@ struct Opening {
     language: Option<String>,
     /// The item its window was asked to open on ([`InstanceRequest::reveal`]).
     reveal: Option<String>,
+    /// The file the app was opened with ([`InstanceRequest::open`]), which the instance runs its
+    /// package's action for once its surface is published.
+    open: Option<runtime_portal::process_link::OpenedFile>,
     /// What its connection delivered while the route joined that the instance takes once it
     /// runs: the workspace's member list, which the broker hands a connection once.
     early: Vec<collaboration::CollabEvent>,
@@ -528,6 +531,7 @@ impl TilolangProcess {
         let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
         let (app, instance) = (request.app.clone(), request.instance);
         let reveal = request.reveal.clone();
+        let open = request.open.clone();
         std::thread::Builder::new()
             .name("tilolang-module".into())
             .spawn(move || {
@@ -555,6 +559,7 @@ impl TilolangProcess {
             person_changed: false,
             language: None,
             reveal,
+            open,
             early: Vec::new(),
         });
         Ok(())
@@ -589,6 +594,7 @@ impl TilolangProcess {
             person_changed: false,
             language: None,
             reveal: None,
+            open: None,
             early: Vec::new(),
         });
     }
@@ -889,6 +895,11 @@ impl TilolangProcess {
         // The item its window was asked to open on, shown as its `open` shows one.
         if let Some(anchor) = opening.reveal.take() {
             hosted.reveal(anchor);
+        }
+        // The file the app was opened with, which its package's action takes once the window's
+        // surface is published.
+        if let Some(file) = opening.open.take() {
+            hosted.open_file(file);
         }
         self.attach_origin(opening, &mut hosted)?;
         opening.reached("opened");

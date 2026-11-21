@@ -75,7 +75,7 @@ pub struct HostedWindow {
 /// What a window is asked to show: the record a launch named, the item the window opens on, and
 /// the file or link it opens. A window that holds its app's data opens the record itself, from
 /// its launch's command line, and the item and the file from its window request; a hosted
-/// window's instance is handed the record and the item, and opens no file.
+/// window's instance is handed the record, the item and the file it opens.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Opens {
     /// The record the launch named, by its id.
@@ -85,6 +85,17 @@ pub struct Opens {
     pub reveal: Option<String>,
     /// The file (at the path the app's sandbox holds it at) or link the launch names.
     pub open: Option<String>,
+    /// The file the launch opens, as content the instance reads from the content store: what an
+    /// app with no path of its own is handed, the same `File` a chooser gives it.
+    pub content: Option<ContentOpen>,
+}
+
+/// A file an app is opened with, by the hash of its content and the name it is known by: the
+/// same `File` value a chooser gives the app, whose bytes the content store holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentOpen {
+    pub hash: String,
+    pub name: Option<String>,
 }
 
 /// What the session does with a hosted window's instance.

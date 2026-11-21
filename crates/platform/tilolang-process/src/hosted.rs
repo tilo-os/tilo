@@ -24,6 +24,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::Write as _;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -51,6 +52,7 @@ use tilolang_tilo::publish::{
     Caller, Committer, Moved, Planner, Publications, host_resource, publish_package,
 };
 use tilolang_tilo::runtime::ids::MemberId;
+use tilolang_tilo::runtime::{InvokeOutcome, Value};
 use tilolang_tilo::used::UsedApp;
 
 mod used;
@@ -831,6 +833,12 @@ pub struct Hosted {
     presence: Presence,
     /// What the connection delivered before the instance ran, taken on its first frame.
     early: Vec<CollabEvent>,
+    /// The file the app was opened with, until the turn that published its surface runs the action
+    /// its package declares for the file's kind ([`Self::opened`]).
+    opening: Option<runtime_portal::process_link::OpenedFile>,
+    /// The content store the app's files are kept in, which the session opened for it: the bytes
+    /// of the file its launch named are read from here, as its own `file.text()` reads them.
+    files: Option<tilo_content::ContentStore>,
 }
 
 /// The wake scope a document's code runs in, the document's content store registered for it: an
@@ -973,6 +981,8 @@ impl Hosted {
             access,
             presence,
             early: Vec::new(),
+            opening: None,
+            files: kept.content.clone(),
         }
     }
 
@@ -980,6 +990,13 @@ impl Hosted {
     /// instance loads its package.
     pub(crate) fn follow_builds(&self, builds: Arc<LaterBuilds>) {
         *self.builds.borrow_mut() = Some(builds);
+    }
+
+    /// Open `file` in the app on the turn that publishes its surface: the action its package
+    /// declares for the file's kind runs with it, as a chooser hands a file to an action, and what
+    /// it made opens in the window.
+    pub fn open_file(&mut self, file: runtime_portal::process_link::OpenedFile) {
+        self.opening = Some(file);
     }
 
     /// Show `anchor` in the window, as a search hit or an agent's `open` of it does.
@@ -1190,7 +1207,134 @@ impl Hosted {
         self.publish();
         self.answer_directory();
         self.publish_search_index();
+        changed |= self.opened();
         changed
+    }
+
+    /// Run the action the package declares for the file the app was opened with, once the
+    /// instance has published its surface: what a person gets by opening a file in the app, as a
+    /// chooser hands one to an action. What the action made opens in the window, as a press of a
+    /// primary action's does. Whether a file was opened.
+    fn opened(&mut self) -> bool {
+        let Some(file) = self.opening.take() else {
+            return false;
+        };
+        let opening = match &file.name {
+            Some(name) => format!("`{name}`"),
+            None => "the file".to_owned(),
+        };
+        // The action its package declares for this kind of file: the extension the name ends in,
+        // which is the narrower claim, else the media type the name declares.
+        let declared = self
+            .bundle
+            .meta
+            .actions
+            .iter()
+            .filter(|action| !action.opens.is_empty())
+            .find(|action| declared_for_file(action, &file))
+            .cloned();
+        let Some(action) = declared else {
+            // The app does not open this kind of file: its window shows its records, and says why
+            // rather than opening a window that took nothing.
+            self.instance
+                .failed(format!("`{}` does not open {opening}", self.spec.app));
+            return true;
+        };
+        self.open_declared(&action, file, &opening);
+        true
+    }
+
+    /// Run `action` with `file` on the root it opens into, as a view's `file.choose` runs the
+    /// action it hands the file to, and open what it made. A file whose bytes are a workspace
+    /// file's manifest is joined to the file it is first.
+    fn open_declared(
+        &mut self,
+        action: &tilolang_tilo::tilolang::meta::ActionMeta,
+        file: runtime_portal::process_link::OpenedFile,
+        opening: &str,
+    ) {
+        let Some(target) = self.bundle.meta.target_of(&action.params) else {
+            return;
+        };
+        let media = tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
+        // What a person's file is: its bytes, or the chunks of a workspace file the store keeps a
+        // manifest of, joined as the file they are.
+        let Some(content) = self.files.as_ref() else {
+            self.instance
+                .failed(crate::files::NO_CONTENT_STORE.to_owned());
+            return;
+        };
+        let max = u64::try_from(tilolang_tilo::runtime::blob::MAX_CHOSEN).unwrap_or(u64::MAX);
+        let bytes = content.read(&file.hash).and_then(|read| {
+            ui::content::manifest::whole(read, max, |chunk| {
+                let mut address = String::with_capacity(64);
+                for byte in chunk {
+                    let _ = write!(address, "{byte:02x}");
+                }
+                content.read(&address)
+            })
+        });
+        let Some(bytes) = bytes else {
+            self.instance.failed(format!("{opening} could not be read"));
+            return;
+        };
+        let opened = tilolang_tilo::runtime::blob::FileValue::new(
+            file.name.unwrap_or_default(),
+            media,
+            i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            file.hash,
+        );
+        let Some(host) = self.instance.host() else {
+            return;
+        };
+        let root = match host.root_resource(&self.spec.app, &target.id) {
+            Ok(root) => root,
+            Err(error) => {
+                self.instance.failed(error.to_string());
+                return;
+            }
+        };
+        let actor = tilolang_tilo::runtime::Actor::Member(MemberId::person(&self.spec.person));
+        let first = host.next_ticket();
+        let outcome = host.runtime().invoke_action(
+            &actor,
+            (
+                action.id.as_str(),
+                vec![Value::resource(&root), Value::file(opened)],
+            ),
+        );
+        let made = match outcome {
+            Ok(InvokeOutcome::Done(Value::Ref(made))) => {
+                Some(std::rc::Rc::unwrap_or_clone(made.target))
+            }
+            Ok(InvokeOutcome::Done(_)) => None,
+            Ok(other) => {
+                self.instance
+                    .failed(format!("{opening} was not opened: {other:?}"));
+                return;
+            }
+            Err(error) => {
+                self.instance.failed(error.to_string());
+                return;
+            }
+        };
+        let invoker = ActionInvoker::person(self.spec.person.clone());
+        // What the action wrote is the person's step on the document, as one a view ran is.
+        for committed in host.take_committed_from(first) {
+            if let Err(error) =
+                self.record
+                    .apply_invoked(&mut self.instance, &committed.action, &invoker, None)
+            {
+                tracing::warn!(app = self.spec.app, %error, "an opened file's change was not kept");
+            }
+        }
+        if let Some(made) = made {
+            self.instance
+                .opens_what_it_made(tilolang_tilo::publish::resource_id(
+                    &self.spec.app,
+                    &made.id_string(),
+                ));
+        }
     }
 
     /// Commit what the runtime planned and send it on the route. Whether anything was.
@@ -2610,6 +2754,25 @@ fn published_in(
         }
     }
     tilo_actions::InteractionAnchor::Text { region, ranges }
+}
+
+/// Whether `action` is the one a package declares for the file `file`: the extension its name ends
+/// in, which is the narrower claim, or the media type the name declares.
+fn declared_for_file(
+    action: &tilolang_tilo::tilolang::meta::ActionMeta,
+    file: &runtime_portal::process_link::OpenedFile,
+) -> bool {
+    let media = tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
+    action.opens.iter().any(|kind| {
+        if kind.contains('/') {
+            *kind == media
+        } else {
+            file.name.as_deref().is_some_and(|name| {
+                name.rsplit_once('.')
+                    .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case(kind))
+            })
+        }
+    })
 }
 
 fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_actions::ActionOutput {

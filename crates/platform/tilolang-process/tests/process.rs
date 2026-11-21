@@ -2744,3 +2744,113 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
         },
     );
 }
+
+/// The Notes app, and Discussion it is made with: the app a Markdown file opens in.
+fn notes_bundle() -> Bundle {
+    let discussion = tilolang::compile_package(
+        include_str!("../../../../apps/tl/discussion/app.tl"),
+        &tilolang::IdsLock::new(),
+        &[],
+    )
+    .unwrap_or_else(|_| panic!("the discussion app compiles"));
+    let lock = tilolang::IdsLock::parse(include_str!("../../../../apps/tl/notes/app.ids")).unwrap();
+    let compiled = tilolang::compile_package(
+        include_str!("../../../../apps/tl/notes/app.tl"),
+        &lock,
+        std::slice::from_ref(&discussion.meta),
+    )
+    .unwrap_or_else(|_| panic!("the notes app compiles"));
+    Bundle::new(&compiled, [])
+}
+
+/// The notes the app's notebook holds, as the titles and the files they came from.
+fn notes_made(host: &TilolangProcess) -> Vec<(String, String)> {
+    fn text(
+        host: &tilolang_tilo::host::Host,
+        at: &tilolang_tilo::runtime::ResourceRef,
+        field: &str,
+    ) -> String {
+        match host.runtime().read(at, field).unwrap() {
+            Value::Text(text) => text,
+            other => panic!("a note's {field} reads as {other:?}"),
+        }
+    }
+    let hosted = host.instances().next().expect("the window's instance runs");
+    let live = hosted.instance().host().expect("the instance's host");
+    let root = live.root_of(NOTES).unwrap();
+    let notes = match live.runtime().read(&root, "notes").unwrap() {
+        Value::List(items) => items,
+        other => panic!("the notebook's notes read as {other:?}"),
+    };
+    notes
+        .iter()
+        .map(|note| {
+            let Value::Ref(note) = note else {
+                panic!("a note is a reference")
+            };
+            (
+                text(&live, &note.target, "title"),
+                text(&live, &note.target, "origin"),
+            )
+        })
+        .collect()
+}
+
+/// A window opened with a file runs the action its package declares for that kind of file: the
+/// app's process reads the bytes from the content store and hands the action the same `File` a
+/// chooser gives it, and what it made opens in the window. A Markdown file opened in Notes becomes
+/// the note its first heading names, and keeps the file it came from.
+#[test]
+fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
+    let broker = Broker::new(route.clone());
+    let sent = broker.sent();
+    let mut manager = CollaborationManager::with_peer_transport(broker);
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: None,
+        resource_type: None,
+        handle: Some("ada".to_owned()),
+    }));
+    let _ = manager.poll();
+    let content = tilo_content::ContentStore::memory();
+    let hash = content.put(b"# Plan\n\n- one\n").unwrap();
+    // The content store the session opens for the app in its workspace: what the file the window
+    // was opened with is read from, and what its own `file.text()` reads.
+    let kept = tilolang_process::hosted::Kept {
+        documents: Rc::new(durable_store::MemoryStore::default()),
+        indexes: None,
+        content: Some(content.clone()),
+        chooser: None,
+    };
+    let record = InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), "ada")
+        .keeping_content_in(content);
+    let mut host = TilolangProcess::new(None, wake());
+    let (ours, theirs) = Channel::pair().unwrap();
+    let watched = ours.as_fd().try_clone_to_owned().unwrap();
+    let mut hosted = Hosted::with_document(
+        Spec::new(NOTES, route.cluster_id.to_string(), 1, "ada"),
+        record,
+        Arc::new(notes_bundle()),
+        &kept,
+        Box::new(ChannelTransport::new(ours).unwrap()),
+        &Rc::new(Phrases::new("en-US")),
+        host.formats(),
+        wake(),
+    );
+    hosted.open_file(runtime_portal::process_link::OpenedFile {
+        hash,
+        name: Some("plan.md".into()),
+    });
+    host.add(hosted, Some(watched));
+    let mut window = Window::over(ChannelTransport::new(theirs).unwrap());
+    settle(&mut host, &mut window);
+    assert_eq!(
+        notes_made(&host),
+        [("Plan".to_owned(), "plan.md".to_owned())],
+        "the file became the note its heading names, keeping the file it came from"
+    );
+    drop(sent);
+}
