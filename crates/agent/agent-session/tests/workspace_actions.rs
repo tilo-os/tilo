@@ -251,9 +251,6 @@ mod resource_support;
 #[path = "workspace_actions/route_parity.rs"]
 mod route_parity;
 #[cfg(test)]
-#[path = "workspace_actions/scale.rs"]
-mod scale;
-#[cfg(test)]
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
 #[cfg(test)]
