@@ -77,25 +77,38 @@ try {
     await tab.navigate(site);
     let handed = null;
     let arrival = null;
+    let last_words = null;
     for (let i = 0; i < 960; i++) {
       const state = await tab.evaluate(`(() => {
         if (location.pathname.startsWith('/w/')) return 'handed';
         const arrival = document.documentElement.dataset.arrival;
         if (arrival === 'stopped') return 'stopped';
         if (arrival === 'done') return 'done';
-        const join = [...document.querySelectorAll('button')].find(b => /^(Join|Join Tilo|Continue|Accept|Open)$/i.test(b.textContent.trim()));
-        if (join && !join.disabled && !join.dataset.pressed) { join.dataset.pressed = '1'; join.click(); }
-        return '';
+        // The card's way in, pressed once: a failure screen's own offer is
+        // the entry's to say, and pressing it again is not a person's choice.
+        const join = [...document.querySelectorAll('button')].find(b => /^Join\b/i.test(b.textContent.trim()));
+        if (join && !join.disabled && !join.dataset.pressed) { join.dataset.pressed = '1'; join.click(); return 'pressed'; }
+        return document.body?.innerText?.trim().slice(0, 160) ?? '';
       })()`).catch(() => '');
       if (state === 'handed') { handed = i * 250; break; }
       if (state === 'stopped' || state === 'done') { arrival = state; break; }
+      if (state && state !== 'pressed') last_words = state;
       await sleep(250);
     }
+    // What the entry asked for, by path: an entry that never arrives says
+    // what it kept asking for.
+    const asked = new Map();
+    for (const request of wire.requests) {
+      const path = request.slice(request.indexOf(' ') + 1);
+      asked.set(path, (asked.get(path) ?? 0) + 1);
+    }
+    const busiest = [...asked.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
     step(`${label}: arrival`, {
       handed,
       arrival,
+      words: last_words,
       path: await tab.evaluate('location.pathname').catch(() => null),
-      entry: {documentBytes: wire.doc, scriptBytes: wire.script, otherBytes: wire.other, requests: wire.requests.length},
+      entry: {documentBytes: wire.doc, scriptBytes: wire.script, otherBytes: wire.other, requests: wire.requests.length, busiest},
     });
     if (handed === null) problems.push(`${label}: the entry did not hand the browser to the page`);
     step(`${label}: devices this browser kept`, {
@@ -260,7 +273,9 @@ try {
   step('home apps', {links});
   if (links.length < 5) problems.push(`the workspace's page offers ${links.length} apps`);
   await press(`document.querySelector('#tilo-page a[href$="/notes"]')`, 'Notes on the workspace page');
-  if (await until(`location.pathname.endsWith('/notes') && document.querySelector('#tilo-page [data-p]')`, 30_000) === null) {
+  // The page names what it opened: the app's page, and then the note inside
+  // it that the app had open last.
+  if (await until(`location.pathname.includes('/notes') && document.querySelector('#tilo-page [data-p]')`, 30_000) === null) {
     problems.push('an app on the workspace page did not open');
   }
   await look('12-home-to-notes');
