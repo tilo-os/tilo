@@ -78,7 +78,7 @@ protection.
 ### Callers the store cannot examine
 
 The store names each caller by reading `/proc/<pid>/exe`. Loading the device
-key makes a process non-dumpable (`tilo_user_identity::persist`), and the
+key makes a process non-dumpable (`tilo_device_identity::persist`), and the
 kernel then refuses that link to every other process of the same user
 (`EACCES`: only `CAP_SYS_PTRACE` passes, which nothing in the session holds,
 and the store's unit has no capabilities at all). The compositor

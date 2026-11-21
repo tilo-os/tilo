@@ -82,8 +82,8 @@ routing metadata and wants content.
 One chain, five uses.
 
 ```
-account key            person-scoped, recoverable, never on a single device alone
-  └── device cert      per machine, hardware-bound where hardware allows, individually revocable
+account key            person-scoped, restorable from its 24 recovery words
+  └── device cert      one per computer, over that computer's one device key, individually revocable
         ├── disk unlock       LUKS keyslot
         ├── login             per-user home credential
         ├── peer identity     the node identity on the network
@@ -93,23 +93,28 @@ account key            person-scoped, recoverable, never on a single device alon
 
 ### 3.1 Account key
 
-Created once, with the person, not with the machine. Held as a threshold key across the user's
-devices so that no single device holds it whole and losing one device does not lose the account.
-An offline recovery share is minted **at creation time**. Creating it later would leave the account
-without recovery until then.
+Created once, with the person, not with the machine, and kept by `tilo_identity::store`: one
+Ed25519 key in the person's identity directory (`$XDG_CONFIG_HOME/tilo/identity`), its secret in
+the Secret Service or a 0600 file ([identity-security.md](../identity-security.md)). The record
+format has room for a threshold key, but every identity today is a single key held whole on each
+computer the person keeps it on. Losing one such computer loses nothing, and losing all of them is
+what the recovery words are for (§3.5).
 
 The account key's only jobs: sign device certificates, and sign revocations.
 
 ### 3.2 Device certificate
 
-Binds a device key to the account. Where a TPM or FIDO2 token is present the device key is
-generated in and never leaves that hardware. Where neither is present it is a software key in device storage, because
-the machine needs its identity before anyone signs in ([sign-in.md](sign-in.md) §2). **The certificate is the same shape either way**, so every consumer of
-identity is unaware of what kind of hardware, if any, sits underneath.
+Binds a device key to the account (`tilo_user_identity::DeviceCert`). Each computer has exactly
+one device key, kept by `tilo_device_identity::IdentityPaths`: a file the device-trust group reads
+(`device-private/keypair.bin`), or on macOS a login Keychain item. It is a software key, created
+before anyone signs in because the machine needs its identity first ([sign-in.md](sign-in.md) §2).
+No device key is generated in or sealed to a TPM or FIDO2 token today. If one is, the certificate
+keeps the same shape, so no consumer of identity has to know what holds the key.
 
-The set of authorised devices is a replicated CRDT set from day one, never a scalar and never a
-distinguished "owner" field. A system that special-cases the first device needs a rewrite to
-support the second.
+The set of authorised devices is one signed list per person, never a scalar and never a
+distinguished "owner" field: `DeviceFleetStore` keeps it in the person's identity directory and
+`CertifiedFleet` verifies it. A device joins it one way, `tilo-enrollment`'s `join_with_token`;
+a login code, a pairing code, a QR code and a boot-key request only supply the token.
 
 A certificate that carries an expiry is renewed before it runs out — by a device holding the
 account key, or, for a device that holds none, through the person's other devices that do. How
@@ -137,9 +142,10 @@ browser's 30 days count from the earlier start too, so nothing lasts longer than
 
 ### 3.3 What this replaces
 
-Every identity in the system derives from the device certificate. There is exactly one
-cryptographic identity per device, and its public half is the name other machines know it by. No
-subsystem mints its own.
+Every identity in the system should derive from the device certificate: one cryptographic
+identity per device, whose public half is the name other machines know it by. Today `tilo login`
+still mints a key of its own for the command line (`tilo-api` `client/device.rs`); that key is
+being replaced by the `IdentityPaths` one, after which no subsystem mints its own.
 
 ### 3.4 Revocation
 
@@ -187,14 +193,14 @@ Three independent scopes, none of which can be lost by the same event:
 
 | Loss | Recovery |
 |---|---|
-| Forgot PIN | Recovery key unlocks the disk |
-| Dead TPM / new motherboard | Recovery key unlocks, one-tap re-seal to the new chip |
+| Forgot PIN | The disk's recovery key unlocks it ([sign-in.md](sign-in.md) §4.5) |
 | Lost one device | Any other device revokes it; account is untouched |
-| Lost every device | Offline recovery share reconstitutes the account |
+| Lost every device | The account's 24 recovery words restore its key on a new computer |
 
-The recovery key is created and displayed **at the moment encryption is enabled**, as a QR code
-that can be printed or photographed, and enrollment does not complete until the user confirms they
-have it. The TPM keyslot is a convenience; the recovery key is the guarantee.
+The account's recovery words are its 32-byte seed written as 24 BIP39 words
+(`tilo_identity::store::recovery_words`). Onboarding shows them when it creates the person, and
+they restore the identity in onboarding or with `tilo login --recovery-key`. They are the only
+recovery format: there is no recovery share, and nothing reconstitutes an account from parts.
 
 ### 3.6 One secret
 
