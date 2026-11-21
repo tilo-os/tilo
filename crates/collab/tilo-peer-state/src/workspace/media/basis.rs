@@ -1,114 +1,66 @@
 //! The security-basis algorithm.
-use super::{MediaPolicyError, read::Error};
+use super::MediaPolicyError;
 use crate::cached_document::CachedDocument;
 use crate::state::GovernedIdentity;
-use crate::workspace::read::collections::Collections;
-use crate::workspace::read::{self, Capacity, LegacyRead, ReadError, WorkspaceRead};
+use crate::workspace::read::{self, WorkspaceRead, policy_error};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use tilo_action_policy::Role;
-use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
+use tilo_user_identity::{RevocationEntry, RevocationList};
 
-trait Decode {
-    fn identity(&self, key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error>;
-}
-struct Legacy;
-impl Decode for Legacy {
-    fn identity(&self, _key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
-        GovernedIdentity::decode(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
-    }
-}
-/// The identity rows as their governance state decoded them once, the rest
-/// as [`Legacy`] decodes it.
-struct Decoded<'a>(&'a CachedDocument);
-impl Decode for Decoded<'_> {
-    fn identity(&self, key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
-        match self.0.decoded_identity(key, bytes) {
-            Some(identity) => Ok(identity.clone()),
-            None => Legacy.identity(key, bytes),
-        }
-    }
-}
-fn policy(error: MediaPolicyError) -> Error {
-    Error::Policy(error)
-}
-pub(super) fn strict_error(error: ReadError<MediaPolicyError>) -> Error {
-    match error {
-        ReadError::Malformed => policy(MediaPolicyError::Malformed),
-        ReadError::Capacity => Error::Capacity,
-        ReadError::Visitor(error) => policy(error),
-    }
-}
-pub(super) fn visit_error(error: ReadError<Error>) -> Error {
-    match error {
-        ReadError::Malformed => policy(MediaPolicyError::Malformed),
-        ReadError::Capacity => Error::Capacity,
-        ReadError::Visitor(error) => error,
-    }
-}
-
-pub(super) fn legacy(
+/// The security basis of `workspace` under the revocations `extra` adds.
+pub(super) fn of_document(
     workspace: &automerge::AutoCommit,
     extra: &[RevocationEntry],
 ) -> Result<[u8; 32], MediaPolicyError> {
     project(
-        &LegacyRead(workspace),
-        &Legacy,
+        workspace,
+        None,
         &crate::members::replay_declared(workspace),
         extra,
-        &mut Work {
-            collections: Collections::unqualified(),
-        },
     )
-    .map_err(super::read::legacy_error)
 }
 
-/// [`legacy`] of a governance state whose identity rows are decoded once for
-/// it.
+/// [`of_document`] of a governance state whose identity rows are decoded
+/// once for it.
 pub(super) fn decoded(
     workspace: &CachedDocument,
     extra: &[RevocationEntry],
 ) -> Result<[u8; 32], MediaPolicyError> {
     project(
-        &LegacyRead(&**workspace),
-        &Decoded(workspace),
+        &**workspace,
+        Some(workspace),
         &crate::members::replay_declared(workspace),
         extra,
-        &mut Work {
-            collections: Collections::unqualified(),
-        },
     )
-    .map_err(super::read::legacy_error)
+}
+
+fn encoded<T: Serialize>(value: &T) -> Result<Vec<u8>, MediaPolicyError> {
+    postcard::to_allocvec(value).map_err(|_| MediaPolicyError::Malformed)
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "one canonical basis projection, in wire order"
 )]
-fn project<'a, R: WorkspaceRead, D: Decode>(
-    workspace: &R,
-    decoder: &D,
+fn project<'a>(
+    workspace: &impl WorkspaceRead,
+    decoded: Option<&CachedDocument>,
     membership: &tilo_action_policy::WorkspacePolicy,
     extra: impl IntoIterator<Item = &'a RevocationEntry>,
-    work: &mut Work,
-) -> Result<[u8; 32], Error> {
-    let owner = read::strict_string(workspace, &workspace.root(), "owner").map_err(strict_error)?;
-    let owner_key = super::canonical_key(&owner).map_err(policy)?;
+) -> Result<[u8; 32], MediaPolicyError> {
+    let root = automerge::ROOT;
+    let owner = read::strict_string(workspace, &root, "owner").map_err(policy_error)?;
+    let owner_key = super::canonical_key(&owner)?;
     // The membership as the log makes it: who is in, and each grant by id.
     let mut grants = BTreeMap::new();
     for grant in &membership.grants {
-        let encoded = work.encoded(grant)?;
-        let key = work.text(grant.id.as_str())?;
-        work.tree_entry::<String, Vec<u8>>()?;
-        grants.insert(key, encoded);
+        grants.insert(grant.id.as_str().to_owned(), encoded(grant)?);
     }
     let mut members = BTreeMap::new();
     for (person, role) in &membership.members {
-        let key = work.text(person)?;
-        work.tree_entry::<String, Role>()?;
-        members.insert(key, *role);
+        members.insert(person.clone(), *role);
     }
-    let peers = read::strict_map(workspace, &workspace.root(), "peers").map_err(strict_error)?;
+    let peers = read::strict_map(workspace, &root, "peers").map_err(policy_error)?;
     // The names the workspace keeps, by the key each is for: a device's, or a
     // person's root for someone it holds by root alone (a declared owner,
     // before any device of theirs arrived). Which is which the identity rows
@@ -116,38 +68,39 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
     let mut named = BTreeSet::new();
     workspace
         .visit_entries(&peers, read::Selection::All, &mut |key, values| {
-            read::strict_string_of(values).map_err(strict_error)?;
-            let key = super::canonical_key(key).map_err(policy)?;
-            work.tree_entry::<[u8; 32], ()>()?;
-            named.insert(key);
+            read::strict_string_of(values).map_err(policy_error)?;
+            named.insert(super::canonical_key(key)?);
             Ok(())
         })
-        .map_err(visit_error)?;
-    let identities = read::strict_map(workspace, &workspace.root(), "peer_identities_v1")
-        .map_err(strict_error)?;
+        .map_err(policy_error)?;
+    let identities =
+        read::strict_map(workspace, &root, "peer_identities_v1").map_err(policy_error)?;
     let mut rows = BTreeMap::new();
     let mut certificates = BTreeMap::new();
     let mut revocations = Vec::new();
     workspace
         .visit_entries(&identities, read::Selection::All, &mut |key, values| {
-            let bytes = read::strict_bytes_of(values).map_err(strict_error)?;
-            let row = &decoder.identity(key, &bytes)?;
-            let device = super::canonical_key(key).map_err(policy)?;
+            let bytes = read::strict_bytes_of(values).map_err(policy_error)?;
+            let row = &match decoded.and_then(|doc| doc.decoded_identity(key, &bytes)) {
+                Some(identity) => identity.clone(),
+                None => {
+                    GovernedIdentity::decode(&bytes).map_err(|_| MediaPolicyError::Malformed)?
+                }
+            };
+            let device = super::canonical_key(key)?;
             if device != row.device_cert.device_public_key {
-                return Err(policy(MediaPolicyError::Identity));
+                return Err(MediaPolicyError::Identity);
             }
             tilo_user_identity::verify_device_cert(&row.device_cert)
-                .map_err(|_| policy(MediaPolicyError::Identity))?;
+                .map_err(|_| MediaPolicyError::Identity)?;
             let mut admissions = BTreeSet::new();
             for proof in row.admission.iter().chain(&row.admissions) {
                 if proof.device_public_key != device
                     || proof.user_public_key != row.device_cert.user_public_key
                 {
-                    return Err(policy(MediaPolicyError::Identity));
+                    return Err(MediaPolicyError::Identity);
                 }
-                let bytes = work.encoded(proof)?;
-                work.tree_entry::<Vec<u8>, ()>()?;
-                admissions.insert(bytes);
+                admissions.insert(encoded(proof)?);
             }
             // A delegation a build before the owner-root layout wrote,
             // hashed in the place it always held: the stored policy's
@@ -155,26 +108,21 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
             // workspace whose rows carry one still names it.
             let mut delegations = BTreeSet::new();
             for delegation in &row.workspace_delegations {
-                let bytes = work.encoded(delegation)?;
-                work.tree_entry::<Vec<u8>, ()>()?;
-                delegations.insert(bytes);
+                delegations.insert(encoded(delegation)?);
             }
             for entry in &row.revocations {
                 if entry.user_public_key != row.device_cert.user_public_key {
-                    return Err(policy(MediaPolicyError::Revocation));
+                    return Err(MediaPolicyError::Revocation);
                 }
-                work.push(&mut revocations, entry.clone())?;
+                revocations.push(entry.clone());
             }
-            work.tree_entry::<[u8; 32], [u8; 32]>()?;
             certificates.insert(device, row.device_cert.user_public_key);
-            let cert = work.cert(&row.device_cert)?;
-            work.tree_entry::<[u8; 32], (DeviceCert, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>)>()?;
-            rows.insert(device, (cert, admissions, delegations));
+            rows.insert(device, (row.device_cert.clone(), admissions, delegations));
             Ok(())
         })
-        .map_err(visit_error)?;
+        .map_err(policy_error)?;
     if !certificates.values().any(|root| *root == owner_key) {
-        return Err(policy(MediaPolicyError::OwnerUnadmitted));
+        return Err(MediaPolicyError::OwnerUnadmitted);
     }
     // The roster is the devices the policy's authorization rests on: every
     // device name is one of them. A name kept under a root names nobody's
@@ -192,13 +140,11 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
             && !membership.is_owner(&person)
             && !members.contains_key(&person)
         {
-            return Err(policy(MediaPolicyError::NamesNobody(key)));
+            return Err(MediaPolicyError::NamesNobody(key));
         }
     }
-    for entry in extra {
-        work.push(&mut revocations, entry.clone())?;
-    }
-    let mut encoded = BTreeMap::new();
+    revocations.extend(extra.into_iter().cloned());
+    let mut by_bytes = BTreeMap::new();
     for entry in revocations {
         if !certificates
             .values()
@@ -207,24 +153,20 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
                 .get(&entry.revoked_device_public_key)
                 .is_some_and(|root| *root != entry.user_public_key)
         {
-            return Err(policy(MediaPolicyError::Revocation));
+            return Err(MediaPolicyError::Revocation);
         }
-        let bytes = work.encoded(&entry)?;
-        work.tree_entry::<Vec<u8>, RevocationEntry>()?;
-        encoded.insert(bytes, entry);
+        by_bytes.insert(encoded(&entry)?, entry);
     }
     // Keep the existing verified union, including equal-timestamp behavior.
-    // Its input order is canonical original entry bytes, unchanged from legacy.
-    work.revocation_table(encoded.len())?;
+    // Its input order is canonical entry bytes.
     let mut verified = RevocationList::new();
-    for entry in encoded.into_values() {
+    for entry in by_bytes.into_values() {
         verified
             .insert(entry)
-            .map_err(|_| policy(MediaPolicyError::Revocation))?;
+            .map_err(|_| MediaPolicyError::Revocation)?;
     }
     let mut revocations = BTreeMap::new();
     for entry in verified.iter() {
-        work.tree_entry::<[u8; 32], &RevocationEntry>()?;
         revocations.insert(entry.revoked_device_public_key, entry);
     }
     let mut hasher = blake3::Hasher::new();
@@ -237,57 +179,9 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
         &mut hasher,
         usize::MAX,
     )
-    .map_err(|_| policy(MediaPolicyError::Malformed))?;
+    .map_err(|_| MediaPolicyError::Malformed)?;
     Ok(*hasher.finalize().as_bytes())
 }
 
-/// The collections limit for one basis projection.
-struct Work {
-    collections: Collections,
-}
-impl Work {
-    fn debit(&mut self, bytes: Option<usize>) -> Result<(), Error> {
-        self.collections.debit(bytes).map_err(capacity)
-    }
-    fn tree_entry<K, V>(&mut self) -> Result<(), Error> {
-        self.collections.tree_entry::<K, V>().map_err(capacity)
-    }
-    fn text(&mut self, value: &str) -> Result<String, Error> {
-        self.collections.text(value).map_err(capacity)
-    }
-    fn push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), Error> {
-        self.collections.push(values, value).map_err(capacity)
-    }
-    /// A copy of `value` within the limit, with the certificate that issued
-    /// it, which a minted grant's signature and so its basis rest on.
-    fn cert(&mut self, value: &DeviceCert) -> Result<DeviceCert, Error> {
-        Ok(DeviceCert {
-            user_public_key: value.user_public_key,
-            device_public_key: value.device_public_key,
-            device_label: self.text(&value.device_label)?,
-            capabilities: value.capabilities.clone(),
-            issued_at_ns: value.issued_at_ns,
-            expires_at_ns: value.expires_at_ns,
-            signature: value.signature,
-            issuer: match value.issuer.as_deref() {
-                Some(issuer) => Some(Box::new(self.cert(issuer)?)),
-                None => None,
-            },
-        })
-    }
-    fn encoded<T: Serialize>(&mut self, value: &T) -> Result<Vec<u8>, Error> {
-        let length = crate::postcard_sink::encoded_len(value, usize::MAX)
-            .map_err(|_| policy(MediaPolicyError::Malformed))?;
-        let mut bytes = self.collections.zeroed(length).map_err(capacity)?;
-        postcard::to_slice(value, &mut bytes).map_err(|_| policy(MediaPolicyError::Malformed))?;
-        Ok(bytes)
-    }
-    fn revocation_table(&mut self, count: usize) -> Result<(), Error> {
-        self.debit(count.checked_mul(size_of::<([u8; 32], RevocationEntry)>().saturating_mul(2)))
-    }
-}
-fn capacity(_: Capacity) -> Error {
-    Error::Capacity
-}
 #[cfg(test)]
 mod tests;

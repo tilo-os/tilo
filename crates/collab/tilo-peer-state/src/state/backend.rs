@@ -1,8 +1,8 @@
 //! The peer's one in-memory representation.
 use super::{
-    AcceptedCheckpoint, AutoCommit, BTreeMap, CachedDocument, DeviceCert, ExactAdmissions,
-    GovernedIdentity, InboundState, NeighbourMsg, RedemptionReceipt, RevocationList, Role, Route,
-    StatePeer, SystemTime, VecDeque, VerifiedCertificate, err, now_ns, workspace,
+    AcceptedCheckpoint, BTreeMap, CachedDocument, DeviceCert, ExactAdmissions, GovernedIdentity,
+    InboundState, NeighbourMsg, RedemptionReceipt, RevocationList, Role, Route, StatePeer,
+    SystemTime, VecDeque, VerifiedCertificate, err, now_ns, workspace,
 };
 use crate::shared::Shared;
 use std::sync::{Arc, OnceLock};
@@ -11,12 +11,11 @@ pub(super) mod governed;
 pub(super) mod media;
 pub(super) mod member;
 mod pending;
-pub(super) mod private_policy;
 pub(super) use pending::validate as validate_pending;
 pub(super) mod revocations;
-pub(super) use revocations::restore_legacy as restore_revocation_union;
+pub(super) use revocations::restore as restore_revocation_union;
 mod roster;
-pub(super) use roster::restore_legacy as restore_certificate_roster;
+pub(super) use roster::restore as restore_certificate_roster;
 
 pub(super) struct PeerDocument {
     pub(super) doc: CachedDocument,

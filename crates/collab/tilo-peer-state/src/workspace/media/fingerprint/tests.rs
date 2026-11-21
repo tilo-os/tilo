@@ -1,5 +1,4 @@
 use super::*;
-use crate::workspace::read::LegacyRead;
 use automerge::{
     ActorId, AutoCommit, ObjType, ROOT, ScalarValue, Value, transaction::Transactable,
 };
@@ -43,18 +42,17 @@ fn old(doc: &AutoCommit) -> super::super::MediaGovernanceValue {
 fn compare(doc: &AutoCommit) {
     let expected = old(doc);
     assert_eq!(super::super::governed_value(Some(doc)), expected);
-    let mut legacy = BTreeSet::new();
-    let count = LegacyRead(doc)
-        .visit_media_fingerprints(|hash| {
-            legacy.insert(hash);
-            Ok::<_, ()>(())
-        })
-        .unwrap();
+    let mut fingerprints = BTreeSet::new();
+    let count = visit_media_fingerprints(doc, |hash| {
+        fingerprints.insert(hash);
+        Ok::<_, ()>(())
+    })
+    .unwrap();
     assert_eq!(
         if count == 0 {
             super::super::MediaGovernanceValue::Absent
         } else {
-            super::super::MediaGovernanceValue::Values(legacy)
+            super::super::MediaGovernanceValue::Values(fingerprints)
         },
         expected
     );
@@ -62,13 +60,12 @@ fn compare(doc: &AutoCommit) {
     let admitted = AutoCommit::load(&doc.clone().save()).unwrap();
     let mut hashes = [[0; 32]; 8];
     let mut index = 0;
-    let count = LegacyRead(&admitted)
-        .visit_media_fingerprints(|hash| {
-            hashes[index] = hash;
-            index = index.checked_add(1).unwrap();
-            Ok::<_, ()>(())
-        })
-        .unwrap();
+    let count = visit_media_fingerprints(&admitted, |hash| {
+        hashes[index] = hash;
+        index = index.checked_add(1).unwrap();
+        Ok::<_, ()>(())
+    })
+    .unwrap();
     assert_eq!(count, index);
     let result = if count == 0 {
         super::super::MediaGovernanceValue::Absent
@@ -136,7 +133,7 @@ tilo_test_env::scenario! {
         compare(&doc);
         let admitted = AutoCommit::load(&doc.clone().save()).unwrap();
         assert_eq!(
-            LegacyRead(&admitted).visit_media_fingerprints(|_| Err(7u8)),
+            visit_media_fingerprints(&admitted, |_| Err(7u8)),
             Err(ReadError::Visitor(7))
         );
     }

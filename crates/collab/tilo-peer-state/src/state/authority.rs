@@ -543,7 +543,7 @@ impl StatePeer {
         if self.governance().revoked_key(source) {
             return Err(MembershipError::Revoked);
         }
-        match backend::member::legacy(&self.core, source, now) {
+        match backend::member::role(&self.core, source, now) {
             Ok((_, delegate)) => {
                 let cert = self.certificate(source, now)?;
                 let person = hex::encode(cert.user_public_key);
@@ -678,7 +678,7 @@ impl StatePeer {
             .ok_or(MembershipError::GovernanceMissing)?
             .workspace_policy(&self.core.workspace)
             .clone();
-        let (_, delegate) = backend::member::legacy_in_history(&self.core, source, now)?;
+        let (_, delegate) = backend::member::role_in_history(&self.core, source, now)?;
         let cert = self
             .core
             .certificate_held(source, now)
@@ -903,7 +903,7 @@ impl StatePeer {
             .action(action);
         // A server of another person takes a member's work only within the
         // delegation the member signed for it.
-        if backend::member::legacy(&self.core, &source, now).is_err()
+        if backend::member::role(&self.core, &source, now).is_err()
             && self
                 .delegated_work(&source, now)
                 .is_none_or(|delegation| !delegation.allows(&node, ActionKind::Undoable))
@@ -1223,14 +1223,14 @@ impl StatePeer {
         if let Some(policy) = &policy {
             backend::media::ready(
                 policy,
-                |app, record| backend::media::legacy_binding(self, policy, app, record),
+                |app, record| backend::media::bound(self, policy, app, record),
                 || {
                     self.security_basis()
                         .ok_or("missing workspace")?
                         .map_err(err)
                 },
             )
-            .map_err(backend::media::ReadinessError::legacy)?;
+            .map_err(backend::media::ReadinessError::message)?;
         }
         Ok(policy)
     }
@@ -1257,9 +1257,9 @@ impl StatePeer {
         require_complete: bool,
     ) -> Result<(), String> {
         backend::media::bindings(policy, require_complete, |app, record| {
-            backend::media::legacy_binding(self, policy, app, record)
+            backend::media::bound(self, policy, app, record)
         })
-        .map_err(backend::media::ReadinessError::legacy)
+        .map_err(backend::media::ReadinessError::message)
     }
 
     pub(super) fn certificate(
@@ -1286,7 +1286,7 @@ impl StatePeer {
     /// # Errors
     /// Why `source` holds no role here, as [`Self::permissions`].
     pub fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, MembershipError> {
-        backend::member::legacy(&self.core, source, now).map(|(role, _)| role)
+        backend::member::role(&self.core, source, now).map(|(role, _)| role)
     }
 
     /// The bot actor `source` may show other names as: a bot device that
@@ -1344,7 +1344,7 @@ impl StatePeer {
         // An agent device its person delegated, with the delegation their
         // root signed, which the workspace holds the same way.
         let delegated = self.core.certificates.keys().filter_map(|device| {
-            match backend::member::legacy(&self.core, device, now) {
+            match backend::member::role(&self.core, device, now) {
                 Ok((_, Some(delegate)))
                     if delegate
                         .actor
@@ -1545,7 +1545,7 @@ impl StatePeer {
         // it, as the work was when it was done ([`Self::written_as`]).
         let live = kept.is_none();
         let delegation = kept.or_else(|| {
-            backend::member::legacy(&self.core, source, authorization_time)
+            backend::member::role(&self.core, source, authorization_time)
                 .is_err()
                 .then(|| self.delegated_work(source, authorization_time))
                 .flatten()

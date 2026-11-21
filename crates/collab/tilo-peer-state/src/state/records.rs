@@ -113,18 +113,13 @@ impl StatePeer {
             .covered_snapshot
             .as_ref()
             .map(|snapshot| snapshot.0.bytes.as_slice());
-        let workspace = self
-            .core
-            .workspace_doc
-            .as_deref()
-            .map(crate::workspace::read::LegacyRead);
+        let workspace: Option<&automerge::AutoCommit> = self.core.workspace_doc.as_deref();
         matches!(
             crate::coverage::read::governed_snapshot_matches(
-                workspace.as_ref(),
+                workspace,
                 (app, record),
                 &document.covered,
                 snapshot,
-                &crate::coverage::read::LegacyCoverage,
             ),
             Ok(crate::coverage::read::Governed::Arriving)
         )

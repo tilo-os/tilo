@@ -9,7 +9,7 @@ pub(in crate::state) enum ReadinessError<E> {
     Unreconciled,
 }
 impl ReadinessError<String> {
-    pub(in crate::state) fn legacy(self) -> String {
+    pub(in crate::state) fn message(self) -> String {
         match self {
             Self::Source(error) => error,
             Self::Incomplete => "media binding requires exact admitted Chat checkpoint".into(),
@@ -48,7 +48,9 @@ pub(in crate::state) fn ready<E>(
     }
     Ok(())
 }
-pub(in crate::state) fn legacy_binding(
+/// Whether the plaintext Chat `app`/`record` is held, checking that every
+/// active call `policy` binds to it still names its channel.
+pub(in crate::state) fn bound(
     peer: &StatePeer,
     policy: &WorkspaceMediaV1,
     app: &str,

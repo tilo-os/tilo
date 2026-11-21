@@ -126,9 +126,9 @@ pub use sealed_compaction::{
 /// admits, what it signs and seals, and the durable record it restores from.
 mod admitting;
 mod authority;
-mod written_under;
 mod construction;
 mod durable;
+mod written_under;
 pub use durable::DURABLE_VERSION;
 #[cfg(test)]
 pub(crate) use durable::Durable;
@@ -528,19 +528,11 @@ fn check_governed_snapshot(
     covered: &BTreeMap<String, u64>,
     snapshot: Option<&[u8]>,
 ) -> Result<(), String> {
-    use crate::coverage::read::{CoverageMatchError, LegacyCoverage, governed_snapshot_matches};
-    let workspace = workspace.map(crate::workspace::read::LegacyRead);
-    governed_snapshot_matches(
-        workspace.as_ref(),
-        (&route.app, &route.record),
-        covered,
-        snapshot,
-        &LegacyCoverage,
-    )
+    use crate::coverage::read::{CoverageMatchError, governed_snapshot_matches};
+    governed_snapshot_matches(workspace, (&route.app, &route.record), covered, snapshot)
     .map(drop)
     .map_err(|error| match error {
         CoverageMatchError::Decode(error) => format!("invalid checkpoint coverage: {error}"),
-        CoverageMatchError::Capacity => "checkpoint coverage exceeds its limit".into(),
         CoverageMatchError::NoMatch => format!(
             "governed checkpoint for {}/{} does not match its coverage; preserve journal and request a fresh authenticated checkpoint",
             route.app, route.record

@@ -18,7 +18,7 @@ fn roster(
     peer: &crate::StatePeer,
     now: std::time::SystemTime,
 ) -> BTreeMap<[u8; 32], VerifiedCertificate> {
-    super::super::roster::restore_legacy(
+    super::super::roster::restore(
         peer.certificates(),
         Vec::new(),
         &peer.owner_certificates()[0],
@@ -44,7 +44,7 @@ tilo_test_env::scenario! {
         enrollment
             .insert(signed(member.device_public_key, 20, &root))
             .unwrap();
-        let union = restore_legacy(stored.clone(), &enrollment, &roster).unwrap();
+        let union = restore(stored.clone(), &enrollment, &roster).unwrap();
         drop(stored);
         drop(enrollment);
         assert_eq!(union.iter().count(), 2);
@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
                 RestoreRevocationsError::Signature(RevocationError::BadSignature),
             ),
         ] {
-            let result = restore_legacy(entries.to_vec(), &empty, &roster);
+            let result = restore(entries.to_vec(), &empty, &roster);
             assert!(matches!(result, Err(error) if error == expected));
         }
     }
@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
             .collect::<Vec<_>>();
         let empty = RevocationList::new();
         for count in [0, 1, 3, 4, 7, 8, 14, 15, 28, 29, 128, 129] {
-            let value = restore_legacy(entries[..count].to_vec(), &empty, &roster).unwrap();
+            let value = restore(entries[..count].to_vec(), &empty, &roster).unwrap();
             assert_eq!(value.iter().count(), count);
         }
     }

@@ -45,7 +45,7 @@ fn revocation(root: &SigningKey, time: u64) -> RevocationEntry {
     reason = "test helper: asserts the two readings agree before returning the basis"
 )]
 fn basis(doc: &AutoCommit, extra: &[RevocationEntry]) -> Result<[u8; 32], MediaPolicyError> {
-    let basis = legacy(doc, extra);
+    let basis = of_document(doc, extra);
     // A governance state reading its once-decoded rows has the same basis.
     let state = crate::cached_document::CachedDocument::from(doc.clone());
     assert_eq!(super::decoded(&state, extra), basis);

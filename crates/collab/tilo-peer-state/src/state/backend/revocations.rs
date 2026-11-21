@@ -36,7 +36,8 @@ fn verified_union(
     Ok(revocations)
 }
 
-pub(in crate::state) fn restore_legacy(
+/// The revocations a durable state holds, with those its enrollment adds.
+pub(in crate::state) fn restore(
     stored: Vec<RevocationEntry>,
     enrollment: &RevocationList,
     certificates: &BTreeMap<[u8; 32], VerifiedCertificate>,

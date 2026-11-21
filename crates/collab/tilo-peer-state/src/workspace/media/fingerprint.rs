@@ -1,14 +1,8 @@
 //! Existing governed-value fingerprints.
-use crate::workspace::read::{LegacyRead, ReadError, WorkspaceRead};
+use crate::workspace::read::ReadError;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::fmt::Write;
 
-pub(crate) trait FingerprintRead: WorkspaceRead {
-    fn visit_media_fingerprints<E>(
-        &self,
-        visitor: impl FnMut([u8; 32]) -> Result<(), E>,
-    ) -> Result<usize, ReadError<E>>;
-}
 struct Hash(blake3::Hasher);
 impl std::fmt::Write for Hash {
     fn write_str(&mut self, text: &str) -> std::fmt::Result {
@@ -46,7 +40,7 @@ fn fingerprint(shape: Shape<'_>, extra: impl FnOnce(&mut Hash)) -> [u8; 32] {
     extra(&mut hash);
     *hash.0.finalize().as_bytes()
 }
-fn legacy(value: Value<'_>, object: &ObjId) -> [u8; 32] {
+fn of(value: Value<'_>, object: &ObjId) -> [u8; 32] {
     match value {
         Value::Scalar(value) => match value.as_ref() {
             ScalarValue::Bytes(bytes) => fingerprint(Shape::Bytes(bytes), |_| ()),
@@ -60,21 +54,20 @@ fn legacy(value: Value<'_>, object: &ObjId) -> [u8; 32] {
         }),
     }
 }
-impl<D: ReadDoc> FingerprintRead for LegacyRead<'_, D> {
-    fn visit_media_fingerprints<E>(
-        &self,
-        mut visitor: impl FnMut([u8; 32]) -> Result<(), E>,
-    ) -> Result<usize, ReadError<E>> {
-        let values = self
-            .0
-            .get_all(ROOT, super::FIELD)
-            .map_err(|_| ReadError::Malformed)?;
-        let count = values.len();
-        for (value, object) in values {
-            visitor(legacy(value, &object)).map_err(ReadError::Visitor)?;
-        }
-        Ok(count)
+/// The fingerprint of each value the workspace's media policy field holds,
+/// and how many there are.
+pub(crate) fn visit_media_fingerprints<E>(
+    doc: &impl ReadDoc,
+    mut visitor: impl FnMut([u8; 32]) -> Result<(), E>,
+) -> Result<usize, ReadError<E>> {
+    let values = doc
+        .get_all(ROOT, super::FIELD)
+        .map_err(|_| ReadError::Malformed)?;
+    let count = values.len();
+    for (value, object) in values {
+        visitor(of(value, &object)).map_err(ReadError::Visitor)?;
     }
+    Ok(count)
 }
 #[cfg(test)]
 mod tests;

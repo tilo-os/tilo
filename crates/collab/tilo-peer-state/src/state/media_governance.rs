@@ -40,10 +40,8 @@ impl PeerMediaGovernance<'_> {
             super::backend::media::ready(
                 policy,
                 |app, record| {
-                    Ok(
-                        super::backend::media::legacy_binding(peer, policy, app, record)?
-                            || peer.publication().is_sealed_document(app, record),
-                    )
+                    Ok(super::backend::media::bound(peer, policy, app, record)?
+                        || peer.publication().is_sealed_document(app, record))
                 },
                 || {
                     media::security_basis(
@@ -56,7 +54,7 @@ impl PeerMediaGovernance<'_> {
                     .map_err(err)
                 },
             )
-            .map_err(super::backend::media::ReadinessError::legacy)?;
+            .map_err(super::backend::media::ReadinessError::message)?;
         }
         Ok(policy)
     }
@@ -99,7 +97,7 @@ impl PeerMediaGovernanceMut<'_> {
         let Some(original) = self.peer.core.workspace_doc.as_deref() else {
             return Ok(false);
         };
-        // Disabled media adds no new prerequisites to legacy data publication.
+        // Disabled media adds no prerequisites to data publication.
         // Explicit Create still requires the strict security basis independently.
         if policy.is_none() && self.peer.core.revocations.iter().next().is_none() {
             return Ok(false);

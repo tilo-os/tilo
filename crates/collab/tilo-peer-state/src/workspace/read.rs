@@ -1,6 +1,4 @@
-//! Shared workspace traversal over any Automerge document reader.
-
-pub(crate) mod collections;
+//! Shared workspace traversal over any Automerge document.
 
 use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
@@ -9,36 +7,24 @@ pub(crate) enum Selection {
     All,
 }
 
-pub(crate) enum WorkspaceValue<'a, O> {
-    Object { kind: ObjType, object: O },
+pub(crate) enum WorkspaceValue<'a> {
+    Object { kind: ObjType, object: ObjId },
     Bytes(&'a [u8]),
     Str(&'a str),
     Boolean(bool),
     Other,
 }
 
-/// A read's explicit limit was reached.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Capacity;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReadError<E> {
     Malformed,
-    Capacity,
     Visitor(E),
-}
-
-impl<E> From<Capacity> for ReadError<E> {
-    fn from(_: Capacity) -> Self {
-        Self::Capacity
-    }
 }
 
 impl<E> ReadError<ReadError<E>> {
     fn flatten(self) -> ReadError<E> {
         match self {
             Self::Malformed => ReadError::Malformed,
-            Self::Capacity => ReadError::Capacity,
             Self::Visitor(error) => error,
         }
     }
@@ -47,24 +33,23 @@ impl<E> ReadError<ReadError<E>> {
 /// Callbacks borrow each scalar for the duration of the call.
 /// What [`WorkspaceRead::visit_entries`] calls with each key of a map and
 /// its values.
-pub(crate) type EntryVisitor<'v, O, E> =
-    dyn for<'a> FnMut(&'a str, &[WorkspaceValue<'a, O>]) -> Result<(), E> + 'v;
+pub(crate) type EntryVisitor<'v, E> =
+    dyn for<'a> FnMut(&'a str, &[WorkspaceValue<'a>]) -> Result<(), E> + 'v;
 
+/// The reads a workspace's governance makes of an Automerge document.
 pub(crate) trait WorkspaceRead {
-    type Object;
-    fn root(&self) -> Self::Object;
     fn visit_keys<E>(
         &self,
-        object: &Self::Object,
+        object: &ObjId,
         visitor: impl for<'a> FnMut(&'a str) -> Result<(), E>,
     ) -> Result<usize, ReadError<E>>;
 
     fn visit_property<E>(
         &self,
-        object: &Self::Object,
+        object: &ObjId,
         key: &str,
         selection: Selection,
-        visitor: impl for<'a> FnMut(WorkspaceValue<'a, Self::Object>) -> Result<(), E>,
+        visitor: impl for<'a> FnMut(WorkspaceValue<'a>) -> Result<(), E>,
     ) -> Result<usize, ReadError<E>>;
 
     /// Every key of the map `object` in [`Self::visit_keys`]'s order, each
@@ -78,9 +63,9 @@ pub(crate) trait WorkspaceRead {
     /// kind of error rather than for every visitor.
     fn visit_entries<E>(
         &self,
-        object: &Self::Object,
+        object: &ObjId,
         selection: Selection,
-        visitor: &mut EntryVisitor<'_, Self::Object, E>,
+        visitor: &mut EntryVisitor<'_, E>,
     ) -> Result<usize, ReadError<E>>;
 }
 
@@ -97,15 +82,15 @@ pub(crate) fn visit_governance_entries<R: WorkspaceRead, E>(
     mut visitor: impl for<'a> FnMut(GovernanceEntry<'a>) -> Result<(), E>,
 ) -> Result<(), ReadError<E>> {
     crate::governance_work::governance_read();
-    let root = read.root();
+    let root = automerge::ROOT;
     let owner = read.visit_property(&root, "owner", Selection::Winner, |value| {
         if let WorkspaceValue::Str(value) = value {
             visitor(GovernanceEntry::Owner(value))?;
         }
         Ok(())
     });
-    // Match the existing workspace projection's ignored lookup errors. Capacity
-    // and visitor failures are never turned into absent policy.
+    // A malformed lookup reads as absent; a visitor's failure is never
+    // turned into absent policy.
     if let Err(error) = owner
         && !matches!(error, ReadError::Malformed)
     {
@@ -151,21 +136,14 @@ pub(crate) fn visit_governance_entries<R: WorkspaceRead, E>(
     Ok(())
 }
 
-pub(crate) struct LegacyRead<'a, D: ReadDoc>(pub(crate) &'a D);
-
-impl<D: ReadDoc> WorkspaceRead for LegacyRead<'_, D> {
-    type Object = ObjId;
-    fn root(&self) -> Self::Object {
-        automerge::ROOT
-    }
-
+impl<D: ReadDoc> WorkspaceRead for D {
     fn visit_keys<E>(
         &self,
-        object: &Self::Object,
+        object: &ObjId,
         mut visitor: impl for<'a> FnMut(&'a str) -> Result<(), E>,
     ) -> Result<usize, ReadError<E>> {
         let mut count = 0usize;
-        for key in self.0.keys(object) {
+        for key in self.keys(object) {
             visitor(&key).map_err(ReadError::Visitor)?;
             count = count.saturating_add(1);
         }
@@ -177,24 +155,23 @@ impl<D: ReadDoc> WorkspaceRead for LegacyRead<'_, D> {
         object: &ObjId,
         key: &str,
         selection: Selection,
-        mut visitor: impl for<'a> FnMut(WorkspaceValue<'a, ObjId>) -> Result<(), E>,
+        mut visitor: impl for<'a> FnMut(WorkspaceValue<'a>) -> Result<(), E>,
     ) -> Result<usize, ReadError<E>> {
         match selection {
-            Selection::Winner => match self.0.get(object, key).map_err(|_| ReadError::Malformed)? {
+            Selection::Winner => match self.get(object, key).map_err(|_| ReadError::Malformed)? {
                 Some((value, object)) => {
-                    visit_legacy_value(value, object, &mut visitor)?;
+                    visit_value(value, object, &mut visitor)?;
                     Ok(1)
                 }
                 None => Ok(0),
             },
             Selection::All => {
                 let values = self
-                    .0
                     .get_all(object, key)
                     .map_err(|_| ReadError::Malformed)?;
                 let count = values.len();
                 for (value, object) in values {
-                    visit_legacy_value(value, object, &mut visitor)?;
+                    visit_value(value, object, &mut visitor)?;
                 }
                 Ok(count)
             }
@@ -205,21 +182,20 @@ impl<D: ReadDoc> WorkspaceRead for LegacyRead<'_, D> {
         &self,
         object: &ObjId,
         selection: Selection,
-        visitor: &mut EntryVisitor<'_, ObjId, E>,
+        visitor: &mut EntryVisitor<'_, E>,
     ) -> Result<usize, ReadError<E>> {
         let mut count = 0usize;
-        for item in self.0.map_range(object, ..) {
+        for item in self.map_range(object, ..) {
             count = count.saturating_add(1);
             if item.conflict && matches!(selection, Selection::All) {
                 // The few keys written concurrently: every value, as a
                 // lookup by key reads them.
                 let all = self
-                    .0
                     .get_all(object, item.key.as_ref())
                     .map_err(|_| ReadError::Malformed)?;
-                let values: Vec<WorkspaceValue<'_, ObjId>> = all
+                let values: Vec<WorkspaceValue<'_>> = all
                     .iter()
-                    .map(|(value, object)| legacy_value(value, object.clone()))
+                    .map(|(value, object)| keyed_value(value, object.clone()))
                     .collect();
                 visitor(&item.key, &values).map_err(ReadError::Visitor)?;
                 continue;
@@ -235,7 +211,7 @@ impl<D: ReadDoc> WorkspaceRead for LegacyRead<'_, D> {
 fn entry_value<'a>(
     value: &'a automerge::ValueRef<'_>,
     object: impl FnOnce() -> ObjId,
-) -> WorkspaceValue<'a, ObjId> {
+) -> WorkspaceValue<'a> {
     use automerge::ScalarValueRef;
     match value {
         automerge::ValueRef::Object(kind) => WorkspaceValue::Object {
@@ -252,7 +228,7 @@ fn entry_value<'a>(
 }
 
 /// `value`, read by key, as a [`WorkspaceValue`].
-fn legacy_value<'a>(value: &'a Value<'_>, object: ObjId) -> WorkspaceValue<'a, ObjId> {
+fn keyed_value<'a>(value: &'a Value<'_>, object: ObjId) -> WorkspaceValue<'a> {
     match value {
         Value::Object(kind) => WorkspaceValue::Object {
             kind: *kind,
@@ -267,10 +243,10 @@ fn legacy_value<'a>(value: &'a Value<'_>, object: ObjId) -> WorkspaceValue<'a, O
     }
 }
 
-pub(super) fn visit_legacy_value<E>(
+pub(super) fn visit_value<E>(
     value: Value<'_>,
     object: ObjId,
-    visitor: &mut impl for<'a> FnMut(WorkspaceValue<'a, ObjId>) -> Result<(), E>,
+    visitor: &mut impl for<'a> FnMut(WorkspaceValue<'a>) -> Result<(), E>,
 ) -> Result<(), ReadError<E>> {
     let value = match value {
         Value::Object(kind) => {
@@ -289,9 +265,9 @@ pub(super) fn visit_legacy_value<E>(
 
 pub(crate) fn strict_map<R: WorkspaceRead>(
     read: &R,
-    parent: &R::Object,
+    parent: &ObjId,
     key: &str,
-) -> Result<R::Object, ReadError<super::media::MediaPolicyError>> {
+) -> Result<ObjId, ReadError<super::media::MediaPolicyError>> {
     use super::media::MediaPolicyError;
     let mut result = None;
     read.visit_property(parent, key, Selection::All, |value| match value {
@@ -308,8 +284,8 @@ pub(crate) fn strict_map<R: WorkspaceRead>(
 }
 
 /// [`strict_string`] of an entry [`WorkspaceRead::visit_entries`] read.
-pub(crate) fn strict_string_of<O>(
-    values: &[WorkspaceValue<'_, O>],
+pub(crate) fn strict_string_of(
+    values: &[WorkspaceValue<'_>],
 ) -> Result<String, ReadError<super::media::MediaPolicyError>> {
     use super::media::MediaPolicyError;
     let mut result: Option<&str> = None;
@@ -331,8 +307,8 @@ pub(crate) fn strict_string_of<O>(
 }
 
 /// [`strict_bytes`] of an entry [`WorkspaceRead::visit_entries`] read.
-pub(crate) fn strict_bytes_of<O>(
-    values: &[WorkspaceValue<'_, O>],
+pub(crate) fn strict_bytes_of(
+    values: &[WorkspaceValue<'_>],
 ) -> Result<Vec<u8>, ReadError<super::media::MediaPolicyError>> {
     use super::media::MediaPolicyError;
     let mut result: Option<&[u8]> = None;
@@ -355,7 +331,7 @@ pub(crate) fn strict_bytes_of<O>(
 
 pub(crate) fn strict_string<R: WorkspaceRead>(
     read: &R,
-    parent: &R::Object,
+    parent: &ObjId,
     key: &str,
 ) -> Result<String, ReadError<super::media::MediaPolicyError>> {
     use super::media::MediaPolicyError;
@@ -380,7 +356,7 @@ pub(crate) fn strict_string<R: WorkspaceRead>(
 #[cfg(test)]
 pub(crate) fn strict_bytes<R: WorkspaceRead>(
     read: &R,
-    parent: &R::Object,
+    parent: &ObjId,
     key: &str,
 ) -> Result<Vec<u8>, ReadError<super::media::MediaPolicyError>> {
     use super::media::MediaPolicyError;
@@ -403,13 +379,12 @@ pub(crate) fn strict_bytes<R: WorkspaceRead>(
 }
 
 /// The policy error a read failure is reported as.
-pub(crate) fn legacy_policy_error(
+pub(crate) fn policy_error(
     error: ReadError<super::media::MediaPolicyError>,
 ) -> super::media::MediaPolicyError {
     use super::media::MediaPolicyError;
     match error {
         ReadError::Malformed => MediaPolicyError::Malformed,
-        ReadError::Capacity => MediaPolicyError::Capacity,
         ReadError::Visitor(error) => error,
     }
 }
@@ -468,18 +443,14 @@ mod tests {
                 Err(ReadError::Visitor(MediaPolicyError::Conflict)),
             ),
         ] {
-            assert_eq!(
-                strict_map(&LegacyRead(document), &ROOT, "channels"),
-                expected,
-                "{case}"
-            );
+            assert_eq!(strict_map(document, &ROOT, "channels"), expected, "{case}");
         }
     }
 
     /// Each key with every value a lookup by key reads for it.
     type Read = Vec<(String, Vec<String>)>;
 
-    fn described(value: &WorkspaceValue<'_, ObjId>) -> String {
+    fn described(value: &WorkspaceValue<'_>) -> String {
         match value {
             WorkspaceValue::Object { kind, object } => format!("{kind:?} {object}"),
             WorkspaceValue::Bytes(bytes) => format!("bytes {bytes:?}"),
@@ -489,7 +460,7 @@ mod tests {
         }
     }
 
-    fn by_key(read: &LegacyRead<'_, AutoCommit>, object: &ObjId, winner: bool) -> Read {
+    fn by_key(read: &AutoCommit, object: &ObjId, winner: bool) -> Read {
         let mut keys = Vec::new();
         read.visit_keys::<()>(object, |key| {
             keys.push(key.to_owned());
@@ -514,7 +485,7 @@ mod tests {
             .collect()
     }
 
-    fn in_one_pass(read: &LegacyRead<'_, AutoCommit>, object: &ObjId, winner: bool) -> Read {
+    fn in_one_pass(read: &AutoCommit, object: &ObjId, winner: bool) -> Read {
         let mut entries = Vec::new();
         let selection = if winner {
             Selection::Winner
@@ -553,18 +524,18 @@ mod tests {
         second.commit();
         first.merge_incoming(&mut second).unwrap();
         assert_eq!(first.get_all(&rows, "row-07").unwrap().len(), 2);
-        let read = LegacyRead(&first);
+        let read = &first;
         for winner in [true, false] {
-            let expected = by_key(&read, &rows, winner);
+            let expected = by_key(read, &rows, winner);
             assert_eq!(
-                in_one_pass(&read, &rows, winner),
+                in_one_pass(read, &rows, winner),
                 expected,
                 "winner: {winner}"
             );
             assert_eq!(expected.len(), 42);
         }
         assert_eq!(
-            in_one_pass(&read, &rows, false)
+            in_one_pass(read, &rows, false)
                 .iter()
                 .find(|(key, _)| key == "row-07")
                 .unwrap()
@@ -590,9 +561,9 @@ mod tests {
             retain_orphans: true,
         });
         let document = tilo_automerge_isolate::load(&bytes).unwrap();
-        let read = LegacyRead(&document);
+        let read = &document;
         let mut count = 0usize;
-        visit_governance_entries(&read, |entry| {
+        visit_governance_entries(read, |entry| {
             count = count.checked_add(1).unwrap();
             match entry {
                 GovernanceEntry::Owner(value) => assert_eq!(Some(value), expected.owner.as_deref()),
@@ -611,7 +582,7 @@ mod tests {
         .unwrap();
         assert_eq!(count, expected_count);
         assert_eq!(
-            visit_governance_entries(&read, |_| Err(42_u8)),
+            visit_governance_entries(read, |_| Err(42_u8)),
             Err(ReadError::Visitor(42)),
         );
         count
@@ -645,10 +616,10 @@ mod tests {
                 )
                 .unwrap();
                 doc.commit();
-                let legacy = super::super::governance_of(Some(&doc));
-                assert!(legacy.peers.is_empty());
+                let governance = super::super::governance_of(Some(&doc));
+                assert!(governance.peers.is_empty());
                 assert_eq!(
-                    legacy.identities.get("later valid row"),
+                    governance.identities.get("later valid row"),
                     Some(&vec![7, 8, 9])
                 );
                 assert_eq!(compare_governance_entries(&doc), 2);

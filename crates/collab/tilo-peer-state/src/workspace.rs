@@ -5,7 +5,6 @@ pub mod base;
 pub mod media;
 pub mod membership;
 pub(crate) mod policy;
-pub(crate) mod private_policy;
 pub(crate) mod read;
 pub mod rows;
 pub mod saved_shortcut;
@@ -76,9 +75,7 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
         return WorkspaceGovernance::absent();
     };
     let mut governance = WorkspaceGovernance::absent();
-    // The legacy public output is unqualified owned data. The same borrowed
-    // traversal serves bounded destinations that pay for each output copy.
-    let result = read::visit_governance_entries(&read::LegacyRead(doc), |entry| {
+    let result = read::visit_governance_entries(doc, |entry| {
         match entry {
             read::GovernanceEntry::Owner(value) => governance.owner = Some(value.to_owned()),
             read::GovernanceEntry::Sandbox { key, bytes } => {
@@ -93,7 +90,7 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
         }
         Ok::<(), std::convert::Infallible>(())
     });
-    // LegacyRead has no resource refusals and the visitor is infallible.
+    // The visitor is infallible.
     debug_assert!(result.is_ok());
     governance.coverage = crate::coverage::governed_bytes(doc);
     governance.invitation_receipts = invitation_receipts(doc).unwrap_or_default();

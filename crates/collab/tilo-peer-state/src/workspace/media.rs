@@ -133,7 +133,7 @@ pub fn security_basis(
     doc: &AutoCommit,
     extra_revocations: &[tilo_user_identity::RevocationEntry],
 ) -> Result<[u8; 32], MediaPolicyError> {
-    basis::legacy(doc, extra_revocations)
+    basis::of_document(doc, extra_revocations)
 }
 
 /// [`security_basis`] of a governance state, reading the identity rows it
@@ -183,7 +183,7 @@ type RevocationFloors = BTreeMap<([u8; 32], [u8; 32]), u64>;
 fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyError> {
     // A joined peer can project its workspace before its first governed snapshot.
     // Absence carries no observed floor; present evidence remains strictly
-    // decoded, including legacy documents that have no media policy yet.
+    // decoded, also in a workspace that has no media policy yet.
     if doc
         .get_all(ROOT, "peer_identities_v1")
         .map_err(|_| MediaPolicyError::Malformed)?
@@ -194,12 +194,11 @@ fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyEr
     let identities = strict_map(doc, &ROOT, "peer_identities_v1")?;
     let mut floors = BTreeMap::new();
     super::read::WorkspaceRead::visit_entries(
-        &super::read::LegacyRead(doc),
+        doc,
         &identities,
         super::read::Selection::All,
         &mut |_, values| {
-            let bytes =
-                super::read::strict_bytes_of(values).map_err(super::read::legacy_policy_error)?;
+            let bytes = super::read::strict_bytes_of(values).map_err(super::read::policy_error)?;
             let row = crate::state::GovernedIdentity::decode(&bytes)
                 .map_err(|_| MediaPolicyError::Malformed)?;
             for entry in row.revocations {
@@ -216,7 +215,7 @@ fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyEr
             Ok(())
         },
     )
-    .map_err(super::read::legacy_policy_error)?;
+    .map_err(super::read::policy_error)?;
     Ok(floors)
 }
 
@@ -260,7 +259,7 @@ pub fn validate_bound_chat_change(
     record: &str,
     candidate: &impl ReadDoc,
 ) -> Result<(), MediaPolicyError> {
-    binding::validate_legacy(policy, app, record, candidate)
+    binding::validate(policy, app, record, candidate)
 }
 /// Resolve one exact admitted Chat object, never a synthesized/default channel.
 pub fn resolve_chat_binding(
@@ -269,7 +268,7 @@ pub fn resolve_chat_binding(
     channel: &str,
     candidate: &impl ReadDoc,
 ) -> Result<ChatCallBindingV1, MediaPolicyError> {
-    binding::resolve_legacy(app, record, channel, candidate).map(binding::Binding::into_legacy)
+    binding::resolve(app, record, channel, candidate)
 }
 
 fn canonical_key(value: &str) -> Result<[u8; 32], MediaPolicyError> {
@@ -280,8 +279,7 @@ fn strict_map(
     parent: &automerge::ObjId,
     key: &str,
 ) -> Result<automerge::ObjId, MediaPolicyError> {
-    super::read::strict_map(&super::read::LegacyRead(doc), parent, key)
-        .map_err(super::read::legacy_policy_error)
+    super::read::strict_map(doc, parent, key).map_err(super::read::policy_error)
 }
 #[cfg(test)]
 fn strict_string(
@@ -289,8 +287,7 @@ fn strict_string(
     parent: &automerge::ObjId,
     key: &str,
 ) -> Result<String, MediaPolicyError> {
-    super::read::strict_string(&super::read::LegacyRead(doc), parent, key)
-        .map_err(super::read::legacy_policy_error)
+    super::read::strict_string(doc, parent, key).map_err(super::read::policy_error)
 }
 #[cfg(test)]
 fn strict_bytes(
@@ -298,8 +295,7 @@ fn strict_bytes(
     parent: &automerge::ObjId,
     key: &str,
 ) -> Result<Vec<u8>, MediaPolicyError> {
-    super::read::strict_bytes(&super::read::LegacyRead(doc), parent, key)
-        .map_err(super::read::legacy_policy_error)
+    super::read::strict_bytes(doc, parent, key).map_err(super::read::policy_error)
 }
 
 /// Canonical encoding of a validated workspace media policy.
@@ -317,7 +313,7 @@ pub fn encode(value: &WorkspaceMediaV1) -> Result<Vec<u8>, MediaPolicyError> {
 }
 /// Strict data parsing only: the caller still verifies writer, security basis and current authority.
 pub fn parse(doc: &AutoCommit) -> Result<Option<WorkspaceMediaV1>, MediaPolicyError> {
-    read::parse(&super::read::LegacyRead(doc), &read::LegacyPolicy).map_err(read::legacy_error)
+    read::parse(doc)
 }
 
 /// Structural validation of a workspace media policy.
@@ -647,12 +643,11 @@ pub enum MediaGovernanceValue {
     Unreadable,
 }
 pub fn governed_value(doc: Option<&AutoCommit>) -> MediaGovernanceValue {
-    use fingerprint::FingerprintRead;
     let Some(doc) = doc else {
         return MediaGovernanceValue::Absent;
     };
     let mut fingerprints = BTreeSet::new();
-    match super::read::LegacyRead(doc).visit_media_fingerprints(|hash| {
+    match fingerprint::visit_media_fingerprints(doc, |hash| {
         fingerprints.insert(hash);
         Ok::<_, std::convert::Infallible>(())
     }) {
@@ -829,7 +824,7 @@ mod workspace_media_tests {
         value
     }
 
-    fn governed_legacy_workspace() -> (AutoCommit, ed25519_dalek::SigningKey, String) {
+    fn governed_workspace() -> (AutoCommit, ed25519_dalek::SigningKey, String) {
         let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
         let mut certificate = tilo_user_identity::DeviceCert {
@@ -864,14 +859,14 @@ mod workspace_media_tests {
     }
 
     tilo_test_env::scenario! {
-        fn legacy_identity_evidence_is_absent_whole_or_rejected;
+        fn identity_evidence_is_absent_whole_or_rejected;
 
-        phase legacy_identity_absence_permits_first_media_checkpoint;
+        phase identity_absence_permits_first_media_checkpoint;
         {
             // A joined shell guest can project its workspace id before receiving the
             // owner's governance. No identity map has existed in this projection.
             let before = workspace();
-            let (mut after, _, _) = governed_legacy_workspace();
+            let (mut after, _, _) = governed_workspace();
             let value = enable_media(&mut after);
             assert_eq!(
                 validate_transition(Some(&before), &after, TransitionMode::Admission),
@@ -879,9 +874,9 @@ mod workspace_media_tests {
             );
         }
 
-        phase legacy_identity_present_malformed_or_conflicting_evidence_is_rejected;
+        phase identity_present_malformed_or_conflicting_evidence_is_rejected;
         {
-            let (mut after, _, _) = governed_legacy_workspace();
+            let (mut after, _, _) = governed_workspace();
             let value = enable_media(&mut after);
             assert_eq!(
                 validate_transition(None, &after, TransitionMode::Restore),
@@ -901,7 +896,7 @@ mod workspace_media_tests {
                 .unwrap();
             left.merge_incoming(&mut right).unwrap();
             assert_eq!(left.get_all(ROOT, "peer_identities_v1").unwrap().len(), 2);
-            let (mut row, _, device) = governed_legacy_workspace();
+            let (mut row, _, device) = governed_workspace();
             let identities = row.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
             row.put(&identities, device, "not identity bytes").unwrap();
             for before in [&scalar, &list, &left, &row] {
@@ -909,9 +904,9 @@ mod workspace_media_tests {
             }
         }
 
-        phase legacy_identity_revocation_floor_survives_media_bootstrap;
+        phase identity_revocation_floor_survives_media_bootstrap;
         {
-            let (mut before, root, device) = governed_legacy_workspace();
+            let (mut before, root, device) = governed_workspace();
             let identities = before.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
             let mut row = crate::state::GovernedIdentity::decode(
                 &strict_bytes(&before, &identities, &device).unwrap(),
@@ -942,7 +937,7 @@ mod workspace_media_tests {
                 Ok(Some(expected)),
             );
             // A self-consistent first media checkpoint cannot erase a revocation
-            // observed while the workspace was still legacy/disabled, or delay its floor.
+            // observed while the workspace had no media policy yet, or delay its floor.
             revoked.revoked_at_ns = 20;
             tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
             for revocations in [Vec::new(), vec![revoked]] {
@@ -989,7 +984,7 @@ mod workspace_media_tests {
             }
         }
 
-        phase malformed_conflicting_and_trailing_values_are_never_legacy_absence;
+        phase malformed_conflicting_and_trailing_values_are_never_absence;
         {
             let mut doc = workspace();
             doc.put(ROOT, FIELD, "bad").unwrap();

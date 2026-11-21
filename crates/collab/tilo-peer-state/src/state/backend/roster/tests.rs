@@ -23,18 +23,18 @@ tilo_test_env::scenario! {
         let enrollment = [member.clone()];
         // Historical exact evidence can outlive expiry; a newly enrolled expired
         // certificate must still fail the current validity check.
-        let historical = restore_legacy(stored.to_vec(), enrollment.to_vec(), &authority, now).unwrap();
+        let historical = restore(stored.to_vec(), enrollment.to_vec(), &authority, now).unwrap();
         assert_eq!(
             historical.get(&member.device_public_key).map(AsRef::as_ref),
             Some(&member)
         );
         assert!(matches!(
-            restore_legacy(Vec::new(), enrollment.to_vec(), &authority, now),
+            restore(Vec::new(), enrollment.to_vec(), &authority, now),
             Err(RosterError::Certificate(DeviceCertError::Expired))
         ));
         let conflicting = labeled(member.clone(), "different signed label");
         assert!(matches!(
-            restore_legacy(
+            restore(
                 vec![member.clone(), conflicting.clone()],
                 Vec::new(),
                 &authority,
@@ -43,13 +43,13 @@ tilo_test_env::scenario! {
             Err(RosterError::StoredConflict)
         ));
         assert!(matches!(
-            restore_legacy(stored.to_vec(), vec![conflicting], &authority, now),
+            restore(stored.to_vec(), vec![conflicting], &authority, now),
             Err(RosterError::EnrollmentConflict)
         ));
         member.signature[0] ^= 1;
         let forged = [member];
         assert!(matches!(
-            restore_legacy(forged.to_vec(), Vec::new(), &authority, now),
+            restore(forged.to_vec(), Vec::new(), &authority, now),
             Err(RosterError::Certificate(DeviceCertError::BadSignature))
         ));
     }
@@ -70,7 +70,7 @@ tilo_test_env::scenario! {
             certificates.push(value);
         }
         certificates.push(certificates[0].clone());
-        let roster = restore_legacy(certificates.clone(), Vec::new(), &authority, now_ns(now)).unwrap();
+        let roster = restore(certificates.clone(), Vec::new(), &authority, now_ns(now)).unwrap();
         for certificate in &certificates {
             assert_eq!(
                 roster

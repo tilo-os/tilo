@@ -5,8 +5,8 @@ use super::{
     now_ns, workspace,
 };
 use automerge::transaction::Transactable as _;
-use std::collections::BTreeSet;
 use collab_types::signer::DeviceSigner;
+use std::collections::BTreeSet;
 
 /// Commit what `doc` holds as one governance change, stamped with `unix_secs`.
 ///
@@ -317,31 +317,14 @@ impl StatePeer {
         Ok(())
     }
 
-    /// [`Self::import_governed_certificates`] of a document whose rows were
-    /// read once per state.
+    /// Take in the certificates and revocations `doc`'s governed identity
+    /// rows prove.
     pub(super) fn import_governed_rows(
         &mut self,
         doc: &CachedDocument,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let (certificates, revocations, changed) = backend::governed::cached(
-            doc,
-            &self.core.certificates,
-            &self.core.revocations,
-            &self.core.owner,
-            now,
-        )
-        .map_err(err)?;
-        self.core.certificates = certificates.into();
-        self.core.revocations = revocations;
-        Ok(changed)
-    }
-    pub(super) fn import_governed_certificates(
-        &mut self,
-        doc: &AutoCommit,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let (certificates, revocations, changed) = backend::governed::legacy(
+        let (certificates, revocations, changed) = backend::governed::import(
             doc,
             &self.core.certificates,
             &self.core.revocations,

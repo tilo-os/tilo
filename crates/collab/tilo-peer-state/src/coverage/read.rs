@@ -2,42 +2,19 @@
 use crate::workspace::read::{ReadError, Selection, WorkspaceRead, WorkspaceValue};
 use std::collections::BTreeMap;
 
-pub(crate) trait CoverageRowView {
-    fn payload_hash(&self) -> [u8; 32];
-    fn admitted_in(&self, covered: &BTreeMap<String, u64>) -> bool;
-}
-impl CoverageRowView for super::RouteValue {
-    fn payload_hash(&self) -> [u8; 32] {
-        super::RouteValue::payload_hash(self)
-    }
-    fn admitted_in(&self, covered: &BTreeMap<String, u64>) -> bool {
-        super::RouteValue::admitted_in(self, covered)
-    }
-}
-pub(crate) trait CoverageDecode {
-    type Error;
-    type Row: CoverageRowView;
-    /// One per-route value (`super::FIELD_V2`).
-    fn decode_row(&self, bytes: &[u8]) -> Result<Self::Row, Self::Error>;
-}
-pub(crate) struct LegacyCoverage;
-impl CoverageDecode for LegacyCoverage {
-    type Error = postcard::Error;
-    type Row = super::RouteValue;
-    fn decode_row(&self, bytes: &[u8]) -> Result<Self::Row, Self::Error> {
-        match super::decode_value(bytes) {
-            Ok(value) => Ok(value),
-            Err(_) => tilo_failure::ignored!(
-                "the fallback's error is the row's error, returned to the caller",
-                postcard::from_bytes(bytes)
-            ),
-        }
+/// One per-route value (`super::FIELD_V2`).
+fn decode_row(bytes: &[u8]) -> Result<super::RouteValue, postcard::Error> {
+    match super::decode_value(bytes) {
+        Ok(value) => Ok(value),
+        Err(_) => tilo_failure::ignored!(
+            "the fallback's error is the row's error, returned to the caller",
+            postcard::from_bytes(bytes)
+        ),
     }
 }
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum CoverageMatchError<E> {
-    Decode(E),
-    Capacity,
+pub(crate) enum CoverageMatchError {
+    Decode(postcard::Error),
     NoMatch,
 }
 /// How a stored checkpoint stands against its route's governed coverage.
@@ -54,18 +31,17 @@ pub(crate) enum Governed {
 /// any. A checkpoint older than coverage whose body the document has not
 /// admitted (`covered`, per hex author) is arriving; one that differs from
 /// coverage it already admitted is refused.
-pub(crate) fn governed_snapshot_matches<R: WorkspaceRead, D: CoverageDecode>(
-    workspace: Option<&R>,
+pub(crate) fn governed_snapshot_matches(
+    workspace: Option<&impl WorkspaceRead>,
     (app, record): (&str, &str),
     covered: &BTreeMap<String, u64>,
     snapshot: Option<&[u8]>,
-    decoder: &D,
-) -> Result<Governed, CoverageMatchError<D::Error>> {
+) -> Result<Governed, CoverageMatchError> {
     let (Some(snapshot), Some(workspace)) = (snapshot, workspace) else {
         return Ok(Governed::Current);
     };
     let mut governed = Governed::Current;
-    let mut resolve = |row: &D::Row| -> Result<(), CoverageMatchError<D::Error>> {
+    let mut resolve = |row: &super::RouteValue| -> Result<(), CoverageMatchError> {
         if crate::document::snapshot_hash(snapshot).is_ok_and(|hash| hash == row.payload_hash()) {
             Ok(())
         } else if row.admitted_in(covered) {
@@ -84,7 +60,7 @@ pub(crate) fn governed_snapshot_matches<R: WorkspaceRead, D: CoverageDecode>(
     };
     let mut routed = false;
     let v2 = workspace.visit_property(
-        &workspace.root(),
+        &automerge::ROOT,
         super::FIELD_V2,
         Selection::Winner,
         |value| {
@@ -99,28 +75,23 @@ pub(crate) fn governed_snapshot_matches<R: WorkspaceRead, D: CoverageDecode>(
                     let WorkspaceValue::Bytes(bytes) = entry else {
                         return Ok(());
                     };
-                    let row = decoder
-                        .decode_row(bytes)
-                        .map_err(CoverageMatchError::Decode)?;
+                    let row = decode_row(bytes).map_err(CoverageMatchError::Decode)?;
                     routed = true;
                     resolve(&row)
                 });
                 match inner {
                     Ok(_) | Err(ReadError::Malformed) => Ok(()),
-                    Err(ReadError::Capacity) => Err(CoverageMatchError::Capacity),
                     Err(ReadError::Visitor(error)) => Err(error),
                 }
             });
             match keys {
                 Ok(_) | Err(ReadError::Malformed) => Ok(()),
-                Err(ReadError::Capacity) => Err(CoverageMatchError::Capacity),
                 Err(ReadError::Visitor(error)) => Err(error),
             }
         },
     );
     match v2 {
         Ok(_) | Err(ReadError::Malformed) => Ok(governed),
-        Err(ReadError::Capacity) => Err(CoverageMatchError::Capacity),
         Err(ReadError::Visitor(error)) => Err(error),
     }
 }

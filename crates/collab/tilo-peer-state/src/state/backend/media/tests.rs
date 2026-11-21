@@ -26,7 +26,7 @@ fn readiness(
 ) -> Result<(), ReadinessError<String>> {
     ready(
         policy,
-        |app, document| legacy_binding(peer, policy, app, document),
+        |app, document| bound(peer, policy, app, document),
         || {
             media::security_basis(peer.admitted_workspace().unwrap(), &peer.revocations())
                 .map_err(err)
@@ -35,7 +35,7 @@ fn readiness(
 }
 fn refusal(peer: &StatePeer, policy: &media::WorkspaceMediaV1) -> String {
     readiness(peer, policy)
-        .map_err(ReadinessError::legacy)
+        .map_err(ReadinessError::message)
         .unwrap_err()
 }
 tilo_test_env::scenario! {
@@ -47,7 +47,7 @@ tilo_test_env::scenario! {
         let policy = admitted_policy(&peer);
         assert_eq!(readiness(&peer, &policy), Ok(()));
         assert_eq!(
-            bindings(&policy, false, |app, document| legacy_binding(
+            bindings(&policy, false, |app, document| bound(
                 &peer, &policy, app, document
             )),
             Ok(())
@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
             change(&mut peer);
             assert_eq!(refusal(&peer, &policy), INCOMPLETE, "{what}");
             assert_eq!(
-                bindings(&policy, false, |app, document| legacy_binding(
+                bindings(&policy, false, |app, document| bound(
                     &peer, &policy, app, document
                 )),
                 Ok(()),
@@ -109,10 +109,10 @@ tilo_test_env::scenario! {
         }
         assert_eq!(refusal(&peer, &policy), "a call's binding to its place in Chat does not hold");
         assert_eq!(
-            bindings(&policy, false, |app, document| legacy_binding(
+            bindings(&policy, false, |app, document| bound(
                 &peer, &policy, app, document
             ))
-            .map_err(ReadinessError::legacy),
+            .map_err(ReadinessError::message),
             Err("a call's binding to its place in Chat does not hold".to_owned()),
             "a partial check refuses a change too, not only a missing document"
         );

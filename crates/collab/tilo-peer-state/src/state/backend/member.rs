@@ -1,31 +1,28 @@
 //! One current-member algorithm over actual admitted workspace data.
-use super::{GovernedIdentity, PeerCore, Role, SystemTime};
+use super::{PeerCore, Role, SystemTime};
 use crate::state::MembershipError;
-use std::collections::BTreeMap;
-use tilo_action_policy::{Grant, MemberId};
+use tilo_action_policy::MemberId;
 use tilo_workspace_join::delegation::Delegate;
 
-trait Policy {
-    fn owner(&self) -> Option<&str>;
-    fn members(&self) -> &BTreeMap<String, Role>;
-    fn grants(&self) -> &[Grant];
-    fn identity(&self) -> &GovernedIdentity;
-    /// The role `person` acts with in `workspace`: none for a stranger or a
-    /// blocked member.
-    fn role(&self, workspace: &str, person: &str) -> Option<Role> {
-        if self.owner() == Some(person) {
-            return Some(Role::Owner);
-        }
-        let role = self.members().get(person).copied()?;
-        let node = tilo_action_policy::TreePath::workspace(workspace);
-        let blocked = self.grants().iter().any(|grant| {
-            grant.grantee.person_id() == Some(person)
-                && grant.node == node
-                && grant.answer == tilo_action_policy::Answer::Deny
-                && grant.kinds == tilo_action_policy::KindSet::ALL
-        });
-        (!blocked).then_some(role)
+/// The role `person` acts with in `workspace` under `policy`: none for a
+/// stranger or a blocked member.
+fn role_in(
+    policy: &tilo_action_policy::WorkspacePolicy,
+    workspace: &str,
+    person: &str,
+) -> Option<Role> {
+    if policy.owner.as_deref() == Some(person) {
+        return Some(Role::Owner);
     }
+    let role = policy.members.get(person).copied()?;
+    let node = tilo_action_policy::TreePath::workspace(workspace);
+    let blocked = policy.grants.iter().any(|grant| {
+        grant.grantee.person_id() == Some(person)
+            && grant.node == node
+            && grant.answer == tilo_action_policy::Answer::Deny
+            && grant.kinds == tilo_action_policy::KindSet::ALL
+    });
+    (!blocked).then_some(role)
 }
 fn key_text(key: &[u8; 32]) -> String {
     hex::encode(key)
@@ -42,12 +39,11 @@ enum Removal {
 }
 /// A current member's role, and the bound on it when its device is a
 /// delegate.
-fn current<'peer, P: Policy>(
-    peer: &'peer PeerCore,
+fn current(
+    peer: &PeerCore,
     source: &[u8; 32],
     now: SystemTime,
     removal: Removal,
-    collect: impl FnOnce(&'peer crate::cached_document::CachedDocument) -> Result<P, MembershipError>,
 ) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
     let cert = match removal {
         Removal::Refuses => peer.certificate_typed(source, now),
@@ -58,8 +54,15 @@ fn current<'peer, P: Policy>(
         .workspace_doc
         .as_ref()
         .ok_or(MembershipError::GovernanceMissing)?;
-    let policy = collect(workspace)?;
-    let identity = policy.identity();
+    let policy = workspace.workspace_policy(&peer.workspace);
+    let key = key_text(source);
+    // Decoded once per document state, not on every lookup.
+    let identity = workspace
+        .identities()
+        .get(key.as_str())
+        .ok_or(MembershipError::Absent)?
+        .as_ref()
+        .map_err(|error| MembershipError::MalformedIdentity(error.clone()))?;
     if identity.device_cert != *cert {
         return Err(MembershipError::CertificateMismatch);
     }
@@ -81,9 +84,8 @@ fn current<'peer, P: Policy>(
         .delegate_acting(&peer.workspace, crate::state::now_ns(now))
         .map_err(MembershipError::Delegate)?;
     let person = key_text(&cert.user_public_key);
-    let role = policy
-        .role(&peer.workspace, person.as_str())
-        .ok_or(MembershipError::NoMembership)?;
+    let role =
+        role_in(policy, &peer.workspace, person.as_str()).ok_or(MembershipError::NoMembership)?;
     // A delegate acts with its person's authority bounded by its own: an
     // agent by the agent preset, a bot by its derived grant in the workspace's
     // policy. Neither governs the workspace, and neither rises above an Editor.
@@ -119,59 +121,24 @@ fn current<'peer, P: Policy>(
 pub(in crate::state) fn foreign(cert: &tilo_user_identity::DeviceCert, origin: &[u8; 32]) -> bool {
     cert.capabilities.foreign && cert.device_public_key != *origin
 }
-struct LegacyPolicy<'a> {
-    data: &'a tilo_action_policy::WorkspacePolicy,
-    identity: &'a GovernedIdentity,
-}
-impl Policy for LegacyPolicy<'_> {
-    fn owner(&self) -> Option<&str> {
-        self.data.owner.as_deref()
-    }
-    fn members(&self) -> &BTreeMap<String, Role> {
-        &self.data.members
-    }
-    fn grants(&self) -> &[Grant] {
-        &self.data.grants
-    }
-    fn identity(&self) -> &GovernedIdentity {
-        self.identity
-    }
-}
-pub(in crate::state) fn legacy(
+/// The role `source`'s device acts with now, and the bound on it when it is
+/// a delegate.
+pub(in crate::state) fn role(
     peer: &PeerCore,
     source: &[u8; 32],
     now: SystemTime,
 ) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
-    legacy_with(peer, source, now, Removal::Refuses)
+    current(peer, source, now, Removal::Refuses)
 }
-/// [`legacy`] for a write of `source`'s history: the role its person holds,
+/// [`role`] for a write of `source`'s history: the role its person holds,
 /// whether or not they removed the device since. Asked only of a write the
 /// cut of the removal keeps; it never says what the device may do now.
-pub(in crate::state) fn legacy_in_history(
+pub(in crate::state) fn role_in_history(
     peer: &PeerCore,
     source: &[u8; 32],
     now: SystemTime,
 ) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
-    legacy_with(peer, source, now, Removal::IsHistory)
-}
-fn legacy_with(
-    peer: &PeerCore,
-    source: &[u8; 32],
-    now: SystemTime,
-    removal: Removal,
-) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
-    current(peer, source, now, removal, |workspace| {
-        let data = workspace.workspace_policy(&peer.workspace);
-        let key = key_text(source);
-        // Decoded once per document state, not on every lookup.
-        let identity = workspace
-            .identities()
-            .get(key.as_str())
-            .ok_or(MembershipError::Absent)?
-            .as_ref()
-            .map_err(|error| MembershipError::MalformedIdentity(error.clone()))?;
-        Ok(LegacyPolicy { data, identity })
-    })
+    current(peer, source, now, Removal::IsHistory)
 }
 #[cfg(test)]
 mod tests;

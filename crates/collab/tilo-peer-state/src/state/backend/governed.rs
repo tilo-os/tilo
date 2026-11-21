@@ -1,16 +1,13 @@
 //! The governed identity import algorithm.
 use super::{
-    AutoCommit, BTreeMap, DeviceCert, GovernedIdentity, RedemptionReceipt, RevocationList,
-    SystemTime, VerifiedCertificate, now_ns,
+    BTreeMap, GovernedIdentity, RedemptionReceipt, RevocationList, SystemTime, VerifiedCertificate,
+    now_ns,
 };
-use crate::workspace::read::{
-    self, GovernanceEntry, LegacyRead, ReadError, Selection, WorkspaceRead, WorkspaceValue,
-};
+use crate::workspace::read::{ReadError, Selection, WorkspaceRead, WorkspaceValue};
 use tilo_user_identity::{DeviceCertError, RevocationError};
 
 #[derive(Debug)]
 pub(in crate::state) enum ImportError {
-    Capacity,
     Row(crate::state::RowError),
     Receipt(postcard::Error),
     Certificate(DeviceCertError),
@@ -42,38 +39,15 @@ impl std::fmt::Display for ImportError {
             }
             Self::RevocationRoot => f.write_str("revocation root mismatch"),
             Self::RevocationCrossRoot => f.write_str("revocation cannot cross identity roots"),
-            Self::Capacity => f.write_str("governed import exceeds its limit"),
             Self::Read => f.write_str("governed import read failed"),
         }
     }
 }
 fn read_error(error: ReadError<ImportError>) -> ImportError {
     match error {
-        ReadError::Capacity => ImportError::Capacity,
         ReadError::Visitor(error) => error,
         ReadError::Malformed => ImportError::Read,
     }
-}
-struct Inputs {
-    identities: BTreeMap<String, GovernedIdentity>,
-}
-fn inputs<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<Inputs, ImportError> {
-    let mut identities = BTreeMap::new();
-    read::visit_governance_entries(workspace, |entry| {
-        if let GovernanceEntry::Identity { key, bytes } = entry {
-            // Exact historical winner/ignore traversal. Decode every
-            // identity before checking any receipt, key, certificate or
-            // revocation.
-            let value = GovernedIdentity::decode(bytes).map_err(ImportError::Row)?;
-            let key = work.text(key)?;
-            work.tree::<String, GovernedIdentity>()?;
-            identities.insert(key, value);
-        }
-        Ok(())
-    })
-    .map_err(read_error)?;
-    receipts_checked(workspace, None, work)?;
-    Ok(Inputs { identities })
 }
 /// Where a workspace keeps its invitation receipts, by invitation.
 const RECEIPTS: &str = "invitation_receipts_v1";
@@ -84,13 +58,12 @@ const RECEIPTS: &str = "invitation_receipts_v1";
 fn receipts_checked<R: WorkspaceRead>(
     workspace: &R,
     only: Option<&std::collections::BTreeSet<String>>,
-    work: &mut Work,
 ) -> Result<(), ImportError> {
     // The old invitation_receipts helper checks ALL root container shapes
     // before examining rows, then all row shapes before decoding any JSON.
     workspace
         .visit_property(
-            &workspace.root(),
+            &automerge::ROOT,
             "invitation_receipts_v1",
             Selection::All,
             |value| {
@@ -110,7 +83,7 @@ fn receipts_checked<R: WorkspaceRead>(
     let mut receipts = BTreeMap::<String, Vec<Vec<u8>>>::new();
     workspace
         .visit_property(
-            &workspace.root(),
+            &automerge::ROOT,
             "invitation_receipts_v1",
             Selection::All,
             |value| {
@@ -135,19 +108,11 @@ fn receipts_checked<R: WorkspaceRead>(
                                 let WorkspaceValue::Bytes(bytes) = value else {
                                     return Err(ImportError::ReceiptShape);
                                 };
-                                work.debit(Some(bytes.len()))?;
-                                work.push(&mut values, bytes.to_vec())
+                                values.push(bytes.to_vec());
+                                Ok(())
                             })
                             .map_err(read_error)?;
-                        if !receipts.contains_key(key) {
-                            let key = work.text(key)?;
-                            work.tree::<String, Vec<Vec<u8>>>()?;
-                            receipts.insert(key, Vec::new());
-                        }
-                        let destination = receipts.get_mut(key).ok_or(ImportError::Read)?;
-                        for value in values {
-                            work.push(destination, value)?;
-                        }
+                        receipts.entry(key.to_owned()).or_default().extend(values);
                         Ok(())
                     })
                     .map_err(read_error)?;
@@ -213,7 +178,6 @@ fn apply<'a>(
     revocations: &mut RevocationList,
     owner: &[u8; 32],
     now: SystemTime,
-    cert_work: &mut Work,
 ) -> Result<bool, ImportError> {
     let mut changed = false;
     for (id, identity) in identities {
@@ -226,7 +190,7 @@ fn apply<'a>(
             // The person's root renewed the device's certificate: the same
             // member, under the certificate that replaces the one it held.
             Some(known) if crate::state::certificate_renewal::renews(cert, known.as_ref()) => {
-                cert_work.certificate(cert, Some(now_ns(now)))?
+                verified(cert, now)?
             }
             // An older state of the workspace, from before the renewal it holds:
             // the renewal stays.
@@ -234,7 +198,7 @@ fn apply<'a>(
                 known.clone()
             }
             Some(_) => return Err(ImportError::CertificateConflict),
-            None => cert_work.certificate(cert, Some(now_ns(now)))?,
+            None => verified(cert, now)?,
         };
         if !original.contains_key(&cert.device_public_key)
             && cert.user_public_key != *owner
@@ -259,57 +223,29 @@ fn apply<'a>(
         }
         changed |=
             certificates.get(&cert.device_public_key).map(AsRef::as_ref) != Some(verified.as_ref());
-        cert_work.tree::<[u8; 32], VerifiedCertificate>()?;
         certificates.insert(cert.device_public_key, verified);
     }
     Ok(changed)
 }
 
 /// Imported certificates and revocations, and whether either changed.
-type LegacyImport = (
+type Import = (
     BTreeMap<[u8; 32], VerifiedCertificate>,
     RevocationList,
     bool,
 );
-pub(in crate::state) fn legacy(
-    workspace: &AutoCommit,
-    original: &BTreeMap<[u8; 32], VerifiedCertificate>,
-    revocations: &RevocationList,
-    owner: &[u8; 32],
-    now: SystemTime,
-) -> Result<LegacyImport, ImportError> {
-    let mut work = Work::unlimited();
-    let inputs = inputs(&LegacyRead(workspace), &mut work)?;
-    let members = crate::members::replay_declared(workspace).members;
-    let mut certificates = original.clone();
-    let mut revocations = revocations.clone();
-    let changed = apply(
-        inputs
-            .identities
-            .iter()
-            .map(|(id, identity)| (id.as_str(), identity)),
-        &|person| members.contains_key(person),
-        original,
-        &mut certificates,
-        &mut revocations,
-        owner,
-        now,
-        &mut work,
-    )?;
-    Ok((certificates, revocations, changed))
-}
-/// [`legacy`] of a document whose rows were read once per state
-/// ([`crate::cached_document`]): an identity row a change left as it was is
-/// neither decoded again nor its certificate checked again, so taking in a
-/// change costs what the change touched, not the workspace.
-pub(in crate::state) fn cached(
+/// The certificates and revocations a workspace's governed identity rows
+/// prove, over those the replica already holds. The rows are read once per
+/// document state ([`crate::cached_document`]): an identity row a change left
+/// as it was is neither decoded again nor its certificate checked again, so
+/// taking in a change costs what the change touched, not the workspace.
+pub(in crate::state) fn import(
     workspace: &crate::cached_document::CachedDocument,
     original: &BTreeMap<[u8; 32], VerifiedCertificate>,
     revocations: &RevocationList,
     owner: &[u8; 32],
     now: SystemTime,
-) -> Result<LegacyImport, ImportError> {
-    let mut work = Work::unlimited();
+) -> Result<Import, ImportError> {
     let views = workspace.identities();
     let mut identities = Vec::with_capacity(views.len());
     for (key, identity) in views {
@@ -336,10 +272,10 @@ pub(in crate::state) fn cached(
     match written.as_ref().map(|written| written.get(RECEIPTS)) {
         Some(None) => {}
         Some(Some(crate::workspace::rows::Wrote::Entries(keys))) => {
-            receipts_checked(&LegacyRead(&**workspace), Some(keys), &mut work)?;
+            receipts_checked(&**workspace, Some(keys))?;
         }
         Some(Some(crate::workspace::rows::Wrote::Whole)) | None => {
-            receipts_checked(&LegacyRead(&**workspace), None, &mut work)?;
+            receipts_checked(&**workspace, None)?;
         }
     }
     workspace.receipts_checked();
@@ -354,81 +290,14 @@ pub(in crate::state) fn cached(
         &mut revocations,
         owner,
         now,
-        &mut work,
     )?;
     Ok((certificates, revocations, changed))
 }
-/// A byte limit on the collections one import builds.
-struct Work {
-    remaining: usize,
-}
-impl Work {
-    fn unlimited() -> Self {
-        Self {
-            remaining: usize::MAX,
-        }
-    }
-    fn debit(&mut self, bytes: Option<usize>) -> Result<(), ImportError> {
-        self.remaining = self
-            .remaining
-            .checked_sub(bytes.ok_or(ImportError::Capacity)?)
-            .ok_or(ImportError::Capacity)?;
-        Ok(())
-    }
-    fn tree<K, V>(&mut self) -> Result<(), ImportError> {
-        // An estimate of a BTreeMap node's share per insertion.
-        self.debit(
-            size_of::<K>()
-                .checked_add(size_of::<V>())
-                .and_then(|n| n.checked_mul(33))
-                .and_then(|n| n.checked_add(768)),
-        )
-    }
-    fn text(&mut self, value: &str) -> Result<String, ImportError> {
-        self.debit(Some(value.len()))?;
-        Ok(value.to_owned())
-    }
-    fn push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), ImportError> {
-        if values.len() == values.capacity() {
-            let next = values.capacity().saturating_mul(2).max(4);
-            self.debit(next.checked_mul(size_of::<T>()))?;
-            values
-                .try_reserve_exact(next.saturating_sub(values.len()))
-                .map_err(|_| ImportError::Capacity)?;
-        }
-        values.push(value);
-        Ok(())
-    }
-    fn certificate(
-        &mut self,
-        value: &DeviceCert,
-        now: Option<u64>,
-    ) -> Result<VerifiedCertificate, ImportError> {
-        let value = self.cert(value)?;
-        match now {
-            Some(now) => VerifiedCertificate::new_typed(value, now),
-            None => VerifiedCertificate::historical_typed(value),
-        }
-        .map_err(ImportError::Certificate)
-    }
-    /// A copy of `value` within the budget, with the certificate that
-    /// issued it: a minted grant's signature is its issuer's.
-    fn cert(&mut self, value: &DeviceCert) -> Result<DeviceCert, ImportError> {
-        self.debit(Some(size_of::<DeviceCert>()))?;
-        Ok(DeviceCert {
-            user_public_key: value.user_public_key,
-            device_public_key: value.device_public_key,
-            device_label: self.text(&value.device_label)?,
-            capabilities: value.capabilities.clone(),
-            issued_at_ns: value.issued_at_ns,
-            expires_at_ns: value.expires_at_ns,
-            signature: value.signature,
-            issuer: match value.issuer.as_deref() {
-                Some(issuer) => Some(Box::new(self.cert(issuer)?)),
-                None => None,
-            },
-        })
-    }
+fn verified(
+    cert: &tilo_user_identity::DeviceCert,
+    now: SystemTime,
+) -> Result<VerifiedCertificate, ImportError> {
+    VerifiedCertificate::new_typed(cert.clone(), now_ns(now)).map_err(ImportError::Certificate)
 }
 #[cfg(test)]
 mod tests;

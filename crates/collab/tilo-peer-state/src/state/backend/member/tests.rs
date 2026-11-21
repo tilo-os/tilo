@@ -1,11 +1,13 @@
 use super::*;
 use crate::StatePeer;
+use crate::state::GovernedIdentity;
 use crate::state::now_ns;
 use crate::verified_certificate::VerifiedCertificate;
 use automerge::ROOT;
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
+use tilo_action_policy::Grant;
 use tilo_action_policy::{ActionKind, Answer, Grantee, KindSet, TreePath, roles};
 use web_time::Duration;
 
@@ -597,9 +599,9 @@ fn make_foreign(peer: &mut StatePeer, source: &[u8; 32]) {
     replace_row(peer, source, identity.encode().unwrap());
 }
 fn assert_foreign(peer: &StatePeer, source: [u8; 32], now: SystemTime, role: Role) {
-    let legacy = peer.permissions(source, now).unwrap();
+    let permissions = peer.permissions(source, now).unwrap();
     assert_eq!(peer.role(&source, now).unwrap(), role);
-    assert!(legacy.acting.foreign_device);
+    assert!(permissions.acting.foreign_device);
     let invite = roles::governance_action(peer.workspace_id(), roles::governance::INVITE);
-    assert!(!legacy.allows(&invite, ActionKind::Undoable, now));
+    assert!(!permissions.allows(&invite, ActionKind::Undoable, now));
 }

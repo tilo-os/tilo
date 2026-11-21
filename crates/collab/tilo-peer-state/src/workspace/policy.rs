@@ -12,8 +12,8 @@ pub(crate) trait Destination {
         Ok(())
     }
 }
-pub(crate) fn project<R: WorkspaceRead, D: Destination>(
-    read: &R,
+pub(crate) fn project<D: Destination>(
+    read: &impl WorkspaceRead,
     destination: &mut D,
 ) -> Result<(), ReadError<D::Error>> {
     read::visit_governance_entries(read, |entry| match entry {
@@ -38,7 +38,7 @@ impl Destination for PolicyData {
         Ok(())
     }
 }
-/// `document`'s governance as [`legacy`] reads it, derived where it can be
+/// `document`'s governance as [`whole`] reads it, derived where it can be
 /// from a state read before.
 ///
 /// Admitting one person writes a row or two of a workspace of hundreds, and
@@ -52,7 +52,7 @@ impl Destination for PolicyData {
 pub(crate) fn read(document: &automerge::AutoCommit) -> std::sync::Arc<PolicyData> {
     use automerge::transaction::Transactable as _;
     if document.pending_ops() > 0 {
-        return std::sync::Arc::new(legacy(document));
+        return std::sync::Arc::new(whole(document));
     }
     let heads = document.base_heads();
     let workspace = governed_workspace(document);
@@ -60,13 +60,13 @@ pub(crate) fn read(document: &automerge::AutoCommit) -> std::sync::Arc<PolicyDat
         return known;
     }
     let read = std::sync::Arc::new(
-        derive(document, &workspace, &heads).unwrap_or_else(|| legacy(document)),
+        derive(document, &workspace, &heads).unwrap_or_else(|| whole(document)),
     );
     // Every derived reading a test makes is checked against the whole one.
     #[cfg(test)]
     assert_eq!(
         *read,
-        legacy_uncounted(document),
+        whole_uncounted(document),
         "a governance reading derived from an earlier state is the whole reading"
     );
     remembered::keep(&workspace, heads, std::sync::Arc::clone(&read));
@@ -254,12 +254,12 @@ mod remembered {
     }
 }
 
-/// [`legacy`], uncounted: a test's check of a derived reading.
+/// [`whole`], uncounted: a test's check of a derived reading.
 #[cfg(test)]
-fn legacy_uncounted(document: &automerge::AutoCommit) -> PolicyData {
+fn whole_uncounted(document: &automerge::AutoCommit) -> PolicyData {
     crate::governance_work::uncounted(|| {
         let mut value = empty();
-        let _ = project(&read::LegacyRead(document), &mut value);
+        let _ = project(document, &mut value);
         value
     })
 }
@@ -273,7 +273,8 @@ fn empty() -> PolicyData {
     }
 }
 
-pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
+/// `document`'s governance, read from every entry it holds.
+pub(crate) fn whole(document: &automerge::AutoCommit) -> PolicyData {
     #[cfg(test)]
     super::POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
     let mut value = PolicyData {
@@ -281,12 +282,11 @@ pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
         identities: std::collections::BTreeMap::new(),
         names: std::collections::BTreeMap::new(),
     };
-    // This concrete legacy adapter has neither resource failures nor fallible
-    // destination operations. Malformed native lookups retain the historical
-    // ignored-value behavior inside visit_governance_entries.
+    // The destination's operations are infallible, and a malformed lookup
+    // reads as absent inside visit_governance_entries.
     let _ = tilo_failure::ignored!(
-        "the legacy adapter's destination operations are infallible",
-        project(&read::LegacyRead(document), &mut value)
+        "the destination's operations are infallible",
+        project(document, &mut value)
     );
     value
 }

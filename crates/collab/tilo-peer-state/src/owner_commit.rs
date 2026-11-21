@@ -1,8 +1,6 @@
 //! Host-local durable handoff. This is not a neighbour message or a wire capability.
 //! A receipt binds the exact signed mutation/receipt basis, never queue admission.
 pub mod desktop_command;
-mod policy_basis;
-pub use policy_basis::{PrivatePolicyBasis, canonical_owner, governance_revision};
 
 use crate::{document_import::ImportAction, workspace_membership::WorkspaceMembershipCommand};
 use serde::{Deserialize, Serialize};

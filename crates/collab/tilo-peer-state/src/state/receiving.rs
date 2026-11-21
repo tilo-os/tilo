@@ -78,7 +78,7 @@ impl StatePeer {
         // A write whose writer this peer's governance does not list yet is no recorded
         // duplicate: the real admission holds it.
         if matches!(
-            backend::member::legacy(&self.core, &source, now),
+            backend::member::role(&self.core, &source, now),
             Err(MembershipError::Absent)
         ) {
             return Ok(None);
@@ -425,7 +425,7 @@ impl StatePeer {
                 }
                 if !holder
                     && matches!(
-                        backend::member::legacy(&self.core, &source, now),
+                        backend::member::role(&self.core, &source, now),
                         Err(MembershipError::Absent)
                     )
                 {

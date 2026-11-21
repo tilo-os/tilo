@@ -1,118 +1,39 @@
 use super::*;
 use crate::StatePeer;
-use crate::state::err;
-use crate::workspace;
-use automerge::{ReadDoc, transaction::Transactable};
+use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
+use tilo_user_identity::DeviceCert;
 
-// Literal pre-extraction production algorithm; intentionally unqualified test oracle.
-fn original_import(
-    peer: &mut StatePeer,
-    doc: &AutoCommit,
-    now: SystemTime,
-) -> Result<bool, String> {
-    let mut changed = false;
-    let mut certificates = peer.core.certificates.clone();
-    let mut revocations = peer.core.revocations.clone();
-    let identities = workspace::governance_of(Some(doc))
-        .identities
-        .into_iter()
-        .map(|(id, bytes)| {
-            GovernedIdentity::decode(&bytes)
-                .map(|identity| (id, identity))
-                .map_err(err)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for (key, values) in workspace::invitation_receipts(doc)? {
-        for bytes in values {
-            let receipt: RedemptionReceipt = crate::state::StoredReceipt::decode(&bytes)
-                .map_err(err)?
-                .receipt;
-            if key != hex::encode(receipt.invite_id) {
-                return Err("governed invitation receipt key mismatch".into());
-            }
-        }
-    }
-    let members = crate::members::replay_declared(doc).members;
-    for (id, identity) in identities {
-        let has_admission = identity.has_admission();
-        let cert = identity.device_cert;
-        if id != hex::encode(cert.device_public_key) {
-            return Err("governed identity key mismatch".into());
-        }
-        let verified = if let Some(known) = certificates.get(&cert.device_public_key) {
-            if known.as_ref() != &cert {
-                return Err("certificate conflict".into());
-            }
-            known.clone()
-        } else {
-            VerifiedCertificate::new(cert.clone(), now_ns(now))?
-        };
-        // Same-root device enrollment remains supported. Independent roots
-        // must carry the durable receipt written by invitation redemption.
-        if !peer.core.certificates.contains_key(&cert.device_public_key)
-            && cert.user_public_key != peer.owner()
-            && !has_admission
-            && !members.contains_key(&hex::encode(cert.user_public_key))
-        {
-            return Err("independent identity is missing governed admission receipt".into());
-        }
-        for entry in identity.revocations {
-            if entry.user_public_key != cert.user_public_key {
-                return Err("revocation root mismatch".into());
-            }
-            if certificates
-                .get(&entry.revoked_device_public_key)
-                .is_some_and(|target| target.user_public_key != entry.user_public_key)
-            {
-                return Err("revocation cannot cross identity roots".into());
-            }
-            changed |= revocations.insert(entry).map_err(err)?;
-        }
-        changed |= certificates.get(&cert.device_public_key).map(AsRef::as_ref) != Some(&cert);
-        certificates.insert(cert.device_public_key, verified);
-    }
-    peer.core.certificates = certificates;
-    peer.core.revocations = revocations;
-    Ok(changed)
-}
-
+/// The import of `workspace` over `peer`'s certificates, read fresh and read
+/// after the state the peer holds, whose views carry over: both alike.
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "test helper: asserts parity with the original before returning the value"
+    reason = "test helper: asserts both readings agree before returning the value"
 )]
 fn compare_case(
     peer: &StatePeer,
     workspace: &AutoCommit,
     now: SystemTime,
-) -> Result<LegacyImport, ImportError> {
-    let mut oracle = peer.clone();
-    let mut actual = peer.clone();
-    let expected = original_import(&mut oracle, workspace, now);
-    let got = actual.import_governed_certificates(workspace, now);
-    assert_eq!(got, expected);
-    assert_eq!(actual.certificates(), oracle.certificates());
-    assert_eq!(actual.revocations(), oracle.revocations());
-    // The rows read once per document state import alike, read fresh and
-    // read after the state the peer holds, whose views carry over.
+) -> Result<Import, ImportError> {
     let fresh = crate::cached_document::CachedDocument::from(workspace.clone());
-    let following = peer.core.workspace_doc.as_ref().map(|held| {
-        let _ = (held.identities(), held.identity_certificates());
-        held.followed_by(workspace.clone())
-    });
-    for rows in std::iter::once(fresh).chain(following) {
-        let mut cached = peer.clone();
-        assert_eq!(cached.import_governed_rows(&rows, now), expected);
-        assert_eq!(cached.certificates(), oracle.certificates());
-        assert_eq!(cached.revocations(), oracle.revocations());
-    }
-    legacy(
-        workspace,
+    let expected = import(
+        &fresh,
         &peer.core.certificates,
         &peer.core.revocations,
         &peer.core.owner,
         now,
-    )
+    );
+    let mut oracle = peer.clone();
+    let imported = oracle.import_governed_rows(&fresh, now);
+    if let Some(held) = peer.core.workspace_doc.as_ref() {
+        let _ = (held.identities(), held.identity_certificates());
+        let mut following = peer.clone();
+        let got = following.import_governed_rows(&held.followed_by(workspace.clone()), now);
+        assert_eq!(got, imported);
+        assert_eq!(following.certificates(), oracle.certificates());
+        assert_eq!(following.revocations(), oracle.revocations());
+    }
+    expected
 }
 
 fn set_identity(workspace: &mut AutoCommit, id: &str, row: &GovernedIdentity) {
@@ -247,7 +168,7 @@ tilo_test_env::scenario! {
         compare_case(&peer, &workspace, now).unwrap();
         let mut imported = peer;
         imported
-            .import_governed_certificates(&workspace, now)
+            .import_governed_rows(&workspace.into(), now)
             .unwrap();
         assert!(
             imported.certificates().contains(&minted),

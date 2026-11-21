@@ -5,7 +5,7 @@ use super::{
 
 /// A streaming admission transaction for one authenticated native publication cut.
 ///
-/// This legacy semantic transaction does not qualify native allocation bounds.
+/// This transaction does not bound native allocation.
 /// The caller must authenticate the carrier/cut and fence its live state across
 /// asynchronous reads. An error consumes the candidate; only `finish` exports it.
 pub struct NativePublicationCut {

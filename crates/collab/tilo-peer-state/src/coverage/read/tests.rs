@@ -1,6 +1,5 @@
 use super::*;
 use crate::coverage::Coverage;
-use crate::workspace::read::LegacyRead;
 use automerge::{AutoCommit, ObjType, ROOT, ScalarValue, transaction::Transactable};
 use std::collections::BTreeMap;
 
@@ -39,14 +38,13 @@ tilo_test_env::scenario! {
     phase coverage_reader_accepts_the_governed_checkpoint;
     {
         let (workspace, snapshot) = stored();
-        let legacy = governed_snapshot_matches(
-            Some(&LegacyRead(&workspace)),
+        let read = governed_snapshot_matches(
+            Some(&workspace),
             ("test.app", "tab:1"),
             &admitted(),
             Some(&snapshot),
-            &LegacyCoverage,
         );
-        assert_eq!(legacy, Ok(Governed::Current));
+        assert_eq!(read, Ok(Governed::Current));
     }
 
     phase coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint_semantics;
@@ -83,22 +81,21 @@ tilo_test_env::scenario! {
             } else {
                 &snapshot
             };
-            let legacy = governed_snapshot_matches(
-                Some(&LegacyRead(&workspace)),
+            let read = governed_snapshot_matches(
+                Some(&workspace),
                 ("test.app", "tab:1"),
                 &admitted(),
                 Some(payload),
-                &LegacyCoverage,
             );
             match mode {
                 0 | 1 => {
-                    assert_eq!(legacy, Ok(Governed::Current));
+                    assert_eq!(read, Ok(Governed::Current));
                 }
                 2 => {
-                    assert!(matches!(legacy, Err(CoverageMatchError::Decode(_))));
+                    assert!(matches!(read, Err(CoverageMatchError::Decode(_))));
                 }
                 _ => {
-                    assert_eq!(legacy, Err(CoverageMatchError::NoMatch));
+                    assert_eq!(read, Err(CoverageMatchError::NoMatch));
                 }
             }
         }
@@ -109,21 +106,19 @@ tilo_test_env::scenario! {
         let (workspace, snapshot) = stored();
         assert_eq!(
             governed_snapshot_matches(
-                Some(&LegacyRead(&workspace)),
+                Some(&workspace),
                 ("test.app", "tab:1"),
                 &admitted(),
                 None,
-                &LegacyCoverage
             ),
             Ok(Governed::Current)
         );
         assert_eq!(
             governed_snapshot_matches(
-                Some(&LegacyRead(&workspace)),
+                Some(&workspace),
                 ("test.app", "unknown"),
                 &admitted(),
                 Some(&snapshot),
-                &LegacyCoverage
             ),
             Ok(Governed::Current)
         );
@@ -136,11 +131,10 @@ tilo_test_env::scenario! {
         let arriving = BTreeMap::new();
         assert_eq!(
             governed_snapshot_matches(
-                Some(&LegacyRead(&workspace)),
+                Some(&workspace),
                 ("test.app", "tab:1"),
                 &arriving,
                 Some(older),
-                &LegacyCoverage,
             ),
             Ok(Governed::Arriving)
         );
