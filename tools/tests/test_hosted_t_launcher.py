@@ -1,7 +1,7 @@
 """The guest's t launcher: token from the environment, download once, cache, exec.
 
 os/hosted-guest/t is what /usr/local/bin/t is in a workspace's VM. It runs
-against a local HTTP server standing in for the t server, so the download the
+against a local HTTP server in the t server's place, so the download the
 launcher makes is the one checked: the request path, the Authorization header
 following the server's redirect, the cached copy, and the arguments it execs
 the program with. Nothing here talks to the real t server.
