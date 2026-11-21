@@ -24,10 +24,7 @@ impl FrameHarness {
             &self.state.doc,
             &mut resources,
         );
-        let Some(mut palette) = self.new_action_palette() else {
-            self.palette_waiting.search = Some(request.clone());
-            return Ok(());
-        };
+        let mut palette = self.new_action_palette();
         let mut providers = crate::bound_dispatch::search_providers(self.root.as_ref());
         providers.push(Box::new(crate::search::OpenResourceSearch::new(&resources)));
         palette.load_open_resources(&resources);

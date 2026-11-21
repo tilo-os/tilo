@@ -52,7 +52,6 @@ mod host;
 mod inspect;
 mod rows;
 mod window_place;
-pub use api::{ACTION_PALETTE, MakeActionPalette, builtin_action_palette};
 pub(crate) use api::{ActionPaletteBox, make_action_palette};
 pub use rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
 pub use window_place::{list_cap, placement};

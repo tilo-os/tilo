@@ -88,8 +88,8 @@ impl<F: Copy + 'static> LazyCode<F> {
 ///
 /// ```ignore
 /// tilo_lock::lazy_code! {
-///     /// History's code.
-///     pub(crate) static HISTORY: MakeHistory = builtin_history, feature = "lazy-history";
+///     /// The people overlay's code.
+///     pub static PEOPLE: MakePeopleOverlay = builtin_people_overlay, feature = "lazy-people";
 /// }
 /// ```
 ///

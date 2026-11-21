@@ -57,9 +57,7 @@ impl FrameHarness {
         {
             return Err("Finish the current dialog or command first".into());
         }
-        let mut palette = self
-            .new_action_palette()
-            .ok_or_else(|| "Search is still loading".to_owned())?;
+        let mut palette = self.new_action_palette();
         palette.load_open_resources(&self.caller_resources());
         palette.open();
         palette.set_query(query);
@@ -95,9 +93,7 @@ impl FrameHarness {
                 && !self.focus_trap_active
                 && self.caller_palette.pending.is_none()
             {
-                let Some(mut palette) = self.new_action_palette() else {
-                    return false;
-                };
+                let mut palette = self.new_action_palette();
                 palette.load_open_resources(&self.caller_resources());
                 palette.open();
                 self.caller_palette.palette = Some(palette);

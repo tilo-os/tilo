@@ -2569,54 +2569,6 @@ pub(crate) struct ResourceOperation<'a> {
     pub(crate) api: Option<&'a mut dyn crate::session_api::SessionApi>,
 }
 
-/// The code that performs a bound action: resolving, admitting and executing it. A window draws its
-/// controls without it, so a program that fetches some of its code later can leave it out of the
-/// code it starts with (`lazy-actions`). Until it is in, an action is answered
-/// [`tilo_actions::api::NOT_READY`]: nothing ran, and a press of the person's waits and is asked
-/// again once it is.
-#[derive(Clone, Copy)]
-pub struct ActionCode {
-    invoke: fn(
-        &mut dyn Widget,
-        &mut AutoCommit,
-        &BoundActionTarget,
-        &mut dyn tilo_actions::ActionTransport,
-        Option<&mut dyn crate::session_api::SessionApi>,
-        ResourceActionRequest<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, BoundActionError>,
-    execute: fn(
-        &mut dyn Widget,
-        &mut AutoCommit,
-        &ObjId,
-        &tilo_actions::ActionRegistry,
-        &mut dyn tilo_actions::ActionTransport,
-        ResourceOperation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
-}
-
-/// The code this build links.
-#[must_use]
-pub fn builtin_actions() -> ActionCode {
-    ActionCode {
-        invoke: perform_resource_action,
-        execute: perform_resource_operation,
-    }
-}
-
-crate::lazy_code! {
-    /// The code that performs a bound action: linked, or with `lazy-actions` fetched as the program
-    /// starts.
-    pub static ACTIONS: ActionCode = builtin_actions, feature = "lazy-actions";
-}
-
-/// What an action is answered while the code that performs it is still on its way.
-pub(crate) fn actions_not_in() -> tilo_actions::ApiError {
-    tilo_actions::ApiError::Unavailable {
-        code: tilo_actions::api::NOT_READY.into(),
-        reason: "the code that performs this has not loaded yet; ask again".into(),
-    }
-}
-
 /// One execution body for bound components, under the broker's admission.
 pub(crate) fn execute_resource_operation(
     widget: &mut dyn Widget,
@@ -2626,8 +2578,7 @@ pub(crate) fn execute_resource_operation(
     transport: &mut dyn tilo_actions::ActionTransport,
     operation: ResourceOperation<'_>,
 ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-    let code = ACTIONS.get().ok_or_else(actions_not_in)?;
-    (code.execute)(widget, doc, path, registry, transport, operation)
+    perform_resource_operation(widget, doc, path, registry, transport, operation)
 }
 
 fn perform_resource_operation(
@@ -2985,10 +2936,7 @@ pub(crate) fn invoke_resource_action(
     api: Option<&mut dyn crate::session_api::SessionApi>,
     request: ResourceActionRequest<'_>,
 ) -> Result<crate::widget::ResourceOperationStart, BoundActionError> {
-    let code = ACTIONS
-        .get()
-        .ok_or_else(|| BoundActionError::Api(actions_not_in()))?;
-    (code.invoke)(root, document, target, transport, api, request)
+    perform_resource_action(root, document, target, transport, api, request)
 }
 
 fn perform_resource_action(

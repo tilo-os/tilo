@@ -1259,7 +1259,6 @@ impl PageRenderer {
     /// A renderer for a page about to be shown.
     #[must_use]
     pub fn new() -> Self {
-        let _ = crate::image_decoders::decoders();
         Self::default()
     }
 
@@ -1541,9 +1540,8 @@ impl PageRenderer {
         if let Some(cached) = self.images.get(hash) {
             return cached.clone();
         }
-        let decoders = crate::image_decoders::decoders()?;
         let bytes = blobs.blob(hash)?;
-        let decoded = (decoders.page)(&bytes);
+        let decoded = crate::image_decoders::page(&bytes);
         self.images.insert(*hash, decoded.clone());
         decoded
     }
@@ -1711,34 +1709,6 @@ mod tests {
             settle(&engine);
             assert!(engine.paint_frame().is_none());
         }
-    }
-
-    #[cfg(feature = "lazy-image-decode")]
-    #[test]
-    fn images_wait_for_a_deferred_decoder() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static LOADS: AtomicUsize = AtomicUsize::new(0);
-        fn load() {
-            LOADS.fetch_add(1, Ordering::SeqCst);
-        }
-
-        let hash = [7_u8; 32];
-        let blobs = |_: &[u8; 32]| Some(Arc::new(TOP_PNG.to_vec()));
-        crate::image_decoders::IMAGE_DECODERS.defer(load);
-        let mut renderer = PageRenderer::new();
-        assert_eq!(
-            LOADS.load(Ordering::SeqCst),
-            1,
-            "a page about to be shown starts fetching it"
-        );
-        assert!(renderer.image(&blobs, &hash).is_none());
-        assert_eq!(LOADS.load(Ordering::SeqCst), 1, "one fetch at a time");
-        crate::image_decoders::IMAGE_DECODERS
-            .install(crate::image_decoders::builtin_image_decoders());
-        let image = renderer
-            .image(&blobs, &hash)
-            .expect("decoded once it is in");
-        assert_eq!((image.width, image.height), (800, 600));
     }
 
     #[test]

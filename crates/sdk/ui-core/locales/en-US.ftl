@@ -71,7 +71,6 @@ window-toolbar-hide-inspector = Hide inspector
 # A window shared live into a conversation, from its own menu.
 window-share-to-channel = Share to channel…
 window-stop-sharing-in = Stop sharing in { $place }
-history-loading = Loading History…
 lazy-loading = Loading…
 history-genesis = Created
 history-moved = Moved between workspaces
@@ -1098,7 +1097,6 @@ emoji-chooser-workspace = Workspace
 emoji-chooser-recent = Recently used
 emoji-chooser-results = Matching emoji
 emoji-chooser-no-results = No emoji found
-emoji-chooser-arriving = More emoji are on their way
 emoji-chooser-add = Add emoji
 emoji-bar = Quick reactions
 emoji-more = More emoji
@@ -1118,7 +1116,6 @@ workspace-emoji-choose-accept = Add
 workspace-emoji-image-files = Pictures
 # Why a picture chosen in the emoji picker was not added, after
 # emoji-chooser-add-failed's colon: short, it shares the picker's last line.
-workspace-emoji-loading = the picture tools are still loading
 workspace-emoji-not-a-picture = it isn't a PNG, JPEG or WebP
 workspace-emoji-too-detailed = it's too detailed for an emoji
 workspace-emoji-unavailable = this workspace's emoji aren't available

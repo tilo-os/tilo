@@ -102,7 +102,6 @@ impl FrameHarness {
         self.control_domain = control_domain;
         self.component_wake = Some(Box::new(wake));
         self.history = None;
-        self.pending_history = None;
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;

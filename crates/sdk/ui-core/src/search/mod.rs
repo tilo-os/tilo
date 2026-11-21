@@ -68,8 +68,6 @@ pub use scope::{AppScope, Scope, WindowGroupId};
 pub use tilo_search::fold as fold_search_text;
 pub use tilo_search::prepare_engine;
 pub use tilo_search::{Frecency, ListIndex, MAX_FIELD_RANK, Matching, fold_char, initials, locate};
-#[cfg(feature = "lazy-engine")]
-pub use tilo_search::{defer_engine, engine_load_failed, install_engine};
 pub use tilo_search::{engine_generation, engine_ready};
 
 /// The rows of a short list that answer `query`, best first, ranked by `index` the way

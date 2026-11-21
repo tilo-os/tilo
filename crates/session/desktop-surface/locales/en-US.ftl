@@ -431,7 +431,6 @@ workspace-settings-emoji-remove = Remove :{ $name }:
 workspace-settings-emoji-not-chosen = No picture was chosen
 workspace-settings-emoji-not-added = { $file } was not added as an emoji
 workspace-settings-emoji-not-removed = :{ $name }: was not removed
-workspace-settings-emoji-tools-loading = The picture tools are still loading. Try again in a moment.
 workspace-settings-emoji-not-a-picture = Only PNG, JPEG and WebP pictures can become emoji.
 workspace-settings-emoji-too-detailed = The picture is too detailed to stay sharp at emoji size. Try a simpler one.
 workspace-settings-emoji-no-name = Its file name has no letters or digits to name an emoji by.

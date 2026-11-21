@@ -335,8 +335,8 @@ pub mod driver;
 mod focus;
 pub use driver::{Outcome, Step, StepEntry, StepStatus, drive};
 mod invocation_results;
-mod lazy_palette;
 mod nav_gesture;
+mod ordinary_palette;
 #[cfg(test)]
 mod palette_window_tests;
 mod profiling;
@@ -408,10 +408,7 @@ pub struct FrameHarness {
     state: Box<State>,
     root: Box<dyn Widget>,
     history: Option<crate::history_mode::host::HistoryChrome>,
-    /// A History registered before its code was in, installed once it is.
-    pending_history: Option<crate::history_mode::HistoryRegistration>,
     action_palette: Option<crate::action_palette::ActionPaletteBox>,
-    palette_waiting: Box<lazy_palette::Waiting>,
     /// Why the person's last invocation did not run, at the control they
     /// used, until their next press or key ([`crate::control_notice`]).
     control_notice: Option<crate::control_notice::ControlNotice>,
@@ -1214,16 +1211,7 @@ impl FrameHarness {
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         self.invalidate_local();
         registration.validate_root(self.root.as_ref())?;
-        let mut history =
-            match crate::history_mode::host::make_history(registration, &self.state.doc)? {
-                crate::history_mode::host::MadeHistory::Ready(history) => history,
-                crate::history_mode::host::MadeHistory::Loading(registration) => {
-                    // The window shows without History until its code is
-                    // in; the next layout takes it up.
-                    self.pending_history = Some(registration);
-                    return Ok(());
-                }
-            };
+        let mut history = crate::history_mode::host::make_history(registration, &self.state.doc)?;
         history.set_control_domain(&self.control_domain);
         self.history = Some(history);
         self.invalidate_layout_tree();
@@ -1452,9 +1440,7 @@ impl FrameHarness {
             layout_maps: crate::retained_widgets::Adopted::default(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
-            pending_history: None,
             action_palette: None,
-            palette_waiting: Box::default(),
             control_notice: None,
             window_refusal: None,
             ordinary_palette_return_focus: None,
@@ -3104,27 +3090,6 @@ impl FrameHarness {
     /// composition: the live host draws the next frame for that input, and
     /// the activation completes there. Bounded as composition is
     /// ([`crate::widget::layout::settle_widget_composition`]).
-    /// Install the History registered before its code was in, once it is.
-    fn adopt_loaded_history(&mut self) {
-        if self.pending_history.is_none() || !crate::history_mode::host::history_code_ready() {
-            return;
-        }
-        let Some(registration) = self.pending_history.take() else {
-            return;
-        };
-        match crate::history_mode::host::make_history(registration, &self.state.doc) {
-            Ok(crate::history_mode::host::MadeHistory::Ready(mut history)) => {
-                history.set_control_domain(&self.control_domain);
-                self.history = Some(history);
-                self.invalidate_layout_tree();
-            }
-            Ok(crate::history_mode::host::MadeHistory::Loading(registration)) => {
-                self.pending_history = Some(registration);
-            }
-            Err(error) => tracing::warn!(%error, "the window shows without its history"),
-        }
-    }
-
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         let _motions = crate::motion::owning(self.motions.0);
         /// Marks the frame's body, restoring the enclosing frame's answer on the way out: a frame a
@@ -3142,8 +3107,6 @@ impl FrameHarness {
             running: std::rc::Rc::clone(&self.frame_running),
             previous: self.frame_running.replace(true),
         };
-        self.adopt_loaded_history();
-        self.adopt_loaded_palette();
         let _wake = self.enter_wake();
         self.activation_recomposed = false;
         self.refresh_part_row();

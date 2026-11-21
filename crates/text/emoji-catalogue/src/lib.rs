@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn the_offered_catalogue_names_and_finds_emoji() {
         super::offer();
-        let catalogue = ui::emoji_catalogue::catalogue().expect("offered");
+        let catalogue = ui::emoji_catalogue::catalogue();
         assert!(!catalogue.groups().is_empty());
         assert!(!catalogue.group_emoji(0).is_empty());
         assert!(catalogue.search("thumbs", 8).contains(&"👍"));

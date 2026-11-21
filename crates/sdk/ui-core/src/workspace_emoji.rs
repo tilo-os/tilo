@@ -105,9 +105,8 @@ impl WorkspaceEmoji {
         found.into_iter().map(|(_, emoji)| emoji).collect()
     }
 
-    /// The picture of the emoji called `name`, decoded: `None` while it is still to
-    /// decode (the decoders are fetched on first use in a browser) or when the workspace
-    /// has no such emoji or its picture is broken.
+    /// The picture of the emoji called `name`, decoded: `None` when the workspace has no
+    /// such emoji or its picture is broken.
     #[must_use]
     pub fn image(&self, name: &str) -> Option<ImageData> {
         if let Some(decoded) = self.decoded.borrow().get(name) {
@@ -117,7 +116,6 @@ impl WorkspaceEmoji {
         let decoded = match crate::image_store::decode_held(&emoji.image, IMAGE_SIDE) {
             crate::image_store::HeldPicture::Ready(image) => Some(image),
             crate::image_store::HeldPicture::Broken => None,
-            crate::image_store::HeldPicture::Pending => return None,
         };
         self.decoded
             .borrow_mut()
@@ -169,7 +167,6 @@ pub enum Adding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Small {
     Ready(Vec<u8>),
-    Pending,
     NotAPicture,
     TooLarge,
 }
@@ -186,18 +183,10 @@ pub fn make_small(image: &[u8]) -> Small {
                 return Small::Ready(png);
             }
             crate::image_store::SmallPicture::Ready(_) => side = side.saturating_sub(8),
-            crate::image_store::SmallPicture::Pending => return Small::Pending,
             crate::image_store::SmallPicture::Broken => return Small::NotAPicture,
         }
     }
     Small::TooLarge
-}
-
-/// Wake `window` once the image tools [`make_small`] waits for are in: a picture it
-/// answered [`Small::Pending`] for is made small then, on the frame that wake brings, and
-/// not only when something else changes.
-pub fn wake_when_tools_are_in(window: &WakeHandle) {
-    crate::image_decoders::wake_when_in(window.clone());
 }
 
 impl Small {
@@ -206,7 +195,6 @@ impl Small {
     pub fn refusal(&self) -> Option<String> {
         let key = match self {
             Self::Ready(_) => return None,
-            Self::Pending => "workspace-emoji-loading",
             Self::NotAPicture => "workspace-emoji-not-a-picture",
             Self::TooLarge => "workspace-emoji-too-detailed",
         };

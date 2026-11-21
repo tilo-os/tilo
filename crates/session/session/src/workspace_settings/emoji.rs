@@ -25,7 +25,7 @@ use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerState, FileRequest, FileType};
 use tilo_sheets::workspace_settings as sheet;
 use ui::permissions::{LivePermissions, PermissionContext};
-use ui::workspace_emoji::{CustomEmoji, Small, WorkspaceEmoji, make_small, wake_when_tools_are_in};
+use ui::workspace_emoji::{CustomEmoji, Small, WorkspaceEmoji, make_small};
 
 /// How workspace settings' history names where a change came from.
 const SETTINGS_APP: (&str, &str) = ("tilo-session", "Workspace settings");
@@ -60,12 +60,9 @@ pub(crate) struct Emoji {
     shown: RefCell<Option<Seen>>,
     /// Why the last emoji was not added or removed.
     notice: RefCell<Option<emoji_pane::EmojiNotice>>,
-    /// Chosen pictures whose making small waits for the image tools.
-    waiting: RefCell<Vec<Waiting>>,
     /// The chooser's request while the person picks a picture.
     choosing: RefCell<Option<String>>,
-    /// Counts what this changed itself: the notice, the chooser opening or closing, a picture
-    /// waiting for the image tools.
+    /// Counts what this changed itself: the notice, the chooser opening or closing.
     version: Cell<u64>,
     /// Counts the chooser's requests, so each one names itself.
     requests: Cell<u64>,
@@ -89,16 +86,9 @@ struct Seen {
     version: u64,
 }
 
-/// A chosen picture whose making small waits for the image tools.
-struct Waiting {
-    /// The file's name, as the tab names what it could not add.
-    file: String,
-    bytes: Vec<u8>,
-}
-
 impl Emoji {
     /// The workspace's emoji in the workspaces' copy of them (`records`), waking the session's loop through
-    /// `wake` when a change or the image tools land.
+    /// `wake` when a change lands.
     pub(crate) fn new(
         records: crate::engine_records::EngineRecords,
         wake: tilo_service::Wake,
@@ -113,7 +103,6 @@ impl Emoji {
             open: RefCell::default(),
             shown: RefCell::default(),
             notice: RefCell::default(),
-            waiting: RefCell::default(),
             choosing: RefCell::default(),
             version: Cell::new(0),
             requests: Cell::new(0),
@@ -378,12 +367,9 @@ impl Emoji {
         self.say(refusal);
     }
 
-    /// Take up what came of the chooser, and the pictures that waited for the image tools: each one
-    /// added, or the tab saying why not.
+    /// Take up what came of the chooser: the picture added, or the tab saying why not.
     pub(crate) fn settle(&self, tree: &Layout, person: &UserId, picker: Option<&FilePickerState>) {
-        let workspace = tree.active_workspace();
-        self.answer(workspace, person, picker);
-        self.retry(workspace, person);
+        self.answer(tree.active_workspace(), person, picker);
     }
 
     /// Take up the chooser's answer, once the person gave one.
@@ -406,7 +392,6 @@ impl Emoji {
             .is_none_or(|request| request.handle != handle)
         {
             self.choosing.borrow_mut().take();
-            self.waiting.borrow_mut().clear();
             self.bump();
             return;
         }
@@ -457,46 +442,9 @@ impl Emoji {
             return;
         };
         let small = make_small(&bytes);
-        if small == Small::Pending {
-            self.waiting.borrow_mut().push(Waiting { file, bytes });
-            wake_when_tools_are_in(&self.wake.handle());
-            self.bump();
-            return;
-        }
         if let Err(why) = self.add_small(workspace, person, &file, &small) {
             tracing::warn!(file = %file, why = ?why.detail, "the chosen picture was not added as an emoji");
             self.say(Some(why));
-        }
-    }
-
-    /// Make small again the pictures that waited for the image tools, and add the ones that are
-    /// pictures now.
-    fn retry(&self, workspace: Option<&Workspace>, person: &UserId) {
-        let Some(workspace) = workspace else {
-            return;
-        };
-        if self.waiting.borrow().is_empty() {
-            return;
-        }
-        let mut left = Vec::new();
-        let mut refusal = None;
-        for waiting in std::mem::take(&mut *self.waiting.borrow_mut()) {
-            let small = make_small(&waiting.bytes);
-            if small == Small::Pending {
-                left.push(waiting);
-                continue;
-            }
-            if let Err(why) = self.add_small(workspace, person, &waiting.file, &small) {
-                tracing::warn!(file = %waiting.file, why = ?why.detail, "the chosen picture was not added as an emoji");
-                refusal = Some(why);
-            }
-        }
-        if !left.is_empty() {
-            wake_when_tools_are_in(&self.wake.handle());
-        }
-        *self.waiting.borrow_mut() = left;
-        if let Some(refusal) = refusal {
-            self.say(Some(refusal));
         }
     }
 

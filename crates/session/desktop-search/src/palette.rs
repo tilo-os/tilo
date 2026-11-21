@@ -1240,5 +1240,3 @@ fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, feature = "lazy-engine"))]
-mod engine_fetch_tests;

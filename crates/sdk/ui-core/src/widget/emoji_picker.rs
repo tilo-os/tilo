@@ -412,9 +412,7 @@ impl EmojiPicker {
     fn rebuild(&mut self) {
         self.built_from = Self::sources();
         let catalogue = emoji_catalogue::catalogue();
-        self.groups = catalogue
-            .map(|catalogue| catalogue.groups())
-            .unwrap_or_default();
+        self.groups = catalogue.groups();
         self.group = self.group.min(self.groups.len().saturating_sub(1));
         let source = crate::workspace_emoji::current();
         let workspace = source
@@ -454,7 +452,7 @@ impl EmojiPicker {
                     .map(Item::Emoji)
                     .collect(),
             );
-            if let (Some(catalogue), Some(group)) = (catalogue, self.groups.get(self.group)) {
+            if let Some(group) = self.groups.get(self.group) {
                 section(
                     &mut self.items,
                     Some(group.label.to_owned()),
@@ -472,8 +470,7 @@ impl EmojiPicker {
                 .map(|emoji| Item::Emoji(format!(":{}:", emoji.name)))
                 .chain(
                     catalogue
-                        .map(|catalogue| catalogue.search(&query, SEARCH_RESULTS))
-                        .unwrap_or_default()
+                        .search(&query, SEARCH_RESULTS)
                         .into_iter()
                         .map(|emoji| Item::Emoji(emoji.to_owned())),
                 )
@@ -698,8 +695,7 @@ impl EmojiPicker {
 
     fn tones_of(text: &str) -> Vec<String> {
         emoji_catalogue::catalogue()
-            .map(|catalogue| catalogue.tones(text))
-            .unwrap_or_default()
+            .tones(text)
             .into_iter()
             .map(str::to_owned)
             .collect()
@@ -707,7 +703,7 @@ impl EmojiPicker {
 
     fn takes_tone(text: &str) -> bool {
         emoji_catalogue::catalogue()
-            .and_then(|catalogue| catalogue.info(text))
+            .info(text)
             .is_some_and(|info| info.takes_tone)
     }
 
@@ -723,7 +719,7 @@ impl EmojiPicker {
             return false;
         };
         let selected = emoji_catalogue::catalogue()
-            .and_then(|catalogue| catalogue.info(text))
+            .info(text)
             .and_then(|info| info.tone)
             .map_or(0, |tone| usize::from(tone) + 1);
         let cell = self.geometry.cell;
@@ -1091,12 +1087,7 @@ impl EmojiPicker {
             }
         }
         if self.items.is_empty() {
-            let key = if emoji_catalogue::catalogue().is_none() {
-                "emoji-chooser-arriving"
-            } else {
-                "emoji-chooser-no-results"
-            };
-            let message = crate::i18n::widget_format(key, &[]);
+            let message = crate::i18n::widget_format("emoji-chooser-no-results", &[]);
             let (w, h) = ctx.text.measure_style(&message, None, &caption);
             let at = shown.center();
             ctx.text(

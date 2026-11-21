@@ -370,8 +370,6 @@ mod window_search;
 pub struct TileHost {
     content: TileContent,
     history: Option<crate::history_mode::host::HistoryChrome>,
-    pending_history: Option<crate::history_mode::HistoryRegistration>,
-    history_opening: bool,
     /// Where the History control stands while History is closed: `None` in
     /// the app's own header row (a tile outside a shell window), `Some`
     /// once a shell window hosts the tile. `Some(true)`: the window's tab
@@ -738,8 +736,6 @@ impl TileHost {
         let mut tile = Self {
             content,
             history: None,
-            pending_history: None,
-            history_opening: false,
             window_history: None,
             live_callback_node: None,
             retained_invocations: HashMap::new(),
@@ -1268,7 +1264,6 @@ impl TileHost {
             _ => Ok(None),
         };
         self.history = None;
-        self.pending_history = None;
         match registration {
             Ok(Some(registration)) => self.install_history_registration(registration),
             Err(error) => self.resource_error = Some(format!("History unavailable: {error}")),
@@ -2004,7 +1999,6 @@ impl Widget for TileHost {
     }
 
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
-        let adopted = self.adopt_loaded_history();
         let progress = self.arrival_progress();
         let now = crate::motion::frame_now();
         let arrival = self
@@ -2015,7 +2009,7 @@ impl Widget for TileHost {
         // there, unconsumed, would be due again on every wake, turning the
         // loop as fast as it can.
         self.advance_arrival(now);
-        self.update_content(s, p) || arrival || adopted
+        self.update_content(s, p) || arrival
     }
     fn build_layout(
         &mut self,
@@ -2867,7 +2861,6 @@ impl TileHost {
         let bounds = vec![transform.transform_rect_bbox(self.rect)];
         crate::scene_parts::part(scene, content, bounds, |scene| {
             self.draw_clipped_content(scene, transform, tr, theme, presence, &shape);
-            self.draw_history_loading(scene, transform, tr, theme);
         });
         scene.pop_layer();
         let edge = crate::scene_parts::PartKey::new("ui.tile-edge", ());

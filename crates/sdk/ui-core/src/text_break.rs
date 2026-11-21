@@ -67,41 +67,17 @@ pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
     breaks
 }
 
-/// Calls `out` with the byte offset in `word` after each of its syllables but the last,
-/// by `lang`'s patterns.
-pub type Hyphenate = fn(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize));
-
-/// TeX/Liang hyphenation by the patterns hypher embeds.
-#[must_use]
-pub fn builtin_hyphenation() -> Hyphenate {
-    fn by_patterns(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
-        let mut end = 0_usize;
-        let mut syllables = hypher::hyphenate(word, lang).peekable();
-        while let Some(syllable) = syllables.next() {
-            end = end.saturating_add(syllable.len());
-            if syllables.peek().is_some() {
-                out(end);
-            }
+/// Calls `out` with the byte offset in `word` after each of its syllables but the last, by
+/// `lang`'s TeX/Liang patterns, as hypher embeds them.
+fn hyphenate(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
+    let mut end = 0_usize;
+    let mut syllables = hypher::hyphenate(word, lang).peekable();
+    while let Some(syllable) = syllables.next() {
+        end = end.saturating_add(syllable.len());
+        if syllables.peek().is_some() {
+            out(end);
         }
     }
-    by_patterns
-}
-
-/// [`Hyphenate`] with the patterns in reach; no breaks while their code is still to come.
-fn hyphenate(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
-    if let Some(hyphenate) = HYPHENATION.get() {
-        hyphenate(word, lang, out);
-    }
-}
-
-crate::lazy_code! {
-    pub static HYPHENATION: Hyphenate = builtin_hyphenation, feature = "lazy-hyphenation";
-}
-
-/// Bumped when the patterns arrive: hyphenated layouts are made again once this moved.
-#[must_use]
-pub fn hyphenation_generation() -> u64 {
-    HYPHENATION.generation()
 }
 
 pub(crate) const VIRTUAL_BREAK: char = '\u{200b}';

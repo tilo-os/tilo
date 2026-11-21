@@ -2265,49 +2265,15 @@ pub(crate) fn press_window_control(
     super::embedded::run_api_control(history, &intent).map_err(|error| error.to_string())
 }
 
-/// The History code, as a program that fetches it on first use hands it over (`install_history_code`).
-#[derive(Clone, Copy)]
-pub struct MakeHistory(
-    fn(HistoryRegistration, &AutoCommit) -> Result<HistoryChrome, HistoryRegistrationError>,
-);
-
-/// The History code this build links: what the module a program fetches on first use hands over.
-#[must_use]
-pub fn builtin_history() -> MakeHistory {
-    MakeHistory(|registration, doc| Ok(Box::new(HistoryHost::new(registration, doc)?)))
-}
-
-/// A window's History, or its registration back while the History code is still on its way.
-pub(crate) enum MadeHistory {
-    Ready(HistoryChrome),
-    Loading(HistoryRegistration),
-}
-
 /// Make the History `registration` asks for, over `doc`.
 pub(crate) fn make_history(
     registration: HistoryRegistration,
     doc: &AutoCommit,
-) -> Result<MadeHistory, HistoryRegistrationError> {
-    match HISTORY.get() {
-        Some(make) => (make.0)(registration, doc).map(MadeHistory::Ready),
-        None => Ok(MadeHistory::Loading(registration)),
-    }
+) -> Result<HistoryChrome, HistoryRegistrationError> {
+    Ok(Box::new(HistoryHost::new(registration, doc)?))
 }
 
-crate::lazy_code! {
-    /// History's code: linked, or with `lazy-history` fetched the first time a window registers
-    /// History.
-    pub static HISTORY: MakeHistory = builtin_history, feature = "lazy-history";
-}
-
-/// Whether the History code is in, asking for it if not.
-pub(crate) fn history_code_ready() -> bool {
-    HISTORY.get().is_some()
-}
-
-/// What a window, a tile or a test harness asks of its History, as a trait object: the History code is
-/// reached only through [`make_history`], so a program that fetches it on first use (`lazy-history`)
-/// keeps it out of the code it starts with.
+/// What a window, a tile or a test harness asks of its History, as a trait object ([`make_history`]).
 pub(crate) trait HistoryChromeApi: Widget {
     #[cfg(test)]
     fn request_close(&self);

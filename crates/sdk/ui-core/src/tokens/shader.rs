@@ -102,9 +102,7 @@ impl Source {
         if !self.time.is_finite() {
             return Err("surface shader time is not a number".to_owned());
         }
-        crate::part_paint::SURFACE_SHADER
-            .get()
-            .map_or(Ok(()), |code| (code.admit)(&self.wgsl))
+        crate::part_paint::shader::admit(&self.wgsl)
     }
 }
 

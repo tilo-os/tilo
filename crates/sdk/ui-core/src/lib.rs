@@ -467,7 +467,6 @@ pub use search::{
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{DocumentFrontier, State, UndoEntry, UndoLog};
 pub use text_break::discretionary_hyphen_breaks;
-pub use text_break::{HYPHENATION, Hyphenate, builtin_hyphenation, hyphenation_generation};
 pub use theme::{
     AppearanceIntent, ContentSurface, SurfaceShape, Theme, WindowAppearance, resolve_theme_layers,
     workspace_hue,

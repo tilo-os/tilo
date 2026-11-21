@@ -253,10 +253,8 @@ fn encode(
                 brush: Brush::Shader { source, fallback },
                 brush_transform,
             } => {
-                let image = match super::shader::SURFACE_SHADER.get() {
-                    Some(code) => (code.evaluate)(source, path.bounding_box(), tokens, *fallback),
-                    None => super::shader::fallback_image(*fallback),
-                };
+                let image =
+                    super::shader::evaluate(source, path.bounding_box(), tokens, *fallback);
                 let brush = ImageBrush::new(image)
                     .with_extend(Extend::Pad)
                     .with_quality(ImageQuality::Medium);

@@ -112,9 +112,7 @@ pub(crate) fn carried(url: &str) -> Option<PenikoImage> {
         return kept;
     }
     let bytes = data_bytes(url)?;
-    // Through the toolkit's decoders, which a program may fetch on first
-    // use: until they are in, the picture keeps its place.
-    let picture = (crate::image_decoders::decoders()?.page)(&bytes)?;
+    let picture = crate::image_decoders::page(&bytes)?;
     LAST.with(|last| *last.borrow_mut() = Some((url.to_owned(), picture.clone())));
     Some(picture)
 }

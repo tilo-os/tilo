@@ -35,8 +35,6 @@ pub(crate) struct WindowEmoji {
     read: RefCell<Option<(u64, Rc<WorkspaceEmoji>)>>,
     /// Pictures the person chose, waiting for the chooser's answer.
     choosing: RefCell<Vec<ui_core::portal::ContentsChannel>>,
-    /// Pictures chosen whose making small waits for the image tools.
-    waiting: RefCell<Vec<ui_core::portal::PickedContents>>,
     /// What became of the last picture chosen, and how many were settled.
     added: RefCell<(u64, Option<Adding>)>,
 }
@@ -49,7 +47,6 @@ impl WindowEmoji {
             record: RefCell::default(),
             read: RefCell::default(),
             choosing: RefCell::default(),
-            waiting: RefCell::default(),
             added: RefCell::default(),
         })
     }
@@ -70,14 +67,14 @@ impl WindowEmoji {
     }
 
     /// Take up what the chooser answered and add each picture chosen: once
-    /// a frame, from the window's refresh. The chooser's answer and the
-    /// image tools' arrival each wake the window, so the refresh that takes
-    /// them up comes without anything else changing in it.
+    /// a frame, from the window's refresh. The chooser's answer wakes the
+    /// window, so the refresh that takes it up comes without anything else
+    /// changing in it.
     pub(crate) fn settle(&self) {
-        if self.choosing.borrow().is_empty() && self.waiting.borrow().is_empty() {
+        if self.choosing.borrow().is_empty() {
             return;
         }
-        let mut chosen = std::mem::take(&mut *self.waiting.borrow_mut());
+        let mut chosen = Vec::new();
         self.choosing
             .borrow_mut()
             .retain(|channel| match channel.try_recv() {
@@ -96,15 +93,6 @@ impl WindowEmoji {
             });
         for file in chosen {
             let small = make_small(&file.bytes);
-            if small == Small::Pending {
-                // Asked again on each refresh that finds them missing: a
-                // failed fetch wakes too, and the next asks for them anew.
-                if let Some(window) = self.state.wake() {
-                    ui_core::workspace_emoji::wake_when_tools_are_in(window);
-                }
-                self.waiting.borrow_mut().push(file);
-                continue;
-            }
             let stem = file
                 .name
                 .rsplit_once('.')

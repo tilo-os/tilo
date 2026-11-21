@@ -598,13 +598,3 @@ pub(crate) fn json_argument(arguments: &serde_json::Map<String, serde_json::Valu
         serde_json::Value::Object(arguments.clone())
     )
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a_press_waits_for_the_action_code() {
-        assert!(super::waits_for_arrival(&Err(
-            crate::bound_dispatch::actions_not_in()
-        )));
-    }
-}

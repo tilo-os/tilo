@@ -140,25 +140,15 @@ pub fn builtin_catalogue(tag: &str) -> &'static dyn EmojiCatalogue {
 }
 
 /// The catalogue in the language the interface speaks now: the one a program
-/// handed over, or the toolkit. Always present, so a text field's
+/// handed over, or the toolkit's. Always present, so a text field's
 /// `:name:` completion and the picker never wait for a catalogue.
-#[cfg(not(feature = "lazy-emoji"))]
 #[must_use]
-pub fn catalogue() -> Option<&'static dyn EmojiCatalogue> {
+pub fn catalogue() -> &'static dyn EmojiCatalogue {
     let tag = crate::i18n::I18nManager::current_locale();
-    Some(match CATALOGUE.get() {
+    match CATALOGUE.get() {
         Some(for_locale) => for_locale(&tag),
         None => builtin_catalogue(&tag),
-    })
-}
-
-/// The catalogue in the language the interface speaks now, or `None` while its code is still to come
-/// (and then fetched); what was drawn without it is drawn again once [`CATALOGUE`]'s generation moved.
-#[cfg(feature = "lazy-emoji")]
-#[must_use]
-pub fn catalogue() -> Option<&'static dyn EmojiCatalogue> {
-    let for_locale = CATALOGUE.get()?;
-    Some(for_locale(&crate::i18n::I18nManager::current_locale()))
+    }
 }
 
 fn shortcode(name: &str) -> String {
@@ -189,7 +179,7 @@ pub fn shortcode_emoji(name: &str) -> Option<String> {
     {
         return Some(format!(":{}:", custom.name));
     }
-    let catalogue = catalogue()?;
+    let catalogue = catalogue();
     catalogue
         .search(name.replace('_', " ").as_str(), 256)
         .into_iter()
@@ -213,36 +203,35 @@ pub fn shortcode_matches(query: &str, limit: usize) -> Vec<Shortcode> {
             emoji: format!(":{}:", custom.name),
         })
         .collect();
-    if let Some(catalogue) = catalogue() {
-        for emoji in catalogue.search(&typed.replace('_', " "), limit.saturating_add(found.len())) {
-            if found.len() >= limit {
-                break;
-            }
-            let Some(info) = catalogue.info(emoji) else {
-                continue;
-            };
-            if found.iter().any(|known| known.emoji == emoji) {
-                continue;
-            }
-            found.push(Shortcode {
-                name: shortcode(info.name),
-                emoji: emoji.to_owned(),
-            });
+    let catalogue = catalogue();
+    for emoji in catalogue.search(&typed.replace('_', " "), limit.saturating_add(found.len())) {
+        if found.len() >= limit {
+            break;
         }
+        let Some(info) = catalogue.info(emoji) else {
+            continue;
+        };
+        if found.iter().any(|known| known.emoji == emoji) {
+            continue;
+        }
+        found.push(Shortcode {
+            name: shortcode(info.name),
+            emoji: emoji.to_owned(),
+        });
     }
     found.truncate(limit);
     found
 }
 
 /// The name of `emoji` in the interface's language: a workspace emoji's `:name:` as written, a Unicode
-/// emoji's name from the catalogue (with its skin tone), or the emoji itself while the catalogue is not
-/// in.
+/// emoji's name from the catalogue (with its skin tone), or the emoji itself where the catalogue does
+/// not know it.
 #[must_use]
 pub fn emoji_name(emoji: &str) -> String {
     if tilo_resource::custom_emoji_name(emoji).is_some() {
         return emoji.to_owned();
     }
-    let Some(info) = catalogue().and_then(|catalogue| catalogue.info(emoji)) else {
+    let Some(info) = catalogue().info(emoji) else {
         return emoji.to_owned();
     };
     match info.tone.and_then(tone_key) {

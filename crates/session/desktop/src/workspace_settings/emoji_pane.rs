@@ -79,7 +79,6 @@ pub fn small_refusal(small: &ui::workspace_emoji::Small) -> Option<String> {
     use ui::workspace_emoji::Small;
     match small {
         Small::Ready(_) => None,
-        Small::Pending => Some(t("workspace-settings-emoji-tools-loading")),
         Small::NotAPicture => Some(t("workspace-settings-emoji-not-a-picture")),
         Small::TooLarge => Some(t("workspace-settings-emoji-too-detailed")),
     }

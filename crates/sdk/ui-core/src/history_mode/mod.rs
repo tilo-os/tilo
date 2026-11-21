@@ -603,6 +603,4 @@ pub(crate) mod routes;
 #[doc(hidden)]
 /// A window's History as the windows that own one hand it to a visitor.
 pub(crate) type FrameworkHistorySurface = dyn host::HistoryChromeApi;
-pub(crate) use host::SIDE_PANEL_WIDTH;
-pub use host::{HISTORY, MakeHistory, builtin_history};
 pub(crate) mod embedded;

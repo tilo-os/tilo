@@ -26,37 +26,9 @@ thread_local! {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvalError(pub String);
 
-/// The code behind surface shaders: the grammar check a theme's shader passes when the theme is read,
-/// and the interpreter that draws it.
-#[derive(Clone, Copy)]
-pub struct SurfaceShaderCode {
-    /// Whether a theme may draw this program: [`shader::check`], then one texel through the
-    /// interpreter.
-    pub admit: fn(&str) -> Result<(), String>,
-    /// The shader's image for a part ([`evaluate`]).
-    pub evaluate:
-        fn(&crate::part_paint::ShaderSource, Rect, &PartTokens, Color) -> vello::peniko::ImageData,
-}
-
-/// The surface shader's code where it is linked.
-#[must_use]
-pub fn builtin_surface_shader() -> SurfaceShaderCode {
-    SurfaceShaderCode { admit, evaluate }
-}
-
-crate::lazy_code! {
-    /// The surface shader's code ([`SurfaceShaderCode`]).
-    pub static SURFACE_SHADER: SurfaceShaderCode = builtin_surface_shader, feature = "lazy-surface-shader";
-}
-
-/// `fallback` over the part: what a shader draws while its code is on the way, and what one that cannot
-/// be evaluated draws.
-#[must_use]
-pub fn fallback_image(fallback: Color) -> vello::peniko::ImageData {
-    crate::raster::rgba8(fallback_pixels(fallback, 1, 1), 1, 1)
-}
-
-fn admit(wgsl: &str) -> Result<(), String> {
+/// Whether a theme may draw this program: [`shader::check`], then one texel through the
+/// interpreter.
+pub(crate) fn admit(wgsl: &str) -> Result<(), String> {
     shader::check(wgsl)?;
     // Checked against the grammar is not yet drawable: what the interpreter
     // cannot run is refused here, at load, rather than drawn as a fallback on
@@ -67,7 +39,7 @@ fn admit(wgsl: &str) -> Result<(), String> {
 /// The shader's image for the part `rect` (logical pixels) in `theme`, drawn with `tokens`; `fallback`
 /// is what a shader that cannot be evaluated is drawn as.
 #[must_use]
-fn evaluate(
+pub(crate) fn evaluate(
     source: &crate::part_paint::ShaderSource,
     rect: Rect,
     tokens: &PartTokens,
