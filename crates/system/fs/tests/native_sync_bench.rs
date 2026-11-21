@@ -695,7 +695,18 @@ impl Pair {
                 std::thread::sleep(Duration::from_millis(50));
             }
             let _ = std::fs::remove_dir_all(&to);
-            copy_tree(&from, &to).expect("the joiner is given the host's kept tree");
+            // The host's keeper writes the tree while it is copied, and a file that changed
+            // under the copy was handed over torn: the joiner then opened an empty tree and
+            // listed nothing. Copy again while the source moves, so the joiner is given a copy
+            // taken from a still tree.
+            for _ in 0..10 {
+                let before = newest_modified(&from);
+                copy_tree(&from, &to).expect("the joiner is given the host's kept tree");
+                if newest_modified(&from) == before {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
             let copied = saved_documents(&to);
             assert!(
                 copied > 0,
