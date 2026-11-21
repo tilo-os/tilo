@@ -423,6 +423,49 @@ fn do_json_answers_the_typed_shape_the_api_answers() {
     );
 }
 
+/// A desktop whose action outlasts the first wait: the invocation answers
+/// that it was accepted, and its status, asked after, that it succeeded.
+fn slow_desktop_answer(request: &serde_json::Value) -> serde_json::Value {
+    match request["op"].as_str() {
+        Some("actions_invoke") => serde_json::json!({"answer": {"receipt": {
+            "broker_invocation_id": 4, "invocation": "invocation-4",
+            "update": {"state": "accepted", "invocation": "invocation-4"}}}}),
+        Some("actions_status") => serde_json::json!({"answer": {"receipt": {
+            "broker_invocation_id": 4, "invocation": "invocation-4",
+            "update": {"state": "succeeded", "output": {"value": "planned"}}}}}),
+        _ => desktop_answer(request),
+    }
+}
+
+/// An action still going after the first wait is followed to its end, so the
+/// command answers what it did rather than exiting on "still going".
+#[test]
+fn an_action_that_outlasts_one_wait_answers_how_it_ended() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = FakeSocket::serve(dir.path(), "control.sock", slow_desktop_answer, false);
+    let sockets = [ControlSocket::Named(socket.path.clone())];
+    let spelling = Spelling::tilo();
+
+    let answered = ran(|io| {
+        run_address(
+            &sockets,
+            ("tilo.machines", "machines\u{1f}machine.plan", "Plan a machine"),
+            &serde_json::json!({}),
+            &spelling,
+            io,
+        )
+    });
+    assert_eq!(answered.code, 0, "{}", answered.err);
+    assert_eq!(answered.out, "ok\nplanned\n");
+    let followed: Vec<_> = socket
+        .requests()
+        .into_iter()
+        .filter(|request| request["op"] == "actions_status")
+        .collect();
+    assert_eq!(followed.len(), 1, "{followed:?}");
+    assert_eq!(followed[0]["invocation_id"], 4);
+}
+
 /// Options typed without a schema to bind them read as JSON where they parse,
 /// else as text: one reading for an action this desktop names by its address
 /// and one a hosted workspace does.
