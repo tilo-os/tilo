@@ -322,6 +322,53 @@ fn package_named(
     let elf = app_elf_needing(app_needs(case), foreign);
     fs::write(&binary, elf).unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut manifest = fixture_manifest(version, case, name);
+    let identity = SigningIdentity::from_seed(&[23; 32]);
+    let publisher = hex::encode(identity.public_key_bytes());
+    manifest.publisher.identity = format!("ed25519:{publisher}");
+    let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
+    let store = layer.join("usr/share/tilo-apps");
+    // The archive the publisher signed and the store installed. The layer does
+    // not carry it: the daemon must rebuild exactly these bytes.
+    tilo_app_package::tapp::write(
+        fs::File::create(work.join("signed.tapp")).unwrap(),
+        &packed.meta,
+        Some(&packed),
+    )
+    .unwrap();
+    let actual = store.join(format!("payload/{name}"));
+    let record = store.join(format!("packages/{name}"));
+    fs::create_dir_all(actual.join("bin")).unwrap();
+    fs::create_dir_all(&record).unwrap();
+    fs::copy(binary, actual.join("bin/fixture")).unwrap();
+    fs::write(
+        record.join(package_store::layout::SIGNED_ROOT_FILE),
+        packed.meta.signed_root_bytes(),
+    )
+    .unwrap();
+    fs::write(
+        record.join(package_store::layout::MANIFEST_FILE),
+        &packed.meta.manifest_bytes,
+    )
+    .unwrap();
+    fs::write(
+        record.join(package_store::layout::COLLECTION_FILE),
+        &packed.meta.collection_bytes,
+    )
+    .unwrap();
+    pin(layer, "app-publisher.hex", &publisher);
+    serde_json::from_value(serde_json::json!({
+        "id":format!("so.tilo.{name}"), "version":"0.1.0", "package_id_hex":packed.meta.id.to_hex(),
+        "manifest_path":format!("/usr/share/tilo-apps/packages/{name}/manifest.toml"),
+        "payload_root":format!("/usr/share/tilo-apps/payload/{name}"), "publisher_key_hex":publisher,
+        "runtime":format!("tilo-runtime/{version}")
+    }))
+    .unwrap()
+}
+
+/// What the fixture package's manifest says: its kind, the ISA table of the case it stands for,
+/// where it runs, and the runtimes it pins.
+fn fixture_manifest(version: &str, case: &str, name: &str) -> Manifest {
     let dual = matches!(case, "dual_isa" | "service");
     let isa = if matches!(case, "empty_isa" | "empty_isa_foreign") {
         ""
@@ -376,51 +423,11 @@ type = "{entry_type}"
 "#,
         "00".repeat(32)
     );
-    let identity = SigningIdentity::from_seed(&[23; 32]);
-    let mut manifest = Manifest::from_toml_str(&source).unwrap();
+    let manifest = Manifest::from_toml_str(&source).unwrap();
     if matches!(case, "empty_isa" | "empty_isa_foreign") {
         tilo_app_package::desktop::validate_native_host(&manifest).unwrap();
     }
-    let publisher = hex::encode(identity.public_key_bytes());
-    manifest.publisher.identity = format!("ed25519:{publisher}");
-    let packed = tilo_app_package::pack(&payload, &manifest, &identity).unwrap();
-    let store = layer.join("usr/share/tilo-apps");
-    // The archive the publisher signed and the store installed. The layer does
-    // not carry it: the daemon must rebuild exactly these bytes.
-    tilo_app_package::tapp::write(
-        fs::File::create(work.join("signed.tapp")).unwrap(),
-        &packed.meta,
-        Some(&packed),
-    )
-    .unwrap();
-    let actual = store.join(format!("payload/{name}"));
-    let record = store.join(format!("packages/{name}"));
-    fs::create_dir_all(actual.join("bin")).unwrap();
-    fs::create_dir_all(&record).unwrap();
-    fs::copy(binary, actual.join("bin/fixture")).unwrap();
-    fs::write(
-        record.join(package_store::layout::SIGNED_ROOT_FILE),
-        packed.meta.signed_root_bytes(),
-    )
-    .unwrap();
-    fs::write(
-        record.join(package_store::layout::MANIFEST_FILE),
-        &packed.meta.manifest_bytes,
-    )
-    .unwrap();
-    fs::write(
-        record.join(package_store::layout::COLLECTION_FILE),
-        &packed.meta.collection_bytes,
-    )
-    .unwrap();
-    pin(layer, "app-publisher.hex", &publisher);
-    serde_json::from_value(serde_json::json!({
-        "id":format!("so.tilo.{name}"), "version":"0.1.0", "package_id_hex":packed.meta.id.to_hex(),
-        "manifest_path":format!("/usr/share/tilo-apps/packages/{name}/manifest.toml"),
-        "payload_root":format!("/usr/share/tilo-apps/payload/{name}"), "publisher_key_hex":publisher,
-        "runtime":format!("tilo-runtime/{version}")
-    }))
-    .unwrap()
+    manifest
 }
 
 pub(crate) fn fixture(root: &Path, case: &str) {
