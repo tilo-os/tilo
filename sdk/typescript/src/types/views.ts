@@ -88,7 +88,7 @@ export interface Default extends tilo.Resource {
 export const DEFAULT_ACTIONS = [] as const;
 
 /** The `tl.so.tilo.lang.views.Default` kind at `path`. */
-export function default(ws: tilo.Workspace, path: string): Default {
+export function viewsDefault(ws: tilo.Workspace, path: string): Default {
   return resourceProxy(ws, path, SURFACE, DEFAULT_ACTIONS) as unknown as Default;
 }
 

@@ -1689,16 +1689,31 @@ fn typescript_actions(out: &mut String, class: &Class, taken: &mut Vec<String>) 
 
 /// The function that makes a `PdfDocument` at a path: `pdfDocument`, or `notesPage` where the
 /// plain name is the page's own (`document`).
+/// The words a module-level function may not be named in TypeScript: a factory named for a kind
+/// whose type is one of them (`Default`) takes its app's name before it (`viewsDefault`).
+const TS_RESERVED: &[&str] = &[
+    "arguments", "await", "break", "case", "catch", "class", "const", "continue", "debugger",
+    "default", "delete", "do", "else", "enum", "eval", "export", "extends", "false", "finally",
+    "for", "function", "if", "implements", "import", "in", "instanceof", "interface", "let", "new",
+    "null", "package", "private", "protected", "public", "return", "static", "super", "switch",
+    "this", "throw", "true", "try", "typeof", "undefined", "var", "void", "while", "with", "yield",
+];
+
 fn factory(class: &Class) -> String {
     let mut chars = class.name.chars();
     let plain: String = chars.next().map_or_else(String::new, |first| {
         first.to_lowercase().chain(chars).collect()
     });
-    if !TS_GLOBALS.contains(&plain.as_str()) {
+    if !TS_GLOBALS.contains(&plain.as_str()) && !TS_RESERVED.contains(&plain.as_str()) {
         return plain;
     }
-    let app = camel(class.kind.split('.').next().unwrap_or(&class.kind));
-    let named = format!("{app}{}", class.name);
+    // The app the kind belongs to: the segment before its type (`pdf`, `views`).
+    let prefix = class
+        .kind
+        .rsplit_once('.')
+        .map_or(class.kind.as_str(), |(prefix, _)| prefix);
+    let app = prefix.rsplit('.').next().unwrap_or(prefix);
+    let named = format!("{}{}", camel(app), class.name);
     let mut chars = named.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_lowercase().chain(chars).collect()
@@ -2036,6 +2051,14 @@ mod tests {
                     .any(|line| line.starts_with("    ") && line.trim_start().starts_with(|c: char| c.is_ascii_digit())),
                 "no annotation starts with a digit:\n{python}"
             );
+        }
+
+        phase a_factory_is_never_a_word_typescript_keeps;
+        // The views app's document type is `Default`: a factory called `default` is a syntax
+        // error, so it takes the app's name.
+        {
+            let ts = typescript_of(&app("so.tilo.lang.views"));
+            assert!(ts.contains("export function viewsDefault("), "{ts}");
         }
 
         phase two_apps_of_one_name_get_a_module_each;
