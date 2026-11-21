@@ -220,7 +220,9 @@ fn a_machine_answered_on_another_device_is_admitted_with_no_sheet_open() {
             std::slice::from_ref(&options),
             Some(&relay_map),
             &mut asked,
-            Some(&ready_tx),
+            |_, _| {
+                let _ = ready_tx.send(());
+            },
         );
     });
     ready_rx

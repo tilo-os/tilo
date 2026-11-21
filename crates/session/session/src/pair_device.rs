@@ -7,7 +7,7 @@
 //! that admits the person's device, and asking once it ran out makes a new one, so the code on
 //! screen is never one that admits nothing. While a link works, this device waits at its host for
 //! the device that opens it ([`crate::certification::watch_host`]). A workspace no host on the web
-//! keeps has no link: the sheet says to add the device nearby.
+//! keeps uses this device’s native enrollment endpoint.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -33,9 +33,9 @@ pub(crate) struct Place {
     pub person: [u8; 32],
 }
 
-/// Why there is no link to show: the device is added nearby instead, or why not even that.
+/// When the site link needs a native fallback, or pairing is unavailable.
 pub(crate) enum NoLink {
-    /// No host on the web keeps the workspace in front, so a link would lead nowhere.
+    /// No web host keeps the workspace in front. Try native enrollment.
     Nearby,
     /// The catalogue key saying why.
     Because(&'static str),
@@ -49,9 +49,16 @@ pub(crate) struct Waiting {
     pub until_ms: u64,
 }
 
+struct LocalOffer {
+    person: [u8; 32],
+    link: String,
+    expires_at_ms: u64,
+}
+
 /// The link the sheet shows, and what its presses do.
 pub(crate) struct Adding {
     invites: RefCell<Invites>,
+    local: RefCell<Option<LocalOffer>>,
     clipboard: Rc<dyn Clipboard>,
     /// The link last put on the clipboard, while it is still the one shown: what the copy button
     /// says it did.
@@ -73,6 +80,7 @@ impl Adding {
     pub(crate) fn new(clipboard: Rc<dyn Clipboard>) -> Self {
         Self {
             invites: RefCell::new(Invites::default()),
+            local: RefCell::default(),
             clipboard,
             copied: RefCell::default(),
             waiting: RefCell::default(),
@@ -132,6 +140,37 @@ impl Adding {
                 device
             }
         }
+    }
+
+    fn local(
+        &self,
+        links: &crate::enrollment::LocalLinks,
+        person: [u8; 32],
+        now_ms: u64,
+    ) -> AddDevice {
+        let mut local = self.local.borrow_mut();
+        if local
+            .as_ref()
+            .is_none_or(|offer| offer.person != person || offer.expires_at_ms <= now_ms)
+        {
+            *local = links
+                .issue(person, now_ms)
+                .map(|(link, expires_at_ms)| LocalOffer {
+                    person,
+                    link,
+                    expires_at_ms,
+                });
+        }
+        let Some(offer) = local.as_ref() else {
+            return self.device(Err(NoLink::Nearby), now_ms);
+        };
+        let mut device = AddDevice::of(&offer.link, minutes_left(offer.expires_at_ms, now_ms));
+        device.in_tilo = tilo_sheets::word("pair-device-local-link");
+        if self.copied.borrow().as_deref() == Some(offer.link.as_str()) {
+            device.copy = device.copied.clone();
+        }
+        device.waiting = self.waiting_machines();
+        device
     }
 
     /// What the person's store holds now: the asks no device answered yet.
@@ -254,8 +293,7 @@ pub(crate) fn follow(
     state: Option<&AddDeviceState>,
     adding: &Adding,
     answer: impl Fn(&str, bool),
-    place: impl FnOnce() -> Result<Place, NoLink>,
-    now_ms: u64,
+    device: impl FnOnce() -> AddDevice,
 ) {
     let Some(state) = state else {
         return;
@@ -264,7 +302,7 @@ pub(crate) fn follow(
     if !state.presentation().is_open() {
         return;
     }
-    state.show(adding.device(place(), now_ms));
+    state.show(device());
 }
 
 impl crate::Shared {
@@ -276,7 +314,7 @@ impl crate::Shared {
         };
         self.follow_enrolling();
         let now = ui::time::unix_now_ms();
-        state.show(self.adding.device(self.pairing_place(), now));
+        state.show(self.pairing_device(now));
         state.presentation().open(false);
         self.wait_for_new_device();
     }
@@ -288,8 +326,7 @@ impl crate::Shared {
             self.pair_device.as_ref(),
             &self.adding,
             |ask, approve| self.answer_enrolling(ask, approve),
-            || self.pairing_place(),
-            ui::time::unix_now_ms(),
+            || self.pairing_device(ui::time::unix_now_ms()),
         );
         self.wait_for_new_device();
         self.follow_enrolling();
@@ -391,9 +428,19 @@ impl crate::Shared {
         if !state.presentation().is_open() {
             return None;
         }
-        let waiting = self.adding.waiting()?;
-        std::time::Instant::now()
-            .checked_add(next_count_in(waiting.until_ms, ui::time::unix_now_ms()))
+        let now_ms = ui::time::unix_now_ms();
+        let after = if matches!(self.pairing_place(), Err(NoLink::Nearby)) {
+            self.adding
+                .local
+                .borrow()
+                .as_ref()
+                .map_or(Duration::from_millis(250), |offer| {
+                    next_count_in(offer.expires_at_ms, now_ms)
+                })
+        } else {
+            next_count_in(self.adding.waiting()?.until_ms, now_ms)
+        };
+        std::time::Instant::now().checked_add(after)
     }
 
     /// Wait at the host the link shown names for the device that opens it, until the link runs
@@ -409,9 +456,24 @@ impl crate::Shared {
         }
     }
 
-    /// Where the link goes: the workspace in front, at the host that keeps it as the person's
-    /// directory lists it, else at the community this computer is set up for, and the person whose
-    /// device a newcomer becomes. Without either, the device is added nearby.
+    fn pairing_device(&self, now_ms: u64) -> AddDevice {
+        let place = self.pairing_place();
+        if matches!(place, Err(NoLink::Nearby))
+            && let Some(engine) = self.engine.as_ref()
+            && let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal())
+        {
+            return self.adding.local(
+                &personal.enrollment_links,
+                engine.identity().device_cert.user_public_key,
+                now_ms,
+            );
+        }
+        self.adding.device(place, now_ms)
+    }
+
+    /// Where the link goes: the workspace in front at the web host that keeps it,
+    /// and the person whose device a newcomer becomes. Without a web keeper,
+    /// use the native enrollment endpoint.
     fn pairing_place(&self) -> Result<Place, NoLink> {
         // Only a device of the person's answers the new device, on their own devices' fabric.
         let engine = self
@@ -442,15 +504,11 @@ impl crate::Shared {
     }
 }
 
-/// The page a link opens on and the host it sends a new device to: the host that keeps the
-/// workspace (`keeper`), else the community `community`; the page is the community's, or the
-/// host's own. `None` when neither is known.
+/// The page opens at the community site or at the workspace's own web host.
+/// A community can provide the page when it is known, while the keeper
+/// alone determines the host that holds the workspace.
 fn place_of(community: Option<url::Url>, keeper: Option<String>) -> Option<(String, String)> {
-    let origin = keeper.or_else(|| {
-        community
-            .as_ref()
-            .map(|site| site.origin().ascii_serialization())
-    })?;
+    let origin = keeper?;
     let site = community.map_or_else(|| format!("{origin}/"), |site| site.to_string());
     Some((site, origin))
 }
@@ -532,8 +590,8 @@ mod tests {
         }
 
         phase the_link_names_the_host_that_keeps_the_workspace;
-        // The host that keeps the workspace is the one the link names; the community this computer
-        // is set up for only when none is known.
+        // The web link needs the workspace's actual keeper. A configured
+        // community may provide the page even when another host keeps the workspace.
         {
             let community = url::Url::parse(SITE).ok();
             assert_eq!(
@@ -542,7 +600,7 @@ mod tests {
             );
             assert_eq!(
                 place_of(community, None),
-                Some((SITE.to_owned(), "https://tilo.coffee".to_owned()))
+                None
             );
             assert_eq!(
                 place_of(None, Some("https://site.example".to_owned())),
@@ -598,7 +656,7 @@ mod tests {
             let (adding, _) = adding();
             let state = AddDeviceState::default();
             state.presentation().open(false);
-            follow(Some(&state), &adding, |_, _| {}, || Ok(place()), START);
+            follow(Some(&state), &adding, |_, _| {}, || adding.device(Ok(place()), START));
             let shown = state.device();
             assert_eq!(shown, adding.device(Ok(place()), START));
             assert!(shown.link.contains("?pair="));

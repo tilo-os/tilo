@@ -29,6 +29,7 @@ pub(crate) struct Personal {
     sync: PersonalSync,
     root: [u8; 32],
     state: PathBuf,
+    pub(crate) enrollment_links: crate::enrollment::LocalLinks,
 }
 
 impl Personal {
@@ -50,6 +51,7 @@ impl Personal {
             sync: PersonalSync::over(PeerPersonal::new(store), Arc::clone(&identity.signer)),
             root,
             state: state.to_owned(),
+            enrollment_links: crate::enrollment::LocalLinks::default(),
         })
     }
 

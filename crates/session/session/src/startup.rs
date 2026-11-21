@@ -10,7 +10,7 @@
 //! be established never reaches a desktop under an identity that is not theirs.
 //! A verified identity is also kept alive: this device's expiring certificates are renewed in the
 //! background for as long as the session runs.
-//! The two headless commands run here as well: they settle the same identity in a login that starts
+//! The headless identity commands run here as well: they settle the same identity in a login that starts
 //! no display, which is how an installer and a test provision and verify one.
 
 use std::path::{Path, PathBuf};
@@ -73,22 +73,34 @@ pub enum Failure {
 }
 
 /// The headless identity command a `tilo-session` command line asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     /// `--provision-identity` : establish the machine's identity, then stop.
     Provision,
     /// `--verify-collaboration-identity` : prove the identity this device holds verifies, then
     /// stop.
     Verify,
+    /// `--pair-device-link-file FILE`: enroll this new device, then stop.
+    PairDevice(PathBuf),
 }
 
 /// What the identity flags among `args` (the program's arguments, without the
 /// program) ask for, and `None` for a command line that starts a session.
 ///
 /// # Errors
-/// Both flags together, which would say two things at once.
+/// Conflicting identity commands, or a pairing flag with no link file.
 pub fn command(args: &[String]) -> Result<Option<Command>, String> {
     let asked = |flag: &str| args.iter().any(|arg| arg == flag);
+    if let Some(pairing) = args.iter().position(|arg| arg == "--pair-device-link-file") {
+        if asked("--provision-identity") || asked("--verify-collaboration-identity") {
+            return Err("device pairing cannot run with another identity command".to_owned());
+        }
+        let file = args
+            .get(pairing.saturating_add(1))
+            .filter(|arg| !arg.starts_with("--"))
+            .ok_or_else(|| "--pair-device-link-file needs a file".to_owned())?;
+        return Ok(Some(Command::PairDevice(PathBuf::from(file))));
+    }
     match (
         asked("--provision-identity"),
         asked("--verify-collaboration-identity"),
@@ -123,7 +135,48 @@ pub fn run(command: Command, host_desktop: bool) -> std::process::ExitCode {
     match command {
         Command::Verify => verify_only(identity_dir, &paths),
         Command::Provision => provision(&store, identity_dir, &paths, host_desktop),
+        Command::PairDevice(file) => match pair_device(identity_dir, &file) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("could not pair this device: {error:#}");
+                ExitCode::FAILURE
+            }
+        },
     }
+}
+
+/// This first-use command runs as the new device's own account, before it
+/// opens a session. The signed answer selects the identity through the same
+/// durable installer the nearby path uses.
+fn pair_device(identity_dir: &Path, file: &Path) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use tilo_enrollment::request::{JoinOptions, PairingProgress};
+    use tilo_identity::enrollment::{DECLARATION, Method, Methods, given_token, spend_token};
+
+    Methods::of_image(Path::new(DECLARATION))?.ensure(Method::Token)?;
+    let link = given_token(file)?.context("the file contains no device pairing link")?;
+    let root = tilo_identity::provisioning::collaboration_identity_root();
+    let options = JoinOptions {
+        identity_root: &root,
+        label: "Tilo device",
+        timeout: 60,
+        kind: tilo_enrollment::EnrollmentKind::PersonalDevice,
+        home_peer_output: None,
+        identity_dir: Some(identity_dir),
+        requester_lease: None,
+        port: 0,
+        person_uid: None,
+        recovery_key: None,
+    };
+    let joined = tilo_enrollment::local_link::redeem(&link, options, |progress| {
+        if let PairingProgress::Waiting { code, .. } = progress {
+            println!("Pairing code: {code}");
+        }
+        Ok(())
+    })?;
+    spend_token(file)?;
+    println!("Paired as {}", joined.label);
+    Ok(())
 }
 
 /// Prove the identity this device holds verifies, as a release check runs it on an installed

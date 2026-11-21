@@ -118,9 +118,10 @@ pub use endpoint_delegation::{
     verify_endpoint_delegation,
 };
 pub use enrollment::{
-    Dial, ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken,
+    Dial, ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentScope, EnrollmentToken,
     MAX_ENROLLMENT_TOKEN_LIFETIME_NS, decode_enrollment_token, encode_enrollment_token,
-    mint_enrollment_token, verify_enrollment_token,
+    enrollment_scope, mint_enrollment_token, mint_personal_enrollment_token,
+    verify_enrollment_token,
 };
 pub use enrollment::{enrollment_endpoint, enrollment_serving_key};
 pub use fleet::{CertifiedFleet, DeviceCertification, FleetError};

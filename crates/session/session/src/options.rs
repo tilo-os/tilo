@@ -306,15 +306,16 @@ fn collaborating(
     let identity = sync::device_identity();
     // The person's own store is answered on the session's endpoint, so it is opened before that
     // endpoint binds and handed over with the rest.
-    let personal = identity.as_ref().and_then(|identity| {
-        match crate::personal::Personal::open(options, identity) {
-            Ok(personal) => Some(personal),
-            Err(error) => {
-                tracing::warn!(%error, "this session keeps no store of the person's own");
-                None
+    let mut personal =
+        identity.as_ref().and_then(|identity| {
+            match crate::personal::Personal::open(options, identity) {
+                Ok(personal) => Some(personal),
+                Err(error) => {
+                    tracing::warn!(%error, "this session keeps no store of the person's own");
+                    None
+                }
             }
-        }
-    });
+        });
     // The person's answers about this device's camera, screen and the rest are kept in their own
     // store, where their other devices see them and can take them back.
     if let (Some(personal), Some(consents)) = (
@@ -334,13 +335,18 @@ fn collaborating(
             personal.sync().clone(),
         )) as std::sync::Arc<dyn tilo_device_mcp::PersonsDevices>
     });
-    if let Some(personal) = &personal {
+    if let Some(personal) = &mut personal {
         beside.push(personal.protocol());
         // Machines that ask to join are answered for as long as this session
         // is up, not only while a sheet is up: each ask is noted in the
         // person's store first, so all their devices see it.
         if let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() {
-            crate::enrollment::serve(personal.sync().clone(), paths.root, paths.dir);
+            personal.enrollment_links = crate::enrollment::serve(
+                personal.sync().clone(),
+                paths.root,
+                paths.dir,
+                options.wake.handle(),
+            );
         }
     }
     if let Some(devices) = &devices {

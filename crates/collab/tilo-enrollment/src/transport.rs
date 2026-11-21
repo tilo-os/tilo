@@ -344,7 +344,7 @@ pub fn serve_for_lifetime(
     options: &[ApprovalOptions<'_>],
     relays: Option<&RelayMap>,
     person: &mut dyn Person,
-    ready: Option<&std::sync::mpsc::Sender<()>>,
+    ready: impl FnOnce(&Endpoint, &ApprovalIdentity),
 ) -> anyhow::Result<()> {
     let mut person: Option<&mut dyn Person> = Some(person);
     let primary = options
@@ -354,9 +354,9 @@ pub fn serve_for_lifetime(
     let runtime = runtime()?;
     runtime.block_on(async {
         let endpoint = endpoint_for(&serving_key(&identity.device), relays).await?;
-        let _ = tokio::time::timeout(Duration::from_secs(15), endpoint.online()).await;
-        if let Some(ready) = ready {
-            let _ = ready.send(());
+        ready(&endpoint, &identity);
+        if relays.is_some() {
+            let _ = tokio::time::timeout(Duration::from_secs(15), endpoint.online()).await;
         }
         let dial = dial_of(&endpoint);
         tracing::info!(
@@ -450,6 +450,9 @@ async fn approve_connection(
         if let Some(person) = person.as_deref_mut()
             && person.decide(&waiting_of(&pending))? == Decision::Decline
         {
+            return Ok(Admission::Declined);
+        }
+        if connection.close_reason().is_some() {
             return Ok(Admission::Declined);
         }
         finish(connection, options, identity, &pending).await?;

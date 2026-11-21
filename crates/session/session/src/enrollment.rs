@@ -13,6 +13,7 @@
 //! `answer:<ask>`, written by whichever of the person's devices answered.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use automerge::transaction::Transactable as _;
@@ -20,7 +21,8 @@ use automerge::{AutoCommit, ReadDoc as _};
 use collab_types::CommitNamed as _;
 use serde::{Deserialize, Serialize};
 use tilo_enrollment::approval::ApprovalOptions;
-use tilo_enrollment::{Decision, Person, WaitingMachine};
+use tilo_enrollment::{Decision, Person, WaitingMachine, local_link::Issuer};
+use tilo_lock::MutexRecover as _;
 use tilo_peer_state::{
     DocumentMutation, ENROLLMENT_KIND, MachineRecovery, PersonalSync, machines,
     update_person_resource,
@@ -247,6 +249,16 @@ impl Person for Asked {
     }
 }
 
+/// The issuer is published only after the device has verified its enrollment authority.
+#[derive(Default)]
+pub(crate) struct LocalLinks(Arc<Mutex<Option<Issuer>>>);
+
+impl LocalLinks {
+    pub(crate) fn issue(&self, person: [u8; 32], now_ms: u64) -> Option<(String, u64)> {
+        self.0.lock_recover().as_ref()?.issue(person, now_ms).ok()
+    }
+}
+
 /// Answer machines on this device's enrollment endpoint for as long as the
 /// session is up, noting each ask in the person's store. `root` and
 /// `directory` are the person's identity as this device holds it.
@@ -254,7 +266,10 @@ pub(crate) fn serve(
     personal: PersonalSync,
     root: std::path::PathBuf,
     directory: std::path::PathBuf,
-) {
+    wake: tilo_service::Wake,
+) -> LocalLinks {
+    let links = LocalLinks::default();
+    let serving = Arc::clone(&links.0);
     let relays = own_relays();
     let spawned = std::thread::Builder::new()
         .name("tilo-enrollment-serve".into())
@@ -287,15 +302,20 @@ pub(crate) fn serve(
                 &options,
                 relays.as_ref(),
                 &mut asked,
-                None,
+                |endpoint, identity| {
+                    *serving.lock_recover() = Some(Issuer::new(endpoint, identity));
+                    wake();
+                },
             ) {
                 Ok(()) => {}
                 Err(error) => tracing::info!("{error:#}"),
             }
+            *serving.lock_recover() = None;
         });
     if let Err(error) = spawned {
         tracing::warn!(%error, "this session answers no machines");
     }
+    links
 }
 
 /// Let a machine with no token in, by its own `tilo://enroll?…` line: this

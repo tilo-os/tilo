@@ -49,6 +49,17 @@ use crate::cert::DeviceCapabilities;
 /// Signing-domain tag for `EnrollmentToken`. Frozen wire ABI:
 /// `tilo-enrollment-v2` + NUL.
 pub const ENROLLMENT_PREIMAGE_TAG: &[u8] = b"tilo-enrollment-v3\0";
+const PERSONAL_DEVICE_ENROLLMENT_TAG: &[u8] = b"tilo-enrollment-personal-device-v1\0";
+
+/// What the issuer authorizes the enrolling machine to ask for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnrollmentScope {
+    /// Existing enrollment tokens, usable for the kind the approver offers.
+    AnyDevice,
+    /// A pairing link from Add a device, for a personal device only.
+    PersonalDevice,
+}
+
 /// Enrollment intent is deliberately short-lived, even when correctly signed.
 pub const MAX_ENROLLMENT_TOKEN_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
@@ -205,6 +216,54 @@ pub fn mint_enrollment_token(
     dial: Vec<Dial>,
     issuer_signing_key: &ed25519_dalek::SigningKey,
 ) -> Result<EnrollmentToken, EnrollmentError> {
+    mint_for_scope(
+        user_public_key,
+        capabilities,
+        issued_at_ns,
+        expires_at_ns,
+        nonce,
+        dial,
+        issuer_signing_key,
+        ENROLLMENT_PREIMAGE_TAG,
+    )
+}
+
+/// Mint a personal-device offer. The signature binds the kind without changing
+/// the encoding or signature of existing enrollment tokens.
+///
+/// # Errors
+///
+/// The validity window is invalid or the token cannot be encoded.
+pub fn mint_personal_enrollment_token(
+    user_public_key: [u8; 32],
+    issued_at_ns: u64,
+    expires_at_ns: u64,
+    nonce: [u8; 16],
+    dial: Vec<Dial>,
+    issuer_signing_key: &ed25519_dalek::SigningKey,
+) -> Result<EnrollmentToken, EnrollmentError> {
+    mint_for_scope(
+        user_public_key,
+        DeviceCapabilities::member(),
+        issued_at_ns,
+        expires_at_ns,
+        nonce,
+        dial,
+        issuer_signing_key,
+        PERSONAL_DEVICE_ENROLLMENT_TAG,
+    )
+}
+
+fn mint_for_scope(
+    user_public_key: [u8; 32],
+    capabilities: DeviceCapabilities,
+    issued_at_ns: u64,
+    expires_at_ns: u64,
+    nonce: [u8; 16],
+    dial: Vec<Dial>,
+    issuer_signing_key: &ed25519_dalek::SigningKey,
+    domain: &[u8],
+) -> Result<EnrollmentToken, EnrollmentError> {
     expires_at_ns
         .checked_sub(issued_at_ns)
         .filter(|lifetime| *lifetime > 0 && *lifetime <= MAX_ENROLLMENT_TOKEN_LIFETIME_NS)
@@ -220,7 +279,7 @@ pub fn mint_enrollment_token(
         dial,
         signature: [0u8; 64],
     };
-    let digest = signing_digest(ENROLLMENT_PREIMAGE_TAG, &token.view())?;
+    let digest = signing_digest(domain, &token.view())?;
     let sig = issuer_signing_key.sign(&digest);
     token.signature = sig.to_bytes();
     Ok(token)
@@ -244,6 +303,19 @@ pub fn verify_enrollment_token(
     token: &EnrollmentToken,
     now_ns: u64,
 ) -> Result<(), EnrollmentError> {
+    enrollment_scope(token, now_ns).map(drop)
+}
+
+/// Verify a token and return the enrollment kind its issuer signed.
+///
+/// # Errors
+///
+/// The signature or validity window fails the same checks as
+/// [`verify_enrollment_token`].
+pub fn enrollment_scope(
+    token: &EnrollmentToken,
+    now_ns: u64,
+) -> Result<EnrollmentScope, EnrollmentError> {
     token
         .expires_at_ns
         .checked_sub(token.issued_at_ns)
@@ -257,11 +329,20 @@ pub fn verify_enrollment_token(
     }
     let vk = ed25519_dalek::VerifyingKey::from_bytes(&token.issuer_device_public_key)
         .map_err(|_| EnrollmentError::InvalidIssuerPublicKey)?;
-    let digest = signing_digest(ENROLLMENT_PREIMAGE_TAG, &token.view())?;
     let sig = ed25519_dalek::Signature::from_bytes(&token.signature);
-    vk.verify(&digest, &sig)
-        .map_err(|_| EnrollmentError::BadSignature)?;
-    Ok(())
+    for (domain, scope) in [
+        (ENROLLMENT_PREIMAGE_TAG, EnrollmentScope::AnyDevice),
+        (
+            PERSONAL_DEVICE_ENROLLMENT_TAG,
+            EnrollmentScope::PersonalDevice,
+        ),
+    ] {
+        let digest = signing_digest(domain, &token.view())?;
+        if vk.verify(&digest, &sig).is_ok() {
+            return Ok(scope);
+        }
+    }
+    Err(EnrollmentError::BadSignature)
 }
 
 /// Crockford base32: upper-case output without padding; decoding is
@@ -344,6 +425,21 @@ mod tests {
             reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
         )]
         fn enrollment_tokens_verify_only_untampered_live_and_from_their_issuer;
+
+        phase a_personal_device_link_signs_its_scope;
+        {
+            let person = [7; 32];
+            let signing_key = issuer(person);
+            let token = mint_personal_enrollment_token(person, 100, 200, [8; 16], Vec::new(), &signing_key).unwrap();
+            let encoded = encode_enrollment_token(&token).unwrap();
+            let decoded = decode_enrollment_token(&encoded).unwrap();
+            assert_eq!(enrollment_scope(&decoded, 100), Ok(EnrollmentScope::PersonalDevice));
+            assert_eq!(enrollment_scope(&decoded, 200), Err(EnrollmentError::Expired));
+
+            let general = mint_enrollment_token(person, DeviceCapabilities::member(), 100, 200, [8; 16], Vec::new(), &signing_key).unwrap();
+            assert_eq!(enrollment_scope(&general, 100), Ok(EnrollmentScope::AnyDevice));
+            assert_ne!(decoded.signature, general.signature);
+        }
 
         phase mint_and_verify_round_trip;
         {

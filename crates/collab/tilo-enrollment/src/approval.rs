@@ -16,7 +16,7 @@ use tilo_identity::device_fleet::DeviceFleetStore;
 use tilo_identity::enrollment::{Certifier, NonceStore, Redemption};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{
-    DeviceCert, decode_enrollment_token, verify_device_cert, verify_enrollment_token,
+    DeviceCert, EnrollmentScope, decode_enrollment_token, enrollment_scope, verify_device_cert,
 };
 
 use crate::protocol::{
@@ -187,7 +187,12 @@ fn valid_pending_request(
             || request.kind != selection.solicitation.kind
             || request.token != selection.token_text
     });
-    Ok(verify_enrollment_token(token, now_ns()?).is_ok()
+    let offered = match enrollment_scope(token, now_ns()?) {
+        Ok(EnrollmentScope::AnyDevice) => true,
+        Ok(EnrollmentScope::PersonalDevice) => kind == EnrollmentKind::PersonalDevice,
+        Err(_) => false,
+    };
+    Ok(offered
         && token.user_public_key == identity.user_public_key
         && token.issuer_device_public_key == identity.device.verifying_key().to_bytes()
         && request.kind == kind
