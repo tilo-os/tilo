@@ -20,7 +20,8 @@
 #   TILO_GITHUB_ASSET_CACHE  the checksum-pinned external assets (default
 #                      os/external-assets/cache), for the CEF distribution
 #   TILO_APP_COLLECTION  the collection in dist/apps/app-collections.toml whose
-#                      apps this image ships (default `image`); its plan is
+#                      apps this image ships (default `image`, or `default` for a
+#                      build given a prebuilt app collection); its plan is
 #                      written to OUT/app-plan.json for the packing stage
 #
 # The compiler cache is the one the caller gives: t's, through RUSTC_WRAPPER and
@@ -211,7 +212,14 @@ export LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
 # The app set the image ships, as a collection in dist/apps/app-collections.toml:
 # the release plans a collection the same way, and an image's is every native app
 # plus the tilolang packages it ships before the native app they replace retires.
-: "${TILO_APP_COLLECTION:=image}"
+# A build given a prebuilt app collection (TILO_PREBUILT_APPS) ships exactly what
+# that release packed, which is the `default` collection: it plans that one, so it
+# builds neither the tilolang packages nor the compiler that builds them.
+if [ "${TILO_PREBUILT_APPS:-0}" = 1 ]; then
+  : "${TILO_APP_COLLECTION:=default}"
+else
+  : "${TILO_APP_COLLECTION:=image}"
+fi
 # Parallel jobs, when the caller sets them (os/dev/build-image.sh, by the memory a
 # link takes); else cargo's own count, within the jobserver t gives every build.
 : "${TILO_CARGO_BUILD_JOBS:=}"
