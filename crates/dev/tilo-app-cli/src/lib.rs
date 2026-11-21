@@ -9768,19 +9768,17 @@ fn app_manifest(spec: &AppSpec) -> Result<String> {
 fn scaffold_offers(spec: &AppSpec) -> String {
     const HEADER: &str = "# What the app offers a person while it is closed: written by `tilo-app surface` from\n\
                           # what its code publishes. Invoking one opens the app and invokes it there.\n";
-    let (action, label, extra) = match spec.template {
-        // The document's clear is destructive, so a closed app asks before it.
-        Template::Starter | Template::Document => {
-            let asks_first = spec.template == Template::Document;
-            ("clear", "Clear", if asks_first { "confirm = true\n" } else { "" })
-        }
-        // The collection's add takes the one line a person writes for it.
-        Template::Collection => ("add", "Add", "asks = \"title\"\n"),
-        Template::Graph => ("create", "Create", ""),
+    // The resource each template publishes its view on, the verb it offers there, how the app
+    // names that verb while it is closed, and what it needs beyond that.
+    let (resource, action, label, extra) = match spec.template {
+        Template::Starter => (".greeting", "clear", "Forget the name", ""),
+        Template::Document => (".document", "clear", "Clear", "confirm = true\n"),
+        Template::Collection => (".items", "add", "Add", "asks = \"title\"\n"),
+        Template::Graph => (".graph-project", "create", "Create", ""),
     };
     format!(
-        "\n{HEADER}\n[[offers]]\nresource = {app_id:?}\naction = {action:?}\nlabel = {label:?}\noperation = \"document\"\n{extra}",
-        app_id = spec.app_id,
+        "\n{HEADER}\n[[offers]]\nresource = {resource:?}\naction = {action:?}\nlabel = {label:?}\noperation = \"document\"\n{extra}",
+        resource = format!("{}{resource}", spec.app_id),
     )
 }
 

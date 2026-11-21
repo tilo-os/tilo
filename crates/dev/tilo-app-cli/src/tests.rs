@@ -134,12 +134,13 @@ fn a_scaffolded_manifest_carries_the_offers_its_code_publishes() {
         };
         let manifest = app_manifest(&spec).unwrap();
         let mut offer = serde_json::Map::new();
-        offer.insert("resource".into(), "so.tilo.notes".into());
-        let (action, label) = match template {
-            Template::Starter | Template::Document => ("clear", "Clear"),
-            Template::Collection => ("add", "Add"),
-            Template::Graph => ("create", "Create"),
+        let (resource, action, label) = match template {
+            Template::Starter => ("so.tilo.notes.greeting", "clear", "Forget the name"),
+            Template::Document => ("so.tilo.notes.document", "clear", "Clear"),
+            Template::Collection => ("so.tilo.notes.items", "add", "Add"),
+            Template::Graph => ("so.tilo.notes.graph-project", "create", "Create"),
         };
+        offer.insert("resource".into(), resource.into());
         offer.insert("action".into(), action.into());
         offer.insert("label".into(), label.into());
         offer.insert("kind".into(), "undoable".into());

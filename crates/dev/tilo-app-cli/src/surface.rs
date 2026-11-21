@@ -1220,15 +1220,33 @@ pub fn check_report(
     if report.view.is_none() {
         let manifest = std::fs::read_to_string(app_dir.join(MANIFEST))
             .with_context(|| format!("reading {}'s manifest", app_dir.display()))?;
-        if with_offers(&manifest, &report.offers) != manifest {
+        let expected = with_offers(&manifest, &report.offers);
+        if expected != manifest {
+            // The words the manifest needs, so a person reads what differs rather than being
+            // sent to run another command to find out.
+            // Only the offers: the rest of the manifest is what it already says.
+            let wanted: Vec<&str> = expected
+                .split("[[offers]]")
+                .skip(1)
+                .flat_map(|offer| {
+                    std::iter::once("[[offers]]").chain(
+                        offer
+                            .lines()
+                            .take_while(|line| !line.trim_start().starts_with('['))
+                            .filter(|line| !line.trim().is_empty()),
+                    )
+                })
+                .collect();
             out.findings.push(ContractFinding {
                 path: PathBuf::from(MANIFEST),
                 line: 0,
                 level: Level::Error,
                 rule: "surface",
-                message: "the actions the code offers while the app is closed differ from the \
-                          manifest's [[offers]]; write them with `tilo-app surface`"
-                    .to_owned(),
+                message: format!(
+                    "the actions the code offers while the app is closed differ from the \
+                     manifest's [[offers]]; write them with `tilo-app surface`. They are: {}",
+                    wanted.join(" ")
+                ),
             });
         }
     }
