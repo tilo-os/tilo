@@ -2,6 +2,13 @@
 //! command, the toolkit and the UI host as a binary of its own. The files stay where they were, as
 //! modules, and nextest runs each test in a process of its own, so nothing one test does reaches
 //! another.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::path::Path;
 

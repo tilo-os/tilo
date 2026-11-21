@@ -6,13 +6,6 @@
     dead_code,
     reason = "each test binary uses a different subset of these fixtures"
 )]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "a fixture: what it cannot set up is the failure it reports"
-)]
 
 use std::collections::BTreeSet;
 use std::path::Path;

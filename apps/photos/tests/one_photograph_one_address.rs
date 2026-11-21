@@ -1,12 +1,6 @@
 //! One photograph, one address — in every session that has it. Same bytes, same blake3 hash, three
 //! names.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use automerge::AutoCommit;
 use photos::PhotosApp;

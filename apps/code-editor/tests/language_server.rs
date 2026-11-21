@@ -14,12 +14,6 @@
 //! The test requires `rust-analyzer` and `cargo` on PATH. It also verifies
 //! `$/progress`, which depends on the client advertising work-done progress.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use ui::time::Duration;
 

@@ -1,13 +1,14 @@
 //! What a screen reader gets from the task list: every row a named item it
 //! can open, tick to finish the issue, and open a menu on — all on the same
 //! actions the pointer uses.
-
 #![allow(
-    clippy::expect_used,
     clippy::unwrap_used,
+    clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use serde_json::json;
 use tasks::App;

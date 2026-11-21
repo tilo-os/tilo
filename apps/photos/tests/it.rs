@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 #[path = "atspi_acceptance.rs"]
 pub mod atspi_acceptance;
 #[path = "end_to_end.rs"]

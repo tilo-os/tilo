@@ -1,11 +1,5 @@
 //! Desktop `TiloLang` Mail uses one mailbox per workspace and applies workspace roles.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "a test: a failure is a panic"
-)]
 
 use std::fmt::Write as _;
 use std::rc::Rc;

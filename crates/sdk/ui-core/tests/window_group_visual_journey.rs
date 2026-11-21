@@ -10,10 +10,6 @@
 //! Set `TILO_UI_SCREENSHOT_DIR=<path>` to write one PNG per state for
 //! by-eye inspection.
 
-#![allow(
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};

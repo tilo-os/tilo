@@ -1,11 +1,5 @@
 //! Drag and drop: a row, or a multi-selection, carried into a folder or onto
 //! the sidebar.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::{Harness, names_in, row_center};
 use file_explorer::views::file_view::drag_threshold;

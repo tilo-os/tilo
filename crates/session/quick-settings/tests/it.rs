@@ -6,13 +6,14 @@
 //! which links the compositor and the session these never start, and so do
 //! the ones that read the panel over AT-SPI (`accessibility.rs`), which name
 //! their buses in the process's environment for the panel they start.
-
 #![allow(
     clippy::unwrap_used,
-    clippy::panic,
     clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 mod common;
 mod layout;

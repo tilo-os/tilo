@@ -12,10 +12,6 @@
 //! The signature covers `(payload_root_hash, publisher_pubkey)`,
 //! which we compute via a preliminary pack pass.
 
-#![allow(
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::fixtures;
 use ed25519_dalek::{Signer, SigningKey};

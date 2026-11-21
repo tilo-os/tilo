@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "integration-test setup and assertions")]
 
 use std::process::Output;
 

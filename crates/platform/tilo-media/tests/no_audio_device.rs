@@ -1,6 +1,13 @@
 //! An engine that only decodes pictures (thumbnails, export, the editor's
 //! preview) never connects to the audio server: one too busy to answer
 //! cannot hold up, or fail, a picture.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 mod common;
 

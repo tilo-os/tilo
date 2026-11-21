@@ -13,10 +13,6 @@
 //! requires two post-handshake exchanges — the `Ready` that answers a
 //! `Subscribe`, and a `Ping`/`Pong` round trip after it.
 
-#![allow(
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_server::{Envelope, ServerClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};

@@ -6,13 +6,6 @@
 //! other device — another person's, a revoked one, a store node, one showing a
 //! certificate that is not its own — is refused with the reason before
 //! anything it sends is read.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::os::unix::net::UnixStream;

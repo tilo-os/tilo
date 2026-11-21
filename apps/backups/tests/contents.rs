@@ -1,11 +1,13 @@
 //! The restore sheet's contents as a tree: the snapshot's folders and files, indented under
 //! their folder, folded away and opened again.
-
 #![allow(
-    clippy::panic,
     clippy::unwrap_used,
-    reason = "in a test a panic is the assertion"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use backups::BackupsShell;
 use ui::accesskit::Role;

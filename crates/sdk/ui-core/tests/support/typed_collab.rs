@@ -6,11 +6,6 @@
 //! the real UI SDK shovel without a shell process or process-global
 //! service-fd variables.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

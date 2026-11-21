@@ -5,13 +5,14 @@
 //! and the packaged binary, run with the command line the worker gives it over a request
 //! staged the way the worker stages one, writes the very thumbnails the requesting device
 //! would have made itself.
-
 #![allow(
-    clippy::expect_used,
     clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
     clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

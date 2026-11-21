@@ -3,13 +3,6 @@
 //! reader does not hold as only being there. Each capture is kept as a PNG at a desktop's and a
 //! phone's width, light and dark, for review against the design language.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 use tilolang_app::app::TlApp;
 use ui::framework::testing::TestApp;

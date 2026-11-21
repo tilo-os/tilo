@@ -8,13 +8,14 @@
 //! `apps/browser/chromium/tests/page_share.py`, which prints the snapshot
 //! when run with `TILO_PAGE_SHARE_RECORD` set. It was asked for with every
 //! style of today's list, so it says what the engine's theme paints.
-
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard; fixtures are checked in"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use tilo_paint_stream::fonts::FontClass;
 use tilo_paint_stream::snapshot::{

@@ -16,12 +16,6 @@
 //! `Server`/`ServerCoeditSession` path — no mocks of the host or the
 //! bridge.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::Duration;
 use tilo_automerge::ApplyIncoming;

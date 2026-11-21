@@ -3,12 +3,6 @@
 //! frame per event. A drag that reaches the tree with no input of its own asks for a frame too, and
 //! a tree on a second display sees it where it is on that display.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
 
 use std::cell::Cell;
 use std::collections::HashMap;

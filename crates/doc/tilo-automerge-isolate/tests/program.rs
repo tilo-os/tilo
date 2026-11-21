@@ -2,10 +2,6 @@
 //! argument alone: libtest's arguments belong to a test binary's workers, and
 //! a person reading a program's process list should not see them.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::process::Command;
 

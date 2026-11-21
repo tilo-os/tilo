@@ -4,12 +4,6 @@
 //! was, and nothing the computer made of its own reaches the host.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::time::Instant;
 

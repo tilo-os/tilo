@@ -1,7 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_ui::widget::Scrollable;
 

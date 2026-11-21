@@ -3,12 +3,6 @@
 //! The app's environment is meant to be a closed set — a list of variables the launcher
 //! puts there, beside the binds that make each mean something.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::PathBuf;
 use tilo_test_env::SpawnUnderEnvLock as _;

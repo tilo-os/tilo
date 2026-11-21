@@ -1,8 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::process::{Command, Stdio};
 use tilo_test_env::SpawnUnderEnvLock as _;

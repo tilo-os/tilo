@@ -2,11 +2,6 @@
 //! calls, with progress before the answer, and each app may make only its own
 //! calls.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

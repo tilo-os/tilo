@@ -7,11 +7,6 @@
     clippy::significant_drop_tightening,
     reason = "the test holds its host for the length of a step"
 )]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_session_client::TransportPhase;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};

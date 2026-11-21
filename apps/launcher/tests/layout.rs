@@ -1,11 +1,13 @@
 //! The launcher as a person meets it: where the card, its field, its chips and its rows sit
 //! in each scenario, as a capture stages it.
-
 #![allow(
     clippy::unwrap_used,
+    clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use launcher_app::{LauncherShell, LauncherSurface};
 use ui::framework::testing::HeadlessApp;

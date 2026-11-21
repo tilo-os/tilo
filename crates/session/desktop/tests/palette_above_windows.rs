@@ -2,11 +2,6 @@
 //! across its card, and once it closes nothing of the palette is painted there any more.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 use std::rc::Rc;
 
 use crate::support::layout_tree;

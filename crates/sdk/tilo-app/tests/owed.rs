@@ -2,7 +2,6 @@
 //! device carries out what a part's items ask that the outside does not
 //! hold yet, confirms it through the part, and reads again only the part
 //! that changed.
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use std::cell::{Cell, RefCell};
 

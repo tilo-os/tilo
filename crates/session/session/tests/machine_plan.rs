@@ -4,12 +4,6 @@
 //! and the session read is one.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;

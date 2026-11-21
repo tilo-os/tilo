@@ -3,12 +3,6 @@
 //! waits, the wireless receivers, and every
 //! choice going to the shell.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_sheets::displays::{
     Band, Discovery, DisplaysApp, DisplaysEffect, DisplaysState, Layout, LayoutRow, Link, Receiver,

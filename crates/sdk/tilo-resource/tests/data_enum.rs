@@ -1,7 +1,6 @@
 //! An enum whose variants carry fields is a model type: stored as a map
 //! naming its variant, its fields stored by variant, merged field by field,
 //! and migrated from the shapes older versions stored.
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use automerge::ReadDoc;
 use tilo_resource::evolution;

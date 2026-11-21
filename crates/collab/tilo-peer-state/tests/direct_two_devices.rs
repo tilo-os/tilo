@@ -1,12 +1,6 @@
 //! Two devices of one person converge on a workspace directly over iroh,
 //! with no workspace host, server or network actor in between, and a device
 //! outside the workspace roster is refused.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::{addr, device, localhost_endpoint};
 

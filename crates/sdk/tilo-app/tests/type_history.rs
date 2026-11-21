@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! What History answers for one version, per resource type, through the read
 //! API every app publishes: the type's own adapter, exactly as it answers the

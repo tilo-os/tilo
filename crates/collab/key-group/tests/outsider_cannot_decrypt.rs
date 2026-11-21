@@ -5,11 +5,6 @@
 //! pins that from several angles — a fresh standalone `KeyGroup`, a
 //! different-workspace group, and a tampered ciphertext.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use collab_types::WorkspaceId;
 use key_group::{KeyGroup, MemberKey};

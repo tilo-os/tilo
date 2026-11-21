@@ -1,10 +1,6 @@
 //! A registry build linked against a runtime build this device lacks: the app installs once its
 //! runtime does, and both are verified.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};

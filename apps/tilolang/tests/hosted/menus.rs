@@ -2,13 +2,6 @@
 //! commands it names run the one way a click does, where they are pressed.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "a test: a failure is a panic"
-)]
-#![allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     reason = "pixels of a small frame: coordinates are tiny"

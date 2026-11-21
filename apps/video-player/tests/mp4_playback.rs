@@ -3,7 +3,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "test prerequisites and production playback failures must fail explicitly"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use std::path::Path;

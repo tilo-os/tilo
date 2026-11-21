@@ -1,9 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixture failures must fail the test"
-)]
 
 use std::fs;
 use std::path::Path;

@@ -10,12 +10,14 @@
 //! apply, and a replaying peer lands on the byte-identical document.
 //! The loop count smokes out the order-dependent flake — an unlucky
 //! actor-sort must not panic or diverge.
-
 #![allow(
     clippy::unwrap_used,
+    clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};

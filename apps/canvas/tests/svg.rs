@@ -1,8 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use canvas::model::Shape;
 use canvas::{App, Artwork};

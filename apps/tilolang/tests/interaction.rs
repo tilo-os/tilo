@@ -6,13 +6,6 @@
 //! With `TILO_INTERACTION_SHOTS=<dir>` the test `shots` writes each state at desktop and phone
 //! sizes, light and dark.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 use crate::change_marks::{menu_items, right_click};
 use tilolang_app::app::TlApp;

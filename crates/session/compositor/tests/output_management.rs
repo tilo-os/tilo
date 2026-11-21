@@ -4,13 +4,6 @@
 //! panel off and on; ordinary clients do not see either global at all.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::time::Duration;
 

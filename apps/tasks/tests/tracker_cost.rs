@@ -5,14 +5,14 @@
 //! sub-issues, moved along the board and commented as it goes. The counts
 //! here are what that takes call by call, and what reading back where the
 //! project stands takes.
-
 #![allow(
-    clippy::expect_used,
     clippy::unwrap_used,
-    clippy::indexing_slicing,
+    clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 mod common;
 

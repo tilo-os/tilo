@@ -1,7 +1,13 @@
 #![cfg(target_os = "linux")]
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 //! Opt-in genuine authored app → canonical SDK graph → signed SDK → package.
 //! All native work runs on the admitted builder. No VM or app executes while signing.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};

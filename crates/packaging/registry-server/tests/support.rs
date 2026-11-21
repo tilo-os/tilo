@@ -1,10 +1,5 @@
 //! Helpers shared by the test modules of this binary.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "a fixture: what it cannot set up is the failure it reports"
-)]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;

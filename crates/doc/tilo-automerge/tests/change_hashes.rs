@@ -3,10 +3,6 @@
 //! (vendor/automerge/TILO-PATCH.md). A history reader relies on both to
 //! read only the changes it has not seen.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, ROOT};

@@ -4,11 +4,6 @@
 //! workspace service, given a relay that never answers.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::time::{Duration, Instant};
 

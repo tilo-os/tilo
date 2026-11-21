@@ -3,12 +3,6 @@
 //! the certificates travel in the person's own store, between devices that
 //! already hold each other's. A revocation still takes a device off every
 //! sibling's list, and a device of another person is sent none of it.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::{addr, device, localhost_endpoint};
 

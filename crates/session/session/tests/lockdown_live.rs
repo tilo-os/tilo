@@ -2,12 +2,6 @@
 //! and silences what is playing, without asking any app to restart.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

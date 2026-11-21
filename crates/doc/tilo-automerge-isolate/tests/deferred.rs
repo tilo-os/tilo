@@ -1,11 +1,6 @@
 //! A copy that admits a writer's changes as they come and applies them only
 //! where it is read.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};

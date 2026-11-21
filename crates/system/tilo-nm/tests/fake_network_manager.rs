@@ -1,10 +1,13 @@
 //! `tilo-nm` against a fake `NetworkManager` served over a socket pair: the
 //! production client code, a real D-Bus wire, no bus daemon.
-
 #![allow(
     clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::collections::HashMap;
 use std::sync::Arc;

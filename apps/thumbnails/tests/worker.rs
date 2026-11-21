@@ -4,14 +4,15 @@
 //! otherwise runs its cases behind the command line `cargo test` and nextest speak to a
 //! test binary. A machine without them cannot observe what these cases check, so the cases
 //! fail there rather than skip.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 #[cfg(target_os = "linux")]
-#[allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 mod cases {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;

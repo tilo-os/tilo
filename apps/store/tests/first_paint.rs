@@ -1,12 +1,14 @@
 //! A new Store window paints the catalogue the last window kept in its
 //! first frame: the catalogue is read from the disk cache and laid out
 //! before anything is asked of the network or the app host.
-
 #![allow(
-    clippy::panic,
+    clippy::unwrap_used,
     clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::time::{Duration, Instant};
 

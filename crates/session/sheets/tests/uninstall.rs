@@ -2,12 +2,6 @@
 //! what goes with the app, the folder each copy is in, the data switch, and
 //! the answer going back to the shell.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::PathBuf;
 

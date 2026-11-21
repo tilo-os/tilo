@@ -1,10 +1,5 @@
 //! Driven scrolling test for the settings content pane.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use settings::categories::Category;
 use ui::theme::Theme;

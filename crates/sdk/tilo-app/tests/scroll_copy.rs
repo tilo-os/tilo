@@ -1,9 +1,4 @@
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-#![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

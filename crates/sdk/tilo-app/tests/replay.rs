@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! A recording replays in the app it recorded: a private window that reads
 //! and is never written, opening History at the recording's first step,

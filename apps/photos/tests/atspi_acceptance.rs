@@ -2,11 +2,6 @@
 //! Photos on a freshly installed profile, finds the manifest's `required` names, activates `action`
 //! and waits for every `after_action` name.
 
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use photos::PhotosShell;
 use ui::accesskit::Action as AkAction;

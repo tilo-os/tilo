@@ -3,6 +3,13 @@
 //! A peer types and writes settings in 20 rounds of 1000 ops; the local [`State`] merges each
 //! round as the collaboration manager does with an incremental document envelope. Its growth is
 //! compared with the same document loaded from a full save.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 #![allow(
     clippy::unwrap_used,

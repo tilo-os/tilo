@@ -1,10 +1,5 @@
 //! End-to-end control-interaction proofs.
 
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use settings::categories::Category;
 

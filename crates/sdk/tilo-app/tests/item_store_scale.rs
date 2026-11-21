@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! The chain's storage of an app's items at 1,000, 10,000 and 25,000 items:
 //! a change to one item writes about the same bytes, finding an item by its

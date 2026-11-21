@@ -4,10 +4,6 @@
 //! These tests start the app under `bwrap`, through the same `launch_with_captured` path
 //! the launcher uses, and assert on what a syscall answered inside the sandbox.
 
-#![allow(
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::PathBuf;
 

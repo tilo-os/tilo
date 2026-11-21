@@ -2,7 +2,10 @@
 #![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
-    reason = "test helpers assert on real filesystem and process behavior"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use advisory_lock::{FileLock, LockMode, TryLockError, open_lock_file, owner_pid};

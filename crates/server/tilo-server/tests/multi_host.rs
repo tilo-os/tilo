@@ -26,12 +26,6 @@
 //!       the peer never talks to).
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-#![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]

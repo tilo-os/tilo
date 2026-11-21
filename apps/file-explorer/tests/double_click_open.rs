@@ -1,8 +1,4 @@
 //! Double-click to open, across the rebuild the first click causes.
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::Path;
 

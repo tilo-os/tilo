@@ -2,12 +2,6 @@
 //! (`use so.tilo.device`) found as `build` and `layout-check` find them; what `--write-ids`
 //! writes is what a check calls current.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 use std::path::Path;
 use std::process::Command;

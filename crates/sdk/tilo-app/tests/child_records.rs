@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! Child records a window's own record lists: creating, trashing and moving
 //! one writes the record the window holds, so each step goes through the

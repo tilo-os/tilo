@@ -1,9 +1,5 @@
 //! Files' sidebar sweep: the pointer moving between two rows repaints the
 //! rows it moved between and nothing wider, within the pointer-motion budget.
-#![allow(
-    clippy::expect_used,
-    reason = "a measurement fails loudly when the app does not open"
-)]
 
 #[test]
 fn sidebar_hover() {

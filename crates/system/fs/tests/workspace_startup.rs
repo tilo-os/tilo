@@ -1,10 +1,6 @@
 //! The recovery guard must reject before any production identity or transport
 //! startup can create persistent state. These tests invoke the shipped CLI.
 
-#![allow(
-    clippy::expect_used,
-    reason = "in a test fixture helper this is the assertion, not a hazard"
-)]
 use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 

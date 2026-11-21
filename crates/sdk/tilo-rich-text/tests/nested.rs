@@ -3,14 +3,14 @@
 //! holds it (an item's, or the record's own), typed as rich text, carrying
 //! rich text's actions, each applied as the record's field edit of that one
 //! field. Nothing of it is repeated on the record.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use tilo_document::RichText;
 use ui::prelude::*;

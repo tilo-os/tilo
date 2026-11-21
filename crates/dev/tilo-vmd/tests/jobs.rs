@@ -2,7 +2,6 @@
 //! own manifest installer lays the component out, the layer lands in the
 //! store without travelling back to the host, and the build dir is
 //! recorded so `gc` can evict it.
-#![allow(clippy::unwrap_used, clippy::panic, reason = "test scaffolding")]
 
 use std::io::{BufReader, Write as _};
 use std::path::Path;

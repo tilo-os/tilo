@@ -4,11 +4,6 @@
 //! connection comes back to the host's session by its id. Whatever the host says, the device's
 //! own environment is never what opens.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::fd::AsRawFd as _;

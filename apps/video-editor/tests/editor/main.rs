@@ -1,15 +1,15 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 
 //! The editor as a person and a screen reader meet it: hosted by the app
 //! framework, driven through keys, pointer and the accessibility tree, and
 //! read back through the project the host holds. One binary, so the editor
 //! links once for all of them.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 mod a11y_tree;
 mod bin_and_imports;

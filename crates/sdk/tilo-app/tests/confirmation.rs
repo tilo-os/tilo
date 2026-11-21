@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 //! A destructive verb of a document is undoable: from whatever path it
 //! comes it applies at once, nobody is asked, and Undo takes it back. Only

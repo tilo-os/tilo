@@ -2,14 +2,14 @@
 //! plain file and a stand-in for the old password database: moving people
 //! off their old password, the admin's system keyslot, changing secrets,
 //! recovery, the TPM lockout authorisation and the boot sign-in.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    reason = "in a test these are the assertion"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use settings_store::sign_in_comforts::SignInComforts;
 use std::collections::HashMap;

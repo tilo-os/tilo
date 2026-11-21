@@ -7,11 +7,6 @@
 //! offscreen tests. Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump the PNGs
 //! (`tooltip_over_icon_button_dark.png` / `_light.png`) for visual review.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;

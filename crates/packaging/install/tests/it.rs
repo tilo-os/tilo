@@ -1,11 +1,12 @@
-// One test binary instead of one per file; #[path] keeps the files in place.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::panic,
     clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+// One test binary instead of one per file; #[path] keeps the files in place.
+
 
 #[path = "eviction.rs"]
 mod eviction;

@@ -1,12 +1,6 @@
 //! `--connect` inside a Tilo login, across a real process boundary: it relays
 //! to the session's MCP server and never starts a standalone runtime beside
 //! the desktop.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;

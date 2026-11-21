@@ -4,11 +4,14 @@
 //! the mesh types travel on the server wire, so their encodings may only change
 //! through an explicit compatibility decision. Each test pins the exact bytes
 //! or text produced today and decodes them back to the same value.
-
 #![allow(
     clippy::unwrap_used,
-    reason = "in a test an unwrap is the assertion, not a hazard"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;

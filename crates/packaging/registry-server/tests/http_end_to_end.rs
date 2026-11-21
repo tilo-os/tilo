@@ -2,11 +2,6 @@
 //! an on-device client would, and assert the wire behaviour of the whole loop, from signature
 //! construction through the server's verify and disk write to GET.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 

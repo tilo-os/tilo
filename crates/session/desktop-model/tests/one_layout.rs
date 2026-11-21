@@ -6,11 +6,6 @@
 //! both read a workspace's layout with, and [`desktop_doc::rebuild`], what the
 //! layout's own document projects.
 
-#![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
 
 use automerge::{AutoCommit, ReadDoc as _};
 use tilo_automerge::ApplyIncoming as _;

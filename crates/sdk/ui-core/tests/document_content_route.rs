@@ -3,10 +3,6 @@
 //! record's route for it, and the store the window's code reads keeps what
 //! arrives — its history shows the words and the action replays.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::sync::Arc;
 

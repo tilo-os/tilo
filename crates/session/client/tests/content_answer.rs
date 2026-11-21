@@ -1,11 +1,6 @@
 //! A page keeps the content its records reference: another member asking the workspace for it
 //! is answered by the page's session, to that member alone, in pieces that make up the bytes.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Outbox};

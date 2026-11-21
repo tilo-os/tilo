@@ -4,12 +4,6 @@
 //! signature that verifies through `collab_types::verify_event` — the
 //! canonical first-enrolment flow.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{

@@ -4,11 +4,6 @@
 //! device folds its workspace's layout record with, rather than against a
 //! helper written to agree with it.
 
-#![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
 
 use automerge::AutoCommit;
 use tilo_desktop_model::ownership::SharedDesktop;

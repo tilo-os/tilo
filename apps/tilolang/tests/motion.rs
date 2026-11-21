@@ -9,13 +9,6 @@
 //! default because it is there to look at, not to check.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions"
-)]
-#![allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,

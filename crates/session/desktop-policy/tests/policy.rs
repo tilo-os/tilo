@@ -1,11 +1,14 @@
 //! The policy over the desktop surface in the toolkit's real frame
 //! pipeline: windows mapped, focused, closed and moved between strips as the
 //! desktop's widgets lay them out.
-
 #![allow(
     clippy::unwrap_used,
-    reason = "test fixtures: a failed lookup is the assertion"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::cell::Cell;
 use std::time::Duration;

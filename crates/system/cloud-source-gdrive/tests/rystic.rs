@@ -2,7 +2,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "integration assertions must fail when the twin cannot be exercised"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use std::io::Read;

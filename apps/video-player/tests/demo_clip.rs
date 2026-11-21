@@ -1,10 +1,13 @@
 //! The capture's demo clip plays on every VP9 decoder: Profile 0, 8-bit, 4:2:0, read from
 //! the pinned fixture's own `vpcC` resource.
-
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
-    reason = "a malformed fixture must fail the test explicitly"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::path::Path;
 

@@ -1,12 +1,6 @@
 //! A field edit's published schema says every argument each operation
 //! reads, so an agent building an edit from the schema alone sends what the
 //! edit needs.
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 
 use serde_json::{Value, json};
 use tilo_resource::{Collection, Edit, Invoke, Model, OP_ARGUMENTS, Replica, resource};

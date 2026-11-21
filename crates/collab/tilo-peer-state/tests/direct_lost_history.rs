@@ -2,12 +2,6 @@
 //! on came later or never, and the device asks the one that sent the frame for
 //! the state it holds, over the same link. Each test has the sending device
 //! make a change it never sends, then send one built on it.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::{addr, device, localhost_endpoint};
 

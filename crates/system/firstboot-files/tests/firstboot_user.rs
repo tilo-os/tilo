@@ -9,9 +9,10 @@
 #![cfg(target_os = "linux")]
 #![allow(
     clippy::unwrap_used,
-    clippy::indexing_slicing,
+    clippy::expect_used,
     clippy::panic,
-    reason = "a test fixture: any failed fixture call fails the test"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use std::fs;

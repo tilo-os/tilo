@@ -3,12 +3,6 @@
 //! A view replaces ~40 per-path `--ro-bind-try` operations with a few binds of a tree
 //! assembled once (`launcher::sandbox_view`).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;

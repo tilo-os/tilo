@@ -1,14 +1,15 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test assertions read a job's own report by name"
-)]
 
 //! Backups on the framework: the retention controls edit the document through the
 //! resource's action, and backing up, verifying and restoring are effects every caller
 //! reaches the same way, with jobs that run off the UI thread against this device's
 //! repository.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use backups::actions::BackupsEffect;
 use backups::{BackupLocation, BackupsShell};

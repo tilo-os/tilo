@@ -1,12 +1,6 @@
 //! The panel as a person meets it, headless: what each page shows, where
 //! things sit, and which effect each control invokes on the device.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::rc::Rc;
 

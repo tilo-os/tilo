@@ -7,6 +7,13 @@
 //! engines in parallel under CPU contention. Before the fix it stalled a few
 //! opens in every thousand; it is a bounded stress test, so a run that misses
 //! the window passes without proving anything.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 mod common;
 

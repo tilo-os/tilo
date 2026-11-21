@@ -5,14 +5,14 @@
 //! `legacy/rust_tube.hex` is what the native app's own model wrote: its library and its watch
 //! history, one document a line (its id, a tab, the saved document as hex), made by its verbs and
 //! edits.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "test assertions"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use tilolang_tilo::host::Host;
 use tilolang_tilo::runtime::{ResourceRef, Value};

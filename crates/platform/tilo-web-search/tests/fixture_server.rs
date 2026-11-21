@@ -3,7 +3,13 @@
 //! text, and a PDF (labelled, or sent with no type at all) whole, as bytes
 //! for the caller to keep. A binary body larger than the limit is refused in
 //! plain words rather than cut.
-#![allow(clippy::unwrap_used, reason = "in a test these are assertions")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;

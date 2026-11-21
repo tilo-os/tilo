@@ -1,7 +1,10 @@
 #![cfg(unix)]
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
-    reason = "isolated actual-stream fixtures must construct before assertions"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 use messages::{MessagesEffect, MessagesShell};
 use std::{

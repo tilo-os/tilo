@@ -3,12 +3,6 @@
 //! shell.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::path::PathBuf;
 use std::time::Duration;

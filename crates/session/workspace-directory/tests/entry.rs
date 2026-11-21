@@ -1,11 +1,13 @@
 //! A site, its directory and its entry, over a real `tilo_net` connection to
 //! a local responder: what a page and the desktop both do.
-
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
+    clippy::panic,
     clippy::indexing_slicing,
-    reason = "a fixture that cannot see its own reply has no fallback"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use test_http::{Reply, Responder};
 use tilo_server_protocol::directory::{DirectoryEntry, DirectoryPage};

@@ -8,11 +8,6 @@
 //! **document content** rather than on a return value — a revert that reported
 //! success while leaving the text alone fails these tests.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};

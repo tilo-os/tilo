@@ -2,12 +2,6 @@
 //! what it shows for each input, and what pressing a key or Done asks the
 //! shell.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{

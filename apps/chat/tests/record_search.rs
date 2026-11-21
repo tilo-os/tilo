@@ -1,9 +1,5 @@
 //! The chat binary's resource mode: what search finds in a resource it reads on a
 //! device that never ran Chat's window.
-#![allow(
-    clippy::expect_used,
-    reason = "a resource that cannot be read fails the test loudly"
-)]
 
 use std::io::Write as _;
 use std::process::{Command, Stdio};

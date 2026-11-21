@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 use serde_json::json;
 use tilo_desktop_model::DropTarget;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};

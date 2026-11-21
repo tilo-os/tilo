@@ -2,11 +2,6 @@
 //! would be a circular workspace dependency) and driven through the built binary with
 //! `XDG_CONFIG_HOME` and `XDG_DATA_HOME` in a tempdir.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::{Path, PathBuf};
 

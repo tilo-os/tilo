@@ -11,12 +11,6 @@
 //! Each device here but the first is the wire itself: it dials, reads every
 //! frame it is sent and says only what the test has it say, so what a device
 //! is handed is observed, not what a well-behaved store would keep of it.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::{addr, device, localhost_endpoint};
 

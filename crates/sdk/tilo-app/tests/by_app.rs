@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 //! What an app keeps for itself in a record beside its own
 //! (`#[action(by_app)]`): its own code applies it, as whoever it names, and
 //! the record's API offers it to nobody and takes it from nobody.

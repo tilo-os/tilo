@@ -2,12 +2,6 @@
 //! what each tab shows, what its controls ask of the shell, and what the
 //! keys do.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_sheets::SheetState as _;
 use tilo_sheets::workspace_settings::{

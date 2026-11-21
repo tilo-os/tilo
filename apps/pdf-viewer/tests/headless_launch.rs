@@ -1,10 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions fail closed when the actual CLI cannot be observed"
-)]
 
 use serde_json::{Value, json};
 use std::path::Path;

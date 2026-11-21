@@ -7,10 +7,6 @@
 //! real device's, started as the login starts it.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::expect_used,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::sync::{Arc, Mutex, RwLock};
 

@@ -5,11 +5,14 @@
 //! workspace's vault put in its environment, and nothing else: no token in the
 //! VM, and no answer for a host the token is not for. These run the script the
 //! image ships, as git runs it.
-
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

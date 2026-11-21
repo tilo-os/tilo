@@ -8,11 +8,6 @@
 //! socket its variable names, sends one line and prints the line it is
 //! answered.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "a test's own host: a frame it did not expect is the test failing"
-)]
 
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;

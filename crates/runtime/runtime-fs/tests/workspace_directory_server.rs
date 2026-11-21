@@ -1,9 +1,4 @@
 #![cfg(unix)]
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    reason = "owned connected native capability assertions"
-)]
 use runtime_fs::directory_backend::{DirectoryStat, JobUpdate};
 use runtime_fs::directory_client::{DirectoryClient, NativeJobClient};
 use runtime_fs::operations::ItemState;

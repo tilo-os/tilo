@@ -1,10 +1,6 @@
 //! A key applies to publish under namespaces it proves, over HTTP, and only the owner's approval,
 //! which checks the proofs again, allowlists it.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

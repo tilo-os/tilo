@@ -1,14 +1,14 @@
 //! The wrappers, the LUKS2 token and keyslot, and the boot sign-in against an
 //! emulated TPM and a LUKS2 header on a plain file: no root, no loop device,
 //! never the machine's own TPM or disks.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    reason = "in a test these are the assertion"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use base64::Engine as _;
 use std::path::{Path, PathBuf};

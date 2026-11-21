@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 #![allow(
     clippy::items_after_statements,
     reason = "a step brings the names it uses where it uses them"

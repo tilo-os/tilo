@@ -5,10 +5,6 @@
 //! afterwards. Hashes that cannot stand for the document's changes are
 //! ignored and the changes rebuilt.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::{CommitOptions, Transactable};

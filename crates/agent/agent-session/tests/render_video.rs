@@ -8,12 +8,6 @@
 //! Without either, the rendering tests say so and return, unless
 //! `TILO_REQUIRE_MEDIA=1` demands them.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_actions::MemberId;
 use tilo_actions::api::{ActionDescriptor, ApiError};

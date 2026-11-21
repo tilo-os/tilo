@@ -1,13 +1,13 @@
-#![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 //! A run's address: the resource Console publishes for it, the view a link opens, and the
 //! link itself, round-tripping through the link grammar.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::sync::{Arc, Mutex};
 

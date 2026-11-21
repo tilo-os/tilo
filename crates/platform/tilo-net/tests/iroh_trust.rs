@@ -5,8 +5,11 @@
 
 #![cfg(not(target_family = "wasm"))]
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use std::net::Ipv4Addr;

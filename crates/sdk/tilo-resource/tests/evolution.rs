@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;

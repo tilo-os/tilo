@@ -8,14 +8,14 @@
 //! The session's log is one stream for the whole process, and a launch reads
 //! its app's pipes on threads of its own, so the subscriber here is the
 //! process's and every test reads only the lines of the app it started.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

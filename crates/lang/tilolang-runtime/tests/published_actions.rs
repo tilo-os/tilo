@@ -3,12 +3,6 @@
 //! channel it shows. The runtime sends that invocation to the app's action API — the one path another
 //! app's declared action takes (one-app-model.md §2, §4).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 #[cfg(test)]
 mod cases {

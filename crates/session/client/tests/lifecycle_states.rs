@@ -2,11 +2,6 @@
 //! host: a page that joins is told its workspace serves it, and a write it makes is told behind,
 //! then done, once its host kept it. Nothing here waits on a timer.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use collab_types::DocumentMutation;
 use tilo_session_client::{Cmd, Event, Outbox as _, SyncState, WorkspaceState};

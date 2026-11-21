@@ -1,11 +1,14 @@
 //! The portable engine (hayro, in process) on the same fixtures as the
 //! helper suite. It is the only engine on macOS and the web, so these run on
 //! every target.
-
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::path::Path;
 

@@ -7,11 +7,6 @@
     clippy::significant_drop_tightening,
     reason = "a test holds its fixtures' locks for the length of a step"
 )]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::sync::Arc;
 use tilo_session_client::{Cmd, Link, Outbox, TransportPhase};

@@ -14,12 +14,6 @@
 //! tree is never built for a page, and that a page at ten thousand costs
 //! within a small factor of one at two hundred.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::{Duration, Instant};
 

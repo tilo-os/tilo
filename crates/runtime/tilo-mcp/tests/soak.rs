@@ -9,13 +9,14 @@
 //!
 //! The count is the whole process's ([`tilo_test_env::held`]), so this binary runs the one test.
 //! `TILO_MCP_SOAK_CALLS` raises the number of calls for a longer soak by hand.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::collections::VecDeque;
 use std::sync::Mutex;

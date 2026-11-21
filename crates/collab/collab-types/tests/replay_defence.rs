@@ -10,10 +10,6 @@
 //! - Different authors maintaining independent seq spaces — author B
 //!   can use seq=1 even after author A has used seq=1.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::{Duration, SystemTime};
 

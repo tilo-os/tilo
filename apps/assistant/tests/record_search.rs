@@ -1,8 +1,11 @@
 //! What search finds in the workspace's agents, read from the resource itself on
 //! a device that never started the Assistant's window.
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
-    reason = "a resource that cannot be read fails the test loudly"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use std::io::Write as _;

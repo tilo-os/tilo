@@ -5,11 +5,6 @@
 //! person had just changed. Each field is stored on its own now; colours,
 //! names, path data and point lists are stored whole, so two people setting
 //! one at once get one of their values, never a mix of both.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use canvas::actions::{Draw, EditLayer, EditMarks, NewMark, SetArtwork, Taught};
 use canvas::model::{Adjust, Artwork, Shape, Style};

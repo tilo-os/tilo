@@ -15,13 +15,6 @@
 //! (`chat_holds`), exactly as `canvas_point.rs` does.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::path::Path;
 use std::rc::Rc;

@@ -1,12 +1,5 @@
 //! `tilolang build`: every package of a build is a signed Tilo app of its own.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 
 use std::path::Path;
 

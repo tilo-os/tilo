@@ -3,7 +3,7 @@
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "integration test assertions"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use cloud_source::{

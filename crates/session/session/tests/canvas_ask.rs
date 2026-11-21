@@ -15,11 +15,6 @@
 //! nested agent story).
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
-)]
 
 use std::time::Duration;
 

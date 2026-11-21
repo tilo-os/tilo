@@ -2,7 +2,6 @@
 //! the project or the file it acts on, or a field edit at a path — and what
 //! it did reads back as the editor's own sentences.
 
-#![allow(clippy::panic, reason = "in a test a panic is the assertion")]
 
 use code_editor::project::{Project, SourceEdit};
 use code_editor::{CodeEditorShell, actions};

@@ -2,13 +2,6 @@
 //! wherever deleting was asked for, and only their yes deletes it.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test fixtures: a failed step is the assertion"
-)]
 
 use std::time::Duration;
 

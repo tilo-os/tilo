@@ -1,5 +1,11 @@
 #![cfg(feature = "test-worker")]
-#![allow(clippy::unwrap_used, reason = "test assertions")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

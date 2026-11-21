@@ -3,10 +3,6 @@
     reason = "each integration module uses a different subset of these fixtures"
 )]
 #![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-#![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]

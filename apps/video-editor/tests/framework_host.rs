@@ -1,8 +1,14 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! The editor hosted by the app framework: its custom timeline keeps its own
 //! rendering and input, and every edit it makes takes the host's path —
 //! permission-checked, one undo step, attributed, replayable.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use ui::prelude::*;
 use ui::tilo_resource::Id;

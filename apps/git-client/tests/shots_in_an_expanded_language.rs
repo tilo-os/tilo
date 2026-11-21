@@ -7,11 +7,6 @@
 //! app ever draws (every message longer, every label wider), so a capture
 //! that survives it survives every translation.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use git_client::i18n::t;
 use git_client::resource::GitClientShell;

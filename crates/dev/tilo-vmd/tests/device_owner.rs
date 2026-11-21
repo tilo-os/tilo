@@ -1,6 +1,5 @@
 //! `tilo-vmd device-owner`, which the daemon runs as an account's account: the
 //! account's identity records open only for it, never for root.
-#![allow(clippy::unwrap_used, reason = "fixture setup fails the test")]
 
 use std::path::Path;
 use std::process::Command;

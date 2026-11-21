@@ -1,13 +1,13 @@
 //! What the list shows where the person is: the issue a press in its field just made,
 //! and its top when issues land above it.
-
 #![allow(
-    clippy::expect_used,
     clippy::unwrap_used,
-    clippy::indexing_slicing,
+    clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use serde_json::json;
 use tasks::App;

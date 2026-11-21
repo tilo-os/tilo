@@ -6,9 +6,11 @@
 
 #![cfg(target_os = "linux")]
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "test fixtures: a failed step is the assertion, and the panic is the thing recorded"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 /// A session that panics leaves a record of why, its backtrace included:

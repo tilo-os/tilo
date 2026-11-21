@@ -159,11 +159,6 @@ pub fn fixture_path() -> PathBuf {
 /// it is cheap to encode but guarantees that two correctly sought pictures
 /// differ.
 #[cfg(feature = "decode")]
-#[allow(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "failure to construct the real encoded test subject must fail the decode test loudly"
-)]
 fn generate_fixture() -> PathBuf {
     let cache_file = format!(
         "vp9-smpte-scroll{FIXTURE_SCROLL_PX}-{FIXTURE_WIDTH}x{FIXTURE_HEIGHT}-{FIXTURE_FPS}fps-\

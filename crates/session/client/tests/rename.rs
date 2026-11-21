@@ -2,12 +2,6 @@
 //! shell does when someone renames the workspace: the answer and every list of
 //! the workspace read the one name, which the workspace's governance keeps.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
 use tilo_session_client::{Link, Outbox};

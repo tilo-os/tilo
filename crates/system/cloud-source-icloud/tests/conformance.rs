@@ -1,13 +1,14 @@
 //! The cloud-source conformance suite for iCloud Drive: the in-process fake with a
 //! trusted session it issues, and a live account when `TILO_LIVE_ICLOUD_SESSION` holds a
 //! serialized [`StoredSession`], each run in its own folder.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "test fixtures"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use std::io::Read;
 use std::sync::Arc;

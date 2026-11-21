@@ -3,12 +3,6 @@
 //! request reaches the device it names, is answered there as the caller the
 //! engine authorized, and is refused from the moment the asking device may
 //! no longer act.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::common::{addr, device, localhost_endpoint, workspace};
 use tilo_peer_state::join::WorkspaceId;

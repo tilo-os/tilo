@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! Where a presence's action leaves them is the framework's: the surface
 //! is told, and reads it back, instead of keeping its own copy. An effect

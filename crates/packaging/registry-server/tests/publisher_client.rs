@@ -2,10 +2,6 @@
 //! registry: apply for a namespace, get approved, publish a build into it, and find the upload
 //! where review reads it.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

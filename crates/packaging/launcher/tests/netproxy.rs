@@ -5,12 +5,6 @@
 //! connection here is to a loopback listener in the test: nothing reaches the network.
 
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;

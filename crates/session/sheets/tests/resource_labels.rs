@@ -6,12 +6,6 @@
 //! up on a German desktop is published as the German name — and keeps its
 //! declared one where a catalogue has no entry for it.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_sheets::add_app::AddToApps;
 use tilo_sheets::dictation::Dictation;

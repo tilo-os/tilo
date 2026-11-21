@@ -1,10 +1,5 @@
 //! What the `tilo-install` end-to-end tests share: the binary, the keys and the `.tapp` builder.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

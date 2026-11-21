@@ -1,9 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test assertions"
-)]
 
 //! The Discord bridge bot's program (discord-bridge.md §3), built here and
 //! kept as the canonical file `bridge/program.json` that the bot directory
@@ -16,6 +10,13 @@
 //! its lists. A pass runs only while
 //! the previous plan asked for another, so a reply waits for its thread and
 //! a post for its author's avatar.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::collections::BTreeMap;
 

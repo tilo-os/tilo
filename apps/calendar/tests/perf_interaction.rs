@@ -1,8 +1,11 @@
 //! Calendar's sidebar sweep: the pointer moving between two rows repaints the
 //! rows it moved between and nothing wider, within the pointer-motion budget.
 #![allow(
+    clippy::unwrap_used,
     clippy::expect_used,
-    reason = "a measurement fails loudly when the app does not open"
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 #[test]

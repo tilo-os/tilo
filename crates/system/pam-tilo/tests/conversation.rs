@@ -1,14 +1,14 @@
 //! `pam_tilo` loaded by the real libpam from a service file in a temporary
 //! directory, talking to a stand-in for `tilo-authd`: what it asks, what it
 //! sends, what the person sees and what the stack makes of the answer.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    reason = "in a test these are the assertion"
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use serde_json::{Value, json};
 use std::collections::VecDeque;

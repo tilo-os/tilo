@@ -1,13 +1,14 @@
 //! The SDK rich-text editor in a framework app, driven the way a person
 //! drives it: typing into the real component runtime, record storage,
 //! permissions, per-author undo and a member's replica.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
+
 
 use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextViews;

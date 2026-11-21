@@ -3,12 +3,6 @@
 //! and the host answers in pieces addressed to that member alone.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-#![allow(
     clippy::significant_drop_tightening,
     reason = "the server and the member's session live until the test ends"
 )]

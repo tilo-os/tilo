@@ -2,13 +2,6 @@
 //! window again on a new build of the runtime binary or a saved source, however the file was
 //! replaced.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 
 use std::path::{Path, PathBuf};
 

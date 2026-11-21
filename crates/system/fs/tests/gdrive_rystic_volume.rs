@@ -1,9 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "external contract assertions"
-)]
 
 use cloud_source::{CloudSource, Credential, ItemId, StaticCredential, UploadTarget};
 use cloud_source_gdrive::{DriveConfig, GDrive, Url};

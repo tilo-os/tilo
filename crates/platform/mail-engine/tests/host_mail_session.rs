@@ -1,11 +1,6 @@
 //! The session the host carries for an account it keeps, against the real
 //! IMAP and SMTP servers this app's own tests use: a folder is read whole, a
 //! message is sent, and a server is told what changed about one.
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_actions::remote::person_accounts::{FetchMail, MarkMail, ReadMail, SearchMail, SendMail};
 use tilo_mail_session::{Attachment, Leaving, LiveMailSession, MailSession};

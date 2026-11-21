@@ -6,12 +6,6 @@
 //! the chain's head part, and the API lists it under the chain at once, with
 //! the actions a member runs on it.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use collab_types::DocumentMutation;
 use tilo_actions::MemberId;

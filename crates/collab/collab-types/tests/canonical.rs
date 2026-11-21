@@ -5,10 +5,6 @@
 //! tampering of an *encoded* envelope makes signature verification
 //! fail — this is the property that makes signed ops trustworthy.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::time::{Duration, SystemTime};
 

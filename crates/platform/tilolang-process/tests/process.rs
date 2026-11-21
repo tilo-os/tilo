@@ -4,12 +4,6 @@
 //! that connection and runs what the broker delivers there as its invoker's step. An instance ends
 //! when its window closes.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "a test: a failure is a panic"
-)]
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

@@ -8,7 +8,6 @@
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
-#![allow(clippy::unwrap_used, reason = "in a test these are the assertions")]
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

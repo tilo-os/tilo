@@ -3,10 +3,6 @@
 //! individually signed segments and arrive at the peer byte-for-byte, with
 //! both bridges still connected afterwards.
 
-#![allow(
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use crate::support::typed_collab::TypedBroker;
 use collab_types::CommitNamed as _;

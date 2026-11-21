@@ -1,6 +1,9 @@
 #![allow(
     clippy::unwrap_used,
-    reason = "fixture builders encode known-valid objects; a failure is the assertion"
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
 )]
 
 use tilo_live::voice::{FRAME_SAMPLES, HEADER_BYTES, MAX_OBJECT_BYTES, VoiceObject};

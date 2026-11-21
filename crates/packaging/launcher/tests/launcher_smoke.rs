@@ -2,11 +2,6 @@
 //!
 //! These tests invoke the *library* surface of `tilo-launcher` against ad-hoc fixtures.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

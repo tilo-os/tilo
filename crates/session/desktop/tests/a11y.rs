@@ -1,12 +1,6 @@
 //! What the chrome tells assistive technology: the overlays it paints — the emoji card and the
 //! strip labels — are in the tree its host publishes, and a reader lands on what the person sees.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
