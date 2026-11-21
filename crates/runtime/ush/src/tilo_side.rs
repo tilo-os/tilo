@@ -906,6 +906,7 @@ impl Session {
         &self,
         target: crate::hosted_vm::HostedTarget,
         key: &str,
+        home: &Path,
         record: &Arc<RecordEnvironment>,
     ) -> Arc<dyn ush_tilo::Programs> {
         let grants = Arc::clone(record);
@@ -913,6 +914,7 @@ impl Session {
             target,
             self.store.workspace_id().to_string(),
             key.to_string(),
+            home.to_path_buf(),
             Box::new(move || {
                 let policy = Policy::new(ush_tilo::Environment::grants(&*grants));
                 let now = Some(unix_now());
@@ -991,8 +993,11 @@ impl Session {
         });
         let listing = self.image_listing(&state);
         let record = Arc::new(RecordEnvironment::new(Arc::clone(&state)));
+        let user = crate::guest::GuestUser::current();
+        let now = Some(unix_now());
+        let home = crate::home::home_of(&resolved.environment, &user);
         let programs: Arc<dyn ush_tilo::Programs> = match self.opts.hosted_vm.clone() {
-            Some(target) => self.hosted_programs(target, &resolved.key, &record),
+            Some(target) => self.hosted_programs(target, &resolved.key, &home, &record),
             None => Arc::new(
                 SessionGuest::new(launch, restart_asked, streams()?, Arc::clone(&place))
                     .listing(listing),
@@ -1007,10 +1012,7 @@ impl Session {
             place,
             io.stderr.clone(),
         ));
-        let user = crate::guest::GuestUser::current();
-        let now = Some(unix_now());
         let policy = Policy::new(resolved.environment.grants.clone());
-        let home = crate::home::home_of(&resolved.environment, &user);
         let cwd = starting_dir(&policy, &home, now);
         let mut shell = ush_shell::Shell::new(
             Arc::clone(&host),

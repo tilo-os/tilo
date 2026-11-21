@@ -417,6 +417,7 @@ impl WorkspaceShells {
             target,
             workspace.to_owned(),
             ENVIRONMENT.to_owned(),
+            shared.clone(),
             Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
         );
         Ok(Some((programs, files)))
@@ -451,6 +452,7 @@ impl WorkspaceShells {
                     target,
                     workspace.to_owned(),
                     ENVIRONMENT.to_owned(),
+                    shared.clone(),
                     Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
                 )
                 .reporting_refusals(Arc::clone(&refused))

@@ -41,11 +41,15 @@ macro_rules! version {
 /// it in the same folder.
 pub const VERSION: &str = version!();
 
-/// Starts the program, installing it for the machine's own user where this version of it
-/// is not there yet. What the installer prints goes to standard error, so standard output
-/// stays the program's own lines.
+/// Starts the program from the machine's own folder, installing it there where this version of
+/// it is not there yet: the tenant's home in the guest image, which is where the image's build
+/// puts it too (`os/Containerfile.hosted-guest`). It is named from the machine's disk rather than
+/// through `HOME`, because a run's `~` is the workspace's files
+/// (`docs/app-model/environments.md`), and a program the machine ships belongs to the machine.
+/// What the installer prints goes to standard error, so standard output stays the program's own
+/// lines.
 const STARTS: &str = concat!(
-    "at=\"$HOME/.local/share/claude-code/",
+    "at=\"/home/tilo/.local/share/claude-code/",
     version!(),
     "\"; [ -x \"$at/bin/claude\" ] \
      || npm install --global --prefix \"$at\" @anthropic-ai/claude-code@",
@@ -278,11 +282,13 @@ mod tests {
             assert_eq!(
                 STARTS,
                 format!(
-                    "at=\"$HOME/.local/share/claude-code/{VERSION}\"; [ -x \"$at/bin/claude\" ] \
+                    "at=\"/home/tilo/.local/share/claude-code/{VERSION}\"; \
+                     [ -x \"$at/bin/claude\" ] \
                      || npm install --global --prefix \"$at\" \
                      @anthropic-ai/claude-code@{VERSION} >&2 || exit 127; \
                      exec \"$at/bin/claude\" \"$@\""
-                )
+                ),
+                "the machine's own folder, not the run's `~`"
             );
             assert!(
                 VERSION.split('.').count() == 3

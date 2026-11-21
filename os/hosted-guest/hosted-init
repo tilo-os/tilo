@@ -39,6 +39,12 @@ mkdir -p /run /tmp
 mounted /run || mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /run
 mounted /tmp || mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs /tmp
 
+# The tenant's own folders on this disk. A program's `~` is its workspace's files
+# (crates/runtime/ush/src/hosted_vm.rs), so what belongs to the machine rather than to the
+# workspace — caches, npm's cache, build output — lives here, and the first program that needs
+# one finds it ready and theirs.
+install -d -m 0700 -o tilo -g tilo /home/tilo/.cache /home/tilo/.npm /var/tmp/tilo
+
 # The disk the host grew for this VM: the filesystem grows to fill it. Online,
 # on the mounted root, and only when there is something to grow into.
 if [ -b /dev/vda ]; then

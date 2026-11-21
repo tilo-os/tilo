@@ -392,6 +392,20 @@ that workspace environment's own, never in a guest sharing the host's kernel
   process held to that directory by Landlock, in user, mount, network and IPC
   namespaces of its own where the jails and the service's sockets do not
   exist.
+- **A program's `~`:** a program the shell runs in the VM starts with `HOME`
+  the environment's shared folder — the same path the shell's `~` names — so
+  what the program or a coding agent writes there is the workspace's files,
+  versioned and bounded by its grant. What belongs to the machine rather than
+  to the workspace stays on the VM's own disk, in the tenant's folders there:
+  `XDG_CACHE_HOME=/home/tilo/.cache`, `XDG_DATA_HOME=/home/tilo/.local/share`,
+  `NPM_CONFIG_CACHE=/home/tilo/.npm`, `CARGO_HOME=/home/tilo/.cargo` and
+  `RUSTUP_HOME=/home/tilo/.rustup` (the toolchain the image ships), and
+  `CARGO_TARGET_DIR=/var/tmp/tilo/target`. The shell sets these over the ones
+  a run carries, so no run moves its `~` or its caches into the workspace's
+  files, and a program the machine ships, such as the coding agent, is found
+  by its path there rather than under the run's `~`. The guest agent takes a
+  launch's `HOME` only when it names a directory the guest has, and the
+  tenant's own home otherwise.
 - **Jail:** each VM runs as a uid of its own (a host has slots; slot `n` is
   uid `base + 2n`), in Firecracker's jailer: a chroot holding only its
   devices, its state, its sockets and the guest kernel; a cgroup bounding

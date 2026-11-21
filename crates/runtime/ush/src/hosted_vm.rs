@@ -19,6 +19,11 @@
 //! ([`HostedPrograms::carrying_secrets`]): items of the workspace's vault its VM may use. They
 //! travel to the VM's agent in the launch alone.
 //!
+//! Its `~` is the workspace's files, the folder the shell's `~` names, so what a program or a
+//! coding agent writes there is the workspace's, versioned and bounded by its grant. What is the
+//! machine's rather than the workspace's stays on the VM's own disk, in the tenant's folders
+//! there (`/home/tilo`), and a run moves neither ([`HostedPrograms::machine_environment`]).
+//!
 //! A program whose input and output are the session's terminal runs on a pseudo-terminal
 //! in the VM ([`Relay::Terminal`]), so editors, prompts and pagers work as on a device.
 //!
@@ -51,6 +56,15 @@ use ush_tilo::Programs;
 
 pub use tilo_server_account::{ACCOUNT_ENV, PLANS_ENV, SOCKET_ENV};
 pub const SIZE_ENV: &str = "TILO_HOSTED_VM_SIZE";
+
+/// The tenant's home on the VM's own disk in the guest image
+/// (`os/Containerfile.hosted-guest`): where a program's caches, toolchains and build output go
+/// while its `~` is the workspace's files.
+const GUEST_HOME: &str = "/home/tilo";
+
+/// Where a program's build output goes: on the VM's disk, which a build may fill, never in the
+/// workspace's files.
+const GUEST_TARGET: &str = "/var/tmp/tilo/target";
 
 #[cfg(any(test, feature = "test-host"))]
 pub mod test_host;
@@ -124,6 +138,8 @@ pub struct HostedPrograms {
     marks_key: Option<String>,
     workspace: String,
     environment: String,
+    /// The workspace's files, which the VM's programs see as `~`.
+    home: PathBuf,
     shares: Box<Shares>,
     terminal: TerminalSlot,
     refusals: Option<std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>>,
@@ -133,11 +149,14 @@ pub struct HostedPrograms {
 }
 
 impl HostedPrograms {
+    /// Programs of `workspace`'s `environment` run in its VM with `home`, the workspace's files,
+    /// as `~`, and `shares` bound at their own paths.
     #[must_use]
     pub fn new(
         target: HostedTarget,
         workspace: String,
         environment: String,
+        home: PathBuf,
         shares: Box<Shares>,
     ) -> Self {
         Self {
@@ -145,6 +164,7 @@ impl HostedPrograms {
             marks_key: None,
             workspace,
             environment,
+            home,
             shares,
             terminal: TerminalSlot::default(),
             refusals: None,
@@ -194,26 +214,52 @@ impl HostedPrograms {
         self
     }
 
-    /// The environment a program starts with: the shell's `env`, and the run's secrets over it.
+    /// The environment a program starts with: the shell's `env`, the run's secrets over it, and
+    /// the machine's own variables over both ([`Self::machine_environment`]).
     fn environment(&self, env: &[(String, String)]) -> Vec<(String, String)> {
-        let Some(slot) = &self.secrets else {
-            return env.to_vec();
+        let mut started: Vec<(String, String)> = match &self.secrets {
+            None => env.to_vec(),
+            Some(slot) => {
+                let secrets = slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut started: Vec<(String, String)> = env
+                    .iter()
+                    .filter(|(name, _)| !secrets.iter().any(|secret| secret.variable == *name))
+                    .cloned()
+                    .collect();
+                started.extend(
+                    secrets
+                        .iter()
+                        .map(|secret| (secret.variable.clone(), secret.value.clone())),
+                );
+                drop(secrets);
+                started
+            }
         };
-        let secrets = slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut started: Vec<(String, String)> = env
-            .iter()
-            .filter(|(name, _)| !secrets.iter().any(|secret| secret.variable == *name))
-            .cloned()
-            .collect();
-        started.extend(
-            secrets
-                .iter()
-                .map(|secret| (secret.variable.clone(), secret.value.clone())),
-        );
-        drop(secrets);
+        for (name, value) in self.machine_environment() {
+            started.retain(|(existing, _)| *existing != name);
+            started.push((name.to_owned(), value));
+        }
         started
+    }
+
+    /// What every program the VM runs starts with, set over the variables it was asked to run
+    /// with — even a run's own or its vault's: `HOME` is the workspace's files, the folder the
+    /// shell's `~` names, and the caches, toolchains and build output that belong to the machine
+    /// rather than to the workspace stay on the VM's disk, in the tenant's folders there. The
+    /// toolchain is the one the image ships, so `cargo` and `rustup` work as they do for the
+    /// tenant's own login there.
+    fn machine_environment(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("HOME", self.home.display().to_string()),
+            ("XDG_CACHE_HOME", format!("{GUEST_HOME}/.cache")),
+            ("XDG_DATA_HOME", format!("{GUEST_HOME}/.local/share")),
+            ("CARGO_HOME", format!("{GUEST_HOME}/.cargo")),
+            ("RUSTUP_HOME", format!("{GUEST_HOME}/.rustup")),
+            ("NPM_CONFIG_CACHE", format!("{GUEST_HOME}/.npm")),
+            ("CARGO_TARGET_DIR", GUEST_TARGET.to_owned()),
+        ]
     }
 
     /// Tell `slot` each refusal that ends a program, so the caller can
@@ -910,6 +956,7 @@ mod tests {
                 },
                 "ws1".into(),
                 "default".into(),
+                "/srv/ws1/files".into(),
                 Box::new(|| shares_of(vec!["/srv/ws1/files".into()], Vec::new())),
             );
             let (stderr, err) = Output::buffer();
@@ -967,6 +1014,7 @@ mod tests {
                 },
                 "ws1".into(),
                 "default".into(),
+                "/srv/ws1/files".into(),
                 Box::new(Vec::new),
             )
             .terminal(slave.try_clone().unwrap());
@@ -1068,6 +1116,7 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
                 },
                 "ws1".into(),
                 "dev".into(),
+                FILES.into(),
                 Box::new(Vec::new),
             )
             .serving_agents(std::sync::Arc::clone(&server) as std::sync::Arc<dyn MachineAgents>, "s1");
@@ -1111,6 +1160,7 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
                 },
                 "ws1".into(),
                 "dev".into(),
+                FILES.into(),
                 Box::new(Vec::new),
             );
             let (stdout, out) = Output::buffer();
@@ -1145,6 +1195,9 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
 
     const KEY: &str = "0123456789abcdef0123";
 
+    /// The workspace's files as a session's shell names them.
+    const FILES: &str = "/srv/ws1/files";
+
     fn session(
         host: &test_host::TestHost,
         account: &str,
@@ -1153,6 +1206,7 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
             host.target(account),
             "ws1".into(),
             "default".into(),
+            FILES.into(),
             Box::new(Vec::new),
         )
         .with_marks_key(Some(KEY.into()));
@@ -1356,6 +1410,117 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
             "ush: cargo: Starting another machine for it, about 3 minutes. Waiting; Ctrl+C \
              cancels.\n",
             "said once, however long it waits"
+        );
+    }
+
+    #[test]
+    fn a_run_reaches_the_vm_with_the_workspaces_files_as_home_and_the_vms_disk_for_caches() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = test_host::TestHost::start(dir.path());
+        std::fs::write(host.plans(), b"{}").unwrap();
+        let files = dir.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let programs = HostedPrograms::new(
+            host.target("acct-1"),
+            "ws1".into(),
+            "default".into(),
+            files.clone(),
+            Box::new(Vec::new),
+        );
+        let (stdout, _out) = Output::buffer();
+        let io = Stdio {
+            stdout,
+            ..Stdio::null()
+        };
+        let ran = programs.run(
+            &["cargo".into(), "build".into()],
+            &[("HOME".into(), "/root".into())],
+            &files,
+            &io,
+            None,
+        );
+        assert_eq!(ran, Program::Exited(0));
+        let (argv, env) = host.launched().pop().expect("the VM was asked to run it");
+        assert_eq!(argv, ["cargo", "build"]);
+        let get = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(
+            get("HOME"),
+            Some(files.display().to_string()),
+            "the shell's `~`, even over what the run was given"
+        );
+        assert_eq!(get("XDG_CACHE_HOME"), Some("/home/tilo/.cache".into()));
+        assert_eq!(get("XDG_DATA_HOME"), Some("/home/tilo/.local/share".into()));
+        assert_eq!(get("CARGO_HOME"), Some("/home/tilo/.cargo".into()));
+        assert_eq!(get("RUSTUP_HOME"), Some("/home/tilo/.rustup".into()));
+        assert_eq!(get("NPM_CONFIG_CACHE"), Some("/home/tilo/.npm".into()));
+        assert_eq!(get("CARGO_TARGET_DIR"), Some("/var/tmp/tilo/target".into()));
+    }
+
+    #[test]
+    fn a_program_works_in_the_workspaces_files_and_writes_its_machines_cache_outside_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = fake_service(dir.path(), fake_vm(dir.path()));
+        let files = dir.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let shared = files.clone();
+        let programs = HostedPrograms::new(
+            HostedTarget {
+                socket,
+                account: "acct-1".into(),
+                size: VmSize::Small,
+                plans: None,
+            },
+            "ws1".into(),
+            "default".into(),
+            files.clone(),
+            Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
+        );
+        let (stdout, out) = Output::buffer();
+        let io = Stdio {
+            stdout,
+            ..Stdio::null()
+        };
+        let asked = files.display().to_string();
+        let ran = programs.run(
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf '%s\\n' \"$HOME\" \"$XDG_CACHE_HOME\" \"$CARGO_HOME\" \
+                 \"$CARGO_TARGET_DIR\"; echo x > ~/f"
+                    .into(),
+            ],
+            &[
+                ("HOME".into(), "/root".into()),
+                ("XDG_CACHE_HOME".into(), files.join(".cache").display().to_string()),
+            ],
+            &files,
+            &io,
+            None,
+        );
+        assert_eq!(ran, Program::Exited(0));
+        let said = String::from_utf8(out.take()).unwrap();
+        assert_eq!(
+            said.lines().collect::<Vec<_>>(),
+            [
+                asked.as_str(),
+                "/home/tilo/.cache",
+                "/home/tilo/.cargo",
+                "/var/tmp/tilo/target",
+            ],
+            "the machine's own paths, over the run's"
+        );
+        assert_eq!(
+            std::fs::read_to_string(files.join("f")).unwrap(),
+            "x\n",
+            "`~` is the workspace's files"
+        );
+        assert!(
+            !files.join(".cache").exists(),
+            "no cache of the machine's landed in the workspace's files"
         );
     }
 }

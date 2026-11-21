@@ -10,8 +10,9 @@ use crate::user::GuestUser;
 /// The X display the guest's Xwayland serves forwarded X11 apps on.
 pub const X_DISPLAY: &str = ":0";
 
-/// Variables the agent owns. A launch cannot override them: they decide which
-/// user the app runs as and where its windows go.
+/// Variables the agent owns. A launch cannot override them in the environment it is given:
+/// they decide which user the app runs as and where its windows go. `HOME` is the guest
+/// user's own unless the launch names a directory the guest has ([`home`]).
 const AGENT_OWNED: &[&str] = &[
     "HOME",
     "USER",
@@ -51,15 +52,30 @@ pub fn waypipe_port(launch: &Launch) -> u32 {
         .unwrap_or(WAYPIPE_PORT)
 }
 
+/// The home a launch's programs work in: the one the launch names, when the guest has that
+/// directory — a hosted workspace's files, which the workspace's shell also calls `~` — and the
+/// guest user's own otherwise. A home the guest does not have would fail every program that
+/// writes under it, so it is never used.
+fn home(launch: &Launch, guest: &GuestView<'_>) -> PathBuf {
+    launch
+        .env
+        .iter()
+        .find(|(name, _)| name == "HOME")
+        .map(|(_, value)| PathBuf::from(value))
+        .filter(|home| (guest.is_dir)(home))
+        .unwrap_or_else(|| guest.user.home.clone())
+}
+
 #[must_use]
 pub fn spec(launch: &Launch, guest: &GuestView<'_>) -> Spec {
     let user = guest.user;
+    let home = home(launch, guest);
     let argv = match launch.display {
         Display::Forwarded => waypipe::server_argv("waypipe", waypipe_port(launch), &launch.argv),
         Display::None => launch.argv.clone(),
     };
     let mut env = vec![
-        ("HOME".to_string(), user.home.display().to_string()),
+        ("HOME".to_string(), home.display().to_string()),
         ("USER".to_string(), user.name.clone()),
         ("LOGNAME".to_string(), user.name.clone()),
         ("SHELL".to_string(), user.shell.clone()),
@@ -191,7 +207,7 @@ mod tests {
             assert_eq!(
                 get(&spec, "HOME"),
                 Some("/home/tilo"),
-                "the agent owns HOME"
+                "a home the guest does not have is the user's own"
             );
             assert_eq!(get(&spec, "LANG"), Some("de_DE.UTF-8"));
             assert_eq!(get(&spec, "DISPLAY"), Some(":0"));
@@ -235,6 +251,23 @@ mod tests {
                     ":0"
                 ]
             );
+        }
+        // phase: a launch that names a directory the guest has works in it: a hosted
+        // workspace's files as `~`, with the run's own variables kept
+        {
+            let view = GuestView {
+                user: &user,
+                x_display: None,
+                session_bus: None,
+                is_dir: &shared,
+            };
+            let mut named = launch(Display::None, "/var/home/you/src");
+            named.env[0] = ("HOME".into(), "/var/home/you".into());
+            named.env.push(("CARGO_HOME".into(), "/tmp/cargo".into()));
+            let spec = spec(&named, &view);
+            assert_eq!(get(&spec, "HOME"), Some("/var/home/you"));
+            assert_eq!(get(&spec, "CARGO_HOME"), Some("/tmp/cargo"));
+            assert_eq!(get(&spec, "USER"), Some("tilo"));
         }
     }
 }
