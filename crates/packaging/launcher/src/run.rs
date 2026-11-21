@@ -2472,9 +2472,13 @@ fn spawn_and_wait(
         cmd.process_group(0);
     }
     if observer.is_some() {
+        // What the app writes reaches whoever started the launcher: the session reads both
+        // streams into its log, labelled with the app, and that is the only account of an app
+        // that fails inside itself. A terminal is never handed to the sandbox, though: one on
+        // the app's streams would let it push input into the shell that started it.
         cmd.stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stdout(app_stream(std::io::IsTerminal::is_terminal(&std::io::stdout())))
+            .stderr(app_stream(std::io::IsTerminal::is_terminal(&std::io::stderr())));
         if let Some((path, _)) = &debug_output {
             tracing::warn!(
                 path = %path.display(),
@@ -2607,6 +2611,15 @@ fn spawn_and_wait(
     };
     drop(system_view);
     Ok(status)
+}
+
+/// What a managed app's stdout or stderr is: the launcher's own stream, unless that is a terminal.
+fn app_stream(terminal: bool) -> std::process::Stdio {
+    if terminal {
+        std::process::Stdio::null()
+    } else {
+        std::process::Stdio::inherit()
+    }
 }
 
 /// Seccomp baseline → tmpfile → fd.
