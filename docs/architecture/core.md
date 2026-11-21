@@ -54,8 +54,8 @@ one resource to everyone.
 - A change is a signed fact. A device writes it for a member, signs it,
   seals it under the keys of the resource's readers and keeps it. Changes
   are only appended. The current state, and every past state, come from them.
-- Every device runs the same engine. Devices differ only in appetite: how
-  much they keep and which work they take. A server is a device that keeps
+- Every device runs the same engine. Devices differ only in how much they
+  keep and which work they take. A server is a device that keeps
   more. A store holds sealed changes and forwards them, but cannot read them.
   A workspace held only by one person's computer is complete.
 - Changes move over one link, device to device. Reaching a device through a
@@ -590,11 +590,11 @@ What survives: **one daemon per device**, the workspace service opened
 through `own_device`. On a desktop the session is that daemon. Elsewhere it
 is one binary that the CLI, a server and tilo.sh all run, with one MCP socket
 locally and `device-mcp` as its remote face. A server differs only in its
-appetite (how much it stores and which work it takes), set per workspace.
+what it keeps and which work it takes, set per workspace.
 The relay is a mode of that daemon. `tilo-api` reads grants from the
 workspace, not from its own file. The agent and bot runner
 (`tilo-server` `workspace_agents` and `workspace_bots`, the only copy) moves
-into the workspace service, so any device whose appetite takes agent work
+into the workspace service, so any device that takes agent work
 runs it. A device's first run needs no server: it creates the person's
 identity and their first workspace, an ordinary workspace whose signed member
 list names them as owner.
@@ -683,6 +683,59 @@ the clients.
 Owner: **actions everywhere** session.
 
 ---
+
+## Words that go
+
+Each of these names a concept the design does not have. The word goes with
+the code that holds the concept, never by a rename alone, and no new use of
+any of them is added.
+
+| Word in the code | What it is today | What the design has instead |
+|---|---|---|
+| governor, governance document, `GovernedWorkspace`, `NativeWorkspaceOwner`, succession | one device that admits a workspace's changes and owns its record | the signed member list every key holder checks |
+| `tilo.host`, `tilo.member` namespaces, host as owner | a server's own records and authority beside the workspace | the workspace's resources; a server is a device |
+| keeper | the person an agent belongs to, named apart from members | the person the agent acts for |
+| roster, `tilo.workspace.agent` | a second list of agents beside members | members; an agent is a member acting for a person |
+| stand-in (host, approver) | a device that signs or answers in a person's place | the person's own devices; an agent acting for them |
+| `PersonalStore`, `(app, personal)`, `tilo-personal-store/1` | records outside every workspace, admitted by the identity alone | records in the person's own workspace |
+| `person_settings`, `person_vault`, `person_model(s)`, `person_telling`, `person_asking`, `person_accounts`, `workspaces/people/<person>/` | per-person stores and their names on a host | the workspace's resources, or the person's own workspace |
+| `AccountStore`, settings `Personal`/`DeviceLocal`/`Shared` scopes, `LiveSettings`, `settings.sock` | accounts and settings outside resources | resources: the workspace's accounts record, the person's and the device's settings as records |
+| per-person cluster | one key cluster per person derived from the root | key groups per set of readers |
+| own workspace, `own_workspaces`, Servers workspace (as a name) | the person's private workspace under several names | one: the person's own workspace |
+| `ProfileWorkspace`, `ProfileGrants`, `Standalone` | a runtime that governs a private profile | the one daemon in an ordinary workspace |
+| `own_service`, `OwnService`, `own_device` wrappers | each host wrapping the engine its own way | the one daemon |
+| held, holder, `HeldWorkspace`, member copy, replica | names for a device having a workspace | a device that holds the workspace (no type of its own) |
+| listing workspace, governed/member/held/own workspace kinds | kinds of workspace by who governs or keeps them | one kind of workspace |
+| home peer, home-peer registry, home server | a separate registry and name for a person's server | a device of the person |
+| `tilo-server-sibling/1`, sibling | a link between one person's devices outside workspaces | the device link of the person's own workspace |
+| `WorkspaceRuntime`, `Membership { devices }` | a device allowlist for a relay | the member list |
+| retained store, lineage, `CURRENT` generations, `tilo-server-store` | a host's second store of changes | the one change store |
+| `Envelope::Delta`, `EnvelopeV2`, co-edit, anti-entropy | a second way to move changes through a host | the one device link |
+| carrier (Direct, Relay, WebTransport) | a choice of path named in callers | the link; how it reaches a device is its own |
+| hosted workspace, `-w`, page-host | a workspace on a server treated as another thing | a workspace; some device holds it |
+| relay runtime | a server mode that forwards without being a device | a device that keeps sealed changes |
+| fleet, `DeviceFleetStore`, `CertifiedFleet` | the person's device list under a third name | the person's devices |
+| ceremony, `tilo-identity-ceremony` | a crate for a record format | the identity store |
+| threshold identity | key generation across devices with no product use | nothing until a product needs it |
+| enrolment, pairing, certification ceremony, handoff | seven ways to add a device | adding a device: a code one of your devices approves |
+| document (as the unit), `workspace_documents`, document host | the storage format named as the thing | a resource |
+| record, item, `ItemId`, item node | second and third words for a resource and its parts | a resource, inside its parent |
+| kind, `KindSet` | the type of a resource under another name | resource type |
+| channel ops, broker (two), publication, `CommittedView`, `committed_surface` | the plumbing between an app and the engine, each with its own names | a call, and a change |
+| surface, `surface.toml` | the published actions under a second name | the workspace's published tree |
+| instance, windowless, showing action, packaged model, native model, `model.wasm` | an app as a running thing, with ways to start it | an app is a package; the system runs its code when called |
+| `DynResource`, `DynAction` | a bridge between two app models | one app model |
+| `ResourceApp`, `ViewCx`, `#[view]` | Rust apps and their second view model | tilolang |
+| outbox, effect receipt | app-side queues of outside effects | effects an action declares and the system carries out |
+| `Answering`, `answers` (MCP) | an MCP answer re-typed for REST | the typed result of a call |
+| legacy, compat readers | readers of formats main no longer writes | nothing: one migration, then the reader goes |
+| `tilo-workspaces`, `(app, workspace, document)` | the old spelling of a workspace on disk and in addresses | the workspace id and an address |
+| invite shelf, invitation receipts | a site-side store of invite links and a receipt log | an invitation, a resource of the workspace |
+| unattended (`commands.unattended`) | a flag on the governance document | a grant |
+| wait-list as a governance verb | a list kept beside members | a resource of the workspace |
+| appetite, key holder, store (as a kind of device) | words from this page for what a device keeps | what a device keeps, and whether it can read |
+| tilo-control row dialect, `legacy_rows`, `param_row` | a second wire for actions | the one call |
+| REST clients in our code (`tilo-api` `client.rs`, SDK HTTP runtimes) | our code calling our REST edge | calls over iroh |
 
 ## Sessions
 
