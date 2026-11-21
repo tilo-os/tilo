@@ -593,12 +593,7 @@ impl PeerPublicationMut<'_> {
                 .cloned()
                 .collect()
         };
-        let epoch = compaction.encryption.map_or(0, |meta| meta.epoch);
-        if replaced
-            .iter()
-            .filter_map(|write| write.encryption)
-            .any(|meta| meta.epoch > epoch)
-        {
+        if sealed_under_a_stale_epoch(&compaction, &replaced) {
             return Err("sealed compaction is sealed under a stale epoch".into());
         }
         holds_every_change(&pieces, &replaced, open)?;
@@ -1753,6 +1748,44 @@ impl StatePeer {
     }
 }
 
+/// Whether `compaction` is sealed under an earlier epoch of the keys one of the `writes` it
+/// folds was sealed under: a member a later epoch left out would read in it what that write kept
+/// from them.
+///
+/// Epochs count within one set of keys, so only writes sealed under the compaction's own keys
+/// are compared with it: the workspace's, or the one document group it names. A document that
+/// moved to a group of its own (its reader set, or writes sealed before reader sets that a key
+/// holder seals again) is compacted under that group, at whatever epoch the group has reached,
+/// over writes the workspace's keys sealed at theirs; which group a compaction may be sealed
+/// under at all is the document's key scope's to say ([`StatePeer::check_document_key_scope`]).
+fn sealed_under_a_stale_epoch<'a>(
+    compaction: &SignedOp,
+    writes: impl IntoIterator<Item = &'a SignedOp>,
+) -> bool {
+    let Some(sealed) = compaction.encryption else {
+        return writes
+            .into_iter()
+            .filter_map(|write| write.encryption)
+            .any(|write| write.epoch > 0);
+    };
+    writes
+        .into_iter()
+        .filter_map(|write| write.encryption)
+        .filter(|write| key_group_of(write) == key_group_of(&sealed))
+        .any(|write| write.epoch > sealed.epoch)
+}
+
+/// The document group `sealed` names, or `None` for the workspace's own keys.
+const fn key_group_of(
+    sealed: &collab_types::EncryptionMetadata,
+) -> Option<collab_types::WorkspaceId> {
+    match sealed.scheme {
+        collab_types::EncryptionScheme::DocumentContentKey { group, .. } => Some(group),
+        collab_types::EncryptionScheme::ContentKey { .. }
+        | collab_types::EncryptionScheme::MlsApplication => None,
+    }
+}
+
 /// Each author's highest write `compaction` folds into its snapshot.
 pub(super) fn covered(compaction: &SignedOp) -> Result<Vec<([u8; 32], u64)>, String> {
     let wrapper = SealedCompaction::parse(compaction).map_err(err)?;
@@ -1808,12 +1841,7 @@ pub(super) fn supersede(
             "sealed compaction is partial: it does not cover exactly this replica's writes".into(),
         );
     }
-    let epoch = compaction.encryption.map_or(0, |meta| meta.epoch);
-    if superseded
-        .iter()
-        .filter_map(|write| write.encryption)
-        .any(|meta| meta.epoch > epoch)
-    {
+    if sealed_under_a_stale_epoch(compaction, superseded.iter().copied()) {
         return Err("sealed compaction is sealed under a stale epoch".into());
     }
     Ok(std::iter::once(compaction.clone())

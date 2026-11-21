@@ -1230,6 +1230,59 @@ tilo_test_env::scenario! {
         refused_with(&mut f.host, &owner, forgery, now, "stale epoch");
     }
 
+    phase a_document_moving_to_its_own_group_is_compacted_under_it_whatever_epoch_the_workspace_reached;
+    {
+        // The workspace's keys have turned over (a member joined), and the document's own group
+        // is new: its epoch is below the one the document's writes were sealed under.
+        let mut f = fixture();
+        let now = f.now;
+        let workspace_keys = f.rotate();
+        let mut author = Author::new(&f.host);
+        let earlier = write(&f.host, &f.other, &workspace_keys, &author.edit("first", SECRET), now);
+        admit(&mut f.host, &f.other, earlier, now);
+        let scope = neighbour_wire::KeyScope::document(channel(), APP, RECORD, None).unwrap();
+        let mut document_group =
+            KeyGroup::create(scope.group(), MemberKey::generate("owner").unwrap()).unwrap();
+        let document_keys = document_group
+            .content_keys()
+            .unwrap()
+            .with_workspace_history(workspace_keys.clone());
+        assert!(document_keys.epoch() < workspace_keys.epoch());
+        let mut replica = f.host.clone();
+
+        let minted = mint(&mut f.host, &document_keys, &f.owner, now)
+            .expect("the document's own group seals its compaction");
+        let compaction = envelope_of(&minted);
+        assert_eq!(held(&f.host), vec![compaction.clone()], "history superseded");
+        let metadata = compaction.encryption.unwrap();
+        assert!(matches!(
+            metadata.scheme,
+            collab_types::EncryptionScheme::DocumentContentKey { group, .. } if group == scope.group()
+        ));
+        let snapshot = open(&document_keys, &compaction).unwrap();
+        let DocumentMutation::Snapshot(bytes) = DocumentMutation::decode(&snapshot).unwrap() else {
+            panic!("a compaction opens to a snapshot");
+        };
+        let merged = AutoCommit::load(&bytes).unwrap();
+        assert_eq!(merged.get(ROOT, "first").unwrap().unwrap().0.as_str(), Some(SECRET));
+        // A replica without the keys takes it from its author as the history it holds.
+        admit(&mut replica, &f.owner, minted, now);
+        assert_eq!(held(&replica), held(&f.host), "another replica supersedes");
+
+        // Within the document's own group an earlier epoch is still stale.
+        let stale = document_group.content_keys().unwrap();
+        document_group
+            .add_member(MemberKey::generate("member").unwrap().fresh_key_package().unwrap())
+            .unwrap();
+        let current = document_group.content_keys().unwrap();
+        assert!(current.epoch() > stale.epoch());
+        let later = write(&f.host, &f.other, &current, &author.edit("second", "2"), now);
+        admit(&mut f.host, &f.other, later, now);
+        let forgery = forged(&f.host, &f.owner, &wrapper(&f.host, &stale, &held(&f.host)), now);
+        let owner = f.owner.clone();
+        refused_with(&mut f.host, &owner, forgery, now, "stale epoch");
+    }
+
     phase a_compaction_founds_a_route_a_replica_holds_none_of;
     {
         let mut f = fixture();
