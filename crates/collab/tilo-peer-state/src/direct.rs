@@ -1351,7 +1351,7 @@ impl DirectSync {
             }
         }
         let mut opens_an_ask = true;
-        // The state an ask opens with that earlier answers had no room for.
+        // The state an ask opens with that earlier answers had not allocated.
         let mut state = std::collections::VecDeque::new();
         let own = self.device();
         while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
@@ -1825,7 +1825,7 @@ impl DirectSync {
         history: bool,
     ) -> (bool, Option<Kept>) {
         let author = store::author_of(&message).unwrap_or(claimed);
-        if channel_governance(&message) {
+        if carried_governance(&message) {
             if self.fans_out() && !retained {
                 self.answer_request(&message);
             }
@@ -1838,8 +1838,8 @@ impl DirectSync {
 
     /// Admit `frames`, history the other device holds, each with its author,
     /// in order: [`Self::admit`] for each of them, except that this device's
-    /// owner takes in each run of them between two channels' governance
-    /// together and commits the workspace once for the run, not once for each
+    /// owner takes in each batch of them between two carried governance frames
+    /// together and commits the workspace once for the batch, not once for each
     /// frame. A device's first sync is its workspace's whole history, and a
     /// commit per frame rewrote what the device held for every one of them.
     ///
@@ -1854,28 +1854,28 @@ impl DirectSync {
             return lacks_history;
         };
         let mut lacks_history = false;
-        let mut run = Vec::with_capacity(frames.len());
+        let mut batch = Vec::with_capacity(frames.len());
         for (claimed, message) in frames {
             let author = store::author_of(&message).unwrap_or(claimed);
-            if channel_governance(&message) {
-                lacks_history |= self.admit_run(admission, std::mem::take(&mut run)).await;
+            if carried_governance(&message) {
+                lacks_history |= self.admit_batch(admission, std::mem::take(&mut batch)).await;
                 self.carry_governance(author, message, true);
                 continue;
             }
-            run.push((author, message));
+            batch.push((author, message));
         }
-        lacks_history | self.admit_run(admission, run).await
+        lacks_history | self.admit_batch(admission, batch).await
     }
 
-    /// Take `run`, frames of retained history with their authors, into this
+    /// Take `batch`, frames of retained history with their authors, into this
     /// device's owner in one commit, keep its verdicts on them, and settle each
     /// as [`Self::admit`] does. Whether any of them waits for history.
-    async fn admit_run(&self, admission: &Admission, run: Vec<([u8; 32], NeighbourMsg)>) -> bool {
-        if run.is_empty() {
+    async fn admit_batch(&self, admission: &Admission, batch: Vec<([u8; 32], NeighbourMsg)>) -> bool {
+        if batch.is_empty() {
             return false;
         }
         let now = tilo_clock::wall();
-        let inputs = run
+        let inputs = batch
             .iter()
             .map(|(author, message)| {
                 (
@@ -1891,12 +1891,12 @@ impl DirectSync {
             Ok(reports) => reports,
             // The commit failed: so did every frame of it, as one frame's
             // failed commit fails that frame.
-            Err(error) => run
+            Err(error) => batch
                 .iter()
                 .map(|_| Err(crate::AdmissionError::from(error.clone())))
                 .collect(),
         };
-        let verdicts: Vec<_> = run
+        let verdicts: Vec<_> = batch
             .iter()
             .map(|(_, message)| message)
             .zip(&reports)
@@ -1912,7 +1912,7 @@ impl DirectSync {
         }
         drop(verdicts);
         let mut lacks_history = false;
-        for ((author, message), report) in run.into_iter().zip(reports) {
+        for ((author, message), report) in batch.into_iter().zip(reports) {
             lacks_history |= self.settle(heard_of(author, message, report, true)).0;
         }
         lacks_history
@@ -2415,7 +2415,7 @@ const NOT_WORKSPACE_STATE: &str =
 
 /// Whether `message` is a channel's governance: a frame of its group, or a
 /// device asking to join it.
-fn channel_governance(message: &NeighbourMsg) -> bool {
+fn carried_governance(message: &NeighbourMsg) -> bool {
     message.governance_workspace().is_some()
 }
 

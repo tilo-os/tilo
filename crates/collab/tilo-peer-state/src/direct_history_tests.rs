@@ -22,7 +22,7 @@ const PART_TEXT: usize = 1536 * 1024;
 /// The changes each part takes after it started: an item each.
 const CHANGES_EACH: usize = 6;
 
-/// A localhost endpoint with no relay whose identity is the device `key`.
+/// A localhost endpoint of its own whose identity is the device `key`.
 async fn endpoint(key: &SigningKey) -> Endpoint {
     Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
