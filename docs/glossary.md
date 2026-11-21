@@ -49,15 +49,19 @@ the graph may make it.
 - **Workspace**: the unit of collaboration. Has members, resources and one set of keys. Identified
   by `WorkspaceId` (a UUID) only.
 - **Resource**: the unit of data. An app declares resource types; a chat message is a resource.
-  Per-person data (drafts, recents, view state) is resources in the workspace that belong to a
-  person.
+  Everything a workspace holds is its resources, one set of them for all its members: mail and its
+  accounts, the calendar, the vault, models, connections, agents and skills, drafts and histories.
+  Its owners restrict any of it with grants.
 - **Hybrid logical clock**: the time a device stamps on what it writes where the order matters: its
   wall clock, moved past every time it had seen, so what it writes reads after what it had already
   read however far the devices' clocks are apart. The stamp is made where the action is written and
   every device applies the same one.
 - **Target**: the resource an action is offered on: its first parameter.
-- **Personal resources**: resources that belong to no workspace: a person's devices and keys,
-  logins, settings that apply everywhere, browsing history, signature.
+- **Personal resources**: what belongs to a person's identity rather than to a workspace: their
+  identity root, their devices and device keys, their appearance and other settings that are
+  theirs everywhere, and each device's settings. Nothing else. Logins are vault items, and history
+  and mail are the workspace's. Someone who wants a private mailbox or vault keeps it in a workspace
+  of their own.
 - **Live session**: one device's sealed `moq-lite` session in one workspace: the presence, call
   audio, pictures, shared windows and pages it publishes and hears. The device serving the workspace
   copies them to the others (its live origin).

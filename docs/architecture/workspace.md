@@ -1157,6 +1157,14 @@ the model but instead of it:
   identity decides, and no governor or workspace takes part. Any of those
   devices creates the group and admits the others
   (`key_group::GroupPeer`), as a workspace's key holders do.
+- **Per-person stores on a host.** A host keeps a vault, mail and calendar
+  accounts, model keys, connections and skills for each person under
+  `workspaces/people/<person>/`, the same in every workspace they are in and
+  reached by them alone. These belong to the workspace, decided by its grants.
+- **A host as owner.** A workspace a host makes for someone names the host as
+  its owner, and the person it is for gets a second grant beside it. The
+  people whose workspace it is own it, and the host holds the grants serving
+  it needs.
 - **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
   Shared scopes, the settings registry and `settings.json`. Settings are
   resources.
