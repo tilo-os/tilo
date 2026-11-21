@@ -132,6 +132,16 @@ which is most of what happens in a workspace. It runs on the person's
 devices, like everything else, and does whatever it or its person starts it
 on.
 
+Asking an agent is a resource of its own type: who asked, what, and on which
+resource. A mention in a chat message, a note or a task, or an ask from the
+canvas creates one, and the agent's reply is a resource linked to it. The
+agent engine runs inside each device's one daemon and reads asks; it never
+reads an app's own fields. Which eligible device takes a turn is decided in
+one function, `tilo_workspace_service::work::takes_turn`: an eligible device
+claims the ask with an ordinary change, the earliest claim wins, and a claim
+that writes nothing for a minute may be taken over. Everything a turn writes
+is a member write for the agent, signed by the device that runs it.
+
 An agent sandbox on tilo.sh is one workspace. Whether that workspace also
 has a machine for terminal commands, Browser tabs, or Linux and Windows apps
 is what the customer pays for.
