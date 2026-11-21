@@ -38,7 +38,7 @@ use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
 };
 use commits::{RecordCreation, ServiceCommits};
-use service::{GovernanceInbox, ServiceWorkspaces};
+use service::ServiceWorkspaces;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -83,7 +83,7 @@ pub struct Standalone {
     policy_origin: tilo_workspace_service::apps::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
     workspaces: Arc<ServiceWorkspaces>,
-    _workspace_keys: workspace_keys::KeyService,
+    _workspace_keys: tilo_workspace_service::apps::own_device::KeyService,
     _identity: IdentityBrokerHandle,
     workspace: String,
     actor: String,
@@ -221,7 +221,7 @@ impl Standalone {
         let identity_broker = identity_service(
             identity_socket.clone(),
             Arc::clone(&authority) as Arc<dyn WorkspaceMembership>,
-            Arc::new(group_keys.keys.clone()),
+            Arc::new(group_keys.keys()),
             &apps,
             dev,
         )?;
@@ -236,7 +236,7 @@ impl Standalone {
                 apps: &apps,
                 media: &media,
                 workspaces: &workspaces,
-                keys: &group_keys.keys,
+                keys: &group_keys.keys(),
                 creation: Arc::clone(&creation),
                 device,
                 personal: personal.sync.clone(),
@@ -1348,7 +1348,7 @@ impl Standalone {
 /// channel keys for the workspaces it holds.
 struct OpenedWorkspaces {
     workspaces: Arc<ServiceWorkspaces>,
-    keys: workspace_keys::KeyService,
+    keys: tilo_workspace_service::apps::own_device::KeyService,
     key_sessions: Option<Arc<crate::key_sessions::KeySessions>>,
 }
 
@@ -1390,8 +1390,7 @@ fn open_workspaces(profile: &Path, opened: OpenWorkspaces<'_>) -> io::Result<Ope
             tilo_identity::provisioning::collaboration_identity_paths(),
         )),
     );
-    let keys = tilo_workspace_service::apps::workspace_keys::KeyProvider::default();
-    let inbox = Arc::new(GovernanceInbox::default());
+    let keys = workspace_keys::open(profile, workspace_id, storage, key, Arc::clone(&broker.0))?;
     let apps = key_sessions.as_ref().map(|sessions| {
         Arc::clone(sessions) as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
     });
@@ -1404,7 +1403,7 @@ fn open_workspaces(profile: &Path, opened: OpenWorkspaces<'_>) -> io::Result<Ope
                 signer: &identity.signer,
             },
             endpoint.clone(),
-            workspace_keys::device_key_groups(keys.clone(), Arc::clone(&inbox)),
+            keys.groups(),
             governs,
             |config| tilo_workspace_service::service::ServiceConfig { apps, ..config },
         ));
@@ -1414,14 +1413,7 @@ fn open_workspaces(profile: &Path, opened: OpenWorkspaces<'_>) -> io::Result<Ope
     } else {
         std::collections::BTreeSet::from([workspace_id])
     };
-    let workspaces = ServiceWorkspaces::new(
-        Arc::clone(&service),
-        identity,
-        endpoint,
-        refused,
-        keys,
-        inbox,
-    );
+    let workspaces = ServiceWorkspaces::new(Arc::clone(&service), identity, endpoint, refused);
     if governs {
         tilo_rt::app()
             .handle()
@@ -1429,14 +1421,10 @@ fn open_workspaces(profile: &Path, opened: OpenWorkspaces<'_>) -> io::Result<Ope
             .map_err(io::Error::other)?;
         admit_own_device(&service, &workspace_id_string, &cert)?;
     }
-    let keys = workspace_keys::open(
-        profile,
-        workspace_id,
-        storage,
-        key,
-        Arc::clone(&workspaces),
-        Arc::clone(&broker.0),
-    )?;
+    {
+        let _entered = tilo_rt::app().handle().enter();
+        keys.attach(service.workspaces());
+    }
     Ok(OpenedWorkspaces {
         workspaces,
         keys,
@@ -1469,8 +1457,6 @@ pub(in crate::standalone) fn open_member_service(
     identity: tilo_identity::identity_store::DeviceIdentity,
     endpoint: iroh::Endpoint,
 ) -> io::Result<Arc<ServiceWorkspaces>> {
-    let keys = tilo_workspace_service::apps::workspace_keys::KeyProvider::default();
-    let inbox = Arc::new(GovernanceInbox::default());
     let service = {
         // A member opens on whichever thread its embedder calls it from,
         // a runtime's own included.
@@ -1480,7 +1466,11 @@ pub(in crate::standalone) fn open_member_service(
             Arc::clone(&identity.signer),
             endpoint.clone(),
         );
-        let groups = workspace_keys::device_key_groups(keys.clone(), Arc::clone(&inbox));
+        let groups = tilo_workspace_service::apps::own_device::key_groups(
+            tilo_workspace_service::apps::workspace_keys::KeyProvider::default(),
+            None,
+            None,
+        );
         service::block_on_owned(async move {
             tilo_workspace_service::apps::own_device::open(
                 store,
@@ -1503,8 +1493,6 @@ pub(in crate::standalone) fn open_member_service(
         identity,
         endpoint,
         std::collections::BTreeSet::new(),
-        keys,
-        inbox,
     );
     Ok(workspaces)
 }

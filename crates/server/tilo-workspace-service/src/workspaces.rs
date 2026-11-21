@@ -155,6 +155,14 @@ mod resources;
 mod revocations;
 pub use own::OwnWorkspaceOffer;
 pub(crate) mod sealed_documents;
+/// How a workspace service holds a workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// The service governs it: it settles the workspace's changes itself.
+    Governs,
+    /// A member copy of a workspace another device serves.
+    MemberCopy,
+}
 pub use crate::documents::device_keys::{
     DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeySink,
 };
@@ -1194,6 +1202,30 @@ impl Workspaces {
     /// The relays this device holds back until something needs it reachable.
     pub(super) fn reachability(&self) -> &tilo_endpoint_reachability::Reachability {
         &self.inner.host.reachability
+    }
+
+    /// The device key this service answers as: what its own hints name, and what founds the
+    /// workspaces it creates.
+    #[must_use]
+    pub fn host_device(&self) -> [u8; 32] {
+        self.inner.host.cert.device_public_key
+    }
+
+    /// Read `workspace`'s replica as it stands now, without waiting for its lock: how it is held
+    /// here, and what `read` makes of it. `None` for a workspace not held here. What reads on a
+    /// thread of its own reads here, as the device's key service reads who takes part in a group.
+    pub fn read_now<R>(
+        &self,
+        workspace: &str,
+        read: impl FnOnce(&StatePeer) -> R,
+    ) -> Option<(Held, R)> {
+        let reading = self.inner.readings.held(workspace)?;
+        let held = if reading.member {
+            Held::MemberCopy
+        } else {
+            Held::Governs
+        };
+        Some((held, reading.replica.read(read)))
     }
 
     /// The channel keys of the device this host runs on, when its embedder

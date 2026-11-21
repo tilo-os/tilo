@@ -21,9 +21,6 @@ use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ReadFuture, Workspaces as PeerWorkspaces};
 use tilo_workspace_service::apps::document_content::RouteContent;
-use tilo_workspace_service::apps::workspace_keys::{
-    GovernancePark, InboundGovernance, KeyProvider,
-};
 use tilo_workspace_service::service::WorkspaceService;
 use tilo_workspace_service::workspaces::{SessionAdmission, Workspaces};
 
@@ -36,12 +33,6 @@ pub(super) struct ServiceWorkspaces {
     /// Workspaces this profile must not touch, whose writes are refused here:
     /// those the desktop session governs.
     refused: BTreeSet<WorkspaceId>,
-    /// This device's channel keys, once the channel service runs: the only
-    /// renewer of its sealed writes that expire held.
-    keys: KeyProvider,
-    /// Channel governance the member copies received, for the channel
-    /// service, and what wakes its pump.
-    governance: Arc<GovernanceInbox>,
     /// The record content service of these workspaces, once it is made.
     content: OnceLock<Arc<RouteContent>>,
     /// What the service hands the content its members answer this device with,
@@ -55,16 +46,12 @@ impl ServiceWorkspaces {
         identity: DeviceIdentity,
         endpoint: iroh::Endpoint,
         refused: BTreeSet<WorkspaceId>,
-        keys: KeyProvider,
-        governance: Arc<GovernanceInbox>,
     ) -> Arc<Self> {
         Arc::new(Self {
             service,
             identity,
             endpoint,
             refused,
-            keys,
-            governance,
             content: OnceLock::new(),
             keepers: Mutex::new(Vec::new()),
         })
@@ -232,17 +219,6 @@ impl ServiceWorkspaces {
         Ok(workspace.to_string())
     }
 
-    /// The slot the channel service fills with this device's channel keys.
-    pub(super) fn group_keys(&self) -> KeyProvider {
-        self.keys.clone()
-    }
-
-    /// What the member copies poke when governance arrives for the channel
-    /// service, whose pump otherwise sleeps while no channel is live.
-    pub(super) fn governance_wake(&self) -> Arc<GovernancePark> {
-        self.governance.park()
-    }
-
     /// Keep `commit`, this device's own membership change (a lease it claims),
     /// in the member copy `workspace` and send it to the device serving it.
     /// Linux only: the VM leases it claims are the hosted-VM service's.
@@ -367,58 +343,6 @@ impl ServiceWorkspaces {
         if let Ok(mut keepers) = self.keepers.lock() {
             keepers.push(keeper);
         }
-    }
-}
-
-/// Governance goes wherever the workspace it names is held: to the device
-/// serving a member copy, and in from that device as it arrives.
-impl tilo_workspace_service::apps::workspace_keys::GovernanceTransport for ServiceWorkspaces {
-    fn publish(&self, message: neighbour_wire::NeighbourMsg) -> bool {
-        let Some(workspace) = message.governance_workspace().and_then(WorkspaceId::parse) else {
-            return false;
-        };
-        self.copies().send_member(workspace, message)
-    }
-
-    fn take_inbound(&self) -> Vec<InboundGovernance> {
-        self.governance.drain()
-    }
-}
-
-/// Channel governance the member copies received, for the channel service,
-/// and the park its pump sleeps in until one arrives.
-#[derive(Default)]
-pub(super) struct GovernanceInbox {
-    arrived: Mutex<Vec<InboundGovernance>>,
-    park: Arc<GovernancePark>,
-}
-
-impl GovernanceInbox {
-    fn park(&self) -> Arc<GovernancePark> {
-        Arc::clone(&self.park)
-    }
-
-    fn drain(&self) -> Vec<InboundGovernance> {
-        self.arrived
-            .lock()
-            .map(|mut arrived| std::mem::take(&mut *arrived))
-            .unwrap_or_default()
-    }
-
-    /// Take `messages`, the governance the member copies heard, and wake the
-    /// channel service's pump.
-    pub(super) fn take_governance(&self, messages: Vec<neighbour_wire::NeighbourMsg>) {
-        let mut arrived = messages
-            .into_iter()
-            .filter_map(InboundGovernance::from_message)
-            .peekable();
-        if arrived.peek().is_none() {
-            return;
-        }
-        if let Ok(mut governance) = self.arrived.lock() {
-            governance.extend(arrived);
-        }
-        self.park.poke();
     }
 }
 
@@ -556,8 +480,6 @@ impl ServiceWorkspaces {
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         let identity = DeviceIdentity::kept(cert.clone(), key.clone());
         let endpoint = test_endpoint(&key).await;
-        let keys = KeyProvider::default();
-        let inbox = Arc::new(GovernanceInbox::default());
         let service = tilo_workspace_service::apps::own_device::open(
             directory.path().join("workspace-host"),
             tilo_workspace_service::apps::own_device::Device {
@@ -565,7 +487,11 @@ impl ServiceWorkspaces {
                 signer: &identity.signer,
             },
             endpoint.clone(),
-            crate::standalone::workspace_keys::device_key_groups(keys.clone(), Arc::clone(&inbox)),
+            tilo_workspace_service::apps::own_device::key_groups(
+                tilo_workspace_service::apps::workspace_keys::KeyProvider::default(),
+                None,
+                None,
+            ),
             true,
             // The fixture's endpoint names no address anywhere: nothing will,
             // so opening does not wait for one.
@@ -583,14 +509,7 @@ impl ServiceWorkspaces {
                 signer: Arc::clone(&identity.signer),
             },
         ));
-        let workspaces = Self::new(
-            Arc::clone(&service),
-            identity,
-            endpoint,
-            BTreeSet::new(),
-            keys,
-            inbox,
-        );
+        let workspaces = Self::new(Arc::clone(&service), identity, endpoint, BTreeSet::new());
         service
             .hold_own_workspace(&workspace.to_string(), "Home", &cert)
             .await

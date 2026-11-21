@@ -1,20 +1,15 @@
 //! This device's side of every encrypted group the profile takes part in.
 //!
-//! In the profile's own workspace, which the workspace host this runtime runs hosts,
-//! the host takes part in the groups as this device's one peer and asks
-//! this service for their keys ([`device_key_groups`]), so its apps get
-//! their route keys without any network. In a workspace
-//! hosted elsewhere it is one key holder among the workspace's member devices:
-//! it asks them for access over the workspace's server session, follows and
-//! checks their commits against the workspace's governance, and commits itself
-//! when the group falls behind the membership. While nobody who can admit
-//! it is online, groups this device already reads keep their keys and a
-//! new request waits, sent again until a key holder answers.
-use super::service::ServiceWorkspaces;
-use collab_types::Ed25519PublicKey;
+//! The device's key service runs beside its own workspace service
+//! ([`KeyService`]): in the profile's own workspace, which that service governs, it is the
+//! group's founder and the service asks it for the keys the apps' records seal with, so they get
+//! their route keys without any network. In a workspace another device serves it is one key
+//! holder among the workspace's devices: what it asks for and commits travels on the member
+//! copy's link to the serving device, and what the groups' other devices send arrives on it. While
+//! nobody who can admit it is online, groups this device already reads keep their keys and a new
+//! request waits, sent again until a key holder answers.
 use key_group::VaultKey;
 use std::{
-    collections::BTreeSet,
     io,
     path::Path,
     sync::{Arc, Mutex},
@@ -23,161 +18,30 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_identity::provisioning::IdentityStorage;
 use tilo_workspace_service::apps::{
     collab_core::{BrokerChannels, BrokerSealChecks},
-    workspace_keys::{
-        GovernancePump, KeyDir, KeyDirectory, KeyProvider, KeysConfig, SharedKeys, WorkspaceKeys,
-    },
+    own_device::KeyService,
 };
 
 /// Sealed group state, and where a Linux profile keeps the key that seals
 /// it (owner-only).
 const GROUP_STATE: &str = "groups";
 const GROUP_STATE_KEY: &str = "group-state.key";
-/// The running key service; stops when dropped.
-pub(super) struct KeyService {
-    pub(super) keys: KeyProvider,
-    _pump: GovernancePump,
-}
 
 /// Open this device's group state in `profile`, whose workspace `profile_workspace`
-/// names the state's key, and run its governance over the joined workspaces'
-/// sessions.
+/// names the state's key, checking what the apps' channels seal against `broker`.
 pub(super) fn open(
     profile: &Path,
     profile_workspace: WorkspaceId,
     storage: IdentityStorage,
     device_key: ed25519_dalek::SigningKey,
-    workspaces: Arc<ServiceWorkspaces>,
     broker: Arc<Mutex<BrokerChannels>>,
 ) -> io::Result<KeyService> {
-    let service = WorkspaceKeys::open(
-        KeysConfig {
-            state: Arc::new(KeyDir::new(profile.join(GROUP_STATE))),
-            vault: vault_key(profile, profile_workspace, storage)?,
-            signer: Arc::new(device_key),
-            role: tilo_workspace_service::apps::workspace_keys::KeyRole::Committer,
-        },
-        Box::new(Directory {
-            workspaces: Arc::clone(&workspaces),
-        }),
+    KeyService::open(
+        "tilo-runtime-groups",
+        &profile.join(GROUP_STATE),
+        vault_key(profile, profile_workspace, storage)?,
+        Arc::new(device_key),
         Arc::new(BrokerSealChecks(broker)),
-    )?;
-    let park = workspaces.governance_wake();
-    let poke = Arc::clone(&park);
-    let access = SharedKeys::with_wake(service, Arc::new(move || poke.poke()));
-    let keys = workspaces.group_keys();
-    keys.set(Some(access.clone()));
-    let pump = GovernancePump::spawn("tilo-runtime-groups", park, Some(access), workspaces, || {})?;
-    Ok(KeyService { keys, _pump: pump })
-}
-
-struct Directory {
-    workspaces: Arc<ServiceWorkspaces>,
-}
-
-impl KeyDirectory for Directory {
-    fn requires_document_keys(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        document: &str,
-    ) -> Option<bool> {
-        self.workspaces
-            .peer(workspace)?
-            .requires_document_keys(app, document, tilo_clock::wall())
-            .ok()
-    }
-
-    fn document_devices(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        document: &str,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let peer = self.workspaces.peer(workspace)?;
-        let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))?;
-        Some(
-            peer.document_key_holders(app, document, at)
-                .ok()?
-                .into_iter()
-                .map(Ed25519PublicKey::from_bytes)
-                .collect(),
-        )
-    }
-
-    fn allowed_devices(
-        &self,
-        workspace: WorkspaceId,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let peer = self.workspaces.peer(workspace)?;
-        let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let holders = peer.governance().key_holders(at).ok()?;
-        Some(
-            holders
-                .into_iter()
-                .map(Ed25519PublicKey::from_bytes)
-                .collect(),
-        )
-    }
-
-    fn reader_devices(
-        &self,
-        workspace: WorkspaceId,
-        people: &BTreeSet<[u8; 32]>,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let peer = self.workspaces.peer(workspace)?;
-        let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let holders = peer.governance().reader_key_holders(people, at).ok()?;
-        Some(
-            holders
-                .into_iter()
-                .map(Ed25519PublicKey::from_bytes)
-                .collect(),
-        )
-    }
-
-    fn founds(&self, workspace: WorkspaceId) -> bool {
-        !self.workspaces.holds(workspace)
-    }
-}
-
-/// This device's key service as the workspace host this runtime runs asks
-/// for it: the keys it opens and seals records with, and the sink the group
-/// governance its members' sessions carry is handed to, since the service runs
-/// here, on this same device. The host holds no group keys of its own, so the
-/// host and the device never found two groups under one leaf.
-pub(super) fn device_key_groups(
-    keys: KeyProvider,
-    inbox: Arc<super::service::GovernanceInbox>,
-) -> tilo_workspace_service::workspaces::DeviceKeyGroups {
-    tilo_workspace_service::apps::own_device::key_groups(
-        keys,
-        None,
-        Some(Arc::new(DeviceKeySink { inbox })),
     )
-}
-
-/// Where the workspace host this runtime runs hands the group governance its
-/// members send: this device's key service, which runs in this process.
-struct DeviceKeySink {
-    inbox: Arc<super::service::GovernanceInbox>,
-}
-
-impl tilo_workspace_service::workspaces::KeySink for DeviceKeySink {
-    fn take(&self, messages: Vec<neighbour_wire::NeighbourMsg>) {
-        self.inbox.take_governance(messages);
-    }
-
-    /// Nothing to note: this device's key service reads the workspace's
-    /// governance itself, through the session that holds it.
-    fn settled(&self, _workspace: &str, _state: tilo_peer_state::StatePeer) {}
 }
 
 /// The key sealing `workspace`'s group state in `profile`, created once: in the

@@ -9,6 +9,10 @@
 //! send for the groups to a sink of the embedder's, so the service and the device never found
 //! two groups under one leaf.
 
+mod key_service;
+
+pub use key_service::KeyService;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,9 +22,7 @@ use tilo_user_identity::DeviceCert;
 use tilo_workspace_keys::KeyProvider;
 
 use crate::service::{ServiceConfig, ServiceError, ServiceIdentity, WorkspaceService};
-use crate::workspaces::{
-    DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeySink, MemberDevice,
-};
+use crate::workspaces::{DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeySink, MemberDevice};
 
 /// How long the service waits for the device's key service to open a group: far more than the
 /// wait before the device founds the group itself

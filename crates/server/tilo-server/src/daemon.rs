@@ -207,7 +207,7 @@ pub struct Server {
     /// This device's part in the channels of the workspaces it governs:
     /// absent when its certificate does not let it own workspaces, and so it
     /// holds no channel keys.
-    _workspace_keys: Option<Arc<crate::workspace_keys::KeyService>>,
+    _workspace_keys: Option<Arc<tilo_workspace_service::apps::own_device::KeyService>>,
     /// What puts its workspaces' questions about running commands unattended
     /// to people: the server's confirmations, held here so that its workspaces
     /// hold them only weakly and nothing of the server outlives it.
@@ -619,10 +619,7 @@ impl Server {
         // one key holder beside their members.
         let workspace_keys = governs_workspaces
             .then(|| {
-                crate::workspace_keys::KeyService::open(
-                    &cfg.state_root,
-                    identity.device_signing_key.clone(),
-                )
+                crate::workspace_keys::open(&cfg.state_root, identity.device_signing_key.clone())
             })
             .transpose()?
             .map(Arc::new);
@@ -677,7 +674,7 @@ impl Server {
             governs_workspaces,
             workspace_keys
                 .as_ref()
-                .map(|workspace_keys| workspace_keys.device()),
+                .map(|workspace_keys| workspace_keys.groups()),
             |_workspaces, rest| rest,
         )
         .await?;
