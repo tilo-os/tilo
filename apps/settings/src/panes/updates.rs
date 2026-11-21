@@ -1373,10 +1373,15 @@ impl UpdatesModel {
     }
 
     /// What the computer runs: the booted deployment, else the name the system gives itself.
+    /// What runs: the staged update once the live update applied it in full, else what started.
     fn current_version(&self) -> String {
         self.update()
-            .and_then(|update| update.booted.as_ref())
-            .and_then(deployment_shown)
+            .and_then(|update| {
+                let applied = update.staged.as_ref().filter(|_| update.applied);
+                applied
+                    .and_then(deployment_shown)
+                    .or_else(|| update.booted.as_ref().and_then(deployment_shown))
+            })
             .or_else(|| self.os_release.clone())
             .unwrap_or_else(|| t("upd-not-reported"))
     }

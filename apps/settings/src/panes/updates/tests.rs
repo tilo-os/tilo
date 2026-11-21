@@ -730,10 +730,17 @@ tilo_test_env::scenario! {
             restart_needed: false,
             ..staged()
         });
+        let built = |version: &str| {
+            t_args(
+                "upd-image-built",
+                &[("image", version.into()), ("date", "2026-06-02".into())],
+            )
+        };
+        // The update runs now, though the machine started the version before it.
         shows(
             &frame,
-            &[t("upd-up-to-date"), t("upd-done"), t("upd-check")],
-            &[t("upd-restart-update"), t("upd-finish-now")],
+            &[t("upd-up-to-date"), t("upd-done"), t("upd-check"), built("Tilo 2026.07")],
+            &[t("upd-restart-update"), t("upd-finish-now"), built("Tilo 2026.06")],
         );
     }
 
