@@ -35,7 +35,52 @@
 # (os/tests/serial_runner.sh).
 #
 # The record of every boot lands in /target/host-assurance.
+#
+#   host-assurance.sh                      the whole proof (host-assurance-x86_64)
+#   host-assurance.sh base OUT             everything before the stages, and the first boot,
+#                                          kept in OUT (publish-host-assurance-base)
+#   host-assurance.sh fetch OUT            the base tools/ci/host-assurance-base.env names,
+#                                          unpacked (host-assurance-base-fetch)
+#   host-assurance.sh stage BASE STAGE...  those stages, on a copy of the fetched BASE
+#                                          (host-assurance-stage-*)
+#
+# The stages, in the order the whole proof runs them: serves, refused, rollback, registry,
+# seal, floor (floor runs on a sealed disk, so after seal). The base is the expensive part:
+# the signed and sealed images, the install onto LUKS2, the update disk and the firmware's
+# keys, and a first boot that serves. A stage boots an overlay of the base's disk with a copy
+# of its TPM and firmware variables, so a fix to this script or to a stage's own checks is
+# proved again in one boot of minutes, not the hours the images take. A change to a program
+# on the image needs a new base: the image is sealed, and nothing merges over it at boot.
+#
+# OUT/timings.tsv records each step's seconds; the log ends with them as a table.
 set -euo pipefail
+mode=${1:-full}
+case $mode in
+  full) ;;
+  base | fetch) base_out=${2:?usage: host-assurance.sh $mode OUT} ;;
+  stage)
+    base_in=${2:?usage: host-assurance.sh stage BASE STAGE...}
+    shift 2
+    stages=("$@")
+    (( ${#stages[@]} > 0 )) || { echo 'host-assurance: name the stages to run' >&2; exit 2; }
+    ;;
+  *) echo "host-assurance: unknown mode $mode" >&2; exit 2 ;;
+esac
+if [[ $mode == fetch ]]; then
+  # Outside the stages' VM, whose user-mode network is slow; t keeps it under the base file's
+  # key, so the stages on one base fetch it once.
+  env_file=tools/ci/host-assurance-base.env
+  [[ -s $env_file ]] || { echo "host-assurance: no base: dispatch publish-host-assurance-base on main (t dispatch --repo tilo --ref main publish-host-assurance-base --publish) and commit the COMMIT= and IMAGE= lines its log ends with as $env_file" >&2; exit 1; }
+  base_commit=$(sed -n 's/^COMMIT=//p' "$env_file") base_image=$(sed -n 's/^IMAGE=//p' "$env_file")
+  [[ $base_commit =~ ^[0-9a-f]{40}$ && $base_image =~ ^registry\.tilo\.so/[a-z0-9/_-]+@sha256:[0-9a-f]{64}$ ]] \
+    || { echo "host-assurance: $env_file names no commit and image by digest" >&2; exit 1; }
+  rm -rf "$base_out" && mkdir -p "$base_out"
+  python3 tools/ci/publish/server-plan-base.py fetch "$base_image" "$base_out/base" > "$base_out/base-config.json"
+  [[ $(jq -r .commit "$base_out/base-config.json") == "$base_commit" ]] \
+    || { echo "host-assurance: the base image was built from $(jq -r .commit "$base_out/base-config.json"), not $base_commit" >&2; exit 1; }
+  du -sh --apparent-size "$base_out/base"
+  exit 0
+fi
 . tools/ci/publish/lib.sh
 # The scratch registry the update below is served from.
 # shellcheck source=os/scratch-registry.env
@@ -72,6 +117,18 @@ report_exit() {
   [ "$code" = 0 ] || printf 'assurance check: exited %s\n' "$code" >/dev/console 2>/dev/null || true
 }
 trap report_exit EXIT
+step_name="" step_started=$SECONDS
+step() {
+  [[ -z $step_name ]] || printf '%s\t%s\n' "$step_name" "$((SECONDS - step_started))" >> "$out/timings.tsv"
+  step_name=$1 step_started=$SECONDS
+}
+table() {
+  step ""
+  [[ -s $out/timings.tsv ]] || return 0
+  { printf '\n%-28s %8s\n' step seconds
+    awk -F'\t' '{ printf "%-28s %8s\n", $1, $2; total += $2 } END { printf "%-28s %8s\n", "total", total }' "$out/timings.tsv"
+  } >&2
+}
 
 bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
 rpm -q binutils openssl >/dev/null 2>&1 \
@@ -85,6 +142,13 @@ python3 os/dev/probe-kvm.py "$arch" || {
 
 rm -rf "$work" "$out"
 mkdir -p "$work" "$out"
+: > "$out/timings.tsv"
+# Before the guest: the image signed, sealed and installed, the firmware's keys, the update
+# disk and what the registry serves. Everything a stage needs after it is in $work (the
+# disk, the update disk, the firmware variables, the TPM, the boot keys, the recovery key,
+# $work/registry, $work/base.vars), which is what the base keeps.
+prepare() {
+step build
 target=$(git rev-parse HEAD)
 built=/target/publish/host
 [[ -s $built/image.oci.tar && -s $built/digest && -s $built/generation ]] \
@@ -287,6 +351,7 @@ grep -q '"generation":0' "$work/older-predictions"/generation-0.json \
 # check installs from — and the command inside it is the one the check ran on its
 # own disk before encryption: os/dev/build-image.sh with TILO_ENCRYPT_INSTALL=1,
 # unchanged, so what is proved here is the shipped path and not a second one.
+step install
 say 'install the image on an encrypted disk, in a guest that can open one'
 dev_disk=/target/publish/os-dev-disk/x86_64/disk/disk.qcow2
 [[ -s $dev_disk ]] || die "no dev disk in /target/publish/os-dev-disk: the check needs os-dev-disk-lean"
@@ -456,6 +521,7 @@ PATH=$work/bin:$PATH bash os/dev/prepare-release-secureboot-vars.sh "$vars_templ
 # above), so it boots under the same firmware. It reaches the guest on a small
 # disk of its own (there is no sshd to copy it with), beside the sealed image's
 # UKI before anything signed it, which the firmware must refuse.
+step update-disk
 say 'build, seal and sign the update the machine will stage'
 load_archive "$sealed" localhost/tilo-host:sealed
 mkdir -p "$work/update"
@@ -517,36 +583,93 @@ cp "$work/older-predictions"/* "$work/mnt/older-predictions/"
 # the tag the server was installed to follow, signed with a key made here for
 # the repository's name, and beside it an image of the repository nobody signed
 # (os/tests/registry_update_check.sh says what the guest does with them).
-podman run -d --name host-assurance-registry -p 127.0.0.1:5050:5000 "$SCRATCH_REGISTRY_IMAGE" >/dev/null \
-  || die 'cannot start the update registry'
-for _ in $(seq 30); do curl -fs http://127.0.0.1:5050/v2/ >/dev/null && break; sleep 1; done
-printf 'host-assurance\n' > "$work/sigstore.pass"
-skopeo generate-sigstore-key --output-prefix "$work/sigstore" --passphrase-file "$work/sigstore.pass" >/dev/null \
+# The registry itself starts when the stage that reads it does (start_registry); what it
+# serves is made here: the signed update and its signing key, kept in $work/registry.
+mkdir -p "$work/registry"
+printf 'host-assurance\n' > "$work/registry/sigstore.pass"
+skopeo generate-sigstore-key --output-prefix "$work/registry/sigstore" \
+  --passphrase-file "$work/registry/sigstore.pass" >/dev/null \
   || die 'cannot make the signing key the registry update is signed with'
-follows="main-${target:0:7}-ci"
-# Signatures go beside the image as sigstore attachments, as the release
-# registry keeps them (os/etc/containers/registries.d).
-mkdir -p "$work/registries.d"
-printf 'docker:\n  127.0.0.1:5050:\n    use-sigstore-attachments: true\n' > "$work/registries.d/update.yaml"
-skopeo --registries.d "$work/registries.d" copy -q --preserve-digests --dest-tls-verify=false \
-  --sign-by-sigstore-private-key "$work/sigstore.private" --sign-passphrase-file "$work/sigstore.pass" \
-  --sign-identity "registry.tilo.so/tilo/tilo-host:$follows" \
-  "oci-archive:$work/update-signed/image.oci.tar" "docker://127.0.0.1:5050/tilo/tilo-host:$follows" \
-  || die 'cannot publish the signed update to the registry'
+mv "$work/update-signed/image.oci.tar" "$work/registry/update.oci.tar"
 staged_digest=$(cat "$work/update-signed/digest")
-mkdir -p "$work/unsigned-image"
-printf 'an image nobody signed\n' > "$work/unsigned-image/note"
-printf 'FROM scratch\nCOPY note /note\n' > "$work/unsigned-image/Containerfile"
-podman build -q -t localhost/host-assurance-unsigned -f "$work/unsigned-image/Containerfile" "$work/unsigned-image" >/dev/null
-skopeo copy -q --dest-tls-verify=false containers-storage:localhost/host-assurance-unsigned \
-  docker://127.0.0.1:5050/tilo/tilo-host:unsigned || die 'cannot publish the unsigned image to the registry'
-cp "$work/sigstore.pub" "$work/mnt/registry-update.pub"
+cp "$work/registry/sigstore.pub" "$work/mnt/registry-update.pub"
 cp os/tests/registry_update_check.sh "$work/mnt/registry_update_check.sh"
 umount "$work/mnt"
-rm -rf "$work/update-signed" "$work/unsigned" "$work/unsigned-image"
+rm -rf "$work/update-signed" "$work/unsigned"
 qemu-img convert -f raw -O qcow2 "$work/update.raw" "$work/update.qcow2"
 rm -f "$work/update.raw"
+# The floor's authority runs the image's own tilo-rollback on this side: it drives no TPM
+# and links nothing but the C library.
+podman create --name host-assurance-rollback localhost/tilo-host:ci >/dev/null
+podman cp host-assurance-rollback:/usr/libexec/tilo/tilo-rollback "$work/tilo-rollback"
+podman rm host-assurance-rollback >/dev/null
+printf 'n=%s\nstaged_digest=%s\nfollows=%s\n' "$n" "$staged_digest" "main-${target:0:7}-ci" > "$work/base.vars"
+cp "$work/install/qcow2/recovery-key.txt" "$work/recovery-key.txt"
 podman rmi -f "$update_ref" localhost/tilo-host:sealed localhost/tilo-host:ci localhost/tilo-host:seal >/dev/null 2>&1 || true
+rm -rf "$work/image.oci" "$work/sealed" "$work/signed" "$work/loader-signed" "$work/trusted-image" \
+  "$work/older-built" "$work/older-sealed" "$work/older-signed" "$work/install" "$work/guest.qcow2"
+}
+
+# The same update served by a registry on this machine, which the guest reaches
+# as 10.0.2.2 and is told is a mirror of registry.tilo.so/tilo/tilo-host: under
+# the tag the server was installed to follow, signed with a key made for the
+# repository's name, and beside it an image of the repository nobody signed
+# (os/tests/registry_update_check.sh says what the guest does with them).
+start_registry() {
+  podman run -d --name host-assurance-registry -p 127.0.0.1:5050:5000 "$SCRATCH_REGISTRY_IMAGE" >/dev/null \
+    || die 'cannot start the update registry'
+  for _ in $(seq 30); do curl -fs http://127.0.0.1:5050/v2/ >/dev/null && break; sleep 1; done
+  # Signatures go beside the image as sigstore attachments, as the release
+  # registry keeps them (os/etc/containers/registries.d).
+  mkdir -p "$work/registries.d"
+  printf 'docker:\n  127.0.0.1:5050:\n    use-sigstore-attachments: true\n' > "$work/registries.d/update.yaml"
+  skopeo --registries.d "$work/registries.d" copy -q --preserve-digests --dest-tls-verify=false \
+    --sign-by-sigstore-private-key "$work/registry/sigstore.private" \
+    --sign-passphrase-file "$work/registry/sigstore.pass" \
+    --sign-identity "registry.tilo.so/tilo/tilo-host:$follows" \
+    "oci-archive:$work/registry/update.oci.tar" "docker://127.0.0.1:5050/tilo/tilo-host:$follows" \
+    || die 'cannot publish the signed update to the registry'
+  mkdir -p "$work/unsigned-image"
+  printf 'an image nobody signed\n' > "$work/unsigned-image/note"
+  printf 'FROM scratch\nCOPY note /note\n' > "$work/unsigned-image/Containerfile"
+  podman build -q -t localhost/host-assurance-unsigned -f "$work/unsigned-image/Containerfile" "$work/unsigned-image" >/dev/null
+  skopeo copy -q --dest-tls-verify=false containers-storage:localhost/host-assurance-unsigned \
+    docker://127.0.0.1:5050/tilo/tilo-host:unsigned || die 'cannot publish the unsigned image to the registry'
+}
+
+# A stage's machine: the base's disk and update disk as overlays it writes to, and copies of
+# its TPM and firmware variables. The update disk takes this tree's guest-side scripts, so a
+# fix to one is proved without a new base.
+restore_base() {
+  local base=$base_in/base
+  for part in disk.qcow2 update.qcow2 state/base.vars; do
+    [[ -s $base/$part ]] || die "the base in $base has no $part: the stage needs host-assurance-base-fetch"
+  done
+  cp -a "$base/state/." "$work/"
+  qemu-img create -q -f qcow2 -F qcow2 -b "$(realpath "$base/disk.qcow2")" "$work/disk.qcow2"
+  qemu-img convert -f qcow2 -O raw "$base/update.qcow2" "$work/update.raw"
+  mkdir -p "$work/mnt"
+  mount -o loop "$work/update.raw" "$work/mnt"
+  cp os/tests/registry_update_check.sh "$work/mnt/registry_update_check.sh"
+  umount "$work/mnt"
+  qemu-img convert -f raw -O qcow2 "$work/update.raw" "$work/update.qcow2"
+  rm -f "$work/update.raw"
+  ln -s "$(realpath "$base/registry")" "$work/registry"
+}
+
+if [[ $mode == stage ]]; then
+  step restore
+  restore_base
+else
+  prepare
+fi
+# shellcheck source=/dev/null
+. "$work/base.vars"
+disk=$work/disk.qcow2
+TILO_UNLOCK_SECRET=$(cat "$work/recovery-key.txt")
+[[ -n $TILO_UNLOCK_SECRET ]] || die "the install's recovery key file is empty"
+export TILO_UNLOCK_SECRET TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER TILO_PASS
+export TILO_TPM_DIR=$work/tpm
 
 export TILO_RUN=$work/run TILO_DISK=$disk
 export TILO_SERIAL_SOCKET=$work/run/serial.sock
@@ -579,6 +702,7 @@ finish() {
   fi
   ./os/dev/vm.sh stop >/dev/null 2>&1 || true
   podman rm -f host-assurance-registry >/dev/null 2>&1 || true
+  table
 }
 trap finish EXIT
 console() { ./os/tests/serial_runner.sh "$1"; }
@@ -607,17 +731,21 @@ unlock_until_console() {
   done
   return 1
 }
-boot_vm
-unlock_until_console \
-  || die 'the installed disk never answered at its console: its encrypted root did not open'
-console 'true' >/dev/null || die 'the installed disk never answered at its console'
-# Keep the console to the runner: kernel messages — auditd's lines among them,
-# one per sudo call — interleave mid-line with the marker it reads, and a marker
-# split that way waits out the command's whole deadline. An unpaired server also
-# prints its pairing prompt here on every attempt, and a line that lands inside
-# a read is read as part of it: this machine is never paired by this check.
-as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+# A boot whose volume the recovery key opened, answering at its console.
+boot_settled() {
+  boot_vm
+  unlock_until_console \
+    || die 'the installed disk never answered at its console: its encrypted root did not open'
+  console 'true' >/dev/null || die 'the installed disk never answered at its console'
+  # Keep the console to the runner: kernel messages — auditd's lines among them,
+  # one per sudo call — interleave mid-line with the marker it reads, and a marker
+  # split that way waits out the command's whole deadline. An unpaired server also
+  # prints its pairing prompt here on every attempt, and a line that lands inside
+  # a read is read as part of it: this machine is never paired by this check.
+  as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+}
 
+stage_serves() {
 say 'the machine serves'
 # What is up: multi-user reached, the hosted-VM service bound its socket, the API
 # server inert until configured, the update timers enabled, the boot path judging
@@ -819,7 +947,9 @@ pcr=$(tpm2_pcrread sha256:11 | sed -n "s/^ *11 *: *0x//p")
 case "$pcr" in ""|*[!0-9A-Fa-f]*|0000000000000000000000000000000000000000000000000000000000000000) tpm2_pcrread sha256:7,11; exit 1 ;; esac
 echo "generation $generation, PCR 11 $pcr"
 '
+}
 
+stage_refused() {
 # A boot the firmware must refuse. What breaks it is done as root on the
 # running machine, as anyone who can write the ESP could, in a mount namespace
 # of its own where the ESP's read-only bind is made writable, as the services
@@ -865,6 +995,9 @@ for _ in $(seq 1 90); do
   sleep 5
 done
 refuse 'the signed disk boots again as it was' 'systemctl is-active --quiet multi-user.target'
+}
+
+stage_rollback() {
 # The server probe runs when a boot is judged, and the boot loader counts only an
 # update's boots, so nothing has run it on this one. The rollback below breaks only
 # the staged deployment, and needs the probe to have said this one is good first.
@@ -898,13 +1031,21 @@ fi
 say 'the machine serves again, on the deployment that came back'
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
 refuse 'the server probe still judges it good' 'systemctl start tilo-server-health.service'
+}
+
+stage_registry() {
 say 'a registry update is verified and staged'
+start_registry
 refuse 'a registry update is verified and staged, and an unsigned image refused' "
 set -eu
 mkdir -p /mnt/update
 mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 bash /mnt/update/registry_update_check.sh 10.0.2.2:5050/tilo/tilo-host /mnt/update/registry-update.pub unsigned '$staged_digest'
 "
+}
+
+machine_sealed=0
+stage_seal() {
 say 'the disk is sealed to this machine and opens by itself'
 # The installer enrolled the TPM keyslot in a guest of its own, whose PCR 7 is
 # not this machine's, so that slot was never going to open here. The installed
@@ -952,7 +1093,11 @@ else
   die 'the disk opened by itself, but nothing recorded the TPM keyslot as what opened it'
 fi
 as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+machine_sealed=1
+}
 
+stage_floor() {
+(( machine_sealed )) || die 'the floor stage runs on a disk this machine sealed: run the seal stage before it'
 say 'an image below the floor is refused'
 # The older signed image the update disk carries (generation 0) gets a keyslot
 # of its own, then the floor moves to this generation: the machine must refuse
@@ -977,12 +1122,9 @@ tilo-rollback floor-request --device "$dev" | base64 -w0
 ') || die 'the machine could not write a floor request'
 printf '%s' "$request" | base64 -d > "$work/floor-request.json" \
   || die 'the floor request did not survive the console'
-load_archive "$pub" localhost/tilo-host:ci
 mkdir -p "$work/approvals"
-podman run --rm --pull=never -v "$work:/work:Z" \
-  --entrypoint /usr/libexec/tilo/tilo-rollback localhost/tilo-host:ci \
-  approve-floor --private-key /work/boot-keys/pcr.key \
-  --request /work/floor-request.json --out-dir /work/approvals \
+"$work/tilo-rollback" approve-floor --private-key "$work/boot-keys/pcr.key" \
+  --request "$work/floor-request.json" --out-dir "$work/approvals" \
   || die 'the authority could not approve the floor advance'
 shopt -s nullglob
 approvals=("$work"/approvals/*.json)
@@ -1046,6 +1188,47 @@ tilo-rollback status --device "$dev"
 tilo-rollback status --device "$dev" --json | grep -q "\"floor_generation\":$(cat /usr/lib/tilo/generation)" \
   || { echo "the floor is not at the running generation"; exit 1; }
 '
+
+}
+
+all_stages=(serves refused rollback registry seal floor)
+if [[ $mode == stage ]]; then
+  for st in "${stages[@]}"; do
+    declare -F "stage_$st" >/dev/null || die "no stage $st; the stages are ${all_stages[*]}"
+  done
+fi
+case $mode in
+  full)
+    step first-boot
+    boot_settled
+    for st in "${all_stages[@]}"; do step "$st"; "stage_$st"; done
+    ;;
+  base)
+    step first-boot
+    boot_settled
+    step serves
+    stage_serves
+    # The base is the machine as its first boot left it, shut down.
+    as_root 'sync' >/dev/null 2>&1 || true
+    ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+    step keep
+    rm -rf "$base_out" && mkdir -p "$base_out/state"
+    mv "$work/disk.qcow2" "$work/update.qcow2" "$base_out/"
+    mv "$work/registry" "$base_out/registry"
+    cp -a "$work/secureboot-vars.qcow2" "$work/tpm" "$work/boot-keys" "$work/recovery-key.txt" \
+      "$work/tilo-rollback" "$work/base.vars" "$base_out/state/"
+    du -sh --apparent-size "$base_out"/* >&2
+    printf '\nthe base is in %s\n' "$base_out" >&2
+    exit 0
+    ;;
+  stage)
+    step boot
+    boot_settled
+    for st in "${stages[@]}"; do step "$st"; "stage_$st"; done
+    printf '\nPASS: %s, on the base %s\n' "${stages[*]}" "$base_in" >&2
+    exit 0
+    ;;
+esac
 
 printf '\nPASS: the server image installs onto an encrypted disk, boots its release-signed boot loader and signed UKI under Secure Boot and refuses an edited or unsigned one, serves, rolls back an update that breaks it, verifies and stages a registry update, opens its disk by itself through the signed PCR 11 prediction and this machine'"'"'s PCR 7, and refuses an image below the rollback floor (evidence in %s)\n' "$out"
 

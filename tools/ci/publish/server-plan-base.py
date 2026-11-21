@@ -13,6 +13,9 @@ against its digest while it extracts it, and refuses a layout whose parts are no
 does the same straight from the registry, with an anonymous pull token: no layout is written,
 so each part is read once and written once.
 
+The base the server image's proof stages start from (publish-host-assurance-base) is packed and
+fetched the same way.
+
 Sparse files (the raw images of the installer bundle) stay sparse both ways: tar records the
 holes, and nothing writes them as zeroes.
 """

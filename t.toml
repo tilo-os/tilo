@@ -7831,6 +7831,136 @@ git = true
 timeout_secs = 10800
 on = ["dispatch"]
 
+# The base the stages of the server image's proof start from, built once from a commit of main
+# and kept by digest: the image signed and sealed with throwaway keys, installed onto LUKS2, booted
+# once and shown to serve, with its update disk, firmware variables, TPM, keys and what the
+# registry serves (tools/ci/host-assurance.sh base), as one image. Its log ends with the base's
+# commit and image by digest, which tools/ci/host-assurance-base.env takes in a commit of its own,
+# so the base moves only when someone dispatches this and commits that file, never with main.
+[[check]]
+name = "publish-host-assurance-base"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\nparts=/target/host-assurance-base\nout=/target/publish/host-assurance-base\nbash tools/ci/host-assurance.sh base \"$parts\"\nrpm -q zstd >/dev/null 2>&1 || dnf install -y --setopt=install_weak_deps=False zstd >/dev/null\nrm -rf \"$out\" && mkdir -p \"$out\"\npython3 tools/ci/publish/server-plan-base.py pack \"$out\" \"$T_COMMIT\" disk.qcow2=\"$parts/disk.qcow2\" update.qcow2=\"$parts/update.qcow2\" state=\"$parts/state\" registry=\"$parts/registry\"\nrm -rf \"$parts\"\nbash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-vm \"$out\" 'host-assurance-base-{commit}'\nprintf 'COMMIT=%s\\nIMAGE=registry.tilo.so/tilo/tilo-vm@%s\\n' \"$T_COMMIT\" \"$(cat \"$out/digest\")\" > \"$out/base.env\"\ncat \"$out/base.env\"\nrm -rf \"$out/oci\""
+needs = ["image-host", "host-base", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64", "os-assets"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/publish/host-assurance-base/receipt.json", "/target/publish/host-assurance-base/base.env"]
+git = true
+timeout_secs = 10800
+on = ["dispatch"]
+id_token = ["registry.tilo.so"]
+pointers = { host-assurance-base = "/target/publish/host-assurance-base/base.env" }
+
+# The stages' base, unpacked from the registry by the digest tools/ci/host-assurance-base.env
+# names, outside the stages' VM (tools/ci/host-assurance.sh fetch). Kept by that file, so the
+# stages on one base fetch it once.
+[[check]]
+name = "host-assurance-base-fetch"
+# The registry redirects each blob to its object store, whose address it names per request.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/host-assurance.sh fetch /target/host-assurance-base-fetch"
+requires = ["arch=x86_64", "disk-100g"]
+outputs = ["/target/host-assurance-base-fetch/**"]
+timeout_secs = 1800
+default = false
+
+# One stage of the server image's proof on the fetched base: the machine serves, keeps its root and store on LUKS2, is hardened, judges its own boot, and booted the signed UKI under Secure Boot
+# (tools/ci/host-assurance.sh stage). `t test host-assurance-stage-serves` from a working tree.
+[[check]]
+name = "host-assurance-stage-serves"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/host-assurance.sh stage /target/host-assurance-base-fetch serves"
+needs = ["host-assurance-base-fetch", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/host-assurance/**"]
+cache = false
+git = true
+timeout_secs = 1800
+default = false
+
+# One stage of the server image's proof on the fetched base: the firmware refuses a UKI whose command line was edited and one nobody signed, and the signed disk boots again
+# (tools/ci/host-assurance.sh stage). `t test host-assurance-stage-refused` from a working tree.
+[[check]]
+name = "host-assurance-stage-refused"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/host-assurance.sh stage /target/host-assurance-base-fetch refused"
+needs = ["host-assurance-base-fetch", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/host-assurance/**"]
+cache = false
+git = true
+timeout_secs = 2700
+default = false
+
+# One stage of the server image's proof on the fetched base: an update that breaks the server spends its tries and the boot loader goes back by itself
+# (tools/ci/host-assurance.sh stage). `t test host-assurance-stage-rollback` from a working tree.
+[[check]]
+name = "host-assurance-stage-rollback"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/host-assurance.sh stage /target/host-assurance-base-fetch rollback"
+needs = ["host-assurance-base-fetch", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/host-assurance/**"]
+cache = false
+git = true
+timeout_secs = 5400
+default = false
+
+# One stage of the server image's proof on the fetched base: a registry update is verified and staged, and an unsigned image refused
+# (tools/ci/host-assurance.sh stage). `t test host-assurance-stage-registry` from a working tree.
+[[check]]
+name = "host-assurance-stage-registry"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/host-assurance.sh stage /target/host-assurance-base-fetch registry"
+needs = ["host-assurance-base-fetch", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/host-assurance/**"]
+cache = false
+git = true
+timeout_secs = 2700
+default = false
+
+# One stage of the server image's proof on the fetched base: the machine seals its disk to itself and reboots with nothing typed
+# (tools/ci/host-assurance.sh stage). `t test host-assurance-stage-seal` from a working tree.
+[[check]]
+name = "host-assurance-stage-seal"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/host-assurance.sh stage /target/host-assurance-base-fetch seal"
+needs = ["host-assurance-base-fetch", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/host-assurance/**"]
+cache = false
+git = true
+timeout_secs = 2700
+default = false
+
+# One stage of the server image's proof on the fetched base: after the seal, the floor moves by signed approvals and an image below it is refused
+# (tools/ci/host-assurance.sh stage). `t test host-assurance-stage-floor` from a working tree.
+[[check]]
+name = "host-assurance-stage-floor"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/host-assurance.sh stage /target/host-assurance-base-fetch seal floor"
+needs = ["host-assurance-base-fetch", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/host-assurance/**"]
+cache = false
+git = true
+timeout_secs = 3600
+default = false
+
 [[check]]
 name = "sign-vm-host"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
