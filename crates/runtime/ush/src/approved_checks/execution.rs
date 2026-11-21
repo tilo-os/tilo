@@ -59,8 +59,9 @@ pub struct CgroupObservation {
 struct Prepared {
     check: ApprovedCheck,
     token: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    report_nonce: Option<String>,
+    /// What the guest's phase reports carry. It grants nothing: the private
+    /// `token` never enters the guest.
+    report_nonce: String,
     runtime_binary_sha256: String,
 }
 
@@ -402,7 +403,7 @@ fn start(
     let prepared = Prepared {
         check: check.clone(),
         token,
-        report_nonce: (!check.reported_phases.is_empty()).then(|| uuid::Uuid::new_v4().to_string()),
+        report_nonce: uuid::Uuid::new_v4().to_string(),
         runtime_binary_sha256: binary_hash(&check.runtime_binary)?,
     };
     let bytes = serde_json::to_vec(&prepared).map_err(|e| e.to_string())?;
@@ -581,7 +582,7 @@ pub(super) fn run(
         mut child,
     } = start(check, &authority)?;
     let mut reports =
-        super::reports::ReportParser::new(check, prepared.report_nonce.as_deref().unwrap_or(""));
+        super::reports::ReportParser::new(check, &prepared.report_nonce);
     // No build script executes until the cgroup was observed and permitted.
     let (observation, mut outcome, mut output, completed, mut error) =
         match admit(check, &prepared.token, &unit.0, &authority) {
@@ -706,12 +707,13 @@ pub fn developer_probe_with_reports(
 
 fn reported_environment(prepared: &Prepared) -> Vec<(String, String)> {
     let mut environment = prepared.check.environment.clone();
-    if !prepared.check.reported_phases.is_empty()
-        && let Some(nonce) = &prepared.report_nonce
-    {
+    if !prepared.check.reported_phases.is_empty() {
         // This separate nonce carries no permit or completion authority. The
         // private supervisor token must never enter guest environment/output.
-        environment.push(("TILO_CHECK_REPORT_TOKEN".into(), nonce.clone()));
+        environment.push((
+            "TILO_CHECK_REPORT_TOKEN".into(),
+            prepared.report_nonce.clone(),
+        ));
         environment.push(("TILO_CHECK_REPORT_ID".into(), prepared.check.id.clone()));
     }
     environment
@@ -876,7 +878,7 @@ mod tests {
         Prepared {
             check,
             token: uuid::Uuid::new_v4().to_string(),
-            report_nonce: None,
+            report_nonce: uuid::Uuid::new_v4().to_string(),
             runtime_binary_sha256: "a".repeat(64),
         }
     }
@@ -885,23 +887,16 @@ mod tests {
         /// What an approved check's run must show before it counts as complete, bounded and cleaned up.
         fn an_approved_check_completes_and_cleans_up_only_on_what_was_observed;
 
-        phase report_nonce_is_optional_legacy_compatible_and_has_no_supervisor_authority;
+        phase the_report_nonce_has_no_supervisor_authority;
         {
             let dir = tempfile::tempdir().unwrap();
             let mut prepared = prepared(dir.path());
-            let legacy = serde_json::to_value(&prepared).unwrap();
-            assert!(legacy.get("report_nonce").is_none());
-            assert!(legacy["check"].get("reported_phases").is_none());
-            assert_eq!(legacy.as_object().unwrap().len(), 3);
-            let restored: Prepared = serde_json::from_value(legacy).unwrap();
-            assert!(restored.report_nonce.is_none());
             assert!(reported_environment(&prepared).is_empty());
             prepared.check.reported_phases = vec![super::super::ReportedCheckPhase {
                 id: "route".into(),
                 label: "Routing".into(),
             }];
-            let informational_nonce = uuid::Uuid::new_v4().to_string();
-            prepared.report_nonce = Some(informational_nonce.clone());
+            let informational_nonce = prepared.report_nonce.clone();
             let report_environment = reported_environment(&prepared);
             assert_ne!(informational_nonce, prepared.token);
             assert_eq!(
@@ -916,12 +911,6 @@ mod tests {
                     .iter()
                     .all(|(_, value)| value != &prepared.token),
                 "the supervisor permit/completion token never enters the guest environment"
-            );
-            assert!(
-                serde_json::to_value(&prepared)
-                    .unwrap()
-                    .get("report_nonce")
-                    .is_some()
             );
         }
 
