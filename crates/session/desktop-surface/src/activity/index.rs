@@ -606,7 +606,7 @@ fn insert_rows(
 ) {
     let mut latest = SystemTime::UNIX_EPOCH;
     for entry in rows {
-        latest = latest.max(entry.timestamp);
+        latest = latest.max(made_at(&entry));
         if !entry
             .context
             .as_ref()
@@ -625,6 +625,33 @@ fn insert_rows(
         target
             .entry(id.clone())
             .or_insert((place, WorkspaceHistoryEntry { id, entry }));
+    }
+}
+
+/// When `entry`'s change was made, to the millisecond where the action it records says so: a
+/// change keeps whole seconds, so two records' changes of one second are placed by the clock of the
+/// action that made each (its `at`), when that falls in the change's own second.
+fn made_at(entry: &HistoryEntry) -> SystemTime {
+    let at_ms = entry
+        .context
+        .as_ref()
+        .and_then(|context| context.action.as_ref())
+        .and_then(|action| {
+            #[derive(serde::Deserialize)]
+            struct Stamped {
+                at: u64,
+            }
+            serde_json::from_slice::<Stamped>(&action.payload).ok()
+        })
+        .map(|stamped| stamped.at);
+    let second = |time: SystemTime| {
+        time.duration_since(SystemTime::UNIX_EPOCH)
+            .map(|since| since.as_secs())
+            .ok()
+    };
+    match at_ms.and_then(|ms| SystemTime::UNIX_EPOCH.checked_add(ui::time::Duration::from_millis(ms))) {
+        Some(at) if second(at) == second(entry.timestamp) => at.max(entry.timestamp),
+        _ => entry.timestamp,
     }
 }
 

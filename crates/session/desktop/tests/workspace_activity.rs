@@ -394,6 +394,73 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase workspace_activity_lists_two_records_changes_of_one_second_as_they_were_made;
+    // A task made, then a note, in one second, in two records: a change keeps whole seconds, so
+    // only the clock of the action that made each says which came first. Ordering them by which
+    // record was read first lists the note below the task here, newest first.
+    {
+        use automerge::transaction::CommitOptions;
+        use tilo_actions::{ActionContext, ActionKey, Described, Did, EncodedAction};
+        use tilo_desktop::activity::*;
+        use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+        let made = |app: &str, kind: &str, verb: &str, title: &str, at_ms: u64| {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "title", title).unwrap();
+            let mut context = ActionContext::for_resource(kind, kind, title)
+                .with_app(app, app)
+                .with_described(
+                    Described::new(Did::verb(ActionKey::new(app, kind, verb), []))
+                        .on(format!("{kind}:1"), title),
+                );
+            context.action = Some(EncodedAction {
+                type_id: kind.to_owned(),
+                payload: format!(r#"{{"op":{{"action":"{verb}"}},"at":{at_ms}}}"#).into_bytes(),
+            });
+            doc.commit_with(
+                CommitOptions::default()
+                    .with_time(1_800_000_000)
+                    .with_message(context.change_message().unwrap()),
+            );
+            doc
+        };
+        let records = vec![
+            ("so.tilo.notes", "notes.pages", "new-note", "Spring plans", 1_800_000_000_700),
+            ("so.tilo.tasks", "tasks.issues", "create", "Check the budget", 1_800_000_000_300),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(tab, (app, kind, verb, title, at))| DetachedRecordHistory {
+            app: app.into(),
+            checkout: DocumentCheckout::new(
+                DocumentId::for_tab(u64::try_from(tab).unwrap() + 1),
+                ResourceType::new(kind),
+            ),
+            tree_chunks: Vec::new(),
+            document: Some(made(app, kind, verb, title, at)),
+        })
+        .collect();
+        let mut tree = design();
+        let mut pane = WorkspaceActivityPane::new();
+        pane.refresh(&mut tree);
+        pane.refresh_detached_records(&mut tree, records);
+        let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+        assert_eq!(
+            feed.entries.len(),
+            2,
+            "both records' changes are listed: {:?}",
+            feed.entries
+        );
+        let summaries = feed
+            .entries
+            .iter()
+            .map(|entry| entry.summary.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            summaries[0].contains("Spring plans") && summaries[1].contains("Check the budget"),
+            "newest first, the note made after the task above it: {summaries:?}"
+        );
+    }
+
     phase workspace_activity_names_setup_by_what_it_did_and_folds_it;
     // A workspace being set up by its devices: each action's receipt, what a device holds of it,
     // where a device that keeps it answers, the operation recording which rows a change wrote,
