@@ -109,10 +109,6 @@ async fn a_device_joins_a_workspace_its_invitation_names_and_holds_its_governanc
         Some("Shared")
     );
     assert_eq!(held.member_actor(entered).await, Some(hex::encode(person)));
-    assert!(
-        held.member_key_holders(entered).await.is_some(),
-        "the member copy's keepers are read from its governance"
-    );
 }
 
 #[tokio::test]

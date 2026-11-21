@@ -193,9 +193,8 @@ takes: workspace work placed on it, and a member's work under that member's
 delegation, each signed so that history names the actor it acted for and the
 server it ran on. Anything else it writes is refused. Adding people otherwise and changing roles stays with the owner's
 and administrators' devices. Whom a workspace is held by is the
-owner's decision and the keeper's: a device of the governor's person, or of
-the person the workspace is kept for, asks its governor to have another host
-hold it (`workspace.attach-host`, an operator's `hold`), and the governor
+owner's decision: a device of the owner asks its governor to have another
+host hold it (`workspace.attach-host`, an operator's `hold`), and the governor
 hands that host the workspace and names it. The other host takes it only when
 its own operator's work setting takes that work: by default only its own
 person's, and another person's only for the workspaces its operator names or
@@ -464,19 +463,27 @@ granted at that point is kept, so replicas stay byte-identical, but has no
 effect. No device decides for the others; every key holder reaches the same
 answer from the same ops.
 
-**Administrators and whom a workspace is kept for.** An administrator is a
-member at the Editor role holding the administrator grants: every governance
-and moderation action of the workspace, still bounded by that role. A
-workspace's owner is structural, and on a host such as tilo.sh it is the host
-itself, so the person the host keeps the workspace for (who made it there, or
-whose account it belongs to) is named in the membership by a grant of its own,
-the keeper grant, which only the owner gives. The policy then decides, for
+**Administrators and the owner.** An administrator is a member at the
+Editor role holding the administrator grants: every governance and moderation
+action of the workspace, still bounded by that role. A workspace has one
+owner, whom its governance names. Its owner hands it to another person with a
+transfer, which only the owner makes and which every key holder replays in
+order like any other op, so every device reaches the same owner and the same
+keys whenever the transfer reached it. The owner it replaces stays in it as an
+administrator. A host that makes a workspace for a person (tilo.sh, a
+workspace of someone's own, one a person asks a host for) founds it and hands
+it to them in the same step: the host stays a member and an administrator,
+which is how it serves the workspace (it admits whom invitations name, names
+its own address, writes checkpoints and relays what members write), and the
+owner withdraws that like any administrator's. The policy then decides, for
 every key holder alike:
 
-- the owner, the keeper and every administrator make administrators;
-- only the owner and the keeper unmake an administrator, change their role or
-  remove, ban or restrict them; an administrator never does it to another,
-  and anyone gives up their own administration or leaves;
+- the owner and every administrator make administrators;
+- only the owner unmakes an administrator, changes their role or removes,
+  bans or restricts them, signed on a device of the owner's own: a host
+  serving the workspace as an administrator does not sign it for them. An
+  administrator never does it to another, and anyone gives up their own
+  administration or leaves;
 - an invitation can make its holder an administrator (an Editor's invitation
   in its own signed layout). Only someone who may make administrators issues
   one, and every key holder admitting its holder checks again that its

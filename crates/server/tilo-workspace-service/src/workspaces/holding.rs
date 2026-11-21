@@ -169,24 +169,14 @@ fn take_governance(
     Ok(())
 }
 
-/// The owners of the workspace `request` hands over, by their user public
-/// keys: the person who owns it, then the people it is kept for, as its
-/// governance says.
+/// The owner of the workspace `request` hands over, by their user public
+/// key, as its governance says.
 ///
 /// # Errors
 ///
 /// The workspace's governance does not hold up.
-pub(crate) fn owners(request: &HostWorkspaceRequest) -> Result<Vec<[u8; 32]>, String> {
-    let peer = replica(&request.bootstrap, tilo_clock::wall())?;
-    let policy = peer.governance().governed_policy()?;
-    let mut owners = vec![peer.owner()];
-    for person in policy.keepers() {
-        let mut key = [0; 32];
-        if hex::decode_to_slice(person, &mut key).is_ok() && !owners.contains(&key) {
-            owners.push(key);
-        }
-    }
-    Ok(owners)
+pub(crate) fn owner(request: &HostWorkspaceRequest) -> Result<[u8; 32], String> {
+    Ok(replica(&request.bootstrap, tilo_clock::wall())?.owner())
 }
 
 /// Whether `work` takes the workspace `request` hands over from `caller`,

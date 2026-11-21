@@ -206,12 +206,14 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     );
 }
 
-/// An owner's key lets a person in by their key, as an owner, through the
-/// action API: no invitation to hand over. That person's own key then reaches
-/// the workspace and brings someone in themself; nobody below an owner makes
-/// an owner, while a key minted for the workspace is its owner's own and does.
+/// An owner's key lets a person in by their key, as an administrator,
+/// through the action API: no invitation to hand over. That person's own key
+/// then reaches the workspace and brings someone in themself. Handing the
+/// workspace on is its owner's own change, signed on a device of theirs: the
+/// API refuses it in words that say so, for the owner's key and for a key
+/// minted for the workspace alike.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
+async fn an_owners_key_adds_an_administrator_by_key_whose_key_brings_people_in() {
     let on_server = api_on_server(ISSUER).await;
     let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -241,11 +243,25 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     )
     .await;
     assert_eq!(bad["status"], "failed", "{bad}");
-    let added = members(
+    let handed = members(
         &mut ada_mcp,
         here,
         "workspace/members#add",
         json!({"person": grace_hex, "role": "owner", "name": "Grace Hopper"}),
+    )
+    .await;
+    assert_eq!(handed["status"], "failed", "{handed}");
+    assert!(
+        handed["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("only the workspace's owner makes this change, and from a device of their own")),
+        "{handed}"
+    );
+    let added = members(
+        &mut ada_mcp,
+        here,
+        "workspace/members#add",
+        json!({"person": grace_hex, "role": "administrator", "name": "Grace Hopper"}),
     )
     .await;
     assert_eq!(added["status"], "ok", "{added}");
@@ -255,11 +271,12 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
         .find(|row| row["member"]["person"] == grace_hex)
         .cloned()
         .unwrap_or_else(|| panic!("Grace has a row in {added}"));
-    assert_eq!(grace_row["owner"], true, "{added}");
+    assert_eq!(grace_row["owner"], false, "{added}");
+    assert_eq!(grace_row["administrator"], true, "{added}");
     assert_eq!(grace_row["name"], "Grace Hopper", "{added}");
 
-    // Grace approves a key of her own, which reaches the workspace as her
-    // owner, and lets Hal in as an editor.
+    // Grace approves a key of her own, which reaches the workspace as hers,
+    // and lets Hal in as an editor.
     let grace_page = enrol(&grace, "Grace's browser", DeviceCapabilities::member());
     let grace_key = approved_key(&on_server, &grace, &grace_page, "Grace's laptop").await;
     let mut grace_mcp = Mcp {
@@ -301,8 +318,8 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     assert_eq!(waiting["status"], "ok", "{waiting}");
     assert_eq!(waiting["result"]["entries"], json!([]), "{waiting}");
 
-    // A key minted for the workspace is Ada's own there, an owner's, so it
-    // makes an owner as she does.
+    // A key minted for the workspace is Ada's own there: it makes an
+    // administrator as she does, and hands the workspace to nobody.
     let minted = ada_mcp
         .did("account/keys#mint", json!({"workspace": workspace}))
         .await;
@@ -315,11 +332,20 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     let (status, init) = agent.initialize().await;
     assert_eq!(status, 200, "{init}");
     let (ivy, _) = tilo_user_identity::UserIdentity::generate("Ivy", 1);
+    let ivy_hex = hex::encode(ivy.verifying_key().to_bytes());
     let by_agent = members(
         &mut agent,
         None,
         "workspace/members#add",
-        json!({"person": hex::encode(ivy.verifying_key().to_bytes()), "role": "owner"}),
+        json!({"person": ivy_hex, "role": "owner"}),
+    )
+    .await;
+    assert_eq!(by_agent["status"], "failed", "{by_agent}");
+    let by_agent = members(
+        &mut agent,
+        None,
+        "workspace/members#add",
+        json!({"person": ivy_hex, "role": "administrator"}),
     )
     .await;
     assert_eq!(by_agent["status"], "ok", "{by_agent}");

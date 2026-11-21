@@ -724,24 +724,6 @@ impl Workspaces {
         member.person_id().map(str::to_owned)
     }
 
-    /// The people that hold `workspace`'s keys, as the governance of the
-    /// member copy held here decides it.
-    pub async fn member_key_holders(
-        &self,
-        workspace: WorkspaceId,
-    ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
-        let (_, state) = self.member_copy(workspace).await?;
-        let policy = state.governance().governed_policy().ok()?;
-        let mut holders = std::collections::BTreeSet::new();
-        for person in policy.keepers() {
-            let mut key = [0; 32];
-            if hex::decode_to_slice(person, &mut key).is_ok() {
-                holders.insert(collab_types::Ed25519PublicKey::from_bytes(key));
-            }
-        }
-        Some(holders)
-    }
-
     /// Whether `workspace` is held here as a member copy of another device.
     ///
     /// # Errors

@@ -1154,7 +1154,7 @@ fn people(
         ws,
         names,
         person,
-        ws.owns(person),
+        ws.is_owner(person),
         &kept,
         delegations,
     ))

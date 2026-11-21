@@ -120,44 +120,45 @@ impl Workspaces {
         Ok(issued)
     }
 
-    /// Whether anyone holds `workspace` as its owner: someone the workspace is
-    /// kept for, besides the host that runs it.
+    /// Whether a person owns `workspace`: its governance names someone else
+    /// than the host that runs it as its owner.
     pub async fn has_owner(&self, workspace: &str) -> bool {
+        let host = hex::encode(self.inner.host.cert.user_public_key);
         self.policy_of(workspace)
             .await
-            .is_some_and(|policy| policy.keepers().next().is_some())
+            .is_some_and(|policy| policy.owner().is_some_and(|owner| owner != host))
     }
 
-    /// Whether the person `user` owns `workspace`: someone it is kept for.
+    /// Whether the person `user` owns `workspace`, as its governance says.
     pub async fn is_owner(&self, workspace: &str, user: [u8; 32]) -> bool {
         self.policy_of(workspace)
             .await
-            .is_some_and(|policy| policy.is_keeper(&hex::encode(user)))
+            .is_some_and(|policy| policy.is_owner(&hex::encode(user)))
     }
 
-    /// Declare the person `user` an owner of `workspace`: its governance
-    /// holds them by their root as an administrator whom the workspace is kept
-    /// for, so its entry lets them in even when it takes people by invitation,
-    /// and a key of theirs lists the workspace, enters it and invites before
-    /// any device of theirs has joined. `name`, when given, is how the
-    /// workspace names them until they rename themselves.
+    /// Hand `workspace`, which this host owns, to the person `user`: its
+    /// governance names them its owner from then on, so its entry lets them
+    /// in even when it takes people by invitation, and a key of theirs lists
+    /// the workspace, enters it and invites before any device of theirs has
+    /// joined. This host stays in it as an administrator the owner may
+    /// withdraw. `name`, when given, is how the workspace names them until
+    /// they rename themselves.
     ///
     /// # Errors
     ///
-    /// The workspace is not governed here or its governance could not be
-    /// changed.
+    /// The workspace is not governed here, this host no longer owns it, or its
+    /// governance could not be changed.
     pub async fn declare_owner(
         &self,
         workspace: &str,
         user: [u8; 32],
         name: Option<&str>,
     ) -> Result<(), CollaborationError> {
-        let host = self.inner.host.cert.clone();
-        let now = tilo_clock::unix_now_ns();
-        self.set_member_administrator(workspace, &host, decision(b"owner", &user, now), user, name)
-            .await?;
-        self.set_member_keeper(workspace, &host, decision(b"keeper", &user, now), user)
-            .await?;
+        let governed = self.workspace(workspace).await?;
+        let mut governed = governed.lock().await;
+        self.give_ownership(&mut governed, user, name)
+            .await
+            .map_err(CollaborationError::new)?;
         Ok(())
     }
 
@@ -190,16 +191,6 @@ impl Workspaces {
             ),
         }
     }
-}
-
-/// A fresh administration request id per decision: the same person can be
-/// promoted, demoted and promoted again over the workspace's life.
-fn decision(kind: &[u8], key: &[u8; 32], now_ns: u64) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(kind);
-    hasher.update(key);
-    hasher.update(&now_ns.to_le_bytes());
-    *hasher.finalize().as_bytes()
 }
 
 #[cfg(test)]
@@ -323,13 +314,6 @@ mod tests {
         (newcomer.user_public_key, reply)
     }
 
-    async fn is_administrator(workspaces: &Workspaces, workspace: &str, person: [u8; 32]) -> bool {
-        workspaces
-            .policy_of(workspace)
-            .await
-            .is_some_and(|policy| policy.is_administrator(&hex::encode(person)))
-    }
-
     /// `device`'s person as a page's workspace lists them.
     fn row<'a>(page: &'a Workspace, device: &DeviceCert) -> &'a collab_types::Member {
         let person = hex::encode(device.user_public_key);
@@ -340,8 +324,8 @@ mod tests {
     }
 
     /// The owner link: an owner invitation, opened by someone whose key the
-    /// host never knew, makes them an administrator the workspace is kept for
-    /// as they come in, also after a restart; once someone did, the workspace
+    /// host never knew, hands them the workspace as they come in, also after
+    /// a restart; once someone did, the workspace
     /// has its owner, and the link is spent.
     #[tokio::test]
     async fn an_owner_invitation_makes_whoever_accepts_it_the_owner() {
@@ -390,11 +374,12 @@ mod tests {
             workspaces.has_owner(&workspace).await,
             "the workspace has its owner"
         );
-        assert!(is_administrator(workspaces, &workspace, owner).await);
+        assert!(workspaces.is_owner(&workspace, owner).await);
         let policy = workspaces.policy_of(&workspace).await.unwrap();
-        assert_eq!(
-            policy.keepers().collect::<Vec<_>>(),
-            vec![hex::encode(owner)]
+        assert_eq!(policy.owner(), Some(hex::encode(owner).as_str()));
+        assert!(
+            policy.is_administrator(&hex::encode(host.1.user_public_key)),
+            "the host it was handed from serves it as an administrator"
         );
         // Who the workspace lists as its owner (`tilo workspace people ls`): the
         // person the link made one.

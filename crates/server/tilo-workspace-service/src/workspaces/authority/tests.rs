@@ -1677,33 +1677,36 @@ fn peer(cert: &DeviceCert) -> AuthenticatedPeer {
     }
 }
 
+/// A workspace its host hands to a person is administered by them: they make
+/// administrators through the host, which serves the workspace as one of
+/// them, and an administrator makes more. Taking an administrator's grant back
+/// is the owner's alone and signed on a device of theirs: the host refuses to
+/// carry it out for them in words that say so, and nobody else may.
 #[tokio::test]
-async fn whom_a_workspace_is_kept_for_makes_and_unmakes_administrators() {
+async fn a_workspace_handed_to_a_person_is_administered_by_them() {
     let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let server = test_host(dir.path(), &key, &owner).await;
+    let (key, host) = governor();
+    let server = test_host(dir.path(), &key, &host).await;
     let workspaces = server.workspaces();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let bo = admit(workspaces, &workspace, &owner, 2).await;
-    let cy = admit(workspaces, &workspace, &owner, 3).await;
+    let ada = admit(workspaces, &workspace, &host, 1).await;
+    let bo = admit(workspaces, &workspace, &host, 2).await;
+    let cy = admit(workspaces, &workspace, &host, 3).await;
     workspaces
-        .set_member_administrator(&workspace, &owner, [40; 32], ada.user_public_key, None)
+        .declare_owner(&workspace, ada.user_public_key, None)
         .await
         .unwrap();
-    // Only the host's person names whom the workspace is kept for.
-    assert!(
-        workspaces
-            .set_member_keeper(&workspace, &ada, [41; 32], ada.user_public_key)
-            .await
-            .is_err()
-    );
-    workspaces
-        .set_member_keeper(&workspace, &owner, [42; 32], ada.user_public_key)
+    assert!(workspaces.is_owner(&workspace, ada.user_public_key).await);
+    let policy = workspaces.policy_of(&workspace).await.unwrap();
+    assert!(policy.is_administrator(&hex::encode(host.user_public_key)));
+    // Only the owner hands the workspace on; the host no longer does.
+    let again = workspaces
+        .declare_owner(&workspace, bo.user_public_key, None)
         .await
-        .unwrap();
+        .unwrap_err();
+    assert!(again.to_string().contains("only the workspace's owner"), "{again}");
 
-    // The keeper makes Bo an administrator, and Bo makes Cy one.
+    // The owner makes Bo an administrator, and Bo makes Cy one.
     workspaces
         .set_member_administrator(&workspace, &ada, [43; 32], bo.user_public_key, None)
         .await
@@ -1712,7 +1715,7 @@ async fn whom_a_workspace_is_kept_for_makes_and_unmakes_administrators() {
         .set_member_administrator(&workspace, &bo, [44; 32], cy.user_public_key, None)
         .await
         .unwrap();
-    // Bo unmakes neither Cy nor the keeper; the keeper unmakes Cy.
+    // Bo unmakes neither Cy nor the owner.
     for person in [&cy, &ada] {
         assert!(
             workspaces
@@ -1725,19 +1728,29 @@ async fn whom_a_workspace_is_kept_for_makes_and_unmakes_administrators() {
                 .is_err()
         );
     }
-    set_role(workspaces, &workspace, &ada, &cy, Role::Editor).await;
+    // The owner may unmake Cy, but not through the host, which signs only
+    // what an administrator may.
+    let relayed = workspaces
+        .set_member_role(
+            &workspace,
+            &ada,
+            role_request(&cy, Role::Editor, rand::random()),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        relayed.contains("only the workspace's owner makes this change, and from a device of their own"),
+        "{relayed}"
+    );
+    let policy = workspaces.policy_of(&workspace).await.unwrap();
+    assert!(policy.is_administrator(&hex::encode(cy.user_public_key)));
 
-    // An administrator invites one; Cy, unmade, no longer does.
+    // An administrator invites one.
     workspaces
-        .issue_as(&workspace, &bo, invitation(45, Role::Editor), true)
+        .issue_as(&workspace, &cy, invitation(45, Role::Editor), true)
         .await
         .unwrap();
-    assert!(
-        workspaces
-            .issue_as(&workspace, &cy, invitation(46, Role::Editor), true)
-            .await
-            .is_err()
-    );
     server.shutdown().await;
 }
 

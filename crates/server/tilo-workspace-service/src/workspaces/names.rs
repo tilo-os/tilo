@@ -94,14 +94,21 @@ impl Workspaces {
 
     /// The workspaces this server governs.
     async fn governed_ids(&self) -> Vec<String> {
-        self.inner
+        let held: Vec<_> = self
+            .inner
             .workspaces
             .lock()
             .await
-            .keys()
-            .filter(|workspace| self.governs(workspace))
-            .cloned()
-            .collect()
+            .iter()
+            .map(|(id, workspace)| (id.clone(), workspace.clone()))
+            .collect();
+        let mut governed = Vec::with_capacity(held.len());
+        for (id, workspace) in held {
+            if self.governs(&*workspace.lock().await) {
+                governed.push(id);
+            }
+        }
+        governed
     }
 
     /// Name each person in `workspace` by the name they gave themselves, where it calls them
@@ -110,19 +117,17 @@ impl Workspaces {
         let Some(names) = self.inner.person_names.read_recover().clone() else {
             return;
         };
-        if !self.governs(workspace) {
-            return;
-        }
         let Ok(state) = self.workspace(workspace).await else {
             return;
         };
         let now = tilo_clock::unix_now_ns();
-        let read = state
-            .lock()
-            .await
-            .peer()
-            .governance()
-            .governed_members(system_time(now));
+        let read = {
+            let governed = state.lock().await;
+            if !self.governs(&governed) {
+                return;
+            }
+            governed.peer().governance().governed_members(system_time(now))
+        };
         let members = match read {
             Ok(list) => list.members,
             Err(error) => {

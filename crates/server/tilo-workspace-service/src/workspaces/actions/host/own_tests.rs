@@ -235,7 +235,8 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
         .is_err()
     );
 
-    // Joining makes them its administrator.
+    // It is theirs: its governance names them its owner, and their device
+    // comes in as the owner's.
     join(workspaces, &created, &guest).await;
     assert_eq!(
         access(
@@ -244,7 +245,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
             guest.user_public_key
         )
         .await,
-        Some((Role::Editor, true))
+        Some((Role::Owner, true))
     );
 
     // Asking again without a name answers the same workspace, with a new
@@ -763,8 +764,8 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
             root.verifying_key().to_bytes()
         )
         .await,
-        Some((Role::Editor, true)),
-        "its person is a member, who administers their own workspace"
+        Some((Role::Owner, true)),
+        "its person owns their own workspace"
     );
     // A key the grant mints for that workspace alone redeems the person's
     // invitation the grant asks for, as the grant did.
@@ -1120,12 +1121,13 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     server.shutdown().await;
 }
 
-/// An owner's server key lets a person in by their key, at once, as an owner:
-/// that person's own key then enters and brings others in, as far as they may.
-/// An administrator makes administrators but no owner, and an editor's key
-/// adds nobody.
+/// An owner's server key lets a person in by their key, at once, as an
+/// administrator: that person's own key then enters and brings others in, as
+/// far as they may. Handing the workspace on is the owner's own to sign, so
+/// the host refuses to do it for them. An administrator makes administrators
+/// but no owner, and an editor's key adds nobody.
 #[tokio::test]
-async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in() {
+async fn an_owners_key_adds_an_administrator_by_key_whose_own_key_then_brings_people_in() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -1144,11 +1146,27 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
     let created = own_as_key(&host, &ada_key, json!({"name": "Lounge"})).await;
     join(workspaces, &created, &ada_key).await;
     let workspace = &created.workspace;
+    assert!(
+        workspaces
+            .is_owner(&workspace.workspace, ada.verifying_key().to_bytes())
+            .await,
+        "the workspace Ada made here is hers"
+    );
 
-    // Grace has never been here: Ada's key makes her an owner by her key.
+    // Grace has never been here. The host does not hand Ada's workspace to
+    // her: that is Ada's to sign on a device of her own.
     let grace = SigningKey::from_bytes(&rand::random());
     let grace_person = grace.verifying_key().to_bytes();
-    let listed = add_member(&host, workspace, &ada_key, &grace, "owner")
+    let handed = add_member(&host, workspace, &ada_key, &grace, "owner").await;
+    assert!(
+        matches!(&handed, Err(ActionCallError::Refused { reason, .. })
+            if reason.contains("only the workspace's owner makes this change, and from a device of their own")),
+        "{handed:?}"
+    );
+    assert!(!workspaces.is_owner(&workspace.workspace, grace_person).await);
+
+    // Ada's key makes Grace an administrator by her key.
+    let listed = add_member(&host, workspace, &ada_key, &grace, "administrator")
         .await
         .unwrap();
     let row = listed
@@ -1160,12 +1178,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_own_key_then_brings_people_in(
         .unwrap_or_else(|| panic!("Grace is listed: {listed}"));
     assert_eq!(
         (row["owner"].clone(), row["administrator"].clone()),
-        (json!(true), json!(true))
-    );
-    assert!(
-        workspaces
-            .is_owner(&workspace.workspace, grace_person)
-            .await
+        (json!(false), json!(true))
     );
 
     // Her own key enters, before any device of hers joined, and makes Hal an
@@ -1941,9 +1954,8 @@ async fn subscribe(
 }
 
 /// A person's key makes a workspace of their own, and a device of theirs joins it before any
-/// of theirs has entered it: the host keeps the workspace for them, so it names them a member
-/// and its administrator as their first device comes in, which the stranger's device below is
-/// still not.
+/// of theirs has entered it: the workspace is theirs from the moment it is made, so their
+/// first device comes in as its owner's, which the stranger's device below is still not.
 #[tokio::test]
 async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
     let dir = tempfile::tempdir().unwrap();
@@ -1968,8 +1980,8 @@ async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
     );
     assert_eq!(
         access(workspaces, &workspace, root.verifying_key().to_bytes()).await,
-        Some((Role::Editor, true)),
-        "the person administers the workspace kept for them"
+        Some((Role::Owner, true)),
+        "the person owns the workspace made for them"
     );
     let (_, stranger) = guest_device();
     assert_eq!(

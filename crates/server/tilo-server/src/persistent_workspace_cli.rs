@@ -179,12 +179,12 @@ pub struct PersistentArgs {
         requires = "wait_list_max"
     )]
     pub wait_list_mail: Option<String>,
-    /// A person who owns the workspace from its start, by their user public
-    /// key (64 hex characters); repeatable. Declared at every start where
-    /// they are not an owner yet: how a host gets its first owner, who then
-    /// lets everyone else in with `tilo workspace people add` and `tilo workspace people
-    /// invite`. An owner taken out later is declared again at the next start
-    /// while the deployment still names them.
+    /// The person the workspace is handed to at its start, by their user
+    /// public key (64 hex characters): how a host gets its owner, who then
+    /// lets everyone else in with `tilo workspace people add` and `tilo
+    /// workspace people invite`. A workspace has one owner, so this takes
+    /// effect while the host still owns it; once it is a person's, only they
+    /// hand it on, and a start that names someone else says so in its log.
     #[arg(long = "owner", value_name = "USER_PUBLIC_KEY")]
     pub owners: Vec<String>,
     /// A UNIX socket the operator asks the running workspace through, one
@@ -877,12 +877,12 @@ fn hold_for(named: Option<&str>) -> anyhow::Result<tilo_server_protocol::WorkSet
     Ok(work)
 }
 
-/// Declare each of `owners` (their user roots, hex) an owner of the workspace
-/// who is not one yet: its governance holds them by their root as a member
-/// with every governance action whom the workspace is kept for, so the entry
-/// lets them in even when it takes people by invitation, and a key of theirs
-/// lists the workspace, enters it and brings others in before any device of
-/// theirs has joined.
+/// Hand the workspace to the first of `owners` (their user roots, hex) while
+/// this host still owns it: its governance names them its owner from then on,
+/// so the entry lets them in even when it takes people by invitation, and a
+/// key of theirs lists the workspace, enters it and brings others in before
+/// any device of theirs has joined. A workspace a person owns already stays
+/// theirs; a deployment naming someone else is told so in the log.
 async fn settle_owners(
     workspaces: &Workspaces,
     workspace: &str,
@@ -894,10 +894,15 @@ async fn settle_owners(
         if workspaces.is_owner(workspace, user).await {
             continue;
         }
+        if workspaces.has_owner(workspace).await {
+            tracing::warn!(%workspace, person = %key,
+                "the workspace has its owner already: only they hand it to someone else");
+            continue;
+        }
         workspaces
             .declare_owner(workspace, user, None)
             .await
-            .map_err(|error| anyhow::anyhow!("declare {key} an owner: {error}"))?;
+            .map_err(|error| anyhow::anyhow!("hand the workspace to {key}: {error}"))?;
         tracing::info!(%workspace, person = %key, "the deployment's owner owns the workspace");
     }
     Ok(())
@@ -1122,13 +1127,13 @@ async fn refound_records(
 /// settlement document, so a restart neither grants it again nor takes back a
 /// person's later choice: after that, the switch in the workspace's settings
 /// is the only way to change it. A workspace the operator does not list, or
-/// does not govern, is left alone.
+/// that a person owns, is left alone.
 pub(crate) async fn settle_moderation(
     workspaces: &Workspaces,
     workspace: &str,
     persistent: &PersistentArgs,
 ) -> anyhow::Result<()> {
-    if persistent.listing_description.is_none() || !workspaces.governs(workspace) {
+    if persistent.listing_description.is_none() || workspaces.has_owner(workspace).await {
         return Ok(());
     }
     let grant = tilo_action_policy::bot::MODERATION_GRANT;

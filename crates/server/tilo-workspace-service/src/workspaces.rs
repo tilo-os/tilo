@@ -64,12 +64,10 @@ mod device_rejoin_tests;
 #[cfg(test)]
 mod hard_stop_tests;
 #[cfg(test)]
-mod removed_keeper_tests;
-#[cfg(test)]
 mod returning_person_tests;
 pub(crate) use desktop_writes::writes_desktop;
 mod holding;
-pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
+pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owner, work_takes};
 mod member;
 pub use member::{AdmittedWrite, MemberDevice, MemberMaterial};
 mod run_admission;
@@ -87,6 +85,7 @@ mod delegated_work;
 mod listing;
 mod memberships;
 mod own;
+mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
 mod packaged_model;
 #[cfg(not(target_arch = "wasm32"))]
@@ -760,8 +759,9 @@ impl GovernedWorkspace {
         ) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
         let committing = crate::timing::start();
-        if candidate.workspace_id() != replica.workspace_id()
-            || candidate.owner() != replica.owner()
+        // The owner changes only by a transfer the workspace's governance
+        // replays; any other owner is another workspace.
+        if candidate.workspace_id() != replica.workspace_id() || !candidate.keeps_owner_of(replica)
         {
             return Err("a workspace change cannot replace the workspace".into());
         }
@@ -1439,6 +1439,9 @@ impl Workspaces {
             if let Err(error) = self.name_own_host(&mut workspace).await {
                 tracing::error!(workspace = %workspace.workspace(), %error, "the host's address is not named in the workspace's governance");
             }
+            if let Err(error) = self.hand_kept_workspace_over(&mut workspace).await {
+                tracing::error!(workspace = %workspace.workspace(), %error, "a workspace this host keeps for a person was not handed to them");
+            }
             self.keep_link_history(&workspace).await;
             self.recall(&mut workspace)
                 .await
@@ -1638,15 +1641,12 @@ impl Workspaces {
         &self.inner.host.cert
     }
 
-    /// Whether this server's own person governs `workspace` here: every
-    /// workspace it keeps is theirs, except a workspace of someone else's
-    /// own, which that person governs.
+    /// Whether this server's own person owns `governed`, as its governance
+    /// says: a workspace this host made for someone else, or that was handed
+    /// to them since, is theirs.
     #[must_use]
-    pub fn governs(&self, workspace: &str) -> bool {
-        let person = self.inner.host.cert.user_public_key;
-        self.own()
-            .and_then(|own| own.owner_of(workspace))
-            .is_none_or(|owner| owner == person)
+    fn governs(&self, governed: &GovernedWorkspace) -> bool {
+        governed.peer().owner() == self.inner.host.cert.user_public_key
     }
 
     /// The governor answering the workspace-join exchange for these workspaces.

@@ -153,7 +153,7 @@ pub fn members(ws: &Workspace, names: &PeopleNames, viewer: &UserId) -> Vec<Memb
                     viewer,
                     &tilo_action_policy::MemberId::person(user.clone()),
                 ),
-                owns: ws.owns(&user),
+                owns: ws.is_owner(&user),
                 administrator: ws.policy.is_administrator(&user),
                 role,
                 grants,

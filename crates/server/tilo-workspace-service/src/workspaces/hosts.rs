@@ -143,7 +143,8 @@ impl Workspaces {
     /// Name this host's own signed address among the workspace's hosts, so
     /// every member reads where the workspace is served from the replica it
     /// already holds. Naming it as it is named changes nothing. A host
-    /// keeping another person's workspace names nothing: its holders are
+    /// keeping another person's workspace, as neither its owner nor one of
+    /// its administrators, names nothing: its holders are
     /// that person's to name, and the address it signed is the one they
     /// named. Nor does a holder its owners have not named yet, other than the
     /// device the workspace was founded on: whoever hands it the workspace
@@ -157,7 +158,7 @@ impl Workspaces {
         let (others, unnamed) = {
             let peer = governed.peer();
             (
-                peer.owner() != host.cert.user_public_key,
+                !peer.governs_history(&host.cert.user_public_key),
                 peer.governance().holder_role(&own).is_none()
                     && peer.governance().founder() != Some(own),
             )
@@ -520,9 +521,8 @@ impl Workspaces {
         }
     }
 
-    /// Whether `caller` chooses which hosts hold `governed`: a device of an
-    /// owner of the workspace (the person who owns it, or one it is kept
-    /// for), who decides where it lives; or that person's server key, which
+    /// Whether `caller` chooses which hosts hold `governed`: a device of the
+    /// workspace's owner, who decides where it lives; or that person's server key, which
     /// acts for them from a script or a command. Never an agent's grant, and
     /// never a device for being of the person whose host this is: every
     /// holder answers it alike.
@@ -532,13 +532,7 @@ impl Workspaces {
             || caller
                 .capabilities
                 .own_key_in(governed.peer().workspace_id());
-        speaks_for_person
-            && (person == governed.peer().owner()
-                || governed
-                    .peer()
-                    .governance()
-                    .governed_policy()
-                    .is_ok_and(|policy| policy.is_keeper(&hex::encode(person))))
+        speaks_for_person && person == governed.peer().owner()
     }
 
     /// The servers keeping `workspace`, as its governance names them: this

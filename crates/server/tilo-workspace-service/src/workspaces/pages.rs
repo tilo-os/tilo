@@ -121,13 +121,11 @@ impl Presented {
 }
 
 /// `workspace` as a page sees it, with `summary` its people as its
-/// governance keeps them, `owners` the
-/// people it is kept for, `holders` the holders of it, `delegations` the work
+/// governance keeps them, its owner among them, `holders` the holders of it, `delegations` the work
 /// its members gave servers and `reader` the person the page's device acts
 /// for.
 fn page_workspace(
     summary: WorkspaceSummary,
-    owners: &BTreeSet<String>,
     holders: Vec<WorkspaceHolder>,
     delegations: Vec<WorkspaceDelegation>,
     reader: [u8; 32],
@@ -139,16 +137,6 @@ fn page_workspace(
             let root = member.root();
             // A person the workspace has not named stays without a name: their device's label
             // names the device, never them.
-            // The person a host keeps the workspace for is its owner: the host
-            // runs the workspace for them and is nobody in it itself, so it is
-            // their role the page reads and their rights it offers.
-            if member
-                .id
-                .person_id()
-                .is_some_and(|person| owners.contains(person))
-            {
-                member.role = Some(Role::Owner);
-            }
             // The page shows its reader's own row as theirs, and reads from it
             // what they may do here.
             if root == Some(reader) {
@@ -187,18 +175,6 @@ fn delegations_of(
             expires_at_ns: delegation.expires_at_ns,
         })
         .collect()
-}
-
-/// The people `workspace` is kept for, by person id: who a page reads as its
-/// owner, as a host running workspaces of people's own keeps each for a person
-/// and is nobody in it itself.
-fn owners_of(workspace: &GovernedWorkspace) -> BTreeSet<String> {
-    workspace
-        .peer()
-        .governance()
-        .governed_policy()
-        .map(|policy| policy.keepers().map(str::to_owned).collect())
-        .unwrap_or_default()
 }
 
 fn valid_name(name: &str) -> Result<String, CollaborationError> {
@@ -669,7 +645,7 @@ impl Workspaces {
             | WorkspacesRequest::RemoveServer { workspace, .. } => workspace.clone(),
             _ => return Err(CollaborationError::new("not a servers request")),
         };
-        // Which servers keep a workspace is its owners' choice, as the
+        // Which servers keep a workspace is its owner's choice, as the
         // workspace's own `server.*` actions decide it.
         let chooses = {
             let governed = self.workspace(&workspace).await?;
@@ -678,7 +654,7 @@ impl Workspaces {
         };
         if !chooses {
             return Err(CollaborationError::new(
-                "only an owner of the workspace chooses the servers that keep it",
+                "only the workspace's owner chooses the servers that keep it",
             ));
         }
         match request {
@@ -940,7 +916,6 @@ impl Workspaces {
                 continue;
             }
             let summary = self.people(&workspace);
-            let owners = owners_of(&workspace);
             let holders = holders_of(&workspace.peer().governance().keeping_devices());
             let delegations = delegations_of(
                 &workspace.peer().workspace().work_delegations(),
@@ -950,7 +925,6 @@ impl Workspaces {
             drop(workspace);
             listed.push(page_workspace(
                 summary,
-                &owners,
                 holders,
                 delegations,
                 device.user_public_key,
@@ -1048,7 +1022,6 @@ impl Workspaces {
         let workspace = self.workspace(workspace).await?;
         let workspace = workspace.lock().await;
         let summary = self.people(&workspace);
-        let owners = owners_of(&workspace);
         let holders = holders_of(&workspace.peer().governance().keeping_devices());
         let delegations = delegations_of(
             &workspace.peer().workspace().work_delegations(),
@@ -1058,7 +1031,6 @@ impl Workspaces {
         drop(workspace);
         Ok(WorkspacesReply::Workspace(page_workspace(
             summary,
-            &owners,
             holders,
             delegations,
             device.user_public_key,
@@ -1865,7 +1837,7 @@ mod tests {
             members: vec![member],
             devices: std::collections::BTreeMap::new(),
         };
-        let page = page_workspace(summary, &BTreeSet::new(), Vec::new(), Vec::new(), [0; 32]);
+        let page = page_workspace(summary, Vec::new(), Vec::new(), [0; 32]);
         assert_eq!(page.members[0].name, "", "an unnamed person stays unnamed");
     }
 

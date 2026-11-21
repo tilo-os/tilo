@@ -266,11 +266,10 @@ fn shown_person(holder: &str, ws: &Workspace) -> ShownPerson {
     }
 }
 
-/// Whether grant `id` is one that makes its holder an administrator of the workspace or the person
-/// it is kept for: a role they hold in it, which its people show, not a part of it shared out.
+/// Whether grant `id` is one that makes its holder an administrator of the workspace: a role they
+/// hold in it, which its people show, not a part of it shared out.
 fn is_role(id: &tilo_action_policy::GrantId) -> bool {
     tilo_action_policy::roles::administrator_named(id).is_some()
-        || tilo_action_policy::roles::keeper_named(id).is_some()
 }
 
 /// The member `holder` as a share row shows them, as what they are: a person by the name they go
@@ -912,18 +911,13 @@ mod workspace_tests {
             );
         }
 
-        fn an_administrator_and_the_person_it_is_kept_for_are_roles_not_shares() {
+        fn an_administrator_is_a_role_not_a_share() {
             let mut w = ws("Design");
             let workspace = w.policy.workspace.clone();
             let by = Grantee::person(ME);
             for grant in [
                 tilo_action_policy::roles::administrator_grant(&workspace, "ada", by.clone()),
-                tilo_action_policy::roles::administrator_moderation_grant(
-                    &workspace,
-                    "ada",
-                    by.clone(),
-                ),
-                tilo_action_policy::roles::keeper_grant(&workspace, "ada", by),
+                tilo_action_policy::roles::administrator_moderation_grant(&workspace, "ada", by),
             ] {
                 w.grant(grant);
             }
@@ -1001,7 +995,7 @@ mod workspace_tests {
         a_workspace_only_you_own_reads_as_private();
         a_person_not_here_goes_by_the_name_they_gave_themselves();
         the_servers_moderation_holds_chat_as_itself();
-        an_administrator_and_the_person_it_is_kept_for_are_roles_not_shares();
+        an_administrator_is_a_role_not_a_share();
         an_agent_holding_part_of_the_workspace_is_named_and_you_are_not_a_share();
         a_member_makes_the_workspace_read_as_shared_with_them();
         a_file_grant_is_a_share_and_not_a_membership();

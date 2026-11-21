@@ -1882,27 +1882,9 @@ impl Workspaces {
     pub(super) async fn members(&self, workspace: &str) -> Result<Vec<Value>, CollaborationError> {
         let governed = self.workspace(workspace).await?;
         let governed = governed.lock().await;
-        // Whoever made a workspace of their own holds it, though its
-        // governance names this host's device as the structural owner
-        // that runs it: every other workspace here is its governor's.
-        let owner = self
-            .own()
-            .and_then(|own| own.owner_of(workspace))
-            .unwrap_or_else(|| governed.peer().owner());
-        // An owner the host declared (its owner link, or the operator's
-        // `owner`) is an administrator the workspace is kept for: as much an
-        // owner as whoever made it.
-        let policy = governed
-            .peer()
-            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
-            .ok()
-            .map(|permissions| permissions.policy);
-        let owns = |root: [u8; 32]| {
-            root == owner
-                || policy
-                    .as_ref()
-                    .is_some_and(|policy| policy.is_keeper(&hex::encode(root)))
-        };
+        // The workspace's governance names its one owner, on every device.
+        let owner = governed.peer().owner();
+        let owns = |root: [u8; 32]| root == owner;
         let people = self.people(&governed);
         drop(governed);
         Ok(people

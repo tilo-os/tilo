@@ -447,10 +447,10 @@ fn readers() -> tilo_action_policy::Preset {
 }
 
 mod made_and_invited {
-    //! Who makes administrators, as every member replays it: the owner, whom
-    //! the workspace is kept for, and administrators make them; only the
-    //! owner and the keeper unmake them; an invitation makes its holder an
-    //! administrator only when whom it carries the making of may.
+    //! Who makes administrators, as every member replays it: the owner and
+    //! administrators make them; only the owner unmakes them; an invitation
+    //! makes its holder an administrator only when whom it carries the making
+    //! of may.
     use super::*;
     use crate::join::{
         InviteGrant, Inviter, JoinChallenge, Role as JoinRole, VerifiedRedemption,
@@ -525,41 +525,32 @@ mod made_and_invited {
         verify_join_proof(&proof, &challenge, joiner, &RevocationList::new(), now_ns).unwrap()
     }
 
-    /// A workspace whose host (its owner) keeps it for the Editor it seeded,
-    /// made its administrator: the host's key, the keeper's device key and
-    /// root.
-    fn kept() -> (StatePeer, SigningKey, SigningKey, [u8; 32], SystemTime) {
+    /// A workspace its host founded and handed to the Editor it seeded,
+    /// staying its administrator: the host's key, the owner's device key
+    /// and root.
+    fn handed() -> (StatePeer, SigningKey, SigningKey, [u8; 32], SystemTime) {
         let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-        let (_, keeper) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-        peer.governance_mut()
-            .set_member_administrator(keeper, None, &host_key, now)
-            .unwrap();
+        let (_, owner) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
         assert!(
             peer.governance_mut()
-                .set_keeper(keeper, &host_key, now)
-                .unwrap()
-        );
-        assert!(
-            !peer
-                .governance_mut()
-                .set_keeper(keeper, &host_key, now)
+                .transfer_ownership(owner, &host_key, now)
                 .unwrap()
         );
         (
             peer,
             host_key,
             SigningKey::from_bytes(&[6; 32]),
-            keeper,
+            owner,
             now,
         )
     }
 
     tilo_test_env::scenario! {
-        fn an_administrator_is_made_by_the_keeper_or_by_an_invitation;
+        fn an_administrator_is_made_by_the_owner_or_by_an_invitation;
 
-        phase the_keeper_makes_an_administrator_who_makes_another_and_only_the_keeper_unmakes;
+        phase the_owner_makes_an_administrator_who_makes_another_and_only_the_owner_unmakes;
         {
-            let (mut peer, host_key, keeper_key, keeper, now) = kept();
+            let (mut peer, host_key, owner_key, owner, now) = handed();
             let (bob_key, _, bob) =
                 crate::admission_tests::add_member_with(&mut peer, &host_key, now, 30, 31);
             let (_, _, dee) =
@@ -567,12 +558,9 @@ mod made_and_invited {
             let (eve_key, _, eve) =
                 crate::admission_tests::add_member_with(&mut peer, &host_key, now, 34, 35);
             let policy = |peer: &StatePeer| peer.governance().governed_policy().unwrap();
-            assert_eq!(
-                policy(&peer).keepers().collect::<Vec<_>>(),
-                [hex::encode(keeper)]
-            );
+            assert_eq!(policy(&peer).owner(), Some(hex::encode(owner).as_str()));
 
-            // An Editor makes nobody an administrator, nor names a keeper.
+            // An Editor makes nobody an administrator, nor takes the workspace.
             assert!(
                 peer.clone()
                     .governance_mut()
@@ -582,14 +570,14 @@ mod made_and_invited {
             assert!(
                 peer.clone()
                     .governance_mut()
-                    .set_keeper(eve, &keeper_key, now)
+                    .transfer_ownership(eve, &eve_key, now)
                     .is_err()
             );
 
-            // The keeper's own device makes Bob one, and Bob makes Dee one.
+            // The owner's own device makes Bob one, and Bob makes Dee one.
             assert!(
                 peer.governance_mut()
-                    .set_member_administrator(bob, None, &keeper_key, now)
+                    .set_member_administrator(bob, None, &owner_key, now)
                     .unwrap()
             );
             assert!(is_administrator(&peer, bob, now));
@@ -611,8 +599,8 @@ mod made_and_invited {
                 "Bob gave it"
             );
 
-            // Bob unmakes and removes neither Dee nor the keeper.
-            for person in [dee, keeper] {
+            // Bob unmakes and removes neither Dee nor the owner.
+            for person in [dee, owner] {
                 assert!(
                     peer.clone()
                         .governance_mut()
@@ -620,9 +608,9 @@ mod made_and_invited {
                         .is_err()
                 );
             }
-            // The keeper unmakes Dee, who governs nothing from then on.
+            // The owner unmakes Dee, who governs nothing from then on.
             peer.governance_mut()
-                .set_member_role(dee, crate::join::Role::Editor, &keeper_key, now)
+                .set_member_role(dee, crate::join::Role::Editor, &owner_key, now)
                 .unwrap();
             assert!(!is_administrator(&peer, dee, now));
             let dee_device = SigningKey::from_bytes(&[33; 32]).verifying_key().to_bytes();
@@ -633,24 +621,28 @@ mod made_and_invited {
                     .may_invite_administrator(&SigningKey::from_bytes(&[33; 32]), now)
             );
             assert!(peer.governance().may_invite_administrator(&bob_key, now));
-            assert!(peer.governance().may_invite_administrator(&keeper_key, now));
+            assert!(peer.governance().may_invite_administrator(&owner_key, now));
             assert!(!peer.governance().may_invite_administrator(&eve_key, now));
         }
 
         phase an_administrator_invitation_makes_one_only_when_its_inviter_may;
         {
-            let (mut peer, host_key, keeper_key, keeper, now) = kept();
-            let host = peer.owner_certificates()[0].clone();
+            let (mut peer, host_key, owner_key, owner, now) = handed();
+            let host = peer
+                .certificates()
+                .into_iter()
+                .find(|cert| cert.device_public_key == host_key.verifying_key().to_bytes())
+                .unwrap();
             let (eve_key, eve_cert, eve) =
                 crate::admission_tests::add_member_with(&mut peer, &host_key, now, 34, 35);
 
-            // The host signs for the keeper: the guest enters as an administrator,
-            // given by the keeper, and a fresh replica reads it so.
+            // The host signs for the owner: the guest enters as an administrator,
+            // given by the owner, and a fresh replica reads it so.
             let guest = device(40, 41);
-            let invited = administrator_redemption(&peer, (&host_key, &host), keeper, &guest, 42, now);
+            let invited = administrator_redemption(&peer, (&host_key, &host), owner, &guest, 42, now);
             assert!(
                 peer.governance_mut()
-                    .admit_invited_member(&invited, &keeper_key, now)
+                    .admit_invited_member(&invited, &owner_key, now)
                     .unwrap()
             );
             assert!(is_administrator(&peer, guest.1.user_public_key, now));
@@ -664,7 +656,7 @@ mod made_and_invited {
             // administrators. No member admits it, whoever writes it.
             let escalated = device(43, 44);
             let refused = administrator_redemption(&peer, (&host_key, &host), eve, &escalated, 45, now);
-            for writer in [&host_key, &keeper_key] {
+            for writer in [&host_key, &owner_key] {
                 let error = peer
                     .clone()
                     .governance_mut()
@@ -683,13 +675,13 @@ mod made_and_invited {
             );
             assert!(peer.permissions(forged.1.device_public_key, now).is_err());
 
-            // An administrator the keeper unmakes invites no administrator after.
+            // An administrator the owner unmakes invites no administrator after.
             let guest_key = &guest.0;
             peer.governance_mut()
                 .set_member_role(
                     guest.1.user_public_key,
                     crate::join::Role::Editor,
-                    &keeper_key,
+                    &owner_key,
                     now,
                 )
                 .unwrap();

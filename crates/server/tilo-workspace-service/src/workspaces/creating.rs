@@ -77,13 +77,33 @@ impl super::Workspaces {
         workspace: Option<&str>,
     ) -> Result<WorkspaceSummary, String> {
         // Making a workspace is a large future; whoever awaits it holds a pointer.
-        Box::pin(self.make_workspace(name, workspace)).await
+        Box::pin(self.make_workspace(name, workspace, None)).await
+    }
+
+    /// [`Self::create_workspace`] for `person`: the workspace is theirs from
+    /// the step that makes it. This host founds it, hands it to them as its
+    /// owner, and stays in it as one of its administrators, which every
+    /// member sees and its owner may withdraw. Made for this host's own
+    /// person, it stays this host's.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::create_workspace`], and when the workspace could not be
+    /// handed to `person`.
+    pub async fn create_for(
+        &self,
+        name: &str,
+        workspace: Option<&str>,
+        person: [u8; 32],
+    ) -> Result<WorkspaceSummary, String> {
+        Box::pin(self.make_workspace(name, workspace, Some(person))).await
     }
 
     async fn make_workspace(
         &self,
         name: &str,
         workspace: Option<&str>,
+        person: Option<[u8; 32]>,
     ) -> Result<WorkspaceSummary, String> {
         // A workspace placed under an identity waits for another placing the
         // same one, so two devices placing it at once create it once. Others
@@ -171,6 +191,9 @@ impl super::Workspaces {
         let mut governed = workspace.lock().await;
         self.settle(&mut governed).await?;
         self.name_own_host(&mut governed).await?;
+        if let Some(person) = person {
+            self.give_ownership(&mut governed, person, None).await?;
+        }
         self.serve_direct(&governed)?;
         drop(governed);
         self.keep_reading(&workspace).await;

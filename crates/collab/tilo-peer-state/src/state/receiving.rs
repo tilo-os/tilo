@@ -210,7 +210,7 @@ impl StatePeer {
     /// Whether this state, staged from `before`, has `before`'s owner, or
     /// the one its governance names after a transfer it replays: the one way
     /// a workspace's owner changes.
-    pub(super) fn keeps_owner_of(&self, before: &Self) -> bool {
+    pub fn keeps_owner_of(&self, before: &Self) -> bool {
         self.core.owner == before.core.owner
             || self
                 .core

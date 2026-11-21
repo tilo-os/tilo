@@ -267,10 +267,6 @@ impl Workspaces {
         let issued = {
             let governed = self.workspace(workspace).await?;
             let mut governed = governed.lock().await;
-            if makes_administrator {
-                self.ensure_keeper(&mut governed, administrator.user_public_key, now)
-                    .await?;
-            }
             self.authorize(
                 administrator,
                 Some(&governed),
@@ -647,8 +643,6 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.ensure_keeper(&mut workspace, administrator.user_public_key, now)
-            .await?;
         self.authorize_role_change(&workspace, administrator, &request, now)?;
         let key = self.inner.host.key.clone();
         self.administer(
@@ -681,8 +675,6 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.ensure_keeper(&mut workspace, caller.user_public_key, now)
-            .await?;
         self.authorize(caller, Some(&workspace), WorkspaceOp::Change(&change), now)?;
         let key = self.inner.host.key.clone();
         self.administer(
@@ -709,8 +701,6 @@ impl Workspaces {
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.ensure_keeper(&mut workspace, caller.user_public_key, now)
-            .await?;
         let at = system_time(now);
         let document = if app.is_empty() {
             document
@@ -777,13 +767,11 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.ensure_keeper(&mut workspace, administrator.user_public_key, now)
-            .await?;
         let person = request.user_public_key;
         let (role, makes_administrator, makes_owner) = match request.place {
             MemberPlace::Role(role) => (role, false, false),
             MemberPlace::Administrator => (Role::Editor, true, false),
-            MemberPlace::Owner => (Role::Editor, true, true),
+            MemberPlace::Owner => (Role::Editor, false, true),
         };
         let op = WorkspaceOp::Place(person, request.place);
         self.authorize(administrator, Some(&workspace), op, now)?;
@@ -795,19 +783,33 @@ impl Workspaces {
                 request.request_id,
                 request_digest(&("member", person, &request.place, name))?,
                 |peer| {
-                    let placed = peer.governance_mut().declare_member(
+                    // The workspace is handed to its new owner, who is no
+                    // member beside it; a name they bring is still theirs.
+                    if makes_owner {
+                        let handed = peer.governance_mut().transfer_ownership(
+                            person,
+                            &key,
+                            system_time(now),
+                        )?;
+                        let named = match name {
+                            Some(name) => peer.governance_mut().name_person(
+                                person,
+                                name,
+                                &key,
+                                system_time(now),
+                            )?,
+                            None => false,
+                        };
+                        return Ok(handed || named);
+                    }
+                    peer.governance_mut().declare_member(
                         person,
                         role,
                         makes_administrator,
                         name,
                         &key,
                         system_time(now),
-                    )?;
-                    let kept = makes_owner
-                        && peer
-                            .governance_mut()
-                            .set_keeper(person, &key, system_time(now))?;
-                    Ok(placed || kept)
+                    )
                 },
                 now,
             )
@@ -822,7 +824,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// Refuses non-administrators, a workspace this server's person does not
-    /// govern, and grants for another workspace.
+    /// own, and grants for another workspace.
     pub async fn put_workspace_grants(
         &self,
         workspace: &str,
@@ -837,13 +839,13 @@ impl Workspaces {
             WorkspaceOp::Host(ServiceOperation::PutWorkspaceGrants),
             now,
         )?;
-        if !self.governs(workspace) {
-            return Err(CollaborationError::new(
-                "this server's person does not govern the workspace",
-            ));
-        }
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
+        if !self.governs(&workspace) {
+            return Err(CollaborationError::new(
+                "this server's person does not own the workspace",
+            ));
+        }
         let key = self.inner.host.key.clone();
         self.administer(
             &mut workspace,
@@ -864,7 +866,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// Why the grants were not taken back; a workspace this server's person
-    /// does not govern is refused.
+    /// does not own is refused.
     pub async fn remove_workspace_grants(
         &self,
         workspace: &str,
@@ -879,13 +881,13 @@ impl Workspaces {
             WorkspaceOp::Host(ServiceOperation::PutWorkspaceGrants),
             now,
         )?;
-        if !self.governs(workspace) {
-            return Err(CollaborationError::new(
-                "this server's person does not govern the workspace",
-            ));
-        }
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
+        if !self.governs(&workspace) {
+            return Err(CollaborationError::new(
+                "this server's person does not own the workspace",
+            ));
+        }
         let key = self.inner.host.key.clone();
         self.administer(
             &mut workspace,
@@ -922,8 +924,6 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.ensure_keeper(&mut workspace, administrator.user_public_key, now)
-            .await?;
         self.authorize(
             administrator,
             Some(&workspace),
@@ -942,45 +942,6 @@ impl Workspaces {
                     &key,
                     system_time(now),
                 )
-            },
-            now,
-        )
-        .await
-    }
-
-    /// Name `user_public_key`, a member, as whom `workspace` is kept for
-    /// ([`tilo_action_policy::roles::keeper_grant`]): they make and unmake its
-    /// administrators as its owner, this host, does. The host's own decision:
-    /// only its person's devices ask it.
-    ///
-    /// # Errors
-    ///
-    /// Refuses anyone but the host's person, a person who is no member, and
-    /// governance that cannot be updated.
-    pub async fn set_member_keeper(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request_id: [u8; 32],
-        user_public_key: [u8; 32],
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            administrator,
-            None,
-            WorkspaceOp::Host(ServiceOperation::SetAdministrator),
-            now,
-        )?;
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let key = self.inner.host.key.clone();
-        self.administer(
-            &mut workspace,
-            request_id,
-            request_digest(&("keeper", user_public_key))?,
-            |peer| {
-                peer.governance_mut()
-                    .set_keeper(user_public_key, &key, system_time(now))
             },
             now,
         )
@@ -1133,8 +1094,6 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.ensure_keeper(&mut workspace, administrator.user_public_key, now)
-            .await?;
         let person = hex::encode(request.user_public_key);
         let change = membership.change(request.user_public_key);
         let identity = workspace.workspace().to_owned();
@@ -1790,116 +1749,8 @@ impl Workspaces {
             // Someone invited from the wait list is in now: their entry
             // leaves it.
             workspace.forget_joined_wait_list();
-            // The person whose own workspace this is administers it from
-            // their first device on.
-            let owner = self
-                .own()
-                .and_then(|own| own.owner_of(workspace.workspace()))
-                .filter(|owner| {
-                    joins
-                        .iter()
-                        .any(|join| join.redemption.certificate().user_public_key == *owner)
-                });
-            if let Some(owner) = owner {
-                self.make_administrator(workspace, owner, now).await?;
-            }
         }
         admitted
-    }
-
-    /// Name `person` as whom `workspace` is kept for when it is a workspace of
-    /// their own here and the workspace does not say so yet: a workspace
-    /// made before its governance named the person it is kept for gains the
-    /// grant the first time they govern its administrators. Nothing for
-    /// anyone else, nor while they have no device there.
-    pub(super) async fn ensure_keeper(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        person: [u8; 32],
-        now: u64,
-    ) -> Result<(), CollaborationError> {
-        let theirs = self
-            .own()
-            .and_then(|own| own.owner_of(workspace.workspace()))
-            .is_some_and(|owner| owner == person);
-        if !theirs {
-            return Ok(());
-        }
-        let kept = workspace
-            .peer()
-            .governance()
-            .governed_policy()
-            .map_err(CollaborationError::new)?;
-        let root = hex::encode(person);
-        if kept.is_keeper(&root) || !kept.is_member(&root) {
-            return Ok(());
-        }
-        self.make_administrator(workspace, person, now).await
-    }
-
-    /// Make `person`, admitted to the workspace of their own `workspace`, its
-    /// administrator; nothing while they have no device there.
-    pub(super) async fn administer_own(
-        &self,
-        workspace: &str,
-        person: [u8; 32],
-        now: u64,
-    ) -> Result<(), CollaborationError> {
-        let held = self.workspace(workspace).await?;
-        let mut held = held.lock().await;
-        let members = held
-            .peer()
-            .governance()
-            .governed_members(system_time(now))
-            .map_err(CollaborationError::new)?
-            .members;
-        if members.iter().any(|member| member.root() == Some(person)) {
-            self.make_administrator(&mut held, person, now).await?;
-        }
-        drop(held);
-        Ok(())
-    }
-
-    /// Make `person`, the one the workspace of their own `workspace` is kept for here, its
-    /// administrator as a device of theirs joins it before any of theirs has entered it: the
-    /// person a workspace of this host's own belongs to administers it from their first device on.
-    pub(super) async fn own_person_administers(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        person: [u8; 32],
-        now: u64,
-    ) -> Result<(), CollaborationError> {
-        self.make_administrator(workspace, person, now).await
-    }
-
-    /// Make the admitted `person` an administrator of `workspace`, held: an
-    /// Editor with every governance and moderation action, and the person
-    /// the workspace is kept for, who makes and unmakes its administrators
-    /// as its owner, this host, does. Writes nothing when they are both.
-    async fn make_administrator(
-        &self,
-        workspace: &mut GovernedWorkspace,
-        person: [u8; 32],
-        now: u64,
-    ) -> Result<(), CollaborationError> {
-        let key = &self.inner.host.key;
-        let mut candidate = workspace.peer().clone();
-        let administrator = candidate.governance_mut().set_member_administrator(
-            person,
-            None,
-            key,
-            system_time(now),
-        )?;
-        let kept = candidate
-            .governance_mut()
-            .set_keeper(person, key, system_time(now))?;
-        if !(administrator || kept) {
-            return Ok(());
-        }
-        let state = workspace.collaboration().clone();
-        workspace.commit(candidate, key, system_time(now), |_, _| Ok(state))?;
-        self.settle(workspace).await?;
-        Ok(())
     }
 }
 

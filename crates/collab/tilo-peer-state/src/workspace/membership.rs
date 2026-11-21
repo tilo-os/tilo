@@ -237,7 +237,12 @@ fn rows_permitted(
             GovernanceRow::Settings => settings(workspace, at, after, &held, writer)?,
             GovernanceRow::Sandbox => sandbox(&before, &written, &held, writer)?,
             GovernanceRow::Identities => {
-                let invited = redemptions(workspace, &held, &wanted, &before, &written, now_ns)?;
+                let invited = redemptions(
+                    workspace,
+                    (&held, &wanted),
+                    (&before, &written),
+                    (op.at_ns, now_ns),
+                )?;
                 identities(&held, &wanted, &invited, writer, (&before, &written))?;
             }
             _ => {
@@ -361,18 +366,19 @@ pub fn invitation_admission(
 /// the batch adds to the workspace's log must be one: the invitation it
 /// carries admits its joiner at the time the workspace records them joining
 /// ([`invitation_admits`]), the joiner's device row holds the receipt, and
-/// the workspace gives them its role. Every invitation part the batch adds
+/// the workspace gives them its role. The owner's device redeems one too,
+/// admitting nobody new: the invitation admits it when the batch was
+/// written (`written_ns`), and its row holds the receipt. Every invitation
+/// part the batch adds
 /// is kept under its own digest and completes a receipt it adds. That an
 /// invitation is redeemed once, and a part once kept stays, is every
 /// writer's rule, checked for the whole candidate
 /// ([`super::redemptions_kept`]).
 fn redemptions(
     workspace: &str,
-    held: &WorkspacePolicy,
-    wanted: &WorkspacePolicy,
-    before: &WorkspaceGovernance,
-    written: &WorkspaceGovernance,
-    now_ns: u64,
+    (held, wanted): (&WorkspacePolicy, &WorkspacePolicy),
+    (before, written): (&WorkspaceGovernance, &WorkspaceGovernance),
+    (written_ns, now_ns): (u64, u64),
 ) -> Result<BTreeMap<String, (Role, String)>, MembershipRefusal> {
     use crate::state::invitation_receipts::{part_in, part_key};
     let malformed = |error: String| MembershipRefusal::Malformed(error);
@@ -412,10 +418,20 @@ fn redemptions(
                 new_parts.remove(&part_key(digest));
             }
             let person = hex::encode(receipt.user_public_key);
-            let joined_ms = wanted.joined_at(&person).ok_or_else(|| {
-                MembershipRefusal::Refused(format!("{person} is admitted at no recorded time"))
-            })?;
-            let at_ns = joined_ms.saturating_mul(1_000_000);
+            // The workspace's owner holds it from its beginning, so a device
+            // of theirs that redeems an invitation (a host's page joining the
+            // workspace it handed them) comes in on its certificate: the
+            // invitation still has to admit them when the change was written,
+            // and gives them no role.
+            let owner = held.is_owner(&person) && wanted.is_owner(&person);
+            let at_ns = if owner {
+                written_ns
+            } else {
+                let joined_ms = wanted.joined_at(&person).ok_or_else(|| {
+                    MembershipRefusal::Refused(format!("{person} is admitted at no recorded time"))
+                })?;
+                joined_ms.saturating_mul(1_000_000)
+            };
             if at_ns > now_ns.saturating_add(ADMISSION_CLOCK_SKEW_NS) {
                 return Err(MembershipRefusal::Refused(format!(
                     "{person} is admitted in the future"
@@ -424,12 +440,12 @@ fn redemptions(
             let grant =
                 invitation_admits(held, workspace, &signed, receipt.user_public_key, at_ns)?;
             let role: Role = grant.role;
-            if grant.role != receipt.role || wanted.role_of(&person) != Some(role) {
+            if !owner && (grant.role != receipt.role || wanted.role_of(&person) != Some(role)) {
                 return Err(MembershipRefusal::Refused(format!(
                     "{person} does not take the role their invitation gives"
                 )));
             }
-            if held.is_banned(&person) || held.is_owner(&person) {
+            if held.is_banned(&person) || (held.is_owner(&person) && !owner) {
                 return Err(MembershipRefusal::Refused(format!(
                     "{person} is not admitted through an invitation"
                 )));
@@ -453,7 +469,9 @@ fn redemptions(
                     "device {device} does not hold its redemption"
                 )));
             }
-            invited.insert(person, (role, device));
+            if !owner {
+                invited.insert(person, (role, device));
+            }
         }
     }
     if !new_parts.is_empty() {

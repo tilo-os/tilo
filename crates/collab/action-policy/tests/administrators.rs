@@ -1,9 +1,8 @@
 //! A workspace's administrator: an Editor given every governance action.
 //! They govern every member who is not an administrator, an Editor by role
 //! alone governs nothing, and a foreign device, an agent, a ban and a
-//! restriction still bound them. Administrators are made by the owner, whom
-//! the workspace is kept for and other administrators, and unmade by the
-//! first two alone.
+//! restriction still bound them. Administrators are made by the owner and
+//! other administrators, and unmade by the owner alone.
 
 use tilo_action_policy::{
     Acting, ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, Lifetime,
@@ -113,7 +112,7 @@ tilo_test_env::scenario! {
                 .check(CAROL, &carol, &remove(person), &cx(), false)
                 .unwrap();
         }
-        // Another administrator is the owner's or the keeper's to remove.
+        // Another administrator is the owner's to remove.
         assert!(matches!(
             workspace.check(CAROL, &carol, &remove("dee"), &cx(), false),
             Err(Refusal::Administrators { unmaking: true, .. })
@@ -239,25 +238,24 @@ tilo_test_env::scenario! {
     }
 }
 
-/// Workspace `r` owned by [`OWNER`], kept for [`KEEPER`] (an administrator, as
-/// a host keeps a person's workspace), with `members` besides.
-fn kept(members: &[(&str, Role)]) -> WorkspacePolicy {
+/// Workspace `r` owned by [`OWNER`] with [`ADMIN`] its administrator, as a
+/// host administers a person's workspace, and `members` besides.
+fn administered(members: &[(&str, Role)]) -> WorkspacePolicy {
     let mut workspace = WorkspacePolicy::new("r", OWNER);
-    workspace.members.insert(KEEPER.to_owned(), Role::Editor);
+    workspace.members.insert(ADMIN.to_owned(), Role::Editor);
     for (person, role) in members {
         workspace.members.insert((*person).to_owned(), *role);
     }
     for grant in [
-        roles::administrator_grant("r", KEEPER, Grantee::person(OWNER)),
-        roles::administrator_moderation_grant("r", KEEPER, Grantee::person(OWNER)),
-        roles::keeper_grant("r", KEEPER, Grantee::person(OWNER)),
+        roles::administrator_grant("r", ADMIN, Grantee::person(OWNER)),
+        roles::administrator_moderation_grant("r", ADMIN, Grantee::person(OWNER)),
     ] {
         workspace.grants.push(grant);
     }
     workspace
 }
 
-const KEEPER: &str = "4ee9e4";
+const ADMIN: &str = "4ee9e4";
 
 /// `actor` making `person` an administrator: both grants, as a workspace's
 /// governance writes them.
@@ -274,12 +272,12 @@ fn make(workspace: &mut WorkspacePolicy, actor: &str, person: &str) -> Result<()
 }
 
 tilo_test_env::scenario! {
-    fn administrators_are_made_by_those_who_may_and_unmade_by_owner_or_keeper;
+    fn administrators_are_made_by_those_who_may_and_unmade_by_the_owner;
 
-    phase the_owner_the_keeper_and_administrators_make_administrators_and_nobody_else;
+    phase the_owner_and_administrators_make_administrators_and_nobody_else;
     {
-        let workspace = kept(&[(BOB, Role::Editor), (CAROL, Role::Moderator), ("v", Role::Viewer)]);
-        for (person, may) in [(OWNER, true), (KEEPER, true), (BOB, false), (CAROL, false), ("v", false)] {
+        let workspace = administered(&[(BOB, Role::Editor), (CAROL, Role::Moderator), ("v", Role::Viewer)]);
+        for (person, may) in [(OWNER, true), (ADMIN, true), (BOB, false), (CAROL, false), ("v", false)] {
             let authority = Authority::person(workspace.party(person));
             assert_eq!(
                 workspace.may_make_administrators(&authority, &cx()),
@@ -287,13 +285,12 @@ tilo_test_env::scenario! {
                 "{person} makes administrators"
             );
         }
-        assert_eq!(workspace.keepers().collect::<Vec<_>>(), [KEEPER]);
-        assert_eq!(workspace.administrators().collect::<Vec<_>>(), [KEEPER]);
+        assert_eq!(workspace.administrators().collect::<Vec<_>>(), [ADMIN]);
 
         let mut made = workspace.clone();
-        make(&mut made, KEEPER, BOB).unwrap();
+        make(&mut made, ADMIN, BOB).unwrap();
         assert!(made.is_administrator(BOB));
-        // An administrator the keeper made makes another in turn.
+        // An administrator an administrator made makes another in turn.
         made.members.insert("dee".into(), Role::Editor);
         make(&mut made, BOB, "dee").unwrap();
         assert!(made.is_administrator("dee"));
@@ -306,51 +303,11 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase only_the_owner_names_whom_the_workspace_is_kept_for;
+    phase an_administrator_never_unmakes_another_and_the_owner_does;
     {
-        let mut workspace = kept(&[(BOB, Role::Editor)]);
-        make(&mut workspace, KEEPER, BOB).unwrap();
-        for actor in [KEEPER, BOB] {
-            let party = workspace.party(actor);
-            let authority = Authority::person(party);
-            assert_eq!(
-                workspace.check(
-                    actor,
-                    &authority,
-                    &Change::Grant(roles::keeper_grant("r", BOB, Grantee::person(actor))),
-                    &cx(),
-                    false
-                ),
-                Err(Refusal::KeeperByOwner)
-            );
-            assert_eq!(
-                workspace.check(
-                    actor,
-                    &authority,
-                    &Change::Revoke(roles::keeper_grant_id(KEEPER)),
-                    &cx(),
-                    false
-                ),
-                Err(Refusal::KeeperByOwner)
-            );
-        }
-        let owner = Authority::person(workspace.party(OWNER));
-        workspace
-            .check(
-                OWNER,
-                &owner,
-                &Change::Grant(roles::keeper_grant("r", BOB, Grantee::person(OWNER))),
-                &cx(),
-                false,
-            )
-            .unwrap();
-    }
-
-    phase an_administrator_never_unmakes_another_and_the_keeper_does;
-    {
-        let mut workspace = kept(&[(BOB, Role::Editor), ("dee", Role::Editor)]);
-        make(&mut workspace, KEEPER, BOB).unwrap();
-        make(&mut workspace, KEEPER, "dee").unwrap();
+        let mut workspace = administered(&[(BOB, Role::Editor), ("dee", Role::Editor)]);
+        make(&mut workspace, ADMIN, BOB).unwrap();
+        make(&mut workspace, ADMIN, "dee").unwrap();
         let unmaking = [
             Change::Revoke(roles::administrator_grant_id("dee")),
             Change::Revoke(roles::administrator_moderation_grant_id("dee")),
@@ -369,40 +326,46 @@ tilo_test_env::scenario! {
                 "an administrator {change:?}"
             );
         }
-        // Nor the keeper, whom no administrator outranks.
+        // Nor the administrator who made them, whom no administrator outranks.
         assert!(workspace
-            .check(BOB, &bob, &Change::Revoke(roles::administrator_grant_id(KEEPER)), &cx(), false)
+            .check(BOB, &bob, &Change::Revoke(roles::administrator_grant_id(ADMIN)), &cx(), false)
             .is_err());
         assert!(workspace
-            .check(BOB, &bob, &Change::RemoveMember { person: KEEPER.into() }, &cx(), false)
+            .check(BOB, &bob, &Change::RemoveMember { person: ADMIN.into() }, &cx(), false)
             .is_err());
         // Giving up one's own administration is anyone's.
         workspace
             .check(BOB, &bob, &Change::Revoke(roles::administrator_grant_id(BOB)), &cx(), false)
             .unwrap();
-        for actor in [KEEPER, OWNER] {
-            let authority = Authority::person(workspace.party(actor));
-            for change in &unmaking {
-                assert_eq!(
-                    workspace.check(actor, &authority, change, &cx(), false),
-                    Ok(()),
-                    "{actor} {change:?}"
-                );
-            }
+        let owner = Authority::person(workspace.party(OWNER));
+        for change in &unmaking {
+            assert_eq!(
+                workspace.check(OWNER, &owner, change, &cx(), false),
+                Ok(()),
+                "the owner {change:?}"
+            );
+        }
+        let admin = Authority::person(workspace.party(ADMIN));
+        assert!(!workspace.may_unmake_administrators(ADMIN, &admin, &cx()));
+        for change in &unmaking {
+            assert!(
+                workspace.check(ADMIN, &admin, change, &cx(), false).is_err(),
+                "the administrator who made them {change:?}"
+            );
         }
     }
 
     phase a_removed_administrator_holds_nothing_of_it;
     {
-        let mut workspace = kept(&[(BOB, Role::Editor), ("v", Role::Viewer)]);
-        make(&mut workspace, KEEPER, BOB).unwrap();
+        let mut workspace = administered(&[(BOB, Role::Editor), ("v", Role::Viewer)]);
+        make(&mut workspace, ADMIN, BOB).unwrap();
         let held = workspace.clone();
         for id in [
             roles::administrator_moderation_grant_id(BOB),
             roles::administrator_grant_id(BOB),
         ] {
-            let authority = Authority::person(held.party(KEEPER));
-            workspace.apply(KEEPER, &authority, Change::Revoke(id), &cx(), false).unwrap();
+            let authority = Authority::person(held.party(OWNER));
+            workspace.apply(OWNER, &authority, Change::Revoke(id), &cx(), false).unwrap();
         }
         assert!(!workspace.is_administrator(BOB));
         let bob = Authority::person(workspace.party(BOB));
@@ -418,7 +381,7 @@ tilo_test_env::scenario! {
 
     phase only_who_may_make_administrators_invites_one;
     {
-        let mut workspace = kept(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);
+        let mut workspace = administered(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);
         workspace.grants.push(Grant::new(
             "carol-invites",
             Grantee::person(CAROL),
@@ -433,12 +396,12 @@ tilo_test_env::scenario! {
             workspace.check_administrator_invite(CAROL, &carol, &cx(), false),
             Err(Refusal::Administrators { unmaking: false, .. })
         ));
-        for actor in [OWNER, KEEPER] {
+        for actor in [OWNER, ADMIN] {
             let authority = Authority::person(workspace.party(actor));
             workspace.check_administrator_invite(actor, &authority, &cx(), false).unwrap();
         }
         // Not from a foreign device either.
-        let foreign = workspace.person_on_device(KEEPER, true);
-        assert!(workspace.check_administrator_invite(KEEPER, &foreign, &cx(), false).is_err());
+        let foreign = workspace.person_on_device(ADMIN, true);
+        assert!(workspace.check_administrator_invite(ADMIN, &foreign, &cx(), false).is_err());
     }
 }

@@ -920,8 +920,10 @@ impl Workspaces {
         } else {
             device
         };
+        // The workspace is its maker's: their person owns it from the step
+        // that makes it, and this host administers it for them.
         let summary = self
-            .create_workspace(name, workspace)
+            .create_for(name, workspace, device.user_public_key)
             .await
             .map_err(|error| refused(&error))?;
         let invitation = match first {
@@ -1146,7 +1148,7 @@ impl Workspaces {
             // not name is named in their language.
             let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
             let summary = self
-                .create_workspace(&name, moving)
+                .create_for(&name, moving, person)
                 .await
                 .map_err(|error| refused(&error))?;
             own.record(&person, &summary.workspace)
@@ -1158,12 +1160,6 @@ impl Workspaces {
                 .map_err(|error| refused(&error))?;
         }
         drop(making);
-        // A person admitted before (another of their devices joined) is
-        // made its administrator now; one joining with the invitation is
-        // as they are admitted.
-        self.administer_own(&summary.workspace, person, now)
-            .await
-            .map_err(|error| refused(&error))?;
         self.invite_own_person(
             summary,
             person,
@@ -1259,12 +1255,12 @@ impl Workspaces {
 
     /// Whom this host takes the workspace `request` hands over for, as
     /// `caller`, its governor, asks: nobody when its work setting takes it
-    /// anyway, else the first of its owners, other than this host's own
-    /// person, this host keeps workspaces for ([`Workspaces::keeps_for_owner`]).
+    /// anyway, else its owner, when that is not this host's own person and
+    /// this host keeps workspaces for them ([`Workspaces::keeps_for_owner`]).
     ///
     /// # Errors
     ///
-    /// The host keeps it for none of its owners: why, for the first of them.
+    /// The host keeps it not for its owner: why.
     async fn kept_for(
         &self,
         caller: &DeviceCert,
@@ -1275,24 +1271,15 @@ impl Workspaces {
         if super::super::work_takes(&host.work, caller, &host.cert, request) {
             return Ok(None);
         }
-        let mut refusal = None;
         // A workspace its own person governs was taken above, whatever the work
         // setting; this host keeps another's only for an owner it keeps
         // workspaces for.
-        let others = super::super::owners(request)?
-            .into_iter()
-            .filter(|owner| *owner != host.cert.user_public_key);
-        for owner in others {
-            match self.keeps_for_owner(&owner, now).await {
-                Ok(()) => return Ok(Some(owner)),
-                Err(reason) => {
-                    refusal.get_or_insert(reason);
-                }
-            }
+        let owner = super::super::owner(request)?;
+        if owner == host.cert.user_public_key {
+            return Err("this host keeps a workspace another host governs only for its owner".into());
         }
-        Err(refusal.unwrap_or_else(|| {
-            "this host keeps a workspace another host governs only for an owner of it".into()
-        }))
+        self.keeps_for_owner(&owner, now).await?;
+        Ok(Some(owner))
     }
 
     /// The host operations that have one host of the person serve a workspace

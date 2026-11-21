@@ -368,9 +368,14 @@ mod copy {
                 ownership()("this host keeps no workspaces of people's own".to_owned())
             })?;
             own.record(&person, branch).map_err(ownership())?;
-            self.administer_own(branch, person, tilo_clock::unix_now_ns())
+            let held = self
+                .workspace(branch)
                 .await
-                .map_err(|error| ownership()(error.to_string()))
+                .map_err(|error| ownership()(error.to_string()))?;
+            let mut held = held.lock().await;
+            self.give_ownership(&mut held, person, None)
+                .await
+                .map_err(ownership())
         }
 
         /// Found `record` of `app` in `branch` as `document`, the source's

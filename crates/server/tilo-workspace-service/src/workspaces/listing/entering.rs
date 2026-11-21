@@ -260,26 +260,14 @@ impl Workspaces {
                 .ok()?
                 .policy;
             let person = hex::encode(cert.user_public_key);
-            if policy.is_blocked(&person) || governed.removals.refuses(cert.user_public_key, now) {
+            // A workspace of the person's own names them its owner from the
+            // moment it is made, so a device of theirs comes in before any
+            // of theirs has entered it.
+            if policy.is_blocked(&person)
+                || governed.removals.refuses(cert.user_public_key, now)
+                || policy.active_role(&person).is_none()
+            {
                 return None;
-            }
-            // A workspace this host keeps for the device's person admits it before any of
-            // theirs has entered: the host names them its member as their first device joins.
-            if policy.active_role(&person).is_none() {
-                if !self.owns(&cert.user_public_key, workspace) {
-                    return None;
-                }
-                if let Err(error) = self
-                    .own_person_administers(&mut governed, cert.user_public_key, now)
-                    .await
-                {
-                    return Some(JoinReply::Refused(error.to_string()));
-                }
-                governed
-                    .peer()
-                    .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
-                    .ok()
-                    .and_then(|permissions| permissions.policy.active_role(&person))?;
             }
             let key = self.inner.host.key.clone();
             let mut candidate = governed.peer().clone();

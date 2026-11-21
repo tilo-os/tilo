@@ -48,11 +48,9 @@ pub(super) enum WorkspaceOp<'a> {
     /// Issue an invitation that also makes its holder an administrator: for
     /// someone who may make administrators themselves.
     InviteAdministrator,
-    /// Make a member an administrator: for the owner, whom the workspace is
-    /// kept for, and its administrators.
+    /// Make a member an administrator: for the owner and its administrators.
     MakeAdministrator,
-    /// Make a member an owner, whom the workspace is kept for: for the
-    /// host's person and the workspace's owners.
+    /// Hand the workspace to another person as its owner: for its owner.
     MakeOwner,
     /// A change to who is in the workspace or what they hold.
     Change(&'a Change),
@@ -138,11 +136,7 @@ impl Workspaces {
             return self.authorize(device, None, op, now).map(drop);
         };
         let governed = self.workspace(workspace).await?;
-        let mut governed = governed.lock().await;
-        // The person a workspace of their own is kept for administers it, as
-        // the request itself makes them first.
-        self.ensure_keeper(&mut governed, device.user_public_key, now)
-            .await?;
+        let governed = governed.lock().await;
         self.authorize(device, Some(&governed), op, now).map(drop)
     }
 
@@ -224,7 +218,7 @@ impl Workspaces {
             return Ok(hex::encode(host));
         }
         let workspace = workspace.ok_or_else(|| CollaborationError::new(HOST_PERSON_ONLY))?;
-        decide_by_governance(workspace, device, op, now)
+        decide_by_governance(workspace, device, op, now, host)
     }
 }
 
@@ -244,13 +238,17 @@ fn refuse_changing_the_owner(
     Ok(())
 }
 
-/// `op` by `device`, a device of a person other than the server's, as the
-/// workspace's governance decides it now.
+/// Whether `op` by `device`, a device of a person other than the server's,
+/// is one the workspace's governance lets its person do now, and this host,
+/// whose key signs what it carries out, may make that change itself: what
+/// only the workspace's owner may do is signed on a device of theirs, never
+/// relayed by its host. `host` is the host's own person.
 fn decide_by_governance(
     workspace: &GovernedWorkspace,
     device: &DeviceCert,
     op: WorkspaceOp<'_>,
     now: u64,
+    host: [u8; 32],
 ) -> Result<String, CollaborationError> {
     let member = workspace
         .peer()
@@ -298,19 +296,12 @@ fn decide_by_governance(
                 })
             }
         }
-        // Whom the workspace is kept for is decided by whom it is kept for
-        // already: an owner makes another, as the host's person does.
+        // Only the owner hands the workspace to someone else.
         WorkspaceOp::MakeOwner => {
-            if member
-                .policy
-                .may_unmake_administrators(person, &authority, &cx)
-            {
+            if member.policy.is_owner(person) {
                 Ok(())
             } else {
-                Err(tilo_action_policy::Refusal::Administrators {
-                    actor: person.to_owned(),
-                    unmaking: false,
-                })
+                Err(tilo_action_policy::Refusal::OwnershipByOwner)
             }
         }
         WorkspaceOp::Change(change) => member.policy.check(person, &authority, change, &cx, false),
@@ -337,18 +328,38 @@ fn decide_by_governance(
                     WorkspaceOp::Change(&change)
                 }
             };
-            return decide_by_governance(workspace, device, op, now);
+            return decide_by_governance(workspace, device, op, now, host);
         }
     };
     decided.map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
+    let host = hex::encode(host);
+    let signs = member.policy.person_on_device(&host, false);
+    let relayed = match op {
+        WorkspaceOp::Change(change) => member.policy.check(&host, &signs, change, &cx, false),
+        WorkspaceOp::MakeOwner if !member.policy.is_owner(&host) => {
+            Err(tilo_action_policy::Refusal::OwnershipByOwner)
+        }
+        _ => Ok(()),
+    };
+    relayed.map_err(|refusal| {
+        CollaborationError::new(format!(
+            "{OWNER_SIGNS}: {refusal}"
+        ))
+    })?;
     Ok(person.to_owned())
 }
+
+/// Why this host does not carry out a change the workspace lets its caller
+/// make: the host signs what it carries out, and the change is one only the
+/// workspace's owner makes.
+const OWNER_SIGNS: &str = "only the workspace's owner makes this change, and from a device of their own: \
+     this host serves the workspace as one of its administrators and may not sign it for them";
 
 impl Workspaces {
     /// Whether `device` may give the member `request` names its new role in
     /// `workspace`: the workspace's set-role change. Setting a role also takes
     /// back an administrator's access, which the workspace's policy gives
-    /// only its owner and whom it is kept for
+    /// only its owner
     /// ([`tilo_action_policy::WorkspacePolicy::may_unmake_administrators`]).
     ///
     /// # Errors

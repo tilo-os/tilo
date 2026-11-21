@@ -1251,7 +1251,11 @@ impl PeerGovernanceMut<'_> {
         if user_public_key == self.peer.core.owner {
             return Ok(false);
         }
-        self.peer.owner_device(&key.device_public_key(), now)?;
+        self.peer
+            .owner_device(&key.device_public_key(), now)
+            .map_err(|_| {
+                "only the workspace's owner hands the workspace to someone else".to_owned()
+            })?;
         let doc = self
             .peer
             .core
@@ -1266,49 +1270,6 @@ impl PeerGovernanceMut<'_> {
             key,
             now,
         )
-    }
-
-    /// Name the person `user_public_key` as whom the workspace is kept for
-    /// ([`tilo_action_policy::roles::keeper_grant`]): a host keeping the
-    /// workspace for the person who made it there, or whose account it
-    /// belongs to, while it is the structural owner itself. They make and
-    /// unmake administrators as the owner does. Only the owner's device names
-    /// them, and every member replays it from the workspace's signed
-    /// governance. Whether the workspace changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key`'s device is not the owner's, the person is
-    /// no member, or governance cannot be updated.
-    pub fn set_keeper(
-        self,
-        user_public_key: [u8; 32],
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.peer.require_member_writer(key, now)?;
-        let doc = self
-            .peer
-            .core
-            .workspace_doc
-            .clone()
-            .ok_or("workspace governance missing")?;
-        let workspace = self.peer.core.workspace.clone();
-        let person = hex::encode(user_public_key);
-        let policy = doc.workspace_policy(&workspace);
-        if !policy.is_member(&person) {
-            return Err("the person is not a member of the workspace".into());
-        }
-        if policy.is_keeper(&person) {
-            return Ok(false);
-        }
-        let grant = tilo_action_policy::roles::keeper_grant(
-            &workspace,
-            &person,
-            Grantee::person(hex::encode(self.peer.core.owner)),
-        );
-        self.peer
-            .write_changes(doc, vec![Change::Grant(grant)], key, now)
     }
 
     /// Name the person `user_public_key` `name` in the workspace: the name

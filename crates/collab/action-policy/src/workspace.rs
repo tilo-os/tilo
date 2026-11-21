@@ -236,15 +236,12 @@ pub enum Refusal {
         target: Role,
     },
     /// Making or unmaking an administrator, or inviting one, by someone who
-    /// may not: the owner, the person the workspace is kept for and its
-    /// administrators make administrators; only the owner and that person
-    /// unmake or remove them.
+    /// may not: the owner and its administrators make administrators; only
+    /// the owner unmakes or removes them.
     Administrators {
         actor: String,
         unmaking: bool,
     },
-    /// Whom the workspace is kept for is named by its owner alone.
-    KeeperByOwner,
     /// The person is banned: unban them first.
     Banned(String),
     /// The person is restricted: they change nothing, the workspace's
@@ -304,17 +301,14 @@ impl std::fmt::Display for Refusal {
                 if *unmaking {
                     write!(
                         f,
-                        "{actor} may not unmake or remove an administrator: only the workspace's owner and the person it is kept for may"
+                        "{actor} may not unmake or remove an administrator: only the workspace's owner may"
                     )
                 } else {
                     write!(
                         f,
-                        "{actor} may not make administrators: only the workspace's owner, the person it is kept for and its administrators may"
+                        "{actor} may not make administrators: only the workspace's owner and its administrators may"
                     )
                 }
-            }
-            Self::KeeperByOwner => {
-                f.write_str("only the workspace's owner names whom it keeps the workspace for")
             }
             Self::Banned(person) => write!(f, "{person} is banned from the workspace"),
             Self::Restricted(person) => write!(f, "{person} is restricted in the workspace"),
@@ -532,17 +526,13 @@ impl WorkspacePolicy {
     }
 
     /// How many permissions the workspace gives `person` beyond their role. Being an
-    /// administrator, or whom the workspace is kept for, is their role's to say, and is not
-    /// counted.
+    /// administrator is their role's to say, and is not counted.
     #[must_use]
     pub fn extra_grants(&self, person: &str) -> usize {
         self.grants
             .iter()
             .filter(|grant| grant.grantee.person_id() == Some(person))
-            .filter(|grant| {
-                roles::administrator_named(&grant.id).is_none()
-                    && roles::keeper_named(&grant.id).is_none()
-            })
+            .filter(|grant| roles::administrator_named(&grant.id).is_none())
             .count()
     }
 
@@ -554,30 +544,9 @@ impl WorkspacePolicy {
             .filter(|person| self.is_administrator(person))
     }
 
-    /// Whether the workspace is kept for `person`: its owner named them so
-    /// ([`roles::keeper_grant`]), a host keeping it for the person who made
-    /// it there or whose account it belongs to.
-    #[must_use]
-    pub fn is_keeper(&self, person: &str) -> bool {
-        let id = roles::keeper_grant_id(person);
-        self.grants.iter().any(|grant| {
-            grant.id == id
-                && grant.grantee.person_id() == Some(person)
-                && grant.answer == Answer::Allow
-        })
-    }
-
-    /// Whom the workspace is kept for, by person id ([`Self::is_keeper`]).
-    pub fn keepers(&self) -> impl Iterator<Item = &str> + '_ {
-        self.grants.iter().filter_map(|grant| {
-            let person = roles::keeper_named(&grant.id)?;
-            self.is_keeper(person).then_some(person)
-        })
-    }
-
     /// Whether `actor` may make administrators now: its grants allow
     /// [`roles::administrators_node`] on their own (the owner, an
-    /// administrator, whom the workspace is kept for), and the workspace
+    /// administrator), and the workspace
     /// neither bans nor restricts its person. A foreign device or an agent
     /// holds less, as for every governance action.
     #[must_use]
@@ -595,8 +564,8 @@ impl WorkspacePolicy {
     }
 
     /// Whether `actor_person`, acting through `actor`, may unmake or remove an
-    /// administrator: the owner, and whom the workspace is kept for while
-    /// they may make administrators. One administrator never unmakes another.
+    /// administrator: the owner, while they may make administrators. One
+    /// administrator never unmakes another.
     #[must_use]
     pub fn may_unmake_administrators(
         &self,
@@ -604,8 +573,7 @@ impl WorkspacePolicy {
         actor: &Authority<'_>,
         cx: &Context<'_>,
     ) -> bool {
-        (self.is_owner(actor_person) || self.is_keeper(actor_person))
-            && self.may_make_administrators(actor, cx)
+        self.is_owner(actor_person) && self.may_make_administrators(actor, cx)
     }
 
     /// The grantees a person is known by here: themselves and their role. A
@@ -832,7 +800,7 @@ impl WorkspacePolicy {
     }
 
     /// Whether `change` unmakes or removes an administrator other than
-    /// `actor_person`: the owner's and the keeper's alone to do. Leaving, or
+    /// `actor_person`: the owner's alone to do. Leaving, or
     /// giving up one's own administration, is anyone's.
     fn unmakes_administrator(&self, actor_person: &str, change: &Change) -> bool {
         let target = match change {
@@ -1082,16 +1050,10 @@ impl WorkspacePolicy {
         if self.is_owner(actor_person) {
             return Ok(());
         }
-        // Whom the workspace is kept for reaches its administrators as its
-        // owner does: whether they may now is decided before
-        // (`unmakes_administrator`).
-        if self.is_keeper(actor_person) && self.is_administrator(person) {
-            return Ok(());
-        }
         // An administrator reaches every member who is not one, whatever
         // their role: two people who share a workspace as equals each
         // remove, ban and restrict its other members. Other administrators
-        // are the owner's and the keeper's to reach.
+        // are the owner's to reach.
         if self.is_administrator(actor_person) && !self.is_administrator(person) {
             return Ok(());
         }
@@ -1332,19 +1294,8 @@ impl WorkspacePolicy {
         cx: &Context<'_>,
     ) -> Result<(), Refusal> {
         // Administrators are made by whoever may make them, and unmade by the
-        // owner and whom the workspace is kept for alone; whom it is kept for
-        // is the owner's to say.
+        // owner alone.
         match change {
-            Change::Grant(grant) if roles::keeper_named(&grant.id).is_some() => {
-                if !self.is_owner(actor_person) {
-                    return Err(Refusal::KeeperByOwner);
-                }
-            }
-            Change::Revoke(id) if roles::keeper_named(id).is_some() => {
-                if !self.is_owner(actor_person) {
-                    return Err(Refusal::KeeperByOwner);
-                }
-            }
             Change::Grant(grant) if roles::administrator_named(&grant.id).is_some() => {
                 self.check_makes_administrators(actor_person, actor, cx, false)?;
             }
