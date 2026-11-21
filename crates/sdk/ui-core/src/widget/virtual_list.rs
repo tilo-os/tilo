@@ -1833,9 +1833,19 @@ impl Widget for VirtualRows {
             && self.rect.height() > 0.0
             && (self.rect.height() - self.viewport.viewport()).abs() > 0.5
         {
+            // Rows stand at offsets from the list's top: only a scroll or a bar the height brings
+            // (or rows it shows, below) lays them out again.
+            let offset = self.viewport.offset();
             self.viewport.set_viewport(self.rect.height());
             self.keep_end();
-            self.visible_window_changed();
+            let beside_bar = self.overlay_bar.is_none() && self.scroll_metrics().overflows();
+            if self.viewport.offset().to_bits() != offset.to_bits()
+                || beside_bar != self.rows_beside_bar
+            {
+                self.visible_window_changed();
+            } else {
+                self.refresh_anchor();
+            }
         }
         let slack = self.end_slack();
         let content = crate::widget::layout::snap_to_device_pixels(

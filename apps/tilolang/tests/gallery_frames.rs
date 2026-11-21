@@ -17,10 +17,9 @@ use ui::text_render::TextRenderer;
 use ui::tilo_resource::profiling::{Sample, observe};
 use ui::winit::event::{ElementState, MouseButton};
 
-/// The middle of the sidebar's rows of the pages a switch shows in place in a 1280×800 window, from
-/// the top: Basics, Controls, Feedback, Release board, Data, Media, Places. Backlog (at 244) is not
-/// among them: showing it builds the window's structure again.
-const ROWS: [f64; 7] = [100.0, 132.0, 164.0, 276.0, 308.0, 380.0, 412.0];
+/// The middle of the sidebar's rows of the pages in a 1280×800 window, from the top: Basics,
+/// Controls, Feedback, Backlog, Release board, Data, Media, Places.
+const ROWS: [f64; 8] = [100.0, 132.0, 164.0, 244.0, 276.0, 308.0, 380.0, 412.0];
 /// Just past the sidebar's edge, where the grip that resizes it stands.
 const EDGE: f64 = 282.0;
 
@@ -51,6 +50,17 @@ fn frame_at(tile: &mut EmbeddedApp, text: &mut TextRenderer, (width, height): (f
         &theme,
         &ui::presence::PresenceCtx::empty(),
     );
+}
+
+/// Frames while the window has work pending, as a host draws: what opening it reads on the
+/// process's reader threads (its index, its first publication), which another test's window
+/// can keep busy, lands before the steps measured.
+fn opened(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
+    frame(tile, text);
+    while tile.app_mut().root_widget_mut().has_pending_visual_work() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        frame(tile, text);
+    }
 }
 
 /// A click at `(x, y)` and the frames that settle it: how many of those frames solved the window's
@@ -112,9 +122,7 @@ fn switching_pages_resizing_the_sidebar_and_scrolling_do_only_what_changed() {
     crate::support::installed("gallery");
     ui::framework::testing::drive_live_embedded::<TlApp, _>(|tile| {
         let mut text = TextRenderer::new();
-        for _ in 0..6 {
-            frame(tile, &mut text);
-        }
+        opened(tile, &mut text);
         switches(tile, &mut text);
         drags(tile, &mut text);
         scrolls(tile, &mut text);
@@ -132,7 +140,7 @@ fn the_gallery_reads_only_the_faces_its_text_is_set_in() {
     crate::support::installed("gallery");
     ui::framework::testing::drive_live_embedded::<TlApp, _>(|tile| {
         let mut text = TextRenderer::new();
-        frame(tile, &mut text);
+        opened(tile, &mut text);
         let read: Vec<String> = ui::font_catalog::font_files_read()
             .iter()
             .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
@@ -140,7 +148,7 @@ fn the_gallery_reads_only_the_faces_its_text_is_set_in() {
         assert_eq!(read, ["TiloSans[wdth,wght].ttf"]);
         // The media page sets its code in the bundled monospace face, which has every character
         // it shows: no other face is read for them.
-        let _ = click(tile, &mut text, (120.0, ROWS[5]));
+        let _ = click(tile, &mut text, (120.0, ROWS[6]));
         let read: Vec<String> = ui::font_catalog::font_files_read()
             .iter()
             .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))

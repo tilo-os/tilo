@@ -424,7 +424,7 @@ view backlog_list(g: Gallery) {
                 role: .caption,
                 secondary: true,
             )
-            ui.VirtualList(selection_follows_focus: true, fill) {
+            ui.VirtualList(selection_follows_focus: true, in_column: true, fill) {
                 for x in g.backlog_items {
                     ui.ListItem(item: x, done: x.stage == "Done") {
                         menu: {

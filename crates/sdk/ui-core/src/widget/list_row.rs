@@ -2155,30 +2155,15 @@ impl ListRow {
         (!trailing.wrapped).then(|| trailing.element.get_rect().width())
     }
 
-    /// How many lines the secondary text takes at the width the row leaves it, no more
-    /// than the row asked for: `None` for a row without one. Read from the band the text
-    /// stands in, so a caption wraps onto as many lines as it needs and the row is as tall
-    /// as they are, however wide the control beside it.
-    fn secondary_lines_that_fit(
-        &self,
-        taffy: &TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> Option<u8> {
+    /// How many lines the secondary text takes in a text band `width` wide and `height` tall, no
+    /// more than the row asked for: `None` for a row without one. A caption wraps onto as many
+    /// lines as it needs and the row is as tall as they are, however wide the control beside it.
+    fn secondary_lines_at(&self, width: f64, height: f64, text: &mut TextRenderer) -> Option<u8> {
         let secondary = self.secondary.as_deref()?;
         let metrics = self.metrics.as_ref()?;
         let theme = self.theme.as_ref()?;
-        let area = match self.trailing.as_ref().and_then(|trailing| trailing.band) {
-            Some(band) => taffy.layout(band).ok()?,
-            None => taffy.layout(node).ok()?,
-        };
-        let band = Rect::new(
-            0.0,
-            0.0,
-            f64::from(area.size.width),
-            f64::from(area.size.height).max(1.0),
-        );
-        let width = self.with_face_over(None, |face| {
+        let band = Rect::new(0.0, 0.0, width, height.max(1.0));
+        let width = self.with_face_over(None, None, |face| {
             let geo = face.geometry(band, metrics, text, theme);
             (geo.second_right - geo.text_x).max(0.0)
         });
@@ -2232,14 +2217,16 @@ impl ListRow {
 
     /// The row as the face it draws, read by the list that builds it and by its tests.
     pub(crate) fn with_face<R>(&self, f: impl FnOnce(&ListRowFace<'_>) -> R) -> R {
-        self.with_face_over(self.trailing_reserve(), f)
+        self.with_face_over(self.trailing_reserve(), self.secondary_shown, f)
     }
 
-    /// [`Self::with_face`], with the width the trailing control takes said outright: a row
-    /// measuring its text before the control is placed passes the width left to it.
-    pub(crate) fn with_face_over<R>(
+    /// [`Self::with_face`], with the width the trailing control takes and the lines its secondary
+    /// text takes (the most the row asked for when `None`) said outright: a row measured before
+    /// it is laid out at that width passes them.
+    fn with_face_over<R>(
         &self,
         trailing_width: Option<f64>,
+        secondary_lines: Option<u8>,
         f: impl FnOnce(&ListRowFace<'_>) -> R,
     ) -> R {
         let actions: Vec<RowAction<'_>> = self
@@ -2311,7 +2298,7 @@ impl ListRow {
         }
         if let Some(secondary) = &self.secondary {
             face = face.secondary(secondary).secondary_lines(
-                self.secondary_shown
+                secondary_lines
                     .unwrap_or(self.secondary_line_count)
                     .max(1),
             );
@@ -2845,15 +2832,20 @@ impl Widget for ListRow {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let mut fitted = false;
-        if let Some(lines) = self.secondary_lines_that_fit(taffy, node, text)
+        // A row with nothing beside its text measured these lines already: no restyle follows.
+        let band = self.trailing.as_ref().and_then(|trailing| trailing.band);
+        if let Ok(area) = taffy.layout(band.unwrap_or(node))
+            && let Some(lines) = self.secondary_lines_at(
+                f64::from(area.size.width),
+                f64::from(area.size.height),
+                text,
+            )
             && self.secondary_shown != Some(lines)
         {
             self.secondary_shown = Some(lines);
             self.dirty = true;
-            fitted = true;
         }
-        settle_trailing(self, taffy, node, text) || fitted
+        settle_trailing(self, taffy, node, text)
     }
 
     fn measure(
@@ -2874,7 +2866,15 @@ impl Widget for ListRow {
                 .with_face(|face| face.card_title_lines(f64::from(width), text_renderer, &theme));
             self.card_lines = lines;
         }
-        let height = self.with_face(|face| face.height(text_renderer, &theme));
+        // A caption wraps at the width asked about, so the height answered is the one drawn.
+        let lines = if self.trailing.is_none() {
+            self.secondary_lines_at(f64::from(width), 0.0, text_renderer)
+        } else {
+            self.secondary_shown
+        };
+        let height = self.with_face_over(self.trailing_reserve(), lines, |face| {
+            face.height(text_renderer, &theme)
+        });
         taffy::Size {
             width,
             height: crate::num::f32_of_f64(height),

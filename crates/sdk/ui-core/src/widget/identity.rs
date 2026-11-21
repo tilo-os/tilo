@@ -75,6 +75,11 @@ impl super::Decorator for Identified {
         self.content.concrete_type_name()
     }
 
+    /// The content's change: an identity adds no structure of its own.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        self.content.take_structure_change()
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
