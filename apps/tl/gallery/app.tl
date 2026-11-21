@@ -182,7 +182,9 @@ fn page_title(page: Text) -> Text {
         std.say("Places")
     } else if page == "chrome" {
         std.say("Shell parts")
-    } else if page == "customs" { std.say("Charts and views") } else { std.say("Gallery") }
+    } else if page == "customs" {
+        std.say("Charts and views")
+    } else if page == "type" { std.say("Type and scripts") } else { std.say("Gallery") }
 }
 
 /// The gallery's window: each group in the sidebar under what it is for, the one chosen shown
@@ -236,6 +238,11 @@ view gallery(g: Gallery) {
                         on select: set(showing, "customs")
                     }
                 }
+                ui.NavSection("Text") {
+                    ui.NavItem("type", "Type and scripts", icon: .italic) {
+                        on select: set(showing, "type")
+                    }
+                }
             }
         }
         content: {
@@ -262,6 +269,8 @@ view gallery(g: Gallery) {
                             media(g)
                         } else if showing == "chrome" {
                             shell_parts(g)
+                        } else if showing == "type" {
+                            type_and_scripts(g)
                         } else {
                             custom(g)
                         }
@@ -296,31 +305,10 @@ view basics(g: Gallery) {
 
 /// Text, buttons, chips, a card of facts, an empty state and a page of a stack.
 view parts(g: Gallery, last: State<Text>) {
-    part("Text", "The type scale, every role from the largest title down to code.") {
-        ui.Text("Planning", role: .display)
+    part("Text", "The type scale: a title, body text at the reading measure, a caption.") {
         ui.Text("Release planning", role: .large_title)
-        ui.Text("Every role comes from one body size", role: .title)
-        ui.Text("A section's heading", role: .heading)
-        ui.Text("A group inside the section", role: .subheading)
         ui.Text("Body text says what a thing is, at the reading measure.")
-        ui.Text("A control's label, or a row's title in a dense list", role: .label)
-        ui.Text(
-            "Reading text, as an article sets it: office, affinity, a naïve café.",
-            role: .reading,
-        )
-        ui.Text("let greeting = \"Hello, 世界\"", role: .code)
         ui.Time(2026-06-30T09:00Z, role: .caption, secondary: true)
-    }
-    part("Scripts", "Every script the toolkit sets: right to left, mixed, without spaces, emoji.") {
-        ui.Text("مرحبًا بالعالم")
-        ui.Text("שלום עולם")
-        ui.Text("नमस्ते दुनिया")
-        ui.Text("নমস্কার বিশ্ব")
-        ui.Text("สวัสดีชาวโลก")
-        ui.Text("東京の天気")
-        ui.Text("上海的早晨")
-        ui.Text("Invoice 123 for חשבון ٤٥٦, total €78")
-        ui.Text("👩🏽‍💻 👨‍👩‍👧‍👦 🏳️‍🌈 🇪🇺")
     }
     part("Button", "What a press does, by its role: the one primary, the usual, the destructive.") {
         row(gap: .related, wrap: true) {
@@ -396,6 +384,47 @@ view parts(g: Gallery, last: State<Text>) {
     part("A page of a stack", "A section opened in a page of its own, one level deep.") {
         ui.PageSlide(level: 1) {
             ui.Text("A page one level deep, slid in over the one that opened it.", role: .caption)
+        }
+    }
+}
+
+/// The type page: every text role, and text in every script the toolkit sets. Its own page, so
+/// the faces it is set in (serif, mono, each script's) are read when it opens, not at the start.
+view type_and_scripts(g: Gallery) {
+    ui.Text(
+        "The type scale and the scripts text is set in, each in the face it needs.",
+        role: .caption,
+        secondary: true,
+    )
+    stack(max: 44rem, gap: .section) {
+        part("Type scale", "Every role from the largest title down to code.") {
+            ui.Text("Planning", role: .display)
+            ui.Text("Release planning", role: .large_title)
+            ui.Text("Every role comes from one body size", role: .title)
+            ui.Text("A section's heading", role: .heading)
+            ui.Text("A group inside the section", role: .subheading)
+            ui.Text("Body text says what a thing is, at the reading measure.")
+            ui.Text("A control's label, or a row's title in a dense list", role: .label)
+            ui.Text(
+                "Reading text, as an article sets it: office, affinity, a naïve café.",
+                role: .reading,
+            )
+            ui.Text("let greeting = \"Hello, 世界\"", role: .code)
+            ui.Time(2026-06-30T09:00Z, role: .caption, secondary: true)
+        }
+        part(
+            "Scripts",
+            "Every script the toolkit sets: right to left, mixed, without spaces, emoji.",
+        ) {
+            ui.Text("مرحبًا بالعالم")
+            ui.Text("שלום עולם")
+            ui.Text("नमस्ते दुनिया")
+            ui.Text("নমস্কার বিশ্ব")
+            ui.Text("สวัสดีชาวโลก")
+            ui.Text("東京の天気")
+            ui.Text("上海的早晨")
+            ui.Text("Invoice 123 for חשבון ٤٥٦, total €78")
+            ui.Text("👩🏽‍💻 👨‍👩‍👧‍👦 🏳️‍🌈 🇪🇺")
         }
     }
 }

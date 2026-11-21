@@ -10,7 +10,7 @@ use ui::framework::testing::drive_live_window;
 use ui::vello::Scene;
 use ui::winit::event::{ElementState, MouseButton};
 
-const PLACES: [&str; 10] = [
+const PLACES: [&str; 11] = [
     "Basics",
     "Controls",
     "Feedback",
@@ -21,6 +21,7 @@ const PLACES: [&str; 10] = [
     "Places",
     "Shell parts",
     "Charts and views",
+    "Type and scripts",
 ];
 
 struct Window;

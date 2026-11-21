@@ -262,6 +262,7 @@ fn every_page_is_handed_what_composing_it_all_gives() {
         "Places",
         "Shell parts",
         "Charts and views",
+        "Type and scripts",
     ] {
         let (x, y) = words_at(harness.presented_composition(), place)
             .unwrap_or_else(|| panic!("the sidebar names {place}"));
