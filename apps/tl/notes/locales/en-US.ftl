@@ -58,6 +58,9 @@ d-v7cub7aw = Notes
 
 d-tmqqtkeb = Notes
 
+d-srfkdt73 = Set aside
+    .doc = Notes carried over from the native Notes app that it no longer showed: a page whose parent was deleted, kept here rather than dropped, out of the tree.
+
 d-qymo5lg2 = New note
     .doc = Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the caller knows them already.
 
@@ -69,6 +72,9 @@ d-37dxigeq = New sub-note
     .doc = Starts a note inside `n`'s own, after the notes it already holds.
 
 d-37dxigeq-n = N
+
+d-6alp5wzx = Carry native notebook
+    .doc = The notebook the native Notes app kept before this app took its id over, carried into this one once: each page a note, under the note its page stood under and in the order its pages stood there, with its title, its body, its tags and the id its page had.
 
 d-qhmjwgei = Pin
     .doc = Pins or unpins a note.
