@@ -34,9 +34,11 @@ pub struct SecretRelease {
 }
 
 impl SecretRelease {
-    /// Ownership on the window's route, captured while the window is built.
-    pub fn capture() -> Option<Self> {
-        Client::capture().map(|client| Self::from(Source::Route(Box::new(client))))
+    /// The session's release on the window's own route, through `client`: the connection the
+    /// window captured while it was built ([`Client::capture`]), which is the only time it can.
+    #[must_use]
+    pub fn through(client: Client) -> Self {
+        Self::from(Source::Route(Box::new(client)))
     }
 
     #[cfg(any(test, feature = "test-support"))]

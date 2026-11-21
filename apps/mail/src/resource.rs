@@ -1484,12 +1484,18 @@ impl ResourceApp for MailShell {
     /// its scenario's fixture.
     fn view(cx: &mut ViewCx<Mail>) -> Element {
         if cx.mode().is_live() {
+            // The session releases the accounts' passwords on the window's own route.
+            let session = cx.session();
             let read =
                 cx.permission_state(tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Read));
-            return cx.switch(&read, |cx, allowed| {
+            return cx.switch(&read, move |cx, allowed| {
                 if *allowed {
-                    let app =
-                        MailApp::for_window(cx.storage(), cx.workspace().as_deref(), cx.content());
+                    let app = MailApp::for_window(
+                        cx.storage(),
+                        cx.workspace().as_deref(),
+                        cx.content(),
+                        session.clone(),
+                    );
                     crate::app::window(cx, app)
                 } else {
                     Box::new(ui::widget::EmptyState::new("mail-workspace-access-denied"))

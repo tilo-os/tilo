@@ -43,17 +43,18 @@ struct MailServer {
 
 impl MailServer {
     fn start() -> Self {
-        let started = tilo_account_probe::stand_in::started(tilo_account_probe::stand_in::Serving {
-            names: vec!["localhost".into()],
-            login: ADDRESS.into(),
-            password: PASSWORD.into(),
-            oauth_token: None,
-            imap: "127.0.0.1:0".into(),
-            smtp: "127.0.0.1:0".into(),
-            imap_wrapped: true,
-            smtp_wrapped: false,
-        })
-        .expect("the stand-in mail server listens");
+        let started =
+            tilo_account_probe::stand_in::started(tilo_account_probe::stand_in::Serving {
+                names: vec!["localhost".into()],
+                login: ADDRESS.into(),
+                password: PASSWORD.into(),
+                oauth_token: None,
+                imap: "127.0.0.1:0".into(),
+                smtp: "127.0.0.1:0".into(),
+                imap_wrapped: true,
+                smtp_wrapped: false,
+            })
+            .expect("the stand-in mail server listens");
         Self { started }
     }
 
@@ -192,10 +193,14 @@ impl Members {
             |doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
         )
         .unwrap();
-        let mut replica = Replica::<PersonAccounts>::from_doc(doc);
-        replica
-            .apply_confirmed(PersonAccounts::saving(account))
-            .unwrap();
+        let saved = {
+            let mut replica = Replica::<PersonAccounts>::from_doc(doc)
+                .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
+            replica
+                .apply_confirmed(PersonAccounts::saving(account))
+                .unwrap();
+            replica.save()
+        };
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: accounts::person::ACCOUNTS_OWNER.into(),
             cluster_id: self.workspace.clone(),
@@ -211,7 +216,7 @@ impl Members {
                 &self.workspace,
                 (accounts::person::ACCOUNTS_OWNER, &document),
                 None,
-                &replica.save(),
+                &saved,
                 true,
                 true,
                 keys.as_ref(),
@@ -309,7 +314,11 @@ async fn released(
 
 #[tokio::test]
 async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entry() {
-    let server = Arc::new(tokio::task::spawn_blocking(MailServer::start).await.unwrap());
+    let server = Arc::new(
+        tokio::task::spawn_blocking(MailServer::start)
+            .await
+            .unwrap(),
+    );
     let members = Members::new().await;
     let workspace = members.workspace.clone();
     members.keep_account(&server.account()).await;
@@ -339,7 +348,10 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
         (&members.member, members.member_caller()),
     ] {
         let named = named_entry(device, &workspace).await;
-        assert_eq!(named, item, "every device reads the one entry the account names");
+        assert_eq!(
+            named, item,
+            "every device reads the one entry the account names"
+        );
         let password = released(device, &workspace, &by, &named, &server)
             .await
             .expect("a member who may use Passwords is released the account's password");
@@ -362,7 +374,10 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
         )
         .await
         .unwrap();
-    assert_eq!(again, item, "a password typed anew is kept in the entry the account names");
+    assert_eq!(
+        again, item,
+        "a password typed anew is kept in the entry the account names"
+    );
 
     // Each release is written down beside the entry, and nothing else was used.
     let opened = members.member.open_vault(&workspace).await.unwrap();
@@ -375,11 +390,18 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
     assert!(uses >= 1, "the member's release is written down");
 
     // The entry is kept only for the account's own servers.
-    let elsewhere = [accounts::vault_items::Place::server("imap", "mail.elsewhere.test", 993).unwrap()];
+    let elsewhere =
+        [accounts::vault_items::Place::server("imap", "mail.elsewhere.test", 993).unwrap()];
     assert!(
         members
             .member
-            .account_password(&workspace, &members.member_caller(), &item, &elsewhere, ADDRESS)
+            .account_password(
+                &workspace,
+                &members.member_caller(),
+                &item,
+                &elsewhere,
+                ADDRESS
+            )
             .await
             .is_err(),
         "the entry is released for no other server"
@@ -388,7 +410,9 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
 
 #[tokio::test]
 async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password() {
-    let server = tokio::task::spawn_blocking(MailServer::start).await.unwrap();
+    let server = tokio::task::spawn_blocking(MailServer::start)
+        .await
+        .unwrap();
     let members = Members::new().await;
     let workspace = members.workspace.clone();
     members.keep_account(&server.account()).await;
@@ -447,7 +471,13 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     assert_eq!(
         members
             .owner
-            .account_password(&workspace, &members.owner_caller(), &named, &places, ADDRESS)
+            .account_password(
+                &workspace,
+                &members.owner_caller(),
+                &named,
+                &places,
+                ADDRESS
+            )
             .await
             .unwrap()
             .secret
@@ -458,7 +488,9 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
 
 #[tokio::test]
 async fn a_password_the_device_kept_is_carried_into_the_vault_once_and_leaves_the_device() {
-    let server = tokio::task::spawn_blocking(MailServer::start).await.unwrap();
+    let server = tokio::task::spawn_blocking(MailServer::start)
+        .await
+        .unwrap();
     let members = Members::new().await;
     let workspace = members.workspace.clone();
     let account = server.account();
@@ -493,10 +525,16 @@ async fn a_password_the_device_kept_is_carried_into_the_vault_once_and_leaves_th
     // The account names the entry, and the member's device signs in with it.
     let item = named_entry(&members.member, &workspace).await;
     assert_eq!(
-        released(&members.member, &workspace, &members.member_caller(), &item, &server)
-            .await
-            .unwrap()
-            .as_str(),
+        released(
+            &members.member,
+            &workspace,
+            &members.member_caller(),
+            &item,
+            &server
+        )
+        .await
+        .unwrap()
+        .as_str(),
         PASSWORD
     );
 

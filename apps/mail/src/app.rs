@@ -452,12 +452,13 @@ impl MailApp {
         storage: &ui::storage::AppStorage,
         workspace: Option<&str>,
         content: Option<ContentStore>,
+        session: Option<ui::collaboration::browser_service_sessions::Client>,
     ) -> Self {
         let persist = storage
             .config_root()
             .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
         // In a session the accounts' secrets are the session's to release;
-        let ownership = mail_engine::account_secrets::SecretRelease::capture();
+        let ownership = session.map(mail_engine::account_secrets::SecretRelease::through);
         let accounts = match (&ownership, persist.root()) {
             (_, None) => AccountStore::new(),
             (Some(_), Some(root)) => AccountStore::load_without_secrets_in(&root),
@@ -497,6 +498,7 @@ impl MailApp {
         _storage: &ui::storage::AppStorage,
         _workspace: Option<&str>,
         content: Option<ContentStore>,
+        _session: Option<ui::collaboration::browser_service_sessions::Client>,
     ) -> Self {
         let shared = MailState::shared(MailState::new_live(
             AccountStore::new(),

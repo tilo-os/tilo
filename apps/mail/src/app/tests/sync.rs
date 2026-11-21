@@ -464,7 +464,7 @@ tilo_test_env::scenario! {
                 ui::storage::SettingsDocument::Profile(profile.path().to_path_buf()),
             );
             assert_eq!(storage.config_root().as_deref(), Some(profile.path()));
-            let app = MailApp::for_window(&storage, None, Some(ContentStore::memory()));
+            let app = MailApp::for_window(&storage, None, Some(ContentStore::memory()), None);
             assert_eq!(
                 app.accounts_persist_root().as_deref(),
                 Some(profile.path()),

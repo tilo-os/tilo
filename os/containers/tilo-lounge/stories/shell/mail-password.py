@@ -410,8 +410,17 @@ def steps(story: Story) -> None:
                     "in this step's shot, and the session's log says what the service did"
                 ) from error
             found["servers-named-by-the-person"] = False
-            # Mail's own window takes the account it was given, with nothing reloaded.
-            until(f"{ADDRESS} in Mail, with no reload", lambda: ada.shows(ADDRESS), 60, 0.2)
+            # Mail's own window takes the account it was given, with nothing reloaded: its
+            # inbox fills from the account's server, and Mail's sidebar names the account by its
+            # address. Beside Settings, Mail's window is too narrow to keep its sidebar open, so
+            # Ada opens it, as a person does to see which account a mailbox is.
+            until("the account's inbox in Mail, with no reload",
+                  lambda: ada.target(NEWEST_SUBJECT, exact=False), 60, 0.2)
+            if not ada.shows(ADDRESS):
+                pressed(ada, "Show sidebar", "Mail's sidebar")
+                until(f"{ADDRESS} in Mail's sidebar", lambda: ada.shows(ADDRESS), 10, 0.2)
+                # The sidebar covers the list in a window this narrow: Ada folds it away again.
+                pressed(ada, "Hide sidebar", "the press that folds Mail's sidebar away")
             story.note("settings-after-account", describe(ada))
             story.note("messages-record", message_states(ada))
 

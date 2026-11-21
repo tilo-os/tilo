@@ -611,6 +611,17 @@ impl<R: Resource> ResourceEnv<R> {
         self.storage.shared_person::<P>()
     }
 
+    /// The window's own route to the session's services, where it runs in one: what an app
+    /// asks the session for what is the session's to decide (Mail an account's password,
+    /// Settings keeping one, Browser a website's session). `None` outside a session, in a past
+    /// version and in a capture.
+    pub fn session(&self) -> Option<ui_core::collaboration::browser_service_sessions::Client> {
+        if self.is_past() {
+            return None;
+        }
+        self.storage.session()
+    }
+
     /// The app's files, secrets and settings documents, as its host gave
     /// them. A secret of one document item is
     /// `cx.storage().secrets().item(purpose, id)`.

@@ -152,9 +152,9 @@ fn peers() -> Peers {
     let mut device = Window::on_device("laptop").unwrap();
     {
         let app = mail(&mut device);
-        app.release_passwords_through(Some(mail_engine::account_secrets::SecretRelease::kept_under(
-            vault.path().to_path_buf(),
-        )));
+        app.release_passwords_through(Some(
+            mail_engine::account_secrets::SecretRelease::kept_under(vault.path().to_path_buf()),
+        ));
         let engine = mail_engine::engine::live::LiveEngine::trusting(
             tilo_content::ContentStore::memory(),
             Arc::new(|| {}),

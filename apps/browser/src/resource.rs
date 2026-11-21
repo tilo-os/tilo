@@ -200,7 +200,7 @@ impl ResourceApp for BrowserShell {
                             .and_then(crate::service_sessions::identity)
                             .is_some()
                     {
-                        ui::collaboration::browser_service_sessions::Client::capture()
+                        cx.session()
                     } else {
                         None
                     },
@@ -210,7 +210,7 @@ impl ResourceApp for BrowserShell {
                 .with_item_client(if mode.is_private() {
                     None
                 } else {
-                    ui::collaboration::browser_service_sessions::Client::capture()
+                    cx.session()
                 })
         } else {
             BrowserWidget::new_headless_in(mode)

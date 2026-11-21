@@ -164,6 +164,8 @@ pub struct AreaContext {
     pub linked: ui::linked_accounts::LinkedAccounts,
     pub sections: crate::sections::Sections,
     pub account_root: crate::accounts::AccountRoot,
+    /// The window's route to the session, where it runs in one.
+    pub session: Option<ui::collaboration::browser_service_sessions::Client>,
 }
 
 impl AreaContext {
@@ -194,6 +196,7 @@ impl AreaContext {
             linked: ui::linked_accounts::LinkedAccounts::default(),
             sections: crate::sections::Sections::default(),
             account_root: crate::accounts::AccountRoot::at(root),
+            session: None,
         }
     }
 }

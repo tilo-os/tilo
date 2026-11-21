@@ -644,7 +644,7 @@ impl AccountsArea {
             linked: cx.linked.clone(),
             remote: ui::RemoteActions::current(),
             removal: std::cell::RefCell::default(),
-            session_secrets: ui::collaboration::browser_service_sessions::Client::capture(),
+            session_secrets: cx.session.clone(),
             adding: std::cell::RefCell::default(),
             model: std::cell::OnceCell::new(),
             account_root: None,
@@ -3073,20 +3073,24 @@ impl AccountsPane {
             let id = account.id.clone();
             return Step::vault(
                 move |_| pending.wait(),
-                move |pane, reply| match reply {
-                    Ok(ui::collaboration::browser_service_sessions::BrowserServiceSessionReply::AccountSecretStored { account: kept, item })
-                        if kept == id.as_str() =>
-                    {
-                        accounts::email::set_password_item(&mut account.config, Some(&item));
-                        let token = secret.token.map(|token| accounts::Secret {
-                            password: String::new(),
-                            token: Some(token),
-                        });
-                        accounts.insert(index, (account, token));
-                        pane.commit_then(accounts, settle)
+                move |pane, reply| {
+                    use ui::collaboration::browser_service_sessions::BrowserServiceSessionReply as Reply;
+                    match reply {
+                        Ok(Reply::AccountSecretStored {
+                            account: kept,
+                            item,
+                        }) if kept == id.as_str() => {
+                            accounts::email::set_password_item(&mut account.config, Some(&item));
+                            let token = secret.token.map(|token| accounts::Secret {
+                                password: String::new(),
+                                token: Some(token),
+                            });
+                            accounts.insert(index, (account, token));
+                            pane.commit_then(accounts, settle)
+                        }
+                        Ok(_) => settle(pane, Err("The session answered something else".into())),
+                        Err(error) => settle(pane, Err(error)),
                     }
-                    Ok(_) => settle(pane, Err("The session answered something else".into())),
-                    Err(error) => settle(pane, Err(error)),
                 },
             );
         }

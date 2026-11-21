@@ -17,24 +17,48 @@
 
 use accounts::email::{AccountConfig, password_item, password_places};
 use accounts::person::secret_keeper;
-use runtime_collab::{BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply};
+use runtime_collab::{
+    BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
+};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_resource::Id;
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::account_logins::{AccountLogin, NO_ENTRY};
 
+/// Where what happens to the workspace's account passwords is logged: with the session's own
+/// account of what it did, which a session's log keeps.
+const LOG: &str = tilo_startup_metrics::ACCOUNT_PASSWORDS_TARGET;
+
 /// What an app is told when its ask is not one it may make.
 pub(crate) const REFUSED: &str = accounts::secret_release::REFUSED;
 
 /// What is said while this device's workspace service is not up yet.
-pub(crate) const NO_VAULT_YET: &str =
-    "This device is still opening its workspaces, so no account's password is available yet. \
+pub(crate) const NO_VAULT_YET: &str = "This device is still opening its workspaces, so no account's password is available yet. \
      Try again in a moment.";
 
 /// Answer `command`, an account's password kept or released, that `app` sent on `by`'s own
 /// connection in `workspace`.
 pub(crate) async fn answer(
+    workspaces: &Workspaces,
+    workspace: &str,
+    app: &str,
+    by: &Caller,
+    command: Command,
+) -> Result<Reply, String> {
+    let asked = if matches!(command, Command::StoreAccountSecret { .. }) {
+        "keep"
+    } else {
+        "release"
+    };
+    let answered = answering(workspaces, workspace, app, by, command).await;
+    if let Err(error) = &answered {
+        tracing::warn!(target: LOG, app, asked, %error, "an account's password was not kept or released");
+    }
+    answered
+}
+
+async fn answering(
     workspaces: &Workspaces,
     workspace: &str,
     app: &str,
@@ -77,7 +101,7 @@ pub(crate) async fn answer(
                     password,
                 )
                 .await?;
-            tracing::info!(%account, app, "kept an account's password in the workspace's vault");
+            tracing::info!(target: LOG, %account, app, "kept an account's password in the workspace's vault");
             Ok(Reply::AccountSecretStored {
                 account,
                 item: item.to_string(),
@@ -111,7 +135,7 @@ pub(crate) async fn answer(
             let released = workspaces
                 .account_password(workspace, by, &item, &places, &account)
                 .await?;
-            tracing::info!(%account, app, "released an account's password from the workspace's vault to the app that keeps its type");
+            tracing::info!(target: LOG, %account, app, "released an account's password from the workspace's vault to the app that keeps its type");
             Ok(Reply::AccountSecret {
                 account,
                 password: released.secret,
@@ -145,7 +169,10 @@ pub(crate) async fn carry(workspaces: &Workspaces, by: &Caller) {
             return;
         }
     };
-    if let Err(error) = workspaces.carry_device_passwords(&mut credentials, by).await {
+    if let Err(error) = workspaces
+        .carry_device_passwords(&mut credentials, by)
+        .await
+    {
         tracing::warn!(%error, "this device's mail passwords were carried, but its credentials did not save");
     }
 }

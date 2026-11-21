@@ -28,10 +28,59 @@ impl Client {
     /// window's requests before its route joined, after, and across a record
     /// switch on the same app's route.
     pub fn capture() -> Option<Self> {
+        Self::captured().ok()
+    }
+    /// [`Self::capture`], or why there is none.
+    fn captured() -> Result<Self, &'static str> {
         service_capture_bridge().map(|bridge| Self {
             bridge,
             busy: Default::default(),
         })
+    }
+    /// [`Self::capture`] while the window is built; after that, the client this thread captured
+    /// for a window in `workspace` then. A view the framework builds again later (when the
+    /// window moves to another record of its app, as Mail's does once the workspace's mailbox
+    /// arrives) is no longer being built, and still reaches the session on its own route.
+    pub fn capture_kept(workspace: Option<&str>) -> Option<Self> {
+        thread_local! {
+            static KEPT: std::cell::RefCell<Vec<Client>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        KEPT.with(|kept| {
+            let mut kept = kept.borrow_mut();
+            let why = match Self::captured() {
+                Ok(captured) => {
+                    let workspace = captured.bridge.workspace();
+                    kept.retain(|client| client.bridge.workspace() != workspace);
+                    kept.push(captured.another());
+                    return Some(captured);
+                }
+                Err(why) => why,
+            };
+            let found = workspace.and_then(|workspace| {
+                kept.iter()
+                    .find(|client| client.bridge.workspace() == workspace)
+                    .map(Self::another)
+            });
+            // A window an app builds in a workspace runs in a session: one with no route to it
+            // cannot ask the session for anything, which its person sees as a failure later. The
+            // session's own windows (a thread that never built an app's window, or a connection
+            // that is no broker's) need no route.
+            let app_window = !crate::native_initial::session_own(why)
+                && (why != crate::native_initial::NOT_BUILDING || !kept.is_empty());
+            if found.is_none() && workspace.is_some() && app_window {
+                tracing::warn!(why, "this window has no route to the session's services");
+            }
+            found
+        })
+    }
+    /// Another client on the same route, with its own request in flight: a clone shares the
+    /// one this client has.
+    #[must_use]
+    pub fn another(&self) -> Self {
+        Self {
+            bridge: self.bridge.clone(),
+            busy: Default::default(),
+        }
     }
     /// Submit without waiting on the frame thread.
     pub fn request(

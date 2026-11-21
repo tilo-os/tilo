@@ -144,6 +144,9 @@ pub(crate) struct ViewStorage {
     workspace: Option<Rc<super::workspace::WorkspaceState>>,
     /// The workspace's emoji, as the window's views draw them.
     emoji: Option<Rc<super::workspace_emoji::WindowEmoji>>,
+    /// The window's own route to the session, where it runs in one: taken while the window is
+    /// constructed, the only time it can be, and handed to views built any time after.
+    session: Option<ui_core::collaboration::browser_service_sessions::Client>,
 }
 
 /// What the host gives a live window beside its record: the person's own
@@ -240,6 +243,13 @@ impl ViewStorage {
         if let Some(records) = &mut hosted.records {
             records.device_queue = Some(storage.settings::<super::chain::QueuedWrites>());
         }
+        let session = ui_core::collaboration::browser_service_sessions::Client::capture_kept(
+            hosted
+                .records
+                .as_ref()
+                .map(|records| records.store.home())
+                .as_deref(),
+        );
         Rc::new(Self {
             storage,
             followed: RefCell::default(),
@@ -254,7 +264,17 @@ impl ViewStorage {
             chain_views: RefCell::default(),
             workspace: hosted.workspace,
             emoji: hosted.emoji,
+            session,
         })
+    }
+
+    /// The window's own route to the session, where it runs in one.
+    pub(crate) fn session(
+        &self,
+    ) -> Option<ui_core::collaboration::browser_service_sessions::Client> {
+        self.session
+            .as_ref()
+            .map(ui_core::collaboration::browser_service_sessions::Client::another)
     }
 
     /// The chain of `P` the app keeps beside its record, opened on first

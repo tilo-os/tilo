@@ -238,7 +238,10 @@ impl AccountStore {
             let mut stored = account.to_stored();
             // The vault entry its password is in is the workspace's to name, which Mail's
             // settings of the account do not carry: it stays as the record names it.
-            if let Some(item) = held.get(&stored.id).and_then(|kept| accounts::email::password_item(&kept.config)) {
+            if let Some(item) = held
+                .get(&stored.id)
+                .and_then(|kept| accounts::email::password_item(&kept.config))
+            {
                 accounts::email::set_password_item(&mut stored.config, Some(item));
             }
             if held.get(&stored.id) != Some(&stored) {

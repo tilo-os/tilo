@@ -14,6 +14,7 @@ use accounts::person::PersonAccounts;
 use accounts::vault_items::{ItemError, ItemId, ItemKind, NewItem, Place, Released, UsedFor};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::ItemRef;
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_resource::{Id, Replica, Resource as _};
 use zeroize::Zeroizing;
 
@@ -202,7 +203,6 @@ impl Workspaces {
                 MAX_ACCOUNTS_BYTES,
             )
             .await?;
-        use tilo_peer_state::workspace_documents::DocumentRead;
         match read {
             DocumentRead::Whole { bytes, .. } | DocumentRead::Changes { bytes, .. } => {
                 Ok(Some(bytes))
@@ -237,8 +237,11 @@ impl Workspaces {
             None => None,
         };
         let changes = {
-            let mut replica =
-                Replica::<PersonAccounts>::load(&bytes).map_err(|error| error.to_string())?;
+            // Written as Settings writes it: each change claims Settings' verb, which every
+            // member decides against Settings' surface.
+            let mut replica = Replica::<PersonAccounts>::load(&bytes)
+                .map_err(|error| error.to_string())?
+                .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
             replica.doc_mut().set_actor(automerge::ActorId::from(
                 self.signing_device().device().to_vec(),
             ));
@@ -329,7 +332,10 @@ impl Workspaces {
                     continue;
                 }
                 let id = account.id.as_str().to_owned();
-                match self.carry_one(&workspace, &by, account, secret.password).await {
+                match self
+                    .carry_one(&workspace, &by, account, secret.password)
+                    .await
+                {
                     Ok(()) => {
                         carried.insert(id);
                     }
@@ -359,7 +365,10 @@ impl Workspaces {
         }
         if !carried.is_empty() {
             credentials.try_save()?;
-            tracing::info!(carried = carried.len(), "this device's mail passwords are the workspace's vault's now");
+            tracing::info!(
+                carried = carried.len(),
+                "this device's mail passwords are the workspace's vault's now"
+            );
         }
         Ok(CarriedPasswords {
             carried: carried.into_iter().collect(),
@@ -384,7 +393,8 @@ impl Workspaces {
         }
         let config = accounts::email::AccountConfig::from_value(account.config.clone())
             .map_err(|error| format!("its settings do not read: {error}"))?;
-        let places = accounts::email::password_places(&config).map_err(|error| error.to_string())?;
+        let places =
+            accounts::email::password_places(&config).map_err(|error| error.to_string())?;
         let item = self
             .keep_account_password(
                 workspace,

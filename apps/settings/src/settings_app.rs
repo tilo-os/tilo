@@ -30,6 +30,8 @@ pub struct SettingsApp {
     setting_request: ui::LocalState<Option<&'static settings_store::index::Setting>>,
     staged: RefCell<Option<crate::scenarios::Staged>>,
     account_root: crate::accounts::AccountRoot,
+    /// The window's route to the session, where it runs in one.
+    session: Option<ui::collaboration::browser_service_sessions::Client>,
     wallpaper_status: ui::LocalState<Option<String>>,
     areas: crate::area::Areas,
     keyboard_map_input: ui::KeyboardMapInput,
@@ -82,6 +84,7 @@ impl SettingsApp {
             setting_request: ui::LocalState::new(None),
             staged: RefCell::new(None),
             account_root,
+            session: None,
             wallpaper_status: ui::LocalState::new(None),
             areas: crate::area::Areas::default(),
             keyboard_map_input: ui::KeyboardMapInput::default(),
@@ -127,6 +130,8 @@ impl SettingsApp {
             ));
         }
         self.storage = cx.storage().clone();
+        // Its areas hand the session what is the session's: an email account's password.
+        self.session = cx.session();
         self.devices = cx.mode().is_live() && !cfg!(test) && cfg!(feature = "tilo-os");
         if self.devices {
             self.radios = crate::radios::Radios::of_device();
@@ -165,6 +170,7 @@ impl SettingsApp {
             linked: self.linked.clone(),
             sections: self.sections.clone(),
             account_root: self.account_root.clone(),
+            session: self.session.clone(),
         }
     }
 

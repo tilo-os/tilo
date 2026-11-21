@@ -1090,7 +1090,7 @@ pub mod live {
         match account.auth {
             AuthMethod::Password => {
                 if account.password.is_empty() {
-                    return Err(NO_PASSWORD.into());
+                    return Err(crate::engine::NO_PASSWORD.into());
                 }
                 Ok(AuthCreds::Password {
                     user,

@@ -412,22 +412,37 @@ pub fn capture_bridge() -> Option<InitialReadBridge> {
 /// when the app asked or of how its record is read. So the connection is
 /// captured from the manager's route whether it is acknowledged yet or not,
 /// and a request sent before the route joined waits for it in the worker.
+/// Why [`service_capture_bridge`] found no route on a thread building no window: a view the
+/// session draws in its own process, or one an app builds again after its window was made.
+pub const NOT_BUILDING: &str = "no window is being built on this thread";
+const NO_BROKER: &str = "the window's connection is not to a broker";
+const OTHER_TRANSPORT: &str = "the window's connection is not the session's broker";
+const NO_SESSION_BUILD: &str = "this build reaches no session";
+/// Whether `why` [`service_capture_bridge`] found no route says the window is the session's own
+/// (drawn in its process, on a connection that is no broker's) rather than an app's in a session
+/// whose route went missing.
+#[must_use]
+pub fn session_own(why: &str) -> bool {
+    [NO_BROKER, OTHER_TRANSPORT, NO_SESSION_BUILD].contains(&why)
+}
 #[cfg(feature = "broker-transport")]
-pub fn service_capture_bridge() -> Option<InitialReadBridge> {
-    let construction = current()?;
+pub fn service_capture_bridge() -> Result<InitialReadBridge, &'static str> {
+    let construction = current().ok_or(NOT_BUILDING)?;
     if construction.failure.borrow().is_some() {
-        return None;
+        return Err("the window's construction failed");
     }
     let manager = construction.manager.borrow();
-    let manager = manager.as_ref()?;
+    let manager = manager
+        .as_ref()
+        .ok_or("the window's connection was already handed to its runner")?;
     // Any app's own route: the owner authorizes each request for the
     // app that sends it (Browser's sessions, Settings' sealing, the secret
     // of an account of the type an app keeps).
     InitialReadBridge::service_connection(manager, construction.bridge.as_ref())
 }
 #[cfg(not(feature = "broker-transport"))]
-pub fn service_capture_bridge() -> Option<InitialReadBridge> {
-    None
+pub fn service_capture_bridge() -> Result<InitialReadBridge, &'static str> {
+    Err(NO_SESSION_BUILD)
 }
 pub fn fail(error: &str) {
     if let Some(state) = current() {
@@ -509,25 +524,30 @@ impl InitialReadBridge {
     /// The record route the construction holds, when it is this app's
     /// (`bridge`), keeps the request on the app it belongs to: a nested
     /// component cannot name its host's connection for another app.
-    fn service_connection(manager: &CollaborationManager, bridge: Option<&Self>) -> Option<Self> {
+    fn service_connection(
+        manager: &CollaborationManager,
+        bridge: Option<&Self>,
+    ) -> Result<Self, &'static str> {
         let Backend::Transport(transport) = &manager.backend else {
-            return None;
+            return Err(NO_BROKER);
         };
         let channel = transport
             .as_any()
-            .and_then(|any| any.downcast_ref::<BrokerTransport>())?;
+            .and_then(|any| any.downcast_ref::<BrokerTransport>())
+            .ok_or(OTHER_TRANSPORT)?;
         let route = manager
             .primary_route
             .accepted
             .as_ref()
             .map(|observation| &observation.route)
-            .or_else(|| manager.requested_primary_route())?;
+            .or_else(|| manager.requested_primary_route())
+            .ok_or("the window's connection has asked for no route yet")?;
         if let Some(bridge) = bridge
             && (bridge.route.app_id != route.app_id || bridge.route.cluster_id != route.cluster_id)
         {
-            return None;
+            return Err("the window's route is another app's or workspace's than its first read");
         }
-        Some(Self {
+        Ok(Self {
             route: route.clone(),
             commands: channel.outbound_tx.downgrade(),
             state: channel.state.clone(),
@@ -812,6 +832,12 @@ impl InitialReadBridge {
 pub struct InitialReadBridge {
     never: std::convert::Infallible,
     route: RouteSpec,
+}
+impl InitialReadBridge {
+    /// The workspace the bridge's route is in.
+    pub(crate) fn workspace(&self) -> String {
+        self.route.cluster_id.to_string()
+    }
 }
 #[cfg(not(feature = "broker-transport"))]
 impl InitialReadBridge {

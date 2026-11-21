@@ -217,13 +217,11 @@ impl MailApp {
                     self.dirty = true;
                 }
                 CheckState::Failed(reason) => {
-                    self.shared
-                        .borrow_mut()
-                        .note_sync_failure_saying(
-                            label,
-                            crate::notice::sync_cause(&reason),
-                            Some(reason.clone()),
-                        );
+                    self.shared.borrow_mut().note_sync_failure_saying(
+                        label,
+                        crate::notice::sync_cause(&reason),
+                        Some(reason.clone()),
+                    );
                     self.dirty = true;
                 }
             }

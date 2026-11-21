@@ -113,12 +113,16 @@ pub const APP_OUTPUT_TARGET: &str = "tilo::app_output";
 /// the next one started, and shown in its saved tabs or as new windows. One line per app at
 /// each step, so the log a device keeps says what a restart kept.
 pub const KEPT_APPS_TARGET: &str = "tilo::kept_apps";
+/// Each account password the session keeps in the workspace's vault, releases to an app, or
+/// refuses to.
+pub const ACCOUNT_PASSWORDS_TARGET: &str = "tilo::account_passwords";
 
 /// Targets the session log keeps at `info` whatever the base filter: rare lines that time
 /// an app's open, the compositor's and launcher's share of it before the app's own clock
 /// starts, what the session's repairs decided, where touch went, every step of joining a
-/// workspace, what an app itself said, and what a restart kept of the apps.
-const ALWAYS_LOGGED: [&str; 7] = [
+/// workspace, what an app itself said, what a restart kept of the apps, and each account
+/// password kept, released or refused.
+const ALWAYS_LOGGED: [&str; 8] = [
     LAUNCH_LATENCY_TARGET,
     XWAYLAND_TARGET,
     REPAIR_TARGET,
@@ -126,6 +130,7 @@ const ALWAYS_LOGGED: [&str; 7] = [
     JOIN_FLOW_TARGET,
     APP_OUTPUT_TARGET,
     KEPT_APPS_TARGET,
+    ACCOUNT_PASSWORDS_TARGET,
 ];
 
 /// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that filter
