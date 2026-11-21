@@ -273,6 +273,8 @@ def steps(story: Story) -> None:
     typed = {}
 
     def ada_types():
+        # She clicks into the note's body, where it asks her to write, and types.
+        ada.press("Block text", "the body of Ada's new note")
         for ch in words:
             ada.session.type(ch)
             time.sleep(0.08)

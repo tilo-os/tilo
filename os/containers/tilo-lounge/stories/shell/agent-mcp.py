@@ -207,7 +207,8 @@ def steps(story: Story) -> None:
     def under_its_name():
         # The shell's own history of the workspace: every change, each under who made it.
         tree = (ada.session.state_dump() or {}).get("workspace_tree") or {}
-        ada.session.invoke(SHELL, f"{CHROME}\u001factivity", {"workspace": tree.get("active")})
+        ada.session.invoke(SHELL, f"{CHROME}\u001factivity",
+                           {"workspace": tree.get("active"), "view": "explore"})
         changes = {FILE: FILE, TASK: TASK, NOTE: NOTE, "the message": "message"}
 
         def listed():
