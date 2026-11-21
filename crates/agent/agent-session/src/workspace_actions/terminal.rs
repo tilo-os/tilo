@@ -653,16 +653,7 @@ impl Worker {
             invocation,
             status: ReceiptStatus::Rejected { error },
         };
-        let turned_away = |why: &str| {
-            tracing::info!(
-                %workspace_id,
-                record = %route.document,
-                action = %request.target.address.action,
-                acting = ?caller.acting(),
-                why,
-                "a Terminal request was turned away"
-            );
-        };
+        let turned_away = |why: &str| turned_away(workspace_id, route, request, caller, why);
         let who = self.bounded(caller).ok_or_else(|| {
             turned_away("the host acts for nobody it names");
             refused(ActionCallError::NotPermitted)
@@ -1077,6 +1068,25 @@ fn parsed(command: &str, output: &[u8]) -> (String, Value) {
     )
 }
 
+/// Say why the host turned the Terminal request `request` on `route` away: the wire answers
+/// unknown and forbidden alike, so this line is where whoever runs the host reads which.
+fn turned_away(
+    workspace_id: WorkspaceId,
+    route: &DocumentRoute,
+    request: &InvokeRequest,
+    caller: &Caller,
+    why: &str,
+) {
+    tracing::info!(
+        %workspace_id,
+        record = %route.document,
+        action = %request.target.address.action,
+        acting = ?caller.acting(),
+        why,
+        "a Terminal request was turned away"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1183,3 +1193,4 @@ mod tests {
         );
     }
 }
+

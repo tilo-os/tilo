@@ -276,3 +276,128 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     drop(hosted.web);
     hosted.server.shutdown().await;
 }
+
+/// A workspace the host made for a person and handed to them in the same
+/// step: the host serves it as one of its administrators. A record the
+/// person's own device writes is sealed on its channel, and the host still
+/// opens it and offers its actions there, as it does in a workspace it owns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_host_opens_a_sealed_record_of_a_workspace_it_handed_its_person() {
+    let (operator, _) = tilo_user_identity::UserIdentity::generate("Operator", 1);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(
+        &operator,
+        "node",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    let page_device = enrol(&ada, "page", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = start(&operator, &host, state.path()).await;
+    let workspaces = hosted.server.workspaces().unwrap();
+    let workspace = workspaces
+        .create_for("Ada's", None, ada.verifying_key().to_bytes())
+        .await
+        .unwrap();
+    assert!(
+        workspaces
+            .is_owner(&workspace.workspace, ada.verifying_key().to_bytes())
+            .await,
+        "the workspace is Ada's"
+    );
+    // Her device comes in as a key of the owner's does: the invitation
+    // admits it and gives no role, since the workspace is hers already.
+    admit_person(
+        &hosted,
+        &host,
+        &workspace.workspace,
+        &page_device,
+        Role::Editor,
+    )
+    .await;
+    let mut page = open_admitted_peer(&hosted, &page_device, &host, &workspace.workspace).await;
+
+    let route = page.create(SHEETS);
+    page.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let written = until_retained(
+        &hosted,
+        workspace.workspace_id,
+        &route,
+        page_device.cert.device_public_key,
+        1,
+    )
+    .await;
+    assert!(
+        written.iter().all(|sealed| *sealed),
+        "the record is sealed on its own channel: {written:?}"
+    );
+    let rows = page
+        .catalogue(CatalogueQuery {
+            provider: Some(resource_provider(&route)),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
+        .await
+        .unwrap()
+        .rows;
+    assert!(
+        rows.iter()
+            .filter_map(|row| row.action.as_ref())
+            .any(|action| action.address.action == "new-sheet"),
+        "the host opened the sealed record and lists its actions: {rows:?}"
+    );
+
+    // The server restarts on what it kept, as a deployment restarts it, and
+    // a member Ada invited writes a record of their own.
+    page.peer.close();
+    hosted.agents.shutdown();
+    drop(hosted.web);
+    hosted.server.shutdown().await;
+    let hosted = start(&operator, &host, state.path()).await;
+    let bo = tilo_user_identity::UserIdentity::generate("Bo", 1).0;
+    let bo_device = enrol(&bo, "shell", DeviceCapabilities::member());
+    admit_person(
+        &hosted,
+        &host,
+        &workspace.workspace,
+        &bo_device,
+        Role::Editor,
+    )
+    .await;
+    let mut member = open_admitted_peer(&hosted, &bo_device, &host, &workspace.workspace).await;
+    let theirs = member.create(SHEETS);
+    member.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let written = until_retained(
+        &hosted,
+        workspace.workspace_id,
+        &theirs,
+        bo_device.cert.device_public_key,
+        1,
+    )
+    .await;
+    assert!(
+        written.iter().all(|sealed| *sealed),
+        "the member's record is sealed on its own channel: {written:?}"
+    );
+    for (route, whose) in [(&route, "Ada's"), (&theirs, "the member's")] {
+        let rows = member
+            .catalogue(CatalogueQuery {
+                provider: Some(resource_provider(route)),
+                max_results: 200,
+                ..CatalogueQuery::default()
+            })
+            .await
+            .unwrap()
+            .rows;
+        assert!(
+            rows.iter()
+                .filter_map(|row| row.action.as_ref())
+                .any(|action| action.address.action == "new-sheet"),
+            "after the restart the host opens {whose} sealed record and lists its actions: {rows:?}"
+        );
+    }
+
+    member.peer.close();
+    hosted.agents.shutdown();
+    drop(hosted.web);
+    hosted.server.shutdown().await;
+}
