@@ -521,7 +521,7 @@ fn review(core: &Core) -> Element {
             SectionHeader::group(CATALOG.t("passwords-review-attention")).count(count),
         )));
     }
-    let mut facts = vec![
+    let facts = vec![
         Property::new(CATALOG.t("passwords-checked"), health.total.to_string())
             .with_kind(TextKind::Numeric),
         Property::new(
@@ -529,12 +529,6 @@ fn review(core: &Core) -> Element {
             CATALOG.t(CHECKED_AGAINST),
         ),
     ];
-    if let Some(backend) = core.backend {
-        facts.push(Property::new(
-            CATALOG.t("passwords-encryption-key"),
-            backend,
-        ));
-    }
     groups.push(Box::new(
         Section::new(vec![Box::new(PropertyList::new(facts))])
             .with_header(SectionHeader::group(CATALOG.t("passwords-review-about"))),

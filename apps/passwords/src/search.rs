@@ -140,9 +140,16 @@ mod tests {
                 None,
                 "a past version says nothing"
             );
-            let _vault = crate::test_vault::isolated();
-            let open = crate::vault::Core::with_model(crate::PasswordsModel::open());
-            assert_eq!(open.secrets_unlocked(), Some(open.recovery_error.is_none()));
+            let mut app = crate::test_vault::workspace_window().unwrap();
+            let unlocked = app
+                .surface_mut::<crate::PasswordsWindow>()
+                .core()
+                .secrets_unlocked();
+            assert_eq!(
+                unlocked,
+                Some(true),
+                "a window on the workspace vault says whether its keys are here"
+            );
         }
 
         phase kind_facet_narrows_hits;

@@ -50,7 +50,6 @@ passwords-and-more = { $count ->
 }
 passwords-allowed-apps = Allowed apps
 passwords-review-about = About this review
-passwords-encryption-key = Encryption key
 passwords-checked-against = Checked against
 passwords-checked = Passwords checked
 passwords-review-attention = Needs attention

@@ -108,11 +108,31 @@ impl WorkspaceVault {
         link.seal_private_field(&item.id.0, &payload)
     }
 
-    pub(crate) fn import_device_vault(
+    /// Whether the document already holds `id`, or once held it and deleted it: such an
+    /// item is never imported again, as `import-sealed` refuses it too.
+    fn already_here(record: &WorkspaceResource<WorkspaceVaultEntries>, id: &SecretId) -> bool {
+        let id = Id::from_raw(&id.0);
+        record
+            .try_get()
+            .is_some_and(|state| state.removed.contains(&id) || state.entry(&id).is_some())
+    }
+
+    /// Seal into the document every item the device vault holds that may be shared
+    /// ([`crate::travels_to_workspace`]), and say which items are now the workspace's: each
+    /// id, and how many this pass sealed. `None` where the device vault cannot be read on
+    /// this thread now, leaving the conversion for the next refresh.
+    ///
+    /// Nothing leaves the device here: the caller removes the ids once the document has
+    /// kept them.
+    ///
+    /// # Errors
+    ///
+    /// Why the device vault cannot be read or the document cannot be written.
+    pub(crate) fn convert_device_vault(
         &self,
         owner: Option<&CredentialOwner>,
-        invoker: Option<&ui::tilo_actions::ActionInvoker>,
-    ) -> Result<usize, String> {
+        local_device_vault: bool,
+    ) -> Result<Option<(Vec<SecretId>, usize)>, String> {
         let record = self.record()?;
         if !record.may("import-sealed") {
             return Err("you may not import into this vault".into());
@@ -121,35 +141,35 @@ impl WorkspaceVault {
         if link.private_field_epoch().is_none() {
             return Err("the workspace vault keys are unavailable".into());
         }
-        let read = |store: &SecretStore| match store.recovery_error() {
-            Some(error) => Err(error.to_owned()),
-            None => Ok(store.list()),
-        };
-        let items = match owner {
-            Some(owner) => owner
-                .read(read)
-                .map_err(|error| format!("could not read vault: {error:?}"))??,
-            None => read(&SecretStore::open())?,
-        };
-        let mut imported = 0_usize;
-        for item in items.iter().filter(|item| item.may_share_with_workspace()) {
-            let id = Id::from_raw(&item.id.0);
-            let state = record
-                .try_get()
-                .ok_or("the workspace vault is unavailable")?;
-            if state.removed.contains(&id) || state.entry(&id).is_some() {
-                continue;
+        let items = if let Some(owner) = owner {
+            if !owner.is_open() && ui::storage::waiting::forbidden() {
+                return Ok(None);
             }
-            let ciphertext = Self::seal_item(&link, item)?;
-            let action = WorkspaceVaultEntries::IMPORT_SEALED.with((item.id.0.clone(), ciphertext));
-            match invoker {
-                Some(invoker) => record.invoke_as(invoker, &action),
-                None => record.invoke(&action),
+            owner
+                .read(device_items)
+                .map_err(|error| format!("could not read vault: {error:?}"))??
+        } else {
+            if !local_device_vault || ui::storage::waiting::forbidden() {
+                return Ok(None);
             }
-            .map_err(|error| error.to_string())?;
-            imported = imported.saturating_add(1);
+            device_items(&SecretStore::open())?
+        };
+        let mut here = Vec::new();
+        let mut sealed = 0_usize;
+        for item in items
+            .iter()
+            .filter(|item| crate::travels_to_workspace(item))
+        {
+            if !Self::already_here(&record, &item.id) {
+                let ciphertext = Self::seal_item(&link, item)?;
+                let action =
+                    WorkspaceVaultEntries::IMPORT_SEALED.with((item.id.0.clone(), ciphertext));
+                record.invoke(&action).map_err(|error| error.to_string())?;
+                sealed = sealed.saturating_add(1);
+            }
+            here.push(item.id.clone());
         }
-        Ok(imported)
+        Ok(Some((here, sealed)))
     }
 
     pub(crate) fn remove(&self, id: &SecretId) -> Result<bool, String> {
@@ -185,4 +205,46 @@ impl WorkspaceVault {
             }
         }
     }
+}
+
+/// Take `ids` out of the device vault, once the document holds them.
+///
+/// # Errors
+///
+/// Why the device vault refuses the removal.
+pub(crate) fn remove_device_items(
+    owner: Option<&CredentialOwner>,
+    local_device_vault: bool,
+    ids: &[SecretId],
+) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    if let Some(owner) = owner {
+        return owner
+            .edit(|store| remove_all(store, ids))
+            .map_err(|error| format!("could not remove converted logins: {error:?}"))?
+            .map_err(|error| format!("could not remove converted logins: {error:?}"));
+    }
+    if !local_device_vault {
+        return Ok(());
+    }
+    remove_all(&mut SecretStore::open(), ids)
+        .map_err(|error| format!("could not remove converted logins: {error:?}"))
+}
+
+/// The items a device vault holds, or why it cannot be read.
+fn device_items(store: &SecretStore) -> Result<Vec<SecretItem>, String> {
+    match store.recovery_error() {
+        Some(error) => Err(error.to_owned()),
+        None => Ok(store.list()),
+    }
+}
+
+/// Take every `id` out of `store`.
+fn remove_all(store: &mut SecretStore, ids: &[SecretId]) -> Result<(), accounts::BrokerError> {
+    for id in ids {
+        store.remove(id)?;
+    }
+    Ok(())
 }

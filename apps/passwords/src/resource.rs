@@ -33,13 +33,8 @@ impl ResourceApp for PasswordsShell {
     };
 
     fn view(cx: &mut ViewCx<Passwords>) -> Element {
-        let workspace = (cx.workspace().is_some() && !cx.on_personal_desktop())
-            || cx
-                .document_id()
-                .is_some_and(|id| id.as_str() == crate::workspace_vault::WORKSPACE_VAULT_DOCUMENT);
-        let owner = cx
-            .mode()
-            .is_live()
+        let live = cx.mode().is_live();
+        let owner = live
             .then(|| cx.take_lent::<accounts::CredentialOwner>())
             .flatten();
         let matches_device = |owner: &accounts::CredentialOwner| {
@@ -48,35 +43,29 @@ impl ResourceApp for PasswordsShell {
                 .is_some_and(|me| me.as_str() == owner.actor())
                 && cx.device() == Some(owner.device())
         };
-        let migration = owner
-            .as_ref()
-            .filter(|owner| workspace && matches_device(owner))
-            .cloned();
-        let can_import_local =
-            workspace && cx.mode().is_live() && !cx.is_embedded() && owner.is_none();
+        // The device's own vault, when the session lent it for this person on this device.
+        let device_owner = owner.filter(matches_device);
+        let in_workspace = live && cx.workspace().is_some();
+        // With no lent owner, a window of its own may still read this device's store.
+        let local_device_vault = in_workspace && !cx.is_embedded() && device_owner.is_none();
+        let can_import_device_vault = device_owner.is_some() || local_device_vault;
         let window = if cx.mode() == RunMode::Past {
             PasswordsWindow::new(crate::PasswordsModel::closed())
         } else if cx.fixture::<DemoVault>().is_some() {
             PasswordsWindow::demo()
-        } else if workspace {
+        } else if in_workspace {
             PasswordsWindow::new(crate::PasswordsModel::workspace(
                 cx.resource_opener(Self::ID),
-                migration.clone(),
+                device_owner,
+                local_device_vault,
             ))
-        } else if let Some(owner) = owner {
-            let model = if matches_device(&owner) {
-                crate::PasswordsModel::shared(owner)
-            } else {
-                crate::PasswordsModel::closed()
-            };
-            PasswordsWindow::new(model)
         } else {
-            PasswordsWindow::new(crate::PasswordsModel::open())
+            PasswordsWindow::new(crate::PasswordsModel::closed())
         };
         cx.on_open(window.opener());
         cx.on_stage(window.stager());
         window.wake_through(cx.waker());
-        answer_effects(cx, &window.vault(), migration, can_import_local);
+        answer_effects(cx, &window.vault(), can_import_device_vault);
         window.vault().borrow_mut().jobs = Some(cx.window_jobs::<PasswordsWindow>());
         let vault = window.vault();
         let (rows, row, entries, unlocked) = (vault.clone(), vault.clone(), vault.clone(), vault);
@@ -103,34 +92,14 @@ impl ResourceApp for PasswordsShell {
 
 /// Answer what the palette, an agent, a script or a search hit asks of the vault; the
 /// window brings itself in step on its next sync.
-fn answer_effects(
-    cx: &ViewCx<Passwords>,
-    vault: &crate::vault::Shared,
-    migration: Option<accounts::CredentialOwner>,
-    can_import_local: bool,
-) {
+fn answer_effects(cx: &ViewCx<Passwords>, vault: &crate::vault::Shared, can_import: bool) {
     let (answer, status) = (vault.clone(), vault.clone());
-    let import_available = migration.is_some() || can_import_local;
-    let opener = cx.resource_opener::<passwords_model::WorkspaceVaultEntries>(PasswordsShell::ID);
-    let wake = cx.waker();
-    cx.effects(move |effect: PasswordsEffect, cx| {
+    cx.effects(move |effect: PasswordsEffect, _cx| {
         if matches!(effect, PasswordsEffect::ImportDeviceVault) {
-            if !import_available {
+            if !can_import {
                 return Err("the device vault cannot be imported here".into());
             }
-            if ui::storage::waiting::forbidden() {
-                if let Some(owner) = &migration {
-                    let wake = wake.clone();
-                    if !owner.open_without_waiting(move || wake.wake()) {
-                        return Err("the device vault is still opening".into());
-                    }
-                } else {
-                    return Err("the device vault cannot be opened here".into());
-                }
-            }
-            let vault = crate::workspace_vault::WorkspaceVault::new(opener.clone());
-            let imported = vault.import_device_vault(migration.as_ref(), cx.invoker().as_ref())?;
-            answer.borrow_mut().refresh();
+            let imported = answer.borrow_mut().convert_device_vault()?;
             return Ok(Effected::value(serde_json::json!({ "imported": imported })));
         }
         let listing = matches!(effect, PasswordsEffect::ListLogins);
@@ -144,7 +113,7 @@ fn answer_effects(
     })
     .status(move || {
         let mut unavailable = Vec::new();
-        if !import_available {
+        if !can_import {
             unavailable.push(EffectStatus::unavailable(
                 PasswordsEffect::IMPORT_DEVICE_VAULT,
                 "no_device_vault",
@@ -174,22 +143,85 @@ mod tests {
     use crate::actions::item_resource_id;
     use ui::tilo_resource::Resource;
 
-    #[test]
-    fn a_workspace_window_does_not_open_the_device_vault() {
-        let _profile = crate::test_vault::isolated();
-        let mut device = crate::PasswordsModel::open();
-        let mut login = SecretItem::login("Device login", "ada", "profile-only");
-        let id = device.save_item(&mut login).unwrap();
-        drop(device);
+    /// The device's own store keeps the secrets that belong to this device alone: the
+    /// scope the messaging profile key carries, and the networks this machine joined.
+    const MESSAGING_PROFILE_SCOPE: &str = "tilo.messaging.profile.scope";
 
-        let mut window =
-            TestApp::<PasswordsShell>::with_role(ui::permissions::Role::Viewer).unwrap();
-        let surface = window.surface_mut::<PasswordsWindow>();
-        let core = surface.core();
-        let model = core.model.as_ref().expect("the workspace vault is mounted");
-        assert!(model.in_workspace());
-        assert!(model.reveal(&id).is_err());
-        assert!(crate::PasswordsModel::open().reveal(&id).is_ok());
+    /// Opening Passwords in a workspace converts what the device vault may share into the
+    /// workspace document, once, and leaves what belongs to the device where it is.
+    #[test]
+    fn a_workspace_window_converts_the_device_vaults_shareable_logins_once() {
+        let _device = crate::test_vault::isolated();
+        let mut store = accounts::SecretStore::open();
+        let mut login = SecretItem::login("Old device login", "ada", "shareable-7X");
+        store.put(&mut login).unwrap();
+        let login_id = login.id.clone();
+        let mut wifi = SecretItem::login("Home Wi-Fi", "ada", "wifi-kept-7X");
+        wifi.kind = accounts::SecretItemKind::Wifi;
+        store.put(&mut wifi).unwrap();
+        let wifi_id = wifi.id.clone();
+        let mut auth = SecretItem::login("Messages account encryption key", "", "auth-kept-7X");
+        auth.kind = accounts::SecretItemKind::Other;
+        auth.fields
+            .insert(MESSAGING_PROFILE_SCOPE.to_owned(), "{}".to_owned());
+        assert!(
+            !auth.may_share_with_workspace(),
+            "device authentication material never leaves the device"
+        );
+        store.put(&mut auth).unwrap();
+        let auth_id = auth.id.clone();
+        drop(store);
+
+        let mut app = crate::test_vault::workspace_window().unwrap();
+        let items = crate::test_vault::stored(&mut app);
+        assert_eq!(
+            items.len(),
+            1,
+            "the workspace holds the shareable login alone"
+        );
+        assert_eq!(items[0].id, login_id);
+        let revealed = app
+            .surface_mut::<PasswordsWindow>()
+            .core()
+            .model
+            .as_ref()
+            .unwrap()
+            .reveal(&login_id)
+            .unwrap();
+        assert_eq!(
+            revealed.as_str(),
+            "shareable-7X",
+            "sealed into the document"
+        );
+
+        let device = accounts::SecretStore::open().list();
+        assert!(
+            device.iter().all(|item| item.id != login_id),
+            "the converted login left the device vault"
+        );
+        assert!(
+            device.iter().any(|item| item.id == wifi_id),
+            "the Wi-Fi network stayed"
+        );
+        assert!(
+            device.iter().any(|item| item.id == auth_id),
+            "the profile key stayed"
+        );
+
+        let mut again = app.reopen().unwrap();
+        let answered = again
+            .effect_confirmed(&PasswordsEffect::ImportDeviceVault)
+            .expect("the effect answers");
+        let value = answered
+            .value
+            .expect("the conversion says how many it imported");
+        assert_eq!(
+            value.get("imported").and_then(serde_json::Value::as_u64),
+            Some(0),
+            "opening it again converts nothing twice"
+        );
+        assert_eq!(crate::test_vault::stored(&mut again).len(), 1);
+        assert_eq!(accounts::SecretStore::open().list().len(), device.len());
     }
 
     tilo_test_env::scenario! {
@@ -202,18 +234,14 @@ mod tests {
 
         phase vault_items_are_live_rows_whose_effects_reach_the_vault;
         {
-            let _profile = profile();
-            let mut model = crate::PasswordsModel::open();
-            let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
-            item.add_origin("https://private.example").unwrap();
-            let id = model.save_item(&mut item).unwrap();
-            drop(model);
-
             let clipboard = std::sync::Arc::new(Clipboard::default());
             let _host = ui::process::enter(
                 &ui::process::ProcessServices::null().with_clipboard(std::sync::Arc::clone(&clipboard) as _),
             );
             let mut app = crate::test_vault::personal_window().unwrap();
+            let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
+            item.add_origin("https://private.example").unwrap();
+            let id = crate::test_vault::seed(&mut app, &mut item);
             let row_id = item_resource_id(&id.0);
             let row = published(&mut app, &row_id).expect("the item is a live row");
             assert_eq!(row.label, "Saved login");
@@ -289,10 +317,10 @@ mod tests {
                     .is_err(),
                 "deleting needs the caller's confirmation"
             );
-            assert_eq!(crate::PasswordsModel::open().items().len(), 1);
+            assert_eq!(crate::test_vault::stored(&mut app).len(), 1);
             app.effect_confirmed(&PasswordsEffect::Delete { item: id.0 })
                 .unwrap();
-            assert!(crate::PasswordsModel::open().items().is_empty());
+            assert!(crate::test_vault::stored(&mut app).is_empty());
             assert!(published(&mut app, &row_id).is_none(), "its row is gone");
         }
 
@@ -300,12 +328,9 @@ mod tests {
         // Opening an item's anchor, as a search hit or an agent does, shows it even where a
         // filter hid it; an item the vault lacks is refused.
         {
-            let _profile = profile();
-            let mut model = crate::PasswordsModel::open();
-            let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
-            let id = model.save_item(&mut item).unwrap();
-            drop(model);
             let mut app = crate::test_vault::personal_window().unwrap();
+            let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
+            let id = crate::test_vault::seed(&mut app, &mut item);
             app.effect(&PasswordsEffect::Filter {
                 filter: "favorites".into(),
             })
@@ -338,32 +363,28 @@ mod tests {
         // A favorite is vault state an agent, a script or a screen reader sets by the item's
         // id, not only by the row's star.
         {
-            let _profile = profile();
-            let mut model = crate::PasswordsModel::open();
-            let mut item = SecretItem::login("Mail", "ada@example.com", "not-public-7A");
-            let id = model.save_item(&mut item).unwrap();
-            drop(model);
             let mut app = crate::test_vault::personal_window().unwrap();
+            let mut item = SecretItem::login("Mail", "ada@example.com", "not-public-7A");
+            let id = crate::test_vault::seed(&mut app, &mut item);
             let vault = published(&mut app, Passwords::KIND).unwrap();
             assert!(
                 vault.actions.iter().any(|action| action.id == "favorite"),
                 "the vault offers favorite"
             );
-            let stored = || {
-                crate::PasswordsModel::open()
-                    .items()
+            fn stored(app: &mut TestApp<PasswordsShell>) -> bool {
+                crate::test_vault::stored(app)
                     .iter()
                     .any(|item| item.tags.contains("favorite"))
-            };
+            }
             let favorite = |favorite| PasswordsEffect::Favorite {
                 item: id.0.clone(),
                 favorite,
             };
 
             app.effect(&favorite(true)).unwrap();
-            assert!(stored(), "the vault keeps the favorite");
+            assert!(stored(&mut app), "the vault keeps the favorite");
             app.effect(&favorite(true)).unwrap();
-            assert!(stored(), "asking again leaves it a favorite");
+            assert!(stored(&mut app), "asking again leaves it a favorite");
             app.effect(&PasswordsEffect::Filter {
                 filter: "favorites".into(),
             })
@@ -374,7 +395,7 @@ mod tests {
                 "Favorites lists it"
             );
             app.effect(&favorite(false)).unwrap();
-            assert!(!stored(), "and no longer once it is removed");
+            assert!(!stored(&mut app), "and no longer once it is removed");
             assert!(
                 app.effect(&PasswordsEffect::Favorite {
                     item: "not-in-the-vault".into(),
@@ -387,7 +408,6 @@ mod tests {
 
         phase an_item_saved_from_the_editor_lands_in_the_vault;
         {
-            let _profile = profile();
             let mut app = crate::test_vault::personal_window().unwrap();
             app.effect(&PasswordsEffect::Add).unwrap();
             app.harness()
@@ -396,7 +416,7 @@ mod tests {
             app.harness().type_text("Mail");
             app.effect(&PasswordsEffect::Generate).unwrap();
             app.effect(&PasswordsEffect::Save).unwrap();
-            let items = crate::PasswordsModel::open().items();
+            let items = crate::test_vault::stored(&mut app);
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].title, "Mail");
             assert!(items[0].password.len() >= 20, "a generated password");
@@ -414,7 +434,6 @@ mod tests {
         {
             use ui::tilo_actions::{ActionArgs, ParamType};
             const PASSWORD: &str = "secret-sentinel-41xq";
-            let _profile = profile();
             let mut app = crate::test_vault::personal_window().unwrap();
             let vault = published(&mut app, Passwords::KIND).unwrap();
             let save = vault
@@ -444,7 +463,7 @@ mod tests {
 
             let answered = app.call("save-login", arguments).unwrap();
             assert!(!format!("{answered:?}").contains(PASSWORD));
-            let items = crate::PasswordsModel::open().items();
+            let items = crate::test_vault::stored(&mut app);
             assert_eq!(items.len(), 1, "the login is in the vault");
             assert_eq!(items[0].title, "Mail");
             assert_eq!(items[0].kind, accounts::SecretItemKind::Login);
@@ -474,22 +493,7 @@ mod tests {
                 .is_err(),
                 "a login with no name is refused as the editor refuses it"
             );
-            assert_eq!(crate::PasswordsModel::open().items().len(), 1);
-        }
-    }
-
-    struct Profile {
-        _home: tempfile::TempDir,
-        _paths: tilo_paths::ProfileScope,
-        _secrets: ui::secrets::SecretsScope,
-    }
-
-    fn profile() -> Profile {
-        let home = tempfile::tempdir().unwrap();
-        Profile {
-            _paths: tilo_paths::scope_profile(home.path()),
-            _secrets: ui::secrets::scope_thread(ui::secrets::memory_backend()),
-            _home: home,
+            assert_eq!(crate::test_vault::stored(&mut app).len(), 1);
         }
     }
 
@@ -555,16 +559,13 @@ mod tests {
     #[test]
     fn export_and_backup_write_private_files_where_the_person_chose() {
         use crate::vault::{Dialog, Request};
-        let _profile = profile();
-        let mut model = crate::PasswordsModel::open();
-        let mut login = SecretItem::login("Example", "ada", "export-secret");
-        login.add_origin("https://example.com").unwrap();
-        model.save_item(&mut login).unwrap();
-        drop(model);
         let out = tempfile::tempdir().unwrap();
         let (services, recorder) = ui::process::ProcessServices::recording();
         let _host = ui::process::enter(&services);
         let mut app = crate::test_vault::personal_window().unwrap();
+        let mut login = SecretItem::login("Example", "ada", "export-secret");
+        login.add_origin("https://example.com").unwrap();
+        crate::test_vault::seed(&mut app, &mut login);
         let ask = |app: &mut TestApp<PasswordsShell>, request: Request| {
             app.surface::<PasswordsWindow, _>(|window| {
                 window.requests.borrow_mut().push(request);
@@ -639,7 +640,7 @@ mod tests {
 
     #[test]
     fn captures_show_a_demo_vault_of_their_own() {
-        let _profile = profile();
+        let mut person = crate::test_vault::workspace_window().unwrap();
         for scenario in crate::window::SCENARIOS {
             let mut app = TestApp::<PasswordsShell>::capture(Some(scenario)).unwrap();
             let root = app.harness().inspection().root;
@@ -665,7 +666,7 @@ mod tests {
             }
         }
         assert!(
-            crate::PasswordsModel::open().items().is_empty(),
+            crate::test_vault::stored(&mut person).is_empty(),
             "no capture wrote to the person's vault"
         );
     }
@@ -698,12 +699,9 @@ mod reveal_tests {
     /// window they pressed it in.
     #[test]
     fn a_confirmed_reveal_shows_the_password() {
-        let _vault = crate::test_vault::isolated();
-        let mut model = crate::PasswordsModel::open();
-        let mut item = SecretItem::login("Bakery", "ada", "crumb-Loaf-42");
-        let id = model.save_item(&mut item).unwrap();
         let mut app = crate::test_vault::personal_window().unwrap();
-        app.settle();
+        let mut item = SecretItem::login("Bakery", "ada", "crumb-Loaf-42");
+        let id = crate::test_vault::seed(&mut app, &mut item);
         assert!(
             app.surface_mut::<PasswordsWindow>().core_mut().open(&id),
             "the saved login is listed"

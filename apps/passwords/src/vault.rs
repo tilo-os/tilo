@@ -348,7 +348,6 @@ pub(crate) struct Core {
     pub(crate) app_grants: Vec<CredentialGrant>,
     pub(crate) app_proposals: Vec<accounts::CredentialProposal>,
     model_revision: Option<u64>,
-    pub(crate) backend: Option<&'static str>,
     pub(crate) recovery_error: Option<String>,
     pub(crate) import_portal: Option<crate::transfer::Choosing>,
     pub(crate) import_parse: Option<std::sync::mpsc::Receiver<Result<Vec<ImportLogin>, String>>>,
@@ -401,7 +400,6 @@ impl Core {
             app_proposals: Vec::new(),
             model_revision: None,
             writing: false,
-            backend: None,
             recovery_error: None,
             import_portal: None,
             import_parse: None,
@@ -469,7 +467,6 @@ impl Core {
         self.findings = crate::findings(&full);
         self.items = crate::demo::items();
         self.app_grants = crate::demo::grants();
-        self.backend = Some("System keyring");
         self.recovery_error = None;
         self.filter = VaultFilter::All;
         self.screen = Screen::Vault;
@@ -506,15 +503,14 @@ impl Core {
         if !model.opens_vault() {
             return None;
         }
-        if model.in_workspace() {
-            return Some(model.recovery_error().is_none());
-        }
-        Some(self.recovery_error.is_none())
+        Some(model.recovery_error().is_none())
     }
 
     pub(crate) fn refresh(&mut self) {
-        if let Some(model) = self.model.as_mut() {
-            model.reload();
+        if let Some(model) = self.model.as_mut()
+            && let Err(error) = model.convert_device_vault()
+        {
+            tracing::warn!(%error, "the device vault was not converted");
         }
         let Some(model) = &self.model else {
             return;
@@ -531,7 +527,6 @@ impl Core {
         self.findings = crate::findings(&full);
         self.app_grants = model.app_grants();
         self.app_proposals = model.app_proposals();
-        self.backend = (!model.in_workspace()).then(|| model.backend().label());
         self.items = full
             .into_iter()
             .map(|mut item| {
@@ -1240,6 +1235,17 @@ impl Core {
             .and_then(crate::PasswordsModel::revision)
             .is_some_and(|revision| Some(revision) != self.model_revision)
     }
+    /// Convert what this device's vault may share into the workspace document, as the
+    /// published effect asks: the window's opening conversion, or what is left of it.
+    pub(crate) fn convert_device_vault(&mut self) -> Result<usize, String> {
+        let imported = self
+            .model
+            .as_mut()
+            .ok_or_else(|| "the vault is not open in this window".to_owned())?
+            .convert_device_vault()?;
+        self.refresh();
+        Ok(imported)
+    }
     pub(crate) fn refresh_model(&mut self) {
         if self.opening {
             if self.open_without_waiting() {
@@ -1253,8 +1259,16 @@ impl Core {
                 .model
                 .as_ref()
                 .is_some_and(|model| model.app_proposals() != self.app_proposals);
+        // A conversion still finishing (the document keeping what it sealed) is retried on the
+        // window's syncs; it is not what makes the window redraw.
+        let converting = self
+            .model
+            .as_ref()
+            .is_some_and(crate::PasswordsModel::conversion_pending);
         if proposals_changed || self.model_changed() {
             self.revealed = None;
+            self.refresh();
+        } else if converting {
             self.refresh();
         }
     }
@@ -1878,7 +1892,7 @@ impl Core {
             }
             PasswordsEffect::Import => self.request_import(),
             PasswordsEffect::ImportDeviceVault => {
-                return Err("the device vault cannot be imported here".into());
+                self.convert_device_vault()?;
             }
             PasswordsEffect::Export => self.request_export(),
             PasswordsEffect::Filter { filter } => {
@@ -1978,7 +1992,7 @@ impl Core {
         if self
             .model
             .as_ref()
-            .is_some_and(|model| model.in_workspace() && model.recovery_error().is_some())
+            .is_some_and(|model| model.recovery_error().is_some())
         {
             return &[];
         }

@@ -202,49 +202,48 @@ tilo_test_env::scenario! {
 
     phase filters_favorites_and_confirmed_deletes_are_real_vault_state;
     {
-        let _vault = crate::test_vault::isolated();
-        let mut model = crate::PasswordsModel::open();
+        let mut app = crate::test_vault::personal_window().unwrap();
         let mut kept = SecretItem::login("Kept", "ada", "kept-secret-1A");
         let mut gone = SecretItem::login("Removed", "ada", "removed-secret-1A");
-        model.save_item(&mut kept).unwrap();
-        model.save_item(&mut gone).unwrap();
-        let mut app = PasswordsWindow::new(model);
+        crate::test_vault::seed(&mut app, &mut kept);
+        crate::test_vault::seed(&mut app, &mut gone);
+        let surface = app.surface_mut::<PasswordsWindow>();
 
-        request(&mut app, Request::Open(gone.id.clone()));
-        request(&mut app, Request::ToggleFavorite(gone.id.clone()));
-        request(&mut app, Request::Navigate("filter:favorites".into()));
-        assert_eq!(app.core().visible().len(), 1);
+        request(surface, Request::Open(gone.id.clone()));
+        request(surface, Request::ToggleFavorite(gone.id.clone()));
+        request(surface, Request::Navigate("filter:favorites".into()));
+        assert_eq!(surface.core().visible().len(), 1);
 
-        request(&mut app, Request::Delete);
+        request(surface, Request::Delete);
         assert!(matches!(
-            app.core().dialog,
+            surface.core().dialog,
             Some(Dialog::DeleteConfirm { ref title, .. }) if title == "Removed"
         ));
         assert_eq!(
-            app.core().model.as_ref().unwrap().items().len(),
+            surface.core().model.as_ref().unwrap().items().len(),
             2,
             "nothing is deleted before the person confirms"
         );
-        request(&mut app, Request::CloseDialog);
-        assert!(app.core().dialog.is_none());
-        assert_eq!(app.core().model.as_ref().unwrap().items().len(), 2);
+        request(surface, Request::CloseDialog);
+        assert!(surface.core().dialog.is_none());
+        assert_eq!(surface.core().model.as_ref().unwrap().items().len(), 2);
 
-        request(&mut app, Request::Delete);
-        request(&mut app, Request::ConfirmDelete);
-        let remaining = app.core().model.as_ref().unwrap().items();
+        request(surface, Request::Delete);
+        request(surface, Request::ConfirmDelete);
+        let remaining = surface.core().model.as_ref().unwrap().items();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].title, "Kept");
-        assert!(app.core().visible().is_empty(), "no favorite is left");
+        assert!(surface.core().visible().is_empty(), "no favorite is left");
     }
 
     phase every_capture_scenario_stages_on_the_fixture_vault;
     {
         for scenario in SCENARIOS.iter().copied().map(Some).chain([None]) {
-            let _vault = crate::test_vault::isolated();
-            let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
-            app.stager()(scenario);
-            app.settle();
-            let core = app.core();
+            let mut app = crate::test_vault::personal_window().unwrap();
+            let surface = app.surface_mut::<PasswordsWindow>();
+            surface.stager()(scenario);
+            surface.settle();
+            let core = surface.core();
             assert!(
                 core.model.is_none(),
                 "{scenario:?} never shows a real vault"
@@ -408,60 +407,60 @@ tilo_test_env::scenario! {
         eprintln!("phase copying and revealing are distinct actions");
         {
             let _clipboard = clipboard_fixture(true);
-            let _vault = crate::test_vault::isolated();
-            let mut model = crate::PasswordsModel::open();
+            let mut app = crate::test_vault::personal_window().unwrap();
             let mut item = SecretItem::login("Account", "ada", "private-value");
             item.add_origin("https://example.invalid").unwrap();
-            let id = model.save_item(&mut item).unwrap();
-            let mut app = PasswordsWindow::new(model);
+            let id = crate::test_vault::seed(&mut app, &mut item);
+            let surface = app.surface_mut::<PasswordsWindow>();
 
-            request(&mut app, Request::CopySecret);
+            request(surface, Request::CopySecret);
             assert_eq!(ui::clipboard_paste().as_deref(), Some("private-value"));
             assert!(
-                app.core().revealed.is_none(),
+                surface.core().revealed.is_none(),
                 "copying must not disclose the value"
             );
             assert!(
-                app.shell()
+                surface
+                    .shell()
                     .toast_text()
                     .is_some_and(|message| message.starts_with("Copied password"))
             );
 
-            effect(&mut app, PasswordsEffect::Reveal { item: id.0.clone() });
+            effect(surface, PasswordsEffect::Reveal { item: id.0.clone() });
             assert_eq!(
-                app.core()
+                surface
+                    .core()
                     .revealed
                     .as_ref()
                     .map(|(_, value, _)| value.to_string()),
                 Some("private-value".into())
             );
-            effect(&mut app, PasswordsEffect::Reveal { item: id.0.clone() });
+            effect(surface, PasswordsEffect::Reveal { item: id.0.clone() });
             assert!(
-                app.core().revealed.is_some(),
+                surface.core().revealed.is_some(),
                 "revealing again leaves it shown"
             );
-            effect(&mut app, PasswordsEffect::Hide { item: id.0 });
-            assert!(app.core().revealed.is_none(), "hiding puts it away");
+            effect(surface, PasswordsEffect::Hide { item: id.0 });
+            assert!(surface.core().revealed.is_none(), "hiding puts it away");
         }
 
         eprintln!("phase a failed copy says so and leaves the clipboard alone");
         {
             let _clipboard = clipboard_fixture(false);
-            let _vault = crate::test_vault::isolated();
-            let mut model = crate::PasswordsModel::open();
+            let mut app = crate::test_vault::personal_window().unwrap();
             let mut item = SecretItem::login("Account", "ada", "private-value");
             item.add_origin("https://example.invalid").unwrap();
-            let id = model.save_item(&mut item).unwrap();
-            let mut app = PasswordsWindow::new(model);
+            let id = crate::test_vault::seed(&mut app, &mut item);
+            let surface = app.surface_mut::<PasswordsWindow>();
             for copy in [
                 PasswordsEffect::Copy { item: id.0.clone() },
                 PasswordsEffect::CopyIdentity { item: id.0.clone() },
                 PasswordsEffect::CopyOrigins { item: id.0 },
             ] {
-                app.shell.dismiss_toast();
-                effect(&mut app, copy);
+                surface.shell.dismiss_toast();
+                effect(surface, copy);
                 assert_eq!(
-                    app.shell().toast_text(),
+                    surface.shell().toast_text(),
                     Some("Could not copy to the clipboard. Try again.")
                 );
                 assert_eq!(ui::clipboard_paste().as_deref(), Some("existing clipboard"));
@@ -476,9 +475,9 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
     eprintln!("phase a new login is saved, then edited without retyping its password");
     {
         let _clipboard = clipboard_fixture(true);
-        let _vault = crate::test_vault::isolated();
-        let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
-        request(&mut app, Request::NewItem);
+        let mut app = crate::test_vault::personal_window().unwrap();
+        let app = app.surface_mut::<PasswordsWindow>();
+        request(app, Request::NewItem);
         assert_eq!(app.core().screen, Screen::Editor);
         {
             let mut core = app.core_mut();
@@ -491,7 +490,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
             core.set_draft(DraftField::Password, "correct horse battery staple");
             core.set_draft(DraftField::Notes, "recovery details");
         }
-        request(&mut app, Request::Save);
+        request(app, Request::Save);
         assert_eq!(
             app.shell().toast_text(),
             Some("Saved Example account"),
@@ -511,7 +510,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
             );
         }
 
-        request(&mut app, Request::Edit);
+        request(app, Request::Edit);
         assert!(
             app.core()
                 .draft_origin
@@ -519,12 +518,12 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         );
         app.core_mut()
             .set_draft(DraftField::Name, "Renamed account");
-        request(&mut app, Request::Save);
+        request(app, Request::Save);
         let stored = app.core().model.as_ref().unwrap().items();
         assert_eq!(stored[0].title, "Renamed account");
         assert_eq!(stored[0].password, "correct horse battery staple");
         let id = stored[0].id.0.clone();
-        effect(&mut app, PasswordsEffect::CopyOrigins { item: id });
+        effect(app, PasswordsEffect::CopyOrigins { item: id });
         let copied = ui::clipboard_paste().unwrap();
         assert!(copied.contains("https://example.com"));
         assert!(copied.contains("https://login.example.com"));
@@ -569,17 +568,16 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
 
     eprintln!("phase editing keeps fields and tags the editor does not show");
     {
-        let _vault = crate::test_vault::isolated();
-        let mut model = crate::PasswordsModel::open();
+        let mut app = crate::test_vault::personal_window().unwrap();
         let mut item = SecretItem::login("Deployment", "ada", "token");
         item.kind = SecretItemKind::Other;
         item.fields.insert("client-id".into(), "app-42".into());
         item.fields.insert("tenant".into(), "northstar".into());
         item.tags.extend(["favorite".into(), "work".into()]);
-        let id = model.save_item(&mut item).unwrap();
+        let id = crate::test_vault::seed(&mut app, &mut item);
 
-        let mut app = PasswordsWindow::new(model);
-        request(&mut app, Request::Edit);
+        let app = app.surface_mut::<PasswordsWindow>();
+        request(app, Request::Edit);
         assert!(
             app.core()
                 .draft_custom_fields
@@ -595,9 +593,13 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
             );
             core.set_draft(DraftField::Tags, "work, infrastructure");
         }
-        request(&mut app, Request::Save);
+        request(app, Request::Save);
 
-        let stored = crate::PasswordsModel::open()
+        let stored = app
+            .core()
+            .model
+            .as_ref()
+            .unwrap()
             .items()
             .into_iter()
             .find(|candidate| candidate.id == id)
@@ -641,8 +643,8 @@ tilo_test_env::scenario! {
     // An empty vault has nothing to review: the page says so instead of grading zero passwords
     // as all clear.
     {
-        let _vault = crate::test_vault::isolated();
-        let app = PasswordsWindow::new(crate::PasswordsModel::open());
+        let mut opened = crate::test_vault::personal_window().unwrap();
+        let app = opened.surface_mut::<PasswordsWindow>();
         let shared = Rc::clone(&app.core);
         shared.borrow_mut().screen = Screen::Review;
         let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
@@ -722,16 +724,16 @@ tilo_test_env::scenario! {
     // A bare host is the https site it names, a corrected field drops its complaint at once,
     // and a saved item is kept, with nothing left writing.
     {
-        let _vault = crate::test_vault::isolated();
-        let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
-        request(&mut app, Request::NewItem);
+        let mut opened = crate::test_vault::personal_window().unwrap();
+        let app = opened.surface_mut::<PasswordsWindow>();
+        request(app, Request::NewItem);
         {
             let mut core = app.core_mut();
             core.set_draft(DraftField::Name, "Forge");
             core.set_draft(DraftField::Origin, "not a host");
             core.set_draft(DraftField::Password, "correct horse battery staple");
         }
-        request(&mut app, Request::Save);
+        request(app, Request::Save);
         assert!(matches!(
             app.core().draft_error,
             Some((DraftField::Origin, ref message)) if message.starts_with("not a host is not a web address")
@@ -741,7 +743,7 @@ tilo_test_env::scenario! {
             app.core().draft_error.is_none(),
             "the corrected field no longer shows the old complaint"
         );
-        request(&mut app, Request::Save);
+        request(app, Request::Save);
         assert_eq!(app.shell().toast_text(), Some("Saved Forge"));
         let stored = app.core().model.as_ref().unwrap().items();
         assert_eq!(stored.len(), 1);
@@ -750,10 +752,11 @@ tilo_test_env::scenario! {
             "{:?}",
             stored[0].origins
         );
-        assert!(
-            !app.core().writing,
-            "a saved item is kept, not left writing"
-        );
+        tilo_test_env::wait_until("the saved item to be kept", || {
+            app.core_mut().poll_transfers();
+            app.settle();
+            !app.core().writing
+        });
     }
 }
 
@@ -771,7 +774,6 @@ fn import_and_restore_flows_round_trip_through_portals() {
     eprintln!("phase an import previews conflicts before writing");
     {
         use std::io::Write;
-        let _vault = crate::test_vault::isolated();
         let csv_path = temp_root("import").with_extension("csv");
         let mut selected = std::fs::File::create(&csv_path).unwrap();
         selected
@@ -780,7 +782,8 @@ fn import_and_restore_flows_round_trip_through_portals() {
             )
             .unwrap();
         drop(selected);
-        let mut app = PasswordsWindow::new(crate::PasswordsModel::open());
+        let mut opened = crate::test_vault::personal_window().unwrap();
+        let app = opened.surface_mut::<PasswordsWindow>();
         let (services, recorder) = ui::process::ProcessServices::recording();
         for expected_conflicts in [0, 1] {
             recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
@@ -789,7 +792,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
                     "passwords.csv",
                 ),
             ));
-            ui::process::scoped(&services, || request(&mut app, Request::Import));
+            ui::process::scoped(&services, || request(app, Request::Import));
             tilo_test_env::wait_until("the import preview", || {
                 app.core_mut().poll_transfers();
                 app.core().dialog.is_some()
@@ -800,7 +803,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
                     if rows.len() == 1
                         && skipped.iter().filter(|skip| **skip).count() == expected_conflicts
             ));
-            request(&mut app, Request::ConfirmImport);
+            request(app, Request::ConfirmImport);
             assert_eq!(app.core().model.as_ref().unwrap().items().len(), 1);
         }
         assert_eq!(recorder.pick_requests()[0].title(), "Import passwords");
@@ -810,7 +813,6 @@ fn import_and_restore_flows_round_trip_through_portals() {
     eprintln!("phase an encrypted backup restores complete items");
     {
         let base = temp_root("backup-flow");
-        let _vault = crate::test_vault::isolated();
         let backup_path = base.join("portable-vault.tilopw");
         std::fs::create_dir_all(&base).unwrap();
         let mut item = SecretItem::login("Studio", "ada", "private-token");
@@ -821,7 +823,8 @@ fn import_and_restore_flows_round_trip_through_portals() {
                 .unwrap();
         std::fs::write(&backup_path, backup.as_slice()).unwrap();
         let (services, recorder) = ui::process::ProcessServices::recording();
-        let mut restored = PasswordsWindow::new(crate::PasswordsModel::open());
+        let mut opened = crate::test_vault::personal_window().unwrap();
+        let restored = opened.surface_mut::<PasswordsWindow>();
         recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
             ui::portal::OpenedFile::new(
                 std::fs::File::open(&backup_path).unwrap(),
@@ -829,7 +832,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
             ),
         ));
         ui::process::scoped(&services, || {
-            request(&mut restored, Request::Restore);
+            request(restored, Request::Restore);
         });
         assert_eq!(
             recorder.pick_requests()[0].title(),
@@ -841,7 +844,7 @@ fn import_and_restore_flows_round_trip_through_portals() {
             Some(Dialog::Restore { .. })
         ));
         restored.core_mut().backup_password = Zeroizing::new("a memorable backup password".into());
-        request(&mut restored, Request::ConfirmRestore);
+        request(restored, Request::ConfirmRestore);
         let items = restored.core().model.as_ref().unwrap().items();
         assert_eq!(items.len(), 1);
         assert_eq!(

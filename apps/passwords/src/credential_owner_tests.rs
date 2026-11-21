@@ -176,44 +176,6 @@ tilo_test_env::scenario! {
         assert!(root.path().read_dir().unwrap().next().is_none());
     }
 
-    phase shared_password_edit_and_delete_update_the_original_current_credential_store;
-    {
-        let owned = Owned::new();
-        owned.grant(&owned.scope);
-        let mut model = crate::PasswordsModel::shared(owned.owner.clone());
-        let id = owned.request.item_id.clone();
-        let mut item = model
-            .items()
-            .into_iter()
-            .find(|item| item.id == id)
-            .unwrap();
-        item.password = "synthetic-new-private-value".into();
-        model.update(&mut item).unwrap();
-        assert_eq!(
-            &*owned
-                .broker
-                .lock()
-                .unwrap()
-                .request_existing_scoped(&owned.request, &owned.scope)
-                .unwrap(),
-            "synthetic-new-private-value"
-        );
-        model.remove(&id).unwrap();
-        assert_eq!(
-            owned
-                .broker
-                .lock()
-                .unwrap()
-                .request_existing_scoped(&owned.request, &owned.scope),
-            Err(BrokerError::NotFound)
-        );
-        assert!(
-            model.app_grants().is_empty(),
-            "deleting an item removes visible current permissions"
-        );
-        drop(model);
-        drop(owned);
-    }
 }
 
 tilo_test_env::scenario! {
@@ -413,107 +375,35 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn the_frame_loop_leaves_vault_reads_and_writes_to_other_threads;
+    fn a_lent_device_vault_is_converted_into_the_workspace;
 
-    phase a_window_on_the_frame_loop_opens_the_vault_on_a_thread_of_its_own;
+    phase the_shareable_items_move_into_the_workspace_document_and_leave_the_device_vault;
     {
         let root = tempfile::tempdir().unwrap();
         let mut store = SecretStore::open_in(root.path());
-        let mut item = SecretItem::login("Synthetic opened title", "user", "password");
-        store.put(&mut item).unwrap();
+        let mut login = SecretItem::login("Synthetic opened title", "user", "synthetic-password-7X");
+        store.put(&mut login).unwrap();
+        let id = login.id.clone();
         drop(store);
         let path = root.path().to_owned();
-        let opens = Arc::new(AtomicUsize::new(0));
-        let counted = Arc::clone(&opens);
-        let owner = CredentialOwner::deferred(&"11".repeat(32), "test-device", move || {
-            counted.fetch_add(1, Ordering::SeqCst);
+        let person = "11".repeat(32);
+        let owner = CredentialOwner::deferred(&person, "test-device", move || {
             SecretStore::open_in(&path)
         })
         .unwrap();
-        let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
-        let mut core = crate::vault::Core::with_model(crate::PasswordsModel::shared(owner.clone()));
-        assert!(core.opening, "the window says the vault is opening");
-        assert!(core.items.is_empty());
-        tilo_test_env::wait_until("the vault to open", || owner.is_open());
-        core.refresh_model();
-        assert!(!core.opening);
-        assert_eq!(opens.load(Ordering::SeqCst), 1, "the vault is opened once");
+        let mut app =
+            crate::test_vault::workspace_window_with_owner(&person, owner).unwrap();
+        let items = crate::test_vault::stored(&mut app);
         assert!(
-            core.items
-                .iter()
-                .any(|shown| shown.title == "Synthetic opened title"),
-            "the window shows the vault once it is open"
+            items.iter().any(|item| item.id == id),
+            "the lent device vault's shareable login is the workspace's"
         );
-    }
-
-    phase every_imported_and_restored_item_reaches_the_disk_from_the_frame_loop;
-    // On the frame loop a vault edit is written by a writer thread, and an edit made while one
-    // is under way waits in memory for the next write.
-    {
-        use crate::transfer::ImportLogin;
-        use zeroize::Zeroizing;
-
-        const ROWS: usize = 12;
-        const PASSPHRASE: &str = "synthetic backup passphrase";
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().to_owned();
-        let owner = CredentialOwner::deferred(&"11".repeat(32), "test-device", move || {
-            SecretStore::open_in(&path)
-        })
-        .unwrap();
-        let backup = crate::transfer::export_encrypted_backup(
-            &(0..ROWS)
-                .map(|i| SecretItem::login(format!("Restored {i}"), "ada", format!("restored-{i}-A7")))
-                .collect::<Vec<_>>(),
-            PASSPHRASE,
-        )
-        .unwrap();
-        let kept = |prefix: &str| {
+        assert!(
             SecretStore::open_in(root.path())
                 .list()
                 .iter()
-                .filter(|item| item.title.starts_with(prefix))
-                .count()
-        };
-        let settle = |core: &mut crate::vault::Core| {
-            tilo_test_env::wait_until("the vault's edits to be written", || {
-                core.poll_transfers();
-                !core.transfers_pending()
-            });
-        };
-        let mut core = crate::vault::Core::with_model(crate::PasswordsModel::shared(owner));
-        core.refresh_model();
-
-        {
-            let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
-            let rows = (0..ROWS)
-                .map(|i| ImportLogin {
-                    title: Zeroizing::new(format!("Imported {i}")),
-                    username: Zeroizing::new("ada".into()),
-                    origin: Zeroizing::new(String::new()),
-                    password: Zeroizing::new(format!("imported-{i}-A7")),
-                    notes: Zeroizing::new(String::new()),
-                })
-                .collect();
-            core.dialog = Some(crate::vault::Dialog::ImportPreview {
-                rows,
-                skipped: vec![false; ROWS],
-            });
-            core.apply_import();
-            settle(&mut core);
-        }
-        assert_eq!(kept("Imported"), ROWS, "every imported login is on disk");
-
-        {
-            let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
-            core.backup_password = Zeroizing::new(PASSPHRASE.into());
-            core.dialog = Some(crate::vault::Dialog::Restore {
-                bytes: backup,
-                error: None,
-            });
-            core.apply_encrypted_restore();
-            settle(&mut core);
-        }
-        assert_eq!(kept("Restored"), ROWS, "every restored item is on disk");
+                .all(|item| item.id != id),
+            "and it left the device vault"
+        );
     }
 }
