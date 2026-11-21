@@ -21,9 +21,12 @@ use tilolang_tilo::chunk::Chunks;
 // The table is read against what a person feels as instant, and against what the instance's
 // evaluation and the layout cost within it: a keystroke must not wait for the workspace's size,
 // and neither must a place switch, a check-off, a page or a scroll. The targets do not move
-// with the machine: a step over one is reported with its gap, and a step past what it is held to
-// (what it costs now, with room for a loaded machine) fails. The check on the work a change does
-// is also the instruction count the `budgets` test holds.
+// with the machine: a step over one is reported with its gap. What a step is held to is read
+// against a reference the same run measures on the same thread beside every step ([`reference`]):
+// a machine whose other work slows the step (a core's other thread, its caches, its clock) slows
+// the reference as much, so a step held as so many references fails when it does more, not when
+// the machine is busy. The check on the work a change does is also the instruction count the
+// `budgets` test holds.
 
 /// The workspace the interactions are measured in: what a person who has used Tasks for years
 /// keeps.
@@ -46,8 +49,8 @@ struct Target {
 
 /// What a step's CPU time is held to, in an optimized build and in a development one, whose
 /// proofs and unoptimized code cost several times as much: what the step costs now, with room
-/// for a loaded machine. A step past it got slower by a clear margin, which no machine's noise
-/// explains; the target is where the step is brought down to, and this follows it down.
+/// for noise, on a machine whose [`reference`] takes [`REFERENCE`]. A step past it got slower by
+/// a clear margin; the target is where the step is brought down to, and this follows it down.
 #[derive(Clone, Copy, Debug)]
 struct Held {
     optimized_us: u64,
@@ -63,6 +66,37 @@ impl Held {
             self.optimized_us
         }
     }
+}
+
+/// The CPU time [`reference`] takes where [`Held`] was measured, in each build: what a step's
+/// time is read against. A step that took `cpu_us` beside a reference that took `reference_us`
+/// costs `cpu_us * REFERENCE / reference_us` on that machine.
+const REFERENCE: Held = Held {
+    optimized_us: 8_300,
+    development_us: 36_000,
+};
+
+/// A fixed piece of the work a step does, timed in UI-thread CPU microseconds: formatting,
+/// hashing and ordering strings and the allocations under them. It does the same work in every
+/// run, so what moves its time is the machine's: another thread on the core, the caches and the
+/// memory bus other work shares, the clock. A step is measured between two of them, and read
+/// against what they took ([`Cost::held_us`]).
+fn reference() -> u64 {
+    const ITEMS: u64 = 20_000;
+    let start = ui::rt::thread_cpu_time();
+    let wall = ui::time::Instant::now();
+    let mut by_name = std::collections::HashMap::new();
+    let mut ordered = BTreeMap::new();
+    for i in 0..ITEMS {
+        let name = format!("task {i:06} {}", i.wrapping_mul(2_654_435_761) % 9_973);
+        by_name.insert(name.clone(), i);
+        ordered.insert(name, i);
+    }
+    let mut names: Vec<&String> = ordered.keys().collect();
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    let found: u64 = names.iter().filter_map(|name| by_name.get(*name)).sum();
+    std::hint::black_box(found);
+    since(start, wall.elapsed())
 }
 
 /// One interaction, measured once.
@@ -89,11 +123,23 @@ struct Cost {
     shown_us: u64,
     /// The frames the step took.
     frames: u64,
+    /// What [`reference`] took beside the step: the mean of one just before it and one just
+    /// after.
+    reference_us: u64,
 }
 
 impl Cost {
     fn eval_layout_us(&self) -> u64 {
         self.instance_us.saturating_add(self.layout_us)
+    }
+
+    /// The step's CPU time on the machine [`Held`] was measured on: its time scaled by what the
+    /// reference took there over what it took beside the step.
+    fn held_us(&self) -> u64 {
+        let reference = REFERENCE.here();
+        let scaled =
+            u128::from(self.cpu_us) * u128::from(reference) / u128::from(self.reference_us.max(1));
+        u64::try_from(scaled).unwrap_or(u64::MAX)
     }
 }
 
@@ -125,11 +171,11 @@ impl Costs {
     fn print(&self) {
         let ms = |us: u64| format!("{:.2}", us as f64 / 1000.0);
         eprintln!(
-            "interaction        steps  frames  cpu_p50  cpu_max  shown  instance  window  event  sync  layout  paint  wall"
+            "interaction        steps  frames  cpu_p50  cpu_max  shown  instance  window  event  sync  layout  paint  wall  reference"
         );
         for label in self.0.keys() {
             eprintln!(
-                "{label:<18} {:>5} {:>7} {:>8} {:>8} {:>6} {:>9} {:>7} {:>6} {:>5} {:>7} {:>6} {:>5}",
+                "{label:<18} {:>5} {:>7} {:>8} {:>8} {:>6} {:>9} {:>7} {:>6} {:>5} {:>7} {:>6} {:>5} {:>9}",
                 self.0[label].len(),
                 self.p50(label, |c| c.frames),
                 ms(self.p50(label, |c| c.cpu_us)),
@@ -142,6 +188,7 @@ impl Costs {
                 ms(self.p50(label, |c| c.layout_us)),
                 ms(self.p50(label, |c| c.paint_us)),
                 ms(self.p50(label, |c| c.wall_us)),
+                ms(self.p50(label, |c| c.reference_us)),
             );
         }
     }
@@ -175,6 +222,8 @@ impl Costs {
             }
             let cpu = self.p50(label, |cost| cost.cpu_us);
             let eval_layout = self.p50(label, Cost::eval_layout_us);
+            let on_reference = self.p50(label, Cost::held_us);
+            let reference = self.p50(label, |cost| cost.reference_us);
             let held = target.held.here();
             eprintln!(
                 "{label:<18} {:>10} ms ({:>9}), {:>10} ms ({:>9})   {:>8} ms",
@@ -187,10 +236,14 @@ impl Costs {
             if cpu > target.step_us || eval_layout > target.eval_layout_us {
                 behind.push(label.to_string());
             }
-            if cpu > held {
+            if on_reference > held {
                 past.push(format!(
-                    "{label}: {} ms of CPU, held to {} ms (instant is {} ms)",
+                    "{label}: {} ms of CPU beside a reference of {} ms, {} ms where the reference \
+                     takes {} ms, held to {} ms (instant is {} ms)",
                     ms(cpu),
+                    ms(reference),
+                    ms(on_reference),
+                    ms(REFERENCE.here()),
                     ms(held),
                     ms(target.step_us)
                 ));
@@ -390,6 +443,7 @@ fn opened_at_rest(session: &mut Session) {
 /// One interaction, measured from `input` reaching the window to the windows' work at rest with
 /// what it did on screen.
 fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Session)) -> Cost {
+    let before = reference();
     session.window.harness().begin_profiling();
     let drawn = session.window.harness().drawn_commands();
     let start = ui::rt::thread_cpu_time();
@@ -422,6 +476,7 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
         paint_us: sum(|frame| frame.draw_us),
         shown_us: frames.last().map_or(0, |frame| frame.input_to_commit_us),
         frames: frames.len() as u64,
+        reference_us: before.midpoint(reference()),
     }
 }
 
@@ -518,6 +573,9 @@ const TARGETS: &[(&str, Target)] = &[
         },
     ),
 ];
+
+/// How many windows the open is measured over ([`what_the_interactions_a_person_feels_cost`]).
+const OPENS: usize = 3;
 
 /// The workspace a person who has used Tasks for years keeps: `n` tasks over the chunks the
 /// store keeps them in (a run of 2048 tasks a chunk), as the actions that add them one at a
@@ -623,26 +681,42 @@ fn what_the_interactions_a_person_feels_cost() {
     let chunks = seeded_tasks(SEEDED);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let storage = kept_index(&route, &chunks, "interactions");
-    let start = ui::rt::thread_cpu_time();
-    let wall = ui::time::Instant::now();
-    let mut session =
-        on_the_frame_clock(Session::tasks_over_launched(&route, chunks, Some(storage)));
-    opened_at_rest(&mut session);
-    let wall_us = wall.elapsed().as_micros() as u64;
-    let cpu_us = since(start, wall.elapsed());
-    costs.add(Cost {
-        label: "open",
-        cpu_us,
-        wall_us,
-        instance_us: cpu_us,
-        window_us: 0,
-        event_us: 0,
-        sync_us: 0,
-        layout_us: 0,
-        paint_us: 0,
-        shown_us: 0,
-        frames: 0,
-    });
+    // The open is one long step, over which what else the machine runs changes more than the two
+    // references beside it see: it is measured over three windows, each closed before the next
+    // opens so that every one opens over the index the first kept, and read at the middle one.
+    let mut session = None;
+    for _ in 0..OPENS {
+        if let Some(earlier) = session.take() {
+            Session::close(earlier);
+        }
+        let before = reference();
+        let start = ui::rt::thread_cpu_time();
+        let wall = ui::time::Instant::now();
+        let mut opened = on_the_frame_clock(Session::tasks_over_launched(
+            &route,
+            own(&chunks),
+            Some(storage.clone()),
+        ));
+        opened_at_rest(&mut opened);
+        let wall_us = wall.elapsed().as_micros() as u64;
+        let cpu_us = since(start, wall.elapsed());
+        costs.add(Cost {
+            label: "open",
+            cpu_us,
+            wall_us,
+            instance_us: cpu_us,
+            window_us: 0,
+            event_us: 0,
+            sync_us: 0,
+            layout_us: 0,
+            paint_us: 0,
+            shown_us: 0,
+            frames: 0,
+            reference_us: before.midpoint(reference()),
+        });
+        session = Some(opened);
+    }
+    let mut session = session.expect("a window opened");
     assert!(
         !session.titles().is_empty(),
         "the window opens on the workspace's tasks"
