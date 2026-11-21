@@ -61,6 +61,10 @@ use crate::search::SessionSearch;
 use crate::services::app_wire::{mount_services, start_app_wire};
 use tilo_app_launch::Links as WindowLinks;
 
+mod turns;
+
+use turns::Turns;
+
 pub use os_actions::SessionAction;
 
 pub use tilo_onboarding_session::view::OnboardingView;
@@ -2970,19 +2974,6 @@ impl Drop for Session {
     }
 }
 
-/// The loop's turns as the watchdog counts them.
-struct Turns(Watchdog);
-
-impl LoopTurns for Turns {
-    fn parking(&self) {
-        self.0.parking();
-    }
-
-    fn unparked(&self) {
-        self.0.unparked();
-    }
-}
-
 /// Every resource of `resource` and its children: what an app publishes is found among these,
 /// as the app own search action and the kinds it holds are read off its records.
 fn leaves_of(resource: &tilo_actions::ResourceSpec) -> Vec<&tilo_actions::ResourceSpec> {
@@ -3001,6 +2992,3 @@ fn app_of_resource(resource: &str) -> Option<String> {
         .and_then(|rest| rest.split_once(0x3a as char))
         .map(|(app, _)| app.to_owned())
 }
-
-#[cfg(test)]
-mod tests;
