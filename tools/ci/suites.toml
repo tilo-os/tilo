@@ -1941,8 +1941,7 @@ reason = "needs the built kernel RPM and QEMU firmware; kernel-acceptance-x86_64
 
 [[unrequired]]
 suite = "os/tests/airplay-encrypted-session.sh"
-check = "os-image-contracts"
-reason = "needs the assembled image's tilo-doubletake binaries, GStreamer and OpenH264, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
+reason = "needs the signed OpenH264 codec extension: the composed image carries Fedora's noopenh264 stub, which os/scripts/verify-no-cisco-openh264.sh enforces, so the test's plugin discovery fails until an installation adds the extension"
 
 [[unrequired]]
 suite = "os/tests/boot_chain_invariants.sh"

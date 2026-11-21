@@ -7660,22 +7660,21 @@ on = ["dispatch"]
 
 # The OS image's own contracts, run against the image the chain composed as an OCI layout: the
 # build runs them while it assembles, and this reruns each from the composed image itself, so a
-# broken encrypted-boot, filesystem, LUKS-enrolment, rollback or AirPlay contract names its test
-# against the image rather than only a red image build.
+# broken encrypted-boot, filesystem, LUKS-enrolment or rollback contract names its test against
+# the image rather than only a red image build.
 [[check]]
 name = "os-image-contracts"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = '''set -eu
-# The image installs os/tests/boot_chain_invariants.sh, os/tests/luks_enrolment.sh and
-# os/tests/airplay-encrypted-session.sh as its own entrypoints; each runs the shipped script.
+# The image installs os/tests/boot_chain_invariants.sh and os/tests/luks_enrolment.sh as its own
+# entrypoints; each runs the shipped script.
 dnf install -y --setopt=install_weak_deps=False podman >/dev/null
 podman=(podman --cgroup-manager=cgroupfs --events-backend=file)
 image=$("${podman[@]}" pull -q "oci:/target/os/x86_64/image/oci")
 trap '"${podman[@]}" image rm "$image" >/dev/null 2>&1 || true' EXIT
 "${podman[@]}" run --rm --entrypoint /usr/libexec/tilo/boot-chain-test.sh "$image"
 "${podman[@]}" run --rm --entrypoint /usr/libexec/tilo/luks-enrolment-test.sh "$image"
-"${podman[@]}" run --rm --entrypoint /usr/libexec/tilo/airplay-encrypted-session-test.sh "$image"
 "${podman[@]}" run --rm --mount "type=bind,src=$PWD/os/tests/collaborative-files-image-contract.sh,dst=/run/tilo-collaborative-files-image-contract.sh,ro" \
   --entrypoint bash "$image" -c 'OS_ROOT=/ bash /run/tilo-collaborative-files-image-contract.sh image'
 "${podman[@]}" run --rm --mount "type=bind,src=$PWD/os,dst=/repo/os,ro" \
