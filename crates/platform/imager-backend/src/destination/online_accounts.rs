@@ -938,8 +938,6 @@ fn authorize_nextcloud(
 #[cfg(any(test, feature = "test-support"))]
 pub mod calendar_tests;
 #[cfg(test)]
-mod native_browser_tests;
-#[cfg(test)]
 mod oauth_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests;

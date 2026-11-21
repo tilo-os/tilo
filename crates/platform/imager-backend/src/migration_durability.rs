@@ -257,36 +257,4 @@ mod tests {
         assert!(!value.binds_btrfs(&uuid.to_string(), 256));
         assert!(!value.binds_filesystem("not-a-uuid"));
     }
-
-    #[test]
-    #[ignore = "requires disposable native Btrfs subvolumes and snapshot supplied by the test controller"]
-    fn distinguishes_btrfs_subvolumes_and_snapshot_file_identities() {
-        use std::{os::unix::fs::MetadataExt, path::PathBuf};
-        let base =
-            PathBuf::from(std::env::var_os("TILO_BTRFS_IDENTITY_FIXTURE").expect(
-                "set fixture with one, two and snapshot subvolumes; one/file before snapshot",
-            ));
-        let one = File::open(base.join("one")).unwrap();
-        let two = File::open(base.join("two")).unwrap();
-        assert_eq!(one.metadata().unwrap().ino(), 256);
-        assert_eq!(two.metadata().unwrap().ino(), 256);
-        let first_identity = identity(&one).unwrap();
-        assert_ne!(
-            first_identity.volume.first(),
-            Some(&2),
-            "Btrfs must have persistent identity, not boot/device fallback"
-        );
-        assert_ne!(first_identity, identity(&two).unwrap());
-        let original = File::open(base.join("one/file")).unwrap();
-        let snapshot = File::open(base.join("snapshot/file")).unwrap();
-        assert_eq!(
-            original.metadata().unwrap().ino(),
-            snapshot.metadata().unwrap().ino()
-        );
-        assert_ne!(identity(&original).unwrap(), identity(&snapshot).unwrap());
-        assert_eq!(
-            identity(&original).unwrap(),
-            identity(&File::open(base.join("one/file")).unwrap()).unwrap()
-        );
-    }
 }

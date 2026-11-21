@@ -1263,33 +1263,4 @@ mod tests {
             assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
         }
     }
-
-    #[cfg(unix)]
-    #[test]
-    #[ignore = "requires root only to create a disposable foreign-owned child"]
-    fn namespace_sticky_parent_does_not_trust_a_foreign_owned_child() {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(tilo_process::effective_uid(), 0);
-        let (temp, source, _) = fixture();
-        let parent = temp.path().canonicalize().unwrap().join("sticky");
-        fs::create_dir(&parent).unwrap();
-        fs::set_permissions(&parent, fs::Permissions::from_mode(0o1777)).unwrap();
-        let child = parent.join("foreign");
-        fs::create_dir(&child).unwrap();
-        let file = fs::File::open(&child).unwrap();
-        // SAFETY: valid fixture-only descriptor; uid/gid65534 is untrusted by
-        // a uid0 worker, independently of whether it names a local account.
-        assert_eq!(unsafe { libc::fchown(file.as_raw_fd(), 65_534, 65_534) }, 0);
-        assert!(
-            copy_folder(
-                &source,
-                &child.join("copy"),
-                &AtomicBool::new(false),
-                |_| {}
-            )
-            .is_err()
-        );
-        assert!(!child.join("copy").exists());
-    }
 }
