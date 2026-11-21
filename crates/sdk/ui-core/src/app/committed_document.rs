@@ -146,11 +146,23 @@ impl App {
                 Ok(None)
             });
             if lacks_base {
-                #[cfg(any(test, feature = "test-support"))]
+                // The change is built on history this replica does not hold (a record it founded
+                // its own empty copy of, a peer that was away too long): the record whole is what
+                // repairs that, so this replica asks its route for one. A change that arrives out
+                // of order is repaired the same way.
                 tracing::warn!(
-                    ?route,
-                    "committed changes refused: the owner lacks their base"
+                    channel = %route.channel_id(),
+                    "committed changes arrived without their history: asking for the record whole"
                 );
+                if self
+                    .document_routes
+                    .take_snapshot_ask(&route, crate::time::now())
+                {
+                    self.collaboration.manager.send_to_route(
+                        route.clone(),
+                        crate::collaboration::CollabRequest::RequestDocumentSnapshot,
+                    );
+                }
                 read.refuse();
                 continue;
             }
