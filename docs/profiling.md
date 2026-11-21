@@ -22,7 +22,7 @@ microseconds + frame index + a monotonic timestamp).
 Turn on the on-screen profiler for any app:
 
 ```bash
-TILO_PROFILE=1 <app>            # e.g. TILO_PROFILE=1 cargo run -p ui-examples --example ui-lab -- gallery
+TILO_PROFILE=1 <app>            # e.g. TILO_PROFILE=1 cargo run -p ui-examples --example ui-lab -- dashboard
 TILO_PROFILE=1 terminal
 ```
 

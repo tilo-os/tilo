@@ -296,10 +296,32 @@ view basics(g: Gallery) {
 
 /// Text, buttons, chips, a card of facts, an empty state and a page of a stack.
 view parts(g: Gallery, last: State<Text>) {
-    part("Text", "The type scale: a title, body text at the reading measure, a caption.") {
+    part("Text", "The type scale, every role from the largest title down to code.") {
+        ui.Text("Planning", role: .display)
         ui.Text("Release planning", role: .large_title)
+        ui.Text("Every role comes from one body size", role: .title)
+        ui.Text("A section's heading", role: .heading)
+        ui.Text("A group inside the section", role: .subheading)
         ui.Text("Body text says what a thing is, at the reading measure.")
+        ui.Text("A control's label, or a row's title in a dense list", role: .label)
+        ui.Text(
+            "Reading text, as an article sets it: office, affinity, a naïve café.",
+            role: .reading,
+        )
+        ui.Text("let greeting = \"Hello, 世界\"", role: .code)
         ui.Time(2026-06-30T09:00Z, role: .caption, secondary: true)
+    }
+    part("Scripts", "Every script the toolkit sets: right to left, mixed, without spaces, emoji.") {
+        ui.Text("العربية — مرحبًا بالعالم")
+        ui.Text("עברית — שלום עולם")
+        ui.Text(
+            "हिन्दी — नमस्ते दुनिया · বাংলা — নমস্কার বিশ্ব",
+        )
+        ui.Text(
+            "ไทย — สวัสดีชาวโลก · 日本語 東京 · 简体中文 上海",
+        )
+        ui.Text("Invoice 123 — חשבון ٤٥٦ — total €78")
+        ui.Text("👩🏽‍💻 👨‍👩‍👧‍👦 🏳️‍🌈 🇪🇺")
     }
     part("Button", "What a press does, by its role: the one primary, the usual, the destructive.") {
         row(gap: .related, wrap: true) {
@@ -312,6 +334,12 @@ view parts(g: Gallery, last: State<Text>) {
             ui.Button("Delete", icon: .trash, role: .destructive) {
                 on press: set(last, "Delete")
             }
+            ui.Button("Details", role: .plain) {
+                on press: set(last, "Details")
+            }
+            ui.Button("Open in the browser", icon: .external_link, icon_only: true) {
+                on press: set(last, "Open in the browser")
+            }
             ui.Button("Archived", icon: .archive, enabled: false)
         }
     }
@@ -319,11 +347,20 @@ view parts(g: Gallery, last: State<Text>) {
         ui.BlockEditor(RichText("Lead with the sync fix, then the new board."))
         ui.Quote("Can we ship the screenshots with the notes?", caption: "Replying to")
     }
-    part("Chip and avatar", "A tag a thing carries, and who looks after it.") {
+    part(
+        "Chip and avatar",
+        "A tag a thing carries, one to pick or take off, and who looks after it.",
+    ) {
         row(gap: .related, wrap: true, align: .center) {
             ui.Chip("Design", icon: .tag)
             ui.Chip("Due Friday", icon: .calendar, tone: .warning)
             ui.Chip("Shipped", icon: .check, tone: .success, selected: true)
+            ui.Chip("Mine", selected: false) {
+                on press: set(last, "Mine")
+            }
+            ui.Chip("ada@example.com") {
+                on remove: set(last, "Removed ada@example.com")
+            }
             ui.Avatar(workspace.me, name: "Ada Lovelace")
             ui.Avatar(name: "Grace Hopper", square: true)
         }
@@ -351,8 +388,11 @@ view parts(g: Gallery, last: State<Text>) {
             "No archived items",
             message: "Archive an item to put it aside.",
             icon: .archive,
+            action: "Open the backlog",
             inline: true,
-        )
+        ) {
+            on act: set(last, "Open the backlog")
+        }
     }
     part("A page of a stack", "A section opened in a page of its own, one level deep.") {
         ui.PageSlide(level: 1) {

@@ -77,8 +77,8 @@ pub(crate) fn end_allocation_profile() -> AllocationSnapshot {
     allocation_profile_snapshot()
 }
 
-#[path = "common/gallery_scene.rs"]
-mod gallery_scene;
+#[path = "common/dashboard_scene.rs"]
+mod dashboard_scene;
 #[path = "registry.rs"]
 mod registry;
 

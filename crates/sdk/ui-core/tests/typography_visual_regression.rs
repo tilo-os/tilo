@@ -1,4 +1,4 @@
-//! Golden-image coverage for the gallery's canonical multilingual typography
+//! Golden-image coverage for the canonical multilingual typography
 //! card. The matrix exercises palette, fractional display scaling, and
 //! independent text scaling through the real widget/layout/render pipeline.
 //!
@@ -40,12 +40,11 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
-#[path = "../../../dev/ui-examples/examples/common/gallery_scene.rs"]
-#[expect(
-    dead_code,
-    reason = "this regression renders only the typography showcase from the shared gallery scene"
-)]
-mod gallery_scene;
+use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::{Column, Container, Divider, Row, Text};
+use tilo_ui::{
+    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
+};
 
 const LOGICAL_WIDTH: u32 = 1160;
 
@@ -127,7 +126,7 @@ fn lay_out(case: Case) -> Laid {
         Theme::dark()
     }
     .with_text_scale(case.text_scale);
-    let mut widget = gallery_scene::build_typography_showcase(&theme);
+    let mut widget = build_typography_showcase(&theme);
     let state = State::new();
     widget.sync(&state.doc, &state.root);
 
@@ -360,4 +359,254 @@ fn multilingual_gallery_matches_scale_matrix() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+// The multilingual typography card the baselines were rendered from.
+
+fn dim(t: &str, theme: &Theme) -> Box<dyn Widget> {
+    Box::new(
+        Text::new(t)
+            .with_role(TextRole::Caption)
+            .with_color(theme.text_dim),
+    )
+}
+
+/// A titled card: heading + divider + body, on a raised background.
+fn card(heading: &str, body: Box<dyn Widget>) -> Box<dyn Widget> {
+    let inner = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(12.0)
+        .push(Box::new(Text::new(heading).with_role(TextRole::Heading)))
+        .push(Box::new(Divider::horizontal()))
+        .push(body);
+    Box::new(
+        Container::new()
+            .with_background()
+            .with_child(Box::new(inner)),
+    )
+}
+
+fn col(gap: f32) -> Column {
+    Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(gap)
+}
+
+fn specimen_cell(caption: &str, specimen: Text, theme: &Theme, width: f32) -> Box<dyn Widget> {
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_width(width)
+            .with_child(Box::new(
+                col(4.0).push(dim(caption, theme)).push(Box::new(specimen)),
+            )),
+    )
+}
+
+fn specimen_pair(
+    theme: &Theme,
+    before_caption: &str,
+    before: Text,
+    after_caption: &str,
+    after: Text,
+) -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .push(specimen_cell(before_caption, before, theme, 520.0))
+            .push(specimen_cell(after_caption, after, theme, 520.0)),
+    )
+}
+
+fn typography_intro_and_serif(column: Column, _theme: &Theme) -> Column {
+    column
+        .push(Box::new(
+            Text::new("A clear hierarchy makes dense interfaces feel calm.")
+                .with_role(TextRole::LargeTitle),
+        ))
+        .push(Box::new(
+            Text::new("Every role derives from one body size").with_role(TextRole::Title),
+        ))
+        .push(Box::new(
+            Text::new("Section heading").with_role(TextRole::Heading),
+        ))
+        .push(Box::new(
+            Text::new("Group label inside a section").with_role(TextRole::Subheading),
+        ))
+        .push(Box::new(
+            Text::new("Body text is the default: what most of the interface says.")
+                .with_role(TextRole::Body),
+        ))
+        .push(Box::new(
+            Text::new("Control label, or a row title in a dense list").with_role(TextRole::Label),
+        ))
+        .push(Box::new(
+            Text::new("Caption: a secondary line, a timestamp, metadata.")
+                .with_role(TextRole::Caption),
+        ))
+        .push(Box::new(
+            Text::new(
+                "Serif reading — AVATAR · WAVE · To · Ta · Yo · office · affinity · ffi · naïve café.",
+            )
+            .with_role(TextRole::Reading),
+        ))
+        .push(Box::new(
+            Text::new("Italic serif — Typography should feel composed, never merely typeset.")
+                .with_role(TextRole::Reading)
+                .with_italic(true),
+        ))
+}
+
+fn typography_feature_pairs(column: Column, theme: &Theme) -> Column {
+    let reading = || TextRole::Reading;
+    column
+        .push(specimen_pair(
+            theme,
+            "Before: kerning disabled",
+            Text::new("AVATAR  WAVE  To Ta Yo")
+                .with_role(reading())
+                .with_kerning(false),
+            "After: kerning enabled",
+            Text::new("AVATAR  WAVE  To Ta Yo")
+                .with_role(reading())
+                .with_kerning(true),
+        ))
+        .push(specimen_pair(
+            theme,
+            "Before: standard forms",
+            Text::new("office · affinity · historic 1847").with_role(reading()),
+            "After: discretionary ligatures",
+            Text::new("office · affinity · historic 1847")
+                .with_role(reading())
+                .with_discretionary_ligatures(true),
+        ))
+        .push(specimen_pair(
+            theme,
+            "Before: proportional lining figures",
+            Text::new("1847  2026  €12,408.50")
+                .with_role(reading())
+                .with_numeric_style(NumericStyle::ProportionalLining),
+            "After: tabular old-style figures",
+            Text::new("1847  2026  €12,408.50")
+                .with_role(reading())
+                .with_numeric_style(NumericStyle::TabularOldstyle),
+        ))
+        .push(specimen_pair(
+            theme,
+            "Before: Adwaita Sans wght 300 · opsz 14",
+            Text::new("Variable fonts adapt continuously")
+                .with_role(TextRole::Title)
+                .with_font_family(FontChoice::Named("Adwaita Sans".into()))
+                .with_font_variation(OpenTypeTag::WEIGHT, 300.0)
+                .with_optical_sizing(OpticalSizing::Value(14.0)),
+            "After: Adwaita Sans wght 720 · optical sizing auto",
+            Text::new("Variable fonts adapt continuously")
+                .with_role(TextRole::Title)
+                .with_font_family(FontChoice::Named("Adwaita Sans".into()))
+                .with_font_variation(OpenTypeTag::WEIGHT, 720.0)
+                .with_optical_sizing(OpticalSizing::Auto),
+        ))
+}
+
+fn typography_wrapping_and_punctuation(column: Column, theme: &Theme) -> Column {
+    column
+        .push(specimen_pair(
+            theme,
+            "Before: ordinary wrapping",
+            Text::new("A balanced heading wraps its thought into lines of comparable visual weight.")
+                .with_role(TextRole::Title),
+            "After: balanced wrapping",
+            Text::new("A balanced heading wraps its thought into lines of comparable visual weight.")
+                .with_role(TextRole::Title)
+                .with_balanced_wrap(),
+        ))
+        .push(specimen_pair(
+            theme,
+            "Before: ragged start",
+            Text::new(
+                "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+            )
+            .with_role(TextRole::Reading),
+            "After: full justification",
+            Text::new(
+                "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+            )
+            .with_role(TextRole::Reading)
+            .with_align(ParagraphAlign::Justified),
+        ))
+        .push(specimen_pair(
+            theme,
+            "Before: punctuation inside the measure",
+            Text::new("“A composed edge,” she wrote, “lets the words lead.”")
+                .with_role(TextRole::Reading),
+            "After: opening and closing punctuation hangs",
+            Text::new("“A composed edge,” she wrote, “lets the words lead.”")
+                .with_role(TextRole::Reading)
+                .with_hanging_punctuation(HangingPunctuation::BOTH),
+        ))
+        .push(dim(
+            "Pagination: RichTextLayout enforces configurable two-line widow and orphan minima at page and column breaks.",
+            theme,
+        ))
+}
+
+fn typography_scripts_and_bidi(column: Column, _theme: &Theme) -> Column {
+    column
+                .push(Box::new(
+                    Text::new("const greeting = \"Hello, 世界\";")
+                        .with_role(TextRole::Code),
+                ))
+                .push(Box::new(
+                    Text::new("العربية — مرحبًا بالعالم").with_role(TextRole::Body),
+                ))
+                .push(Box::new(
+                    Text::new("עברית — שלום עולם").with_role(TextRole::Body),
+                ))
+                .push(Box::new(
+                    Text::new("हिन्दी — नमस्ते दुनिया  ·  বাংলা — নমস্কার বিশ্ব")
+                        .with_role(TextRole::Body),
+                ))
+                .push(Box::new(
+                    Text::new("ไทย — สวัสดีชาวโลก  ·  日本語 東京  ·  简体中文 上海")
+                        .with_role(TextRole::Body),
+                ))
+                .push(Box::new(
+                    Text::new(
+                        "Thai dictionary wrap (no spaces): ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์ทุกสองสัปดาห์",
+                    )
+                    .with_role(TextRole::Body),
+                ))
+                .push(Box::new(
+                    col(4.0)
+                        .push(Box::new(
+                            Text::new("English auto hyphenation:")
+                                .with_role(TextRole::Body),
+                        ))
+                        .push(Box::new(
+                            Container::new().with_no_padding().with_width(190.0).with_child(
+                                Box::new(
+                                    Text::new("Internationalization demonstrates typography.")
+                                        .with_role(TextRole::Reading)
+                                        .with_auto_hyphenation("en-US"),
+                                ),
+                            ),
+                        )),
+                ))
+                .push(Box::new(
+                    Text::new("Mixed BiDi: Invoice 123 — חשבון ٤٥٦ — total €78")
+                        .with_role(TextRole::Body),
+                ))
+                .push(Box::new(
+                    Text::new("Emoji clusters: 👩🏽‍💻  👨‍👩‍👧‍👦  🏳️‍🌈  🇪🇺")
+                        .with_role(TextRole::Body),
+                ))
+}
+
+fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
+    let column = typography_intro_and_serif(col(9.0), theme);
+    let column = typography_feature_pairs(column, theme);
+    let column = typography_wrapping_and_punctuation(column, theme);
+    let column = typography_scripts_and_bidi(column, theme);
+    card("Typography & Scripts", Box::new(column))
 }

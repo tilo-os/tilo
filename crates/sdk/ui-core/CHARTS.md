@@ -64,21 +64,13 @@ the nearest sample, draws the guide and the dot, and reads the value — in its
 `unit` — on the same card, so a trend cell in a table explains itself without a
 chart around it.
 
-## Interactive gallery
+## Seeing them
 
-The catalogue is executable example code rather than a static mockup. It
-contains populated examples of every chart family, reflows from two columns to
-one, and retains each widget's hover, click, focus, and accessibility behavior:
-
-```text
-cargo run -p ui-examples --example ui-lab -- chart_gallery
-```
-
-Deterministic wide/narrow, light/dark renders use the same scene:
-
-```text
-cargo run -p ui-examples --example ui-shots -- chart_gallery_shots
-```
+The charts an app written in tilolang places (`ui.Chart`, `ui.BarChart`,
+`ui.PieChart` and `ui.GraphCanvas`) are on the gallery app's "Charts and views"
+page, `apps/tl/gallery/custom.tl`, live, with their hover, focus and
+accessibility behaviour. [The tilolang guide](../../../docs/tilolang-dev.md#the-gallery)
+says how to open it as a window, a web page or in a session.
 
 ## A mixed Cartesian plot
 

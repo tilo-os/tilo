@@ -18,7 +18,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::solve_built_layout;
 
-use super::gallery_scene;
+use super::dashboard_scene;
 use tilo_ui::widget::DrawChild;
 
 const WIDTH: u32 = 1280;
@@ -38,8 +38,8 @@ pub fn run(_args: &[String]) {
         .unwrap_or(90);
 
     let theme = Theme::dark();
-    let mut state = State::new();
-    let mut root = gallery_scene::build_showcase(&mut state, &theme);
+    let state = State::new();
+    let mut root = dashboard_scene::build();
 
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::empty();

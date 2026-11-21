@@ -79,24 +79,13 @@ macro_rules! scenario_modules {
 
 pub(crate) use scenario_modules;
 
-const LAB_SOURCES: &[&str] = &[
-    "activity_timeline.rs",
-    "chart_gallery.rs",
-    "dashboard.rs",
-    "gallery.rs",
-    "responsive_gallery.rs",
-];
+const LAB_SOURCES: &[&str] = &["activity_timeline.rs", "dashboard.rs"];
 const SHOT_SOURCES: &[&str] = &[
-    "chart_gallery_shots.rs",
     "content_shots.rs",
     "ctrl_k_palette.rs",
     "data_table.rs",
     "denied_state_shots.rs",
-    "design_gallery_shots.rs",
-    "fractional_scale_shots.rs",
     "floating_surface_shots.rs",
-    "gallery_harness_shots.rs",
-    "gallery_shots.rs",
     "history_cases.rs",
     "inline_emoji_shots.rs",
     "nav_shell_shots.rs",
@@ -264,14 +253,14 @@ mod tests {
     #[test]
     fn duplicate_names_and_sources_are_rejected() {
         let duplicate_name = [
-            Scenario::new("gallery", "gallery.rs", "one", noop),
-            Scenario::new("gallery", "dashboard.rs", "two", noop),
+            Scenario::new("timeline", "activity_timeline.rs", "one", noop),
+            Scenario::new("timeline", "dashboard.rs", "two", noop),
         ];
         assert!(validate(Surface::Lab, &duplicate_name).is_err());
 
         let duplicate_source = [
-            Scenario::new("gallery", "gallery.rs", "one", noop),
-            Scenario::new("dashboard", "gallery.rs", "two", noop),
+            Scenario::new("timeline", "activity_timeline.rs", "one", noop),
+            Scenario::new("dashboard", "activity_timeline.rs", "two", noop),
         ];
         assert!(validate(Surface::Lab, &duplicate_source).is_err());
     }

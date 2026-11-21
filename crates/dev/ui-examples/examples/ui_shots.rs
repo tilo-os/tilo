@@ -1,24 +1,17 @@
 //! Deterministic screenshot and visual-regression scenario runner.
 
-#[path = "common/chart_gallery_scene.rs"]
-mod chart_gallery_scene;
-#[path = "common/gallery_scene.rs"]
-mod gallery_scene;
+#[path = "common/dashboard_scene.rs"]
+mod dashboard_scene;
 #[path = "registry.rs"]
 mod registry;
 
 registry::scenario_modules! {
     Shots;
     ctrl_k_palette, "ctrl_k_palette.rs", "unified Ctrl+K palette states";
-    chart_gallery_shots, "chart_gallery_shots.rs", "responsive light and dark chart catalogue";
     content_shots, "content_shots.rs", "content composites: rows, cards, media, stats, states";
     data_table, "data_table.rs", "virtualized data-table states";
     denied_state_shots, "denied_state_shots.rs", "permission-denied control states";
-    design_gallery, "design_gallery_shots.rs", "every design-system primitive in every state, dark and light";
-    fractional_scale_shots, "fractional_scale_shots.rs", "fractional-scale gallery renders";
     floating_surface_shots, "floating_surface_shots.rs", "soft floating call and navigation surfaces";
-    gallery_harness, "gallery_harness_shots.rs", "gallery in a FrameHarness, dark and light, PNG + inspection";
-    gallery_shots, "gallery_shots.rs", "dark and light component gallery";
     history_cases, "history_cases.rs", "history and collaboration cases";
     inline_emoji_shots, "inline_emoji_shots.rs", "workspace emoji drawn inside text, dark and light, 1x and 2x";
     nav_shell_shots, "nav_shell_shots.rs", "navigation shell states";

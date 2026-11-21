@@ -18,12 +18,11 @@ use std::rc::Rc;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::profiling::{FRAME_BUDGET_US, PerfReport, PerfScenario, PerfStep, run_scenario_on};
 use tilo_ui::state::State;
-use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Column, Scrollable, Text, Widget};
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, WindowEvent};
 
-use super::gallery_scene;
+use super::dashboard_scene;
 
 /// A tall scrollable list — a realistic "feed / notes" app shape, and a
 /// reliable scroll target (its content overflows the viewport).
@@ -147,11 +146,11 @@ pub fn run(args: &[String]) {
         print!("{report}");
     }
 
-    // 2) Steady-state redraw against the reference component gallery.
-    let mut g_state = State::new();
-    let g_root = gallery_scene::build_showcase(&mut g_state, &Theme::dark());
+    // 2) Steady-state redraw of the dashboard's dense tree.
+    let g_state = State::new();
+    let g_root = dashboard_scene::build();
     let gallery = PerfScenario {
-        name: "gallery-steady-headless-idle-cpu".to_string(),
+        name: "dashboard-steady-headless-idle-cpu".to_string(),
         viewport: (1280, 800),
         warmup: 3,
         steps: vec![PerfStep::Frames(count)],

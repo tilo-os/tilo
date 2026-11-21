@@ -55,6 +55,14 @@ view feedback(g: Gallery) {
                 on act: set(last, "Retry")
             }
             ui.Banner(
+                "A new version is ready",
+                message: "Restart to finish updating.",
+                kind: .info,
+            ) {
+                on dismiss: set(last, "Dismissed")
+            }
+            ui.Banner("This report is read-only", kind: .neutral)
+            ui.Banner(
                 "Release 4.2 is out",
                 message: "Everyone on the team has the new board.",
                 kind: .success,
@@ -77,6 +85,9 @@ view feedback(g: Gallery) {
             row(gap: .related, wrap: true, align: .center) {
                 ui.Badge("Beta")
                 ui.Badge(count: 12)
+                ui.Badge(count: 128)
+                ui.Badge("New", tone: .info)
+                ui.Badge("Due soon", tone: .warning)
                 ui.Badge(dot: true)
                 ui.Badge("Done", tone: .success)
                 ui.Badge("Late", tone: .danger)
@@ -120,6 +131,8 @@ view feedback(g: Gallery) {
                 ui.StatTile("Open", "24", change: "+3", trend: .up)
                 ui.StatTile("Closed", "112", unit: "this month", samples: [3.0, 5.0, 4.0, 8.0, 6.0])
                 ui.StatTile("Late", "2", tone: .danger)
+                ui.StatTile("Failed", "3", change: "2 fewer", trend: .down, tone: .success)
+                ui.StatTile("Latency", "48", unit: "ms", change: "No change", trend: .flat)
             }
             row(gap: .related) {
                 ui.Sparkline(

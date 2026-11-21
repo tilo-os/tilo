@@ -653,15 +653,15 @@ paths as keyboard input. Composite editors forward those actions to their
 inner text surface. Protected fields publish neither their value nor selection
 length, so accessibility does not become a side channel for secrets.
 
-The normal component gallery includes a `Typography & Scripts` card in both
-light and dark offscreen renders. It is the visual review corpus for semantic
-hierarchy, Latin ligatures/diacritics, Arabic, Hebrew, Devanagari, Bengali,
-Thai, CJK, mixed BiDi, and multi-codepoint emoji. Run
-`cargo run -p ui-examples --example ui-shots -- gallery_shots` through the repository build wrapper
-to regenerate it.
+The gallery app's Basics page (`apps/tl/gallery`) shows the type scale and
+text in Arabic, Hebrew, Devanagari, Bengali, Thai, CJK, mixed BiDi and
+multi-codepoint emoji as an app written in tilolang sets them.
 
-That same card is also a committed visual regression corpus. The integration
-suite compares light and dark reference PNGs at 1×, fractional 1.25× display
+A `Typography & Scripts` card, built in
+`crates/sdk/ui-core/tests/typography_visual_regression.rs`, is the committed
+visual regression corpus for semantic hierarchy, Latin ligatures and
+diacritics, the OpenType features, wrapping and punctuation, and those
+scripts. The integration suite compares light and dark reference PNGs at 1×, fractional 1.25× display
 scale, and combined 1.5× display/1.25× text scale. Comparisons tolerate only
 the renderer's measured one-channel antialiasing wobble; a real mismatch writes
 the actual frame and a high-contrast pixel diff under the test target's

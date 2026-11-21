@@ -201,7 +201,7 @@ results are not interchangeable with native-4K dashboard redraws:
 
 | Scenario / control                           | Default / behavior                                                                                                                                                              |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `perf_scenario --count N` (also `--count=N`) | `120` usize iterations; missing/invalid count falls back. Runs CPU-only list-scroll and gallery-steady scenarios, without a GPU or window. Use a positive count.                |
+| `perf_scenario --count N` (also `--count=N`) | `120` usize iterations; missing/invalid count falls back. Runs CPU-only list-scroll and dashboard-steady scenarios, without a GPU or window. Use a positive count.                |
 | `perf_scenario --json`                       | Off; emits JSON reports instead of text.                                                                                                                                        |
 | `widget_perf_bench` / `TILO_UI_PERF_ITERS`   | `20` usize iterations; invalid falls back. A separate 1100×800 click/layout/draw/offscreen-render workload; use a positive count.                                               |
 | `ui-shots perf_hud_shot` / `PERF_HUD_FRAMES` | `90` usize frames; invalid falls back. Feeds real CPU pass timings into a HUD screenshot at 1280×800, not an acceptance run.                                                    |
