@@ -1,5 +1,6 @@
 //! One guided story through real actions; only host discovery is an isolated fixture.
 
+#[cfg(feature = "native-capture-qualification")]
 use super::*;
 #[cfg(feature = "native-capture-qualification")]
 use crate::resource::ImagerShell;
