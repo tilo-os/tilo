@@ -15,6 +15,10 @@
 //! hosts have no room ([`Reply::Busy`]) a command waits after one line saying so, and
 //! interrupting it ends it having run nothing.
 //!
+//! A program starts with the shell's variables and, set over them, the secrets the run carries
+//! ([`HostedPrograms::carrying_secrets`]): items of the workspace's vault its VM may use. They
+//! travel to the VM's agent in the launch alone.
+//!
 //! A program whose input and output are the session's terminal runs on a pseudo-terminal
 //! in the VM ([`Relay::Terminal`]), so editors, prompts and pagers work as on a device.
 //! [`SOCKET_ENV`], [`ACCOUNT_ENV`], [`SIZE_ENV`] and [`PLANS_ENV`] turn this on for a
@@ -91,6 +95,7 @@ pub struct HostedPrograms {
     shares: Box<Shares>,
     terminal: TerminalSlot,
     refusals: Option<std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>>,
+    secrets: Option<crate::workspace_shell::Secrets>,
 }
 
 impl HostedPrograms {
@@ -109,7 +114,36 @@ impl HostedPrograms {
             shares,
             terminal: TerminalSlot::default(),
             refusals: None,
+            secrets: None,
         }
+    }
+
+    /// Start each program with what `slot` holds when it starts, set over the shell's
+    /// variables of the same names: the secrets of the run in progress.
+    #[must_use]
+    pub(crate) fn carrying_secrets(mut self, slot: crate::workspace_shell::Secrets) -> Self {
+        self.secrets = Some(slot);
+        self
+    }
+
+    /// The environment a program starts with: the shell's `env`, and the run's secrets over it.
+    fn environment(&self, env: &[(String, String)]) -> Vec<(String, String)> {
+        let Some(slot) = &self.secrets else {
+            return env.to_vec();
+        };
+        let secrets = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut started: Vec<(String, String)> = env
+            .iter()
+            .filter(|(name, _)| !secrets.iter().any(|secret| secret.variable == *name))
+            .cloned()
+            .collect();
+        started.extend(
+            secrets
+                .iter()
+                .map(|secret| (secret.variable.clone(), secret.value.clone())),
+        );
+        drop(secrets);
+        started
     }
 
     /// Tell `slot` each refusal that ends a program, so the caller can
@@ -485,7 +519,7 @@ impl Programs for HostedPrograms {
         let launch = Launch {
             argv: argv.to_vec(),
             cwd: Some(cwd.display().to_string()),
-            env: env.to_vec(),
+            env: self.environment(env),
             stdio: terminal.map_or(Relay::Relay, |fd| Relay::Terminal(terminal_size(fd))),
             display: Display::None,
         };

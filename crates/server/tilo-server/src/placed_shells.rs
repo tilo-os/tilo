@@ -278,6 +278,7 @@ impl PlacedShells {
             agent,
             account: self.account.clone(),
             size: self.size.as_str().to_owned(),
+            secrets: Vec::new(),
         };
         let mut ran = run_on(&device, &asked, watching)?;
         if let Some(words) = waited {

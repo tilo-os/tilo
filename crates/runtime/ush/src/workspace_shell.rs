@@ -18,6 +18,13 @@
 //! ([`WorkspaceShells::interactive`]): it prompts and edits lines on the terminal, and its
 //! programs run on a terminal in the VM, so editors, prompts and `claude` work as on a device.
 //! [`crate::environment_terminals`] carries that terminal to a person's device.
+//!
+//! A run may carry secrets ([`RunWith::secrets`]): items of the workspace's vault its VM may
+//! use, which the host resolved for this run. Every program the
+//! command starts in the VM gets them in its environment, set over a shell variable of the
+//! same name. The shell itself never holds them: `echo $NAME` and `env` among its own commands
+//! do not see them, they are not kept between runs, and nothing the run answers carries them
+//! unless a program prints its own environment.
 
 use std::collections::HashMap;
 use std::io;
@@ -27,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use collab_types::caps::CapOverride;
-use tilo_actions::remote::environment_commands::CommandOutput;
+use tilo_actions::remote::environment_commands::{CommandOutput, VmSecret};
 use tilo_actions::remote::server_account::Refusal;
 use ush_shell::commands::Render;
 use ush_shell::{Output, Run, Shell, Stdio};
@@ -91,6 +98,24 @@ pub type Seen<'a> = &'a (dyn Fn(&CommandOutput) + Sync);
 /// wait or a running program ends within a fraction of a second.
 pub type Stopping<'a> = &'a (dyn Fn() -> bool + Sync);
 
+/// What a run is asked with besides its command line.
+#[derive(Clone, Copy, Default)]
+pub struct RunWith<'a> {
+    /// Who pays for the VM rather than this host's own account (the first run of a
+    /// workspace's session decides it).
+    pub payer: Option<&'a Payer>,
+    /// What the programs the command starts in the VM get in their environment, this run
+    /// only.
+    pub secrets: &'a [VmSecret],
+    /// Whether the caller asked the command to stop.
+    pub stopping: Option<Stopping<'a>>,
+    /// What the caller is shown of the command while it runs.
+    pub seen: Option<Seen<'a>>,
+}
+
+/// The secrets the run in progress hands the programs it starts in the VM.
+pub(crate) type Secrets = Arc<Mutex<Vec<VmSecret>>>;
+
 const SEEN_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 const STOP_EVERY: std::time::Duration = std::time::Duration::from_millis(25);
@@ -107,6 +132,7 @@ struct Session {
     /// The terminal the shell is on while it runs interactively; its programs and its line
     /// editor find it here.
     terminal: TerminalSlot,
+    secrets: Secrets,
 }
 
 /// A session's shell running interactively on a terminal ([`WorkspaceShells::interactive`]).
@@ -243,13 +269,11 @@ impl WorkspaceShells {
         command: &str,
         agent: bool,
     ) -> io::Result<ShellRun> {
-        self.run_for(workspace, session, command, agent, None, None, None)
+        self.run_for(workspace, session, command, agent, RunWith::default())
     }
 
-    /// [`Self::run`], its VM paid for by `payer` rather than this host's
-    /// own account when given (the first run of a workspace's session
-    /// decides it), ended when `stopping` says so, and `seen` shown what the
-    /// command printed so far while it runs.
+    /// [`Self::run`], with what `with` says: who pays for the VM, the secrets its programs
+    /// get, when to stop, and what the caller is shown of the command while it runs.
     ///
     /// # Errors
     ///
@@ -260,13 +284,11 @@ impl WorkspaceShells {
         session: &str,
         command: &str,
         agent: bool,
-        payer: Option<&Payer>,
-        stopping: Option<Stopping<'_>>,
-        seen: Option<Seen<'_>>,
+        with: RunWith<'_>,
     ) -> io::Result<ShellRun> {
-        let shell = self.session(workspace, session, payer)?;
+        let shell = self.session(workspace, session, with.payer)?;
         let mut session = shell.lock().unwrap_or_else(PoisonError::into_inner);
-        Ok(session.run(command, agent, stopping, seen))
+        Ok(session.run(command, agent, with))
     }
 
     /// Run `workspace`'s Terminal session `session` interactively on the pseudo-terminal whose
@@ -409,6 +431,7 @@ impl WorkspaceShells {
         });
         let refused = Arc::new(Mutex::new(None));
         let terminal = TerminalSlot::default();
+        let secrets = Secrets::default();
         let programs: Arc<dyn Programs> = match target {
             Some(target) => {
                 let shared = files.clone();
@@ -420,7 +443,8 @@ impl WorkspaceShells {
                         Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
                     )
                     .reporting_refusals(Arc::clone(&refused))
-                    .on_terminal_of(Arc::clone(&terminal)),
+                    .on_terminal_of(Arc::clone(&terminal))
+                    .carrying_secrets(Arc::clone(&secrets)),
                 )
             }
             None if programs_here => Arc::new(MachinePrograms),
@@ -455,6 +479,7 @@ impl WorkspaceShells {
             refused,
             stopped,
             terminal,
+            secrets,
         })
     }
 }
@@ -474,13 +499,15 @@ impl Session {
         status
     }
 
-    fn run(
-        &mut self,
-        command: &str,
-        agent: bool,
-        stopping: Option<Stopping<'_>>,
-        seen: Option<Seen<'_>>,
-    ) -> ShellRun {
+    fn run(&mut self, command: &str, agent: bool, with: RunWith<'_>) -> ShellRun {
+        let RunWith {
+            secrets,
+            stopping,
+            seen,
+            ..
+        } = with;
+        // This run's secrets, and none of an earlier run's.
+        *self.secrets.lock().unwrap_or_else(PoisonError::into_inner) = secrets.to_vec();
         let cwd = self.shell.cwd().to_string_lossy().into_owned();
         *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.stopped.store(false, Ordering::SeqCst);
@@ -502,6 +529,10 @@ impl Session {
             self.run_watched(command, stopping, seen)
         };
         self.shell.set_run(None);
+        self.secrets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         let ended_ms = now_ms();
         let cancelled = self.stopped.swap(false, Ordering::SeqCst);
         let mut output = self.captured.take();

@@ -6,7 +6,7 @@
 //! plans file, which sells a "Pro" plan. An account it does not name has no card on file,
 //! and [`TestHost::add_card`] writes it into the plans file as the provider does. An
 //! admitted program runs in a stand-in for the VM's agent that answers `ran <argv>` with
-//! exit status 0.
+//! exit status 0, and keeps what each launch asked for ([`TestHost::launched`]).
 
 #![allow(
     clippy::expect_used,
@@ -58,10 +58,14 @@ pub fn selling() -> Plans {
     }
 }
 
+/// One program the stand-in agent was asked to start: its arguments and its environment.
+pub type Launched = (Vec<String>, Vec<(String, String)>);
+
 pub struct TestHost {
     dir: PathBuf,
     asked: Arc<Mutex<Vec<String>>>,
     full_for: Arc<Mutex<usize>>,
+    launches: Arc<Mutex<Vec<Launched>>>,
 }
 
 impl TestHost {
@@ -71,16 +75,18 @@ impl TestHost {
             dir: dir.to_path_buf(),
             asked: Arc::new(Mutex::new(Vec::new())),
             full_for: Arc::new(Mutex::new(0)),
+            launches: Arc::new(Mutex::new(Vec::new())),
         };
         host.write(&selling());
         let service = tilo_files::native::socket::bind(&host.socket()).expect("the service socket");
         let agent =
             tilo_files::native::socket::bind(&host.agent_socket()).expect("the agent socket");
-        let (plans, agent_socket, asked, full_for) = (
+        let (plans, agent_socket, asked, full_for, launches) = (
             host.plans(),
             host.agent_socket(),
             Arc::clone(&host.asked),
             Arc::clone(&host.full_for),
+            Arc::clone(&host.launches),
         );
         std::thread::spawn(move || {
             for stream in service.incoming().flatten() {
@@ -89,7 +95,8 @@ impl TestHost {
         });
         std::thread::spawn(move || {
             for stream in agent.incoming().flatten() {
-                std::thread::spawn(move || run_agent(stream));
+                let launches = Arc::clone(&launches);
+                std::thread::spawn(move || run_agent(stream, &launches));
             }
         });
         host
@@ -136,6 +143,15 @@ impl TestHost {
 
     pub fn full_for(&self, wakes: usize) {
         *self.full_for.lock().unwrap_or_else(PoisonError::into_inner) = wakes;
+    }
+
+    /// Every program the stand-in agent was asked to start, oldest first.
+    #[must_use]
+    pub fn launched(&self) -> Vec<Launched> {
+        self.launches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     #[must_use]
@@ -204,7 +220,7 @@ fn answer(
     let _ = FRAMING.write_value(&mut stream, &reply);
 }
 
-fn run_agent(mut stream: UnixStream) {
+fn run_agent(mut stream: UnixStream, launches: &Mutex<Vec<Launched>>) {
     let mut line = Vec::new();
     let mut byte = [0_u8; 1];
     while stream.read(&mut byte).is_ok_and(|read| read == 1) && byte != *b"\n" {
@@ -228,6 +244,10 @@ fn run_agent(mut stream: UnixStream) {
     let Ok(Some(HostMessage::Launch(launch))) = recv::<_, HostMessage>(&mut stream) else {
         return;
     };
+    launches
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((launch.argv.clone(), launch.env.clone()));
     let _ = send(&mut stream, &GuestMessage::Started { pid: 1 });
     let _ = send(
         &mut stream,

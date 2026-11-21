@@ -30,7 +30,7 @@ use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 
 use crate::environment_browsers::{AppRefused, BrowserHost};
 use crate::environment_programs::{Held, LEFT_AFTER, Starts};
-use crate::workspace_shell::{Payer, ShellRun, WorkspaceShells};
+use crate::workspace_shell::{Payer, RunWith, ShellRun, WorkspaceShells};
 
 const PROFILE_STORE: &str = ".tilo/browser";
 
@@ -297,9 +297,12 @@ impl Inner {
                 &asked.session,
                 &asked.command,
                 asked.agent,
-                Some(&payer),
-                Some(&stopping),
-                Some(&seen),
+                RunWith {
+                    payer: Some(&payer),
+                    secrets: &asked.secrets,
+                    stopping: Some(&stopping),
+                    seen: Some(&seen),
+                },
             );
             let update = match ran {
                 Ok(ran) => InvocationUpdate::Succeeded {

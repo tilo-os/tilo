@@ -356,9 +356,11 @@ impl WorkspaceShell for HostShells {
                 session,
                 command,
                 agent,
-                None,
-                watching.stop,
-                watching.seen,
+                ush::workspace_shell::RunWith {
+                    stopping: watching.stop,
+                    seen: watching.seen,
+                    ..ush::workspace_shell::RunWith::default()
+                },
             )
             .map_err(|error| error.to_string())?;
         Ok(ShellRan {

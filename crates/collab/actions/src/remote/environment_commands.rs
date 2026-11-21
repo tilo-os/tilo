@@ -21,6 +21,12 @@
 //!   session's shell, and the [`CommandRan`] says it was
 //!   ([`cancelled`](CommandRan::cancelled)).
 //!
+//! - A run may carry secrets beside its command line ([`VmSecret`]): items of
+//!   the workspace's vault its VM may use, resolved by the host for this run.
+//!   Each reaches the environment of every program the command starts in the
+//!   VM, and nothing else: not the shell's own variables, not the command
+//!   line, not the run's answer.
+//!
 //! Only the workspace's host may ask, as a device of the operator the
 //! member's own identity belongs to: a run is paid for by the account the
 //! request names, which only the host knows.
@@ -64,6 +70,29 @@ pub struct CommandRequest {
     pub account: String,
     /// The size of the workspace's VM (`small`, `default`, `large`, `xlarge`).
     pub size: String,
+    /// What the programs the command starts in the VM get in their
+    /// environment besides the shell's variables.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<VmSecret>,
+}
+
+/// One secret a program in the workspace's VM starts with: an environment
+/// variable whose value a vault item keeps. It prints nothing of the value.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmSecret {
+    /// The variable's name (`CLAUDE_CODE_OAUTH_TOKEN`).
+    pub variable: String,
+    /// What it is set to.
+    pub value: String,
+}
+
+impl std::fmt::Debug for VmSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VmSecret")
+            .field("variable", &self.variable)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What a running command printed so far.
@@ -116,6 +145,17 @@ pub struct CommandRan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_secret_prints_its_name_and_never_its_value() {
+        let secret = VmSecret {
+            variable: "CLAUDE_CODE_OAUTH_TOKEN".into(),
+            value: "sk-the-value".into(),
+        };
+        let printed = format!("{secret:?}");
+        assert!(printed.contains("CLAUDE_CODE_OAUTH_TOKEN"), "{printed}");
+        assert!(!printed.contains("sk-the-value"), "{printed}");
+    }
 
     #[test]
     fn live_output_keeps_the_newest_bytes_and_counts_them_all() {

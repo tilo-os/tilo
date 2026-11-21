@@ -102,6 +102,7 @@ fn run_request(session: &str, command: &str) -> InvokeRequest {
         agent: true,
         account: "acct-1".into(),
         size: "small".into(),
+        secrets: Vec::new(),
     })
     .unwrap();
     let serde_json::Value::Object(argument) = argument else {

@@ -45,6 +45,7 @@ fn asking(command: &str) -> InvokeRequest {
         agent: true,
         account: "acct-1".into(),
         size: "small".into(),
+        secrets: Vec::new(),
     };
     let serde_json::Value::Object(map) = serde_json::to_value(asked).unwrap() else {
         panic!("a command is an object");

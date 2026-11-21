@@ -158,3 +158,65 @@ fn a_server_without_programs_starts_none() {
     assert_ne!(ended.exit, 0);
     assert!(!shells.files("w1").join("no").exists());
 }
+
+/// A run's secrets reach the programs it starts in the workspace's VM, and nothing else: not
+/// the shell's own variables, not the run's answer, not the session's next run.
+#[test]
+fn a_runs_secrets_reach_its_programs_in_the_vm_and_nothing_else() {
+    use crate::hosted_vm::testing::{fake_service, fake_vm};
+    const VALUE: &str = "sk-ant-oat01-the-persons-own-token";
+    let state = tempfile::tempdir().unwrap();
+    let socket = fake_service(state.path(), fake_vm(state.path()));
+    let shells = WorkspaceShells::new(
+        state.path().join("shells"),
+        Some(HostedTarget {
+            socket,
+            account: "acct-1".into(),
+            size: VmSize::default(),
+            plans: None,
+        }),
+    );
+    let secret = VmSecret {
+        variable: "CLAUDE_CODE_OAUTH_TOKEN".into(),
+        value: VALUE.into(),
+    };
+    let with = RunWith {
+        secrets: std::slice::from_ref(&secret),
+        ..RunWith::default()
+    };
+    let given = shells
+        .run_for(
+            "ws-1",
+            "s1",
+            &format!(
+                "CLAUDE_CODE_OAUTH_TOKEN=typed sh -c 'test \"$CLAUDE_CODE_OAUTH_TOKEN\" = {VALUE} && echo given'"
+            ),
+            true,
+            with,
+        )
+        .unwrap();
+    assert_eq!(given.exit, 0, "{}", text(&given));
+    assert_eq!(text(&given), "given\n");
+
+    let shell_sees = shells
+        .run_for(
+            "ws-1",
+            "s1",
+            "echo \"[$CLAUDE_CODE_OAUTH_TOKEN]\"",
+            true,
+            with,
+        )
+        .unwrap();
+    assert_eq!(text(&shell_sees), "[]\n", "the shell itself never holds it");
+
+    let next = shells
+        .run("ws-1", "s1", "sh -c 'echo \"[$CLAUDE_CODE_OAUTH_TOKEN]\"'", true)
+        .unwrap();
+    assert_eq!(next.exit, 0, "{}", text(&next));
+    assert_eq!(text(&next), "[]\n", "a run without it starts its programs without it");
+
+    // The first command names the value only to compare it; what each run printed never holds it.
+    for ran in [&given, &shell_sees, &next] {
+        assert!(!text(ran).contains(VALUE), "{}", text(ran));
+    }
+}
