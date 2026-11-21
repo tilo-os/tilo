@@ -523,10 +523,15 @@ mod tests {
         let serving = Arc::clone(&agent);
         let server = std::thread::spawn(move || serving.serve(guest));
         let at = 1_782_816_120_123;
-        let answer = client::request(&mut host, &HostMessage::SetClock { unix_millis: at }).unwrap();
+        let answer =
+            client::request(&mut host, &HostMessage::SetClock { unix_millis: at }).unwrap();
         server.join().unwrap().unwrap();
         assert_eq!(answer, GuestMessage::ClockSet { unix_millis: at });
-        assert_eq!(*seen.lock().unwrap(), [at], "the guest's clock got the host's time");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [at],
+            "the guest's clock got the host's time"
+        );
     }
 
     #[test]

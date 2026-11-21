@@ -8,7 +8,9 @@ use ui_core::automerge::AutoCommit;
 use ui_core::widget::Element;
 
 use super::shared_tree::mark_document_jobs;
-use super::{BaseKey, BindingBase, BindingHead, Decoration, ResourceRoot, framework_specs, unreadable_state};
+use super::{
+    BaseKey, BindingBase, BindingHead, Decoration, ResourceRoot, framework_specs, unreadable_state,
+};
 use crate::framework::rows::{LiveRow, merge};
 
 impl ResourceRoot {
@@ -224,12 +226,7 @@ impl ResourceRoot {
             let _profile = tilo_resource::profiling::Phase::start("framework.surface_publication");
             availability.extend(surface.availability());
             if children {
-                rows.extend(
-                    surface
-                        .live_rows()
-                        .into_iter()
-                        .map(LiveRow::into_resource),
-                );
+                rows.extend(surface.live_rows().into_iter().map(LiveRow::into_resource));
             }
         });
         resource = self.typed.bind(resource, bound);

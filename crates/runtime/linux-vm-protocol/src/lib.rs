@@ -96,22 +96,30 @@ impl GuestOs {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HostMessage {
-    Hello { protocol_major: u16 },
+    Hello {
+        protocol_major: u16,
+    },
     Health,
     ListRunning,
-    Mount { shares: Vec<GuestShare> },
+    Mount {
+        shares: Vec<GuestShare>,
+    },
     InstalledApps,
     Launch(Launch),
     Stdin(Vec<u8>),
     CloseStdin,
     Signal(Signal),
-    MountFiles { shares: Vec<files::FileShare> },
+    MountFiles {
+        shares: Vec<files::FileShare>,
+    },
     Resize(TerminalSize),
     /// Set the guest's wall clock, as Unix milliseconds, before the host hands
     /// the VM out. A VM restored from a snapshot resumes with the clock the
     /// snapshot was taken at; the agent runs as root, which is what moving
     /// `CLOCK_REALTIME` takes.
-    SetClock { unix_millis: u64 },
+    SetClock {
+        unix_millis: u64,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -119,16 +127,26 @@ pub enum GuestMessage {
     Hello(AgentHello),
     Health(Health),
     Running(Vec<RunningApp>),
-    Mounted { shares: Vec<GuestShare> },
+    Mounted {
+        shares: Vec<GuestShare>,
+    },
     InstalledApps(Vec<InstalledApp>),
-    Started { pid: u32 },
+    Started {
+        pid: u32,
+    },
     Stdout(Vec<u8>),
     Stderr(Vec<u8>),
     Exited(ExitStatus),
-    Error { message: String },
-    FilesMounted { paths: Vec<String> },
+    Error {
+        message: String,
+    },
+    FilesMounted {
+        paths: Vec<String>,
+    },
     /// The guest's wall clock now reads `unix_millis`.
-    ClockSet { unix_millis: u64 },
+    ClockSet {
+        unix_millis: u64,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
