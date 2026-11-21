@@ -1336,9 +1336,11 @@ fn store_by_id_changed_in(
             continue;
         };
         let key = id.as_str();
-        match then.and_then(|then| was.item(then)) {
-            Some((_, held)) => write_item_changed(table, (doc, &map, key), item, held, dirty)?,
-            None => (table.ops.store)(table, item, doc, Slot::Key(&map, key)).located(key)?,
+        if let Some((_, held)) = then.and_then(|then| was.item(then)) {
+            write_item_changed(table, (doc, &map, key), item, held, dirty)?;
+        } else {
+            made_entry(doc, &map, key)?;
+            (table.ops.store)(table, item, doc, Slot::Key(&map, key)).located(key)?;
         }
     }
     Ok(())
@@ -1369,7 +1371,17 @@ fn store_by_id_in(
         let Some((id, item)) = items.item(at) else {
             continue;
         };
+        made_entry(doc, &map, id.as_str())?;
         (table.ops.store)(table, item, doc, Slot::Key(&map, id.as_str())).located(id.as_str())?;
+    }
+    Ok(())
+}
+
+/// Note the item `key` as one the applying action made, when `map` holds no entry for it yet:
+/// what History names a change that added a keyed item by (the agent, the device it made).
+fn made_entry(doc: &Doc, map: &ObjId, key: &str) -> Result<(), ModelError> {
+    if doc.get(map, key)?.is_none() {
+        crate::action::note_entry(map, key);
     }
     Ok(())
 }

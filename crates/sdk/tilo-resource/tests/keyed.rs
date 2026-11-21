@@ -228,6 +228,20 @@ tilo_test_env::scenario! {
         assert_eq!(origin.state().unwrap().colour, [1.0, 0.5, 0.0, 1.0]);
     }
 
+    phase a_verb_that_adds_a_keyed_item_names_it_in_history;
+    // The item a verb added under an id it was handed, as with an id it made, is what its
+    // change is about: History reads "Added the clip “Intro”", not a change of the timeline.
+    {
+        let entry = Replica::<Timeline>::new()
+            .apply(Timeline::ADD_CLIP.with(("intro".to_owned(), "Intro".to_owned(), 0.0)))
+            .unwrap()
+            .context
+            .clone()
+            .unwrap();
+        let item = entry.item.unwrap();
+        assert_eq!((item.id.as_str(), item.label.as_str()), ("intro", "Intro"));
+    }
+
     phase ordered_items_keep_the_arranged_order_and_merge_by_identity;
     {
         let mut timeline = Replica::<Timeline>::new();
