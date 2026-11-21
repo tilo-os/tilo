@@ -8,52 +8,68 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{FilterCount, ListRow, QueryView, Section, SectionHeader, Segment, ToggleGroup};
 
-use crate::{ActivityEffect, Filter, Nav, Provider, ago, page, tr, trf};
+use crate::{ActivityEffect, Filters, Nav, Provider, Window, ago, page, tr, trf};
 
 /// The place's content and its header's commands.
-pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
-    let filter = cx.value(Filter::clone);
-    let (scoped, limited) = (nav.clone(), nav.clone());
+///
+/// The filter is the window's own: the feed is read again for the period, person and lens it
+/// names, and the search narrows what the read returned. Nothing of it is a change to the
+/// workspace.
+pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav) -> (Element, Vec<Element>) {
+    let scoped = nav.clone();
     let content = cx.switch(&nav.everywhere, move |cx, everywhere| {
         let scope = if *everywhere {
             wire::Scope::AllWorkspaces
         } else {
             wire::Scope::ThisWorkspace
         };
-        let nav = scoped.clone();
-        let filter = filter.clone();
-        cx.switch(&limited.limit, move |cx, limit| {
-            let nav = nav.clone();
+        let scoped = scoped.clone();
+        let limit = scoped.limit.clone();
+        cx.switch(&limit, move |cx, limit| {
+            let scoped = scoped.clone();
             let limit = *limit;
-            cx.switch(&filter, move |cx, filter| {
-                let mut query = filter.query(scope);
-                query.limit = if filter.searching() {
-                    limit.max(wire::FEED_PAGE).saturating_mul(4)
-                } else {
-                    limit
-                };
-                feed(cx, &nav, &query, filter.narrows())
+            let period = scoped.period.clone();
+            cx.switch(&period, move |cx, _| {
+                let scoped = scoped.clone();
+                let author = scoped.author.clone();
+                cx.switch(&author, move |cx, _| {
+                    let scoped = scoped.clone();
+                    let lens = scoped.lens.clone();
+                    cx.switch(&lens, move |cx, _| {
+                        let scoped = scoped.clone();
+                        let query = scoped.query.clone();
+                        cx.switch(&query, move |cx, _| {
+                            let filters = scoped.filters();
+                            let mut asked = filters.query(scope);
+                            asked.limit = if filters.searching() {
+                                limit.max(wire::FEED_PAGE).saturating_mul(4)
+                            } else {
+                                limit
+                            };
+                            feed(cx, &scoped, &asked, &filters)
+                        })
+                    })
+                })
             })
         })
     });
     (content, Vec::new())
 }
 
-/// The feed `query` reads, under the filter row; `narrows` says whether the filter narrows
-/// it.
-fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) -> Element {
+/// The feed `query` reads, under the filter row that asked for it.
+fn feed(cx: &ViewCx<Window>, nav: &Nav, query: &wire::FeedQuery, filters: &Filters) -> Element {
     let read = Provider::of(cx).follow::<wire::Feed>(wire::FEED, Some(query));
     let nav = nav.clone();
+    let filters = filters.clone();
     Box::new(cx.arriving(&read.answer(), move |cx, feed| {
-        let filter = cx.value(Filter::clone).get();
-        let mut parts = vec![filters(cx, &nav, feed, narrows)];
-        let found = found(feed, &filter);
+        let mut parts = vec![filter_row(&nav, feed, filters.narrows())];
+        let found = found(feed, &filters);
         if feed.entries.is_empty() {
-            parts.push(empty(feed, narrows));
+            parts.push(empty(feed, filters.narrows()));
         } else {
             let shown = feed.clone();
             let listed = nav.clone();
-            let narrowed = filter.clone();
+            let narrowed = filters.clone();
             let actions = cx.actions();
             parts.push(cx.switch(&nav.selection, move |_, selection| {
                 list(&listed, &actions, &shown, selection.as_ref(), &narrowed)
@@ -71,30 +87,27 @@ fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) 
                 ));
             }
         }
-        searchable(cx, page(parts), &filter, found.len(), feed.entries.len())
+        searchable(page(parts), &nav, &filters, found.len(), feed.entries.len())
     }))
 }
 
-/// The page, as the window bar's search narrows it: what is typed reaches the filter, and
-/// the bar counts what the filter left of the `total` the read returned.
+/// The page, as the window bar's search narrows it: what is typed reaches the window's
+/// filter, and the bar counts what the filter left of the `total` the read returned.
 fn searchable(
-    cx: &ViewCx<Filter>,
     content: Element,
-    filter: &Filter,
+    nav: &Nav,
+    filters: &Filters,
     found: usize,
     total: usize,
 ) -> Element {
-    let dispatcher = cx.dispatcher();
-    let path = Filter::paths().query;
-    let current = filter.query.clone();
+    let current = filters.query.clone();
+    let typed = nav.query.clone();
     Box::new(
         QueryView::new(content, move |text| {
             if text == current {
                 return;
             }
-            if let Ok(invoke) = Invoke::edit(&path.set(text.to_owned())) {
-                dispatcher.submit(invoke);
-            }
+            typed.set(text.to_owned());
         })
         .kept(FilterCount::new(found, total)),
     )
@@ -102,7 +115,7 @@ fn searchable(
 
 /// What the search leaves of the feed: the changes whose words, person or app contain its
 /// query.
-fn found(feed: &wire::Feed, filter: &Filter) -> Vec<wire::Entry> {
+fn found(feed: &wire::Feed, filter: &Filters) -> Vec<wire::Entry> {
     feed.entries
         .iter()
         .filter(|entry| {
@@ -131,31 +144,24 @@ fn empty(feed: &wire::Feed, narrows: bool) -> Element {
     Box::new(state.with_id("activity-history-empty"))
 }
 
-/// A dropdown of `options` (value, label) bound to `field` of the filter.
+/// A dropdown of `options` (value, label) bound to `state`, the window's own field.
 fn picker(
-    cx: &ViewCx<Filter>,
+    state: &LocalState<String>,
     id: &'static str,
     name: &str,
     options: Vec<(String, String)>,
-    field: Path<Filter, String>,
 ) -> Element {
     let name = tr(name);
-    Box::new(cx.control(
-        move |state| {
-            let mut picker = Dropdown::from_state(Vec::new(), state)
-                .with_id(id)
-                .with_accessible_name(name);
-            picker.set_value_options(options);
-            picker
-        },
-        field,
-    ))
+    let mut picker = Dropdown::from_state(Vec::new(), state)
+        .with_id(id)
+        .with_accessible_name(name);
+    picker.set_value_options(options);
+    Box::new(picker)
 }
 
 /// The filter row, with a way back to every change while the filter narrows them, and only
 /// then.
-fn filters(cx: &ViewCx<Filter>, nav: &Nav, feed: &wire::Feed, narrows: bool) -> Element {
-    let paths = Filter::paths();
+fn filter_row(nav: &Nav, feed: &wire::Feed, narrows: bool) -> Element {
     let scope = ToggleGroup::from_state(
         vec![
             (false, Segment::new(tr("activity-scope-this-workspace"))),
@@ -190,31 +196,30 @@ fn filters(cx: &ViewCx<Filter>, nav: &Nav, feed: &wire::Feed, narrows: bool) -> 
         .with_rhythm(ui::tokens::Rhythm::Related)
         .push(Box::new(scope))
         .push(picker(
-            cx,
+            &nav.period,
             "activity-filter-period",
             "activity-filter-time",
             periods,
-            paths.period,
         ))
         .push(picker(
-            cx,
+            &nav.author,
             "activity-filter-person",
             "activity-filter-people",
             people,
-            paths.author,
         ))
         .push(picker(
-            cx,
+            &nav.lens,
             "activity-filter-lens",
             "activity-browse-by",
             lenses,
-            paths.lens,
         ));
     if narrows {
-        row = row.push(Box::new(cx.actions().bind(
-            Button::new("activity-clear-filters", "activity-clear-filters").with_icon(Icon::X),
-            Filter::CLEAR_FILTERS,
-        )));
+        let cleared = nav.clone();
+        row = row.push(Box::new(
+            Button::new("activity-clear-filters", "activity-clear-filters")
+                .with_icon(Icon::X)
+                .on_view(move || cleared.clear_filters()),
+        ));
     }
     Box::new(row)
 }
@@ -249,10 +254,10 @@ fn heading(entry: &wire::Entry) -> Heading {
 
 fn list(
     nav: &Nav,
-    actions: &Actions<Filter>,
+    actions: &Actions<Window>,
     feed: &wire::Feed,
     selection: Option<&wire::Range>,
-    filter: &Filter,
+    filter: &Filters,
 ) -> Element {
     let span = selected_span(feed, selection);
     let groups: HashMap<&str, &wire::Group> = feed
@@ -321,7 +326,7 @@ fn list(
 
 /// What the system did, from the log: outcomes that needed nobody, with the app that did
 /// them and when.
-fn log_section(filter: &Filter) -> Option<Element> {
+fn log_section(filter: &Filters) -> Option<Element> {
     let entries: Vec<ui::attention::Entry> = ui::attention::entries()
         .into_iter()
         .filter(|entry| {
@@ -357,7 +362,7 @@ fn log_section(filter: &Filter) -> Option<Element> {
 
 fn entry_row(
     nav: &Nav,
-    actions: &Actions<Filter>,
+    actions: &Actions<Window>,
     feed: &wire::Feed,
     entry: &wire::Entry,
     selected: bool,

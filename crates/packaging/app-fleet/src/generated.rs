@@ -38,7 +38,7 @@ pub(super) const DOCUMENT_WINDOWS: &[&str] = &[
 pub(super) const SURFACES: &[(&str, &str)] = &[
     (
         "so.tilo.activity",
-        "# Written by `tilo-app surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"activity.filter\"\nlabel = \"Workspace activity\"\nversion = 1\nshows = [\"select-through\"]\nfields = [\n  { path = \"period\", type = \"text\" },\n  { path = \"author\", type = \"text\" },\n  { path = \"lens\", type = \"text\" },\n  { path = \"query\", type = \"text\" },\n]\n\n[[resources.verbs]]\nid = \"clear-filters\"\nkind = \"undoable\"\n\n",
+        "# Written by `tilo-app surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"activity.window\"\nlabel = \"Workspace activity\"\nversion = 1\nshows = [\"select-through\"]\n\n",
     ),
     (
         "so.tilo.api-tester",
@@ -456,7 +456,7 @@ pub(super) const APPS: &[FleetApp] = &[
             "protokoll",
         ],
         resource_types: &[],
-        offers: "activity.filter\t\tclear-filters\tClear filters\t\tundoable\tdocument\t0\t\t\t\nactivity.filter\t\trefresh-source\tRefresh source\t\toutside\teffect\t0\tkey\t\t\nactivity.filter\t\tremove-source\tRemove source\t\toutside\teffect\t0\tkey\t\t\n",
+        offers: "activity.window\t\trefresh-source\tRefresh source\t\toutside\teffect\t0\tkey\t\t\nactivity.window\t\tremove-source\tRemove source\t\toutside\teffect\t0\tkey\t\t\n",
     },
     FleetApp {
         id: "so.tilo.api-tester",

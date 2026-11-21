@@ -3,18 +3,8 @@
 format = 2
 
 [[resources]]
-kind = "activity.filter"
+kind = "activity.window"
 label = "Workspace activity"
 version = 1
 shows = ["select-through"]
-fields = [
-  { path = "period", type = "text" },
-  { path = "author", type = "text" },
-  { path = "lens", type = "text" },
-  { path = "query", type = "text" },
-]
-
-[[resources.verbs]]
-id = "clear-filters"
-kind = "undoable"
 

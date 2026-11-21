@@ -1,5 +1,5 @@
-//! The `activity.filter` resource, as the app that draws it reads it.
+//! The `activity.window` resource, as the app that draws it reads it.
 
-mod filter;
+mod window;
 
-pub use filter::{Filter, period};
+pub use window::Window;

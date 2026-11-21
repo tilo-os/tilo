@@ -4813,12 +4813,6 @@
         ],
         "description": "An upload dropped before every byte of it was sent."
       },
-      "activity.filter.clear-filters.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "api-tester.workspace.new-request.Arguments": {
         "type": "object",
         "properties": {},
@@ -40487,12 +40481,6 @@
     }
   },
   "x-tilo-actions": [
-    {
-      "app": "so.tilo.activity",
-      "resource": "activity.filter",
-      "action": "clear-filters",
-      "arguments": "#/components/schemas/activity.filter.clear-filters.Arguments"
-    },
     {
       "app": "so.tilo.api-tester",
       "resource": "api-tester.workspace",

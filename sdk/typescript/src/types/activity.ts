@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Filter` is a `Resource` of the app's `activity.filter`, made by its factory with the
+ * `Window` is a `Resource` of the app's `activity.window`, made by its factory with the
  * resource's path (`activity/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,29 +22,18 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.activity@fe5e26e58568ed26";
+export const SURFACE = "so.tilo.activity@06b8aac1b632cdca";
 
-/** The arguments of `clear-filters`. */
-export interface ClearFiltersArgs {
+/** Workspace activity — `activity.window`. */
+export interface Window extends tilo.Resource {
 }
 
-/** Workspace activity — `activity.filter`. */
-export interface Filter extends tilo.Resource {
-  period: string;
-  author: string;
-  lens: string;
-  query: string;
-  clearFilters(): Promise<void>;
-  /** Runs `clear-filters` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  clearFiltersMany(items: ClearFiltersArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `Filter` reaches before it is read: `ws` calls them without a
+/** The actions `Window` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const FILTER_ACTIONS = ["clearFilters", "clearFiltersMany"] as const;
+export const WINDOW_ACTIONS = [] as const;
 
-/** The `activity.filter` kind at `path`. */
-export function filter(ws: tilo.Workspace, path: string): Filter {
-  return resourceProxy(ws, path, SURFACE, FILTER_ACTIONS) as unknown as Filter;
+/** The `activity.window` kind at `path`. */
+export function activityWindow(ws: tilo.Workspace, path: string): Window {
+  return resourceProxy(ws, path, SURFACE, WINDOW_ACTIONS) as unknown as Window;
 }
 

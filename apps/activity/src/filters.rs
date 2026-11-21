@@ -1,11 +1,11 @@
-//! The app's resource of the workspace: which changes History shows.
+//! What History narrows to, as the window holds it: never stored or synced.
 
-use tilo_actions::remote::workspace_activity as wire;
-use tilo_resource::{self, Model, resource};
+use ui::tilo_actions::remote::workspace_activity as wire;
 
-/// Which changes History shows.
-#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
-pub struct Filter {
+/// The window's filter: a span of time, a person, a browse lens, and what the window bar's
+/// search says.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Filters {
     /// Period
     pub period: String,
     /// Person
@@ -16,7 +16,7 @@ pub struct Filter {
     pub query: String,
 }
 
-impl Filter {
+impl Filters {
     /// The feed this filter asks for, in `scope`.
     pub fn query(&self, scope: wire::Scope) -> wire::FeedQuery {
         wire::FeedQuery {
@@ -59,28 +59,5 @@ pub fn period(key: &str) -> wire::Period {
         "week" => wire::Period::Week,
         "month" => wire::Period::Month,
         _ => wire::Period::AllTime,
-    }
-}
-
-impl Filter {
-    /// What the resource holds: which changes History shows — the agent, the workspace and
-    /// the span of time, each picked whole from a list.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "activity.filter",
-    read_content = Filter::read_document
-)]
-impl Filter {
-    /// Show every change again.
-    #[action(label = "activity-clear-filters")]
-    pub fn clear_filters(&mut self) {
-        *self = Self::default();
     }
 }

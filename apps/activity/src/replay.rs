@@ -5,7 +5,7 @@ use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::time::Duration;
 use ui::widget::{Card, ListRow, Pacer, Section, TransportControl};
 
-use crate::{Filter, Nav, Provider, ago, page, tr, trf};
+use crate::{Nav, Provider, Window, ago, page, tr, trf};
 
 const BEAT: Duration = Duration::from_millis(850);
 
@@ -25,7 +25,7 @@ fn index_of(at: f64, total: usize) -> usize {
 }
 
 /// The place's content and its header's commands.
-pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
+pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav) -> (Element, Vec<Element>) {
     let read = Provider::of(cx).follow::<wire::Replay>(wire::REPLAY, None::<&()>);
     let answer = read.answer();
     let frames = move || answer.get().ready().map_or(0, |replay| replay.frames.len());
@@ -85,7 +85,7 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
     )
 }
 
-fn frames_view(cx: &ViewCx<Filter>, nav: &Nav, replay: &wire::Replay) -> Element {
+fn frames_view(cx: &ViewCx<Window>, nav: &Nav, replay: &wire::Replay) -> Element {
     if replay.frames.is_empty() {
         let (title, message) = if replay.pending {
             ("activity-replay-pending", None)

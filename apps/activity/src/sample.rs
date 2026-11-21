@@ -4,7 +4,7 @@
 use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 
-use crate::{Filter, Nav, Place};
+use crate::{Nav, Place, Window};
 
 pub(crate) const SCENARIOS: &[&str] = &["whats-new", "history", "detail", "replay", "caught-up"];
 
@@ -328,7 +328,7 @@ fn replay() -> wire::Replay {
 }
 
 /// The answers a capture's reads get.
-pub(crate) fn fixture(fixture: &mut Fixture<Filter>) {
+pub(crate) fn fixture(fixture: &mut Fixture<Window>) {
     seed_log();
     let caught_up = fixture.scenario() == Some("caught-up");
     fixture.answer(&wire::target(wire::SUMMARY), &summary(caught_up));

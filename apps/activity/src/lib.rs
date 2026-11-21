@@ -5,6 +5,7 @@ pub const APP_TITLE: &str = "Activity";
 
 mod detail;
 mod effects;
+mod filters;
 mod history;
 pub mod locales;
 mod replay;
@@ -20,9 +21,9 @@ use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{NavItem, NavSection};
 
-pub use activity_model as filter;
+pub use activity_model::Window;
 pub use effects::ActivityEffect;
-pub use filter::Filter;
+pub(crate) use filters::Filters;
 
 /// What the window shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,6 +75,10 @@ pub(crate) struct Nav {
     pub(crate) place: LocalState<Option<String>>,
     pub(crate) pane: LocalState<ui::widget::NavPane>,
     pub(crate) everywhere: LocalState<bool>,
+    pub(crate) period: LocalState<String>,
+    pub(crate) author: LocalState<String>,
+    pub(crate) lens: LocalState<String>,
+    pub(crate) query: LocalState<String>,
     pub(crate) selection: LocalState<Option<wire::Range>>,
     pub(crate) inspector: LocalState<bool>,
     pub(crate) reveal: LocalState<bool>,
@@ -87,6 +92,24 @@ pub(crate) struct Nav {
 impl Nav {
     pub(crate) fn place(&self) -> Place {
         Place::of(self.place.get().as_deref())
+    }
+
+    /// What History narrows to as the window holds it now.
+    pub(crate) fn filters(&self) -> Filters {
+        Filters {
+            period: self.period.get(),
+            author: self.author.get(),
+            lens: self.lens.get(),
+            query: self.query.get(),
+        }
+    }
+
+    /// Show every change again.
+    pub(crate) fn clear_filters(&self) {
+        self.period.set(String::new());
+        self.author.set(String::new());
+        self.lens.set(String::new());
+        self.query.set(String::new());
     }
 
     pub(crate) fn show(&self, place: Place) {
@@ -114,10 +137,10 @@ impl Nav {
 /// The session's api to the workspace's history, for the parts of the view that ask it for
 /// a change.
 #[derive(Clone)]
-pub(crate) struct Provider(ResourceEnv<Filter>);
+pub(crate) struct Provider(ResourceEnv<Window>);
 
 impl Provider {
-    pub(crate) fn of(cx: &ViewCx<Filter>) -> Self {
+    pub(crate) fn of(cx: &ViewCx<Window>) -> Self {
         Self(ResourceEnv::clone(cx))
     }
 
@@ -183,7 +206,7 @@ pub(crate) fn page(content: Vec<Element>) -> Element {
 pub struct App;
 
 impl ResourceApp for App {
-    type Resource = Filter;
+    type Resource = Window;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
     const TITLE_KEY: &'static str = "activity-app-title";
@@ -202,15 +225,19 @@ impl ResourceApp for App {
     }
 
     #[cfg(feature = "samples")]
-    fn fixture(fixture: &mut Fixture<Filter>) {
+    fn fixture(fixture: &mut Fixture<Window>) {
         sample::fixture(fixture);
     }
 
-    fn view(cx: &mut ViewCx<Filter>) -> Element {
+    fn view(cx: &mut ViewCx<Window>) -> Element {
         let nav = Nav {
             place: cx.local(Some(Place::WhatsNew.key().to_owned())),
             pane: cx.local(ui::widget::NavPane::Content),
             everywhere: cx.local(false),
+            period: cx.local(String::new()),
+            author: cx.local(String::new()),
+            lens: cx.local(String::new()),
+            query: cx.local(String::new()),
             selection: cx.local(None),
             inspector: cx.local(true),
             reveal: cx.local(false),
@@ -247,7 +274,7 @@ impl ResourceApp for App {
 }
 
 /// Show what `focus` asks for, unless it was shown.
-fn show_focus(cx: &ViewCx<Filter>, nav: &Nav, focus: &wire::Focus) {
+fn show_focus(cx: &ViewCx<Window>, nav: &Nav, focus: &wire::Focus) {
     if focus.serial == 0 || focus.serial <= nav.shown_focus.get() {
         return;
     }
@@ -256,16 +283,8 @@ fn show_focus(cx: &ViewCx<Filter>, nav: &Nav, focus: &wire::Focus) {
         wire::View::WhatsNew => nav.show(Place::WhatsNew),
         wire::View::Replay => nav.show(Place::Replay),
         wire::View::History => {
-            let dispatcher = cx.dispatcher();
-            let paths = Filter::paths();
-            for edit in [
-                paths.author.set(focus.author.clone().unwrap_or_default()),
-                paths.lens.set(focus.lens.clone().unwrap_or_default()),
-            ] {
-                if let Ok(invoke) = Invoke::edit(&edit) {
-                    dispatcher.submit(invoke);
-                }
-            }
+            nav.author.set(focus.author.clone().unwrap_or_default());
+            nav.lens.set(focus.lens.clone().unwrap_or_default());
             nav.everywhere.set(false);
             if let Some(entry) = focus.entry.as_deref() {
                 nav.open_in_history(wire::Range::one(entry));
@@ -285,7 +304,7 @@ fn show_focus(cx: &ViewCx<Filter>, nav: &Nav, focus: &wire::Focus) {
 
 /// The window as it shows `nav`'s place: the sidebar of places, the place with its commands
 /// in the header, and History's inspector.
-fn window(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
+fn window(cx: &ViewCx<Window>, nav: &Nav) -> Element {
     let chosen = nav.clone();
     let sidebar = ui::widget::NavList::new(vec![NavSection::untitled(
         "places",

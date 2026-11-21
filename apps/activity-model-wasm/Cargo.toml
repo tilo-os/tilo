@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT OR Apache-2.0"
-description = "The Activity model as the WebAssembly module its package carries: the filter's verb, applied by any device holding the workspace's keys."
+description = "The Activity model as the WebAssembly module its package carries: the window's record, read by any device holding the workspace's keys."
 
 [lib]
 crate-type = ["cdylib", "rlib"]

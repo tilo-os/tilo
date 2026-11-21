@@ -16,7 +16,7 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 [resources]
-kinds = ["activity.filter"]
+kinds = ["activity.window"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -48,18 +48,13 @@ ext = []
 # what its code publishes. Invoking one opens the app and invokes it there.
 
 [[offers]]
-resource = "activity.filter"
-action = "clear-filters"
-label = "Clear filters"
-operation = "document"
-[[offers]]
-resource = "activity.filter"
+resource = "activity.window"
 action = "refresh-source"
 label = "Refresh source"
 kind = "outside"
 asks = "key"
 [[offers]]
-resource = "activity.filter"
+resource = "activity.window"
 action = "remove-source"
 label = "Remove source"
 kind = "outside"

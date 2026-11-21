@@ -241,9 +241,15 @@ fn a_focus_asked_for_outside_opens_history_on_it_once() {
         1,
         serde_json::to_value(Some(&asked_for)).unwrap(),
     );
-    assert_eq!(app.state().author, "Grace", "History shows Grace's changes");
     let requests = asked(&mut app);
-    read(&requests, wire::FEED);
+    assert_eq!(
+        feed_query(read(&requests, wire::FEED))
+            .expect("the feed names its query")
+            .author
+            .as_deref(),
+        Some("Grace"),
+        "History shows Grace's changes"
+    );
     let detail = read(&requests, wire::DETAIL);
     let InvokeArgument::Json(argument) = &detail.argument else {
         panic!("the detail names its range");
@@ -327,6 +333,73 @@ fn change(n: u8) -> String {
     format!("activity-entry-{}", wire::entry_hex(&[n; 16]))
 }
 
+/// The query a feed read asks for, when it names one.
+fn feed_query(request: &InvokeRequest) -> Option<wire::FeedQuery> {
+    let InvokeArgument::Json(argument) = &request.argument else {
+        return None;
+    };
+    serde_json::from_value(serde_json::Value::Object(argument.clone())).ok()
+}
+
+/// A change by `name`, the `n`th of a test's feed.
+fn by(name: &str, n: u8, summary: &str) -> wire::Entry {
+    wire::Entry {
+        id: wire::entry_hex(&[n; 16]),
+        author: wire::Author {
+            name: name.to_owned(),
+            identity: name.to_lowercase(),
+            ..wire::Author::default()
+        },
+        at_ms: 1_700_000_000_000_i64.saturating_add(i64::from(n)),
+        summary: summary.to_owned(),
+        ..wire::Entry::default()
+    }
+}
+
+/// The feed of `entries`, as the session answers one.
+fn feed_of(entries: Vec<wire::Entry>) -> wire::Feed {
+    wire::Feed {
+        total: entries.len(),
+        entries,
+        people: vec!["Ada".to_owned(), "Grace".to_owned()],
+        ..wire::Feed::default()
+    }
+}
+
+/// Everything the window asked the session for since last asked, reads and writes alike.
+fn exchanged(app: &mut TestApp<App>) -> Vec<CollabRequest> {
+    app.frame();
+    app.harness().take_collaboration_requests()
+}
+
+/// The invoke of `action` among `requests`; a missing one fails where the test names it.
+#[track_caller]
+fn invoke_of<'a>(requests: &'a [CollabRequest], action: &str) -> &'a InvokeRequest {
+    requests
+        .iter()
+        .find_map(|request| match request {
+            CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Invoke(request),
+            } if request.target == wire::target(action) => Some(request),
+            _ => None,
+        })
+        .expect("the window asks for the action named")
+}
+
+/// How many document changes `requests` carry: what narrowing the view must never make.
+fn document_changes(requests: &[CollabRequest]) -> usize {
+    requests
+        .iter()
+        .filter(|request| matches!(request, CollabRequest::Document { .. }))
+        .count()
+}
+
+/// The window's record of the workspace: its committed heads and the writes still to commit.
+fn document_state(app: &TestApp<App>) -> (usize, usize) {
+    use ui::automerge::transaction::Transactable as _;
+    app.read_document(|doc| (doc.clone().get_heads().len(), doc.pending_ops()))
+}
+
 /// The window bar's search is History's: what is typed narrows the feed through the filter
 /// the app already keeps, and the bar counts what the filter left of the page it read.
 #[test]
@@ -366,6 +439,157 @@ fn the_window_bars_search_narrows_history_and_the_bar_counts_what_it_kept() {
     assert!(
         shows(&mut app, &change(6)),
         "closing the search shows every change again"
+    );
+}
+
+/// Open History as the shell asks for it — `author`'s changes, or everyone's — and answer the
+/// feed that filter reads with `entries`.
+fn open_history(
+    app: &mut TestApp<App>,
+    serial: u64,
+    author: Option<&str>,
+    entries: Vec<wire::Entry>,
+) {
+    let requests = exchanged(app);
+    let focus = invoke_of(&requests, wire::FOCUS).invocation;
+    answer(
+        app,
+        focus,
+        1,
+        serde_json::to_value(Some(&wire::Focus {
+            serial,
+            view: wire::View::History,
+            author: author.map(str::to_owned),
+            ..wire::Focus::default()
+        }))
+        .unwrap(),
+    );
+    let requests = exchanged(app);
+    assert_eq!(
+        document_changes(&requests),
+        0,
+        "showing History writes nothing"
+    );
+    let feed = invoke_of(&requests, wire::FEED);
+    assert_eq!(
+        feed_query(feed)
+            .expect("the feed names its query")
+            .author
+            .as_deref(),
+        author,
+        "the feed asks for the changes History shows"
+    );
+    answer(
+        app,
+        feed.invocation,
+        1,
+        serde_json::to_value(feed_of(entries)).unwrap(),
+    );
+}
+
+/// The feed `app` asks for after a change of the filter, once it settles; its author is
+/// checked, and its choices are answered with `entries`.
+fn refiltered(app: &mut TestApp<App>, author: Option<&str>, entries: Vec<wire::Entry>) {
+    app.settle();
+    let requests = exchanged(app);
+    assert_eq!(
+        document_changes(&requests),
+        0,
+        "narrowing a view writes nothing"
+    );
+    let feed = invoke_of(&requests, wire::FEED);
+    assert_eq!(
+        feed_query(feed)
+            .expect("the feed names its query")
+            .author
+            .as_deref(),
+        author,
+        "the feed asks for the changes History shows"
+    );
+    answer(
+        app,
+        feed.invocation,
+        1,
+        serde_json::to_value(feed_of(entries)).unwrap(),
+    );
+}
+
+/// The shell narrowing History to a person is the window's own: the feed is read for them,
+/// their changes are listed, and the workspace records no change under their name.
+#[test]
+fn history_narrowed_to_the_person_the_shell_asks_for_writes_no_change() {
+    english();
+    let mut app = TestApp::<App>::for_person("ada").expect("open");
+    let before = document_state(&app);
+    open_history(
+        &mut app,
+        9,
+        Some("Grace"),
+        vec![by("Grace", 2, "Moved the venue to the river hall")],
+    );
+    assert!(shows(&mut app, &change(2)), "Grace's change is listed");
+    assert_eq!(
+        document_state(&app),
+        before,
+        "narrowing a view is not a change to the workspace"
+    );
+}
+
+/// A person picks someone in the filter row, and clears it: the feed follows the picker, the
+/// list shows whom it asks for, and none of it is a change to the workspace.
+#[test]
+fn choosing_a_person_and_clearing_filters_narrows_history_without_a_change() {
+    english();
+    let mut app = TestApp::<App>::for_person("ada").expect("open");
+    let before = document_state(&app);
+    open_history(
+        &mut app,
+        9,
+        None,
+        vec![
+            by("Ada", 1, "Rewrote the press release intro"),
+            by("Grace", 2, "Moved the venue to the river hall"),
+        ],
+    );
+    for listed in [1, 2] {
+        assert!(shows(&mut app, &change(listed)), "change {listed} is listed");
+    }
+
+    app.harness()
+        .perform_named(
+            "activity-filter-person",
+            &ui::a11y::Action::SetValue("Ada".to_owned()),
+        )
+        .expect("the person picker takes the choice");
+    refiltered(
+        &mut app,
+        Some("Ada"),
+        vec![by("Ada", 1, "Rewrote the press release intro")],
+    );
+    assert!(shows(&mut app, &change(1)), "Ada's change is listed");
+    assert!(!shows(&mut app, &change(2)), "Grace's change is not");
+
+    app.harness()
+        .click_named("activity-clear-filters")
+        .expect("Clear filters is offered while the filter narrows");
+    refiltered(
+        &mut app,
+        None,
+        vec![
+            by("Ada", 1, "Rewrote the press release intro"),
+            by("Grace", 2, "Moved the venue to the river hall"),
+        ],
+    );
+    for listed in [1, 2] {
+        assert!(
+            shows(&mut app, &change(listed)),
+            "change {listed} is listed again"
+        );
+    }
+    assert_eq!(
+        document_state(&app),
+        before,
+        "narrowing a view is not a change to the workspace"
     );
 }
 

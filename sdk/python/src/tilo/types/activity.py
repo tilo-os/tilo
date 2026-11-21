@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Filter` is the app's `activity.filter` at `activity/<resource>`, read with
+`Window` is the app's `activity.window` at `activity/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,32 +20,10 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "Filter",
-    "ClearFiltersArgs",
+    "Window",
 ]
 
-ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
-})
-"""The arguments of `clear-filters`."""
-
-class Filter(Resource):
-    """Workspace activity — `activity.filter`."""
-    __surface__ = "so.tilo.activity@fe5e26e58568ed26"
-    period: str
-    author: str
-    lens: str
-    query: str
-
-    def clear_filters(self) -> None:
-        """Runs the app's action."""
-        return self.action("clear-filters")
-
-    def clear_filters_many(self, items: list[ClearFiltersArgs]) -> list[dict[str, Any]]:
-        """Runs `clear-filters` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("clear-filters", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"clear_filters", "clear_filters_many"})
-
+class Window(Resource):
+    """Workspace activity — `activity.window`."""
+    __surface__ = "so.tilo.activity@06b8aac1b632cdca"
 

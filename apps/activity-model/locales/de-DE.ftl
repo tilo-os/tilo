@@ -1,4 +1,1 @@
-## Actions
-
-activity-clear-filters = Filter zurücksetzen
-activity-filter = Aktivität im Arbeitsbereich
+activity-window = Aktivität im Arbeitsbereich

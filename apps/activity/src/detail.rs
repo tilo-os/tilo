@@ -5,9 +5,9 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ListRow, ObjectHeader, Property, PropertyList, Section};
 
-use crate::{Filter, Nav, Provider, tr, trf};
+use crate::{Nav, Provider, Window, tr, trf};
 
-pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
+pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav) -> Element {
     let nav = nav.clone();
     cx.switch(&nav.selection.clone(), move |cx, selection| {
         let Some(range) = selection.clone() else {
@@ -32,7 +32,7 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
     })
 }
 
-fn content(cx: &ViewCx<Filter>, nav: &Nav, range: &wire::Range, detail: &wire::Detail) -> Element {
+fn content(cx: &ViewCx<Window>, nav: &Nav, range: &wire::Range, detail: &wire::Detail) -> Element {
     if detail.gone {
         return Box::new(
             EmptyState::new(tr("activity-history-gone"))
@@ -213,7 +213,7 @@ fn agent_session(provider: &Provider, range: &wire::Range, run: &wire::Session) 
 
 /// The run's name as a work session: typed, then saved with the button.
 fn name(
-    cx: &ViewCx<Filter>,
+    cx: &ViewCx<Window>,
     provider: &Provider,
     range: &wire::Range,
     detail: &wire::Detail,

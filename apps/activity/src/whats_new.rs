@@ -5,10 +5,10 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{DisclosureRow, DisclosureState, ListRow, Section};
 
-use crate::{ActivityEffect, Filter, Nav, Provider, ago, page, tr};
+use crate::{ActivityEffect, Nav, Provider, Window, ago, page, tr};
 
 /// The place's content and its header's commands.
-pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
+pub(crate) fn view(cx: &ViewCx<Window>, nav: &Nav) -> (Element, Vec<Element>) {
     let provider = Provider::of(cx);
     let summary = provider.follow::<wire::Summary>(wire::SUMMARY, None::<&()>);
     let answer = summary.answer();
@@ -48,7 +48,7 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
 }
 
 fn parts(
-    cx: &ViewCx<Filter>,
+    cx: &ViewCx<Window>,
     nav: &Nav,
     opened: &LocalState<Option<String>>,
     summary: &wire::Summary,
@@ -213,7 +213,7 @@ fn brief_body(index: usize, brief: &wire::Brief) -> Element {
     Box::new(column)
 }
 
-fn sources(provider: &Provider, actions: &Actions<Filter>, sources: &[wire::Source]) -> Element {
+fn sources(provider: &Provider, actions: &Actions<Window>, sources: &[wire::Source]) -> Element {
     let rows = sources
         .iter()
         .map(|source| {
