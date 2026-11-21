@@ -763,6 +763,75 @@ fn a_calendar_invitation_is_a_draft_that_goes_out_with_its_calendar_part() {
     assert!(sent.contains("invitation.ics"), "{sent}");
 }
 
+/// Mail moved in from another program arrives a message at a time, as `tilo migrate` hands each
+/// over: it is kept with the mail held outside the accounts, in its conversation and folder, and
+/// a message handed over again is the one already kept.
+#[test]
+fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let root = session.mail_root();
+    let first = json!({
+        "from": "Ada Lovelace <ada@analytical.example>", "to": ME,
+        "subject": "Engine notes", "body": "The notes are attached.\r\nAda",
+        "folder": "archive", "read": true, "date": "2024-03-01T09:00:00Z",
+        "conversation": "notes@analytical.example", "message_id": "notes@analytical.example",
+        "original": "tilo.content:abc",
+        "attachments": ["notes.pdf"],
+        "parts": [r#"{"at":120,"size":12,"pieces":["tilo.content:def"]}"#],
+    });
+    let delivered = session.call("deliver_message", &root, &first);
+    let again = session.call("deliver_message", &root, &first);
+    assert_eq!(
+        delivered.resources, again.resources,
+        "the message handed over again is the one kept"
+    );
+    session.call(
+        "deliver_message",
+        &root,
+        &json!({
+            "from": ME, "to": "ada@analytical.example", "subject": "Re: Engine notes",
+            "body": "Thank you.", "folder": "sent", "read": false,
+            "date": "2024-03-02T10:00:00Z", "conversation": "notes@analytical.example",
+            "message_id": "thanks@rivera.example",
+        }),
+    );
+
+    let kept = session.refs(&root, "recovered_mail");
+    let [thread] = kept.as_slice() else {
+        panic!("one conversation: {kept:?}");
+    };
+    assert_eq!(session.text(thread, "subject"), "Engine notes");
+    assert!(
+        session.text(thread, "snippet").starts_with("The notes are attached."),
+        "a conversation reads as its first message"
+    );
+    assert!(session.flag(thread, "unread"), "the unread reply leaves it unread");
+    let messages = session.refs(thread, "messages");
+    assert_eq!(messages.len(), 2, "each message once");
+    let notes = &messages[0];
+    assert_eq!(session.text(notes, "from"), "ada@analytical.example");
+    assert_eq!(session.text(notes, "from_name"), "Ada Lovelace");
+    assert_eq!(session.text(notes, "mailbox"), "archive");
+    assert_eq!(session.text(notes, "original"), "tilo.content:abc");
+    assert_eq!(session.text(notes, "attachments"), "notes.pdf");
+    assert!(session.text(notes, "parts").contains("tilo.content:def"));
+    assert!(!session.flag(notes, "unread"));
+    assert_eq!(session.text(notes, "body"), "The notes are attached.\r\nAda");
+    assert!(
+        session
+            .try_call("deliver_message", &root, &json!({"subject": "Nobody"}))
+            .is_err(),
+        "a message says who it is from"
+    );
+
+    // What came in answers as any message does.
+    let reply = session.made("reply_to", notes, &json!({}));
+    assert_eq!(session.text(&reply, "to"), "ada@analytical.example");
+    assert_eq!(session.text(&reply, "subject"), "Re: Engine notes");
+}
+
 #[test]
 fn a_reply_goes_out_through_the_outbox_once_the_server_takes_it() {
     let servers = servers();

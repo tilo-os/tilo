@@ -101,6 +101,12 @@ type Message (origin: imap.message) {
     unread: Bool
     flagged: Bool
     mailbox: Text
+    /// The content reference of the message as it was sent, for one taken in from outside the
+    /// account's server (`deliver_message`): empty for one its server holds.
+    original: Text = ""
+    /// Where each large part of a message taken in from outside stands in `original` and the
+    /// pieces of content it is in, one JSON text a line: empty for one its server holds.
+    parts: Text = ""
 }
 
 /// A message being written: who it goes to, what it says, what it answers, and how it stands on
@@ -426,6 +432,109 @@ action prepare_calendar_invitation(
             invitation: calendar_ics,
         ),
     )
+}
+
+/// Takes in a message that reached the workspace from outside its accounts' servers: one moved
+/// in from another mail program (`tilo migrate`), or handed over through the API. It is kept
+/// with the mail held outside the accounts, in the conversation it belongs to (`conversation`,
+/// the Message-ID the conversation began with) and the folder it was in, read or not. `from` is
+/// the sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the
+/// content reference of the message as it was sent, less its large parts: `parts` says where
+/// each of those stands in it and which pieces of content it is in, one JSON text each
+/// (`{"at": 120, "size": 4096, "pieces": ["tilo.content:…"]}`). `attachments` names the
+/// files it carries. A message already held under its Message-ID is answered as it is, so
+/// delivering it again keeps it once.
+action deliver_message(
+    m: Mail,
+    from: Text,
+    subject: Text = "",
+    body: Text = "",
+    folder: Text = "inbox",
+    read: Bool = false,
+    to: Text = "",
+    cc: Text = "",
+    date: Time = Time("1970-01-01T00:00:00Z"),
+    conversation: Text = "",
+    message_id: Text = "",
+    original: Text = "",
+    parts: List<Text> = [],
+    attachments: List<Text> = [],
+) -> Message (icon: .inbox, label: "Deliver a message") {
+    require from != "" "A message says who it is from"
+    if message_id != "" {
+        for held in m.recovered_mail {
+            if let kept = held.messages.find(x -> x.message_id == message_id) {
+                return kept
+            }
+        }
+    }
+    let address = sender_address(from)
+    let name = sender_name(from)
+    let key = if conversation != "" {
+        conversation
+    } else if message_id != "" { message_id } else { "{address} {date} {subject}" }
+    // What a conversation shows of itself is what its first message said: like a server's
+    // conversation, it is written when it is made, and later messages are kept in it.
+    let t = if let held = m.recovered_mail.find(x -> x.key == key) {
+        held
+    } else {
+        m.recovered_mail.insert(
+            Thread(
+                key: key,
+                subject: subject,
+                latest: date,
+                snippet: as_lines(body).slice(0, 200),
+                senders: name,
+                count: 1,
+            ),
+        )
+    }
+    t.boxes.add(folder)
+    if not read {
+        t.unread = true
+    }
+    t.messages.insert(
+        Message(
+            key: if message_id != "" { message_id } else { "{key} {t.messages.len()}" },
+            subject: subject,
+            from: address,
+            from_name: name,
+            to: to,
+            cc: cc,
+            received: date,
+            snippet: as_lines(body).slice(0, 200),
+            body: body,
+            message_id: message_id,
+            unread: not read,
+            mailbox: folder,
+            attachments: attachments.join("\n"),
+            original: original,
+            parts: parts.join("\n"),
+        ),
+    )
+}
+
+/// The address of a sender as a header writes them: what stands in `<…>`, or all of it.
+fn sender_address(from: Text) -> Text {
+    if let open = from.find("<") {
+        let rest = from.slice(open + 1, from.len())
+        if let close = rest.find(">") {
+            return rest.slice(0, close).trim()
+        }
+    }
+    from.trim()
+}
+
+/// The name of a sender as a header writes them: what stands before `<…>`, without quotes, or
+/// their address when it names none.
+fn sender_name(from: Text) -> Text {
+    if let open = from.find("<") {
+        let named = from.slice(0, open).trim().replace("\"", "")
+        if named != "" {
+            return named
+        }
+    }
+    sender_address(from)
 }
 
 /// The subject an answer to a conversation has.

@@ -161,6 +161,12 @@ d-vxxb4sqr = Flagged
 
 d-xlejsz5j = Mailbox
 
+d-hgysjvfy = Original
+    .doc = The content reference of the message as it was sent, for one taken in from outside the account's server (`deliver_message`): empty for one its server holds.
+
+d-wuefabwr = Parts
+    .doc = Where each large part of a message taken in from outside stands in `original` and the pieces of content it is in, one JSON text a line: empty for one its server holds.
+
 d-sshtf3z7-filter-received = Received
 
 d-sshtf3z7-filter-unread = Unread
@@ -283,6 +289,36 @@ d-hom44or2-subject = Subject
 d-hom44or2-body = Body
 
 d-hom44or2-calendar_ics = Calendar ics
+
+d-grphua5j = Deliver a message
+    .doc = Takes in a message that reached the workspace from outside its accounts' servers: one moved in from another mail program (`tilo migrate`), or handed over through the API.
+    .w-a-message-says-who-it-is = A message says who it is from
+
+d-grphua5j-from = From
+
+d-grphua5j-subject = Subject
+
+d-grphua5j-body = Body
+
+d-grphua5j-folder = Folder
+
+d-grphua5j-read = Read
+
+d-grphua5j-to = To
+
+d-grphua5j-cc = Cc
+
+d-grphua5j-date = Date
+
+d-grphua5j-conversation = Conversation
+
+d-grphua5j-message_id = Message id
+
+d-grphua5j-original = Original
+
+d-grphua5j-parts = Parts
+
+d-grphua5j-attachments = Attachments
 
 d-hirareiw = Reply
     .doc = Answers the conversation's newest message, to whoever wrote it, quoting it under what is written.
@@ -445,6 +481,8 @@ d-2zkppx6r = Set hold~present
 d-gcixhwyt = New draft~present
 
 d-7jf4pn3j = Prepare calendar invitation~present
+
+d-s2qkkueu = Deliver message~present
 
 d-bj7uen6f = Archive~present
 

@@ -160,6 +160,12 @@ d-vxxb4sqr = Markiert
 
 d-xlejsz5j = Postfach
 
+d-hgysjvfy = Original
+    .doc = Der Inhaltsverweis der Nachricht, wie sie gesendet wurde, bei einer, die von außerhalb des Servers des Kontos übernommen wurde (`deliver_message`): leer bei einer, die ihr Server hält.
+
+d-wuefabwr = Teile
+    .doc = Wo jeder große Teil einer von außerhalb übernommenen Nachricht in `original` steht und in welchen Inhaltsstücken er liegt, ein JSON-Text je Zeile: leer bei einer, die ihr Server hält.
+
 d-sshtf3z7-filter-received = Empfangen
 
 d-sshtf3z7-filter-unread = Ungelesen
@@ -276,6 +282,36 @@ d-hom44or2-subject = Betreff
 d-hom44or2-body = Text
 
 d-hom44or2-calendar_ics = Kalender-ICS
+
+d-grphua5j = Nachricht zustellen
+    .doc = Nimmt eine Nachricht auf, die den Arbeitsbereich von außerhalb der Server seiner Konten erreicht hat: eine aus einem anderen Mailprogramm übernommene (`tilo migrate`) oder eine über die API übergebene.
+    .w-a-message-says-who-it-is = Eine Nachricht sagt, von wem sie ist
+
+d-grphua5j-from = Von
+
+d-grphua5j-subject = Betreff
+
+d-grphua5j-body = Text
+
+d-grphua5j-folder = Ordner
+
+d-grphua5j-read = Gelesen
+
+d-grphua5j-to = An
+
+d-grphua5j-cc = Cc
+
+d-grphua5j-date = Datum
+
+d-grphua5j-conversation = Unterhaltung
+
+d-grphua5j-message_id = Nachrichten-ID
+
+d-grphua5j-original = Original
+
+d-grphua5j-parts = Teile
+
+d-grphua5j-attachments = Anhänge
 
 d-hirareiw = Antworten
     .doc = Beantwortet die neueste Nachricht der Unterhaltung an wen sie geschrieben hat und zitiert sie unter dem Geschriebenen.
@@ -438,6 +474,8 @@ d-2zkppx6r = Zeit zum Zurückholen~present
 d-gcixhwyt = Neuer Entwurf~present
 
 d-7jf4pn3j = Kalendereinladung vorbereiten~present
+
+d-s2qkkueu = Nachricht zustellen~present
 
 d-bj7uen6f = Archivieren~present
 
