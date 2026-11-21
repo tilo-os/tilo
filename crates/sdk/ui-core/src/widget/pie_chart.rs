@@ -14,9 +14,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 
+use crate::motion::{Direction, MotionSpec, MotionValue, Pace, Reduced, Shortcut};
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
-use crate::tokens::TextRole;
+use crate::tokens::{EffectiveMotion, MotionSource, TextRole};
 use crate::widget::chart_geometry;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
@@ -151,6 +152,9 @@ pub struct PieMarks {
     frame: PlotFrame<usize>,
     transition_from: Option<Vec<PieSlice>>,
     transition_started: Instant,
+    /// Each slice's rise toward the pointer, from none to the whole `hover_offset`, on the shared
+    /// spring: a slice lifts and sinks as the pointer comes and goes, never in one jump.
+    lifts: Vec<MotionValue<f64>>,
     reduce_motion: bool,
     legend: bool,
     /// What a slice's value counts, written after it in the readout ("GB", "h").
@@ -175,6 +179,7 @@ impl PieChart {
             frame: PlotFrame::fill(80.0),
             transition_from: None,
             transition_started: crate::time::now(),
+            lifts: Vec::new(),
             reduce_motion: false,
             legend: false,
             unit: String::new(),
@@ -382,6 +387,7 @@ impl PieMarks {
         }
         self.frame.inspection.hovered =
             hovered_id.and_then(|id| self.slices.iter().position(|slice| slice.id == id));
+        self.lifts.truncate(self.slices.len());
     }
     /// Replace data without motion, useful for initial hydration, restored
     /// sessions, and deterministic capture.
@@ -391,13 +397,62 @@ impl PieMarks {
         self.transition_from = None;
         self.frame.inspection.hovered =
             hovered_id.and_then(|id| self.slices.iter().position(|slice| slice.id == id));
+        self.lifts.truncate(self.slices.len());
     }
     fn is_animating(&self) -> bool {
-        !self.reduce_motion
+        (!self.reduce_motion
             && self.style.animate_changes
             && self.transition_from.is_some()
             && crate::time::now().saturating_duration_since(self.transition_started)
-                < data_change_time()
+                < data_change_time())
+            || self
+                .lifts
+                .iter()
+                .any(|lift| lift.is_moving(crate::motion::frame_now()))
+    }
+    /// Each slice's lift toward the slice the pointer is on, on the shared spring: a slice rises
+    /// as the pointer reaches it and sinks as the pointer leaves, at once when motion is reduced
+    /// or the theme holds still.
+    fn advance_lifts(&mut self, now: Instant, motion: EffectiveMotion) {
+        self.lifts
+            .resize_with(self.slices.len(), || MotionValue::new(0.0));
+        let spec = MotionSpec {
+            enter: Pace::Fast,
+            exit: Pace::Fast,
+            reduced: Reduced::Lands,
+            shortcut: Shortcut::Lands,
+        };
+        let source = if self.frame.inspection.keyboard {
+            MotionSource::Keyboard
+        } else {
+            MotionSource::Pointer
+        };
+        let hovered = self.frame.inspection.hovered;
+        for (index, lift) in self.lifts.iter_mut().enumerate() {
+            let on = hovered == Some(index)
+                && self
+                    .slices
+                    .get(index)
+                    .is_some_and(|slice| slice.interactive);
+            let timing = spec.timing(Direction::of(on), motion, source);
+            lift.set(if on { 1.0 } else { 0.0 }, timing, now);
+        }
+    }
+    /// What of the inspection the picture itself shows: the slice lifted under the pointer and
+    /// the legend entry beside it. Its lift is drawn into the picture, so the page redraws the
+    /// picture while the slice is still moving.
+    fn shown_inspection_epoch(&self) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        self.frame.inspection.hovered.hash(&mut hash);
+        // Where each lift stands now, not where it was last drawn: the page takes the picture
+        // again while a slice is still moving, so the spring advances a frame at a time there
+        // as it does where the frame itself draws it.
+        let now = crate::motion::frame_now();
+        for lift in &self.lifts {
+            lift.get(now).to_bits().hash(&mut hash);
+        }
+        hash.finish()
     }
     fn set_center(&mut self, title: impl Into<String>, subtitle: impl Into<String>) {
         self.center_title = title.into();
@@ -597,6 +652,9 @@ impl PlotMarks for PieMarks {
     fn is_animating(&self) -> bool {
         self.is_animating()
     }
+    fn shown_inspection(&self) -> u64 {
+        self.shown_inspection_epoch()
+    }
     /// The slice's name, its value and its share, beside the pointer on the slice, or beside
     /// the slice when the keyboard or its legend entry chose it, clear of the legend.
     fn readout(&self, theme: &Theme) -> Option<Readout> {
@@ -644,7 +702,11 @@ impl PlotMarks for PieMarks {
             self.frame.rect,
             &self.frame.title,
         );
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
+        self.advance_lifts(
+            now,
+            EffectiveMotion::new(theme.tokens.motion, theme.reduce_motion),
+        );
         let (base_center, outer, inner) = self.geometry();
         let sectors = self.sectors_at(now);
         if sectors.is_empty() {
@@ -661,11 +723,11 @@ impl PlotMarks for PieMarks {
                 continue;
             };
             let mid = sector.start.midpoint(sector.end);
-            let lift = if self.frame.inspection.hovered == Some(sector.index) && slice.interactive {
-                self.style.hover_offset
-            } else {
-                0.0
-            };
+            let lift = self
+                .lifts
+                .get(sector.index)
+                .map_or(0.0, |lift| lift.get(now).clamp(0.0, 1.0))
+                * self.style.hover_offset;
             let center = Point::new(
                 base_center.x + lift * mid.cos(),
                 base_center.y + lift * mid.sin(),
@@ -1021,6 +1083,39 @@ mod tests {
             assert!(
                 chart.marks.hit_test(after.center()).is_none(),
                 "the area the wider legend takes holds no wedge"
+            );
+        }
+
+        phase a_pie_slice_lifts_on_the_shared_spring;
+        {
+            let theme = Theme::dark();
+            let mut chart = PieChart::new(vec![
+                PieSlice::new("a", "A", 1.0, Color::WHITE),
+                PieSlice::new("b", "B", 1.0, Color::BLACK),
+            ]);
+            let motion = EffectiveMotion::new(theme.tokens.motion, false);
+            let start = crate::time::now();
+            chart.marks.frame.inspection.hovered = Some(1);
+            chart.marks.advance_lifts(start, motion);
+            assert!(
+                chart.marks.lifts[1].get(start).abs() < 1e-9,
+                "the slice rises from where it stood"
+            );
+            let middle = start + Duration::from_millis(40);
+            let level = chart.marks.lifts[1].get(middle);
+            assert!(level > 0.05 && level < 0.95, "on its way: {level}");
+            assert!(chart.marks.lifts[1].is_moving(middle));
+            assert!(chart.needs_animation_frame(), "a rising slice asks for frames");
+            let rest = start + Duration::from_millis(600);
+            assert!((chart.marks.lifts[1].get(rest) - 1.0).abs() < 1e-6);
+            assert!(!chart.marks.lifts[1].is_moving(rest));
+            // Reduced motion lands at once: the slice is down on the frame the pointer leaves.
+            chart.marks.frame.inspection.hovered = None;
+            let reduced = EffectiveMotion::new(theme.tokens.motion, true);
+            chart.marks.advance_lifts(rest, reduced);
+            assert!(
+                chart.marks.lifts[1].get(rest).abs() < 1e-9,
+                "reduced motion sinks it at once"
             );
         }
     }
