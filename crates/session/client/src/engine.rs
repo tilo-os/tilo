@@ -1090,139 +1090,6 @@ impl Engine {
                 }))
     }
 
-    /// Write `changes` to `record` of `app` in `workspace` as this device's own write, and publish
-    /// it to the workspace's other devices: the record's founding write when `founding` (the whole
-    /// document, which the workspace must not hold yet), a change of it otherwise. Sealed under
-    /// `sealed` , the keys of the record's channel — a founding write as a checkpoint, so the
-    /// record is sealed from the start.
-    /// Answers the write as this device's apps take a member's: their copies of the record follow
-    /// it only once it is handed to them.
-    /// # Errors
-    /// The workspace is not held here, a founding write finds the record held already, or the
-    /// workspace refused the write: [`WriteRefusal::ChangeRefused`] names the document it refused,
-    /// the changes it carried and why, as a server's refusal of a change does.
-    pub async fn write_resource(
-        &self,
-        workspace: WorkspaceId,
-        document: (&str, &str),
-        changes: &[u8],
-        founding: bool,
-        sealed: Option<&key_group::ContentKeys>,
-    ) -> Result<tilo_peer_state::owner::AppWrite, tilo_peer_state::owner::WriteRefusal> {
-        self.write_resource_read_by(
-            workspace,
-            document,
-            collab_types::EVERY_MEMBER,
-            changes,
-            founding,
-            sealed,
-        )
-        .await
-    }
-
-    /// [`Self::write_resource`] of a document only `readers` read
-    /// ([`collab_types::Readers`]): sealed under `sealed`, the keys of that reader set's group,
-    /// for the scope the document's id derives ([`collab_types::document_artifact_id`]). A
-    /// resource store's document carries its set in the clear, so its host sends it to the
-    /// set's people alone.
-    /// # Errors
-    /// As [`Self::write_resource`].
-    pub(crate) async fn write_resource_read_by(
-        &self,
-        workspace: WorkspaceId,
-        (app, doc): (&str, &str),
-        readers: &str,
-        changes: &[u8],
-        founding: bool,
-        sealed: Option<&key_group::ContentKeys>,
-    ) -> Result<tilo_peer_state::owner::AppWrite, tilo_peer_state::owner::WriteRefusal> {
-        use tilo_broker_core::owner_service::OwnerService as _;
-        let device = self.identity.device_cert.device_public_key;
-        let now = tilo_clock::wall();
-        let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), doc);
-        let named = (collab_types::is_store_document(doc) && readers != collab_types::EVERY_MEMBER)
-            .then(|| readers.to_owned());
-        let frame = if founding {
-            collab_types::DocumentMutation::Snapshot(changes.to_vec())
-        } else {
-            collab_types::DocumentMutation::Incremental(changes.to_vec())
-        }
-        .encode()
-        .map_err(|error| error.to_string())?;
-        let mut author = None;
-        let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
-            if founding && view.peer().document(app, doc).is_some() {
-                return Err(format!("{doc} of {app} is in the workspace already"));
-            }
-            if Admission::of(view, device) != Admission::Admitted {
-                return Err("the workspace has not admitted this device yet".to_owned());
-            }
-            author = Some(
-                view.peer()
-                    .permissions(device, now)
-                    .map_err(|error| error.to_string())?,
-            );
-            let mut seal = sealed.map(|keys| {
-                move |plaintext: &[u8]| {
-                    keys.seal_content(
-                        artifact,
-                        collab_types::ContentRetention::of_frame(plaintext),
-                        plaintext,
-                    )
-                    .map_err(|error| error.to_string())
-                }
-            });
-            let op = view.peer().draft_write(
-                (app, doc),
-                named.as_deref(),
-                &frame,
-                seal.as_mut()
-                    .map(|seal| seal as &mut tilo_peer_state::SealCheckpoint<'_>),
-                device,
-                0,
-                now,
-            )?;
-            Ok(vec![tilo_peer_state::owner_commit::OwnerCommitRequest {
-                workspace: workspace.to_string(),
-                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                    app: app.to_owned(),
-                    document: doc.to_owned(),
-                    envelope: Box::new(op),
-                    own: view.peer().own_write(app, doc, &device),
-                    readers: named.clone(),
-                },
-            }])
-        };
-        let committed = self
-            .owner
-            .write(workspace, draft, self.identity.signer.as_ref(), now)
-            .await?
-            .pop()
-            .ok_or_else(|| {
-                tilo_peer_state::owner::WriteRefusal::Refused("the write was not committed".into())
-            })?;
-        self.schedule_publication(workspace);
-        let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, own, .. } =
-            committed.0.operation
-        else {
-            return Err(tilo_peer_state::owner::WriteRefusal::Refused(
-                "the write is not a document write".to_owned(),
-            ));
-        };
-        Ok(tilo_peer_state::owner::AppWrite {
-            peer: neighbour_wire::peer_handle(&device),
-            app_id: app.to_owned(),
-            cluster_id: workspace.to_string(),
-            document_id: doc.to_owned(),
-            author: author.ok_or_else(|| {
-                tilo_peer_state::owner::WriteRefusal::Refused("the write was not made".to_owned())
-            })?,
-            replayed: false,
-            envelope: *envelope,
-            own,
-        })
-    }
-
     /// The keys of `route`'s record in `workspace` here: those its host handed this device, else
     /// its channel's — taking part in it asks the workspace's devices for access the first time,
     /// and its governance answers with the group — and while the channel asks again, the ones it
@@ -2311,10 +2178,58 @@ mod tests {
         );
     }
 
-    /// A machine copied from a device, before the workspace admits it, reads what the copy holds,
-    /// nothing it does not hold, and writes nothing.
+    /// `written` committed as `engine`'s device's sealed note `note` of `workspace`, as a write of
+    /// its session commits it.
+    fn commit_note(
+        engine: &Engine,
+        workspace: WorkspaceId,
+        written: &[u8],
+        keys: &key_group::ContentKeys,
+    ) {
+        let (app, doc) = ("so.tilo.notes", "note");
+        let device = engine.identity.device_cert.device_public_key;
+        let now = tilo_clock::wall();
+        let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), doc);
+        let frame = collab_types::DocumentMutation::Snapshot(written.to_vec())
+            .encode()
+            .expect("a frame");
+        let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
+            let mut seal = |plaintext: &[u8]| {
+                keys.seal_content(
+                    artifact,
+                    collab_types::ContentRetention::of_frame(plaintext),
+                    plaintext,
+                )
+                .map_err(|error| error.to_string())
+            };
+            let op = view.peer().draft_write(
+                (app, doc),
+                None,
+                &frame,
+                Some(&mut seal),
+                device,
+                0,
+                now,
+            )?;
+            Ok(vec![tilo_peer_state::owner_commit::OwnerCommitRequest {
+                workspace: workspace.to_string(),
+                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                    app: app.to_owned(),
+                    document: doc.to_owned(),
+                    envelope: Box::new(op),
+                    own: view.peer().own_write(app, doc, &device),
+                    readers: None,
+                },
+            }])
+        };
+        pollster::block_on(engine.owner.write(workspace, draft, engine.identity.signer.as_ref(), now))
+            .expect("the laptop writes its note");
+    }
+
+    /// A machine copied from a device, before the workspace admits it, reads what the copy holds
+    /// and nothing it does not hold.
     #[test]
-    fn a_copy_awaiting_its_host_reads_what_it_holds_and_writes_nothing() {
+    fn a_copy_awaiting_its_host_reads_what_it_holds() {
         let state = tempfile::tempdir().expect("a state directory");
         let (laptop, _) = identity(DeviceCapabilities::member());
         let workspace = {
@@ -2334,14 +2249,7 @@ mod tests {
         {
             let engine = engine(state.path(), laptop);
             engine.hand_keys(workspace, keys.clone());
-            pollster::block_on(engine.write_resource(
-                workspace,
-                ("so.tilo.notes", "note"),
-                &written,
-                true,
-                Some(&keys),
-            ))
-            .expect("the laptop writes its note");
+            commit_note(&engine, workspace, &written, &keys);
         }
 
         let (copy, _) = device_of([0x44; 32], DeviceCapabilities::member());
@@ -2367,23 +2275,6 @@ mod tests {
         assert!(
             !matches!(copy.record(&id, "so.tilo.notes", "other"), Ok(Some(_))),
             "what the copy does not hold reads as nothing"
-        );
-        automerge::transaction::Transactable::put(&mut note, automerge::ROOT, "title", "Changed")
-            .expect("a change");
-        let refused = pollster::block_on(copy.write_resource(
-            workspace,
-            ("so.tilo.notes", "note"),
-            &note.save_incremental(),
-            false,
-            Some(&keys),
-        ));
-        assert!(
-            matches!(
-                refused,
-                Err(tilo_peer_state::owner::WriteRefusal::Refused(ref reason))
-                    if reason.contains("not admitted this device")
-            ),
-            "the copy writes nothing before it is admitted"
         );
     }
 }
