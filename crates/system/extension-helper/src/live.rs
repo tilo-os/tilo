@@ -321,12 +321,13 @@ fn restart(live: &dyn LiveHost, restarts: &Restarts, deferred: &mut Vec<String>)
         live.try_restart(None, unit)?;
         restarted.push((None, unit.clone()));
     }
-    let users: BTreeSet<&str> = logins.iter().map(|login| login.user.as_str()).collect();
-    for user in users {
-        live.reload_user(user)?;
+    // One service manager per account, however many desktops it has open.
+    let accounts: BTreeMap<u32, &Login> = logins.iter().map(|login| (login.uid, login)).collect();
+    for login in accounts.into_values() {
+        live.reload_user(login)?;
         for unit in &restarts.user_units {
-            live.try_restart(Some(user), unit)?;
-            restarted.push((Some(user.to_owned()), unit.clone()));
+            live.try_restart(Some(login), unit)?;
+            restarted.push((Some(login), unit.clone()));
         }
     }
     if restarted.is_empty() {
@@ -335,9 +336,9 @@ fn restart(live: &dyn LiveHost, restarts: &Restarts, deferred: &mut Vec<String>)
     live.sleep(SETTLE);
     let failed: Vec<String> = restarted
         .iter()
-        .filter(|(user, unit)| live.unit_failed(user.as_deref(), unit))
-        .map(|(user, unit)| match user {
-            Some(user) => format!("{unit} ({user})"),
+        .filter(|(login, unit)| live.unit_failed(*login, unit))
+        .map(|(login, unit)| match login {
+            Some(login) => format!("{unit} ({})", login.user),
             None => unit.clone(),
         })
         .collect();
@@ -1232,6 +1233,8 @@ pub struct Login {
     pub user: String,
     /// The account the wrapper runs as: its runtime directory holds the desktop's records.
     pub uid: u32,
+    /// The account's own group, which its service manager is reached as.
+    pub gid: u32,
 }
 
 #[expect(
@@ -1247,9 +1250,9 @@ pub trait LiveHost {
     /// Whether a mount in any mount namespace still reads `layer` as a lower directory.
     fn layer_in_use(&self, layer: &Path) -> bool;
     fn daemon_reload(&self) -> Result<()>;
-    fn reload_user(&self, user: &str) -> Result<()>;
-    fn try_restart(&self, user: Option<&str>, unit: &str) -> Result<()>;
-    fn unit_failed(&self, user: Option<&str>, unit: &str) -> bool;
+    fn reload_user(&self, login: &Login) -> Result<()>;
+    fn try_restart(&self, login: Option<&Login>, unit: &str) -> Result<()>;
+    fn unit_failed(&self, login: Option<&Login>, unit: &str) -> bool;
     fn start_no_block(&self, unit: &str);
     fn logins(&self) -> Vec<Login>;
     fn restart_desktop(&self, login: &Login) -> Result<()>;
@@ -1291,10 +1294,26 @@ pub trait LiveHost {
     }
 }
 
-fn systemctl(user: Option<&str>, args: &[&str]) -> Vec<String> {
-    let mut command = vec!["systemctl".to_owned()];
-    if let Some(user) = user {
-        command.push(format!("--machine={user}@"));
+/// `systemctl ARGS` for the system's service manager, or for the one of a logged-in account.
+///
+/// An account's manager is asked as that account, on its own bus. `systemctl --machine=NAME@
+/// --user` asks the system's manager to start a bridge instead and hands it this process's
+/// output pipe over the system bus; the bus may not write to a system service's pipe (SELinux),
+/// drops the connection, and the update that asked rolled back.
+fn systemctl(login: Option<&Login>, args: &[&str]) -> Vec<String> {
+    let mut command = Vec::new();
+    if let Some(login) = login {
+        command.extend([
+            "setpriv".to_owned(),
+            format!("--reuid={}", login.uid),
+            format!("--regid={}", login.gid),
+            "--init-groups".to_owned(),
+            "env".to_owned(),
+            format!("XDG_RUNTIME_DIR=/run/user/{}", login.uid),
+        ]);
+    }
+    command.push("systemctl".to_owned());
+    if login.is_some() {
         command.push("--user".to_owned());
     }
     command.extend(args.iter().map(|arg| (*arg).to_owned()));
@@ -1608,16 +1627,16 @@ impl LiveHost for crate::System {
         .map(drop)
     }
 
-    fn reload_user(&self, user: &str) -> Result<()> {
-        run_strings(&systemctl(Some(user), &["daemon-reload"]), true).map(drop)
+    fn reload_user(&self, login: &Login) -> Result<()> {
+        run_strings(&systemctl(Some(login), &["daemon-reload"]), true).map(drop)
     }
 
-    fn try_restart(&self, user: Option<&str>, unit: &str) -> Result<()> {
-        run_strings(&systemctl(user, &["try-restart", unit]), true).map(drop)
+    fn try_restart(&self, login: Option<&Login>, unit: &str) -> Result<()> {
+        run_strings(&systemctl(login, &["try-restart", unit]), true).map(drop)
     }
 
-    fn unit_failed(&self, user: Option<&str>, unit: &str) -> bool {
-        run_strings(&systemctl(user, &["is-failed", "--quiet", unit]), false)
+    fn unit_failed(&self, login: Option<&Login>, unit: &str) -> bool {
+        run_strings(&systemctl(login, &["is-failed", "--quiet", unit]), false)
             .is_ok_and(|output| output.success)
     }
 
@@ -1652,6 +1671,7 @@ impl LiveHost for crate::System {
                 wrapper: pid,
                 user,
                 uid,
+                gid: metadata.gid(),
             });
         }
         logins

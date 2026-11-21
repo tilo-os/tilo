@@ -374,19 +374,19 @@ impl LiveHost for Fake {
         Ok(())
     }
 
-    fn reload_user(&self, _user: &str) -> Result<()> {
+    fn reload_user(&self, _login: &Login) -> Result<()> {
         Ok(())
     }
 
-    fn try_restart(&self, user: Option<&str>, unit: &str) -> Result<()> {
+    fn try_restart(&self, login: Option<&Login>, unit: &str) -> Result<()> {
         self.restarted.borrow_mut().push(format!(
             "{}{unit}",
-            user.map(|u| format!("{u}:")).unwrap_or_default()
+            login.map(|l| format!("{}:", l.user)).unwrap_or_default()
         ));
         Ok(())
     }
 
-    fn unit_failed(&self, _user: Option<&str>, unit: &str) -> bool {
+    fn unit_failed(&self, _login: Option<&Login>, unit: &str) -> bool {
         self.failing.borrow().iter().any(|failing| failing == unit)
     }
 
@@ -481,6 +481,7 @@ fn machine() -> (tempfile::TempDir, Layout, Fake) {
         wrapper: 1,
         user: "ana".into(),
         uid: 1000,
+        gid: 1000,
     });
     // The default desktop is up and usable, as one is before an update restarts it.
     fake.login_alive.set(true);
@@ -496,6 +497,7 @@ fn a_restarted_desktop_is_back_only_once_it_is_usable() {
         wrapper: 1,
         user: "ana".into(),
         uid: 1000,
+        gid: 1000,
     };
     fake.login_alive.set(true);
     fake.compositor.set(Some(7));
@@ -1126,4 +1128,34 @@ fn the_compositor_is_told_from_the_login_wrapper_by_its_binary() {
         .status_locked();
     let _ = login.kill();
     let _ = login.wait();
+}
+
+#[test]
+fn an_accounts_service_manager_is_asked_as_that_account_on_its_own_bus() {
+    let login = Login {
+        wrapper: 1,
+        user: "ana".into(),
+        uid: 1000,
+        gid: 1001,
+    };
+    assert_eq!(
+        systemctl(Some(&login), &["try-restart", "tilo-ush.service"]),
+        [
+            "setpriv",
+            "--reuid=1000",
+            "--regid=1001",
+            "--init-groups",
+            "env",
+            "XDG_RUNTIME_DIR=/run/user/1000",
+            "systemctl",
+            "--user",
+            "try-restart",
+            "tilo-ush.service",
+        ]
+    );
+    // The system's own manager is asked directly, with nothing handed over a bus.
+    assert_eq!(
+        systemctl(None, &["daemon-reload"]),
+        ["systemctl", "daemon-reload"]
+    );
 }
