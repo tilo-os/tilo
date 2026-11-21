@@ -135,10 +135,11 @@ impl Spec {
 }
 
 /// The documents a native app of `record`'s app id kept in its workspace on this device, when
-/// this device governs the workspace (none elsewhere), each by the key it is stored under: its records, which the package now under that id carries over once
-/// with a migration of its own. Read here, never written. While one of them does not read, or
-/// the store cannot list them, none are handed over: carrying some of them would leave the rest
-/// behind for good, so the carrying waits for a start that reads them all.
+/// this device governs the workspace (none elsewhere), each by the key it is stored under: its
+/// records, which the package now under that id carries over once with a migration of its own.
+/// Read here, never written. While one of them does not read, or the store cannot list them, none
+/// are handed over: carrying some of them would leave the rest behind for good, so the carrying
+/// waits for a start that reads them all.
 fn earlier_documents(
     documents: &Rc<dyn durable_store::DurableStore>,
     record: &InstanceDocument,
