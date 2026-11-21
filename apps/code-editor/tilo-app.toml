@@ -163,6 +163,14 @@ keywords = ["mkdir", "make directory", "create folder"]
 icon = "folder-plus"
 [[offers]]
 resource = "code_editor.project"
+action = "open-terminal"
+label = "Open terminal"
+kind = "outside"
+operation = "document"
+asks = "cols"
+keywords = ["open terminal", "interactive shell", "attach"]
+[[offers]]
+resource = "code_editor.project"
 action = "stop"
 label = "Stop in terminal"
 operation = "document"
