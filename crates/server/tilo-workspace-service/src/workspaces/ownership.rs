@@ -9,9 +9,10 @@
 //! workspace's checkpoints and relays what its members write.
 //!
 //! A workspace an earlier build kept for a person while this host owned it
-//! is handed to that person when the host next starts, or when another
-//! holder hands it to this host
-//! ([`Workspaces::hand_kept_workspace_over`]).
+//! is handed to that person when the host next starts, or, handed over by
+//! another holder, once this copy holds what that holder holds
+//! ([`Workspaces::hand_kept_workspace_over`]): every change made before is
+//! then decided under the governance it was made in.
 
 use tilo_action_policy::GrantId;
 
@@ -54,6 +55,18 @@ impl Workspaces {
         let state = governed.collaboration().clone();
         governed.commit(candidate, key, now, |_, _| Ok(state))?;
         self.settle(governed).await
+    }
+
+    /// [`Self::hand_kept_workspace_over`] for the workspace held here as
+    /// `workspace`, once this copy holds what another holder of it holds.
+    pub(super) async fn hand_kept_workspace_over_named(&self, workspace: &str) {
+        let Ok(governed) = self.workspace(workspace).await else {
+            return;
+        };
+        let mut governed = governed.lock().await;
+        if let Err(error) = self.hand_kept_workspace_over(&mut governed).await {
+            tracing::error!(%workspace, %error, "a workspace this host keeps for a person was not handed to them");
+        }
     }
 
     /// Hand `governed` to the person it is kept for, when this host owns it:

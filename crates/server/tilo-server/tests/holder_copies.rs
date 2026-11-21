@@ -364,14 +364,20 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     )
     .await
     .unwrap();
-    assert!(
-        remains
-            .host
-            .workspaces()
-            .is_owner(&workspace.workspace, alice.user_pk)
-            .await,
-        "the server it was handed to hands it to the person it is kept for"
-    );
+    within(
+        "the server it was handed to hands it to the person it is kept for",
+        async {
+            while !remains
+                .host
+                .workspaces()
+                .is_owner(&workspace.workspace, alice.user_pk)
+                .await
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
     let workspaces = remains.host.workspaces();
     // The key joins as an API server's key of the person does, while both
     // servers keep the workspace: the server it reaches invites it and it

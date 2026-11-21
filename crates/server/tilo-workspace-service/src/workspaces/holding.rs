@@ -397,13 +397,6 @@ impl Workspaces {
         };
         let mut governed = state.lock().await;
         self.settle(&mut governed).await?;
-        // A workspace an earlier build kept for a person while its holders
-        // owned it is handed to that person by whichever holder of the
-        // owner's takes it next, whether or not the one that kept it is still
-        // there.
-        if let Err(error) = self.hand_kept_workspace_over(&mut governed).await {
-            tracing::error!(%workspace, %error, "a workspace this host keeps for a person was not handed to them");
-        }
         tracing::info!(%workspace, workspace_id = %request.workspace_id, role = ?request.role, "holding a workspace another host handed over");
         self.transport_hint_as(&governed, request.role)
             .map_err(|error| error.to_string())
@@ -556,6 +549,11 @@ async fn report_copy(workspaces: Weak<super::WorkspacesInner>, workspace: String
             .any(|(device, link)| *link == Link::Current && before.get(device) != Some(link))
         {
             drop(this.inner.reached.send(workspace.clone()));
+            // Holding what that holder holds, this copy has taken in every
+            // change made before: a workspace an earlier build kept for a
+            // person is handed to them now, and no change the earlier owner
+            // made is decided under the governance after.
+            this.hand_kept_workspace_over_named(&workspace).await;
         }
         before = now;
         let held = held_copy(&links);
