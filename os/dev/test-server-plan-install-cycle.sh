@@ -132,7 +132,7 @@ owner_profile() {
   TILO_SSH_BOUND="${TILO_SSH_BOUND:-660}" owner ssh "bash $owner_driver $owner_root $*"
 }
 owner_control() {
-  TILO_SSH_BOUND="${TILO_SSH_BOUND:-120}" owner ssh "bash $owner_driver $owner_root control $*"
+  TILO_SSH_BOUND="${TILO_SSH_BOUND:-120}" owner ssh "bash $owner_driver $owner_root control $(printf '%q ' "$@")"
 }
 owner_cmd() {
   TILO_SSH_BOUND="${TILO_SSH_BOUND:-600}" owner ssh "bash $owner_driver $owner_root cmd $(printf '%q ' "$@")"
