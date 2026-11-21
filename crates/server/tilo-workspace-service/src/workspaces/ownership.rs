@@ -195,6 +195,10 @@ mod tests {
     /// it was kept for still governs it, as an administrator: nobody it was
     /// kept for is left without a say.
     #[tokio::test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the host a test binds has to outlive every step it drives"
+    )]
     async fn every_other_person_a_workspace_was_kept_for_stays_its_administrator() {
         let dir = tempfile::tempdir().unwrap();
         let host = governor();

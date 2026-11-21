@@ -27,6 +27,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_mail_session::{InboxHeard, InboxSeen, Watching};
 
 use super::Workspaces;
+use super::vault::VaultAt;
 
 /// How many arrivals a workspace's log keeps, newest last.
 const ARRIVALS_KEPT: usize = 500;
@@ -34,6 +35,13 @@ const ARRIVALS_KEPT: usize = 500;
 const EXCERPT_CHARS: usize = 2000;
 /// The folder every arrival is in: an inbox is what a watch watches.
 const INBOX: &str = "inbox";
+
+/// An account whose inbox is watched, with the sign-in its watch runs with.
+type WatchedAccount = (
+    String,
+    accounts::Account,
+    tilo_actions::remote::person_vault::ItemRef,
+);
 
 /// What the host keeps of a workspace's arriving mail.
 #[derive(Default, Serialize, Deserialize)]
@@ -285,14 +293,18 @@ impl Workspaces {
             return;
         };
         let state = Arc::clone(&self.inner.mail_watches.state);
-        state.pending.send_modify(|pending| *pending += 1);
+        state
+            .pending
+            .send_modify(|pending| *pending = pending.saturating_add(1));
         let (workspaces, workspace) = (self.clone(), workspace.to_owned());
         runtime.spawn(async move {
             {
                 let _one = state.lining_up.lock().await;
                 workspaces.line_up_watches(&workspace).await;
             }
-            state.pending.send_modify(|pending| *pending -= 1);
+            state
+                .pending
+                .send_modify(|pending| *pending = pending.saturating_sub(1));
         });
     }
 
@@ -308,7 +320,7 @@ impl Workspaces {
     /// vault, its use written, only where its watch starts: a watch that runs with the sign-in
     /// its entry holds now reads nothing more than a mark of it.
     async fn line_up_watches(&self, workspace: &str) {
-        use super::person_settings::kept_sign_ins::{SIGN_IN, places_of, sign_in_of};
+        use super::person_settings::kept_sign_ins::{SIGN_IN, places_of};
 
         let state = &self.inner.mail_watches.state;
         if !state.listened.lock_recover().contains_key(workspace) {
@@ -316,37 +328,9 @@ impl Workspaces {
         }
         let root = self.workspace_root(workspace);
         let vault = self.vault_at(workspace);
-        let store = accounts::AccountStore::load_in(&root);
-        let mut wanted = HashMap::new();
-        for account in store.list(&accounts::AccountTypeId::from(accounts::email::TYPE_ID)) {
-            let setting = |name: &str| account.config.get(name);
-            let waits =
-                setting("import_pending").and_then(serde_json::Value::as_bool) == Some(true);
-            let signs_in_elsewhere = setting("auth")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|auth| auth.eq_ignore_ascii_case("oauth"));
-            // An account that waits for its sign-in, or signs in with a
-            // provider this host holds no grant for, has nothing to watch
-            // with.
-            if waits || signs_in_elsewhere {
-                continue;
-            }
-            let Some(reference) = sign_in_of(&account.config) else {
-                continue;
-            };
-            let mark = match vault.sign_in_mark(&reference).await {
-                Ok(Some(mark)) => mark,
-                Ok(None) => continue,
-                Err(reason) => {
-                    tracing::warn!(%reason, "mail: a workspace's sign-ins could not be read, so its inboxes are not watched");
-                    return;
-                }
-            };
-            wanted.insert(
-                account.id.to_string(),
-                (signs_in_by(account, &mark), account.clone(), reference),
-            );
-        }
+        let Some(wanted) = self.wanted_watches(&root, vault).await else {
+            return;
+        };
         // The watches that run with what is kept now stay, and only the others are started.
         let starting: Vec<_> = {
             let mut listened = state.listened.lock_recover();
@@ -356,10 +340,12 @@ impl Workspaces {
             entry.watches.retain(|account, (signs_in, _)| {
                 wanted.get(account).is_some_and(|(now, ..)| now == signs_in)
             });
-            wanted
+            let starting = wanted
                 .into_iter()
                 .filter(|(id, _)| !entry.watches.contains_key(id))
-                .collect()
+                .collect();
+            drop(listened);
+            starting
         };
         let mut signed_in = Vec::new();
         for (id, (signs_in, account, reference)) in starting {
@@ -417,6 +403,50 @@ impl Workspaces {
             }
         }
         drop(listened);
+    }
+
+    /// The accounts `workspace` keeps here whose inboxes are watched now, with
+    /// the sign-in each runs with: none where a sign-in could not be read,
+    /// which stops the watches being brought in line.
+    async fn wanted_watches(
+        &self,
+        root: &Path,
+        vault: VaultAt<'_>,
+    ) -> Option<HashMap<String, WatchedAccount>> {
+        use super::person_settings::kept_sign_ins::sign_in_of;
+
+        let store = accounts::AccountStore::load_in(root);
+        let mut wanted = HashMap::new();
+        for account in store.list(&accounts::AccountTypeId::from(accounts::email::TYPE_ID)) {
+            let setting = |name: &str| account.config.get(name);
+            let waits =
+                setting("import_pending").and_then(serde_json::Value::as_bool) == Some(true);
+            let signs_in_elsewhere = setting("auth")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|auth| auth.eq_ignore_ascii_case("oauth"));
+            // An account that waits for its sign-in, or signs in with a
+            // provider this host holds no grant for, has nothing to watch
+            // with.
+            if waits || signs_in_elsewhere {
+                continue;
+            }
+            let Some(reference) = sign_in_of(&account.config) else {
+                continue;
+            };
+            let mark = match vault.sign_in_mark(&reference).await {
+                Ok(Some(mark)) => mark,
+                Ok(None) => continue,
+                Err(reason) => {
+                    tracing::warn!(%reason, "mail: a workspace's sign-ins could not be read, so its inboxes are not watched");
+                    return None;
+                }
+            };
+            wanted.insert(
+                account.id.to_string(),
+                (signs_in_by(account, &mark), account.clone(), reference),
+            );
+        }
+        Some(wanted)
     }
 }
 
@@ -897,11 +927,11 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
-        let (ada, bob) = two(&workspaces).await;
+        let (ada, bob) = two(workspaces).await;
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
-        keep(&workspaces, &ada, "ada@example.test", "adas-password").await;
-        keep(&workspaces, &bob, "bob@example.test", "bobs-password").await;
+        keep(workspaces, &ada, "ada@example.test", "adas-password").await;
+        keep(workspaces, &bob, "bob@example.test", "bobs-password").await;
         assert!(servers.running().is_empty(), "nobody listens yet");
 
         let listening = workspaces.listen_for_mail(&ada);
@@ -965,11 +995,11 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
-        let (ada, bob) = two(&workspaces).await;
+        let (ada, bob) = two(workspaces).await;
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
-        keep(&workspaces, &ada, "ada@example.test", "adas-password").await;
-        keep(&workspaces, &bob, "bob@example.test", "bobs-password").await;
+        keep(workspaces, &ada, "ada@example.test", "adas-password").await;
+        keep(workspaces, &bob, "bob@example.test", "bobs-password").await;
         let _listening = workspaces.listen_for_mail(&ada);
         workspaces.mail_watches_settled().await;
         let mut grew = workspaces.mail_arrival_changes();
@@ -1064,16 +1094,16 @@ mod tests {
         let (key, owner) = governor();
         let server = test_host(dir.path(), &key, &owner).await;
         let workspaces = server.workspaces();
-        let (ada, _) = two(&workspaces).await;
+        let (ada, _) = two(workspaces).await;
         let servers = Arc::new(Watched::default());
         workspaces.carry_mail_through(servers.clone());
         let root = workspaces.workspace_root(&ada);
-        keep(&workspaces, &ada, "ada@example.test", "first-password").await;
+        keep(workspaces, &ada, "ada@example.test", "first-password").await;
         let _listening = workspaces.listen_for_mail(&ada);
         workspaces.mail_watches_settled().await;
         assert_eq!(servers.running().len(), 1);
 
-        keep(&workspaces, &ada, "ada@work.example.test", "work-password").await;
+        keep(workspaces, &ada, "ada@work.example.test", "work-password").await;
         workspaces.person_settings_changed();
         workspaces.mail_watches_settled().await;
         let mut watched: Vec<String> = servers
@@ -1086,7 +1116,7 @@ mod tests {
 
         // A changed sign-in stops the watch that signed in with the old
         // one and starts one with the new.
-        keep(&workspaces, &ada, "ada@example.test", "second-password").await;
+        keep(workspaces, &ada, "ada@example.test", "second-password").await;
         workspaces.person_settings_changed();
         workspaces.mail_watches_settled().await;
         let passwords: Vec<String> = servers

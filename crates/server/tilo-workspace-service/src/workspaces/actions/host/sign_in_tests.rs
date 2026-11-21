@@ -214,7 +214,7 @@ async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
     assert!(!serde_json::to_string(&listed).unwrap().contains("access-"));
 
     let keeping = workspaces.workspace_root(&workspace_id.to_string());
-    let grant = sealed(&workspaces, workspace_id, "ada@gmail.example")
+    let grant = sealed(workspaces, workspace_id, "ada@gmail.example")
         .await
         .expect("the grant is an entry of the workspace's vault");
     assert!(is_grant(&grant));
@@ -233,7 +233,7 @@ async fn a_google_sign_in_keeps_the_account_and_its_calendar() {
         Some("google")
     );
     assert!(
-        sealed(&workspaces, workspace_id, calendar.id.as_str())
+        sealed(workspaces, workspace_id, calendar.id.as_str())
             .await
             .is_some_and(|kept| is_grant(&kept))
     );
@@ -279,7 +279,7 @@ async fn a_grant_renews_through_the_web_client_it_was_signed_in_with() {
     workspaces.accounts_return(&landing.query()).await.unwrap();
 
     let secret = crate::workspaces::person_settings::account_secret_for_test(
-        &workspaces,
+        workspaces,
         &workspace_id.to_string(),
         "ada@gmail.example",
     )
@@ -512,7 +512,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
             .any(|account| account.type_id.as_str() == accounts::cloud_types::NEXTCLOUD)
     })
     .await;
-    let app_password = sealed(&workspaces, workspace_id, "nextcloud:ada@127.0.0.1")
+    let app_password = sealed(workspaces, workspace_id, "nextcloud:ada@127.0.0.1")
         .await
         .unwrap_or_default();
     assert_eq!(app_password, "minted-app-password");

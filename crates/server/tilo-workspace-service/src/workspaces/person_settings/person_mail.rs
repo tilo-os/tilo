@@ -175,7 +175,7 @@ impl Workspaces {
             }
         }
         set_services_in_config(root, &saying.account, services)?;
-        mail_accounts(root)
+        Ok(mail_accounts(root))
     }
 
     /// Keep the calendars of an added iCloud account with its sign-in,
@@ -348,7 +348,7 @@ impl Workspaces {
 /// that feeds mail, and every other account a provider keeps beside them
 /// (a Nextcloud server's, whose files and calendars it is signed in to),
 /// which feeds no mail.
-pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
+pub(super) fn mail_accounts(root: &Path) -> MailAccounts {
     let store = accounts::AccountStore::load_in(root);
     let email = accounts::AccountTypeId::from(accounts::email::TYPE_ID);
     let listed = |account: &accounts::Account| {
@@ -395,7 +395,7 @@ pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
             server: server_of(account),
         }
     };
-    Ok(MailAccounts {
+    MailAccounts {
         accounts: store
             .list(&email)
             .into_iter()
@@ -416,7 +416,7 @@ pub(super) fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
         // Which providers this server begins a sign-in with is the sign-in
         // module's to say.
         signs_in_with: super::sign_in::signs_in_with(),
-    })
+    }
 }
 
 /// The provider that serves `found`'s servers: Google's or Microsoft's where
@@ -562,7 +562,7 @@ pub(super) fn answers_in_public(name: &str) -> bool {
 
 /// The account `id` as the listing answers it.
 pub(super) fn kept_mail(root: &Path, id: &str) -> Result<MailAccount, String> {
-    mail_accounts(root)?
+    mail_accounts(root)
         .accounts
         .into_iter()
         .find(|kept| kept.id == id)

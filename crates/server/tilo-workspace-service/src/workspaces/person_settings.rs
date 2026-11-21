@@ -83,7 +83,9 @@ impl Workspaces {
     /// answers them: what a window following [`person_accounts::WATCH`] is
     /// sent again whenever they change.
     pub(super) fn accounts_listing(&self, workspace: &str) -> Result<Value, ActionCallError> {
-        answer(&mail_accounts(&self.workspace_root(workspace)))
+        answer(&Ok::<_, String>(mail_accounts(
+            &self.workspace_root(workspace),
+        )))
     }
 
     /// What a workspace's accounts or providers kept here changed: a window
@@ -405,13 +407,14 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         let root = signing.root;
         match request.target.address.action.as_str() {
-            person_accounts::LIST => answer(&mail_accounts(root).map(|mut listed| {
+            person_accounts::LIST => {
+                let mut listed = mail_accounts(root);
                 if agent {
                     // Whose sign-in is running is no agent's business.
                     listed.signing_in.clear();
                 }
-                listed
-            })),
+                answer(&Ok::<_, String>(listed))
+            }
             person_accounts::FETCH => {
                 let asking: FetchMail = argument(request, "a folder to read")?;
                 answer(&fetch_with(self.mail_session(), signing, asking).await)
@@ -708,7 +711,7 @@ async fn remove_mail(
             "mail: a removed account's calendar account could not be removed"
         );
     }
-    mail_accounts(root)
+    Ok(mail_accounts(root))
 }
 
 /// The account `id` names, with the sign-in the workspace's vault keeps for it, the use
@@ -1785,7 +1788,6 @@ mod tests {
         // The server check needs a server; keeping and removing are what the
         // store and vault do, so they are proven without one.
         let mut store = accounts::AccountStore::load_in(root.path());
-        let mut kept = Vec::new();
         for (address, own) in [("ada@example.test", true), ("bo@example.test", false)] {
             let mut account = accounts::Account::new(address, accounts::email::TYPE_ID);
             account.config = serde_json::json!({
@@ -1821,12 +1823,11 @@ mod tests {
                 tilo_actions::remote::person_vault::ItemRef::from_id(added.id.as_str()).unwrap()
             };
             accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
-            kept.push(account.clone());
             store.upsert(account);
         }
         store.save_in(root.path()).expect("the store saves");
 
-        let listed = mail_accounts(root.path()).expect("the accounts read back");
+        let listed = mail_accounts(root.path());
         assert_eq!(listed.accounts.len(), 2);
         assert!(listed.accounts.iter().all(|account| account.has_secret));
         let json = serde_json::to_string(&listed).unwrap();
@@ -2031,7 +2032,7 @@ mod mail_session_tests {
             .build()
             .unwrap();
         runtime.block_on(account_with_sign_in(signing));
-        let listing = mail_accounts(root).unwrap();
+        let listing = mail_accounts(root);
         assert_eq!(listing.accounts.len(), 1);
         assert!(listing.accounts[0].has_secret);
 

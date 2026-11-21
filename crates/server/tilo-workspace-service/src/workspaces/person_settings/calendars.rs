@@ -52,6 +52,7 @@
 //! not rewrite at all.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use calendar_model::account::{RemoteCalendar, TYPE_ID};
@@ -737,8 +738,8 @@ fn add(
         "calendars": calendars,
         "collapsed": false,
     });
-    if read_only {
-        stored.config["read_only"] = true.into();
+    if read_only && let Some(config) = stored.config.as_object_mut() {
+        config.insert("read_only".to_owned(), true.into());
     }
     let sign_in = match named {
         Some(named) => SignIn::Named(named),
@@ -1362,13 +1363,10 @@ fn note_put_in(root: &Path, account: &Account, entry: &str, by: PutIn) {
 /// with, where that is an address, and the mail accounts they keep here.
 fn own_addresses(root: &Path, account: &Account) -> BTreeSet<String> {
     let mut own: BTreeSet<String> = mail_accounts(root)
-        .map(|kept| {
-            kept.accounts
-                .into_iter()
-                .map(|mail| mail.address.trim().to_ascii_lowercase())
-                .collect()
-        })
-        .unwrap_or_default();
+        .accounts
+        .into_iter()
+        .map(|mail| mail.address.trim().to_ascii_lowercase())
+        .collect();
     own.insert(account.username.trim().to_ascii_lowercase());
     own.retain(|address| {
         address
@@ -2014,6 +2012,19 @@ impl Workspaces {
         answer(&made)
     }
 
+    /// Keep what was asked, tell the person settings that changed where it
+    /// was kept, and answer what it kept.
+    async fn kept_and_answered<T: serde::Serialize>(
+        &self,
+        keeping: impl Future<Output = Result<T, String>>,
+    ) -> Result<Value, ActionError> {
+        let kept = keeping.await;
+        if kept.is_ok() {
+            self.person_settings_changed();
+        }
+        answer(&kept)
+    }
+
     /// Answer a request about a workspace's calendars ([`RESOURCE`]), as its
     /// policy lets the caller.
     pub(super) async fn person_calendars_invoke(
@@ -2039,23 +2050,16 @@ impl Workspaces {
             LIST => answer(&Ok::<_, String>(listed(&root, &accounts))),
             ADD => {
                 let adding: Add = argument(request, "a calendar account to add")?;
-                let kept = off_thread(move || add(&root, &reach, adding, None)).await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                self.kept_and_answered(off_thread(move || add(&root, &reach, adding, None)))
+                    .await
             }
             REMOVE => {
                 let asked: OneAccount = argument(request, "the account")?;
-                let kept = remove(
+                self.kept_and_answered(remove(
                     (reach.vault.at(), &root),
                     asked.account.as_deref().unwrap_or_default(),
-                )
-                .await;
-                if kept.is_ok() {
-                    self.person_settings_changed();
-                }
-                answer(&kept)
+                ))
+                .await
             }
             SYNC => {
                 let asked: OneAccount = match &request.argument {

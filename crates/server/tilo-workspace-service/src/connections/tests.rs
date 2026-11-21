@@ -184,50 +184,72 @@ async fn a_service_is_connected_by_its_address_and_its_commands_are_read() {
         );
     }
 
-    // Another person's root holds nothing of it and reaches nothing of it.
+    // Another person's root holds nothing of it and reaches nothing of it;
+    // its person reads it again and removes it.
     let other = tempfile::tempdir().unwrap();
-    assert!(list(other.path()).unwrap().connections.is_empty());
-    let read_by_another = refresh(
-        (other.path(), vault(other.path())),
+    another_person_reaches_nothing_and_removing_it_keeps_nothing(
+        root.path(),
+        other.path(),
         &reach,
-        &added.id,
-        Calling::Person,
-    )
-    .await;
-    assert_eq!(read_by_another.unwrap_err(), NOT_KEPT);
-    assert_eq!(
-        remove((other.path(), vault(other.path())), &added.id)
-            .await
-            .unwrap_err(),
-        NOT_KEPT
-    );
-
-    let read_again = refresh(
-        (root.path(), vault(root.path())),
-        &reach,
-        &added.id,
-        Calling::Agent("Assistant"),
+        &file,
+        &added,
     )
     .await
     .unwrap();
+}
+
+/// Another person's root holds nothing of `added` and reaches nothing of it;
+/// its person reads it again, and removing it once keeps nothing, a second
+/// time finding it gone.
+async fn another_person_reaches_nothing_and_removing_it_keeps_nothing(
+    root: &Path,
+    other: &Path,
+    reach: &Reach,
+    file: &Path,
+    added: &Connection,
+) -> Result<(), String> {
+    assert!(list(other)?.connections.is_empty());
+    assert_eq!(
+        refresh((other, vault(other)), reach, &added.id, Calling::Person)
+            .await
+            .err()
+            .as_deref(),
+        Some(NOT_KEPT)
+    );
+    assert_eq!(
+        remove((other, vault(other)), &added.id)
+            .await
+            .err()
+            .as_deref(),
+        Some(NOT_KEPT)
+    );
+
+    let read_again = refresh(
+        (root, vault(root)),
+        reach,
+        &added.id,
+        Calling::Agent("Assistant"),
+    )
+    .await?;
     assert_eq!(read_again.commands, added.commands);
     assert_eq!(read_again.state, State::Ready);
     assert!(read_again.commands_read_at_ms >= added.commands_read_at_ms);
 
     assert!(
-        remove((root.path(), vault(root.path())), &added.id)
-            .await
-            .unwrap()
+        remove((root, vault(root)), &added.id)
+            .await?
             .connections
             .is_empty()
     );
     assert!(!file.exists());
     assert_eq!(
-        remove((root.path(), vault(root.path())), &added.id)
+        remove((root, vault(root)), &added.id)
             .await
-            .unwrap_err(),
-        NOT_KEPT
+            .err()
+            .as_deref(),
+        Some(NOT_KEPT)
     );
+    Ok(())
 }
 
 /// A service that lies about itself is kept as what it is: its name one
@@ -1225,6 +1247,7 @@ fn a_sign_in_left(root: &Path, service: &StandIn, (id, returned): (&str, &str), 
         used.iter().all(|used| used.places == service_alone),
         "{used:?}"
     );
+    drop(vault);
 
     // Nothing of what was handed out is anywhere in the clear: in no file
     // of the person's, and in no line that was logged.

@@ -442,7 +442,7 @@ impl Workspaces {
         root: &Path,
     ) -> Result<super::MailAccounts, String> {
         cancel(&person, stopping)?;
-        let listed = super::mail_accounts(root)?;
+        let listed = super::mail_accounts(root);
         self.person_settings_changed();
         Ok(listed)
     }
@@ -594,7 +594,7 @@ async fn finish(
         ..Registration::default()
     };
     let profile = client.profile.clone();
-    let root_owned = root.to_path_buf();
+    let root_owned = root.clone();
     let granted = tokio::task::spawn_blocking(move || {
         let http = OAuthClient::new().map_err(|error| error.to_string())?;
         let tokens = http
@@ -629,29 +629,48 @@ async fn finish(
         Err(said) => Err(said),
     };
     if let Err(said) = kept {
-        let mut entries = begun();
-        entries.insert(
-            id.to_owned(),
-            Begun {
-                id: id.to_owned(),
-                person,
-                workspace: workspace.to_owned(),
-                root: root.to_path_buf(),
-                until_ms: now_ms().saturating_add(minutes_ms(SIGN_IN_MINUTES)),
-                failed: Some(said.clone()),
-                kind: Kind::Web {
-                    issuer,
-                    verifier: String::new(),
-                    redirect: String::new(),
-                    services,
-                    account: String::new(),
-                },
-            },
+        failed_again(
+            id,
+            person,
+            workspace,
+            root,
+            (issuer, services),
+            said.clone(),
         );
-        drop(entries);
         return Err(said);
     }
     Ok(())
+}
+
+/// Put a sign-in this host began back, failed with `said`: its person reads
+/// why nothing was kept, begins it again.
+fn failed_again(
+    id: &str,
+    person: [u8; 32],
+    workspace: &str,
+    root: &Path,
+    (issuer, services): (OAuthIssuer, Services),
+    said: String,
+) {
+    let mut entries = begun();
+    entries.insert(
+        id.to_owned(),
+        Begun {
+            id: id.to_owned(),
+            person,
+            workspace: workspace.to_owned(),
+            root: root.to_path_buf(),
+            until_ms: now_ms().saturating_add(minutes_ms(SIGN_IN_MINUTES)),
+            failed: Some(said),
+            kind: Kind::Web {
+                issuer,
+                verifier: String::new(),
+                redirect: String::new(),
+                services,
+                account: String::new(),
+            },
+        },
+    );
 }
 
 /// The words a declined sign-in is shown with.

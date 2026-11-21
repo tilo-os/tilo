@@ -61,7 +61,7 @@ impl Mail {
         workspaces.carry_mail_through(servers.clone());
         let (workspace, workspace_id, service) = governed(workspaces).await;
         let ada = admit(workspaces, &workspace, owner, 1).await;
-        keep(&workspaces, &workspace_id.to_string(), ACCOUNT, PASSWORD).await;
+        keep(workspaces, &workspace_id.to_string(), ACCOUNT, PASSWORD).await;
         Self {
             servers,
             workspaces: workspaces.clone(),
