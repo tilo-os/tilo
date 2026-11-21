@@ -9,6 +9,10 @@
 //! in before the connection is secure. It sends nothing anywhere: every message the SMTP
 //! server takes stays on the box it is started on.
 //!
+//! Every IMAP sign-in is said on standard error, with the login it named, whether it was taken,
+//! and the process that made the connection where the stand-in may read it (it runs beside its
+//! clients, as a story's machine): who signed in is read off the server, never off a client.
+//!
 //! The example `mail_stand_in` is this module as a program (the local stack starts it as
 //! `mail-stand-in`); the crate's tests sign in to it with the proof itself.
 
@@ -412,6 +416,7 @@ struct Signed {
 }
 
 fn imap_connection(tcp: TcpStream, taking: &Taking, wrapped: bool) {
+    let peer = tcp.peer_addr().ok();
     let tcp = if wrapped {
         tcp
     } else if let Some(upgraded) = imap_in_the_clear(tcp) {
@@ -430,7 +435,7 @@ fn imap_connection(tcp: TcpStream, taking: &Taking, wrapped: bool) {
     {
         return;
     }
-    imap_secure(&mut lines, taking);
+    imap_secure(&mut lines, taking, peer);
 }
 
 /// The cleartext start of an IMAP connection: the greeting and, when asked, the upgrade. The
@@ -471,7 +476,7 @@ fn imap_in_the_clear(tcp: TcpStream) -> Option<TcpStream> {
 }
 
 /// The secured part of an IMAP connection: the sign-in, then its mailbox.
-fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
+fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking, peer: Option<SocketAddr>) {
     let mut signed = Signed {
         taken: false,
         selected: None,
@@ -488,10 +493,18 @@ fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
         };
         let said = match command.as_str() {
             "LOGIN" => {
-                signed.taken = match arguments(&rest).as_slice() {
-                    [login, password] => taking.takes(login, password),
-                    _ => false,
+                let named = match arguments(&rest).as_slice() {
+                    [login, password] => Some((login.clone(), password.clone())),
+                    _ => None,
                 };
+                signed.taken = named
+                    .as_ref()
+                    .is_some_and(|(login, password)| taking.takes(login, password));
+                said_sign_in(
+                    named.as_ref().map(|(login, _)| login.as_str()),
+                    signed.taken,
+                    peer,
+                );
                 lines.say(&signed_in(&tag, signed.taken))
             }
             "AUTHENTICATE" => {
@@ -504,16 +517,16 @@ fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
                     None if (plain || xoauth2) && lines.say("+ ") => lines.line(),
                     None => None,
                 };
-                signed.taken = (plain
-                    && token
-                        .as_deref()
-                        .and_then(plain_login)
-                        .is_some_and(|(login, password)| taking.takes(&login, &password)))
-                    || (xoauth2
-                        && token
-                            .as_deref()
-                            .and_then(oauth2_login)
-                            .is_some_and(|(user, token)| taking.takes_token(&user, &token)));
+                let plain_named = token.as_deref().filter(|_| plain).and_then(plain_login);
+                let oauth_named = token.as_deref().filter(|_| xoauth2).and_then(oauth2_login);
+                signed.taken = plain_named
+                    .as_ref()
+                    .is_some_and(|(login, password)| taking.takes(login, password))
+                    || oauth_named
+                        .as_ref()
+                        .is_some_and(|(user, token)| taking.takes_token(user, token));
+                let login = plain_named.as_ref().or(oauth_named.as_ref());
+                said_sign_in(login.map(|(login, _)| login.as_str()), signed.taken, peer);
                 lines.say(&signed_in(&tag, signed.taken))
             }
             "IDLE" if signed.taken => {
@@ -564,6 +577,92 @@ fn imap_secure<S: Read + Write>(lines: &mut Lines<S>, taking: &Taking) {
             return;
         }
     }
+}
+
+/// Say an IMAP sign-in on standard error: the login it named, whether it was taken, and the
+/// process that holds the client's end of the connection, with the processes that started it.
+fn said_sign_in(login: Option<&str>, taken: bool, peer: Option<SocketAddr>) {
+    let client = peer.and_then(client_of).map_or_else(
+        || "a process this stand-in cannot read".to_owned(),
+        |lineage| format!("process {lineage}"),
+    );
+    let from = peer.map_or_else(|| "an unknown address".to_owned(), |peer| peer.to_string());
+    eprintln!(
+        "mail stand-in: IMAP sign-in as {} from {from} by {client}: {}",
+        login.unwrap_or("(no login)"),
+        if taken { "taken" } else { "refused" }
+    );
+}
+
+/// The process holding the client's end of the loopback connection from `peer`, and each
+/// process that started it, as `pid name < pid name < …`. Only where this machine's processes
+/// are readable: on Linux, the socket whose own address is `peer` and the process one of whose
+/// descriptors it is.
+#[cfg(target_os = "linux")]
+fn client_of(peer: SocketAddr) -> Option<String> {
+    let inode = ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .filter_map(|table| std::fs::read_to_string(table).ok())
+        .find_map(|table| socket_inode(&table, peer))?;
+    let wanted = format!("socket:[{inode}]");
+    let holder = std::fs::read_dir("/proc")
+        .ok()?
+        .flatten()
+        .find_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            std::fs::read_dir(entry.path().join("fd"))
+                .ok()?
+                .flatten()
+                .any(|fd| {
+                    std::fs::read_link(fd.path())
+                        .is_ok_and(|link| link.as_os_str() == wanted.as_str())
+                })
+                .then_some(pid)
+        })?;
+    let mut lineage = Vec::new();
+    let mut pid = holder;
+    while pid > 0 && lineage.len() < 64 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // `pid (name) state ppid …`: a name may hold spaces and brackets, so it ends at the last.
+        let (head, tail) = stat.rsplit_once(')')?;
+        let name = head.split_once('(').map_or("", |(_, name)| name);
+        lineage.push(format!("{pid} {name}"));
+        pid = tail.split_whitespace().nth(1)?.parse().ok()?;
+    }
+    Some(lineage.join(" < "))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn client_of(_peer: SocketAddr) -> Option<String> {
+    None
+}
+
+/// The inode of the socket of a `/proc/net/tcp` or `tcp6` table whose own address is `peer`.
+#[cfg(target_os = "linux")]
+fn socket_inode(table: &str, peer: SocketAddr) -> Option<u64> {
+    let wanted = (peer.ip().to_canonical(), peer.port());
+    table.lines().skip(1).find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let (address, port) = fields.get(1)?.split_once(':')?;
+        let port = u16::from_str_radix(port, 16).ok()?;
+        // Each 32-bit word of the address is printed as the machine holds it.
+        let words = address
+            .as_bytes()
+            .chunks(8)
+            .map(|word| {
+                std::str::from_utf8(word)
+                    .ok()
+                    .and_then(|word| u32::from_str_radix(word, 16).ok())
+            })
+            .collect::<Option<Vec<u32>>>()?;
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_ne_bytes()).collect();
+        let ip = match bytes.len() {
+            4 => std::net::IpAddr::from(<[u8; 4]>::try_from(bytes).ok()?),
+            16 => std::net::IpAddr::from(<[u8; 16]>::try_from(bytes).ok()?),
+            _ => return None,
+        };
+        ((ip.to_canonical(), port) == wanted).then(|| fields.get(9)?.parse().ok())?
+    })
 }
 
 fn signed_in(tag: &str, taken: bool) -> String {

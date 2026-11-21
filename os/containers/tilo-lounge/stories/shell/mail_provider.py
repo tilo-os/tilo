@@ -7,7 +7,9 @@ mail_stand_in.rs`), the same program a tilo.sh stack runs for a stack's mail acc
 login, hold a few made-up messages and keep the mail they are handed. Here it is started by the
 story alone, with no stack around it, answering the address's own server names on this machine
 (the names are given in `/etc/hosts`) and with a certificate this machine trusts (it is added to
-the system's CA bundle for the story and taken out again after).
+the system's CA bundle for the story and taken out again after). It says every IMAP sign-in on its
+log, with the process that made the connection, which is how a story tells whose computer signed
+in.
 
 The account's sign-in is checked before it is kept. Settings' sandbox has no network of its own
 (`apps/settings/tilo-app.toml` declares `[sandbox.net] mode = "off"`), so the session makes that
@@ -21,6 +23,7 @@ import contextlib
 import imaplib
 import json
 import os
+import re
 import signal
 import ssl
 import subprocess
@@ -56,6 +59,9 @@ ADD_EMAIL = "Add Email"
 # chain's first parts are asked for: a part nobody wrote yet reads as empty.
 MESSAGES_CHAIN = "derived:mail-messages@derived:default@tab:0000000000000000"
 MESSAGES_PARTS = [f"derived:part.{index}@{MESSAGES_CHAIN}" for index in range(8)]
+# How the stand-in says an IMAP sign-in on its log (`stand_in::said_sign_in`).
+SIGN_IN = re.compile(r"mail stand-in: IMAP sign-in as (?P<login>.*?) from (?P<peer>\S+) "
+                     r"by (?P<by>.+): (?P<verdict>taken|refused)$")
 
 
 def describe(one: Person) -> str:
@@ -263,6 +269,23 @@ class StandIn:
         roots = self.dir / "roots.pem"
         roots.write_bytes(certificate)
         os.environ["SSL_CERT_FILE"] = str(roots)
+
+    def sign_ins(self) -> list[dict]:
+        """Every IMAP sign-in the stand-in said on its log, in order: the login it named, whether
+        it was taken (only the stand-in's own password is), where it came from, and the process
+        that made the connection with each process that started it, by their ids."""
+        text = self.log.read_text(errors="replace") if self.log.is_file() else ""
+        found = []
+        for line in text.splitlines():
+            said = SIGN_IN.match(line)
+            if not said:
+                continue
+            by = said["by"]
+            lineage = ([int(part.split()[0]) for part in by.removeprefix("process ").split(" < ")]
+                       if by.startswith("process ") else [])
+            found.append({"login": said["login"], "taken": said["verdict"] == "taken",
+                          "from": said["peer"], "by": by, "lineage": lineage})
+        return found
 
     def received(self, words: str, token: str) -> str | None:
         """The message the stand-in's inbox holds that carries `token` and `words`, as the

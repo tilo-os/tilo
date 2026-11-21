@@ -128,6 +128,21 @@
       "mailStandIn": true
     },
     {
+      "id": "shared-mailbox",
+      "title": "Share one mail account in a workspace",
+      "intent": "Ada adds her workspace's mail account once, with its password. Grace, another member, opens Mail on her own computer and reads the same inbox without typing any password: the password is kept once, in the workspace's vault, and no computer keeps a copy of its own.",
+      "walk": "shell",
+      "steps": [
+        "Ada makes a workspace and invites Grace, and Grace joins",
+        "Ada adds the lab's mail account in Settings",
+        "Ada's Mail shows the lab's inbox, and she opens the newest message",
+        "Grace opens Mail and reads the same inbox, typing no password",
+        "Neither computer keeps a copy of the password"
+      ],
+      "driver": "shell/shared-mailbox.py",
+      "mailStandIn": true
+    },
+    {
       "id": "calendar-invite",
       "title": "Connect a calendar and create and invite an event",
       "intent": "A person connects their calendar, creates an event and invites someone, who receives the invitation.",

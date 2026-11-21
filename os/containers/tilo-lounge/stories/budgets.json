@@ -121,6 +121,13 @@
       "Ada sends a reply, and it arrives": 90000,
       "Mail finds the server by itself and connects": 60000
     },
+    "shared-mailbox": {
+      "Ada makes a workspace and invites Grace, and Grace joins": 120000,
+      "Ada adds the lab's mail account in Settings": 60000,
+      "Ada's Mail shows the lab's inbox, and she opens the newest message": 60000,
+      "Grace opens Mail and reads the same inbox, typing no password": 60000,
+      "Neither computer keeps a copy of the password": 30000
+    },
     "second-device": {
       "Ada opens Tilo on her laptop": 15000,
       "Ada asks her laptop for a way to add a new device": 15000,
