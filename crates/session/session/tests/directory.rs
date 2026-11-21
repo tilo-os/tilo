@@ -1298,9 +1298,9 @@ impl Lounge {
         });
     }
 
-    /// A link to the lounge's workspace carrying an invitation for this person, as whoever shares
-    /// the workspace copies it.
-    fn invitation_link(&self) -> String {
+    /// The invitation for this person as an invitation's text: the code a host hands a session to
+    /// join with, not the link that carries it.
+    fn invitation_text(&self) -> String {
         let issued = block_on_within(
             &self.runtime,
             "the lounge to issue this person an invitation",
@@ -1318,11 +1318,17 @@ impl Lounge {
             ),
         )
         .expect("an invitation to the lounge");
+        tilo_workspace_join::encode_invitation_text(&issued.signed_invitation)
+    }
+
+    /// A link to the lounge's workspace carrying an invitation for this person, as whoever shares
+    /// the workspace copies it.
+    fn invitation_link(&self) -> String {
         format!(
             "{}#/w/{}?invite={}",
             self.entry,
             self.workspace,
-            tilo_workspace_join::encode_invitation_text(&issued.signed_invitation)
+            self.invitation_text()
         )
     }
 }
@@ -1475,6 +1481,55 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
         "under the name the site's entry gives it"
     );
     wait_until_the_directory_is_done(&mut session);
+}
+
+/// A session a host started with an invitation joins its workspace with nobody at the sheet, and
+/// the notice that says so names the workspace by its own name: the one its governance carries,
+/// which the top bar shows, never a stand-in for a name the join has not learned.
+#[test]
+fn a_session_started_with_an_invitation_names_the_workspace_it_joins_in_its_notice() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+    let (_root, person) = this_computer_with_an_identity(&mut home);
+    let lounge = Lounge::start(person, "Pulled up a chair");
+    let _config = community_site(home.env(), "");
+    // The invitation the host hands the session, as a provider's guest gets it: the workspace's
+    // own name is in no invitation, only the workspace its governance names.
+    let invitation = home.root().join("invitation.txt");
+    std::fs::write(&invitation, lounge.invitation_text()).expect("the invitation is written");
+    home.env()
+        .set("TILO_SHELL_JOIN_INVITATION_FILE", &invitation);
+    let state = tempfile::tempdir().expect("a directory for this computer's session");
+    let mut session = collaborative_session(state.path());
+    wait_until(
+        &mut session,
+        "the invited workspace is on the session",
+        |session| {
+            held(session)
+                .iter()
+                .any(|(_, _, workspace)| workspace == &lounge.workspace)
+        },
+    );
+    let joined = held(&session)
+        .into_iter()
+        .find(|(_, _, workspace)| workspace == &lounge.workspace)
+        .expect("the workspace is on the session");
+    assert_eq!(
+        joined.1, "Lounge",
+        "the slot goes by the name the workspace's governance gives it"
+    );
+    wait_until(&mut session, "the join is said", |session| {
+        said(session)
+            .iter()
+            .any(|notice| notice.starts_with("You joined "))
+    });
+    let notices = said(&session);
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.starts_with("You joined Lounge:")),
+        "the notice names the workspace it joined, as its people read it: {notices:?}"
+    );
 }
 
 /// The lounge's workspace as its people left it: two strips, and three windows written by another

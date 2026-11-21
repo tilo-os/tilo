@@ -226,6 +226,7 @@ fn join_listed(state: &DirectoryState, store: &Store, host: &dyn Host, key: &str
 /// workspace's news.
 pub(crate) fn workspace_notice(notices: &dyn Notices, words: (&str, &str), name: &str) {
     let (title, body) = words;
+    let name = tilo_desktop_surface::names::workspace(name);
     notices.show(
         &Notice::new(
             String::new(),

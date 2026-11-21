@@ -24,8 +24,9 @@ pub type Wake = Arc<dyn Fn() + Send + Sync>;
 /// or an invitation it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Joined {
-    /// The name the workspace goes by: the one it was listed under, else one
-    /// of the sheet's.
+    /// The name the workspace was listed under, or the address a link named
+    /// it by: empty when only the workspace's own governance names it, which
+    /// the session reads once its host admits this device.
     pub name: String,
     /// The workspace joined, and how this device comes into it.
     pub granted: Granted,
@@ -606,14 +607,7 @@ impl Store {
             Answer::Taken { key, name, granted } => {
                 *self.joining.borrow_mut() = None;
                 match granted {
-                    Ok(granted) => {
-                        let listed = if name.is_empty() {
-                            crate::word("directory-joined-name")
-                        } else {
-                            name
-                        };
-                        self.granted(&key, &listed, granted, None);
-                    }
+                    Ok(granted) => self.granted(&key, &name, granted, None),
                     Err(reason) => {
                         tracing::info!(
                             target: JOIN_FLOW_TARGET,
@@ -691,9 +685,15 @@ impl Store {
 
     /// The name the site listed `workspace` under, once a join was granted:
     /// a slot the shell makes when the host admits this device shows the
-    /// workspace by the name it was chosen under, not its id.
+    /// workspace by the name it was chosen under, not its id. `None` when the
+    /// site knew none: an invitation's text names only the workspace, and the
+    /// workspace's own name is the one the session reads from its governance.
     pub fn listed_name(&self, workspace: &str) -> Option<String> {
-        self.names.borrow().get(workspace).cloned()
+        self.names
+            .borrow()
+            .get(workspace)
+            .filter(|name| !name.trim().is_empty())
+            .cloned()
     }
 
     /// The community site `workspace` was joined as its home through, while

@@ -1246,6 +1246,25 @@ impl crate::Shared {
         }
     }
 
+    /// The name the workspace's governance gives it, once this device holds the workspace: the one
+    /// name every device and list of it reads, which the shell shows as its own. `None` while this
+    /// device holds none of it, or it names none.
+    pub(crate) fn governing_name(&self, workspace: WorkspaceId) -> Option<String> {
+        let engine = self.engine.as_ref()?;
+        let name = engine
+            .owner()
+            .with_current(workspace, |view| {
+                Ok(view.peer().governance().workspace_name())
+            })
+            .ok()??;
+        let name = name.trim();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_owned())
+        }
+    }
+
     /// Take what became of the invitations this session redeemed: the person lands in the workspace
     /// they joined once it is held here, or it is taken off the shell and the sheet says why.
     #[allow(
@@ -1259,26 +1278,29 @@ impl crate::Shared {
         let mut settled = false;
         for enrolled in sync.take_enrolled() {
             let key = enrolled.workspace_id.to_string();
-            let name = self
-                .handle
-                .read(|tree| {
-                    tree.workspaces
-                        .iter()
-                        .find(|workspace| workspace.id() == enrolled.workspace_id)
-                        .map(|workspace| tilo_desktop_surface::names::workspace(&workspace.name))
+            let named_on_shell = self.handle.read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|workspace| workspace.id() == enrolled.workspace_id)
+                    .map(|workspace| workspace.name.clone())
+            });
+            // The name the workspace goes by: the one its own governance gives it, which this
+            // device holds the moment its host admits it — every device and list of the workspace
+            // reads that one name, and the shell shows it. Until then the name the person's list
+            // gave it, or the site listed it under, says which workspace is meant: a join that is
+            // refused says which workspace stayed away the same way, and one nothing has named is
+            // the shell's own word for a workspace, never the id it is numbered by.
+            let listed = self
+                .governing_name(enrolled.workspace_id)
+                .or_else(|| match &enrolled.name {
+                    Some(name) => Some(name.clone()),
+                    None => self.directory_store.listed_name(&key),
                 })
-                .unwrap_or_else(|| key.clone());
-            // The name the site listed the workspace under, not the id the session numbers it by: a
-            // join that is refused says which workspace stayed away by the name the person chose it
-            // under. A workspace of the person's own is named by the list it came from, which no
-            // site lists.
-            let listed = match &enrolled.name {
-                Some(name) => name.clone(),
-                None => self
-                    .directory_store
-                    .listed_name(&key)
-                    .unwrap_or_else(|| name.clone()),
-            };
+                .or(named_on_shell)
+                .map_or_else(
+                    || tilo_desktop_surface::names::workspace(""),
+                    |name| tilo_desktop_surface::names::workspace(&name),
+                );
             match &enrolled.result {
                 Ok(()) => {
                     tracing::info!(

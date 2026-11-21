@@ -136,9 +136,7 @@ impl crate::Shared {
             let mut changed = false;
             for workspace in workspaces {
                 // The workspace's one name, which the shell keeps none of its own of.
-                if let Ok(Some(name)) = engine.owner().with_current(workspace.id(), |view| {
-                    Ok(view.peer().governance().workspace_name())
-                }) {
+                if let Some(name) = self.governing_name(workspace.id()) {
                     changed |= workspace.named_as(&name);
                 }
                 let Ok(policy) = engine.policy(&workspace.id().to_string()) else {
