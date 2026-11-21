@@ -346,39 +346,6 @@ pub(super) fn presence_stamp(session: &Session<'_>, hash: &mut impl std::hash::H
     }
 }
 
-#[cfg(test)]
-mod naming_tests {
-    use super::*;
-
-    /// A member's row is named as every surface names them: a person nobody named is someone
-    /// without a name yet, and nobody is named by their key.
-    #[test]
-    fn a_member_nobody_named_reads_as_someone_without_a_name() {
-        let unnamed = collab_types::presence::Shown {
-            label: String::new(),
-            ..collab_types::presence::Shown::default()
-        };
-        assert_eq!(
-            row(&unnamed)["label"],
-            serde_json::json!(ui::presence::unnamed_person_label())
-        );
-        let keyed = collab_types::presence::Shown {
-            label: "3f".repeat(32),
-            ..collab_types::presence::Shown::default()
-        };
-        assert_eq!(
-            row(&keyed)["label"],
-            serde_json::json!(ui::presence::unnamed_person_label()),
-            "a key is never read as the person's name"
-        );
-        let named = collab_types::presence::Shown {
-            label: "Ada".to_owned(),
-            ..collab_types::presence::Shown::default()
-        };
-        assert_eq!(row(&named)["label"], serde_json::json!("Ada"));
-    }
-}
-
 /// One row per tab of `tree` — where it is, which app shows it, whether it is the tab in
 /// front of the active workspace's active strip and group, and, for a tab a window fills,
 /// that window and where the frame draws it. A workspace or strip without a name is named by
@@ -469,5 +436,38 @@ pub(super) fn tile_kind(tile: &tilo_desktop_model::TileContent) -> (String, Json
             |(kind, body)| (kind, body.get("app_id").cloned().unwrap_or_default()),
         ),
         _ => (String::new(), Json::Null),
+    }
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+
+    /// A member's row is named as every surface names them: a person nobody named is someone
+    /// without a name yet, and nobody is named by their key.
+    #[test]
+    fn a_member_nobody_named_reads_as_someone_without_a_name() {
+        let unnamed = collab_types::presence::Shown {
+            label: String::new(),
+            ..collab_types::presence::Shown::default()
+        };
+        assert_eq!(
+            row(&unnamed)["label"],
+            serde_json::json!(ui::presence::unnamed_person_label())
+        );
+        let keyed = collab_types::presence::Shown {
+            label: "3f".repeat(32),
+            ..collab_types::presence::Shown::default()
+        };
+        assert_eq!(
+            row(&keyed)["label"],
+            serde_json::json!(ui::presence::unnamed_person_label()),
+            "a key is never read as the person's name"
+        );
+        let named = collab_types::presence::Shown {
+            label: "Ada".to_owned(),
+            ..collab_types::presence::Shown::default()
+        };
+        assert_eq!(row(&named)["label"], serde_json::json!("Ada"));
     }
 }

@@ -305,6 +305,10 @@ fn a_layout_write_under_way_holds_the_session_open() {
 /// read again: what reached it meanwhile moved the engine's revision before the skip, so only
 /// the record's own read state says it is behind.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one record's write, the look that skipped it, and the read once it is done"
+)]
 fn a_record_skipped_for_its_write_is_read_once_the_write_is_done() {
     let workspace = workspace_id();
     let tree = Layout {

@@ -730,7 +730,7 @@ fn a_hosted_window_opens_a_file_by_its_content_and_name() {
     assert_eq!(
         opens.content,
         Some(tilo_app_launch::ContentOpen {
-            hash: hash.clone(),
+            hash,
             name: Some("plan.md".into()),
         })
     );
