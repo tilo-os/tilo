@@ -96,7 +96,7 @@ fn started(profile: &Path) {
         app.harness()
             .targets()
             .keys()
-            .any(|name| name.contains("/NavRow["))
+            .any(|name| name.contains("NavList[") && name.contains("/row["))
     };
     let (shown, settling) = observe(|| {
         // Each pass takes in what was read off the frame, then waits for the next wake: a first

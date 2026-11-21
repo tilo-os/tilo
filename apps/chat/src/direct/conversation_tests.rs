@@ -731,7 +731,15 @@ fn sidebar_rows(window: &mut Window) -> Vec<(String, vello::kurbo::Point)> {
         .harness()
         .targets()
         .into_iter()
-        .filter(|(name, _)| name.contains("NavRow["))
+        // A sidebar row is named by its key in the list that holds it, as a keyed list names
+        // its rows: the row itself, not the parts inside it.
+        .filter(|(name, _)| {
+            name.contains("NavList[")
+                && name
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|part| part.starts_with("row["))
+        })
         .map(|(_, rect)| rect)
         .collect();
     rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));

@@ -153,7 +153,7 @@ fn a_note_rows_own_name_opens_the_note() {
     );
     let route = named(app.harness(), "Groceries")
         .into_iter()
-        .find(|route| route.0.contains("ListRow"))
+        .find(|route| route.0.contains("/row["))
         .expect("the note's own row names it");
     app.harness()
         .perform_semantic_named(&route.0, route.1.as_deref(), &Action::Activate)

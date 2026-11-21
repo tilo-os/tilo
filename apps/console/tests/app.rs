@@ -426,7 +426,7 @@ fn connect(browser_pages: bool) -> TestApp<App> {
     let targets: Vec<String> = app.harness().targets().into_keys().collect();
     let connect = targets
         .iter()
-        .find(|target| target.ends_with("NavList[0]/NavRow[2]"))
+        .find(|target| target.contains("NavList[0]/row[") && target.ends_with("connect]"))
         .cloned()
         .unwrap_or_else(|| panic!("the sidebar offers Connect among {targets:?}"));
     app.harness().click_named(&connect).unwrap();
@@ -487,7 +487,7 @@ fn connect_on_a_server_that_keeps_no_grants_for_the_person_offers_their_setup() 
     let targets: Vec<String> = app.harness().targets().into_keys().collect();
     let connect = targets
         .iter()
-        .find(|target| target.ends_with("NavList[0]/NavRow[2]"))
+        .find(|target| target.contains("NavList[0]/row[") && target.ends_with("connect]"))
         .cloned()
         .unwrap_or_else(|| panic!("the sidebar offers Connect among {targets:?}"));
     app.harness().click_named(&connect).unwrap();
@@ -511,7 +511,7 @@ fn revoking_a_grant_names_it_to_the_server() {
     let targets: Vec<String> = app.harness().targets().into_keys().collect();
     let connect = targets
         .iter()
-        .find(|target| target.ends_with("NavList[0]/NavRow[2]"))
+        .find(|target| target.contains("NavList[0]/row[") && target.ends_with("connect]"))
         .cloned()
         .unwrap_or_else(|| panic!("the sidebar offers Connect among {targets:?}"));
     app.harness().click_named(&connect).unwrap();
