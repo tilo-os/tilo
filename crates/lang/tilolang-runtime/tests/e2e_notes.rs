@@ -691,7 +691,7 @@ mod cases {
                 Value::some(Value::resource(&agenda)),
             ],
         );
-        assert_eq!(n.parent_of(&loose), Some(plan.clone()));
+        assert_eq!(n.parent_of(&loose), Some(plan));
         assert_eq!(labels(&n.window()), ["Plan", "Meetings", "Agenda", "Loose"]);
     }
 
