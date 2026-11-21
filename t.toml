@@ -4919,7 +4919,10 @@ default = false
 [[check]]
 name = "server-plan-base-fetch"
 # The registry redirects each blob to its object store, whose address it names per request.
-egress = { to = ["0.0.0.0/0", "::/0"] }
+# Pinned: the image is named by digest (tools/ci/server-plan-base.env), and the fetch refuses a
+# blob or a layer that doesn't match its digest, so a result is the base's whatever served it,
+# and retries on one base are answered from the first fetch rather than fetching 25 GB again.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash tools/ci/server-plan-retry.sh fetch /target/server-plan-base-fetch"
 requires = ["arch=x86_64", "disk-100g"]
 outputs = ["/target/server-plan-base-fetch/**"]
