@@ -216,9 +216,10 @@ impl<'a> Walk<'a> {
     /// stands where it stood, scrolled as it was, on the same ground.
     ///
     /// Each widget in the part is checked, not only the outermost: a scroll inside it moves what
-    /// it scrolls and changes nothing of the widgets around. A part that moved is composed again,
-    /// as what a widget composes of its own (a list's day heading held at its top while its rows
-    /// scroll) need not move with it.
+    /// it scrolls and changes nothing of the widgets around. A part that moved is composed again:
+    /// what a widget places of its own is placed in the window, and placed at another offset it
+    /// rounds otherwise than the kept part moved as far (a page rail's thumbnails, a fraction of
+    /// a pixel apart).
     fn reuse(&self, path: &str, widget: &dyn Widget) -> Option<Composed> {
         let kept = self.kept.as_ref()?;
         let before = *kept.parts.get(path)?;

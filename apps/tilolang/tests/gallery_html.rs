@@ -411,3 +411,109 @@ fn first_difference(
         )
     })
 }
+
+/// The Data page's conversation, opened and scrolled: each of its lines and day headings stands
+/// inside the list, the first at its top, in what composing the window gives and in what the page
+/// is handed, whether or not a paint placed them.
+#[test]
+fn a_conversation_shows_its_lines_where_the_list_stands() {
+    crate::support::installed("gallery");
+    let mut app = TestApp::<TlApp>::drive_at("custom", (1280, 800)).expect("the scenario stages");
+    let harness = app.harness();
+    harness.set_scene_drawn(false);
+    harness.set_coalesce_input_frames(true);
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+        let _ = harness.compose_frame();
+    }
+    let (x, y) = words_at(harness.presented_composition(), "Data").expect("the sidebar names Data");
+    harness.click_at(x, y);
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+        let _ = harness.compose_frame();
+    }
+    let scroller = harness
+        .presented_composition()
+        .and_then(|composition| {
+            let mut best: Option<(String, f64)> = None;
+            let mut nodes = vec![&composition.root];
+            while let Some(node) = nodes.pop() {
+                if let Some([_, content, viewport]) = node.scroll
+                    && node.rect[0] > 200.0
+                    && content > viewport
+                    && best
+                        .as_ref()
+                        .is_none_or(|(_, room)| content - viewport > *room)
+                {
+                    best = Some((node.path.clone(), content - viewport));
+                }
+                nodes.extend(&node.children);
+            }
+            best
+        })
+        .map(|(path, _)| path)
+        .expect("the Data page scrolls");
+    for step in 0..=6 {
+        let offset = f64::from(step) * 60.0;
+        if step > 0 {
+            assert!(
+                harness.scroll_composed(&scroller, offset),
+                "the page takes the scroll to {offset}"
+            );
+        }
+        let _ = harness.poll_frame();
+        let whole = harness.composition();
+        let _ = harness.compose_frame();
+        let presented = harness
+            .presented_composition()
+            .expect("a composition was handed over")
+            .clone();
+        for (what, composition) in [("composed", &whole), ("handed", &presented)] {
+            let mut lists = Vec::new();
+            let mut nodes = vec![&composition.root];
+            while let Some(node) = nodes.pop() {
+                if node.widget == "ConversationList" {
+                    lists.push(node);
+                }
+                nodes.extend(&node.children);
+            }
+            assert!(!lists.is_empty(), "the Data page shows a conversation");
+            for list in lists {
+                let [x, y, width, height] = list.rect;
+                let rows: Vec<_> = list
+                    .children
+                    .iter()
+                    .filter(|row| row.path.contains("#line:") || row.path.contains("#day:"))
+                    .collect();
+                assert!(!rows.is_empty(), "{}: the list holds lines", list.path);
+                let top = rows
+                    .iter()
+                    .map(|row| row.rect[1])
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    (top - y).abs() < 0.5,
+                    "scrolled to {offset}, {what}: the first of {} stands at {top}, the list at {y}",
+                    list.path
+                );
+                let mut parts: Vec<_> = rows.clone();
+                while let Some(part) = parts.pop() {
+                    let [px, py, pw, ph] = part.rect;
+                    assert!(
+                        px >= x - 0.5
+                            && px + pw <= x + width + 0.5
+                            && py >= y - 0.5
+                            && py + ph <= y + height + 0.5,
+                        "scrolled to {offset}, {what}: {} at {:?} stands outside its list at {:?}",
+                        part.path,
+                        part.rect,
+                        list.rect
+                    );
+                    parts.extend(&part.children);
+                }
+            }
+        }
+        if let Some(differs) = first_difference(&presented.root, &whole.root) {
+            panic!("scrolled to {offset}: {differs}");
+        }
+    }
+}

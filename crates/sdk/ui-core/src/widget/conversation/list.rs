@@ -937,6 +937,15 @@ impl ConversationList {
     pub fn work(&self) -> ListWork {
         self.cache.work()
     }
+
+    /// How far the list stands from where its kept rows were placed: a measure places them at
+    /// the origin, a paint where it paints, and the list may have moved since, as a scrolled
+    /// page moves it without painting it.
+    fn moved(&self) -> [f64; 2] {
+        self.cache.placed.as_ref().map_or([0.0, 0.0], |placed| {
+            [self.rect.x0 - placed.x0, self.rect.y0 - placed.y0]
+        })
+    }
 }
 
 impl Widget for ConversationList {
@@ -1002,6 +1011,12 @@ impl Widget for ConversationList {
             }
             return;
         }
+        // The rows stand where they were last placed (a measure places them at the origin, a
+        // paint where it painted); the parts are composed there, then moved to where the list
+        // stands now.
+        let moved = self.moved();
+        let (left, right) = (self.rect.x0 - moved[0], self.rect.x1 - moved[0]);
+        let first = cx.node().children.len();
         for (index, row) in rows.iter().enumerate() {
             let (y0, y1) = row.band();
             match row {
@@ -1010,7 +1025,7 @@ impl Widget for ConversationList {
                     let part = cx.part(
                         &format!("day:{index}"),
                         "SectionDivider",
-                        Rect::new(self.rect.x0, y0, self.rect.x1, y1),
+                        Rect::new(left, y0, right, y1),
                     );
                     part.tag = Some("li");
                     part.painted_of(label);
@@ -1034,7 +1049,7 @@ impl Widget for ConversationList {
                     let item = cx.part(
                         &format!("line:{index}"),
                         "ConversationLine",
-                        Rect::new(self.rect.x0, y0, self.rect.x1, y1),
+                        Rect::new(left, y0, right, y1),
                     );
                     item.tag = Some("li");
                     if let Some(author_rect) = author {
@@ -1095,6 +1110,11 @@ impl Widget for ConversationList {
                             .with_name(spoken.join(", ")),
                     );
                 }
+            }
+        }
+        if moved != [0.0, 0.0] {
+            for part in cx.node().children.iter_mut().skip(first) {
+                part.translate(moved);
             }
         }
     }
@@ -1181,6 +1201,7 @@ impl Widget for ConversationList {
         use crate::a11y::{AccessNode, AccessState, Role};
         let face = ListFace::new(&self.lines, ConversationClock::local());
         let total = self.lines.len();
+        let [_, moved] = self.moved();
         let children: Vec<AccessNode> = self
             .lines
             .iter()
@@ -1196,7 +1217,12 @@ impl Widget for ConversationList {
                     .find_map(|row| match row {
                         Row::Line {
                             index: at, y0, y1, ..
-                        } if *at == index => Some(Rect::new(self.rect.x0, *y0, self.rect.x1, *y1)),
+                        } if *at == index => Some(Rect::new(
+                            self.rect.x0,
+                            *y0 + moved,
+                            self.rect.x1,
+                            *y1 + moved,
+                        )),
                         _ => None,
                     })
                     .unwrap_or(self.rect);

@@ -204,8 +204,11 @@ impl crate::widget::Widget for DeclaredRail {
         }
     }
 
+    /// The rail stands where the component is laid out, painted or not: a page composes it
+    /// from there without ever painting it.
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rail.begin_frame(self.rect, self.count, self.current);
         self.laid_out = Some(self.count);
     }
 
