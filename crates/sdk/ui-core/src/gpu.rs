@@ -265,6 +265,22 @@ fn native_backends() -> BackendChoice {
     BackendChoice::only(wgpu::Backends::all())
 }
 
+/// The backends of the process that drives the display, when `WGPU_BACKEND` names none
+/// (`native::gpu_backends::beside_the_display`).
+#[cfg(feature = "native")]
+fn display_backends() -> BackendChoice {
+    if cfg!(any(target_os = "windows", target_os = "android")) {
+        default_backends()
+    } else {
+        crate::native::gpu_backends::beside_the_display()
+    }
+}
+
+#[cfg(not(feature = "native"))]
+fn display_backends() -> BackendChoice {
+    default_backends()
+}
+
 #[cfg(feature = "native")]
 fn adapter_named_by_env() -> bool {
     crate::native::gpu_backends::adapter_named()
@@ -302,6 +318,14 @@ impl RenderContext {
     pub fn new() -> Self {
         Self::with_backends(
             wgpu::Backends::from_env().map_or_else(default_backends, BackendChoice::only),
+        )
+    }
+
+    /// A context for the process whose compositor drives the display, made before that compositor
+    /// opened the display's device: it initialises no driver that could open the device first.
+    pub(crate) fn beside_the_display() -> Self {
+        Self::with_backends(
+            wgpu::Backends::from_env().map_or_else(display_backends, BackendChoice::only),
         )
     }
 

@@ -450,9 +450,11 @@ impl OffscreenMemoryStats {
 
 /// Load the GPU drivers the process draws with now, without opening a device: a process that also opens
 /// a display through EGL (a compositor) loads them first, as it always did, which is the order NVIDIA's
-/// driver tears down cleanly in.
+/// driver tears down cleanly in. Only drivers that cannot take the display's device from that
+/// compositor are loaded ([`RenderContext::beside_the_display`]).
 pub fn load_drivers() {
-    let _ = shared_render_context();
+    let _ = SHARED_RENDER_CONTEXT
+        .get_or_init(|| Arc::new(Mutex::new(RenderContext::beside_the_display())));
 }
 
 fn shared_render_context() -> Arc<Mutex<RenderContext>> {
