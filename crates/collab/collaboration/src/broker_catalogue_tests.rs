@@ -3,6 +3,7 @@
 //! that does not apply asks for the whole catalogue again.
 
 use super::*;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 tilo_test_env::scenario! {
     /// The action catalogue as it reaches the owner, each case on a bridge of its own with no broker behind it.
@@ -57,7 +58,7 @@ tilo_test_env::scenario! {
         let (tx, mut rx) = tokio_mpsc::channel(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
         let inbound = InboundBridge::new(tx, state.clone());
-        let reads = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let reads = Arc::new(AtomicU64::new(0));
         let counted = reads.clone();
         let local = tokio::task::LocalSet::new();
         local.block_on(&runtime, async move {
@@ -93,7 +94,7 @@ tilo_test_env::scenario! {
             ));
             assert!(state.is_healthy());
         });
-        assert_eq!(reads.get(), 2, "no read while a catalogue is queued");
+        assert_eq!(reads.load(Ordering::Relaxed), 2, "no read while a catalogue is queued");
     }
 
     phase a_catalogue_change_that_does_not_apply_asks_for_the_whole_catalogue;
@@ -113,7 +114,7 @@ tilo_test_env::scenario! {
         let mut gap: CatalogueChange = serde_json::from_str(&initial).unwrap();
         gap.reset = false;
         gap.since = 5;
-        let restarts = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let restarts = Arc::new(AtomicUsize::new(0));
         let counted = restarts.clone();
         let source = ScriptedCatalogue {
             changes: std::collections::VecDeque::from([
@@ -161,7 +162,7 @@ tilo_test_env::scenario! {
                     "the follower never holds an empty catalogue"
                 );
             }
-            assert_eq!(restarts.get(), 2, "a gap and a corrupt change are re-asked");
+            assert_eq!(restarts.load(Ordering::Relaxed), 2, "a gap and a corrupt change are re-asked");
             assert!(state.is_healthy());
         });
     }
@@ -190,7 +191,7 @@ tilo_test_env::scenario! {
         ))
         .unwrap();
         broken.templates.clear();
-        let restarts = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let restarts = Arc::new(AtomicUsize::new(0));
         let counted = restarts.clone();
         let source = ScriptedCatalogue {
             changes: std::collections::VecDeque::from([Ok(serde_json::to_string(&gap).unwrap())]),
@@ -213,7 +214,7 @@ tilo_test_env::scenario! {
             for _ in 0..64 {
                 tokio::task::yield_now().await;
             }
-            assert_eq!(asked.get(), 1, "the whole catalogue is asked for once");
+            assert_eq!(asked.load(Ordering::Relaxed), 1, "the whole catalogue is asked for once");
             assert!(
                 rx.try_recv().is_err(),
                 "nothing that cannot be applied is forwarded"
@@ -227,13 +228,12 @@ tilo_test_env::scenario! {
 /// connection `reads + 1`: `initial` is connection 1, so a read ahead of
 /// the owner would be visible in the connection it names.
 struct NextWindow {
-    reads: std::rc::Rc<std::cell::Cell<u64>>,
+    reads: Arc<AtomicU64>,
 }
 
 impl CatalogueSource for NextWindow {
     async fn read(&mut self) -> Result<String, ()> {
-        let next = self.reads.get() + 1;
-        self.reads.set(next);
+        let next = self.reads.fetch_add(1, Ordering::Relaxed) + 1;
         Ok(notebook_action_catalogue_fixture(
             Uuid::nil(),
             1,
@@ -252,7 +252,7 @@ impl CatalogueSource for NextWindow {
 struct ScriptedCatalogue {
     changes: std::collections::VecDeque<Result<String, ()>>,
     snapshots: std::collections::VecDeque<String>,
-    restarts: std::rc::Rc<std::cell::Cell<usize>>,
+    restarts: Arc<AtomicUsize>,
 }
 
 impl CatalogueSource for ScriptedCatalogue {
@@ -261,7 +261,7 @@ impl CatalogueSource for ScriptedCatalogue {
     }
 
     async fn restart(&mut self) -> Result<(), ()> {
-        self.restarts.set(self.restarts.get() + 1);
+        self.restarts.fetch_add(1, Ordering::Relaxed);
         let Some(snapshot) = self.snapshots.pop_front() else {
             return Err(());
         };
