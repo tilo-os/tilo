@@ -183,9 +183,7 @@ fn holding(pid: u32) -> (u64, u64, u64) {
                 .split_whitespace()
                 .next_back()
                 .is_some_and(|path| std::path::Path::new(path) == exe.as_path());
-        } else if of_exe
-            && let Some(rest) = line.strip_prefix("Private_Dirty:")
-        {
+        } else if of_exe && let Some(rest) = line.strip_prefix("Private_Dirty:") {
             relocated += rest
                 .trim()
                 .trim_end_matches("kB")
