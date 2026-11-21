@@ -233,6 +233,51 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
+    /// A record a window holds beside its own whose history the workspace's host has not
+    /// replayed is on its way: the window builds without it and asks again once it arrives.
+    /// It waited for it on the window's frame, with no clock, and a host that never replayed
+    /// it left the window blank and answering no action.
+    #[test]
+    fn a_record_beside_the_window_whose_history_never_arrives_is_on_its_way() {
+        const APP: &str = "so.tilo.terminal";
+        const RECORD: &str = "uuid:8038f29a-fb3e-400a-adc5-f411efb63325";
+        let (opened, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let workspace = uuid::Uuid::new_v4();
+            let manager =
+                crate::collaboration::CollaborationManager::native_initial_unanswered_fixture_for_test(
+                    APP,
+                    workspace,
+                    AutoCommit::new().save(),
+                    &[RECORD],
+                );
+            let construction =
+                crate::collaboration::native_initial::NativeConstruction::enter(manager)
+                    .expect("the window's construction");
+            // The app keeps the record itself: the window's own store opens it, the one that
+            // reads its records through the window's broker.
+            let store = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::queued()))
+                .open(APP, &workspace.to_string())
+                .expect("the window's store");
+            let records = WorkspaceResources::new(MemberId::person("alice"), move |_| {
+                Ok(store.clone())
+            });
+            let first = records.open_resource_at(APP, RECORD, "terminal.history", &|_| Ok(()));
+            let again = records.open_resource_at(APP, RECORD, "terminal.history", &|_| Ok(()));
+            drop(construction);
+            let _ = opened.send([first.err(), again.err()]);
+        });
+        let answered = answer
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the window waited for a record its host never replayed");
+        assert!(
+            answered
+                .iter()
+                .all(|error| matches!(error, Some(ResourceOpenError::Arriving))),
+            "{answered:?}"
+        );
+    }
+
     tilo_test_env::scenario! {
         fn a_workspace_holds_one_record_for_every_window_and_app;
 

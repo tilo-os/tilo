@@ -425,7 +425,7 @@ pub(super) fn open_in(
     checkout: &DocumentCheckout,
     initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
 ) -> Result<(), ResourceOpenError> {
-    match store.try_open_resource(checkout) {
+    match store.try_open_beside(checkout) {
         Ok(_) => Ok(()),
         Err(ResourceOpenError::MissingResource) => store
             .reserve_resource(checkout)?

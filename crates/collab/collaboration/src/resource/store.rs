@@ -892,6 +892,22 @@ impl ResourceSet {
         self.try_open_record_with_recovery(want, true)
     }
 
+    /// Whether opening `want` reads nothing its committed read still has to answer: it is
+    /// open or opening here already, or no broker reads it, or the broker's read answered.
+    fn read_answered(&self, want: &DocumentCheckout) -> Result<bool, ResourceOpenError> {
+        if self.portable.is_some()
+            || self.open.contains_key(&want.id)
+            || self.opening.contains_key(&want.id)
+        {
+            return Ok(true);
+        }
+        self.native_initial.as_ref().map_or(Ok(true), |bridge| {
+            bridge
+                .answered(&self.app_id, &self.home, want)
+                .map_err(ResourceOpenError::Initialization)
+        })
+    }
+
     fn try_open_record_with_recovery(
         &mut self,
         want: &DocumentCheckout,
@@ -2167,6 +2183,27 @@ impl ResourceStore {
             }
             other => other,
         }
+    }
+
+    /// [`Self::try_open_resource`] for a record a window holds beside the one it shows: one
+    /// whose committed history has not arrived is [`ResourceOpenError::Arriving`] rather than
+    /// waited for, and the store's readers are woken when it arrives. The window builds
+    /// without it and keeps waiting for it however long its host takes.
+    ///
+    /// # Errors
+    /// As [`Self::try_open_resource`].
+    pub fn try_open_beside(
+        &self,
+        want: &DocumentCheckout,
+    ) -> Result<ResourceOpenOutcome, ResourceOpenError> {
+        let answered = {
+            let set = self.0.try_borrow().map_err(|_| ResourceOpenError::Busy)?;
+            set.read_answered(want)?
+        };
+        if !answered {
+            return Err(ResourceOpenError::Arriving);
+        }
+        self.try_open_resource(want)
     }
 
     /// Open `want` if this store holds it, without asking the workspace for

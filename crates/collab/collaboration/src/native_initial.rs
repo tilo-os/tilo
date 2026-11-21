@@ -645,6 +645,42 @@ impl InitialReadBridge {
         self.document_waiting(app, workspace, checkout)
             .map_err(ResourceReadError::Initialization)
     }
+    /// Whether `checkout`'s committed read answered, asking for it the first time. A record a
+    /// window holds beside the one it shows opens once it did, and is on its way until then:
+    /// [`Self::record`] waits for it with no clock, which on the window's frame left the
+    /// window blank and deaf to its actions for as long as a slow or unreachable host took.
+    /// The primary route and a record that arrives on demand never wait there, so they answer
+    /// at once.
+    ///
+    /// # Errors
+    /// The read belongs to another app or workspace, or its worker ended.
+    pub fn answered(
+        &self,
+        app: &str,
+        workspace: &str,
+        checkout: &collab_types::document::DocumentCheckout,
+    ) -> Result<bool, String> {
+        self.check_scope(app, Some(workspace))?;
+        if checkout.id.is_package_primary() || checkout.id.arrives_on_demand() {
+            return Ok(true);
+        }
+        let route = RouteSpec::document(
+            self.route.app_id.clone(),
+            self.route.cluster_id,
+            checkout.id.as_str(),
+        );
+        let key = route.channel_id();
+        if self.state.document_reads.joining(&key) {
+            let tx = self.commands.upgrade().ok_or("native read worker ended")?;
+            let kind = checkout.kind.as_str().to_owned();
+            if !enqueue_sdk_command(&tx, SdkCommand::Join(route, Some(kind)), &self.state) {
+                return Err("native record read queue unavailable".into());
+            }
+        }
+        Ok(self.state.document_reads.initial(&key).is_some()
+            || self.state.document_reads.answered_by_own_channel(&key)
+            || self.state.document_reads.unreadable(&key).is_some())
+    }
     fn document_waiting(
         &self,
         app: &str,
@@ -832,6 +868,14 @@ impl InitialReadBridge {
         &self,
         _checkout: &collab_types::document::DocumentCheckout,
     ) -> bool {
+        match self.never {}
+    }
+    pub fn answered(
+        &self,
+        _app: &str,
+        _workspace: &str,
+        _checkout: &collab_types::document::DocumentCheckout,
+    ) -> Result<bool, String> {
         match self.never {}
     }
 }

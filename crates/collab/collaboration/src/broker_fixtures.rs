@@ -60,6 +60,47 @@ impl CollaborationManager {
         tests::native_initial_fixture(app, workspace, history)
     }
 
+    /// A manager joined on `app`'s route in `workspace`, whose broker never answers the
+    /// committed read of the `unanswered` records of `app` in `workspace`, as a host that is slow to replay
+    /// them, or never does.
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "a fixture for the toolkit's tests"
+    )]
+    pub fn native_initial_unanswered_fixture_for_test(
+        app: &str,
+        workspace: Uuid,
+        history: Vec<u8>,
+        unanswered: &[&str],
+    ) -> Self {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                committed_history_fixture: Some(history),
+                committed_open_unanswered_channels: unanswered
+                    .iter()
+                    .map(|record| RouteSpec::document(app, workspace, *record).channel_id())
+                    .collect(),
+                ..Captures::default()
+            })),
+            ..FakeBroker::default()
+        };
+        let (fd, _captures, _thread) = tests::stand_up_fake_broker(broker);
+        let mut manager = Self::from_sdk_fd_for_test(fd, app, workspace);
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: app.to_owned(),
+            cluster_id: workspace,
+            record: None,
+            resource_type: None,
+            handle: None,
+        }));
+        manager
+            .await_primary_route()
+            .expect("the app's route acknowledged");
+        manager
+    }
+
     /// Socket-backed ordering fixture on an actual acknowledged named route.
     /// This fixture does not establish native caller authority.
     #[allow(
