@@ -55,6 +55,10 @@ fn keep_in_run(source: &FileKeys, keys: &ContentKeys) {
     });
 }
 
+/// Connections to the identity service a workspace's key reads keep open while idle: one per
+/// writer a mount runs at once, beyond which a burst opens more and closes them after.
+const IDLE_KEY_LINKS: usize = 16;
+
 /// The key authority for the Files endpoint's workspace.
 #[derive(Clone)]
 pub struct FileKeys {
@@ -65,37 +69,48 @@ pub struct FileKeys {
 impl FileKeys {
     #[must_use]
     pub fn new(workspace: WorkspaceId, identity: PathBuf) -> Self {
-        let broker = Mutex::new(None::<BrokerSigningIdentity>);
         let scope = workspace.to_string();
+        let connect_scope = scope.clone();
+        Self::pooled(
+            workspace,
+            move || connect_identity(&identity, &connect_scope),
+            move |connection: &mut BrokerSigningIdentity| {
+                let reply = connection
+                    .group_keys(&scope, FILES_APP, &document_id(), 0)
+                    .map_err(|error| anyhow!("could not read the Files keys: {error}"))?;
+                Ok(if reply.access == KeyAccess::Ready {
+                    reply.keys.ok_or_else(|| anyhow!("no Files keys returned"))
+                } else {
+                    Err(anyhow!("{}", crate::sync_folder::KEYS_NOT_READY))
+                })
+            },
+        )
+    }
+
+    /// Keys read over connections `connect` opens, each asked by `read`. A connection answers one
+    /// request at a time, so files saved at once (a mount's writers, each closing one) each take
+    /// an idle connection or open another, rather than queueing on one; up to [`IDLE_KEY_LINKS`]
+    /// stay open for the next. `read` answers what the service said, the encoded keys or why
+    /// there are none, or why the connection failed, which closes it.
+    fn pooled<C: Send + 'static>(
+        workspace: WorkspaceId,
+        connect: impl Fn() -> Result<C> + Send + Sync + 'static,
+        read: impl Fn(&mut C) -> Result<Result<Vec<u8>>> + Send + Sync + 'static,
+    ) -> Self {
+        let idle = Mutex::new(Vec::<C>::new());
         Self::from_session(workspace, move || {
-            let mut connected = broker.lock_recover();
-            if connected.is_none() {
-                *connected = Some(connect_identity(&identity, &scope)?);
-            }
-            let connection = connected
-                .as_mut()
-                .ok_or_else(|| anyhow!("no Files identity connection"))?;
-            let reply = match connection.group_keys(&scope, FILES_APP, &document_id(), 0) {
-                Ok(reply) => reply,
-                Err(error) => {
-                    *connected = None;
-                    drop(connected);
-                    return Err(anyhow!("could not read the Files keys: {error}"));
-                }
+            let held = idle.lock_recover().pop();
+            let mut connection = match held {
+                Some(connection) => connection,
+                None => connect()?,
             };
-            drop(connected);
-            ensure!(
-                reply.access == KeyAccess::Ready,
-                "{}",
-                crate::sync_folder::KEYS_NOT_READY
-            );
-            ContentKeys::from_bytes(
-                reply
-                    .keys
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("no Files keys returned"))?,
-            )
-            .context("decoding Files content keys")
+            let said = read(&mut connection)?;
+            let mut idle = idle.lock_recover();
+            if idle.len() < IDLE_KEY_LINKS {
+                idle.push(connection);
+            }
+            drop(idle);
+            ContentKeys::from_bytes(&said?).context("decoding Files content keys")
         })
     }
 
@@ -254,8 +269,9 @@ impl Hydrator {
         let value = apply();
         let held = RUN.with_borrow_mut(Option::take).unwrap_or_default();
         drop(ends);
-        let moved = held.into_values().any(|(source, keys)| {
-            match self.block_on(source.access()) {
+        let moved = held
+            .into_values()
+            .any(|(source, keys)| match self.block_on(source.access()) {
                 Ok(current) => {
                     (current.workspace(), current.epoch()) != (keys.workspace(), keys.epoch())
                 }
@@ -263,8 +279,7 @@ impl Hydrator {
                     tracing::warn!(%error, "the Files keys a run sealed with could not be checked");
                     true
                 }
-            }
-        });
+            });
         (value, moved)
     }
 
@@ -609,6 +624,94 @@ mod tests {
             &[collab_types::MemberId::person("local")],
             None,
         )
+    }
+
+    fn group_keys() -> ContentKeys {
+        key_group::KeyGroup::create(
+            WorkspaceId::new(),
+            key_group::MemberKey::generate("member").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap()
+    }
+
+    /// A mount's writers each close a file at once: their key reads go over a connection each
+    /// rather than queueing on one, and the connections stay open for the next, at most
+    /// [`IDLE_KEY_LINKS`] of them. A connection whose request failed is not used again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    async fn files_saved_at_once_read_their_keys_side_by_side() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Default)]
+        struct Service {
+            opened: AtomicUsize,
+            reading: AtomicUsize,
+            most_at_once: AtomicUsize,
+            reads: AtomicUsize,
+        }
+        let service = Arc::new(Service::default());
+        let keys = group_keys().to_bytes().unwrap().to_vec();
+        let (opens, reads) = (Arc::clone(&service), Arc::clone(&service));
+        let source = FileKeys::pooled(
+            WorkspaceId::new(),
+            move || Ok(opens.opened.fetch_add(1, Ordering::SeqCst)),
+            move |connection: &mut usize| {
+                let at_once = reads.reading.fetch_add(1, Ordering::SeqCst) + 1;
+                reads.most_at_once.fetch_max(at_once, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                reads.reading.fetch_sub(1, Ordering::SeqCst);
+                let read = reads.reads.fetch_add(1, Ordering::SeqCst);
+                // The first connection breaks on its second request.
+                ensure!(
+                    !(*connection == 0 && read > 0 && read < 20),
+                    "the connection broke"
+                );
+                Ok(Ok(keys.clone()))
+            },
+        );
+        let store = Arc::new(crate::store::ContentStore::memory());
+        let started = std::time::Instant::now();
+        let writers: Vec<_> = (0..16_u8)
+            .map(|writer| {
+                let (source, store) = (source.clone(), Arc::clone(&store));
+                tokio::spawn(async move {
+                    let mut saved = 0;
+                    for file in 0..32_u8 {
+                        let data = vec![writer.wrapping_mul(32).wrapping_add(file); 4096];
+                        let (manifest, _) = content::build(&data, None);
+                        saved += usize::from(
+                            source
+                                .save(&store, &manifest, data.as_slice())
+                                .await
+                                .is_ok(),
+                        );
+                    }
+                    saved
+                })
+            })
+            .collect();
+        let mut saved = 0;
+        for writer in writers {
+            saved += writer.await.unwrap();
+        }
+        let took = started.elapsed();
+        println!(
+            "BENCH file_keys sealed_saves_s {:.0} files/s over {} key reads",
+            512.0 / took.as_secs_f64(),
+            service.reads.load(Ordering::SeqCst)
+        );
+        assert!(
+            saved >= 510,
+            "{saved} of 512 files saved: only the broken connection's fail"
+        );
+        let most = service.most_at_once.load(Ordering::SeqCst);
+        assert!(most > 1, "key reads went one at a time ({most} at most)");
+        let opened = service.opened.load(Ordering::SeqCst);
+        assert!(
+            opened <= 16 + 1,
+            "{opened} connections opened for 16 writers and one broken connection"
+        );
     }
 
     fn install_file_keys(hydrator: &Hydrator, workspaces: [WorkspaceId; 2]) {
