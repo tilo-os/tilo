@@ -15,14 +15,6 @@ use super::{
 use tilo_actions::remote::{Completer, Pending};
 use tilo_server_protocol::page::{OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal};
 
-/// How long a page's act waits for a replica that is taking its document's
-/// parts in: the parts arrive off the service's thread, and a person's click
-/// waits them out rather than being answered "not ready".
-const ACT_WAIT: std::time::Duration = std::time::Duration::from_millis(10);
-/// The most waits one act makes: a fifth of a second together, which is a long
-/// time to lay a document's parts out and short enough not to hold the thread.
-const ACT_TRIES: u32 = 20;
-
 /// Whether `error` says the record is not ready yet, as a replica taking its
 /// parts in does.
 fn not_ready(error: &ActionCallError) -> bool {
@@ -191,8 +183,24 @@ impl Worker {
                 done,
             } => done.complete(self.open_page(workspace_id, &caller, &address)),
             PageJob::Act {
-                page, act, done, ..
-            } => done.complete(self.act_on_page(page, act)),
+                workspace_id,
+                page,
+                act,
+                done,
+            } => match self.act_on_page(page, act.clone()) {
+                Some(answer) => done.complete(answer),
+                // Its record or its chains are still on their way: it waits off the thread,
+                // and goes on once they arrive.
+                None => self.await_part(
+                    workspace_id,
+                    Job::Page(Box::new(PageJob::Act {
+                        workspace_id,
+                        page,
+                        act,
+                        done,
+                    })),
+                ),
+            },
             PageJob::Close { page, .. } => {
                 if self.pages.held.remove(&page).is_some() {
                     self.bounded.retain(|key, _| key.3 != Some(page));
@@ -367,84 +375,80 @@ impl Worker {
         })
     }
 
+    /// Act on `page` as its person did, or answer what changed on it: what the page shows now.
+    /// `None` while its record or the chains it reads are still on their way: the act is held
+    /// off the thread ([`Worker::await_part`]) and applied once they arrive.
     fn act_on_page(
         &mut self,
         page: u64,
         act: Option<(u32, Option<String>, PageAction)>,
-    ) -> Result<Vec<PagePatch>, PageRefusal> {
+    ) -> Option<Result<Vec<PagePatch>, PageRefusal>> {
         // What the page holds, taken by value so the workspace is read next.
-        let (home, app) = match self
-            .pages
-            .held
-            .get(&page)
-            .ok_or_else(|| unavailable("the page was closed"))?
-        {
-            HeldPage::App {
+        let (home, app) = match self.pages.held.get(&page) {
+            Some(HeldPage::App {
                 workspace_id,
                 who,
                 route,
-            } => (
+            }) => (
                 None,
                 Some((*workspace_id, bounded::Bounded::clone(who), route.clone())),
             ),
-            HeldPage::Home { workspace_id } => (Some(*workspace_id), None),
+            Some(HeldPage::Home { workspace_id }) => (Some(*workspace_id), None),
+            None => return Some(Err(unavailable("the page was closed"))),
         };
         // The workspace's front page holds no document and nothing acts on
         // it: a pass over it answers that nothing changed. It is read again
         // first, so a workspace no longer readable here is refused.
         if let Some(workspace_id) = home {
-            self.refresh(workspace_id, Needs::Workspace)
-                .map_err(refused)?;
-            return Ok(Vec::new());
+            return Some(
+                self.refresh(workspace_id, Needs::Workspace)
+                    .map_err(refused)
+                    .map(|_| Vec::new()),
+            );
         }
-        let (workspace_id, who, route) = app.ok_or_else(|| unavailable("the page was closed"))?;
+        let Some((workspace_id, who, route)) = app else {
+            return Some(Err(unavailable("the page was closed")));
+        };
         let acting = act.is_some();
+        let started = std::time::Instant::now();
+        // Others' writes since are merged before the person acts, as they
+        // would have seen them in a window.
         // A replica holding neither its document's parts nor the parts of its
         // chains answers that it is not ready while they are on their way off
-        // this thread. What a person did is asked again until they are here:
-        // they see the one click they made, and nothing they typed is lost to a
-        // read that was still arriving.
-        let mut tries = 0;
-        let (patches, refreshed, held_at, acted, saved_at) = 'act: loop {
-            let started = std::time::Instant::now();
-            // Others' writes since are merged before the person acts, as they
-            // would have seen them in a window.
-            let state = match self.refresh(workspace_id, Needs::Workspace) {
-                Ok(state) => state,
-                Err(error) if acting && not_ready(&error) && tries < ACT_TRIES => {
-                    tries = tries.saturating_add(1);
-                    std::thread::sleep(ACT_WAIT);
-                    continue 'act;
-                }
-                Err(error) => return Err(refused(error)),
-            };
-            let refreshed = started.elapsed();
-            let key = match self.bounded_replica(workspace_id, &who, &route, &state) {
-                Ok(key) => key,
-                Err(error) if acting && not_ready(&error) && tries < ACT_TRIES => {
-                    tries = tries.saturating_add(1);
-                    std::thread::sleep(ACT_WAIT);
-                    continue 'act;
-                }
-                Err(error) => return Err(refused(error)),
-            };
-            let held_at = started.elapsed();
-            let patches = self
-                .bounded
-                .get(&key)
-                .ok_or_else(|| unavailable("the page's document did not open"))?
-                .held
-                .app
-                .page_act(act)
-                .map_err(not_shown)?;
-            let acted = started.elapsed();
-            self.save_page(workspace_id, &key, (&who, &route, &state))?;
-            break 'act (patches, refreshed, held_at, acted, started.elapsed());
+        // this thread. What a person did is held until they are here: they see
+        // the one click they made, and nothing they typed is lost to a read
+        // that was still arriving.
+        let state = match self.refresh(workspace_id, Needs::Workspace) {
+            Ok(state) => state,
+            Err(error) if acting && not_ready(&error) => {
+                return self.park_page_act(page, &error);
+            }
+            Err(error) => return Some(Err(refused(error))),
         };
+        let refreshed = started.elapsed();
+        let key = match self.bounded_replica(workspace_id, &who, &route, &state) {
+            Ok(key) => key,
+            Err(error) if acting && not_ready(&error) => {
+                return self.park_page_act(page, &error);
+            }
+            Err(error) => return Some(Err(refused(error))),
+        };
+        let held_at = started.elapsed();
+        let Some(held) = self.bounded.get(&key) else {
+            return Some(Err(unavailable("the page's document did not open")));
+        };
+        let patches = match held.held.app.page_act(act) {
+            Ok(patches) => patches,
+            Err(error) => return Some(Err(not_shown(error))),
+        };
+        let acted = started.elapsed();
+        if let Err(error) = self.save_page(workspace_id, &key, (&who, &route, &state)) {
+            return Some(Err(error));
+        }
+        let saved_at = started.elapsed();
         tracing::debug!(
             page,
             acted = acting,
-            tries,
             patches = patches.len(),
             refresh_ms = refreshed.as_millis(),
             replica_ms = held_at.saturating_sub(refreshed).as_millis(),
@@ -452,10 +456,27 @@ impl Worker {
             save_ms = saved_at.saturating_sub(acted).as_millis(),
             "workspace actions: a page was acted on"
         );
-        Ok(patches
+        Some(Ok(patches
             .into_iter()
             .map(|(id, html)| PagePatch { id, html })
-            .collect())
+            .collect()))
+    }
+
+    /// The act found its record or the chains it reads still on their way: hold it off the
+    /// thread until they arrive ([`Worker::await_part`]), or refuse it once the wait is over.
+    fn park_page_act(
+        &mut self,
+        page: u64,
+        error: &ActionCallError,
+    ) -> Option<Result<Vec<PagePatch>, PageRefusal>> {
+        if self.hold_for_part(None) {
+            tracing::warn!(page, error = ?error, "a page's act found its record not ready");
+            return None;
+        }
+        tracing::warn!(page, error = ?error, "a page's act was refused before it was applied");
+        Some(Err(unavailable(
+            "the page's record has not arrived from the workspace in time".to_owned(),
+        )))
     }
 
     /// Save what the page's person wrote through it: checked against their

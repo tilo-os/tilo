@@ -151,6 +151,17 @@ impl Job {
         }
     }
 
+    /// Whether the request waits off the workspace's thread for the parts of what it reads or
+    /// changes: a write, a listing, or a page's act, which is a person's click and waits like
+    /// one.
+    pub(super) const fn holds_for_parts(&self) -> bool {
+        match self {
+            Self::Invoke { .. } | Self::Catalogue { .. } => true,
+            Self::Page(job) => matches!(**job, pages::PageJob::Act { .. }),
+            _ => false,
+        }
+    }
+
     /// Which step of a content put the job is, for the log: a slow one is
     /// told apart from the others by what it was doing.
     pub(super) const fn step_kind(&self) -> Option<&'static str> {
@@ -274,5 +285,35 @@ impl Job {
             | Self::Page(_)
             | Self::Rename(..) => Keys::Joined,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn page(act: bool) -> Job {
+        let workspace_id = WorkspaceId::parse("6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b").unwrap();
+        let job = if act {
+            let (done, _answer) = tilo_actions::remote::pending();
+            pages::PageJob::Act {
+                workspace_id,
+                page: 1,
+                act: None,
+                done,
+            }
+        } else {
+            pages::PageJob::Close {
+                workspace_id,
+                page: 1,
+            }
+        };
+        Job::Page(Box::new(job))
+    }
+
+    #[test]
+    fn a_pages_act_holds_for_parts_as_a_write_does() {
+        assert!(page(true).holds_for_parts());
+        assert!(!page(false).holds_for_parts());
     }
 }
