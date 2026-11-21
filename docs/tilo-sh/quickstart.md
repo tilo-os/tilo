@@ -57,7 +57,7 @@ bun add tilo-sdk       # TypeScript:  import { Tilo } from "tilo-sdk"
 ```
 
 The SDKs read `TILO_API_KEY` from the environment, so nothing is hard-coded. This makes a workspace of
-its own, lists the apps in it, writes a note and reads it back:
+its own, lists the apps in it, writes a snippet and reads it back:
 
 ```python example=first-workspace
 from tilo import Tilo
@@ -69,9 +69,9 @@ workspace = tilo.workspace(created.id)
 print("workspace:", created.name, created.id)
 print("apps:", len(workspace.ls().rows))
 
-workspace.do("notes#new-note", title="Hello")
-note = workspace.read("notes/Hello")
-print("note:", note.kind, "title:", note.fields["title"])
+workspace.do("snippets#new-snippet", title="Hello")
+snippet = workspace.read("snippets/Hello")
+print("snippet:", snippet.kind, "title:", snippet.fields["title"])
 ```
 
 ```typescript example=first-workspace
@@ -85,9 +85,9 @@ console.log("workspace:", created.name, created.id);
 const apps = await workspace.ls();
 console.log("apps:", apps.rows.length);
 
-await workspace.do("notes#new-note", { title: "Hello" });
-const note = await workspace.read("notes/Hello");
-console.log("note:", note.kind, "title:", note.fields.title);
+await workspace.do("snippets#new-snippet", { title: "Hello" });
+const snippet = await workspace.read("snippets/Hello");
+console.log("snippet:", snippet.kind, "title:", snippet.fields.title);
 ```
 
 ```curl example=first-workspace
@@ -103,13 +103,13 @@ echo "workspace: $(jq -r .name <<<"$created") $workspace"
 apps=$(curl -sS --fail-with-body "$api/workspaces/$workspace/resources" -H "$auth")
 echo "apps: $(jq '.rows | length' <<<"$apps")"
 
-curl -sS --fail-with-body "$api/workspaces/$workspace/resources/notes/actions/new-note" -H "$auth" \
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/snippets/actions/new-snippet" -H "$auth" \
   -H "Content-Type: application/json" -d '{"title": "Hello"}' > /dev/null
-note=$(curl -sS --fail-with-body "$api/workspaces/$workspace/resources/notes/Hello" -H "$auth")
-echo "note: $(jq -r .kind <<<"$note") title: $(jq -r .fields.title <<<"$note")"
+snippet=$(curl -sS --fail-with-body "$api/workspaces/$workspace/resources/snippets/Hello" -H "$auth")
+echo "snippet: $(jq -r .kind <<<"$snippet") title: $(jq -r .fields.title <<<"$snippet")"
 ```
 
-Open the workspace at [tilo.sh](https://tilo.sh), and the note is there, with the run that made it in
+Open the workspace at [tilo.sh](https://tilo.sh), and the snippet is there, with the run that made it in
 its history.
 
 ## Where next

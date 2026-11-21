@@ -25,7 +25,7 @@ wants.
 ## Watching from your code
 
 `ws.watch()` is an async iterator: Python's `async for`, TypeScript's `for await`. Here a watch is opened,
-a page is made, and the first event is printed:
+a snippet is made, and the first event is printed:
 
 ```python example=watch-stream
 import asyncio
@@ -45,7 +45,7 @@ async def main() -> None:
 
     watcher = asyncio.create_task(first_change())
     await asyncio.sleep(1)                      # let the watch attach
-    await workspace.do("notes#create-page", title="Arrivals", markdown="- 09:40 Jane Doe\n")
+    await workspace.do("snippets#new-snippet", title="Arrivals")
 
     event = await asyncio.wait_for(watcher, timeout=30)
     print(
@@ -81,7 +81,7 @@ async function firstChange() {
 
 const watcher = firstChange();
 await new Promise((resolve) => setTimeout(resolve, 1000)); // let the watch attach
-await workspace.do("notes#create-page", { title: "Arrivals", markdown: "- 09:40 Jane Doe\n" });
+await workspace.do("snippets#new-snippet", { title: "Arrivals" });
 
 const event = await Promise.race([
   watcher,
@@ -110,8 +110,8 @@ workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-T
 curl -sSN "$api/workspaces/$workspace/events" -H "$auth" > events.txt &
 watching=$!
 sleep 1
-curl -sS --fail-with-body "$api/workspaces/$workspace/resources/notes/actions/create-page" -H "$auth" \
-  -H "Content-Type: application/json" -d '{"title": "Arrivals", "markdown": "- 09:40 Jane Doe\n"}' > /dev/null
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/snippets/actions/new-snippet" -H "$auth" \
+  -H "Content-Type: application/json" -d '{"title": "Arrivals"}' > /dev/null
 for _ in $(seq 30); do grep -q '^event: change' events.txt && break; sleep 1; done
 kill "$watching"
 grep -A1 '^event: change' events.txt | head -2

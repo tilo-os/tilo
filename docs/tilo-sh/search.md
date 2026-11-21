@@ -10,8 +10,8 @@ sees, so picking is a matter of reading labels rather than guessing ids:
 
 ```text
 ls                 → the apps, each with the path its own listing takes
-ls notes           → the notes
-ls notes/Todo      → the blocks of one note, and the actions it offers
+ls snippets        → the snippets
+ls snippets/Todo   → the fields of one snippet, and the actions it offers
 ```
 
 Paging is `limit`, and a listing answers a cursor for the rest.
@@ -22,11 +22,11 @@ from tilo import Tilo
 tilo = Tilo()
 workspace = tilo.workspace(tilo.workspaces.create("Looking for things").id)
 
-workspace.do("notes#create-page", title="Visa checklist", markdown="- passport\n")
-workspace.do("notes#create-page", title="Packing list", markdown="- socks\n")
+workspace.do("snippets#new-snippet", title="Visa checklist")
+workspace.do("snippets#new-snippet", title="Packing list")
 
 wanted = "visa"
-for row in workspace.ls("notes").rows:
+for row in workspace.ls("snippets").rows:
     if wanted in (row.label or row.name).lower():
         print(row.path, "|", row.label, "|", row.kind)
 ```
@@ -37,12 +37,12 @@ import { Tilo } from "tilo-sdk";
 const tilo = new Tilo();
 const workspace = tilo.workspace((await tilo.workspaces.create("Looking for things")).id);
 
-await workspace.do("notes#create-page", { title: "Visa checklist", markdown: "- passport\n" });
-await workspace.do("notes#create-page", { title: "Packing list", markdown: "- socks\n" });
+await workspace.do("snippets#new-snippet", { title: "Visa checklist" });
+await workspace.do("snippets#new-snippet", { title: "Packing list" });
 
 const wanted = "visa";
-const notes = await workspace.ls("notes");
-for (const row of notes.rows) {
+const snippets = await workspace.ls("snippets");
+for (const row of snippets.rows) {
   if ((row.label || row.name).toLowerCase().includes(wanted)) {
     console.log(row.path, "|", row.label, "|", row.kind);
   }
@@ -56,13 +56,13 @@ workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-T
   -d '{"name": "Looking for things"}' | jq -r .id)
 resources=$api/workspaces/$workspace/resources
 
-for page in '{"title": "Visa checklist", "markdown": "- passport\n"}' \
-            '{"title": "Packing list", "markdown": "- socks\n"}'; do
-  curl -sS --fail-with-body "$resources/notes/actions/create-page" -H "$auth" \
-    -H "Content-Type: application/json" -d "$page" > /dev/null
+for snippet in '{"title": "Visa checklist"}' \
+               '{"title": "Packing list"}'; do
+  curl -sS --fail-with-body "$resources/snippets/actions/new-snippet" -H "$auth" \
+    -H "Content-Type: application/json" -d "$snippet" > /dev/null
 done
 
-curl -sS --fail-with-body "$resources?path=notes" -H "$auth" \
+curl -sS --fail-with-body "$resources?path=snippets" -H "$auth" \
   | jq -r '.rows[] | select((.label // .name) | ascii_downcase | contains("visa"))
            | "\(.path) | \(.label) | \(.kind)"'
 ```
@@ -81,7 +81,7 @@ from tilo import Tilo
 
 tilo = Tilo()
 workspace = tilo.workspace(tilo.workspaces.create("Searching").id)
-workspace.do("notes#create-page", title="Visa checklist", markdown="- passport\n- photos\n")
+workspace.do("snippets#new-snippet", title="Visa passport checklist")
 
 for hit in workspace.find("passport"):
     print(hit.path, "|", hit.label, "|", hit.kind)
@@ -92,7 +92,7 @@ import { Tilo } from "tilo-sdk";
 
 const tilo = new Tilo();
 const workspace = tilo.workspace((await tilo.workspaces.create("Searching")).id);
-await workspace.do("notes#create-page", { title: "Visa checklist", markdown: "- passport\n- photos\n" });
+await workspace.do("snippets#new-snippet", { title: "Visa passport checklist" });
 
 for (const hit of await workspace.find("passport")) {
   console.log(hit.path, "|", hit.label, "|", hit.kind);
@@ -104,9 +104,9 @@ api=$TILO_API_URL/v1
 auth="Authorization: Bearer $TILO_API_KEY"
 workspace=$(curl -sS --fail-with-body "$api/workspaces" -H "$auth" -H "Content-Type: application/json" \
   -d '{"name": "Searching"}' | jq -r .id)
-curl -sS --fail-with-body "$api/workspaces/$workspace/resources/notes/actions/create-page" -H "$auth" \
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/snippets/actions/new-snippet" -H "$auth" \
   -H "Content-Type: application/json" \
-  -d '{"title": "Visa checklist", "markdown": "- passport\n- photos\n"}' > /dev/null
+  -d '{"title": "Visa passport checklist"}' > /dev/null
 
 curl -sS --fail-with-body "$api/workspaces/$workspace/search?q=passport" -H "$auth" \
   | jq -r '.hits[] | "\(.path) | \(.label) | \(.kind)"'
@@ -120,7 +120,7 @@ curl -sS --fail-with-body "$api/workspaces/$workspace/search?q=passport" -H "$au
 
 ## What is worth finding
 
-An app decides what search can see and what it says about a record: a note's title and text, a task's
+An app decides what search can see and what it says about a record: a snippet's title and body, a task's
 title and notes, a file's name. Those same labels are what a person reads in the palette and what an agent
 gets when it lists.
 
