@@ -1,9 +1,9 @@
-//! A key's calls while a mail import goes on in the same workspace: Ada's logged-in computer
-//! writes mail into the workspace as fast as it reads it in, one new message after another, and
-//! her backend's key lists her tasks, her notes and her folder all the while, through the API
-//! server as `tilo ls -w` asks it. Mail's writes are another app's: every listing answers at once,
-//! the last as fast as the first, and a folder of more files than a page holds lists whole, never
-//! "kept changing" for writes to Mail.
+//! A key's calls while an import goes on in the same workspace: Ada's logged-in computer writes
+//! spreadsheets into the workspace as fast as it reads them in, one new sheet after another, and
+//! her backend's key lists her tasks, her contacts and her folder all the while, through the API
+//! server as `tilo ls -w` asks it. The sheets are another app's writes: every listing answers at
+//! once, the last as fast as the first, and a folder of more files than a page holds lists whole,
+//! never "kept changing" for writes to Sheets.
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key};
@@ -13,7 +13,7 @@ use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-const MAIL: &str = "so.tilo.mail";
+const SHEETS: &str = "so.tilo.sheets";
 
 /// More files than one page of a listing holds, so the folder is read over several pages.
 const FILES: usize = 300;
@@ -21,8 +21,8 @@ const FILES: usize = 300;
 /// How often the key lists while the import goes on.
 const ROUNDS: usize = 8;
 
-/// What one listing of the key may take while Mail is written: well under a second on the real
-/// path, however busy Mail is.
+/// What one listing of the key may take while Sheets is written: well under a second on the
+/// real path, however busy Sheets is.
 const CALL_BUDGET: Duration = Duration::from_millis(1_000);
 
 /// Every row `path` lists, page after page as `tilo ls` reads them, with what the key was answered
@@ -54,7 +54,7 @@ async fn timed<T>(call: impl std::future::Future<Output = T>) -> (Duration, T) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mail_import_beside_never_slows_a_keys_listings() {
+async fn an_import_into_another_app_never_slows_a_keys_listings() {
     Box::pin(beside_an_import()).await;
 }
 
@@ -72,7 +72,7 @@ async fn beside_an_import() {
     let workspace = made["id"].as_str().unwrap().to_owned();
     let base = format!("/v1/workspaces/{workspace}");
 
-    // Her computer holds the workspace, with her tasks, her notes and her folder.
+    // Her computer holds the workspace, with her tasks, her contacts and her folder.
     let mut page = super::resource_support::open_admitted_peer(
         &on_server.hosted,
         &computer,
@@ -81,7 +81,7 @@ async fn beside_an_import() {
     )
     .await;
     page.create("so.tilo.tasks");
-    page.create("so.tilo.notes");
+    page.create("so.tilo.contacts");
     let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
     for index in 0..FILES {
         folder
@@ -91,7 +91,7 @@ async fn beside_an_import() {
     super::put_files::write_tree(&page, &mut folder).unwrap();
     page.durable().await;
     let tasks = format!("{base}/resources?path=tasks&limit=40");
-    let notes = format!("{base}/resources?path=notes&limit=40");
+    let contacts = format!("{base}/resources?path=contacts&limit=40");
     let files = format!("{base}/resources?path=files&limit=100");
     let deadline = tilo_test_env::hang_deadline();
     let files_listed = loop {
@@ -108,14 +108,14 @@ async fn beside_an_import() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
 
-    // It imports mail: a new message written into Mail after another, as fast as it can.
+    // It imports spreadsheets: a new sheet written after another, as fast as it can.
     let stop = Arc::new(AtomicBool::new(false));
     let written = Arc::new(AtomicUsize::new(0));
     let import = {
         let (stop, written) = (Arc::clone(&stop), Arc::clone(&written));
         tokio::task::spawn_blocking(move || {
             while !stop.load(Ordering::Relaxed) {
-                page.create(MAIL);
+                page.create(SHEETS);
                 page.pump();
                 written.fetch_add(1, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(5));
@@ -135,21 +135,21 @@ async fn beside_an_import() {
     for round in 0..ROUNDS {
         let before = written.load(Ordering::Relaxed);
         let mut took = Vec::new();
-        for (call, path) in [("tasks", &tasks), ("notes", &notes)] {
+        for (call, path) in [("tasks", &tasks), ("contacts", &contacts)] {
             let (elapsed, (status, listed)) = timed(key.get(path)).await;
             assert_eq!(status, 200, "listing {call} in round {round}: {listed}");
             took.push((call, elapsed));
         }
-        // The folder over its pages: each read on from the last one's cursor while Mail moves.
+        // The folder over its pages: each read on from the last one's cursor while Sheets moves.
         let (elapsed, listed) = timed(listed_whole(&key, &files)).await;
         assert_eq!(
             listed,
             Ok(files_listed),
-            "the folder lists whole beside Mail's writes, in round {round}"
+            "the folder lists whole beside Sheets' writes, in round {round}"
         );
         took.push(("files", elapsed / 3));
         let during = written.load(Ordering::Relaxed) - before;
-        eprintln!("round {round}: {took:?}, {during} messages written meanwhile");
+        eprintln!("round {round}: {took:?}, {during} sheets written meanwhile");
         rounds.push(took);
         during_rounds.push(during);
     }
@@ -157,8 +157,8 @@ async fn beside_an_import() {
     let page = import.await.unwrap();
     page.durable().await;
     let written = written.load(Ordering::Relaxed);
-    eprintln!("{written} messages written in all");
-    // The import writes one message after another as fast as it can, so how many it wrote in
+    eprintln!("{written} sheets written in all");
+    // The import writes one sheet after another as fast as it can, so how many it wrote in
     // all measures how long the rounds took, not whether it kept up: the same test wrote 90-99
     // across eight rounds on a faster machine and 126 when the rounds ran longer. What the
     // listings were beside is an import that never stopped: every round found it writing.
