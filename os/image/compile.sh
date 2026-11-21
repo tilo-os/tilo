@@ -6,10 +6,12 @@
 # build compiles: this runs as an ordinary build action, with the compiler
 # cache, warm build directories and keys every other build of the workspace has.
 #
-# usage: compile.sh OUT | --dev OUT | --chromium OUT | --apps FROM OUT
+# usage: compile.sh OUT | --dev OUT | --chromium OUT | --boot OUT | --apps FROM OUT
 #   CARGO_TARGET_DIR   the build directory (default target/)
 #   TILO_RUST_LTO      thin (published images) or off (integration and development)
 #   TILO_WITH_BROWSER  1 to build the browser's engine host, 0 not to
+#   TILO_BOOT_GREETER  `apart` leaves the initramfs's greeter (`--boot`) out of OUT, for
+#                      an image build given it beside the tree (os/image/build-layer.sh)
 #   TILO_CHROMIUM_ENGINE  what `--chromium` left: the engine taken from there
 #                      instead of built again; `apart` leaves it out of OUT, for an
 #                      image build given it beside the tree (os/dev/build-image.sh)
@@ -54,6 +56,37 @@ if [[ ${1:-} == --chromium ]]; then
   out=$(cd "$out" && pwd)
   export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$(pwd)/target} LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
   chromium_engine "$out" "$CARGO_TARGET_DIR" "${TILO_GITHUB_ASSET_CACHE:-$(pwd)/os/external-assets/cache}"
+  exit 0
+fi
+# The initramfs's greeter (OUT/tilo-greeter-boot). The release build resolves features for the
+# whole workspace through workspace-hack, which hands the greeter the media stack other members
+# enable. This copy (profile `initrd`) links the empty os/initrd/workspace-hack instead, so it
+# takes only what its own manifests name and every boot unpacks no GStreamer or PipeWire. The
+# resolve that build writes to Cargo.lock is put back after it. It links as its profile says (fat
+# LTO, one codegen unit), which keeps it within the initramfs's budget, not with the release
+# build's thin LTO; an image linked without LTO (TILO_RUST_LTO=off) links it without LTO too.
+boot_greeter() {
+  local dest=$1 lock lto=fat units=1 status=0
+  [ "${TILO_RUST_LTO:-thin}" = off ] && lto=off units=16
+  lock=$(mktemp "${TMPDIR:-/tmp}/tilo-boot-lock.XXXXXX")
+  cp Cargo.lock "$lock"
+  CARGO_PROFILE_INITRD_LTO=$lto CARGO_PROFILE_INITRD_CODEGEN_UNITS=$units \
+    cargo build --profile initrd -p greeter --bin tilo-greeter \
+      --config 'patch.crates-io.workspace-hack.path="os/initrd/workspace-hack"' || status=$?
+  cp "$lock" Cargo.lock
+  rm -f "$lock"
+  [ "$status" = 0 ] || return "$status"
+  cp "$CARGO_TARGET_DIR"/initrd/tilo-greeter "$dest"/tilo-greeter-boot
+}
+
+# --boot: the initramfs's greeter alone, a build of its own resolve that shares nothing with the
+# release build's but the compiler cache, so it runs beside that build rather than after it.
+if [[ ${1:-} == --boot ]]; then
+  out=${2:?usage: compile.sh --boot OUT}
+  mkdir -p "$out"
+  out=$(cd "$out" && pwd)
+  export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$(pwd)/target} LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
+  boot_greeter "$out"
   exit 0
 fi
 # --dev: the development components instead (os/scripts/install-components.py --dev names them,
@@ -262,15 +295,8 @@ build_phase() {
   started=$now
 }
 trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; command -v sccache >/dev/null && sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT
-# The greeter is built twice. The release build above resolves features for
-# the whole workspace through workspace-hack, which hands the greeter the media
-# stack other members enable. Its initramfs copy (phase rust-boot-greeter,
-# profile `initrd`) links the empty os/initrd/workspace-hack instead, so it
-# takes only what its own manifests name and every boot unpacks no GStreamer or
-# PipeWire. The resolve that build writes to Cargo.lock is put back after it.
-# It links as its profile says (fat LTO, one codegen unit), which keeps it
-# within the initramfs's budget, not with the release build's thin LTO; an
-# image linked without LTO links it without LTO too.
+# The greeter is built twice: by the release build, and for the initramfs (boot_greeter, phase
+# rust-boot-greeter), unless TILO_BOOT_GREETER=apart leaves that to `--boot`.
 if [[ $TILO_COMPILER_CACHE == off ]]; then
   if [[ -n ${RUSTC_WRAPPER:-}${SCCACHE_BUCKET:-}${SCCACHE_ENDPOINT:-}${SCCACHE_DIR:-}${ACTIONS_CACHE_URL:-}${ACTIONS_RUNTIME_TOKEN:-}${AWS_ACCESS_KEY_ID:-} ]]; then
     echo 'a build without the compiler cache received compiler-cache settings' >&2; exit 1
@@ -333,14 +359,20 @@ case "$TILO_RUST_LTO" in \
        fi \
     && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p imager -p runtime-bundle -p tilo-rollback -p tilo-auth -p tilo-boot-signin -p tilo-esp-write -p tilo-extension -p tilo-staging-reclaim -p tilo-install-helpers -p tilo-boot-order -p tilo-image-policy-check -p tilo-board-successor -p tilo-firstboot-files -p tilo-crypto -p tilo-user-identity -p tilo-device-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-flight-log -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p package-service -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p system-extension -p compat-service -p account-credentials -p linux-vm -p tilo-ntfs-mount -p tilo-device-vpn -p tilo-net-answers -p tilo-app-keeper -p tilo-audio-service -p tilo-messaging-service -p tilo-identity -p tilo-window-menu -p tilo-lock-screen -p tilo-quick-settings -p osk -p tilolang-process ${TILOLANG_RELEASE_ARGS}" \
     && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-model-http --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-package-service --bin tilo-rollback --bin tilo-authd --bin tilo-auth --bin tilo-boot-signin --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-default-start --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-server --bin tilo-server-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-linux-vm --bin tilo-account-credential --bin tilo-ntfs-mount --bin tilo-device-vpn --bin tilo-net-answers --bin tilo-app-keeper --bin tilo-audio --bin tilo-messaging --bin tilo-identity --bin tilo-window-menu --bin tilo-lock-screen --bin tilo-quick-settings --bin osk --bin tilolang-process ${TILOLANG_RELEASE_BINS}" \
+    && if [ "$tilolang_apps" != 0 ]; then THIN_RUNTIMES=tilolang-app; else THIN_RUNTIMES=""; fi \
     && build_thin_apps() { \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
+         WITH_RUNTIMES="${THIN_RUNTIMES}" \
          APP_FEATURES="${APP_FEATURES}" \
          CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
          EXTRA_CARGO_ARGS="$1" \
            os/scripts/build-thin-apps.sh; \
        } \
-    && thin_pid="" \
+    && thin_pid="" models_pid="" \
+    && if [ "${TILO_PREBUILT_APPS}" != 1 ] && [ -z "${TILO_APP_MODELS:-}" ]; then \
+         { bash tools/ci/app-models.sh > "$scratch/tilo-app-models.log" 2>&1 & } \
+         && models_pid=$!; \
+       fi \
     && if [ "${TILO_PREBUILT_APPS}" != 1 ] && [ "$TILO_RUST_LTO" = off ]; then \
          { ( thin_started=$(date +%s); build_thin_apps "" \
              && printf 'TILO_BUILD_TIMING phase=rust-thin-apps-parallel elapsed_seconds=%s exit_code=0\n' "$(( $(date +%s) - thin_started ))" \
@@ -507,10 +539,7 @@ case "$TILO_RUST_LTO" in \
          && cp $target/thin-app/tilo-runtime-account-capability "$out"/ \
          && cp $target/thin-app/runtime-engines "$out"/runtime-engines \
          && while IFS= read -r engine; do cp "$target/thin-app/$engine" "$out"/; done < "$out"/runtime-engines \
-         && if [ "$tilolang_apps" != 0 ]; then \
-              BUILD_PACKAGES=tilolang-app build_thin_apps "${TILO_CARGO_TIMINGS:+--timings}" \
-              && cp "$target/thin-app/tilolang-app" "$out"/thin-apps/; \
-            fi \
+         && if [ -n "$THIN_RUNTIMES" ]; then cp "$target/thin-app/tilolang-app" "$out"/thin-apps/; fi \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" "$out"/ \
@@ -519,19 +548,14 @@ case "$TILO_RUST_LTO" in \
          && if [ -n "${TILO_APP_MODELS:-}" ]; then \
               cp -a "${TILO_APP_MODELS}" "$out"/app-models; \
             else \
-              bash tools/ci/app-models.sh \
+              models_status=0; wait "$models_pid" || models_status=$?; \
+              cat "$scratch/tilo-app-models.log"; \
+              [ "$models_status" = 0 ] \
               && cp -a "$target/app-models" "$out"/app-models; \
             fi; \
        fi \
     && build_phase rust-boot-greeter \
-    && cp Cargo.lock "$scratch/Cargo.lock" \
-    && if [ "$TILO_RUST_LTO" = off ]; then initrd_lto=off initrd_units=16; else initrd_lto=fat initrd_units=1; fi \
-    && { CARGO_PROFILE_INITRD_LTO="$initrd_lto" \
-         CARGO_PROFILE_INITRD_CODEGEN_UNITS="$initrd_units" \
-         cargo build --profile initrd -p greeter --bin tilo-greeter \
-           --config 'patch.crates-io.workspace-hack.path="os/initrd/workspace-hack"'; \
-         boot_status=$?; cp "$scratch/Cargo.lock" Cargo.lock; [ "$boot_status" = 0 ]; } \
-    && cp $target/initrd/tilo-greeter "$out"/tilo-greeter-boot \
+    && if [ "${TILO_BOOT_GREETER:-}" != apart ]; then boot_greeter "$out"; fi \
     && build_phase chromium-engine \
     && if [ "${TILO_WITH_BROWSER}" = 0 ] || [ "${TILO_CHROMIUM_ENGINE:-}" = apart ]; then \
          :; \

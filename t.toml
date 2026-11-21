@@ -5637,7 +5637,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh /target/os/x86_64/compiled"
 needs = ["test-assets"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_BOOT_GREETER = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled/**"]
 timeout_secs = 10800
@@ -5669,6 +5669,21 @@ env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets",
 requires = ["arch=x86_64"]
 outputs = ["/target/os/x86_64/compiled-dev/**"]
 timeout_secs = 10800
+default = false
+
+[[check]]
+name = "os-compile-boot-x86_64"
+# The initramfs's greeter (os/image/compile.sh --boot), apart from os-compile-x86_64: a resolve of
+# its own, built beside that compile rather than after it, and kept while the greeter's crates
+# stand. The image layer installs it beside the compiled tree.
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash os/image/compile.sh --boot /target/os/x86_64/boot"
+needs = ["test-assets"]
+image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
+env = { TILO_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/os/x86_64/boot/**"]
+timeout_secs = 5400
 default = false
 
 [[check]]
@@ -5784,7 +5799,7 @@ arch = ["x86_64", "aarch64"]
 name = "os-layer-image-x86_64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image x86_64 /target/os/x86_64/layers/image"
-needs = ["os-base-x86_64", "os-assets-image-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-tools-x86_64", "os-compile-x86_64", "os-payload-x86_64"]
+needs = ["os-compile-boot-x86_64", "os-base-x86_64", "os-assets-image-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-tools-x86_64", "os-compile-x86_64", "os-payload-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5927,7 +5942,7 @@ egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-
 run = "bash os/image/compile.sh /target/os/aarch64/compiled"
 needs = ["test-assets"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_BOOT_GREETER = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled/**"]
 timeout_secs = 10800
@@ -5959,6 +5974,21 @@ env = { TILO_DEV_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets",
 requires = ["arch=arm64"]
 outputs = ["/target/os/aarch64/compiled-dev/**"]
 timeout_secs = 10800
+default = false
+
+[[check]]
+name = "os-compile-boot-aarch64"
+# The initramfs's greeter (os/image/compile.sh --boot), apart from os-compile-aarch64: a resolve of
+# its own, built beside that compile rather than after it, and kept while the greeter's crates
+# stand. The image layer installs it beside the compiled tree.
+egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
+run = "bash os/image/compile.sh --boot /target/os/aarch64/boot"
+needs = ["test-assets"]
+image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
+env = { TILO_RUST_LTO = "off", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=arm64"]
+outputs = ["/target/os/aarch64/boot/**"]
+timeout_secs = 5400
 default = false
 
 [[check]]
@@ -6017,7 +6047,7 @@ default = false
 name = "os-layer-image-aarch64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/layers/image"
-needs = ["os-base-aarch64", "os-assets-image-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-tools-aarch64", "os-compile-aarch64", "os-payload-aarch64"]
+needs = ["os-compile-boot-aarch64", "os-base-aarch64", "os-assets-image-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-tools-aarch64", "os-compile-aarch64", "os-payload-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"

@@ -30,6 +30,7 @@
 #                                compiled-release/; what of it the apps are packed from in
 #                                compiled-apps/ (compiled-release-apps/)
 #   chromium/                    the browser's engine, for a compiled tree without it
+#   boot/                        the initramfs's greeter, for a compiled tree without it
 #   layers/<layer>/              the fragment of the layers that layer action added; a
 #                                release's own layers in release-layers/<layer>/, a board
 #                                release's in board-layers/<board>/<layer>/
@@ -423,31 +424,6 @@ load_given() {
   done
 }
 
-# The component-files stage (os/image/helpers/component-files.Containerfile), made here rather
-# than built: os/components.toml's installer arranges the compiled tree under DIR/image/<layer>/,
-# which the binaries piece copies one layer at a time (`COPY --from=component-files`), given
-# DIR as a build context. As a stage it wrote every binary into the stage, committed that
-# (about as long again) and copied it into the image after; here it is written once onto the
-# step's own disk, then copied. Every file is dated by the build's clock, as the stage's
-# build context dates the files it copies: a compile of the same bytes gives the same layers.
-install_components() {
-  local dir=$scratch/component-files
-  rm -rf "$dir"
-  mkdir -p "$dir"
-  (umask 022
-    TILO_GITHUB_ASSET_CACHE=$repo_root/os/external-assets/cache python3 -I -B os/scripts/install-components.py \
-      --manifest os/components.toml --from "$TILO_COMPILED" --dest "$dir/image" --by-layer --all --quiet)
-  python3 -I - "$SOURCE_DATE_EPOCH" "$dir" <<'PY'
-import os, sys
-clock, top = int(sys.argv[1]), sys.argv[2]
-for root, dirs, files in os.walk(top):
-    for entry in dirs + files:
-        os.utime(os.path.join(root, entry), (clock, clock), follow_symlinks=False)
-os.utime(top, (clock, clock))
-PY
-  layer_args+=(--build-context "component-files=$dir")
-}
-
 cmd_image() {
   local name=$1 target
   guest_devices
@@ -512,6 +488,9 @@ cmd_layer() {
   fi
   if [[ $components == 1 ]]; then
     phase components
+    # Sourced only here: every action of the OS runs this script, and an edit of what only
+    # the image layer does keys no other.
+    . os/image/install-components.sh
     install_components
   fi
   image=localhost/tilo-layer:$name

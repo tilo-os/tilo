@@ -9,6 +9,10 @@ REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 EXCLUDE_PACKAGES=" ${EXCLUDE_PACKAGES:-} "
 INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 BUILD_PACKAGES=" ${BUILD_PACKAGES:-} "
+# Runtime bundles' binaries (apps/*/tilo-runtime.toml, by package) that join the graph beside
+# every app, as an app does: the image's packing bakes the tilolang runtime from the graph
+# whose libruntime_dylib.so it ships, so it is built in that one build, not a second.
+WITH_RUNTIMES=" ${WITH_RUNTIMES:-} "
 # BUILD_RUNTIME_ONLY=1 builds the shared runtime, its engines and the account probe in the
 # collection's graph and no app binary: what every app's thin build has in common. Apps built later in the same build directory, with
 # the same packages and features, find these units fresh.
@@ -54,8 +58,8 @@ selected_crates=()
 app_profiles=()
 # A runtime bundle's binary (apps/*/tilo-runtime.toml: the tilolang runtime,
 # which every tilolang app's entrypoint executes) joins the graph only when
-# BUILD_PACKAGES names it (the nested session, `tilolang dev`): tilolang is
-# experimental, so the image and the app collection are built without it.
+# BUILD_PACKAGES or WITH_RUNTIMES names it (the nested session, `tilolang dev`,
+# an image that ships tilolang packages).
 for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; do
     [ -f "$manifest" ] || continue
     dir="$(dirname "$manifest")"
@@ -66,7 +70,8 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; d
     case "$EXCLUDE_PACKAGES" in
         *" $package "*) continue ;;
     esac
-    if [ "${manifest##*/}" = tilo-runtime.toml ] && [[ "$BUILD_PACKAGES" != *" $package "* ]]; then
+    if [ "${manifest##*/}" = tilo-runtime.toml ] && [[ "$BUILD_PACKAGES" != *" $package "* ]] \
+        && [[ "$WITH_RUNTIMES" != *" $package "* ]]; then
         continue
     fi
     if [ "$INCLUDE_PACKAGES" != "  " ] && [ "${manifest##*/}" = tilo-app.toml ]; then
