@@ -179,25 +179,6 @@ pub struct WebArgs {
 #[cfg(feature = "agents")]
 #[derive(clap::Args, Clone, Debug)]
 pub struct AgentArgs {
-    /// The model the workspaces' agents fall back on for a keeper who linked none: `settings` (the provider
-    /// selected in Settings, through tilo-model-gateway), `scripted` (a
-    /// deterministic keyword planner for tests and demos),
-    /// `openai:<base url>` (an OpenAI-compatible chat-completions endpoint),
-    /// `anthropic:<base url>` (Anthropic's Messages API, e.g.
-    /// `https://api.anthropic.com`) or `cloud:<base url>` (Tilo Cloud's
-    /// metered `…/api/machines/<id>/ai/v1`, billed to the machine's AI
-    /// credits). The
-    /// key comes from `TILO_AGENT_API_KEY`, or `TILO_AGENT_API_KEY_FILE`,
-    /// read before every call so a rotated token needs no restart. Default
-    /// `$TILO_AGENT_MODEL`, else `settings`. The items of a coordinated
-    /// task may plan with another model, `$TILO_AGENT_DECOMPOSE_ITEM_MODEL`
-    /// with its own key (`TILO_AGENT_DECOMPOSE_ITEM_API_KEY_FILE`).
-    #[arg(long = "agent-model", value_name = "MODEL")]
-    pub model: Option<String>,
-    /// The model id for `openai:` and `anthropic:` (required) or `cloud:` (default
-    /// `gpt-4.1-mini-2025-04-14`). Default `$TILO_AGENT_MODEL_NAME`.
-    #[arg(long = "agent-model-name", value_name = "ID")]
-    pub model_name: Option<String>,
     /// Serve workspace resources to pages and host the workspace's roster agents:
     /// the host runs an action of a workspace record for whoever the workspace's
     /// policy lets ask, such as a member linking their own account on the
@@ -208,40 +189,6 @@ pub struct AgentArgs {
 
 #[cfg(feature = "agents")]
 impl AgentArgs {
-    /// The model the agents this server runs for its workspaces fall back on: `--agent-model`,
-    /// else `$TILO_AGENT_MODEL`, else `settings` — the provider chosen
-    /// in this server's own Settings, read again for every turn. It answers only for an agent
-    /// whose keeper linked no provider of their own: one the keeper adds in Settings, under Agent
-    /// models, is kept with their key in their own store on this server and answers their
-    /// agent's next turn instead, with no restart. A spec that is not usable is said in the log,
-    /// and the agents then tell a keeper who linked nothing that the server runs no model.
-    fn host_model(&self) -> Option<tilo_agent_session::ModelChoice> {
-        let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-        let spec = self
-            .model
-            .clone()
-            .or_else(|| env("TILO_AGENT_MODEL"))
-            .unwrap_or_else(|| "settings".into());
-        let name = self
-            .model_name
-            .clone()
-            .or_else(|| env("TILO_AGENT_MODEL_NAME"));
-        match tilo_agent_session::ModelChoice::parse(
-            &spec,
-            name.as_deref(),
-            tilo_agent_session::ApiKey::from_env(
-                env("TILO_AGENT_API_KEY"),
-                env("TILO_AGENT_API_KEY_FILE"),
-            ),
-        ) {
-            Ok(model) => Some(model),
-            Err(error) => {
-                tracing::warn!(%error, "the workspaces' agents run without a model: --agent-model");
-                None
-            }
-        }
-    }
-
     fn options(
         &self,
         state_dir: PathBuf,
@@ -378,7 +325,7 @@ pub async fn start_server_lending(
             tilo_server::agents::start_workspace_documents(cfg, identity, options)
                 .await
                 .context("start the server with workspace documents and roster agents")?;
-        let (draining, host_agents) = start_roster(&server, &args.agents, roster, shells, browsers);
+        let (draining, host_agents) = start_roster(&server, roster, shells, browsers);
         return Ok(HostedServer {
             server,
             agents: Some(agents),
@@ -405,7 +352,6 @@ pub async fn start_server_lending(
 #[cfg(feature = "agents")]
 fn start_roster(
     server: &Server,
-    args: &AgentArgs,
     roster: tilo_server::agents::RosterServices,
     shells: std::sync::Arc<tilo_server::agents::HostShells>,
     browsers: Option<std::sync::Arc<tilo_server::hosted_browser::HostedBrowsers>>,
@@ -413,22 +359,19 @@ fn start_roster(
     Option<tilo_server::workspace_agents::Draining>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
-    // The agents each workspace made to run here work around the clock, on the host's model.
+    // The agents each workspace made to run here work around the clock, on the model their workspace linked.
     // The devices this server placed itself: no agent reads as one of them for a person.
     let placed = server.environments();
     let started = server.workspaces().cloned().map(|workspaces| {
         // What is judged for a person is counted on their assistant's day,
         // and a question that waits for them reaches their log.
         tilo_server::workspace_telling::start(&workspaces);
-        let model = args.host_model();
         tracing::info!(
-            model = %model.as_ref().map_or_else(|| "none".to_owned(), tilo_agent_session::ModelChoice::describe),
-            "the workspaces' agents run on this host"
+            "the workspaces' agents run on this host, each on the model its workspace linked"
         );
         let agents = tilo_server::workspace_agents::ServerAgents::with_sessions(
             workspaces,
             roster.actions,
-            model.map(tilo_server::workspace_agents::model_of),
             server,
             roster.sessions,
         )
@@ -1435,13 +1378,9 @@ mod tests {
             #[command(flatten)]
             web: WebArgs,
         }
-        let args = <Command as clap::Parser>::try_parse_from([
-            "workspace",
-            "--workspace-documents",
-            "--agent-model",
-            "scripted",
-        ])
-        .unwrap();
+        let args =
+            <Command as clap::Parser>::try_parse_from(["workspace", "--workspace-documents"])
+                .unwrap();
         let state = tempfile::tempdir().unwrap();
         let (root, device) = (key(), key());
         let device_cert = enrol(&root, &device, "host", DeviceCapabilities::member()).unwrap();

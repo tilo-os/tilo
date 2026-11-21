@@ -43,7 +43,7 @@ use crate::{
 #[cfg(test)]
 use crate::{read_frame, write_frame};
 use account_credentials::{Capability, CredentialError, CredentialStore, OAuthIssuer, OAuthUse};
-use accounts::{AccountId, ServiceAuthorization, ServiceCredentials};
+use accounts::AccountId;
 use agent_provider_config::{
     EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, SignInIssuer,
     transform as provider_transform,
@@ -830,16 +830,6 @@ fn rejected(error: &str) -> Response {
         error: Some(error.into()),
         model_error: None,
         event: None,
-    }
-}
-
-fn credential_error(error: &accounts::secrets::BrokerError) -> String {
-    use accounts::secrets::BrokerError;
-    match error {
-        BrokerError::Denied | BrokerError::OriginMismatch =>
-            "provider credential origin does not match; restore the endpoint this key was saved with".into(),
-        BrokerError::InvalidOrigin => "a valid provider endpoint is required".into(),
-        _ => "provider credential storage is unavailable; restore vault access and retry".into(),
     }
 }
 

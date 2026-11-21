@@ -32,8 +32,7 @@
 //! an action that asks first is put to the person on their own devices. Its changes are its own in
 //! history, for the person. Its model is the workspace's: the one the workspace linked for the
 //! work its agents do, asked with the workspace's key ([`Workspaces::workspace_model`]), and never
-//! another once it linked any. A workspace that linked none is answered by the host's model where
-//! its operator runs one ([`ModelChoice`]), and told what to link where it runs none. What each
+//! another once it linked any. A workspace that linked none is told what to link. What each
 //! turn costs is counted on the agent's record, and an agent whose daily limit is reached stops
 //! and says so.
 
@@ -50,8 +49,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
 use tilo_agent_session::model::{Answered as ModelAnswered, PlanTurns};
+use tilo_agent_session::resource_provider;
 use tilo_agent_session::workspace_actions::WorkspaceActions;
-use tilo_agent_session::{ModelChoice, resource_provider};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_model_gateway::host_backend::protocol::{
@@ -634,16 +633,9 @@ impl ChangeFeed for WorkspaceActionProvider {
     }
 }
 
-/// What carries one turn's model calls, made fresh for each turn on its own thread: the host's
-/// [`ModelChoice`] ([`model_of`]), or a test's script.
+/// What carries one turn's model calls, made fresh for each turn on its own thread: a test's
+/// script, standing where a workspace's model would ([`ServerAgents::for_test`]).
 pub type Model = Arc<dyn Fn() -> Option<Box<dyn PlanTurns>> + Send + Sync>;
-
-/// The [`Model`] `choice` names: its gateway, endpoint or script, and none for Settings with no
-/// provider chosen.
-#[must_use]
-pub fn model_of(choice: ModelChoice) -> Model {
-    Arc::new(move || choice.turns())
-}
 
 /// Something a person asked an agent, and where its answer goes.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -752,7 +744,8 @@ pub struct ServerAgents {
         crate::agents::ServerAgentLink,
         tilo_agent_session::AgentSessions,
     )>,
-    /// The host's model; `None` when it runs none, which every ask is told.
+    /// A test's script, answering in a workspace that linked no model: `None` outside tests,
+    /// where such a workspace is told what to link.
     model: Option<Model>,
     /// The turns going now: one for each agent in each conversation, with what reaches it
     /// while it works.
@@ -781,16 +774,23 @@ impl ServerAgents {
     pub fn with_sessions(
         workspaces: Workspaces,
         actions: WorkspaceActions,
-        model: Option<Model>,
         server: &crate::Server,
         sessions: tilo_agent_session::AgentSessions,
     ) -> Self {
         Self::build(
             workspaces,
             actions,
-            model,
+            None,
             Some((server.agent_link(), sessions)),
         )
+    }
+
+    /// A test's script answers in every workspace here that linked no model.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn scripted(mut self, model: Model) -> Self {
+        self.model = Some(model);
+        self
     }
 
     /// Exercise turn machinery in fixtures that do not provision peer sessions.
@@ -1796,8 +1796,8 @@ impl ServerAgents {
     ///
     /// The workspace pays, so its own model answers: the one it linked for work its agents do.
     /// Once it linked a provider its settings decide alone, and a choice that cannot be used is
-    /// said, never replaced by a model somebody else pays for. Only a workspace that linked
-    /// nothing is answered by the host's own model, where its operator runs one.
+    /// said, never replaced by a model somebody else pays for. A workspace that linked nothing is
+    /// told what to link.
     async fn model_for(
         &self,
         place: (&str, WorkspaceId),
@@ -1817,43 +1817,38 @@ impl ServerAgents {
         stop: Arc<AtomicBool>,
     ) -> Result<Model, String> {
         let theirs = {
-                // Every call is counted on the agent's day as it is answered, so turns of
-                // one agent going at once cannot each spend the day's whole limit.
-                let named_model = turn.agent.model.as_deref().or_else(|| {
-                    turn.agent.sub.as_ref().and_then(|sub| {
-                        crate::workspaces::person_model::Interaction::from_id(&sub.kind)
-                            .is_none()
-                            .then_some(sub.kind.as_str())
-                    })
+            // Every call is counted on the agent's day as it is answered, so turns of
+            // one agent going at once cannot each spend the day's whole limit.
+            let named_model = turn.agent.model.as_deref().or_else(|| {
+                turn.agent.sub.as_ref().and_then(|sub| {
+                    crate::workspaces::person_model::Interaction::from_id(&sub.kind)
+                        .is_none()
+                        .then_some(sub.kind.as_str())
+                })
+            });
+            let theirs = self
+                .workspaces
+                .workspace_model(workspace_id, sub_agents::kind_of(&turn.agent))
+                // The model the agent itself names answers where the workspace linked it on
+                // this server: a sub-agent's is its skill's, or the one its starter named.
+                .naming(named_model)
+                .spending_as(Spender {
+                    workspace: workspace.to_owned(),
+                    agent: sub_agents::payer(turn).id.0.clone(),
+                    name: sub_agents::payer(turn).name.clone(),
+                    day: day.to_owned(),
+                    limit_micros: sub_agents::payer(turn).spend_limit_micros,
                 });
-                let theirs = self
-                    .workspaces
-                    .workspace_model(workspace_id, sub_agents::kind_of(&turn.agent))
-                    // The model the agent itself names answers where the workspace linked it on
-                    // this server: a sub-agent's is its skill's, or the one its starter named.
-                    .naming(named_model)
-                    .spending_as(Spender {
-                        workspace: workspace.to_owned(),
-                        agent: sub_agents::payer(turn).id.0.clone(),
-                        name: sub_agents::payer(turn).name.clone(),
-                        day: day.to_owned(),
-                        limit_micros: sub_agents::payer(turn).spend_limit_micros,
-                    });
-                // A turn a look of its person's look-round started counts on the
-                // look-round's own day as well, and stops where that day's limit is reached.
-                let look_round = self.initiative.as_ref().and_then(|initiative| {
-                    initiative.day_of_turn(
-                        &workspace_id.to_string(),
-                        &turn.person,
-                        &turn.cause,
-                        day,
-                    )
-                });
-                match look_round {
-                    Some(look_round) => theirs.spending_as(look_round),
-                    None => theirs,
-                }
-            };
+            // A turn a look of its person's look-round started counts on the
+            // look-round's own day as well, and stops where that day's limit is reached.
+            let look_round = self.initiative.as_ref().and_then(|initiative| {
+                initiative.day_of_turn(&workspace_id.to_string(), &turn.person, &turn.cause, day)
+            });
+            match look_round {
+                Some(look_round) => theirs.spending_as(look_round),
+                None => theirs,
+            }
+        };
         let asked = theirs.clone();
         let linked = tokio::task::spawn_blocking(move || asked.linked())
             .await
@@ -2563,7 +2558,7 @@ async fn invoke_at(
     .map_err(|error| error.to_string())?
 }
 
-/// Work on `turn` with the host's model through the agent's tools until the model answers, the
+/// Work on `turn` with its model through the agent's tools until the model answers, the
 /// budget is spent or its person stops it: how it ended, and what it cost. It asks its model for
 /// as long as the model calls tools; nothing counts those asks to end the turn.
 /// What its person wrote since reaches it at each step ([`going::Going::take`]): `turn` and
@@ -2640,7 +2635,7 @@ async fn work(
     (outcome, cost, usage)
 }
 
-/// The host's model as a turn asks it: each call asked again where it fails for a moment
+/// A turn's model as the turn asks it: each call asked again where it fails for a moment
 /// ([`asking::again`]), and what it writes handed on as it comes. What a call answered with
 /// and used is kept, for the reply that names it.
 struct Asking {

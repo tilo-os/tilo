@@ -37,7 +37,6 @@ pub mod bot;
 pub mod facts;
 pub mod grants;
 pub mod model;
-pub mod profile;
 pub mod record_actions;
 pub mod render;
 pub mod search;
@@ -54,7 +53,6 @@ pub use grants::{
     AgentHostLink, AgentIdentity, AgentSessions, AgentSupervisor, ApprovalDone, GrantRecord,
     SupervisorSnapshot,
 };
-pub use model::{ApiKey, CLOUD_MODEL, MakeTurns, ModelChoice};
 pub use record_actions::{RESOURCE_PROVIDER, resource_provider};
 pub use service::{AgentService, CatalogueFactory, ServerEndpoint};
 pub use worker::{ConfinedReplica, PageAction};

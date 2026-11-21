@@ -13,8 +13,7 @@
 //!   certifies only the browsers whose pairing codes its operator admits
 //!   (`admit <code>` on stdin) and announces each on stdout.
 //! - `--workspace-documents` on `run` and `dev` (feature `agents`) — the workspaces'
-//!   records and roster agents on the host, with
-//!   `--agent-model settings|scripted|openai:<url>|anthropic:<url>|cloud:<url>`.
+//!   records and roster agents on the host, each agent working on the model its workspace linked.
 //! - `page-host <origin>` (feature `web`) — print what a site hands its page
 //!   about the host at `origin` (the web entry's `TILO_WEB_HOME_HOST_INFO`).
 //! - `status` — print a snapshot of the running daemon's counters

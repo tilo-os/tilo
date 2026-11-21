@@ -787,16 +787,6 @@ server_env() {
       [[ -z ${!oauth:-} ]] || env+=("$oauth=${!oauth}")
     done
   fi
-  # The model the agents a workspace made to run on its server work with, as
-  # production's TILO_AGENT_MODEL names it: TILO_SH_AGENT_MODEL (with
-  # TILO_SH_AGENT_MODEL_NAME and TILO_SH_AGENT_API_KEY), e.g.
-  # anthropic:https://api.anthropic.com. Without it the agents answer that
-  # the server runs no model.
-  if [[ -n ${TILO_SH_AGENT_MODEL:-} ]]; then
-    env+=("TILO_AGENT_MODEL=$TILO_SH_AGENT_MODEL")
-    [[ -z ${TILO_SH_AGENT_MODEL_NAME:-} ]] || env+=("TILO_AGENT_MODEL_NAME=$TILO_SH_AGENT_MODEL_NAME")
-    [[ -z ${TILO_SH_AGENT_API_KEY:-} ]] || env+=("TILO_AGENT_API_KEY=$TILO_SH_AGENT_API_KEY")
-  fi
   # TILO_SH_TERMINAL_ON_MACHINE=1: with no VM host, the workspaces' Terminal
   # (a person's and their agents') starts its programs on this machine, as the
   # stack's own user, with the PATH and toolchain of whoever brought it up:
@@ -813,13 +803,12 @@ server_env() {
         done
         # This stack's own settings, so stack.sh started from that Terminal (an
         # agent's `restart --detach server web`) acts on this stack, at its
-        # ports, and starts the server again with the model it uses, rather than
-        # on a stack at the defaults. The model's key stays out of the file.
+        # ports, rather than on a stack at the defaults.
         printf 'TILO_SH_STATE=%s\nTILO_SH_PORT_BASE=%s\n' "$state" "$base"
         local setting
         while IFS= read -r setting; do
-          [[ $setting == TILO_SH_STATE || $setting == TILO_SH_PORT_BASE \
-            || $setting == TILO_SH_AGENT_API_KEY ]] || printf '%s=%s\n' "$setting" "${!setting}"
+          [[ $setting == TILO_SH_STATE || $setting == TILO_SH_PORT_BASE ]] \
+            || printf '%s=%s\n' "$setting" "${!setting}"
         done < <(compgen -e | grep '^TILO_SH_')
         [[ -z ${CARGO_BUILD_JOBS:-} ]] || printf 'CARGO_BUILD_JOBS=%s\n' "$CARGO_BUILD_JOBS"
       } > "$state/terminal-on-machine.env"

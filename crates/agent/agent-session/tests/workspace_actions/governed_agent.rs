@@ -446,10 +446,10 @@ async fn a_hosted_roster_turn() {
     let runner = ServerAgents::with_sessions(
         workspaces.clone(),
         roster.actions.clone(),
-        Some(model),
         &hosted.server,
         roster.sessions.clone(),
-    );
+    )
+    .scripted(model);
     let turns = runner.turns(&workspace.workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
     let ended = runner.answer(&workspace.workspace, &turns[0]).await;

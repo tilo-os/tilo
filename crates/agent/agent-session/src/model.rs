@@ -1,26 +1,67 @@
-//! The model an agent works with: which one a host runs ([`ModelChoice`]),
-//! and what carries its turns, holding the credential ([`PlanTurns`]).
-//!
-//! [`GatewayTurns`] asks through `tilo-model-gateway`, which holds the
-//! provider credential: the agent never sees a key. An endpoint the trusted
-//! host was given is asked with the host's own client
-//! ([`ModelChoice::turns`]). [`ScriptedTurns`] calls no network at all and
-//! plays what a task writes out, for tests and a host started with
-//! `--agent-model scripted`.
+//! What carries the model turns of the agents a host runs for their keepers ([`PlanTurns`]),
+//! holding its credential: its callers see requests and responses only.
 
-use std::sync::Arc;
+use std::time::Instant;
 
-/// Trusted-host CLI credential source; sandboxed agents use the gateway capability.
-pub use tilo_model_gateway::host_backend::ApiKey;
+use tilo_model_gateway::host_backend::protocol::{
+    ModelError, ModelRequest, ModelResponse, StreamEvent,
+};
 
-mod openai;
-mod scripted;
-mod turns;
+/// What answered a turn's calls: the provider as the person named it, and the
+/// model's id. A turn keeps it on its reply, so a conversation says which
+/// model wrote each answer even after the person switched models.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answered {
+    pub provider: String,
+    /// The model's id, as its provider names it.
+    pub model: String,
+    /// The model as a person reads it, where its provider labels it.
+    pub label: String,
+}
 
-pub use openai::{CLOUD_MODEL, ModelChoice};
-pub use scripted::ScriptedTurns;
-pub use turns::{Answered, GatewayTurns, PlanTurns};
+/// What carries a model's turns, holding the credential.
+pub trait PlanTurns: Send {
+    /// Answer one turn's `request`. `key` names the turn, the same for
+    /// every attempt at it, so a metered endpoint bills it once; `retry`
+    /// says this is the turn asked again after its first call was lost to
+    /// the network, for the usage log.
+    fn turn(
+        &mut self,
+        request: &ModelRequest,
+        key: &str,
+        deadline: Instant,
+        retry: bool,
+    ) -> Result<ModelResponse, ModelError>;
 
-/// Makes the turns of the model a host's agents work with, on the thread
-/// that asks it; `None` when the host has no model they can work with.
-pub type MakeTurns = Arc<dyn Fn() -> Option<Box<dyn PlanTurns>> + Send + Sync>;
+    /// [`Self::turn`], handing what the model writes to `written` while it writes: the
+    /// answer's words as they arrive, for whoever shows the answer growing. Presentation
+    /// only: the answer returned is what counts. What carries its turns without anything
+    /// to hand on answers whole, and `written` hears nothing.
+    fn turn_streaming(
+        &mut self,
+        request: &ModelRequest,
+        key: &str,
+        deadline: Instant,
+        retry: bool,
+        written: &mut (dyn FnMut(StreamEvent) + Send),
+    ) -> Result<ModelResponse, ModelError> {
+        let _ = written;
+        self.turn(request, key, deadline, retry)
+    }
+
+    /// The model's name, for the usage log.
+    fn model(&self) -> &str;
+
+    /// What answered the last call: a person's own provider and its model,
+    /// where the turns are theirs; `None` for a model the server provides itself,
+    /// which has no provider of the person's to name.
+    fn answered_by(&self) -> Option<Answered> {
+        None
+    }
+
+    /// Whether the model is shown the pictures a tool answers with. One that
+    /// is not reads that it was not shown them.
+    fn sees(&self) -> bool {
+        false
+    }
+}
