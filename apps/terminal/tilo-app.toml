@@ -106,6 +106,14 @@ operation = "document"
 keywords = ["stop", "cancel", "interrupt", "ctrl c"]
 [[offers]]
 resource = "terminal.session"
+action = "open-terminal"
+label = "Open on a terminal"
+kind = "outside"
+operation = "document"
+asks = "cols"
+keywords = ["open terminal", "interactive shell", "attach"]
+[[offers]]
+resource = "terminal.session"
 action = "record-target"
 label = "Record where the session runs"
 operation = "document"
