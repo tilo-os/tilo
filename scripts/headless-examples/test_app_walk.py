@@ -35,6 +35,12 @@ def ops_of(step):
             yield None, name, value
 
 
+def named_variants(spec):
+    """The versions a step file drives: both while the Rust app still exists,
+    only `tl` after the change that retires it leaves its entry out."""
+    return [variant for variant in walk.VARIANTS if variant in spec]
+
+
 def from_key(ops):
     for op in ops:
         (name, value), = op.items()
@@ -42,12 +48,13 @@ def from_key(ops):
 
 
 class TheStepFiles(unittest.TestCase):
-    def test_every_walk_names_both_versions_and_their_apps(self):
+    def test_every_walk_names_the_versions_it_drives_and_their_apps(self):
         for path, spec in steps():
             with self.subTest(walk=path.stem):
-                self.assertEqual(set(walk.VARIANTS) & set(spec), set(walk.VARIANTS))
+                named = named_variants(spec)
+                self.assertTrue(named, f"{path.stem} names no version")
                 self.assertEqual(spec["app"], path.stem)
-                for variant in walk.VARIANTS:
+                for variant in named:
                     self.assertTrue(spec[variant]["id"].startswith("so.tilo."))
 
     def test_every_op_is_one_the_driver_has(self):
@@ -65,16 +72,17 @@ class TheStepFiles(unittest.TestCase):
                     self.assertTrue(step["said"].strip())
                     self.assertTrue(step["id"].strip())
 
-    def test_a_value_that_differs_between_versions_names_both(self):
+    def test_a_value_that_differs_between_versions_names_each_of_them(self):
         """A selector written for one version alone would press nothing in the
         other, and the walk would report a missing control where there is one.
         A step with several controls to try names each of them for the versions
-        it is written for, and one for every version."""
+        it is written for, and one for every version the walk drives."""
         for path, spec in steps():
+            named = named_variants(spec)
             for step in spec["steps"]:
                 for variant, name, value in ops_of(step):
                     if name in ("press_any", "offered"):
-                        for each in walk.VARIANTS if variant is None else [variant]:
+                        for each in named if variant is None else [variant]:
                             found = [alternative for alternative in value
                                      if walk.alternative(alternative, each) is not None]
                             with self.subTest(walk=path.stem, step=step["id"], op=name,
@@ -82,20 +90,20 @@ class TheStepFiles(unittest.TestCase):
                                 self.assertTrue(found, f"{name} in {step['id']} offers "
                                                        f"nothing in the {each} version")
                     else:
-                        self.assert_named_both(path, step, name, value)
+                        self.assert_named_both(path, step, name, value, named)
 
-    def assert_named_both(self, path, step, op, value):
+    def assert_named_both(self, path, step, op, value, named):
         if isinstance(value, dict) and set(value) & set(walk.VARIANTS):
             with self.subTest(walk=path.stem, step=step["id"], op=op):
-                self.assertLessEqual(set(walk.VARIANTS), set(value),
+                self.assertLessEqual(set(named), set(value),
                                      f"{op} in {step['id']} names only some versions")
         elif isinstance(value, list):
             for inner in value:
-                self.assert_named_both(path, step, op, inner)
+                self.assert_named_both(path, step, op, inner, named)
         elif isinstance(value, dict):
             for key, inner in value.items():
                 if key in ("control", "selectors"):
-                    self.assert_named_both(path, step, op, inner)
+                    self.assert_named_both(path, step, op, inner, named)
 
 
 class ThePageItWrites(unittest.TestCase):
