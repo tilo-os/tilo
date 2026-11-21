@@ -219,7 +219,9 @@ of each once a server holds it; a group of desktops with no server wants
 nothing beyond the devices it has, so it needs no setup and is never short.
 Each holder says in the workspace's state where its own copy stands: which
 holders it is still taking what it lacks from, and which it cannot reach and
-since when. Every device reads the same rows, so every device names the same
+since when. A holder the owners take out takes its row with it: it is no
+holder of the report any more, and nothing falls short about it.
+Every device reads the same rows, so every device names the same
 shortfall: which holder lacks what (history from another holder, or what was
 written since it was last reached) and how many current copies of each kind
 are missing (`tilo_peer_state::CopyStatus`, answered with the holder list). A

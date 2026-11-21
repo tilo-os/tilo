@@ -148,7 +148,9 @@ impl PeerGovernanceMut<'_> {
     }
 
     /// Name the host `device` among the workspace's hosts no more, authored by
-    /// the governor `key`. Returns whether it changed the workspace.
+    /// the governor `key`, and take the word it said of its own copy with it:
+    /// a copy report is a holder's, and this device holds the workspace no
+    /// more. Returns whether it changed the workspace.
     pub fn author_keeping_device_removed(
         self,
         device: &[u8; 32],
@@ -171,7 +173,14 @@ impl PeerGovernanceMut<'_> {
                 return Ok(());
             };
             doc.delete(&hosts, hex::encode(device).as_str())
-                .map_err(err)
+                .map_err(err)?;
+            if let Some((Value::Object(ObjType::Map), rows)) =
+                doc.get(ROOT, super::copies::HELD_COPIES_KEY).map_err(err)?
+            {
+                doc.delete(&rows, hex::encode(device).as_str())
+                    .map_err(err)?;
+            }
+            Ok(())
         })
     }
 

@@ -452,6 +452,20 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
         Some(main.device_pubkey()),
         "the remaining server makes the base: {status:?}"
     );
+    assert!(
+        !status
+            .holders
+            .iter()
+            .any(|holder| holder.device == old.device_pubkey()),
+        "a server the owner took out is no holder: {status:?}"
+    );
+    assert!(
+        !status.shortfall.iter().any(|short| matches!(
+            short,
+            Shortfall::Holder { device, .. } if *device == old.device_pubkey()
+        )),
+        "and nothing falls short about it: {status:?}"
+    );
     drop(client);
     remains.stop().await;
 }

@@ -339,16 +339,18 @@ impl PeerWorkspace<'_> {
 
         // Each holder holds the workspace as its signed entry says; a holder
         // that says where its copy stands writes into the workspace's state,
-        // which only a key holder does.
+        // which only a key holder does. A row naming another device names a
+        // holder beside it, but only one the workspace still has: a device it
+        // names, or one that says where its own copy stands. A row can only
+        // name a device the workspace dropped while it named it, or one that
+        // stopped keeping it since, so such a device is no holder of the
+        // report, and nothing falls short about it.
         let mut roles: BTreeMap<[u8; 32], CopyRole> = BTreeMap::new();
         for hint in &servers {
             roles.insert(hint.host.device_public_key, super::holder_role(hint));
         }
-        for (device, row) in &rows {
+        for device in rows.keys() {
             roles.entry(*device).or_insert(CopyRole::KeyHolder);
-            for other in row.unreachable.keys().chain(&row.catching_up_from) {
-                roles.entry(*other).or_insert(CopyRole::KeyHolder);
-            }
         }
 
         let mut shortfall = Vec::new();
@@ -370,6 +372,9 @@ impl PeerWorkspace<'_> {
         }
         for (seen_by, row) in &rows {
             for (device, since_ns) in &row.unreachable {
+                if !roles.contains_key(device) {
+                    continue;
+                }
                 shortfall.push(Shortfall::Holder {
                     device: *device,
                     missing: Missing::WritesSince {
@@ -471,6 +476,64 @@ mod tests {
     use super::*;
     use crate::owner::testing::now;
     use crate::state::test_desktops::{cert_of, desktops, sync};
+
+    /// The owners take a holder out: its row says where its copy stood no
+    /// more, and a row naming it no longer makes it one of the report's
+    /// holders, nor makes anything fall short about it.
+    #[test]
+    fn a_holder_the_workspace_no_longer_names_is_no_holder() {
+        let (mut left, left_key, mut right, right_key) = desktops();
+        let (left_cert, right_cert) = (cert_of(&left), cert_of(&right));
+        let right_device = right_cert.device_public_key;
+        for (cert, key, at) in [
+            (&left_cert, &left_key, "left addr"),
+            (&right_cert, &right_key, "right addr"),
+        ] {
+            let hint =
+                tilo_workspace_join::sign_transport_hint("iroh", at, cert.clone(), [1; 32], key)
+                    .unwrap();
+            left.governance_mut()
+                .author_keeping_device(&hint, &left_key, now())
+                .unwrap();
+        }
+        let away = HeldCopy {
+            unreachable: BTreeMap::from([(right_device, 7)]),
+            ..HeldCopy::default()
+        };
+        left.workspace_mut()
+            .report_copy(&left_cert, &away, now())
+            .unwrap();
+        sync(&left, &mut right);
+        right
+            .workspace_mut()
+            .report_copy(&right_cert, &HeldCopy::default(), now())
+            .unwrap();
+        sync(&right, &mut left);
+        let status = left.workspace().copies();
+        assert_eq!(status.holders.len(), 2, "{status:?}");
+
+        assert!(
+            left.governance_mut()
+                .author_keeping_device_removed(&right_device, &left_key, now())
+                .unwrap()
+        );
+        sync(&left, &mut right);
+        let status = right.workspace().copies();
+        assert!(
+            status
+                .holders
+                .iter()
+                .all(|holder| holder.device != right_device),
+            "a device the workspace no longer names is no holder: {status:?}"
+        );
+        assert!(
+            !status.shortfall.iter().any(|short| matches!(
+                short,
+                Shortfall::Holder { device, .. } if *device == right_device
+            )),
+            "and nothing falls short about it: {status:?}"
+        );
+    }
 
     /// A group of desktops with no server wants nothing beyond the devices
     /// it has: it is never short, however its desktops come and go.
