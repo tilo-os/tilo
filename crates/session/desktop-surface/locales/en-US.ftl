@@ -683,6 +683,24 @@ workspace-settings-stat-app-rules = { $count ->
    *[other] app rules
 }
 
+# Workspace settings: document access and roles
+workspace-settings-access-all-apps = All workspace apps
+workspace-settings-access-app-default = { $app } defaults
+workspace-settings-create-role = Create role
+workspace-settings-custom-roles = Custom roles
+workspace-settings-delete-role = Delete this role?
+workspace-settings-delete-role-confirm = Delete role
+workspace-settings-delete-role-detail = Its permissions and member assignments will be removed.
+workspace-settings-document-access = Data access
+workspace-settings-document-apply = Apply access rule
+workspace-settings-document-empty = There are no shared documents to manage.
+workspace-settings-document-everyone = Everyone
+workspace-settings-document-label = Applies to
+workspace-settings-keep-role = Keep role
+workspace-settings-rename-role = Rename
+workspace-settings-role-name = Role name
+workspace-settings-save-role = Save role
+
 # People popover
 a11y-shell-people = People
 a11y-shell-people-description = Who is here, where they are and what they are doing

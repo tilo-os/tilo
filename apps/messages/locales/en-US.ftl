@@ -208,5 +208,8 @@ messages-drafts-keep-draft = Keep a draft
 messages-drafts-drop-draft = Drop a draft
 
 messages-import-previous-draft = Import previous draft
+# What history says the draft actions did: the app's own sentence for each verb.
+messages-import-previous = Imported the previous draft
+messages-sent = Sent the message
 messages-drafts-import-previous = Restore the previous draft for a conversation
 messages-drafts-sent = Remove the delivered draft

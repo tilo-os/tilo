@@ -718,6 +718,24 @@ workspace-settings-stat-app-rules = { $count ->
    *[other] App-Regeln
 }
 
+# Workspace settings: document access and roles
+workspace-settings-access-all-apps = Alle Apps im Workspace
+workspace-settings-access-app-default = { $app }: Standardzugriff
+workspace-settings-create-role = Rolle erstellen
+workspace-settings-custom-roles = Benutzerdefinierte Rollen
+workspace-settings-delete-role = Diese Rolle löschen?
+workspace-settings-delete-role-confirm = Rolle löschen
+workspace-settings-delete-role-detail = Ihre Berechtigungen und Mitgliederzuweisungen werden entfernt.
+workspace-settings-document-access = Datenzugriff
+workspace-settings-document-apply = Zugriffsregel anwenden
+workspace-settings-document-empty = Es gibt keine gemeinsamen Dokumente zu verwalten.
+workspace-settings-document-everyone = Alle
+workspace-settings-document-label = Gilt für
+workspace-settings-keep-role = Rolle behalten
+workspace-settings-rename-role = Umbenennen
+workspace-settings-role-name = Rollenname
+workspace-settings-save-role = Rolle speichern
+
 # People popover
 a11y-shell-people = Personen
 a11y-shell-people-description = Wer hier ist, wo und woran gerade gearbeitet wird

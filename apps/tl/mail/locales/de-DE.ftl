@@ -213,6 +213,16 @@ d-gkuo27e6 = Entwürfe
 
 d-z3zcztpz = Labels
 
+d-bag7bf25 = Übernommene Mail
+    .doc = Unterhaltungen aus einem früheren Postfach, außerhalb der Sammlungen des IMAP-Kontos.
+
+d-fezdozrd = Übernommene Unterhaltungen
+
+d-swilesl6 = Übernommene Signaturen
+
+d-5upxgb6g = Übernommene Entwürfe
+    .doc = Früher importierte Entwürfe, auch solche, die danach gelöscht wurden.
+
 d-4ow5ydy5 = Wartezeit
     .doc = Wie viele Sekunden eine gesendete Nachricht wartet, bevor sie rausgeht, damit sie zurückgeholt werden kann: die Einstellung der Person, zehn von Haus aus, und keine Wartezeit, wenn sie null ist.
 
@@ -234,6 +244,17 @@ d-arnkrvgw = Jetzt abrufen
 
 d-eon6gbrn = Neue Nachricht
     .doc = Beginnt eine Nachricht von dem Konto.
+
+d-y6hvqjbf = Vorherige Mail übernehmen
+    .doc = Kopiert Daten aus dem früheren privaten Postfach in diesen Arbeitsbereich.
+
+d-y6hvqjbf-drafts = Entwürfe
+
+d-y6hvqjbf-labels = Labels
+
+d-y6hvqjbf-conversations = Unterhaltungen
+
+d-y6hvqjbf-signatures = Signaturen
 
 d-ygbvdl5l = Neue Nachricht
     .doc = Beginnt eine Nachricht vom ersten Konto.
@@ -378,6 +399,7 @@ d-twebu5cb = Senden rückgängig
 d-a4rv5wm6 = Antworten
     .doc = Beantwortet die Unterhaltung mit dem Getippten: die Nachricht geht an wen ihre neueste geschrieben hat, als Antwort darauf, zitiert.
     .w-say-something-first = Sag zuerst etwas
+    .w-the-account-for-this-conversation-is = Das Konto für diese Unterhaltung ist nicht verfügbar
 
 d-a4rv5wm6-body = Text
 
@@ -447,6 +469,9 @@ d-4fjgzcq6 = Zusammengeführt
     .w-all-inboxes = Alle Posteingänge
     .w-all-mail = Alle Mails
     .w-labels = Labels
+    .w-recovered-mail = Übernommene Mail
+
+d-3k7hkyhl = Übernommene Mail
 
 d-m5y6nl2m = Alle Posteingänge
     .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
