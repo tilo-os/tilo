@@ -479,6 +479,17 @@ that workspace environment's own, never in a guest sharing the host's kernel
   session it came from (`ush::hosted_vm::MachineAgents`), which decides what
   it is. It ends with the program
   ([`agent_socket.rs`](../../crates/runtime/linux-vm-agent/src/agent_socket.rs)).
+  The server asks the person whose Terminal `run` the workspace admitted for
+  that session, on their approving devices, whether the program may work in
+  the workspace as `claude-code@<environment>#n` (numbered from one in each
+  workspace since the server started). "Always allow" is kept for that person
+  per environment, executable and client name. Allowed, it acts as that agent
+  for them through the workspace's actions, held to their access and an
+  agent's bound, and History keeps what it does as that agent's; a session
+  nobody is known to have started is refused before anyone is asked
+  ([`machine_agents.rs`](../../crates/server/tilo-server/src/machine_agents.rs)).
+  This holds where the server runs its workspaces' shells itself; where their
+  machines are on VM hosts, the hosts do not carry these connections back yet.
 - **The guest image** is one signed OCI image holding two files: an
   uncompressed x86-64 kernel built from a pinned kernel.org longterm release
   with everything a VM needs built in (virtio-mmio, blk, net, vsock, FUSE,

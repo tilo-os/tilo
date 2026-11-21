@@ -52,7 +52,7 @@ impl Machines for crate::agents::HostShells {
     /// workspace's machine, held from here ([`crate::placed_programs`]).
     fn serve(&self, workspace: &str, start: ServeRun) -> Result<Arc<dyn Machine>, String> {
         match self {
-            Self::Here(shells) => shells
+            Self::Here(shells, _) => shells
                 .serve_run(workspace, None, start)
                 .map(|served| Arc::new(served) as Arc<dyn Machine>)
                 .map_err(|error| error.to_string()),

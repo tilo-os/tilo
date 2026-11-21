@@ -75,6 +75,8 @@ pub struct OnServer {
     /// them: under the system's temporary directory, which a shell's sandbox
     /// grants, unlike the shared memory the state is kept in.
     pub shells: Option<tempfile::TempDir>,
+    /// What runs those sessions, when the server runs them.
+    pub shell: Option<Arc<tilo_server::agents::HostShells>>,
 }
 
 impl OnServer {
@@ -134,15 +136,16 @@ async fn start(issuer: &str, shelled: bool) -> OnServer {
     );
     let state = crate::support::scratch_dir();
     let shells = shelled.then(|| tempfile::tempdir().unwrap());
+    let held_shells = shells
+        .as_ref()
+        .map(|shells| tilo_server::agents::host_shells(shells.path().join("shells")).unwrap());
     let hosted = crate::harness::hosted::start(
         &operator,
         &host,
         state.path(),
         Options {
             plain: true,
-            shell: shells.as_ref().map(|shells| {
-                tilo_server::agents::host_shells(shells.path().join("shells")).unwrap()
-            }),
+            shell: held_shells.clone(),
             web_entry: Some(format!("http://127.0.0.1:{}/", site.port())),
             ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
         },
@@ -201,6 +204,7 @@ async fn start(issuer: &str, shelled: bool) -> OnServer {
         _site: site,
         state,
         shells,
+        shell: held_shells,
     }
 }
 
@@ -279,6 +283,7 @@ impl OnServer {
             _site: site,
             state,
             shells,
+            shell: None,
         }
     }
 }

@@ -280,10 +280,15 @@ pub struct AgentOptions {
 /// A placer is named, but its members or account are not usable.
 pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
     let placed = crate::placed_shells::PlacedShells::shared_from_env()?;
-    Ok(Arc::new(match placed {
-        Some(placed) => HostShells::Placed(placed),
-        None => HostShells::Here(ush::workspace_shell::WorkspaceShells::from_env(state)),
-    }))
+    if let Some(placed) = placed {
+        return Ok(Arc::new(HostShells::Placed(placed)));
+    }
+    let agents = Arc::new(crate::machine_agents::MachineAgentsServer::new(Some(
+        state.clone(),
+    )));
+    let shells = ush::workspace_shell::WorkspaceShells::from_env(state)
+        .serving_agents(Arc::clone(&agents) as Arc<dyn ush::hosted_vm::MachineAgents>);
+    Ok(Arc::new(HostShells::Here(shells, agents)))
 }
 
 /// What a host lends its workspaces' records service: a model that looks
@@ -297,17 +302,43 @@ type Lent = (
 
 /// Where the workspace actions run a session's commands.
 pub enum HostShells {
-    /// Here: ush's workspace shells, in this process.
-    Here(ush::workspace_shell::WorkspaceShells),
+    /// Here: ush's workspace shells, in this process, and who serves the agents their
+    /// programs in the workspaces' machines start.
+    Here(
+        ush::workspace_shell::WorkspaceShells,
+        Arc<crate::machine_agents::MachineAgentsServer>,
+    ),
     /// On the member device holding the workspace's VM.
     Placed(Arc<crate::placed_shells::PlacedShells>),
 }
 
 impl HostShells {
+    /// Who serves the agents the programs in the workspaces' machines start, where this host
+    /// runs its shells itself.
+    #[must_use]
+    pub fn machine_agents(&self) -> Option<&Arc<crate::machine_agents::MachineAgentsServer>> {
+        match self {
+            Self::Here(_, agents) => Some(agents),
+            Self::Placed(_) => None,
+        }
+    }
+
     /// Ask VM hosts' members, if any, as `server`'s own device, reading which
     /// keeps each workspace's VM from the workspaces' VM leases, and have the
     /// workspaces' machines branched and deleted with them.
-    fn serve_from(&self, server: &Server) {
+    fn serve_from(&self, server: &Server, actions: &WorkspaceActions) {
+        if let (Self::Here(_, agents), Some(workspaces), Ok(runtime)) = (
+            self,
+            server.workspaces(),
+            tokio::runtime::Handle::try_current(),
+        ) {
+            agents.bind(
+                workspaces.clone(),
+                actions.clone(),
+                server.confirmations(),
+                runtime,
+            );
+        }
         if let (Self::Placed(placed), Some(workspaces)) = (self, server.workspaces()) {
             placed.ask_from(workspaces.action_service(), server.endpoint());
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -327,7 +358,7 @@ impl HostShells {
             Self::Placed(placed) => Some(Arc::new(crate::placed_machines::PlacedMachines::new(
                 Arc::clone(placed),
             ))),
-            Self::Here(shells) => shells.hosted().map(|target| {
+            Self::Here(shells, _) => shells.hosted().map(|target| {
                 Arc::new(crate::placed_machines::LocalMachines::new(target.clone()))
                     as Arc<dyn crate::workspaces::WorkspaceMachines>
             }),
@@ -346,7 +377,7 @@ impl WorkspaceShell for HostShells {
         watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
         let shells = match self {
-            Self::Here(shells) => shells,
+            Self::Here(shells, _) => shells,
             Self::Placed(placed) => {
                 return placed.run(workspace, session, command, agent, person, watching);
             }
@@ -376,6 +407,12 @@ impl WorkspaceShell for HostShells {
             ended_ms: ran.ended_ms,
             refusal: ran.refusal,
         })
+    }
+
+    fn started(&self, workspace: &str, session: &str, caller: &Caller) {
+        if let Self::Here(_, agents) = self {
+            agents.started(workspace, session, caller);
+        }
     }
 }
 
@@ -1365,7 +1402,7 @@ fn attach_resources(
         actions.attach_agent_sessions(sessions.clone());
     }
     if let Some(shell) = &shell {
-        shell.serve_from(server);
+        shell.serve_from(server, actions);
     }
     if let Some(browsers) = &browsers {
         // A session in a workspace's VM joins as a device of the person's,

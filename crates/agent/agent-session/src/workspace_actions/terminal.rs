@@ -97,6 +97,12 @@ pub trait WorkspaceShell: Send + Sync {
         watching: Watching<'_>,
     ) -> Result<ShellRan, String>;
 
+    /// `caller` was let run commands in `workspace`'s session `session`: the person its
+    /// programs' agents ask whether they may work in the workspace.
+    fn started(&self, workspace: &str, session: &str, caller: &Caller) {
+        let _ = (workspace, session, caller);
+    }
+
     /// Keep `output`, a command's output, where the workspace's devices fetch
     /// its content, answering the reference that opens it, or `None` when
     /// this host keeps none.
@@ -325,6 +331,7 @@ impl Worker {
             entry.stop = Some(Arc::clone(&stop));
             drop(log);
         }
+        shell.started(&workspace, &session, caller);
         let spawned = Started {
             shell,
             jobs,

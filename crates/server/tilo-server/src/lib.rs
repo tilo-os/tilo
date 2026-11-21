@@ -98,6 +98,8 @@ mod offload_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_media;
 #[cfg(feature = "agents")]
+pub mod machine_agents;
+#[cfg(feature = "agents")]
 pub mod placed_browsers;
 #[cfg(feature = "agents")]
 pub mod placed_machines;
