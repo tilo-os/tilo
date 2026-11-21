@@ -26,6 +26,7 @@ use ui::winit::event::{ElementState, WindowEvent};
 struct Field {
     typed: Rc<std::cell::RefCell<String>>,
     rect: ui::kurbo::Rect,
+    modal: bool,
 }
 
 impl Widget for Field {
@@ -35,6 +36,10 @@ impl Widget for Field {
 
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn modal_capture(&self) -> Option<ui::kurbo::Rect> {
+        self.modal.then_some(self.rect)
     }
 
     fn build_layout(
@@ -83,6 +88,34 @@ fn key(pressed: bool, text: &str) -> SurfaceKey {
         text: Some(text.to_owned()),
         modifiers: KeyModifiers::default(),
     }
+}
+
+#[test]
+fn an_open_modal_claims_its_layout_bounds_without_painted_pixels() {
+    let mut host = WidgetSurface::new(
+        Box::new(Field {
+            modal: true,
+            ..Field::default()
+        }),
+        Placement {
+            origin: (120, 80),
+            size: (320, 240),
+            scale: 1.5,
+        },
+        false,
+    );
+    assert!(
+        host.prepare_frame(),
+        "the field is laid out on a transparent surface"
+    );
+    assert!(
+        host.accepts_pointer(160.0, 115.0),
+        "the field keeps a press in the open modal, even on a transparent frame"
+    );
+    assert!(
+        !host.accepts_pointer(160.0, 135.0),
+        "a press outside the modal still goes to the surface behind it"
+    );
 }
 
 #[test]

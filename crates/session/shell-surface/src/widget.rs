@@ -903,7 +903,15 @@ impl ShellSurface for WidgetSurface {
         )]
         let (px, py) = (lx as u32, ly as u32);
         let scale = self.placement.scale;
+        let point = vello::kurbo::Point::new(lx / scale, ly / scale);
         self.frames.covers(px, py)
+            // A modal's controls are available as soon as layout publishes them.
+            // Keep presses inside it while the raster is still arriving.
+            || self
+                .host
+                .root_widget()
+                .modal_capture()
+                .is_some_and(|bounds| bounds.contains(point))
             || self.lifted.iter().filter(|layer| layer.shown).any(|layer| {
                 let ((x, y), _) = layer.rect;
                 #[allow(
