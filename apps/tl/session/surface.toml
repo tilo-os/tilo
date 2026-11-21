@@ -792,31 +792,6 @@ id = "redo"
 kind = "undoable"
 params = []
 
-[[resources.verbs]]
-id = "show-match"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "query"
-required = true
-type = "text"
-
-[[resources.verbs.params]]
-name = "resource"
-required = true
-
-[resources.verbs.params.type]
-resource = ""
-
-[[resources.verbs]]
-id = "retry"
-kind = "undoable"
-
-[[resources.verbs.params]]
-name = "query"
-required = true
-type = "text"
-
 [[resources]]
 id = "session-authoring"
 kind = "session.authoring"
