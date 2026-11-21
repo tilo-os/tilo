@@ -1404,8 +1404,9 @@ async fn vouch(reporter: &Reporter<'_>, server: &dyn HttpClient) -> Result<ExitC
 
 /// `tilo login` on a computer that holds the person's root itself: no tab and no code. The root
 /// certifies a fresh device key for the agent here, the person's list of devices on the site's
-/// server takes the key in, and the computer enters `workspace` (by name or id),
-/// else their own workspace there, as [`set_up`] would after a tab approved it.
+/// server takes the key in, and the computer enters `workspace` (by name or id), else the first
+/// of their own there ([`choose_workspace`]), as [`set_up`] would after a tab approved it; the
+/// peer it starts takes in every other workspace the person has there.
 ///
 /// # Errors
 /// The site or its server is not reached, the person has no workspace there by that name, or the
@@ -1429,7 +1430,7 @@ pub fn login_held(
             });
     let site = site_origin(site)?;
     let runtime = runtime()?;
-    let (key, device) = runtime.block_on(async {
+    let (key, device, others) = runtime.block_on(async {
         let origin = home_server(&Origin::new(&http(), &site)).await?;
         let server = Origin::new(&http(), &origin);
         let info = https::server_info(&server).await.map_err(|error| {
@@ -1487,11 +1488,12 @@ pub fn login_held(
                 .keep_personal(&list)
                 .await
                 .map_err(|refusal| anyhow!("{refusal}"))?;
-            choose_workspace(&list.workspaces, workspace)
+            let others = list.workspaces.len().saturating_sub(1);
+            choose_workspace(&list.workspaces, workspace).map(|(id, name)| (id, name, others))
         }
         .await;
         session.close();
-        let (id, name) = chosen?;
+        let (id, name, others) = chosen?;
         let device = Device {
             site: format!("{site}/"),
             host_origin: origin,
@@ -1504,7 +1506,7 @@ pub fn login_held(
             server_cert: hex::encode(postcard::to_allocvec(&info.server_cert)?),
             server_address: None,
         };
-        anyhow::Ok((key, device))
+        anyhow::Ok((key, device, others))
     })?;
     let dir = device_dir()?;
     store(&dir, &key, &device)?;
@@ -1515,6 +1517,15 @@ pub fn login_held(
         device.label,
         which_agent(&agent.name)
     );
+    if others > 0 {
+        println!(
+            "Your {others} other workspace{} come{} to this computer as well, each to a folder of \
+             its own, as Tilo's background sync takes {} in.",
+            if others == 1 { "" } else { "s" },
+            if others == 1 { "s" } else { "" },
+            if others == 1 { "it" } else { "them" },
+        );
+    }
     entered_after_login(&runtime, &key, &device, &agent)
 }
 
@@ -1587,7 +1598,9 @@ fn held_device_cert(
 }
 
 /// The workspace a held login enters: the one `asked` names (its id, or its name in any case),
-/// else the person's own one, else the only one they have.
+/// else the first the person made of their own, else the first they were let in to. A login names
+/// no workspace to have every one of the person's: the peer it starts gives each of the others a
+/// folder as well, so the one entered first is only where it starts.
 pub(crate) fn choose_workspace(
     listed: &[tilo_server_session::workspaces::PersonalWorkspace],
     asked: Option<&str>,
@@ -1610,16 +1623,16 @@ pub(crate) fn choose_workspace(
                 )
             });
     }
-    let own: Vec<_> = listed
-        .iter()
-        .filter(|found| found.role.as_deref() == Some("owner"))
-        .collect();
-    match (own.as_slice(), listed) {
-        ([only], _) => Ok(pick(only)),
-        (_, [only]) => Ok(pick(only)),
-        ([], []) => bail!("You have no workspace there yet: make one in Tilo first."),
-        _ => bail!("Say which workspace with -w; {}", names_of(listed)),
-    }
+    let first = |own: bool| {
+        listed
+            .iter()
+            .filter(|found| !own || found.role.as_deref() == Some("owner"))
+            .min_by_key(|found| (found.made_at_ms.unwrap_or(i64::MAX), found.workspace.clone()))
+    };
+    first(true)
+        .or_else(|| first(false))
+        .map(pick)
+        .ok_or_else(|| anyhow!("You have no workspace there yet: make one in Tilo first."))
 }
 
 fn names_of(listed: &[tilo_server_session::workspaces::PersonalWorkspace]) -> String {
@@ -1664,6 +1677,37 @@ mod tests {
             server_cert: "00".into(),
             server_address: None,
         }
+    }
+
+    fn listed(
+        workspace: &str,
+        role: &str,
+        made_at_ms: i64,
+    ) -> tilo_server_session::workspaces::PersonalWorkspace {
+        tilo_server_session::workspaces::PersonalWorkspace {
+            workspace: workspace.into(),
+            name: workspace.to_uppercase(),
+            host: None,
+            role: Some(role.into()),
+            labels: tilo_server_session::workspaces::WorkspaceLabels::new(),
+            made_at_ms: Some(made_at_ms),
+            unattended: false,
+        }
+    }
+
+    #[test]
+    fn a_login_naming_no_workspace_starts_in_the_first_of_the_persons_own() {
+        let several = [
+            listed("lounge", "editor", 1),
+            listed("studio", "owner", 30),
+            listed("notes", "owner", 20),
+        ];
+        assert_eq!(choose_workspace(&several, None).unwrap().0, "notes");
+        assert_eq!(choose_workspace(&several, Some("STUDIO")).unwrap().0, "studio");
+        let invited = [listed("lounge", "editor", 5), listed("club", "viewer", 2)];
+        assert_eq!(choose_workspace(&invited, None).unwrap().0, "club");
+        assert!(choose_workspace(&[], None).is_err());
+        assert!(choose_workspace(&several, Some("elsewhere")).is_err());
     }
 
     #[test]

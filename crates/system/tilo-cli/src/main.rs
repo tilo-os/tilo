@@ -358,7 +358,8 @@ enum Cmd {
     Login {
         /// The code your Tilo tab shows, like K7Q-MX2P, or an invitation link a member sent you,
         /// which joins their workspace over iroh. Not needed on a computer that holds your
-        /// identity (`--new-identity`): it logs itself in, into -w or your own workspace.
+        /// identity (`--new-identity`): it logs itself in, into -w or the first of your own,
+        /// and the others follow it to this computer.
         code: Option<String>,
         /// Instead: make a Tilo identity whose root this computer holds (or
         /// say it has one), and print its user public key. A host's operator
