@@ -12,7 +12,7 @@
 //!
 //! A kept read is a worker process too: what it answers, and the policy check
 //! that decides whether it may, go through the same off-thread wait as any
-//! other call ([`super::call_wait`]), so a large record's read never holds the
+//! other call ([`super::call_wait`]), so a large resource's read never holds the
 //! thread that serves its workspace.
 
 use std::collections::{HashMap, HashSet};
@@ -53,7 +53,7 @@ pub(super) enum KeptRead {
     Answered(tilo_actions::ActionOutput),
     /// It does not offer that read now: one is prepared.
     NotOffered,
-    /// The record moved past the revision its caller named.
+    /// The resource moved past the revision its caller named.
     Stale,
     /// Its worker is still answering: the request waits off this thread for it.
     Held,

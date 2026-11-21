@@ -89,7 +89,7 @@ async fn viewed(
 }
 
 /// A chat document with the feedback channel a report goes to, written into the workspace.
-async fn feedback_record(browser: &mut Browser) -> DocumentRoute {
+async fn feedback_resource(browser: &mut Browser) -> DocumentRoute {
     let route = DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: browser.cluster_id.clone(),
@@ -210,7 +210,7 @@ async fn a_slow_read_leaves_its_thread_answering() {
             .await
             .unwrap();
     }
-    let chat = feedback_record(&mut browser).await;
+    let chat = feedback_resource(&mut browser).await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let submission = approved(&chat);
     let task_route = DocumentRoute {

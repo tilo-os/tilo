@@ -124,7 +124,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
-use crate::host::CatalogueFactory;
+use crate::service::CatalogueFactory;
 use crate::member::actions::{Outcome, api_outcome, resource_of, resource_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_documents::{Reads, WorkspaceDocuments};
@@ -1836,7 +1836,7 @@ impl Worker {
                     done,
                 } => match self.shared.link.get().cloned() {
                     Some(link) => {
-                        // It proves the destination through the record's registered read, and
+                        // It proves the destination through the resource's registered read, and
                         // projects its report from the committed source in a worker: that goes
                         // on off this thread once it outlasts a call, and answers the caller
                         // from there.

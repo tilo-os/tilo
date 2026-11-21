@@ -162,11 +162,11 @@ fn step_of(run: &str) -> ActionContext {
         ))
 }
 
-fn request(app: &str, record: &str, action: &str) -> InvokeRequest {
+fn request(app: &str, resource: &str, action: &str) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: resource_provider(&route(app, record)),
+            provider: resource_provider(&route(app, resource)),
             address: ActionAddress::new("r", action),
         },
         argument: InvokeArgument::Json(Map::from_iter([("text".into(), json!("hi"))])),

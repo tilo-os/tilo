@@ -16,7 +16,7 @@ use tilo_actions::remote::{
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::WorkspaceShell;
-use crate::host::ServerEndpoint;
+use crate::service::ServerEndpoint;
 use tilo_server_protocol::WorkspaceId;
 
 /// The host's own device, as the service takes part in its workspaces: a
