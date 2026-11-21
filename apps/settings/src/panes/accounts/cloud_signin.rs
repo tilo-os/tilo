@@ -1123,9 +1123,8 @@ impl SignInFlow {
         if let Some(receiver) = urls.take() {
             match receiver.recv_timeout(remaining()) {
                 Ok((url, false)) => *launch = Some(self.opener.open(&url)),
-                Ok((_, true)) => {}
+                Ok((_, true)) | Err(channel::RecvTimeoutError::Disconnected) => {}
                 Err(channel::RecvTimeoutError::Timeout) => return false,
-                Err(channel::RecvTimeoutError::Disconnected) => {}
             }
         }
         match result.recv_timeout(remaining()) {
