@@ -395,6 +395,23 @@ impl Host {
         Self(Running::of(owner, "The test host", Some(name)))
     }
 
+    /// A site of the person `owner`, whose home is the workspace `name`: a host that keeps the
+    /// workspaces of whoever its home lets in, and lists them theirs, as a community site does.
+    #[must_use]
+    pub fn site(owner: &SigningKey, name: &str) -> Self {
+        let host = Self::of(owner, name);
+        assert!(
+            host.0
+                .workspaces
+                .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+                    "site.test"
+                ))
+                .expect("the site keeps workspaces of people's own")
+        );
+        assert!(host.0.workspaces.admit_own_through(host.workspace()));
+        host
+    }
+
     /// What a device of this machine's relays through this host.
     #[must_use]
     pub fn relays(&self) -> EndpointRelays {
@@ -410,10 +427,25 @@ impl Host {
             .expect("a host started with a workspace")
     }
 
+    /// Govern a further workspace named `name`, as the host's own: its id.
+    #[must_use]
+    pub fn create(&self, name: &str) -> String {
+        self.0
+            .runtime
+            .block_on(self.0.workspaces.create(name))
+            .expect("the workspace")
+            .workspace
+    }
+
     /// An invitation to the workspace that only `person`'s devices redeem.
     #[must_use]
     pub fn invitation(&self, person: [u8; 32], request: u8) -> String {
-        let workspace = self.workspace();
+        self.invitation_to(self.workspace(), person, request)
+    }
+
+    /// An invitation to `workspace`, one this host governs, that only `person`'s devices redeem.
+    #[must_use]
+    pub fn invitation_to(&self, workspace: &str, person: [u8; 32], request: u8) -> String {
         let issued = self
             .0
             .runtime

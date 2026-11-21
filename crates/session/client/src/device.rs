@@ -454,6 +454,22 @@ impl Device {
         labels: &WorkspaceLabels,
         workspace: Option<&str>,
     ) -> Result<PersonalList, DeviceRefusal> {
+        self.personal_list_in(self.workspace_id, labels, workspace)
+            .await
+    }
+
+    /// [`Self::personal_list`], asked in `entered`, a workspace this device is in on the host
+    /// ([`crate::session::HOST_ITSELF`] for none): how a device that took a workspace in on this
+    /// session asks it there.
+    ///
+    /// # Errors
+    /// The host did not answer, refused, or answered something else.
+    pub async fn personal_list_in(
+        &self,
+        entered: WorkspaceId,
+        labels: &WorkspaceLabels,
+        workspace: Option<&str>,
+    ) -> Result<PersonalList, DeviceRefusal> {
         let mut arguments = Map::new();
         if let Some(workspace) = workspace {
             arguments.insert("workspace".to_owned(), serde_json::Value::from(workspace));
@@ -465,7 +481,11 @@ impl Device {
                     .map_err(|error| DeviceRefusal::malformed(error.to_string()))?,
             );
         }
-        let listed = self.host_action(LIST_PERSONAL, arguments).await?;
+        let target = RemoteActionTarget {
+            provider: HOST_ACTIONS_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(HOST_WORKSPACES_RESOURCE, LIST_PERSONAL),
+        };
+        let listed = self.ask_host(entered, target, arguments).await?;
         serde_json::from_value(listed).map_err(|error| {
             DeviceRefusal::malformed(format!("The host answered no workspace list: {error}"))
         })

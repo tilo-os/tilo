@@ -282,7 +282,7 @@ pub(crate) fn start_app_wire(
     // What Browser's asks for vault items are answered with: kept here as well, so a session
     // that holds a workspace's Browser can say so and name who asks its server.
     let item_lending = std::sync::Arc::new(crate::item_lending::ItemLending::default());
-    let broker = app_wire::serve(
+    let (broker, hosting) = app_wire::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
@@ -364,6 +364,7 @@ pub(crate) fn start_app_wire(
         file_clipboard,
         _personal: personal,
         item_lending,
+        hosting,
     }))
 }
 

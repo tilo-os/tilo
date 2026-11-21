@@ -15,9 +15,17 @@
 //!
 //! A workspace this device hosts itself, or one founded on its own shell
 //! (whose host is a desktop, which runs no workers), is decided here.
+//!
+//! The same sessions carry the person's workspace list as each host keeps it
+//! ([`HostedWorkspaces::follow_lists`]): the workspaces of theirs a host holds,
+//! made in a browser, by the CLI or on another computer, which a device of
+//! theirs restored from their identity alone learns of nowhere else. Each one
+//! this device holds no copy of is handed to the session with its host's
+//! signed address, and the session enters it there as their further device.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
@@ -28,11 +36,11 @@ use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::device_admin;
 use tilo_lock::MutexRecover as _;
-use tilo_server_session::workspaces::PersonalList;
+use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalList, WorkspaceLabels};
 use tilo_session_actions::SessionActions;
-use tilo_session_client::PeerConfig;
 use tilo_session_client::device::Device;
 use tilo_session_client::{Cmd, Outbox as _};
+use tilo_session_client::{PeerConfig, PersonalWorkspaces};
 
 use crate::engine::Engine;
 
@@ -52,11 +60,27 @@ struct Inner {
     /// host of its, once the session's broker can answer it
     /// ([`crate::device_inbox`]).
     inbound: Mutex<Option<Arc<dyn ActionProvider + Send + Sync>>>,
+    /// The person's workspaces the hosts listed that this device holds no copy of, by
+    /// workspace, until the session takes them ([`HostedWorkspaces::take_listed`]).
+    listed: Mutex<BTreeMap<WorkspaceId, Listed>>,
+}
+
+/// One of the person's workspaces a host of theirs lists that this device holds no copy of.
+pub(crate) struct Listed {
+    /// Its name, as the host lists it.
+    pub(crate) name: String,
+    /// Where its host is reached for it, as the host signed it: where this device asks to be taken
+    /// in.
+    pub(crate) host: tilo_peer_state::join::TransportHint,
 }
 
 /// This device's session with one host, and the workspaces it entered there.
 struct ServerAddress {
     device: Device,
+    /// The person's workspace list as the host sends it on this session.
+    personal: PersonalWorkspaces,
+    /// Whether the person's list is followed on this session yet.
+    followed: AtomicBool,
     /// Each entered workspace's actions on the host, by its id there.
     entered: Mutex<HashMap<WorkspaceId, SessionActions>>,
     /// Held while a workspace is entered, so two invocations enter it once.
@@ -105,7 +129,44 @@ impl HostedWorkspaces {
             runtime,
             hosts: Mutex::default(),
             inbound: Mutex::default(),
+            listed: Mutex::default(),
         })))
+    }
+
+    /// Follow the person's workspace list on every host of a workspace this device holds: what
+    /// the host lists now, and each list it sends as it changes. A workspace of theirs this device
+    /// holds no copy of is kept for [`Self::take_listed`], with the host's signed address for it,
+    /// and `wake` runs the session's pass to take it. A host whose session ended is followed again
+    /// on the next.
+    pub(crate) fn follow_lists(&self, wake: &tilo_service::Wake) {
+        for OnHosts { workspace, host } in hosts_of(&self.0.engine) {
+            let placed = Placed {
+                workspace,
+                workspace_id: host.workspace_id,
+                host,
+            };
+            let host = self.host(&placed);
+            if host.followed.swap(true, Ordering::Relaxed) {
+                continue;
+            }
+            let reading = Reading {
+                hosted: Arc::downgrade(&self.0),
+                host: Arc::downgrade(&host),
+                on: (placed.workspace.clone(), placed.workspace_id),
+                wake: Arc::clone(wake),
+            };
+            let again = reading.clone();
+            host.device
+                .session()
+                .on_event(host.personal.sent(), Arc::new(move || again.read()));
+            reading.read();
+        }
+    }
+
+    /// The person's workspaces their hosts listed since the last call that this device holds no
+    /// copy of, by workspace.
+    pub(crate) fn take_listed(&self) -> BTreeMap<WorkspaceId, Listed> {
+        std::mem::take(&mut *self.0.listed.lock_recover())
     }
 
     /// Serve what another device addresses to this device through a host of its:
@@ -170,6 +231,8 @@ impl HostedWorkspaces {
             },
         );
         let host = Arc::new(ServerAddress {
+            personal: PersonalWorkspaces::follow(device.session()),
+            followed: AtomicBool::new(false),
             device,
             entered: Mutex::default(),
             entering: tokio::sync::Mutex::new(()),
@@ -287,6 +350,106 @@ impl HostedWorkspaces {
             }
         }
     }
+}
+
+/// One read of the person's list on one host's session: what the host lists now, each workspace
+/// of theirs this device holds no copy of kept with the host's signed address for it.
+#[derive(Clone)]
+struct Reading {
+    hosted: Weak<Inner>,
+    host: Weak<ServerAddress>,
+    /// A workspace this device holds on the host, by its id and its id there: where the host is
+    /// asked, as everything of the person's is asked there.
+    on: (String, WorkspaceId),
+    wake: tilo_service::Wake,
+}
+
+impl Reading {
+    /// Read the list now, off the caller's thread.
+    fn read(&self) {
+        let Some(hosted) = self.hosted.upgrade() else {
+            return;
+        };
+        let reading = self.clone();
+        hosted.runtime.spawn(async move {
+            let (Some(hosted), Some(host)) = (reading.hosted.upgrade(), reading.host.upgrade())
+            else {
+                return;
+            };
+            if read_list(&hosted, &host, &reading.on).await {
+                (reading.wake)();
+            }
+        });
+    }
+}
+
+/// Keep each workspace `host` lists for the person that `hosted`'s device holds no copy of, with
+/// the host's signed address for it: one a host keeps itself is asked for alone, which is when the
+/// host signs where it answers for it. Whether any was kept.
+async fn read_list(hosted: &Inner, host: &ServerAddress, on: &(String, WorkspaceId)) -> bool {
+    let entered = match enter(host, &on.0, on.1).await {
+        Ok(_) => on.1,
+        Err(error) => {
+            tracing::info!(host = host.device.label(), %error, "a host's list of the person's workspaces was not read");
+            return false;
+        }
+    };
+    let list = match host.personal.read_in(&host.device, entered).await {
+        Ok(list) => list,
+        Err(refusal) => {
+            tracing::info!(host = host.device.label(), %refusal, "a host's list of the person's workspaces was not read");
+            return false;
+        }
+    };
+    let held: BTreeSet<WorkspaceId> = hosted.engine.workspaces().into_iter().collect();
+    let mut kept = false;
+    for entry in list.workspaces {
+        let Some(workspace) = WorkspaceId::parse(&entry.workspace) else {
+            continue;
+        };
+        // A workspace no device of the person's said the host of yet waits until one does.
+        let Some(address) = entry.host else {
+            continue;
+        };
+        if held.contains(&workspace) {
+            continue;
+        }
+        let signed = if address.hint.is_some() {
+            Some(address)
+        } else {
+            host.device
+                .personal_list_in(entered, &WorkspaceLabels::new(), Some(&entry.workspace))
+                .await
+                .ok()
+                .and_then(|one| one.workspaces.into_iter().next())
+                .and_then(|one| one.host)
+        };
+        let Some(hint) = signed.and_then(|address| signed_hint(&address, workspace)) else {
+            tracing::debug!(%workspace, "a listed workspace's host signed no address for it");
+            continue;
+        };
+        hosted.listed.lock_recover().insert(
+            workspace,
+            Listed {
+                name: entry.name,
+                host: hint,
+            },
+        );
+        kept = true;
+    }
+    kept
+}
+
+/// The signed address `address` names for `workspace`, when it is one: signed by the host it
+/// names, for that workspace.
+fn signed_hint(
+    address: &KeepingDeviceAddress,
+    workspace: WorkspaceId,
+) -> Option<tilo_peer_state::join::TransportHint> {
+    let bytes = hex::decode(address.hint.as_deref()?).ok()?;
+    let hint: tilo_peer_state::join::TransportHint = postcard::from_bytes(&bytes).ok()?;
+    let (host, _) = WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).ok()?;
+    (host.workspace_id == workspace).then_some(hint)
 }
 
 /// The device `hint` places a workspace on, when that is another device than `own` and it runs

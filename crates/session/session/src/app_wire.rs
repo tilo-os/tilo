@@ -493,7 +493,10 @@ pub fn serve(
     launches: std::sync::Arc<Launches>,
     fabric: Option<crate::platform::fabric::SharedLink>,
     hosted: Hosted,
-) -> std::io::Result<BrokerHandle> {
+) -> std::io::Result<(
+    BrokerHandle,
+    Option<crate::hosted_workspaces::HostedWorkspaces>,
+)> {
     let _ = link.launches.set(std::sync::Arc::clone(&launches));
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.layout) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
@@ -550,10 +553,10 @@ pub fn serve(
     // What another device addresses to this device through a workspace's host — a
     // listing of a window's resources, a page action on it — is served by the broker
     // that now serves, and the answer goes back on the session it arrived on.
-    if let (Some(hosting), Some(host)) = (hosting, broker.app_action_broker()) {
+    if let (Some(hosting), Some(host)) = (&hosting, broker.app_action_broker()) {
         hosting.serve_inbound(host.device_host());
     }
-    Ok(broker)
+    Ok((broker, hosting))
 }
 
 /// Where the broker's writes go beyond this device's own apps: an app's
@@ -1526,6 +1529,9 @@ pub(crate) struct AppWire {
     /// The person's own store open to their other devices, held so its links
     /// and the writes it keeps end with the session.
     pub(crate) _personal: Option<tilo_workspace_service::apps::personal::Links>,
+    /// The hosts of the workspaces this device takes part in but does not host: where the
+    /// person's actions on them go, and where their workspace list is kept and read.
+    pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
     /// What Browser's asks for vault items are answered with, shared with the service that
     /// answers them.
     pub(crate) item_lending: std::sync::Arc<crate::item_lending::ItemLending>,

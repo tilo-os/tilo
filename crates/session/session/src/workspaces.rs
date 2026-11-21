@@ -831,6 +831,54 @@ impl Personal {
         taken
     }
 
+    /// Take in the person's workspaces their hosts list that this device holds no copy of
+    /// (`listed`, by workspace): each one the list does not name yet is written to it, hosted by
+    /// the device that signed where it is reached, and with that address, so this device enters it
+    /// there as it enters every listed workspace ([`Self::adopt_into`]) and the person's other
+    /// devices read it too. A workspace the list names already keeps its name and hosts. Whether
+    /// the list moved.
+    pub(crate) fn take_hosted(
+        &mut self,
+        listed: BTreeMap<WorkspaceId, crate::hosted_workspaces::Listed>,
+    ) -> bool {
+        if listed.is_empty() {
+            return false;
+        }
+        let named: BTreeSet<WorkspaceId> = entries_of(&self.directory)
+            .into_iter()
+            .map(|(workspace, _)| workspace)
+            .collect();
+        let mut moved = false;
+        for (workspace, entry) in listed {
+            let host = entry.host.host.writes_for();
+            let Ok(hint) = postcard::to_allocvec(&entry.host) else {
+                continue;
+            };
+            let written = (|| {
+                let mut changed = false;
+                if !named.contains(&workspace) {
+                    self.directory.add_workspace(workspace, &entry.name)?;
+                    self.directory.assign_host(workspace, host)?;
+                    changed = true;
+                }
+                // The address is the host's own word for where it answers: it is said under its key.
+                changed |= self.directory.set_host_hint(workspace, host, &hint)?;
+                Ok::<bool, tilo_user_identity::DirectoryError>(changed)
+            })();
+            match written {
+                Ok(changed) => moved |= changed,
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, "a workspace a host lists for the person was not listed here");
+                }
+            }
+        }
+        if moved {
+            self.published = None;
+            self.persist();
+        }
+        moved
+    }
+
     /// Say where this device reaches the host of each listed workspace it holds, as each workspace's
     /// own state names it (`hints`, by workspace id): a device of the person's that does not hold one
     /// yet enters it there.
@@ -1408,7 +1456,7 @@ impl crate::Shared {
     /// this device did since the last pass.
     pub(crate) fn follow_records(
         &self,
-        hosted: Option<&dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
+        hosted: Option<&crate::hosted_workspaces::HostedWorkspaces>,
     ) {
         self.follow_data_usage();
         self.follow_personal(hosted);
@@ -1425,11 +1473,17 @@ impl crate::Shared {
     /// took off theirs, and say again what this device has when theirs was missing something.
     pub(crate) fn follow_personal(
         &self,
-        hosted: Option<&dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
+        hosted: Option<&crate::hosted_workspaces::HostedWorkspaces>,
     ) {
         let Some(personal) = &self.personal else {
             return;
         };
+        // The person's list as the hosts of their workspaces keep it: the workspaces of theirs a
+        // host holds that no device of theirs listed here, as on a device restored from their
+        // identity alone, which knows of them nowhere else.
+        if let Some(hosted) = hosted {
+            hosted.follow_lists(&self.wake_handle);
+        }
         let news = {
             let mut personal = personal.borrow_mut();
             // Where this device holds each of its workspaces, as the workspaces themselves say: the
@@ -1441,6 +1495,9 @@ impl crate::Shared {
             // What the person's other devices wrote to the list is taken in before this session's
             // pass is written over it, so the pass reconciles against their list.
             let mut news = store.is_some_and(|store| personal.sync_store(store));
+            if let Some(hosted) = hosted {
+                news |= personal.take_hosted(hosted.take_listed());
+            }
             news |= personal.publish_local(&self.handle);
             news |= self.fleet_moved(&mut personal);
             if let Some(engine) = &self.engine {
@@ -1513,7 +1570,13 @@ impl crate::Shared {
             if let Some(store) = store {
                 news |= personal.sync_store(store);
             }
-            self.keep_readable(&mut personal, hosted, news);
+            self.keep_readable(
+                &mut personal,
+                hosted.map(|hosted| {
+                    hosted as &dyn tilo_workspace_service::apps::services::HostedWorkspaces
+                }),
+                news,
+            );
             if adoption.changed {
                 self.keep_layout_now();
             }

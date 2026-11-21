@@ -28,6 +28,7 @@ use serde::Serialize;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_session::workspaces::PersonalList;
+use tilo_session_client::PersonalWorkspaces;
 use tilo_session_client::device::Device as Entered;
 
 use crate::mcp::held::UNMOUNTING;
@@ -146,37 +147,19 @@ impl Peer {
         })
     }
 
-    /// The person's workspaces on the host `device` entered: the list their
-    /// host sent ([`Self::keep_personal`]), or the one asked for once while
-    /// none arrived. What was listed, and whether the host answered the whole
-    /// list.
+    /// The person's workspaces as the peer last took them in ([`Self::take_personal`]), and
+    /// whether the host answered the whole list: until it has, only the workspace `device` entered.
     async fn listed(&self, device: &Entered) -> (Vec<Listed>, bool) {
-        let held = self.listed.lock().await.clone();
-        if let Some((list, complete)) = held {
-            return (list, complete);
-        }
-        let (list, complete) = match device
-            .personal_list(
-                &tilo_server_session::workspaces::WorkspaceLabels::new(),
-                None,
+        self.listed.lock().await.clone().unwrap_or_else(|| {
+            (
+                vec![Listed {
+                    workspace: device.workspace_id(),
+                    name: None,
+                    role: None,
+                }],
+                false,
             )
-            .await
-        {
-            Ok(personal) => (Self::listed_from(device.workspace_id(), &personal), true),
-            Err(refusal) => {
-                tracing::warn!(%refusal, "the person's workspaces are not listed; only the one logged into is shown");
-                (
-                    vec![Listed {
-                        workspace: device.workspace_id(),
-                        name: None,
-                        role: None,
-                    }],
-                    false,
-                )
-            }
-        };
-        *self.listed.lock().await = Some((list.clone(), complete));
-        (list, complete)
+        })
     }
 
     /// A session has just started: nothing has been sent over it yet, so the
@@ -186,11 +169,24 @@ impl Peer {
         *self.listed.lock().await = None;
     }
 
-    /// The host sent the person's workspaces as they are now: their folders
-    /// follow on the peer's next look, without asking the host again.
-    pub(crate) async fn keep_personal(&self, device: &Entered, personal: &PersonalList) {
-        *self.listed.lock().await =
-            Some((Self::listed_from(device.workspace_id(), personal), true));
+    /// Take in the person's workspaces as `personal`, followed on `device`'s session, has them:
+    /// the newest list the host sent, else the one it answers when asked, once a session. Their
+    /// folders follow on the peer's next look.
+    pub(crate) async fn take_personal(&self, device: &Entered, personal: &PersonalWorkspaces) {
+        let list = match personal.heard() {
+            Some(list) => list,
+            None if self.listed.lock().await.is_some() => return,
+            None => match personal.read(device).await {
+                Ok(list) => list,
+                Err(refusal) => {
+                    tracing::warn!(%refusal, "the person's workspaces are not listed; only the one logged into is shown");
+                    let only = self.listed(device).await;
+                    *self.listed.lock().await = Some(only);
+                    return;
+                }
+            },
+        };
+        *self.listed.lock().await = Some((Self::listed_from(device.workspace_id(), &list), true));
     }
 
     /// `personal`, as the peer lists it: the workspace this device entered

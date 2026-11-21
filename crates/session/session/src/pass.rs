@@ -696,14 +696,13 @@ impl Session {
         // layouts through the same records.
         self.shared.follow_layouts();
         self.follow_automation();
-        // The person's list is kept on the hosts of their workspaces through the sessions the
-        // broker reaches them on.
+        // The person's list is kept on the hosts of their workspaces, and read from them, through
+        // the sessions the broker reaches them on.
         let hosted = self
             .app_wire
             .as_ref()
-            .and_then(crate::app_wire::AppWire::action_broker)
-            .and_then(|broker| broker.hosted_workspaces());
-        self.shared.follow_records(hosted.as_deref());
+            .and_then(|wire| wire.hosting.as_ref());
+        self.shared.follow_records(hosted);
         // The person's settings follow them between their devices in their own store: what they set
         // here is written there, and what they set there reaches the document this session reads.
         if let Some(personal) = self.shared.sync.as_ref().and_then(|sync| sync.personal()) {

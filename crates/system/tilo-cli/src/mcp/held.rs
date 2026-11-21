@@ -1098,7 +1098,7 @@ async fn keep_peer<E: Enter>(shared: Arc<Shared<E>>, home: PathBuf, state: PathB
     let mut shown: Option<Arc<super::Session>> = None;
     // What the host sends this session: the person's workspaces as they are
     // now, and a wake when one arrives.
-    let mut personal: Option<tilo_session_client::Events> = None;
+    let mut personal: Option<tilo_session_client::PersonalWorkspaces> = None;
     let woken = Arc::new(tokio::sync::Notify::new());
     loop {
         match shared.session(false, super::Ask::Sync).await {
@@ -1132,7 +1132,7 @@ async fn follow_session(
     peer: &crate::peer::Peer,
     session: &Arc<super::Session>,
     shown: &mut Option<Arc<super::Session>>,
-    personal: &mut Option<tilo_session_client::Events>,
+    personal: &mut Option<tilo_session_client::PersonalWorkspaces>,
     woken: &Arc<tokio::sync::Notify>,
 ) {
     if shown
@@ -1142,23 +1142,16 @@ async fn follow_session(
         peer.close().await;
         shown.replace(Arc::clone(session));
         peer.forget_personal().await;
-        let events = session
-            .device
-            .session()
-            .events_where(|event| matches!(event, tilo_session_client::Event::Personal(_)));
+        let followed = tilo_session_client::PersonalWorkspaces::follow(session.device.session());
         let woken = Arc::clone(woken);
         session
             .device
             .session()
-            .on_event(&events, Arc::new(move || woken.notify_one()));
-        *personal = Some(events);
+            .on_event(followed.sent(), Arc::new(move || woken.notify_one()));
+        *personal = Some(followed);
     }
-    if let Some(events) = personal {
-        for event in events.drain() {
-            if let tilo_session_client::Event::Personal(list) = event {
-                peer.keep_personal(&session.device, &list).await;
-            }
-        }
+    if let Some(followed) = personal {
+        peer.take_personal(&session.device, followed).await;
     }
     peer.reconcile(&session.device).await;
 }

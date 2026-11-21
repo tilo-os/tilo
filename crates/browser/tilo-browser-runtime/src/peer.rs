@@ -1340,10 +1340,9 @@ pub struct WasmPeer {
     durable_events: Events,
     live_events: Events,
     voice_events: Events,
-    /// The person's workspace lists as their host sends them: what the
+    /// The person's workspace list as their host sends it: what the
     /// switcher offers without asking the host again.
-    personal_events: Events,
-    personal_list: RefCell<Option<tilo_server_session::workspaces::PersonalList>>,
+    personal: tilo_session_client::PersonalWorkspaces,
     /// Joined workspaces by workspace, to name them in call events.
     voice_workspaces: RefCell<std::collections::HashMap<WorkspaceId, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
@@ -1445,28 +1444,15 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// The person's workspaces as their host lists them, in the page's shape: the list the host
-    /// sent this session as it changed, else the question this page's device asks once
-    /// ([`Device::personal_list`], the one the CLI's peer asks), so a page offers every workspace
-    /// of theirs, not only the ones this browser's storage still remembers.
+    /// The person's workspaces as their host lists them, in the page's shape: what every device
+    /// of theirs reads ([`tilo_session_client::PersonalWorkspaces`]), so a page offers every
+    /// workspace of theirs, not only the ones this browser's storage still remembers.
     pub(crate) async fn personal_workspaces(&self) -> Result<serde_json::Value, JsError> {
-        for event in self.personal_events.drain() {
-            if let Event::Personal(list) = event {
-                self.personal_list.borrow_mut().replace(*list);
-            }
-        }
-        let pushed = self.personal_list.borrow().clone();
-        let list = match pushed {
-            Some(list) => list,
-            None => self
-                .device
-                .personal_list(
-                    &tilo_server_session::workspaces::WorkspaceLabels::new(),
-                    None,
-                )
-                .await
-                .map_err(|refusal| js_error(refusal.message))?,
-        };
+        let list = self
+            .personal
+            .read(&self.device)
+            .await
+            .map_err(|refusal| js_error(refusal.message))?;
         serde_json::to_value(&list).map_err(js_error)
     }
 }
@@ -1570,7 +1556,7 @@ impl WasmPeer {
         )));
         // The person's lists as the host sends them: read beside what this
         // page remembered, never asked for again.
-        let personal_events = handle.events_where(|event| matches!(event, Event::Personal(_)));
+        let personal = tilo_session_client::PersonalWorkspaces::follow(&handle);
         let listeners: Rc<RefCell<Vec<Function>>> = Rc::default();
         let changed = Arc::new(tokio::sync::Notify::new());
         handle.on_change({
@@ -1602,8 +1588,7 @@ impl WasmPeer {
             durable_events: handle.events_where(is_durable),
             live_events: handle.events_where(is_live),
             voice_events: handle.events_where(is_voice),
-            personal_events,
-            personal_list: RefCell::new(None),
+            personal,
             voice_workspaces: RefCell::default(),
             handle,
             device,

@@ -844,7 +844,11 @@ impl Workspaces {
             };
             check_labels(&only.labels).map_err(invalid)?;
             let here = self.listed(device, &only).await;
-            return answer(&self.personal(device, &here, &only));
+            let mut list = self.personal(device, &here, &only);
+            if only.workspace.is_some() {
+                self.sign_own_addresses(&mut list).await;
+            }
+            return answer(&list);
         }
         if operation == ServiceOperation::NamePersonalDevice {
             let key = args.required_text("device")?;
@@ -861,6 +865,35 @@ impl Workspaces {
             .map_err(|error| refused(&error))?;
         self.note_own_device(device);
         Ok(serde_json::json!({ "kept": kept }))
+    }
+
+    /// Name, in each workspace of `list` this host keeps, its own signed
+    /// address for it: what a device of the person's that asks for one
+    /// workspace dials to be taken in as their further device. A whole list
+    /// leaves them out, so a person with hundreds of workspaces here waits on
+    /// no signing; one asked alone is what a device enters.
+    async fn sign_own_addresses(&self, list: &mut PersonalList) {
+        let own = self.inner.host.cert.device_public_key;
+        for entry in &mut list.workspaces {
+            let Some(host) = entry.host.as_mut().filter(|host| host.hint.is_none()) else {
+                continue;
+            };
+            let Ok(hints) = self.hosts(&entry.workspace).await else {
+                continue;
+            };
+            let Some(hint) = hints
+                .into_iter()
+                .find(|hint| hint.host.device_public_key == own)
+            else {
+                continue;
+            };
+            match postcard::to_allocvec(&hint) {
+                Ok(bytes) => host.hint = Some(hex::encode(bytes)),
+                Err(error) => {
+                    tracing::warn!(%error, workspace = %entry.workspace, "this host's address did not encode");
+                }
+            }
+        }
     }
 
     /// Make the workspace `args` names, as `device`, already permitted to,

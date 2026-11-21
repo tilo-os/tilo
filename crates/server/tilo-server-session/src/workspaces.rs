@@ -257,7 +257,10 @@ pub const PERSONAL_DEVICE_NAME: &str = "workspace.personal.name";
 /// reads it; an agent's grant reads only what its scope reaches. A page
 /// asking it may name its browser's tab devices (argument `browser`, a
 /// [`PersonalBrowser`]): they join the person's devices, and the list marks
-/// them as that browser's.
+/// them as that browser's. Asked for one workspace (argument `workspace`),
+/// the host names its own signed address for it
+/// ([`KeepingDeviceAddress::hint`]): where a device of the person's that
+/// does not hold it yet asks to be taken in.
 pub const LIST_PERSONAL: &str = "workspace.personal";
 /// The most workspaces a kept list names.
 pub const MAX_PERSONAL_WORKSPACES: usize = 4096;
@@ -381,9 +384,10 @@ pub struct KeepingDeviceAddress {
     /// The host's own signed address for the workspace
     /// (`tilo_peer_state::join::TransportHint`), postcard in hex: what a
     /// device dials, checked against the host's certificate it carries.
-    /// `None` for a workspace the host that answered the list keeps itself:
-    /// the reader reaches it where it asked, and a person with hundreds of
-    /// them there reads their list in one answer.
+    /// `None` for a workspace the host that answered the list keeps itself,
+    /// unless the reader asked for that workspace alone: the reader reaches
+    /// it where it asked, and a person with hundreds of them there reads
+    /// their list in one answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
 }
