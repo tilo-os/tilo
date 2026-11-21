@@ -192,6 +192,9 @@ tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-server-store = { path = "../tilo-server-store", features = ["test-support"] }
+# A test's mail server answers over real sockets, and the tester trusts its
+# certificate, which no authority signed.
+tilo-account-probe = { path = "../../platform/account-probe", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
