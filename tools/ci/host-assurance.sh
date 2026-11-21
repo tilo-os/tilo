@@ -489,7 +489,10 @@ rm -f "$work/update.raw"
 # past it and names nothing that said why.
 archive_mib=$(( ($(stat -c %s "$work/update-signed/image.oci.tar") + 1048575) / 1048576 ))
 # And what the last steps need at the console: the recovery key that authorises
-# sealing to this machine, and the older signed UKI with its signed prediction.
+# sealing to this machine, the signed prediction of the generation it runs, and
+# the older signed UKI with its signed prediction. The predictions come from the
+# image, not from the machine's /boot: there the ESP is mounted over the image's
+# own /boot, and this install put no copy of them on the ESP.
 truncate -s "$(( 2 * archive_mib + 768 ))M" "$work/update.raw"
 mkfs.ext4 -q -F -L tiloupdate "$work/update.raw"
 mkdir -p "$work/mnt" "$work/original-efi"
@@ -499,7 +502,11 @@ cp "$work"/unsigned/*.efi "$work/mnt/unsigned.efi"
 install -m 0600 "$work/install/qcow2/recovery-key.txt" "$work/mnt/recovery.key"
 podman create --name host-assurance-original localhost/tilo-host:ci >/dev/null
 podman cp "host-assurance-original:/boot/EFI/Linux/." "$work/original-efi"
+mkdir -p "$work/mnt/predictions"
+podman cp "host-assurance-original:/boot/tilo-target/predictions/." "$work/mnt/predictions"
 podman rm host-assurance-original >/dev/null
+compgen -G "$work/mnt/predictions/generation-$n.json" >/dev/null \
+  || die "the installed image carries no signed prediction of generation $n"
 cp "$work/original-efi"/*.efi "$work/mnt/original.efi"
 cp "$work/older-efi"/*.efi "$work/mnt/older.efi"
 mkdir -p "$work/mnt/older-predictions"
@@ -898,7 +905,7 @@ src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/$(lsblk -snro NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
 gen=$(cat /usr/lib/tilo/generation)
 tilo-rollback enroll --device "$dev" --generation "$gen" \
-  --predictions /boot/tilo-target/predictions --recovery-key-file /mnt/update/recovery.key --automatic
+  --predictions /mnt/update/predictions --recovery-key-file /mnt/update/recovery.key --automatic
 tilo-rollback status --device "$dev"
 '
 ./os/dev/vm.sh stop >/dev/null 2>&1 || true
@@ -981,7 +988,7 @@ mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
 src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
 dev=/dev/\$(lsblk -snro NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
 gen=\$(cat /usr/lib/tilo/generation)
-tilo-rollback --retain \$((gen + 1)) --predictions /boot/tilo-target/predictions \
+tilo-rollback --retain \$((gen + 1)) --predictions /mnt/update/predictions \
   confirm --device \"\$dev\" --generation \"\$gen\" --floor-at-least \"\$gen\" \
   --recovery-key-file /mnt/update/recovery.key
 tilo-rollback status --device \"\$dev\"
