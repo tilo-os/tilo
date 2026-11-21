@@ -155,7 +155,11 @@ impl Shared {
         }
         // What the press asked is carried out: what it closed may be raised again, though the press
         // it closed for may already be over—a quick click comes up faster than its own toggle does.
-        self.overlays.settle_press();
+        // The bar's toggle of what it just closed arrives as an intent the chrome raises: while one
+        // stands, the press it came from has not been carried out yet and its surface stays down.
+        if self.asks.borrow().is_empty() && self.intents.borrow().is_empty() {
+            self.overlays.settle_press();
+        }
         // One anchored surface at a time, whichever side opened it.
         self.lone_surface();
         // What the person chose where only a host performs it: search and a banner hand their host
