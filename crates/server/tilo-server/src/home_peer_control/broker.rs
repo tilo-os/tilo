@@ -11,6 +11,8 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
+use tilo_enrollment::client::{NearbyApproval, approve_nearby_command};
+use tilo_identity::device_admin::ENROLL;
 use tilo_server::ServerConfig;
 use tilo_server_protocol::WorkSetting;
 
@@ -497,46 +499,25 @@ fn approve_enrollment(
     if workspace_ids.len() > 4096 {
         bail!("too many workspaces");
     }
-    let uid = invoking_uid()?;
-    let account = account_for_uid(uid)?;
-    let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
-    let mut command = Command::new("/usr/libexec/tilo/tilo-enroll");
-    command
-        .args(["approve", "--timeout", "60", "--identity-root"])
-        .arg(&identity_root);
-    for id in workspace_ids {
-        command.args(["--server-workspace-id", &id.to_string()]);
-    }
-    match (expected_device, expected_service) {
+    let expected = match (expected_device.as_deref(), expected_service.as_deref()) {
         (Some(device), Some(service)) => {
-            if device.len() != 64
-                || service.len() != 64
-                || hex::decode(&device).is_err()
-                || hex::decode(&service).is_err()
-            {
-                bail!("invalid nearby home-server identity");
-            }
-            command.args(["--expected-device", &device]);
-            command.args(["--expected-service", &service]);
+            validate_peer_ids(device, service).context("invalid nearby home-server identity")?;
+            Some((device, service))
         }
-        (None, None) => {}
+        (None, None) => None,
         _ => bail!("nearby device and service identities must be supplied together"),
-    }
-    // The person's root signs the approval, and it is kept only in their
-    // identity store.
+    };
     let identity_dir = identity_dir.context("approving needs the person's identity directory")?;
-    let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
-    // The directory is checked now, but the approval runs for up to its
-    // timeout, while the person can replace it; tilo-enroll writes there
-    // only as them.
-    command
-        .arg("--identity-dir")
-        .arg(identity_dir)
-        .args(["--person-uid", &uid.to_string()]);
-    run_as_invoking_person(&mut command, uid, &account)?;
-    let output =
-        bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(90))?;
-    enrollment_command_result(&output, "home-server enrollment was not completed")
+    approve_nearby(
+        identity_root,
+        identity_dir,
+        NearbyApproval::HomePeer {
+            workspaces: &workspace_ids,
+            expected,
+        },
+        Duration::from_secs(90),
+        "home-server enrollment was not completed",
+    )
 }
 
 fn validate_identity_dir(path: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
@@ -584,31 +565,29 @@ fn enrollment_command_result(
     bail!("{incomplete}: {detail}")
 }
 
-fn approve_personal_device(
+fn approve_nearby(
     identity_root: &Path,
     identity_dir: &Path,
-    expected_device: &str,
-    expected_service: &str,
+    approval: NearbyApproval<'_>,
+    timeout: Duration,
+    incomplete: &'static str,
 ) -> anyhow::Result<()> {
     let uid = invoking_uid()?;
     let account = account_for_uid(uid)?;
     let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
     let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
-    let mut command = Command::new("/usr/libexec/tilo/tilo-enroll");
-    command
-        .arg("approve-device")
-        .arg("--identity-root")
-        .arg(&identity_root)
-        .arg("--identity-dir")
-        .arg(identity_dir)
-        .args(["--person-uid", &uid.to_string()])
-        .args(["--expected-device", expected_device])
-        .args(["--expected-service", expected_service]);
-    // The approval signs with the person's identity, as them.
+    // The directory can be replaced during the window. Sign and write as
+    // the invoking person throughout the helper's lifetime.
+    let mut command = approve_nearby_command(
+        Path::new(ENROLL),
+        &identity_root,
+        &identity_dir,
+        uid,
+        approval,
+    );
     run_as_invoking_person(&mut command, uid, &account)?;
-    let output =
-        bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
-    enrollment_command_result(&output, "personal-device enrollment was not completed")
+    let output = bounded_command::run_prepared(command, None, 1024 * 1024, timeout)?;
+    enrollment_command_result(&output, incomplete)
 }
 
 pub fn main() -> anyhow::Result<std::process::ExitCode> {
@@ -643,11 +622,15 @@ fn run() -> anyhow::Result<()> {
             expected_service,
         } => {
             validate_peer_ids(&expected_device, &expected_service)?;
-            approve_personal_device(
+            approve_nearby(
                 &identity_root,
                 &identity_dir,
-                &expected_device,
-                &expected_service,
+                NearbyApproval::PersonalDevice {
+                    device: &expected_device,
+                    service: &expected_service,
+                },
+                Duration::from_secs(600),
+                "personal-device enrollment was not completed",
             )
         }
     }

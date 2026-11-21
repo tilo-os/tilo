@@ -7,6 +7,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 pub use tilo_server_protocol::ProcessLease;
+use tilo_server_protocol::WorkspaceId;
 
 use crate::{WindowClosed, restore_owner_from_parent};
 
@@ -35,6 +36,58 @@ pub fn pair_device_command(
         .arg(requester.pid().to_string())
         .arg("--requester-start-time")
         .arg(requester.start_time().to_string());
+    command
+}
+
+/// The role and selection already authorized by the calling device.
+pub enum NearbyApproval<'a> {
+    HomePeer {
+        workspaces: &'a [WorkspaceId],
+        expected: Option<(&'a str, &'a str)>,
+    },
+    PersonalDevice {
+        device: &'a str,
+        service: &'a str,
+    },
+}
+
+/// Build the nearby approval helper command. The caller establishes whose
+/// authority it runs under and owns its process and timeout.
+pub fn approve_nearby_command(
+    executable: &Path,
+    identity_root: &Path,
+    identity_dir: &Path,
+    person_uid: u32,
+    approval: NearbyApproval<'_>,
+) -> Command {
+    let mut command = Command::new(executable);
+    let expected = match approval {
+        NearbyApproval::HomePeer {
+            workspaces,
+            expected,
+        } => {
+            command.arg("approve").args(["--timeout", "60"]);
+            for workspace in workspaces {
+                command.args(["--server-workspace-id", &workspace.to_string()]);
+            }
+            expected
+        }
+        NearbyApproval::PersonalDevice { device, service } => {
+            command.arg("approve-device");
+            Some((device, service))
+        }
+    };
+    if let Some((device, service)) = expected {
+        command
+            .args(["--expected-device", device])
+            .args(["--expected-service", service]);
+    }
+    command
+        .arg("--identity-root")
+        .arg(identity_root)
+        .arg("--identity-dir")
+        .arg(identity_dir)
+        .args(["--person-uid", &person_uid.to_string()]);
     command
 }
 
