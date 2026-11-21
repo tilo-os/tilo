@@ -1977,8 +1977,13 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_land() {
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let server = bot_server(scratch.path(), &key, &cert).await;
+    // The host holds the workspace's keys, as a host that governs one does: the
+    // bot's install grants it nothing, so every record is sealed under keys of
+    // its own, which only a key holder writes.
+    let (key, cert) = crate::workspaces::fixtures::governor_with(
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    let server = bot_server_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let (workspace, general) = chat_workspace(&workspaces, &cert).await;
     let bot = greeter(general.as_str());

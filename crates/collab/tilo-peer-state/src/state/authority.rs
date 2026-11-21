@@ -990,6 +990,43 @@ impl StatePeer {
         }
     }
 
+    /// Whether `member` holds the keys of `document` of `app`: it reads the
+    /// document, or may act on some part of it, which it cannot do without
+    /// the content the keys seal. A member's own record is its person's alone.
+    fn holds_document_keys_as(
+        &self,
+        member: &MemberAccess,
+        (app, document): (&str, &str),
+        own: Option<&collab_types::OwnResource>,
+        now: SystemTime,
+    ) -> bool {
+        if self
+            .check_read_as(member, (app, document), own, now)
+            .is_ok()
+        {
+            return true;
+        }
+        if own.is_some() {
+            return false;
+        }
+        let root = collab_types::document_access_target(app, document).unwrap_or(document);
+        let kind = self
+            .core
+            .documents
+            .get(&Route {
+                app: app.into(),
+                record: root.into(),
+            })
+            .and_then(|held| super::resource_type(&*held.doc));
+        backend::access::document_reached(
+            &member.authority(),
+            &self.core.workspace,
+            (app, document),
+            kind.as_deref(),
+            now,
+        )
+    }
+
     /// Resolve personal routes before the first write teaches the replica
     /// their owner. A document group can be founded before any data exists.
     fn document_owner(
@@ -1035,8 +1072,7 @@ impl StatePeer {
             .access_of(&devices, now)?
             .into_iter()
             .filter_map(|(device, member)| {
-                self.check_read_as(&member, (app, document), own.as_ref(), now)
-                    .is_ok()
+                self.holds_document_keys_as(&member, (app, document), own.as_ref(), now)
                     .then_some(device)
             })
             .collect())
@@ -1099,9 +1135,7 @@ impl StatePeer {
         let devices: Vec<_> = governance.key_holders(now)?.into_iter().collect();
         let access = governance.access_of(&devices, now)?;
         Ok(devices.iter().any(|device| match access.get(device) {
-            Some(member) => self
-                .check_read_as(member, (app, document), None, now)
-                .is_err(),
+            Some(member) => !self.holds_document_keys_as(member, (app, document), None, now),
             // A holder the governance names to hold the workspace's keys reads
             // what they seal because it is named so, not through a member's
             // role. A server that takes no member's work, or no longer does,

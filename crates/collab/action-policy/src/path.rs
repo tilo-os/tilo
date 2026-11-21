@@ -298,6 +298,39 @@ impl TreePath {
         overlaps(self.trimmed(), other.trimmed())
     }
 
+    /// The node at or below `self` that `pattern`, a grant's node, names:
+    /// `self`'s names at the levels it has, and the pattern's at the levels it
+    /// adds. `None` when no node lies below both, or either goes on past an
+    /// open rest, whose depth names no one node.
+    #[must_use]
+    pub fn toward(&self, pattern: &Self) -> Option<Self> {
+        let (mine, theirs) = (self.trimmed(), pattern.trimmed());
+        if !overlaps(mine, theirs)
+            || mine.contains(&Segment::Rest)
+            || theirs.contains(&Segment::Rest)
+        {
+            return None;
+        }
+        let at = |segments: &[Segment], level| {
+            segments
+                .iter()
+                .find(|segment| segment.level() == Some(level))
+                .cloned()
+        };
+        let node = Self(
+            Level::ALL
+                .into_iter()
+                .filter_map(|level| match (at(mine, level), at(theirs, level)) {
+                    (Some(named @ Segment::Name(..)), _) | (_, Some(named @ Segment::Name(..))) => {
+                        Some(named)
+                    }
+                    (mine, theirs) => mine.or(theirs),
+                })
+                .collect(),
+        );
+        self.covers(&node).then_some(node)
+    }
+
     /// Whether `self` lies at or below `ancestor`.
     #[must_use]
     pub fn is_within(&self, ancestor: &Self) -> bool {

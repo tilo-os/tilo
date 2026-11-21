@@ -672,7 +672,9 @@ pub(super) fn refound(
 
 /// Start `record` of `app` in `candidate` as the workspace's host, signed with
 /// `key` and sealed with `keys`: the checkpoint every record is born from,
-/// which holds nothing, then `changes`, what the record starts with.
+/// which holds nothing, then `changes`, what the record starts with. A record
+/// that needs keys of its own is written in the clear not even empty: its
+/// first sealed write is the whole record and founds it alone.
 pub(super) fn start_sealed(
     candidate: &mut StatePeer,
     keys: &DocumentKeys,
@@ -681,7 +683,9 @@ pub(super) fn start_sealed(
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    if !candidate.holds_document(app, record) {
+    if !candidate.holds_document(app, record)
+        && !candidate.requires_document_keys(app, record, now)?
+    {
         candidate.publication_mut().publish_document(
             app,
             record,

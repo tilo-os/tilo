@@ -245,3 +245,48 @@ tilo_test_env::scenario! {
         assert!(bot::fits_within(&old, &old));
     }
 }
+
+/// A bot acts within the records its program names an action of, and within no
+/// other: no whole record is the bot's to read, yet a chat it posts in is one it
+/// acts within, which is what decides the records whose keys it holds.
+#[test]
+fn a_bot_acts_within_the_records_its_program_names_and_no_other() {
+    let chat = TreePath::workspace(WORKSPACE)
+        .app("so.tilo.chat")
+        .resource("general");
+    let typed = TreePath::workspace(WORKSPACE)
+        .app("so.tilo.chat")
+        .kind("chat.workspace")
+        .resource("general");
+    let direct = TreePath::workspace(WORKSPACE)
+        .app("so.tilo.chat")
+        .kind("chat.direct")
+        .resource("ada");
+    let note = TreePath::workspace(WORKSPACE)
+        .app("so.tilo.notes")
+        .resource("welcome");
+
+    let owners = bot_of(workspace_with_bot(OWNER, None), OWNER);
+    let authority = owners.authority();
+    assert_eq!(
+        authority.decide(&chat, ActionKind::Read, &cx()).answer,
+        Answer::Deny,
+        "the bot reads no whole record"
+    );
+    assert!(authority.acts_within(&chat, &cx()), "it posts in the chat");
+    assert!(
+        authority.acts_within(&typed, &cx()),
+        "a record that names its kind is reached the same"
+    );
+    assert!(
+        !authority.acts_within(&direct, &cx()),
+        "a record of another kind is not the program's"
+    );
+    assert!(!authority.acts_within(&note, &cx()), "nor a note");
+
+    let orphan = bot_of(workspace_with_bot(EDITOR, None), EDITOR);
+    assert!(
+        !orphan.authority().acts_within(&chat, &cx()),
+        "a bot whose installer left acts within nothing"
+    );
+}

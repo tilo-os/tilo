@@ -994,3 +994,48 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// An installed bot holds the keys of the records its program acts on, the
+/// parts of a chained record included, and of no other record: a record it
+/// may not touch is sealed under keys of its own, which the workspace's
+/// people hold and the bot does not.
+#[test]
+fn a_bot_holds_the_keys_of_the_records_it_acts_on_and_of_no_other() {
+    let now = SystemTime::now();
+    let (governor, _, owner_device, bot) = installed(now);
+    let (owner, bot) = (owner_device.device_public_key, bot.device_public_key);
+    let chat = ("so.tilo.chat", "chat:1");
+    let part = (
+        "so.tilo.chat",
+        "derived:part.0@derived:messages@derived:default@chat:1",
+    );
+    for (app, document) in [chat, part] {
+        let holders = governor.document_key_holders(app, document, now).unwrap();
+        assert!(
+            holders.contains(&bot) && holders.contains(&owner),
+            "{app}/{document}: the bot posts there, so it holds the keys beside the owner"
+        );
+        assert!(
+            !governor.requires_document_keys(app, document, now).unwrap(),
+            "{app}/{document}: every key holder may act there, so the workspace's keys seal it"
+        );
+    }
+    for (app, document) in [
+        ("so.tilo.browser-desktop", "desktop"),
+        ("so.tilo.notes", "welcome"),
+    ] {
+        assert!(
+            governor.requires_document_keys(app, document, now).unwrap(),
+            "{app}/{document}: the bot may not touch it, so it needs keys of its own"
+        );
+        let holders = governor.document_key_holders(app, document, now).unwrap();
+        assert!(
+            holders.contains(&owner),
+            "{app}/{document}: the owner holds its keys"
+        );
+        assert!(
+            !holders.contains(&bot),
+            "{app}/{document}: the bot holds no keys of a record it may not touch"
+        );
+    }
+}

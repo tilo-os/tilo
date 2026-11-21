@@ -2299,14 +2299,26 @@ impl Workspaces {
         // member's changes only as a tail of a checkpoint that resolves their
         // dependencies.
         let whole = envelope.is_whole_resource();
+        // A record that needs keys of its own is founded under them: even its
+        // empty base is not written in the clear.
+        let founding_keys = if !whole
+            && workspace
+                .peer()
+                .requires_document_keys(&app_id, &document_id, now)?
+        {
+            self.sealing_keys(&workspace, &app_id, &document_id).await?
+        } else {
+            None
+        };
         workspace.change_held(
             &host.key,
             now,
             |_, candidate| {
                 if !whole {
-                    candidate.publication_mut().publish_document(
-                        &app_id,
-                        &document_id,
+                    sealed_documents::refound(
+                        candidate,
+                        founding_keys.as_ref(),
+                        (&app_id, &document_id),
                         automerge::AutoCommit::new().save(),
                         &host.key,
                         now,

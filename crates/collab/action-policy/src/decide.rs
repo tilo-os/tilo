@@ -396,6 +396,27 @@ impl<'g> Authority<'g> {
 }
 
 impl Authority<'_> {
+    /// Whether this authority may read or change `node` or anything within it:
+    /// `node` itself, or a node below it that one of its grants names, as a
+    /// bot's program names the one action of a record it runs. What a
+    /// document's keys seal is the whole document, so whoever may act on any
+    /// part of it needs them.
+    #[must_use]
+    pub fn acts_within(&self, node: &TreePath, cx: &Context<'_>) -> bool {
+        let allows = |at: &TreePath| {
+            [ActionKind::Read, ActionKind::Undoable]
+                .into_iter()
+                .any(|kind| self.decide(at, kind, cx).answer == Answer::Allow)
+        };
+        allows(node)
+            || std::iter::once(&self.person)
+                .chain(&self.bounds)
+                .flat_map(|party| party.grants.iter().copied())
+                .filter(|grant| grant.answer == Answer::Allow && grant.is_live(cx))
+                .filter_map(|grant| node.toward(&grant.node))
+                .any(|at| allows(&at))
+    }
+
     /// [`Self::decide`]'s answer alone, made [`Verdict::privileged`] when
     /// `privileged`, without keeping each party's decision: what a check
     /// that only needs the answer asks.
