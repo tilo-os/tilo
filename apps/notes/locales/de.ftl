@@ -48,7 +48,7 @@ notes-notebook-tags = { $op ->
     [insert] Schlagwort hinzugefügt
    *[other] Schlagwort entfernt
 }
-notes-new-note = „{ $note }“ erstellt
+notes-new-note = „{ $now }“ erstellt
 notes-deleted = { $inside ->
     [0] { $title } gelöscht
     [one] { $title } und 1 Notiz darin gelöscht

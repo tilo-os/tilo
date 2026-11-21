@@ -51,7 +51,7 @@ notes-notebook-tags = { $op ->
     [insert] Added a tag
    *[other] Removed a tag
 }
-notes-new-note = Created “{ $note }”
+notes-new-note = Created “{ $now }”
 notes-deleted = { $inside ->
     [0] Deleted { $title }
     [one] Deleted { $title } and 1 note inside

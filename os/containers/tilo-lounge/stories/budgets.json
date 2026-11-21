@@ -87,7 +87,7 @@
       "Ada copies a document into the workspace’s folder": 15000
     },
     "agent-mcp": {
-      "Ada opens Tilo": 15000,
+      "Ada opens Tilo and gives her name": 20000,
       "Ada opens Files to watch her agent work": 20000,
       "Ada connects their agent to the workspace": 90000,
       "The agent writes a file": 45000,

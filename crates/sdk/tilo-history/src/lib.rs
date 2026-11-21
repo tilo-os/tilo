@@ -380,10 +380,20 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// The name `item` goes by now, as the reader's labels call it, else as the change
+    /// recorded it.
+    fn item_now(&self, item: &tilo_actions::ActionItem) -> Option<String> {
+        self.labels
+            .and_then(|labels| labels.item(&item.id))
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| self.item_name(item))
+    }
+
     /// The sentence for `entry`, without naming who did it.
     pub fn sentence(&self, entry: &ActionContext) -> String {
         let app = entry.app.as_ref().map_or("", |app| app.id.as_str());
         let item = entry.item.as_ref().and_then(|item| self.item_name(item));
+        let now = entry.item.as_ref().and_then(|item| self.item_now(item));
         // A step on an item of the resource that has no name yet is about that item: it says
         // the item unnamed rather than borrowing the resource's name ("Renamed Notebook to …"
         // for a note that had no title).
@@ -396,6 +406,7 @@ impl<'a> Reader<'a> {
         let scope = Scope {
             app,
             item: item.as_deref().or(resource),
+            now: now.as_deref(),
             within: item.is_none() && resource.is_some(),
         };
         match &entry.what {
@@ -411,11 +422,13 @@ impl<'a> Reader<'a> {
             .item
             .as_ref()
             .and_then(|item| self.item_name(item));
+        let now = described.item.as_ref().and_then(|item| self.item_now(item));
         self.did(
             &described.what,
             &Scope {
                 app,
                 item: item.as_deref(),
+                now: now.as_deref(),
                 within: false,
             },
             &mut false,
@@ -453,9 +466,11 @@ impl<'a> Reader<'a> {
     /// `false` when the app has no such message and the framework fell back
     /// to naming the field or the action.
     pub fn did_by_app(&self, what: &Did, app: &str, item: Option<&str>) -> (String, bool) {
+        let item = item.filter(|label| !label.trim().is_empty());
         let scope = Scope {
             app,
-            item: item.filter(|label| !label.trim().is_empty()),
+            item,
+            now: item,
             within: false,
         };
         let mut by_app = false;
@@ -497,13 +512,20 @@ impl<'a> Reader<'a> {
                 .item
                 .map_or_else(|| self.item_unnamed(), str::to_owned),
         );
+        args.set(
+            "now",
+            scope
+                .now
+                .or(scope.item.filter(|_| !scope.within))
+                .map_or_else(|| self.item_unnamed(), str::to_owned),
+        );
         args
     }
 
     fn edit(&self, edit: &FieldEdit, what: &Did, scope: &Scope<'_>) -> String {
         let mut args = self.base_args(scope);
         for (name, value) in &edit.args {
-            if !matches!(name.as_str(), "item" | "actor" | "for" | "old" | "new") {
+            if !matches!(name.as_str(), "item" | "now" | "actor" | "for" | "old" | "new") {
                 args.set(name.clone(), fluent_value(value));
             }
         }
@@ -581,7 +603,7 @@ impl<'a> Reader<'a> {
         // An argument naming an item reads as the item's name now ("New note" says the note it
         // made); an id the reader cannot name says nothing either.
         for (name, value) in &verb.args {
-            if matches!(name.as_str(), "item" | "actor" | "for") {
+            if matches!(name.as_str(), "item" | "now" | "actor" | "for") {
                 continue;
             }
             match value.as_str() {
@@ -641,11 +663,13 @@ impl<'a> Reader<'a> {
                 .item
                 .as_ref()
                 .and_then(|item| self.item_name(item));
+            let now = described.item.as_ref().and_then(|item| self.item_now(item));
             self.did(
                 &described.what,
                 &Scope {
                     app: scope.app,
                     item: item.as_deref().or(scope.item),
+                    now: now.as_deref().or(scope.now),
                     within: item.is_none() && scope.within,
                 },
                 by_app,
@@ -737,6 +761,9 @@ struct Scope<'s> {
     app: &'s str,
     /// The item's label, else the resource's.
     item: Option<&'s str>,
+    /// The item's name as the reader calls it now: what a message says an item by when it
+    /// names the item it made, which may have been renamed since (`$now`).
+    now: Option<&'s str>,
     /// Whether `item` names the resource the action ran in rather than an
     /// item it acted on.
     within: bool,

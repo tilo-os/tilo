@@ -313,6 +313,12 @@ pub(crate) fn named_item() -> Option<tilo_actions::ActionItem> {
     NAMED.with_borrow(Clone::clone)
 }
 
+/// The ids of the entries the action applying last on this thread made in a
+/// collection, minted or handed to it, in no order.
+pub(crate) fn entries_so_far() -> Vec<String> {
+    ENTRIES.with_borrow(|entries| entries.keys().cloned().collect())
+}
+
 /// The ids the action applying last on this thread minted, as it minted
 /// them: for reading what it made, without taking them from whoever answers
 /// its caller ([`take_minted`]).

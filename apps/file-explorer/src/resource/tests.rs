@@ -1734,6 +1734,6 @@ tilo_test_env::scenario! {
             .item
             .as_ref()
             .expect("the change names the file it writes");
-        assert_eq!(item.label, format!("{folder}/agent-notes.md"));
+        assert_eq!(item.label, "agent-notes.md");
     }
 }

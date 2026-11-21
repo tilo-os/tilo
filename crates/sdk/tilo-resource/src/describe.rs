@@ -474,31 +474,32 @@ fn item_named(
 /// The item the action applying last on this thread made, named as a person
 /// reads it: the entry it added to one of the record's collections, with the
 /// label the record gives that item, or the item the app named as it ran
-/// ([`crate::ActionCx::named`]). `None` when it made no such item, or the
-/// item has no name of its own: a change that names nothing keeps the words
-/// its description read before it applied.
+/// ([`crate::ActionCx::named`]). An entry is the action's whether it minted
+/// the id or was handed it (a window's New knows the id it opens next), and
+/// one with no name of its own yet is named by its id alone, which a reader
+/// names as the item is called when it reads it (a note by its first line).
+/// `None` when it made no item of the record's: a change that names nothing
+/// keeps the words its description read before it applied.
 pub(crate) fn made<R: crate::Model>(doc: &Doc) -> Option<tilo_actions::ActionItem> {
     if let Some(named) = crate::action::named_item() {
         return Some(named);
     }
-    for id in crate::action::minted_so_far() {
-        let Some(map) = crate::action::minted_entry(&id) else {
-            continue;
-        };
-        let Some((shape, keyed)) = collection_of::<R>(doc, &map) else {
-            continue;
-        };
+    let mut ids = crate::action::minted_so_far();
+    let mut handed = crate::action::entries_so_far();
+    handed.retain(|id| !ids.contains(id));
+    handed.sort_unstable();
+    ids.extend(handed);
+    ids.into_iter().find_map(|id| {
+        let map = crate::action::minted_entry(&id)?;
+        let (shape, keyed) = collection_of::<R>(doc, &map)?;
         let item = if keyed {
             map_at(doc, &map, &id)
         } else {
             map_at(doc, &map, &id).and_then(|entry| map_at(doc, &entry, "v"))
-        };
-        let Some(label) = item.and_then(|item| label_of(doc, shape, &item)) else {
-            continue;
-        };
-        return Some(tilo_actions::ActionItem { id, label });
-    }
-    None
+        }?;
+        let label = label_of(doc, shape, &item).unwrap_or_default();
+        Some(tilo_actions::ActionItem { id, label })
+    })
 }
 
 /// The collection of the record of type `R` whose map in `doc` is `map`: the

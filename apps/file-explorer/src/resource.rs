@@ -196,9 +196,12 @@ fn queue(
     }
     let id = cx.id();
     // The change is about the file it changes, which the record holds no
-    // item of: History says which file, not only which folder.
+    // item of: History says which file, not only which folder, by the name a
+    // person knows it by rather than the path on the device.
     if let Some(changed) = op.changed() {
-        cx.named(id.as_str(), changed);
+        let trimmed = changed.trim_end_matches('/');
+        let name = trimmed.rsplit('/').next().filter(|name| !name.is_empty());
+        cx.named(id.as_str(), name.unwrap_or(trimmed));
     }
     ops.push(id, FileTask { device, op });
     ops.prune(KEPT_OPS);

@@ -551,3 +551,38 @@ fn a_step_names_its_item_as_the_app_calls_it_now() {
     assert_eq!(reader.sentence(&made(NOTE)), "Created “Garden plan”");
     assert_eq!(reader.sentence(&made(GONE)), "New note in Notes");
 }
+
+/// A change that made an item, though its caller named none (an agent asking for a note by its
+/// title alone), says the item by `$now`: as the reader's app calls it now, so a note renamed
+/// since reads under its name, while `$item` keeps the name the change recorded.
+#[test]
+fn a_change_names_the_item_it_made_as_it_is_called_now() {
+    struct Now;
+    impl Labels for Now {
+        fn item(&self, id: &str) -> Option<String> {
+            (id == NOTE).then(|| "Roadmap".to_owned())
+        }
+    }
+    const NOTE: &str = "9a8898a9-d93d-4cfd-8e57-3c79686c254b";
+    const GONE: &str = "1b8898a9-d93d-4cfd-8e57-3c79686c254b";
+    let notes = Catalogue::new(
+        "en-US",
+        &["notes-new-note = Created “{ $now }”\nnotes-new-child = Made “{ $item }”"],
+    );
+    let made = |action: &str, note: &str| {
+        ActionContext::for_resource("pages", "notes.pages", "Notes")
+            .with_app("so.tilo.notes", "Notes")
+            .with_described(
+                Described::new(Did::verb(
+                    ActionKey::new("so.tilo.notes", "notes.pages", action),
+                    [("title".to_owned(), Scalar::from("Plan"))],
+                ))
+                .on(note, "Plan"),
+            )
+    };
+    let reader = Reader::new("en-US").with_app(&notes).with_labels(&Now);
+    assert_eq!(reader.sentence(&made("new-note", NOTE)), "Created “Roadmap”");
+    assert_eq!(reader.sentence(&made("new-child", NOTE)), "Made “Plan”");
+    // An item gone since is said as the change recorded it.
+    assert_eq!(reader.sentence(&made("new-note", GONE)), "Created “Plan”");
+}

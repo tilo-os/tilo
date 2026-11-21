@@ -132,9 +132,11 @@ def steps(story: Story) -> None:
         took = ada.start(apps=APPS)
         story.timing("Ada's session start, to its first frame", took["tookMs"])
         story.timing("Ada's session start, to its first frame, with the development launcher's installing", took["launcherMs"])
+        # Her own changes are under the name she gives, as History shows them beside the agent's.
+        ada.name_self("Ada")
         return {"tookMs": took["tookMs"]}
 
-    story.step("Ada opens Tilo", ada_opens)
+    story.step("Ada opens Tilo and gives her name", ada_opens)
 
     def files():
         ada.session.launch("file-explorer")
