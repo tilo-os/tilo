@@ -232,13 +232,22 @@ def steps(story: Story) -> None:
 
     def ada_types():
         # She clicks into the note's body, where it asks her to write, and types.
+        began = time.monotonic()
         ada.press("Block text", "the body of Ada's new note")
+        story.timing("Ada's press into her note's body", (time.monotonic() - began) * 1000)
+        answers = []
         for ch in words:
+            key = time.monotonic()
             ada.session.type(ch)
+            answers.append((time.monotonic() - key) * 1000)
             time.sleep(0.08)
         typed["last"] = time.monotonic()
+        story.timing("Ada's slowest key, to the session taking it", max(answers))
+        story.timing("Ada's keys, to the session taking them", sum(answers))
         try:
             until("Ada's words in Ada's note", lambda: in_note(ada, words), 15, 0.1)
+            story.timing("Ada's words in her note, after her last key",
+                         (time.monotonic() - typed["last"]) * 1000)
         except Failed:
             made = notes_listed(ada) - typed["notes"]
             story.note("ada-controls-after-typing", ada.targets())
