@@ -468,13 +468,20 @@ fn open_history<'a>(
     maximum: usize,
     kept: &'a mut KeptDocument,
 ) -> Result<&'a Automerge, PeerDocumentReadError> {
+    // The cleartext document the history opens onto counts toward `maximum`: one already past it
+    // is refused before anything of the history is opened.
+    let layout = document.doc.stored_layout();
+    let base = layout.base_len.saturating_add(layout.since_len);
+    if base > maximum {
+        return Err(PeerDocumentReadError::Capacity);
+    }
     let mut opened = match kept.0.take().filter(|opened| opened.continues(document)) {
         Some(opened) => opened,
         None => Opened {
             base: document.doc.committed_document().get_heads(),
             count: 0,
             last: None,
-            size: 0,
+            size: base,
             transfers: crate::document_frame::Transfers::default(),
             captured: None,
             stuck: Vec::new(),
