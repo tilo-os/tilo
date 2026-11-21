@@ -186,7 +186,7 @@ mod tests {
             assert!(pair[0] <= pair[1], "monotonic: {pair:?}");
         }
         for (i, &value) in lut.iter().enumerate() {
-            #[allow(clippy::cast_precision_loss, reason = "small index")]
+            #[allow(clippy::cast_precision_loss, reason = "an index below 1024")]
             let input = srgb_eotf(i as f32 / 1023.0);
             assert!(
                 (linear(value) - input * 0.5).abs() < 1e-3,
