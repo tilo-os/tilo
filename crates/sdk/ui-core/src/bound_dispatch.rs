@@ -1040,6 +1040,65 @@ pub(crate) fn resolve_component_resource(
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
+/// Whether the component `binding` hosts is up and shown to its member but does not publish
+/// resource `id` yet: it publishes resources this member may see, and `id` is none of them. What a
+/// component publishes nothing of, or nothing this member may see, is not on its way.
+pub(crate) fn component_awaits_resource(
+    root: &mut dyn Widget,
+    doc: &AutoCommit,
+    binding: &CallbackBinding,
+    id: &str,
+    action: &str,
+) -> bool {
+    let Ok(_entry) = binding.enter() else {
+        return false;
+    };
+    let mut awaits = false;
+    let mut visit = |current: &CallbackBinding,
+                     widget: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        awaits = current
+            .read_document(doc, |doc, _| {
+                // A resource it publishes, whatever this member may do on it, is no resource
+                // still on its way: what is missing there is refused at once.
+                if resolve_published(widget, doc, Walk::Component, id)
+                    .or_else(|| {
+                        provider_resource(
+                            widget,
+                            current,
+                            &tilo_actions::ActionAddress::new(id, action),
+                        )
+                    })
+                    .is_some()
+                {
+                    return false;
+                }
+                let presence = crate::invocation_scope::current_presence();
+                let mut published = Vec::new();
+                collect_published(widget, doc, Walk::Component, presence.as_ref(), &mut published);
+                let permitted: Vec<_> = published
+                    .into_iter()
+                    .filter_map(|resource| filter_resource(current, resource))
+                    .collect();
+                !permitted.is_empty() && !permitted.iter().any(|resource| holds_resource(resource, id))
+            })
+            .unwrap_or(false);
+        None
+    };
+    root.visit_components(&mut ComponentRequest {
+        target: Some(binding),
+        found: false,
+        visit: &mut visit,
+    })
+    .is_ok()
+        && awaits
+}
+
+/// Whether `resource` or one of its children is resource `id`.
+fn holds_resource(resource: &ResourceSpec, id: &str) -> bool {
+    resource.id.as_str() == id || resource.children.iter().any(|child| holds_resource(child, id))
+}
+
 /// Whether any widget of `widget`'s tree, whatever component it is part of, may resolve resource `id`
 /// once what it reads arrives.
 #[cfg(any(test, feature = "test-support"))]

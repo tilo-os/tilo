@@ -868,3 +868,95 @@ fn a_row_offers_an_action_another_resource_declares() {
         "an action another resource declares is published on the row as it is"
     );
 }
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "test.late-page", label = "Page", effects = PageEffect)]
+struct LatePage;
+
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "test.late-page.effect", catalogue = "tests/locales")]
+pub enum PageEffect {
+    /// Open an address on the page.
+    #[effect(row, on = LatePage, kind = "read")]
+    Go {
+        #[param("The address")]
+        url: String,
+    },
+}
+
+thread_local! {
+    /// Whether the window's view publishes its page yet.
+    static PAGE_SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static WENT: std::cell::RefCell<Vec<PageEffect>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A window whose page is a row its view publishes only once it has built it, and which opens a
+/// link on that page.
+struct LatePageApp;
+
+impl ResourceApp for LatePageApp {
+    type Resource = Jobs;
+    const ID: &'static str = "so.tilo.test-late-page";
+    const TITLE: &'static str = "Pages";
+
+    fn catalog() -> Option<&'static tilo_app::i18n::EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
+
+    fn open_link(link: &str) -> Option<Vec<Invoke<Jobs>>> {
+        Some(vec![
+            Invoke::effect(&PageEffect::Go { url: link.into() }).on("late.page"),
+        ])
+    }
+
+    fn view(cx: &mut ViewCx<Jobs>) -> Element {
+        cx.effects(|effect: PageEffect, _| {
+            WENT.with(|went| went.borrow_mut().push(effect));
+            Ok(Effected::done())
+        });
+        cx.publishing(
+            Publishes::new().live_rows(|| {
+                PAGE_SHOWN
+                    .get()
+                    .then(|| {
+                        LiveRow::typed_with::<LatePage>(
+                            "late.page",
+                            "Page",
+                            &tilo_resource::RowBindings::new().offer(PageEffect::GO),
+                        )
+                    })
+                    .into_iter()
+                    .collect()
+            }),
+            Box::new(Column::new()),
+        )
+    }
+}
+
+/// A link handed to a window before its view publishes the page it opens on waits for the page,
+/// as a press before an app is ready does, and opens there once it is published: it is never
+/// dropped as an address nobody offers.
+#[test]
+fn a_link_handed_to_a_window_still_building_its_page_opens_once_the_page_is_there() {
+    PAGE_SHOWN.set(false);
+    let mut app = TestApp::<LatePageApp>::new().unwrap();
+    app.call(
+        tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+        serde_json::json!({ "link": "late:one" }),
+    )
+    .unwrap();
+    app.settle();
+    assert!(WENT.with(|went| went.borrow().is_empty()), "no page to open it on yet");
+    assert_eq!(app.refused(), None, "it waits for the page rather than being refused");
+    PAGE_SHOWN.set(true);
+    app.harness().relayout();
+    app.settle();
+    WENT.with(|went| {
+        assert_eq!(
+            went.borrow().as_slice(),
+            [PageEffect::Go {
+                url: "late:one".into()
+            }]
+        );
+    });
+}

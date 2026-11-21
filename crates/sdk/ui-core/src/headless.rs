@@ -8830,6 +8830,17 @@ impl crate::app_core::ControlCore for FrameHarness {
         &mut self.waiting_controls
     }
 
+    fn component_awaits(&mut self, target: &crate::bound_dispatch::BoundActionTarget) -> bool {
+        let address = &target.address.address;
+        crate::bound_dispatch::component_awaits_resource(
+            self.root.as_mut(),
+            &self.state.doc,
+            &target.binding,
+            &address.resource,
+            &address.action,
+        )
+    }
+
     fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication {
         &self.bound_publication
     }

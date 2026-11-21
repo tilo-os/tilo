@@ -391,6 +391,7 @@ test-jobs-add-job = Add a job
 test-jobs-effect-stop = Stop this job
 test-jobs-effect-play = Play this
 test-jobs-effect-skip = Skip ahead
+test-late-page-effect-go = Open an address on the page
 test-transfers = Transfers
 test-transfers-effect-pause = Pause this transfer
 test-transfers-effect-cancel = Cancel this transfer

@@ -33,6 +33,19 @@ fn waits_for_arrival(result: &Started) -> bool {
     matches!(result, Err(ApiError::Unavailable { code, .. }) if code == tilo_actions::api::NOT_READY)
 }
 
+/// Whether `result` is an address the component does not publish yet: an invocation its app
+/// queued as it started (a link handed to a window that is still building its view) names a row
+/// the view publishes once it is built. Like a press whose change has not arrived, it waits and is
+/// asked again. An action missing from a resource that is published, and an address of a component
+/// that publishes nothing its member may see, are refused at once.
+fn waits_for_publication<C: ControlCore + ?Sized>(
+    core: &mut C,
+    target: &BoundActionTarget,
+    result: &Started,
+) -> bool {
+    matches!(result, Err(ApiError::Unknown(_))) && core.component_awaits(target)
+}
+
 /// When a press first refused at `first` (now, when `None`) stops waiting, or `None` once it has.
 fn still_waiting(first: Option<crate::time::Instant>) -> Option<crate::time::Instant> {
     let now = crate::time::now();
@@ -46,6 +59,10 @@ pub(crate) trait ControlCore: AppCore {
 
     /// The presses of the person's that wait for what they change to arrive ([`WaitingControl`]).
     fn waiting_controls(&mut self) -> &mut Vec<WaitingControl>;
+
+    /// Whether the component `target` names is up and shown to its member but does not publish
+    /// the resource it addresses yet ([`crate::bound_dispatch::component_awaits_resource`]).
+    fn component_awaits(&mut self, target: &BoundActionTarget) -> bool;
 
     /// How the host publishes its components' resources to the workspace.
     fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication;
@@ -512,7 +529,7 @@ pub(crate) trait ControlCore: AppCore {
         drop(scopes);
         if on_behalf_of.is_none()
             && origin.is_persons()
-            && waits_for_arrival(&result)
+            && (waits_for_arrival(&result) || waits_for_publication(self, target, &result))
             && let Some(until) = still_waiting(waited)
         {
             self.waiting_controls().push(WaitingControl {
