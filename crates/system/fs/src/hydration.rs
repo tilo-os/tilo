@@ -525,12 +525,27 @@ impl Hydrator {
         workspace: Option<collab_types::WorkspaceId>,
     ) -> Result<Vec<u8>> {
         self.authorize_scoped_read(workspace)?;
+        let tracing_read = tracing_reads();
+        let began = std::time::Instant::now();
         let manifest = self.manifest_index(manifest_hash).await?;
+        if tracing_read {
+            eprintln!(
+                "read of {manifest_hash}: its manifest in {:?}",
+                began.elapsed()
+            );
+        }
         let end = offset.saturating_add(size).min(manifest.total_len());
         let start = offset.min(end);
         if content::is_file_backed(&manifest) {
+            let ranged = std::time::Instant::now();
             self.ensure_range(manifest_hash, &manifest, start..end, priority)
                 .await?;
+            if tracing_read {
+                eprintln!(
+                    "read of {manifest_hash}: its range in {:?}",
+                    ranged.elapsed()
+                );
+            }
             return self
                 .store
                 .read_local(manifest_hash, &manifest, start..end)
@@ -866,7 +881,7 @@ impl Hydrator {
         Ok(Manifest::decode(&bytes)?)
     }
 
-    /// Fetch a whole blob from a specific peer, verify, persist and return it. `get_blob` streams
+/// Fetch a whole blob from a specific peer, verify, persist and return it. `get_blob` streams
     /// bao-verified content, so a corrupt blob fails the stream instead of returning bad bytes.
     pub async fn fetch_from(&self, hash: Hash, peer: EndpointAddr) -> Result<Bytes> {
         let _guard = self.mark_fetching(hash);
@@ -874,9 +889,18 @@ impl Hydrator {
         let peer_id = peer.id;
         let result = match tokio::time::timeout(PEER_FETCH_TIMEOUT, async {
             let conn = self.blob_connection(&peer).await?;
+            let asking = Instant::now();
             let (bytes, _stats) = iroh_blobs::get::request::get_blob(conn, hash)
                 .bytes_and_stats()
                 .await?;
+            if tracing_reads() {
+                eprintln!(
+                    "fetch of {hash} from {}: asked in {:?}, {} bytes",
+                    peer_id,
+                    asking.elapsed(),
+                    bytes.len()
+                );
+            }
             self.count_blob_bytes(bytes.len() as u64);
             self.store.store_fetched(hash, bytes.clone()).await?;
             self.remote_sources.write_recover().insert(hash, peer);
@@ -1398,4 +1422,17 @@ mod tests {
             assert!(!hydrator.prefetch(manifest_hash, 512).await.unwrap());
         }
     }
+}
+
+/// Whether reads and their fetches say where their time went (`TILO_FS_TRACE_READS=1`): read
+/// once, so a read's hot path costs no environment lookup.
+pub(crate) fn tracing_reads() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TILO_FS_TRACE_READS").is_some())
+}
+
+/// Whether a commit says where its time went (`TILO_FS_TRACE_WRITES=1`).
+pub(crate) fn tracing_writes() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TILO_FS_TRACE_WRITES").is_some())
 }

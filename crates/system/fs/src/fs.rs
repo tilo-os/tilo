@@ -1592,6 +1592,8 @@ impl QuickFS {
     /// Returns the errno the writer should see when the bytes did not become the file's
     /// committed content.
     fn commit_buffer(&self, ino: u64, stage: &mut WriteStage, adopt: bool) -> Result<(), i32> {
+        let tracing = crate::hydration::tracing_writes();
+        let began = std::time::Instant::now();
         let workspace = stage.workspace();
         let previous = self
             .version_base(ino, workspace)
@@ -1605,6 +1607,7 @@ impl QuickFS {
                 eprintln!("storing a version of inode {ino} failed: {error}");
                 commit_errno(&error)
             })?;
+        let stored_at = began.elapsed();
         if adopted {
             stage.retire();
         }
@@ -1613,6 +1616,12 @@ impl QuickFS {
         Self::commit_retrying(ino, || {
             self.install_version(ino, stored, now_ms(), None, workspace)
         })?;
+        if tracing {
+            eprintln!(
+                "commit of inode {ino}: its bytes in {stored_at:?}, its name in {:?}",
+                began.elapsed() - stored_at
+            );
+        }
         self.remember_staged_metadata(ino, stage);
         Ok(())
     }

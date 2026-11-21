@@ -280,6 +280,8 @@ impl Hydrator {
         }
         let key = *content.as_bytes();
         let files = Arc::clone(self.store.files());
+        let tracing = super::tracing_reads();
+        let began = std::time::Instant::now();
         let entry = files.entry(&key);
         if entry.as_ref().is_none_or(|e| e.size != size) {
             let chunks = content::chunk_locations(manifest);
@@ -287,6 +289,9 @@ impl Hydrator {
             let files = Arc::clone(&files);
             tokio::task::spawn_blocking(move || files.ensure(&key, size, retention, &chunks))
                 .await??;
+            if tracing {
+                eprintln!("range of {content}: its area entry in {:?}", began.elapsed());
+            }
         } else if priority == Priority::Pinned {
             files.keep_offline(&key, true)?;
         }
@@ -312,6 +317,9 @@ impl Hydrator {
         // What was fetched counts against the cache budget; the entry just
         // filled stays.
         tokio::task::spawn_blocking(move || files.evict_to_budget(&[key])).await?;
+        if tracing {
+            eprintln!("range of {content}: its pieces and budget in {:?}", began.elapsed());
+        }
         Ok(())
     }
 

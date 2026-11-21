@@ -1698,6 +1698,20 @@ async fn mount(
     for peer in &bootstrap {
         hydrator.warm_peer(peer.clone());
     }
+    // The certificate and the connection are not the whole of what a first read pays: the
+    // request that follows them answers slowly on a route nothing has asked through yet, and a
+    // workspace of thousands of files makes that the biggest part of an open. One small read
+    // now asks through the route the person's first open will use.
+    {
+        let hydrator = Arc::clone(&hydrator);
+        let namespace = Arc::clone(&namespace);
+        tokio::spawn(async move {
+            let Some(hash) = first_file_content(&namespace) else {
+                return;
+            };
+            let _ = hydrator.read(hash, 0, WARM_READ_BYTES).await;
+        });
+    }
 
     let keeper = kept
         .clone()
@@ -1793,6 +1807,38 @@ fn keep_generation(namespace: &Arc<Mutex<Namespace>>, kept: &KeptTree) -> Result
         }
     }
     Ok(*hasher.finalize().as_bytes())
+}
+
+/// How much of the first file a joining device reads to warm the route a person's first open
+/// will use: one request's worth, and no more.
+const WARM_READ_BYTES: u64 = 4096;
+
+/// The content of the first file this workspace lists, a few folders deep: what a person
+/// opening the workspace's folder and reading something would touch first.
+fn first_file_content(namespace: &Arc<Mutex<Namespace>>) -> Option<iroh_blobs::Hash> {
+    let mut ns = namespace.lock().ok()?;
+    let mut folders = vec![fs::ROOT_INO];
+    for _level in 0..3 {
+        let mut deeper = Vec::new();
+        for folder in folders {
+            for (ino, kind, _) in ns.readdir(folder).unwrap_or_default().into_iter().take(64) {
+                match kind {
+                    fuser::FileType::RegularFile => {
+                        if let Some(hash) = ns.hash_for(ino) {
+                            return Some(hash);
+                        }
+                    }
+                    fuser::FileType::Directory => deeper.push(ino),
+                    _ => {}
+                }
+            }
+        }
+        folders = deeper;
+        if folders.is_empty() {
+            return None;
+        }
+    }
+    None
 }
 
 /// Save what changed now; a failure is reported, and the journals keep the changes until the

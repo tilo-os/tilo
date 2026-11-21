@@ -141,19 +141,27 @@ impl Hydrator {
         // The provider decides who may ask when the connection arrives, so this device says who
         // it is first: the same certificate exchange every sync connection starts with, on its
         // own connection, ahead of the one that carries content.
+        let opening = Instant::now();
         if let Some(identity) = &self.identity
             && let crate::net::Net::Direct { endpoint, .. } = &self.net
             && let Err(error) = crate::sync::certify_to_peer(endpoint, peer.clone(), identity).await
         {
             eprintln!("could not certify this device to {}: {error:#}", peer.id);
         }
-        let opening = Instant::now();
+        let certified_at = opening.elapsed();
         let connection = tokio::time::timeout(
             CONNECT_TIMEOUT,
             self.net.connect(peer.clone(), iroh_blobs::ALPN),
         )
         .await
         .map_err(|_| anyhow!("connecting to {} timed out", peer.id))??;
+        if super::tracing_reads() {
+            eprintln!(
+                "content route to {}: certificate in {certified_at:?}, connection in {:?}",
+                peer.id,
+                opening.elapsed()
+            );
+        }
         // A first read that is slow because its route had to be set up says so: the
         // certificate exchange and this connect are what a warm route was for.
         if opening.elapsed() > Duration::from_millis(100) {
