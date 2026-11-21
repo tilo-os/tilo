@@ -330,6 +330,10 @@ impl Session {
                 reveals: Rc::clone(&reveals),
             },
         );
+        // Only a session with a launcher behind it brings the window a launch holds a place for;
+        // one without starts nothing, so no window is on its way and the keys are never held for
+        // one.
+        desktop.with_policy(|policy| policy.set_starts_windows(options.launch.is_some()));
         desktop.set_gestures(options.config.gestures);
         // What each open window is told of the shell it stands on, from the
         // settings as they are now; the shell wears the same theme.

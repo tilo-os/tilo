@@ -488,6 +488,9 @@ pub struct DesktopPolicy {
     /// The windows app keepers show, by window: each is told the tab it stands in
     /// ([`Self::kept_placements`]).
     kept: BTreeMap<u64, KeptWindow>,
+    /// Whether this session starts the windows a launch asks for ([`Self::set_starts_windows`]):
+    /// without a launcher behind it, a held tab is the app's own and no window comes for it.
+    starts_windows: bool,
 }
 
 impl DesktopPolicy {
@@ -552,8 +555,16 @@ impl DesktopPolicy {
             launch_tabs: None,
             to_carry: Vec::new(),
             kept: BTreeMap::new(),
+            starts_windows: true,
         };
         (policy, surface)
+    }
+
+    /// Tell the policy whether this session starts the windows a launch asks for. A session with no
+    /// launcher behind it makes a held tab and nothing ever fills it, so the place it holds is the
+    /// app's own and never a window the person's keys are for.
+    pub fn set_starts_windows(&mut self, starts: bool) {
+        self.starts_windows = starts;
     }
 
     /// The launches the person asked for that no window of theirs is behind,
@@ -1664,9 +1675,13 @@ impl DesktopPolicy {
 
     /// Whether the place the person is at waits for the window a launch brings, none having come:
     /// the tab a launch holds is in front of them, or the shell is still making the tab of one they
-    /// started in front of them. Their keys are for that window.
+    /// started in front of them. Their keys are for that window. A session that starts no windows
+    /// holds no place for one, so nothing waits.
     #[must_use]
     pub fn awaits_launched_window(&self) -> bool {
+        if !self.starts_windows {
+            return false;
+        }
         let active = self.handle.read(|tree| {
             let route = tilo_desktop_surface::navigation::active_route(tree)?;
             Some((route.tab, window_of(tree, route.tab).is_some()))
