@@ -91,15 +91,6 @@ class Dependants(unittest.TestCase):
         )
         self.assertEqual([], found)
 
-    def test_a_recorded_dev_edge_that_becomes_production_is_reported(self) -> None:
-        baseline = layers.Baseline({("engine", "viewer", ""): ""}, "")
-        found = layers.violations(
-            rules(ENGINE + VIEWER), [package("engine"), package("viewer", engine=frozenset({"dependency"}))]
-        )
-        reported, stale = layers.reconcile(found, baseline)
-        self.assertEqual(1, len(reported))
-        self.assertEqual([], stale)
-
     def test_the_generated_unifying_crate_is_not_a_dependant(self) -> None:
         found = layers.violations(
             rules(ENGINE), [package("engine"), package("workspace-unify", engine=frozenset({"dependency"}))]
@@ -165,64 +156,6 @@ class Rules(unittest.TestCase):
     def test_an_allowance_for_no_workspace_crate_fails(self) -> None:
         with self.assertRaises(ValueError):
             layers.violations(rules(ENGINE + HOST), [package("engine")])
-
-
-class Baseline(unittest.TestCase):
-    def setUp(self) -> None:
-        self.directory = tempfile.TemporaryDirectory()
-        self.path = Path(self.directory.name) / "baseline.toml"
-        self.finding = layers.Finding("engine", "app", "crates/app/Cargo.toml", "app depends on engine")
-        self.other = layers.Finding("engine", "gone", "crates/gone/Cargo.toml", "gone depends on engine")
-
-    def tearDown(self) -> None:
-        self.directory.cleanup()
-
-    def test_a_recorded_finding_passes(self) -> None:
-        baseline = layers.Baseline({self.finding.key: ""}, "")
-        self.assertEqual([], layers.reconcile([self.finding], baseline)[0])
-        self.assertFalse(layers.report([self.finding], baseline))
-
-    def test_an_unrecorded_finding_fails(self) -> None:
-        reported, _ = layers.reconcile([self.finding], layers.Baseline({}, ""))
-        self.assertEqual([self.finding], reported)
-        self.assertTrue(layers.report([self.finding], layers.Baseline({}, "")))
-
-    def test_a_stale_entry_fails(self) -> None:
-        _, stale = layers.reconcile([], layers.Baseline({self.other.key: ""}, ""))
-        self.assertEqual([self.other.key], stale)
-        self.assertTrue(layers.report([], layers.Baseline({self.other.key: ""}, "")))
-
-    def test_the_first_run_records_everything(self) -> None:
-        layers.write_baseline(self.path, layers.Baseline({}, "header\n"), [self.finding])
-        self.assertEqual({self.finding.key}, layers.load_baseline(self.path).keys)
-
-    def test_a_write_keeps_the_comments_and_drops_only_what_is_gone(self) -> None:
-        self.path.write_text(
-            "header\n\n"
-            "# app draws a frame itself\n"
-            "[[violation]]\n"
-            'rule = "engine"\n'
-            'package = "app"\n'
-            "\n"
-            "# gone is being rebuilt\n"
-            "[[violation]]\n"
-            'rule = "engine"\n'
-            'package = "gone"\n'
-        )
-        baseline = layers.load_baseline(self.path)
-        text = str(baseline.blocks[self.finding.key])
-        self.assertIn("# app draws a frame itself", text)
-        self.assertEqual(2, len(baseline.keys))
-        layers.write_baseline(self.path, baseline, [self.finding])
-        written = self.path.read_text()
-        self.assertIn("# app draws a frame itself", written)
-        self.assertNotIn("gone", written)
-        self.assertEqual({self.finding.key}, layers.load_baseline(self.path).keys)
-
-    def test_a_write_never_records_a_new_finding(self) -> None:
-        baseline = layers.Baseline({self.other.key: ""}, "header\n")
-        layers.write_baseline(self.path, baseline, [self.finding])
-        self.assertEqual(frozenset(), layers.load_baseline(self.path).keys)
 
 
 if __name__ == "__main__":

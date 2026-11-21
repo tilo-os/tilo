@@ -20937,6 +20937,7 @@ dependencies = [
  "tilo-ui",
  "tilo-unlock-protocol",
  "tilo-user-identity",
+ "tilo-workspace-join",
  "tilo-workspace-service",
  "tokio",
  "tracing",

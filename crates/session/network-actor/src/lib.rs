@@ -519,7 +519,7 @@ enum InternalEvent {
     /// A workspace's hold failed to dial `via`, one of its holders.
     NativeDialFailed {
         ws: WorkspaceId,
-        via: Box<tilo_peer_state::join::TransportHint>,
+        via: Box<tilo_workspace_join::TransportHint>,
         /// Why the holder turned this device away, typed: a workspace its
         /// owner deleted is one this device forgets, not one to dial again.
         reason: tilo_server_protocol::refusal::Refusal,

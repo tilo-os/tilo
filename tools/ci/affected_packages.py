@@ -190,10 +190,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/policy/check_crate_layers.py",
         "tools/tests/test_check_crate_layers.py",
     ),
-    "tools/policy/crate_layers_baseline.toml": (
-        "tools/policy/check_crate_layers.py",
-        "tools/tests/test_check_crate_layers.py",
-    ),
     "os/dev/ci-native-podman-store.sh": (
         "tools/tests/test_ci_native_podman_store.py",
         "os/tests/disk_image_root_podman_store.sh",

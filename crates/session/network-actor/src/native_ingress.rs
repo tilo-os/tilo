@@ -11,10 +11,10 @@ use crate::WorkspaceId;
 use crate::own_service::OwnService;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::direct::DirectSync;
-use tilo_peer_state::join::TransportHint;
 use tilo_peer_state::owner::session::CannotDial;
 pub use tilo_peer_state::owner::session::{Connect, Input, Scope};
 use tilo_peer_state::owner::session::{Holder, Link, Linked, OwnHost, Reach};
+use tilo_workspace_join::TransportHint;
 
 struct Route {
     connect: Connect,
