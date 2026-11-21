@@ -111,17 +111,12 @@ impl Workspaces {
             .map_err(|error| error.to_string())
     }
 
-    /// The items of `workspace`'s vault. They are kept, for now, in its owner's vault on this
-    /// server; the vault's items move onto the workspace.
+    /// The items of `workspace`'s vault, which this server keeps in the workspace's own store.
     async fn workspace_vault_items(&self, workspace: &str) -> Result<VaultItems, String> {
-        let owner = self
-            .policy_of(workspace)
+        self.policy_of(workspace)
             .await
-            .ok_or("this server does not hold that workspace")?
-            .owner()
-            .and_then(|person| <[u8; 32]>::try_from(hex::decode(person).ok()?).ok())
-            .ok_or(NOT_KEPT)?;
-        VaultItems::open_in(&self.person_settings_root(&owner)).map_err(|error| error.to_string())
+            .ok_or("this server does not hold that workspace")?;
+        VaultItems::open_in(&self.workspace_root(workspace)).map_err(|error| error.to_string())
     }
 }
 
