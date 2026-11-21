@@ -129,6 +129,10 @@ pub enum StoreEvictionError {
     Remove(String),
 }
 
+/// A file stored as a version: its content id and length (`None` for an empty file), and whether
+/// the file itself became the stored entry.
+pub(crate) type Published = (Option<(iroh_blobs::Hash, u64)>, bool);
+
 pub struct ContentStore {
     cache: Cache<Hash, Bytes>,
     /// Serializes publication with eviction, so a blob being written is not removed out from under

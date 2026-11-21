@@ -154,7 +154,7 @@ impl ContentStore {
     pub(crate) fn adopt_staged_inline(
         &self,
         path: &Path,
-    ) -> Result<Option<(Option<(Hash, u64)>, bool)>> {
+    ) -> Result<Option<crate::store::Published>> {
         let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         let len = file.metadata()?.len();
         if len == 0 || len > ADOPT_MAX {

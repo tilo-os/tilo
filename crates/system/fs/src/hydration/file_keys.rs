@@ -369,7 +369,7 @@ impl Hydrator {
     pub(crate) fn adopt_staged_inline(
         &self,
         path: &Path,
-    ) -> Result<Option<(Option<(Hash, u64)>, bool)>> {
+    ) -> Result<Option<crate::store::Published>> {
         self.store.adopt_staged_inline(path)
     }
 

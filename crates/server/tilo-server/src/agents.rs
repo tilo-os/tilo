@@ -1255,19 +1255,19 @@ pub async fn start_serving_documents(
     shell: Option<Arc<HostShells>>,
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 ) -> Result<(Server, WorkspaceActions), ServerError> {
-    let options = AgentOptions {
-        state_dir: cfg.state_root.join("agents"),
-        model: Arc::new(|| None),
-        catalogue,
-        feedback_reviewer,
-        shell,
-        browsers,
-    };
     let content = crate::content::stores(&cfg.state_root);
+    let state_dir = cfg.state_root.join("agents");
     let (server, actions) = start_app_server(
         cfg,
         identity,
-        options,
+        AgentOptions {
+            state_dir,
+            model: Arc::new(|| None),
+            catalogue,
+            feedback_reviewer,
+            shell,
+            browsers,
+        },
         content,
         None,
         None,
