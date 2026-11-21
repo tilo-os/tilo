@@ -98,6 +98,19 @@ class AppReleaseTests(unittest.TestCase):
                     name for name, app in catalog.items() if app["kind"] == "native"
                 ),
             )
+        with self.subTest(phase='an image ships the tilolang packages its collection names'):
+            # The image's collection is every native app plus the tilolang package
+            # that will take over one of them; a package joins `default` only in the
+            # change that retires the native app it replaces.
+            catalog = app_release.app_catalog(ROOT)
+            config = app_release.config(ROOT / "dist/apps/app-collections.toml")
+            image = app_release.resolve_collection("image", catalog, config)
+            self.assertEqual(
+                image,
+                sorted(set(app_release.resolve_collection("default", catalog, config))
+                       | {"tl-notes"}),
+            )
+            self.assertEqual(catalog["tl-notes"]["kind"], "tilolang")
         with self.subTest(phase='a promotion selects affected apps and publishes default collection'):
             workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
                 encoding="utf-8"

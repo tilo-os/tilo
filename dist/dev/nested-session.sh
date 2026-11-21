@@ -339,20 +339,19 @@ tilolang_bin=$thin/tilolang-app
 tilolang_process_bin=$bin/tilolang-process
 if [[ -f $tilolang_bin ]]; then
     [[ -f $tilolang_process_bin ]] || die "no tilolang host at $tilolang_process_bin"
-    tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
-        "$repo_root/apps/tilolang/tilo-runtime.toml")
-    [[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
+    # shellcheck source=/dev/null
+    . "$repo_root/tools/apps/tilolang_packages.sh"
+    tilolang_version=$(tilolang_runtime_version "$repo_root") \
+        || die "cannot read the tilolang runtime version"
     tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin" "$tilolang_process_bin"; } | sha256sum | cut -c1-64)
     if [[ ! -f $runtimes/.tilolang-key || $(<"$runtimes/.tilolang-key") != "$tilolang_key" \
           || ! -f $runtimes/$tilolang_version/bundle.toml ]]; then
         say "baking the tilolang runtime bundle"
-        chmod +x "$tilolang_bin"
-        rm -rf "$state/work/tilolang" "$runtimes/$tilolang_version"
         mkdir -p "$state/work"
-        "$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
-            --out "$state/work/tilolang" --include-bin "$tilolang_bin" \
-            --include-bin "$tilolang_process_bin" \
-            --identity "$identity" >/dev/null
+        tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$tilolang_bin" "$tilolang_process_bin" \
+            "$identity" "$state/work/tilolang" "$tilolang_version" \
+            || die "could not bake the tilolang runtime bundle"
+        rm -rf "$runtimes/$tilolang_version"
         mv "$state/work/tilolang" "$runtimes/$tilolang_version"
         printf '%s\n' "$tilolang_key" > "$runtimes/.tilolang-key"
     fi

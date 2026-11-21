@@ -4,6 +4,12 @@
 # it into the image-wide app store, so a fresh boot has a populated launcher
 # without the user running anything.
 #
+# The tilolang packages the image's app set names are packed the same way and
+# into the same store, so an app written in tilolang is installed exactly as a
+# Rust one is; the tilolang runtime bundle they execute is baked beside the Tilo
+# runtime first (tools/apps/tilolang_packages.sh, which the release's packing
+# uses too).
+#
 # The point of doing it this way, rather than by copying binaries into
 # /usr/bin: a preinstalled app goes through the *same* `tilo-app-package pack` +
 # `tilo-install install` path a user's own package goes through, and ends up
@@ -13,7 +19,8 @@
 # has at all is that it is read-only, being inside the image.
 #
 # Envs:
-#   REPO           repo root, holding apps/*/tilo-app.toml   [default: /build]
+#   REPO           repo root, holding apps/*/tilo-app.toml and, for the
+#                  tilolang packages, apps/tl            [default: /build]
 #   BIN_DIR        directory of built release binaries      [default: /out]
 #   COHORT_APPS    the app directories this cohort ships, space separated; an
 #                  app left out of the cohort is neither packed nor installed
@@ -44,6 +51,19 @@
 #                  Rust package checks compile in) and may only be made stricter
 #   BUDGET_DIR     the per-app size budgets: budget.toml plus raises/*.toml
 #                  [default: tools/perf/tapp-size-budget beside this script]
+#   APP_PLAN       the app set this image ships, as tools/apps/app_release.py's
+#                  plan (the compile writes it, and a release's plan.json has the
+#                  same shape). Its `tilolang` list is the packages under apps/tl
+#                  this image installs: each is built here with `tilolang build`
+#                  and signed with IDENTITY_JSON. A package the plan does not name
+#                  is not installed                        [default: none]
+#   TILOLANG_BIN   the `tilolang` CLI that builds and signs each package
+#                  [default: <BIN_DIR>/../tilolang]
+#   RUNTIME_ROOT   where runtime bundles ship, each at /<version>, which is where
+#                  the launcher and `tilo-install` find them. The tilolang
+#                  runtime bundle is baked beside the Tilo runtime before this
+#                  runs (os/image/helpers/apps-payload.Containerfile), by the key
+#                  that signs the runtimes    [default: /usr/lib/tilo-runtime]
 #   TAPP_ARCH      the architecture the apps were built for, as budget.toml
 #                  names it                                  [default: uname -m]
 #   TAPP_BUDGET    `enforce` refuses an app over its budget; `report` names it
@@ -99,6 +119,9 @@ BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/tilo-runtime-bundle}"
 SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
 COHORT_APPS="${COHORT_APPS:-}"
 APP_MODELS="${APP_MODELS:-$(dirname "$BIN_DIR")/app-models}"
+APP_PLAN="${APP_PLAN:-}"
+TILOLANG_BIN="${TILOLANG_BIN:-$(dirname "$BIN_DIR")/tilolang}"
+RUNTIME_ROOT="${RUNTIME_ROOT:-/usr/lib/tilo-runtime}"
 TAPP_DIR="${TAPP_DIR:-}"
 RUNTIME_ID="${RUNTIME_ID:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
@@ -399,6 +422,75 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     fi
     shipped+=("$id ($tapp_bytes bytes)")
 done
+
+# --- tilolang packages ------------------------------------------------------
+# An app written in tilolang is a package under apps/tl, which the release plans
+# with the Rust apps under the same collection (tools/apps/app_release.py): the
+# plan's `tilolang` list is the image's tilolang app set, so a package the set
+# does not name is not installed. Each is compiled, staged and signed here by
+# `tilolang build` and installed through the same `tilo-install` a Rust tapp is.
+# They execute the tilolang runtime bundle, which this image baked beside the Tilo
+# runtime before this packing ran: `tilo-install` refuses a package whose runtime
+# is absent, so it is already in place when the first package installs.
+if [ -n "$APP_PLAN" ]; then
+    [ -f "$APP_PLAN" ] || die "no app plan at $APP_PLAN"
+    tilolang_entries=()
+    tilolang_rows=$(python3 - "$APP_PLAN" <<'PY'
+import json, sys
+plan = json.load(open(sys.argv[1], encoding="utf-8"))
+for app in plan.get("tilolang", []):
+    print("\t".join([app["app"], app["dir"], app["id"], app["version"], app["runtime"]]))
+PY
+) || die "cannot read the tilolang packages of $APP_PLAN"
+    while IFS=$'\t' read -r tl_name tl_dir tl_id tl_version tl_runtime; do
+        [ -n "$tl_name" ] || continue
+        if [ -n "$COHORT_APPS" ] && [[ " $COHORT_APPS " != *" $tl_name "* ]]; then continue; fi
+        tilolang_entries+=("$tl_name"$'\t'"$tl_dir"$'\t'"$tl_id"$'\t'"$tl_version"$'\t'"$tl_runtime")
+    done <<<"$tilolang_rows"
+    if [ "${#tilolang_entries[@]}" -ne 0 ]; then
+        # The package build is the release's own (tools/apps/tilolang_packages.sh);
+        # the runtime they execute was baked beside the Tilo runtime before this
+        # ran, and `tilo-install` refuses a package whose runtime is absent.
+        # shellcheck source=/dev/null
+        . "$(dirname "${BASH_SOURCE[0]}")/../../tools/apps/tilolang_packages.sh"
+        [ -x "$TILOLANG_BIN" ] || die "$TILOLANG_BIN not found or not executable"
+        mkdir -p "$STAGE/tilolang"
+        for tl_entry in "${tilolang_entries[@]}"; do
+            IFS=$'\t' read -r tl_name tl_dir tl_id tl_version tl_runtime <<<"$tl_entry"
+            if ! tilolang_build_package "$TILOLANG_BIN" "$REPO" "$tl_dir" "$tl_name" \
+                    "$STAGE/tilolang" "$IDENTITY_JSON" "$tl_version" "$RUNTIME_ID" "$tl_id"; then
+                failed+=("$tl_name ($tl_id): build failed")
+                continue
+            fi
+            tl_tapp="$STAGE/tilolang/$tl_name.tapp"
+            tl_tapp_bytes="$(stat -c %s "$tl_tapp")"
+            if ! over=$(check_budget "$tl_name ($tl_id)" "$tl_id" "$tl_tapp_bytes"); then
+                failed+=("$over")
+                continue
+            fi
+            if [ "$tl_tapp_bytes" -gt "$MAX_TAPP_BYTES" ]; then
+                failed+=("$tl_name ($tl_id): package is $tl_tapp_bytes bytes; limit is $MAX_TAPP_BYTES")
+                continue
+            fi
+            if ! "$PKG_BIN" verify --trusted-key "$PUBKEY" "$tl_tapp" \
+                    >"$STAGE/$tl_id.verify.log" 2>&1; then
+                failed+=("$tl_name ($tl_id): verify failed — $(tail -3 "$STAGE/$tl_id.verify.log" | tr '\n' ' ')")
+                continue
+            fi
+            if ! "$INSTALL_BIN" install "$tl_tapp" --allow-self-signed \
+                    >"$STAGE/$tl_id.install.log" 2>&1; then
+                failed+=("$tl_name ($tl_id): install failed — $(tail -3 "$STAGE/$tl_id.install.log" | tr '\n' ' ')")
+                continue
+            fi
+            if [ -n "${TAPP_OUT:-}" ]; then
+                [ -n "$COHORT_APPS" ] && [[ "$COHORT_APPS" != *" "* ]] \
+                    || die "TAPP_OUT requires a single-app cohort"
+                cp "$tl_tapp" "$TAPP_OUT"
+            fi
+            shipped+=("$tl_id ($tl_tapp_bytes bytes)")
+        done
+    fi
+fi
 fi
 
 # --- report ----------------------------------------------------------------
@@ -427,10 +519,10 @@ expected_rows=$((initial_rows + ${#shipped[@]}))
     || die "registry has $rows row(s), expected $initial_rows existing + ${#shipped[@]} installed"
 msg "registry.toml lists $rows package(s)"
 
-# Every runtime build a shipped app pins -- the Browser's engine included --
-# must ship with the image at that exact version, or the app boots into
-# "not installed". The check reads the installed manifests, so no list of
-# runtimes is kept beside the apps.
-STORE="$STORE" RUNTIME_ROOT="${RUNTIME_ROOT:-/usr/lib/tilo-runtime}" BUNDLE_BIN="$BUNDLE_BIN" \
+# Every runtime build a shipped app pins -- the Browser's engine, and the
+# tilolang runtime every tilolang package names -- must ship with the image at
+# that exact version, or the app boots into "not installed". The check reads the
+# installed manifests, so no list of runtimes is kept beside the apps.
+STORE="$STORE" RUNTIME_ROOT="$RUNTIME_ROOT" BUNDLE_BIN="$BUNDLE_BIN" \
     "$(dirname "${BASH_SOURCE[0]}")/check-shipped-runtimes.sh" \
     || die "an app pins a runtime build the image does not ship"

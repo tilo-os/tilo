@@ -340,37 +340,32 @@ done < <(jq -r '.catalog[] | select(.kind == "native") | [.name,.package,.binary
 # is the `tilolang/<version>` each package names as its entrypoint runtime and lists under
 # `optional-runtimes`, so a device installs the bundle along with the apps that need it.
 if (( tilolang_apps > 0 )); then
-    tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
-        "$repo_root/apps/tilolang/tilo-runtime.toml")
-    [[ -n $tilolang_version ]] \
-        || { printf 'apps/tilolang/tilo-runtime.toml provides no tilolang version\n' >&2; exit 1; }
+    # shellcheck source=/dev/null
+    . "$repo_root/tools/apps/tilolang_packages.sh"
+    tilolang_version=$(tilolang_runtime_version "$repo_root")
     tilolang_bin="$thin_app_dir/tilolang-app"
     tilolang_host="$release_dir/tilolang-process"
     [[ -f $tilolang_bin ]] || { printf 'missing tilolang runtime binary: %s\n' "$tilolang_bin" >&2; exit 1; }
     [[ -f $tilolang_host ]] || { printf 'missing tilolang host: %s\n' "$tilolang_host" >&2; exit 1; }
-    chmod +x "$tilolang_bin"
     tilolang_bundle="$out/runtime/tilolang/$tilolang_version"
-    "$release_dir/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
-        --out "$tilolang_bundle" --include-bin "$tilolang_bin" \
-        --include-bin "$tilolang_host" --identity "$runtime_identity" >/dev/null
+    tilolang_bake_runtime "$release_dir/tilo-runtime-bundle" "$tilolang_bin" "$tilolang_host" \
+        "$runtime_identity" "$tilolang_bundle" "$tilolang_version" \
+        || { printf 'baking the tilolang runtime bundle failed\n' >&2; exit 1; }
     # `tilolang build` keeps each tapp's own name (`<last id segment>.tapp`); the collection
     # names every tapp `<app>-<version>-<arch>`, native or not, so a client reads one scheme.
-    while IFS=$'\t' read -r name dir id version runtime; do
-        tilolang_out="$out/work/tilolang"
-        mkdir -p "$tilolang_out"
-        printf 'building tilolang app=%s id=%s runtime=%s\n' "$name" "$id" "$runtime"
-        "$release_dir/tilolang" build "$repo_root/$dir" --search "$repo_root/apps/tl" \
-            --out "$tilolang_out" --identity "$identity" --version "$version" \
-            --tilo-runtime "tilo-runtime/$runtime_release"
-    done < <(jq -r '.tilolang[] | [.app,.dir,.id,.version,.runtime] | @tsv' "$plan")
-    # Every package the apps use was signed beside them: a library is installed with the apps
-    # that need it, from the same collection.
+    # Every package the apps use is in the plan (a selection brings them along), and each is
+    # signed beside them, so a library is installed with the apps that need it.
+    tilolang_out="$out/work/tilolang"
     tilolang_arch=$(uname -m)
-    while IFS=$'\t' read -r id name version; do
-        tapp="$tilolang_out/${id##*.}.tapp"
-        [[ -f $tapp ]] || { printf 'tilolang build made no tapp for %s\n' "$id" >&2; exit 1; }
-        install -pm 0644 "$tapp" "$out/tapp/$name-$version-$tilolang_arch.tapp"
-    done < <(jq -r '.catalog[] | select(.kind == "tilolang") | [.id,.name,.version] | @tsv' "$plan")
+    mkdir -p "$tilolang_out"
+    while IFS=$'\t' read -r name dir id version runtime; do
+        printf 'building tilolang app=%s id=%s runtime=%s\n' "$name" "$id" "$runtime"
+        tilolang_build_package "$release_dir/tilolang" "$repo_root" "$dir" "$name" \
+            "$tilolang_out" "$identity" "$version" "tilo-runtime/$runtime_release" "$id" \
+            || { printf 'building the tilolang package %s failed\n' "$name" >&2; exit 1; }
+        install -pm 0644 "$tilolang_out/$name.tapp" \
+            "$out/tapp/$name-$version-$tilolang_arch.tapp"
+    done < <(jq -r '.tilolang[] | [.app,.dir,.id,.version,.runtime] | @tsv' "$plan")
 fi
 
 # The runtime itself, as the registry offers it: a `kind = "runtime"`

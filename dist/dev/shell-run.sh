@@ -317,9 +317,11 @@ say "the apps run on $app_runtime"
 # from this tree and signed with the session's key. It holds the binaries alone
 # (`--binaries-only`): the launcher runs it on the app's Tilo runtime, whose loader and
 # libraries it links, so a loader set of its own is never read.
-tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
-    "$repo_root/apps/tilolang/tilo-runtime.toml")
-[[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
+# The two steps below are the ones the release's and the image's packing take
+# (tools/apps/tilolang_packages.sh), so what a session installs is built the same way.
+. "$repo_root/tools/apps/tilolang_packages.sh"
+tilolang_version=$(tilolang_runtime_version "$repo_root") \
+    || die "cannot read the tilolang runtime version"
 # Beside it, the tilolang host (crates/platform/tilolang-process), which runs a workspace's tilolang
 # apps by one author as instances, as `nested-session.sh` bakes it: without it every tilolang
 # app's window and every agent program finds no host to run in. `nested-session-build.sh` builds
@@ -327,10 +329,9 @@ tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
 tilolang_process_bin=$repo_root/target/nested-session/bin/tilolang-process
 [[ -f $tilolang_process_bin ]] || die "no tilolang host at $tilolang_process_bin: run dist/dev/nested-session-build.sh"
 say "baking the tilolang runtime bundle $tilolang_version"
-"$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
-    --out "$runtimes/$tilolang_version" --include-bin "$tilolang_bin" \
-    --include-bin "$tilolang_process_bin" \
-    --identity "$identity" >/dev/null
+tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$tilolang_bin" "$tilolang_process_bin" \
+    "$identity" "$runtimes/$tilolang_version" "$tilolang_version" \
+    || die "could not bake the tilolang runtime bundle"
 tilolang_runtime=tilolang/$tilolang_version
 
 # Build each tilolang app into a signed `.tapp` and install it into the session's own app
@@ -342,10 +343,12 @@ install_apps() {
     mkdir -p "$out"
     for app in "${tl_apps[@]}"; do
         # A package is a directory of `.tl` files; the packages it uses are found beside it
-        # (`apps/tl`), and each is built and installed before the one that uses it.
-        "$bin/tilolang" build "$repo_root/apps/tl/$app" \
-            --search "$repo_root/apps/tl" --out "$out" --identity "$identity" \
-            --tilo-runtime "$app_runtime" --version 0.1.0 >/dev/null
+        # (`apps/tl`), and each is built and installed before the one that uses it. The build
+        # is the image's and the release's (tools/apps/tilolang_packages.sh), so the session
+        # runs the packages a device installs.
+        tilolang_build_package "$bin/tilolang" "$repo_root" "apps/tl/$app" "tl-$app" \
+            "$out" "$identity" 0.1.0 "$app_runtime" \
+            || die "the tilolang package $app did not build"
     done
     local tapps=("$out"/*.tapp)
     ((${#tapps[@]})) || die "the tilolang apps built no package"

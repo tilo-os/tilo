@@ -43,6 +43,9 @@ BINARY_INPUTS = {
 }
 PACKAGING_INPUTS = {
     "dist/apps/package-apps.sh",
+    # The tilolang packages' build and the runtime bundle they run on: a change
+    # to either changes every tilolang tapp the collection ships.
+    "tools/apps/tilolang_packages.sh",
     # Builds every app's model module together, and the model runtime the
     # runtime bundle carries for them (with tools/web/wasm-split below).
     "tools/ci/app-models.sh",

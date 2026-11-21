@@ -9,6 +9,15 @@ extends = ["default"]
 [collections.os]
 extends = ["default"]
 
+# The apps an OS image bakes into its read-only store (os/scripts/pack-apps.sh,
+# from the plan its compile writes): every native app, and the tilolang packages
+# the image ships beside the native app they replace. A package moves to
+# `default` only in the change that retires that app, so a release never ships
+# two apps for one thing under one id.
+[collections.image]
+extends = ["default"]
+include = ["tl-notes"]
+
 [collections.recovery]
 include = ["file-explorer", "settings", "terminal"]
 

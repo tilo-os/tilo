@@ -11,6 +11,8 @@ COPY --from=compiled / /out/
 COPY os/scripts/pack-apps.sh os/scripts/stamp-runtime.sh os/scripts/check-shipped-runtimes.sh \
      os/scripts/install-env-runtime.sh /build/os/scripts/
 COPY tools/apps/stage_sdk_services.py /build/tools/apps/
+# The tilolang packages' packing steps, which the release's packing shares.
+COPY tools/apps/tilolang_packages.sh /build/tools/apps/
 COPY os/usr/share/tilo/system-interfaces.toml /build/os/usr/share/tilo/system-interfaces.toml
 COPY crates/packaging/tilo-app-package/max-app-bytes /build/crates/packaging/tilo-app-package/max-app-bytes
 ARG TILO_PREBUILT_APPS=0
@@ -21,7 +23,9 @@ ARG TILO_RUST_LTO=thin
 ARG TILO_APP_COLLECTION_PUBLISHER=""
 # A prebuilt runtime (TILO_PREBUILT_APPS=1) is where the bake below looks for it.
 RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
-      mkdir -p /usr/lib/tilo-runtime && cp -a /out/prebuilt-runtime/tilo-runtime/. /usr/lib/tilo-runtime/; \
+      mkdir -p /usr/lib/tilo-runtime && cp -a /out/prebuilt-runtime/tilo-runtime/. /usr/lib/tilo-runtime/ \
+      && if [ -d /out/prebuilt-runtime/tilolang ]; then \
+           cp -a /out/prebuilt-runtime/tilolang/. /usr/lib/tilo-runtime/; fi; \
     fi
 
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
@@ -59,6 +63,12 @@ ARG RUNTIME_RELEASE=2026.07
 ENV RUNTIME_RELEASE=${RUNTIME_RELEASE}
 # The bundle and the app store below record when they were produced: the build
 # scripts' SOURCE_DATE_EPOCH, not the fixed one the compile above ran with.
+#
+# The tilolang runtime bundle is baked here too, when the image's app set names a
+# tilolang package: beside the Tilo runtime, at `/usr/lib/tilo-runtime/<version>`,
+# signed by the same runtime publisher, so one trust root covers both. It is the
+# binaries alone (tools/apps/tilolang_packages.sh), which run on the app's Tilo
+# runtime.
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # libstd is not on the system loader path, so it is included by name. The
@@ -121,6 +131,13 @@ RUN --mount=type=secret,id=publisher_identity \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/tilo-runtime-account-capability /out/thin-apps/* \
+      && if [ -f /out/app-plan.json ] && [ "$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("tilolang", [])))' /out/app-plan.json)" != 0 ]; then \
+           . /build/tools/apps/tilolang_packages.sh \
+           && tilolang_version="$(tilolang_runtime_version /out)" \
+           && tilolang_bake_runtime /out/tilo-runtime-bundle /out/thin-apps/tilolang-app \
+                /out/tilolang-process /out/runtime-bundle-identity.json \
+                "/usr/lib/tilo-runtime/$tilolang_version" "$tilolang_version"; \
+         fi \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
@@ -189,6 +206,12 @@ COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
 #
+# The app set is the image's collection (dist/apps/app-collections.toml), whose
+# plan the compile wrote: it names every native app and the tilolang packages that
+# ship beside them. A tilolang package is signed here by `tilolang build`, and the
+# tilolang runtime it executes is baked into /usr/lib/tilo-runtime beside the Tilo
+# runtime, where the launcher and `tilo-install` find both.
+#
 # Apps compiled here are signed by the build's publisher identity, as the
 # runtimes above. The key is in no trust list: see the store's COPY below. The
 # publisher key is in each package's signed root, whose hash is its id, so a minted key
@@ -209,7 +232,10 @@ RUN --mount=type=secret,id=publisher_identity \
     && REPO=/out \
     BIN_DIR=/out/thin-apps \
     APP_MODELS=/out/app-models \
+    APP_PLAN="$([ -f /out/app-plan.json ] && printf %s /out/app-plan.json || true)" \
     TAPP_DIR=/out/prebuilt-apps \
+    TILOLANG_BIN=/out/tilolang \
+    RUNTIME_ROOT=/usr/lib/tilo-runtime \
     TAPP_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
     PKG_BIN=/out/tilo-app-package \

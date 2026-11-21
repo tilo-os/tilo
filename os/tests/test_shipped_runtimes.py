@@ -64,6 +64,20 @@ class ShippedRuntimeContract(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_a_tilolang_packages_runtime_is_checked_too(self):
+        # A package `tilolang build` signs executes `tilolang/<version>`, which
+        # the launcher resolves beside the Tilo runtime like any other bundle.
+        tilolang = "0.1.0+tilolang"
+        manifest = (f'[package]\nruntime = "tilo-runtime/{NATIVE}"\n'
+                    f'optional-runtimes = ["tilolang/{tilolang}"]\n')
+        shipped = self.run_check(shipped=[NATIVE, tilolang], manifest=manifest)
+        self.assertEqual(shipped.returncode, 0, shipped.stderr)
+        self.assertIn("2 runtime pin(s)", shipped.stderr)
+
+        missing = self.run_check(shipped=[NATIVE], manifest=manifest)
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn(f"tilolang/{tilolang}", missing.stderr)
+
     def test_the_image_build_runs_the_check_and_pins_the_engine_to_the_source(self):
         pack = (ROOT / "os/scripts/pack-apps.sh").read_text()
         self.assertIn("check-shipped-runtimes.sh", pack)

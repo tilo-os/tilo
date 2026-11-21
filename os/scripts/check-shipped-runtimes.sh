@@ -4,11 +4,12 @@
 # shipped with it.
 #
 # An app's manifest names the runtime builds it runs on: `[package].runtime`
-# and the further runtimes it requires, `[package].optional-runtimes` (the Browser's
-# Chromium engine). The launcher resolves each by exact version, so an image
-# whose store lists an app but whose /usr/lib/tilo-runtime lacks that build
-# boots into an app that says "not installed". This reads the manifests of the
-# packages actually installed in STORE -- not a list kept beside them -- and
+# and the further runtimes it requires, `[package].optional-runtimes` (the
+# Browser's Chromium engine, and the tilolang runtime a package built with
+# `tilolang build` executes). The launcher resolves each by exact version, so an
+# image whose store lists an app but whose /usr/lib/tilo-runtime lacks that
+# build boots into an app that says "not installed". This reads the manifests of
+# the packages actually installed in STORE -- not a list kept beside them -- and
 # requires each named build to be a bundle that verifies, so the two cannot
 # drift apart without failing the build.
 #
@@ -34,9 +35,11 @@ for manifest in "$STORE"/pkgs/*.pkg/manifest.toml; do
         /^optional-runtimes[ \t]*=/ { inlist = 1 }
         inlist { print }
         inlist && /\]/ { inlist = 0 }
-    ' "$manifest" | grep -o '"tilo-runtime/[^"]*"' | tr -d '"' | sort -u)"
+    ' "$manifest" | grep -oE '"(tilo-runtime|tilolang)/[^"]*"' | tr -d '"' | sort -u)"
     for ref in $refs; do
-        version="${ref#tilo-runtime/}"
+        # `<name>/<version>`, found at RUNTIME_ROOT/<version> for every name: the
+        # Tilo runtime build, its Chromium engine, and the tilolang runtime.
+        version="${ref#*/}"
         checked=$((checked + 1))
         dir="$RUNTIME_ROOT/$version"
         if [ ! -f "$dir/bundle.toml" ]; then

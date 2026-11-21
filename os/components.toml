@@ -461,8 +461,11 @@ files = [
 # The shared runtime and every packaged thin app. One component because Rust
 # dylib symbols carry crate hashes: a thin app only runs against the
 # libruntime_dylib.so built in the same Cargo graph (os/scripts/build-thin-apps.sh).
-# The app set is every apps/*/tilo-app.toml; the image bakes the signed bundle
-# and packs the read-only app store at their final paths in the builder stage.
+# The app set is the image's app collection (dist/apps/app-collections.toml):
+# every apps/*/tilo-app.toml, and the tilolang packages it names under apps/tl.
+# The image bakes the signed runtimes (the Tilo runtime and the tilolang one) and
+# packs every app of the set into the read-only store at their final paths in the
+# builder stage.
 [[component]]
 name = "apps+runtime"
 kind = "userspace"
