@@ -20,9 +20,6 @@ steady.p95_us = 9000
 steady.allocs_per_frame = 0
 idle_working_frames = 0
 
-[devices.opi3b.web_startup]
-first_frame_ms = 4000
-
 [devices.opi3b.session.arriving]
 first_frame_us = 90000
 steady.p95_us = 9000

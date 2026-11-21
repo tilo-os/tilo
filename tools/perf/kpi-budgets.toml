@@ -1624,16 +1624,3 @@ tick.body.p95_us = 1500
 # touching ground beyond the two rects.
 drag.damage_violations = 0
 drag.body.p95_us = 1500
-
-# The same desktop in a browser (headless Chrome here, no hardware adapter):
-# the page's first frames rasterize on the CPU while the browser compiles the
-# renderer's pipelines, so the shell is on screen without waiting on them.
-[devices.web-desktop.web_startup]
-# Measured: 605 ms cold, 359 ms warm (module already fetched). The page never
-# reports a graphics step it waits on, so `gpu_steps` stays empty.
-first_frame_ms = 1500
-# 16.7 ms a frame while a strip pans.
-frames.p95_ms = 33
-# 7.5 MiB of brotli-compressed wasm for a 25 MiB module, as a deployment
-# serves it; the first load stays under 8 MiB.
-wasm.transfer_bytes = 8000000

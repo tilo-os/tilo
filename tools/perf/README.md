@@ -8,7 +8,6 @@ class, and checked against budgets in `kpi-budgets.toml`.
 |---|---|---|
 | `crates/session/desktop/examples/session_perf.rs` | the shared desktop surface (`arriving`: the native session's chrome; `apps`: the page's chrome and app paint): build, first frame, steady frame, typing frame, idle frames that did work, allocations per frame, peak RSS | any machine with the build toolchain: x86, the OPi, CI |
 | `tools/perf/startup_marks.py` | a login's own startup timeline, from the session's marks to `first-frame-presented` | the device's session (`TILO_STARTUP_METRICS_PATH=<file>`) |
-| `tools/perf/web_startup.mjs` | a page load in a browser: the page's marks, the wasm transfer, the heap after the first frame, and the frames presented while the strip pans | any machine with Chrome (headless) |
 | `tools/perf/check_kpi.py` | compares any of those measurements with its budget | CI, a person |
 
 A window's tile holds different content on the two hosts, so the frame costs
@@ -21,8 +20,6 @@ promise on the OPi 3B as on a laptop with a real GPU:
 
 - `opi3b` — the floor: four Cortex-A76 cores, no GPU worth the name.
 - `x86` — a desktop or laptop x86 machine with a real GPU.
-- `web-desktop` — the web shell in a desktop browser.
-- `web-opi` — the web shell in a browser on the OPi.
 
 ## Measuring
 
@@ -39,20 +36,8 @@ TILO_PERF_DEVICE=x86 cargo run -p tilo-desktop --release --example session_perf 
 TILO_STARTUP_METRICS_PATH=~/session-startup.json tilo-session
 tools/perf/startup_marks.py ~/session-startup.json --device opi3b --json opi3b-startup.json
 
-# The web shell: build a bundle, then load it in headless Chrome.
-crates/browser/tilo-browser-runtime/scripts/build.sh "$PWD/bundle" --bundle runtime
-node tools/perf/web_startup.mjs --bundle "$PWD/bundle" --device web-desktop --json web.json
-# The page names the graphics step it waits on (`device`, `pipelines`,
-# `surface`), printed with its time: a slow first frame on a browser without
-# a GPU is the browser compiling the renderer's pipelines, not the page.
-# The bundle is served brotli-compressed, as a deployment serves it, so the
-# transfer it reports is the one a person waits on; `--warm` loads the page a
-# second time in the same browser, as someone coming back to it does.
-# `--chrome-arg=SWITCH` passes one browser switch (`=`, since a switch starts
-# with a dash), e.g. to ask for a hardware backend.
-
 # Check every measurement against its budget.
-tools/perf/check_kpi.py check x86-arriving.json x86-apps.json web.json
+tools/perf/check_kpi.py check x86-arriving.json x86-apps.json
 ```
 
 The first frame is a wall-clock promise, so it is measured with wall clock.

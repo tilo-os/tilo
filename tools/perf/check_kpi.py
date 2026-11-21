@@ -10,9 +10,7 @@ here are what a person is owed on that class of device:
   `activities` for the floating layer's cards), and a device class keeps one
   budget table per profile because they fill a window differently;
 - `startup_marks` (`tools/perf/startup_marks.py`) — the native session's own
-  startup marks, from process start to the first presented frame;
-- `web_startup` (`tools/perf/web_startup.mjs`) — a page load in a browser, from
-  navigation to the first presented desktop frame.
+  startup marks, from process start to the first presented frame.
 
 Usage:
     check_kpi.py check MEASUREMENT.json [MEASUREMENT.json ...]
@@ -36,7 +34,7 @@ BUDGETS = REPO / "tools" / "perf" / "kpi-budgets.toml"
 
 #: A measurement kind names one harness; each budget table lists limits for the
 #: fields of that kind's JSON.
-KINDS = ("session", "startup_marks", "web_startup")
+KINDS = ("session", "startup_marks")
 
 #: The profiles a session measurement names: the native session draws chrome
 #: over its windows, the page draws chrome and its apps, and the floating layer
