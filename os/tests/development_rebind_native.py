@@ -57,6 +57,8 @@ def install_synthetic_rollback(image_root):
     shutil.copytree(ROLLBACK_MODULE, destination)
     for relative in (
             'usr/libexec/tilo/tilo-rollback',
+            'usr/libexec/tilo/tilo-boot-signin',
+            'usr/libexec/tilo/tilo-auth',
             'usr/libexec/tilo-rollback-initrd-unlock',
             'usr/libexec/tilo-root-discover',
             'usr/lib/systemd/system-generators/tilo-root-generator'):
@@ -70,7 +72,10 @@ def packaged_kernel_packages():
     return ('kernel-core', 'dracut', 'cryptsetup', 'tpm2-tools', 'tpm2-tss',
             'plymouth', 'systemd', 'kmod', 'binutils', 'coreutils', 'bash',
             'util-linux', 'grep', 'gawk', 'findutils', 'sed', 'xz', 'zstd',
-            'gzip', 'cpio', 'squashfs-tools')
+            'gzip', 'cpio', 'squashfs-tools',
+            # The rollback module's sibling unlock reaches the owner's other devices
+            # through NetworkManager, so its check() requires it and ip.
+            'NetworkManager', 'iproute', 'dbus-broker')
 
 
 def install_packaged_rootfs(image_root):
@@ -261,7 +266,11 @@ def main():
                     new_manifest_sha256=new_manifest, new_target=new_target,
                     new_owner='cd' * 32, generation=generation, source_date_epoch=epoch)
                 with patch.object(transform.importer.retention, 'REPOSITORY', repository):
-                    result = transform.transform(transform_args)
+                    try:
+                        result = transform.transform(transform_args)
+                    except transform.CommandFailure as error:
+                        # The command's own output says why; the exception alone only says it failed.
+                        raise SystemExit(transform.failure_diagnostic(error)) from error
                 images.append(result['rootfs_id'])
 
                 if result['source_id'] != image_id:
