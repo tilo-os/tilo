@@ -638,7 +638,8 @@ async fn a_hosted_roster_turn() {
         guest.invoke(ask()).await.status,
         ReceiptStatus::Rejected {
             error: tilo_actions::remote::ActionCallError::Refused { reason },
-        } if reason == "This server cannot approve hosted agents for guest accounts yet."
+        } if reason == "This server can't run an agent you bring as a guest yet. \
+            Ask the person who runs this server to set up an agent for this workspace."
     ));
     let standalone = page
         .invoke(request(

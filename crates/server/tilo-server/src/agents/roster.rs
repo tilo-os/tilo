@@ -136,7 +136,9 @@ fn check_keeper_session(
     }
     if cert.user_public_key != link.user_public_key {
         return Err(ActionCallError::Refused {
-            reason: "This server cannot approve hosted agents for guest accounts yet.".into(),
+            reason: "This server can't run an agent you bring as a guest yet. \
+                Ask the person who runs this server to set up an agent for this workspace."
+                .into(),
         });
     }
     Ok(())
