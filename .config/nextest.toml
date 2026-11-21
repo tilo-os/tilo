@@ -301,6 +301,26 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) and binary(it) and test(closed_tasks::)"
 setup = "tasks-siblings"
 
+# The installed apps the session opens and times against the splash budgets their own manifests
+# declare, and the launcher that starts them: each is a program of another package, which Cargo
+# builds for no test of the session's.
+[scripts.setup.app-open-siblings]
+command = [
+    "bash", "tools/build-sibling-binaries.sh",
+    "tasks:tasks", "chat:chat", "tilo-runtime:tilo-runtime",
+    "passwords:passwords", "model-providers:model-providers", "launcher:tilo-launcher",
+]
+
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(it) and test(app_open_budget::)"
+setup = "app-open-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-session) and binary(it) and test(app_open_budget::)"
+setup = "app-open-siblings"
+
 # The native NTFS images the helper's tests read are generated once and handed
 # to the tests as TILO_NTFS_FIXTURES; Cargo builds none, and a test that starts
 # without them fails saying so. In every profile: the release is graded with the

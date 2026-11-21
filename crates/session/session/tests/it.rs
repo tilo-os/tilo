@@ -41,6 +41,8 @@ mod agent_control;
 mod agent_environments;
 #[path = "agent_story.rs"]
 mod agent_story;
+#[path = "app_open_budget.rs"]
+mod app_open_budget;
 #[path = "app_records.rs"]
 mod app_records;
 #[path = "app_sheets.rs"]
