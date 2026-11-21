@@ -1017,32 +1017,6 @@ impl Session {
                 }
             })
         };
-        // Who is here, over the windows: the roster the bar's faces open and
-        // where everyone else's pointer is.
-        let people = crate::people::mount(
-            &mut crate::platform::surfaces::Hosted::new(
-                &mut compositor,
-                &mut published,
-                presentation.theme.clone(),
-            ),
-            crate::people::Given {
-                scale: options.scale,
-                device_person: options.person.clone(),
-                notes: {
-                    let notes = std::sync::Arc::clone(&notes);
-                    Rc::new(move || notes.windows())
-                },
-                apps: Some(std::sync::Arc::new(options.lists.clone())
-                    as std::sync::Arc<dyn crate::platform::apps::Apps>),
-                handle: handle.clone(),
-                sync: sync.clone(),
-                // Who is here as the bar's faces are drawn from them: the app wire's.
-                here: Rc::clone(&place_here),
-                intents: Rc::clone(&intents),
-                invitable: Rc::clone(&invitable),
-            },
-        );
-
         // What the floating layer keeps clear of: the banners' stack while a
         // banner shows, and the readout's band while it stands.
         let banner_stack = crate::panels::Reserved::new();
@@ -1067,6 +1041,32 @@ impl Session {
             &options,
             banner_stack,
             banners.clone(),
+        );
+
+        // The roster and profile card are opened by the person. Put them above
+        // transient banners so a notice cannot cover or take a press on a field.
+        let people = crate::people::mount(
+            &mut crate::platform::surfaces::Hosted::new(
+                &mut compositor,
+                &mut published,
+                presentation.theme.clone(),
+            ),
+            crate::people::Given {
+                scale: options.scale,
+                device_person: options.person.clone(),
+                notes: {
+                    let notes = std::sync::Arc::clone(&notes);
+                    Rc::new(move || notes.windows())
+                },
+                apps: Some(std::sync::Arc::new(options.lists.clone())
+                    as std::sync::Arc<dyn crate::platform::apps::Apps>),
+                handle: handle.clone(),
+                sync: sync.clone(),
+                // Who is here as the bar's faces are drawn from them: the app wire's.
+                here: Rc::clone(&place_here),
+                intents: Rc::clone(&intents),
+                invitable: Rc::clone(&invitable),
+            },
         );
 
         // The sheets, over the desktop and its panels.

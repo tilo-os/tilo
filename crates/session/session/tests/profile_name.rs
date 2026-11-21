@@ -219,3 +219,38 @@ fn the_name_field_asks_for_a_name_and_keeps_the_last_one_given() {
     );
     shot(&mut session, "name-field-renamed");
 }
+
+#[test]
+fn a_notification_does_not_take_a_press_on_the_name_field() {
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    let state = crate::common::device_in(&mut home);
+    make_the_identity_unnamed(&home);
+    tilo_session::identity::install();
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        Options {
+            state: Some(state),
+            ..Options::default()
+        },
+    );
+    let title = "You joined Garden club";
+    session.notifications().post(
+        tilo_desktop_surface::notifications::Notification::new(title, "")
+            .with_dismiss_after(Duration::from_secs(60)),
+    );
+    until(&mut session, "the banner on screen", |session| {
+        session.a11y_windows().into_iter().any(|(_, _, tree)| {
+            tree.nodes
+                .into_iter()
+                .any(|(_, node)| node.value() == Some(title))
+        })
+    });
+
+    open_own_card(&mut session);
+    let field = control_named(&session, "Your name").expect("the name field over the banner");
+    press_rect(&mut session, field);
+    type_text(&mut session, "Lin");
+    assert_eq!(field_value(&session).as_deref(), Some("Lin"));
+    shot(&mut session, "name-field-in-front-of-notification");
+}
