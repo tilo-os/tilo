@@ -61,9 +61,6 @@ struct PageWorkspaces {
     keeps: bool,
     /// Whether the store keeps the record's parts at all.
     parts: bool,
-    /// The record was read from the whole-record copy an earlier build wrote,
-    /// which the first publication in parts lets go.
-    legacy: AtomicBool,
 }
 
 /// The record's parts as the page's store keeps them
@@ -95,7 +92,6 @@ impl PageWorkspaces {
             journaled: std::sync::Mutex::default(),
             keeps,
             parts,
-            legacy: AtomicBool::new(false),
         }
     }
 
@@ -103,10 +99,8 @@ impl PageWorkspaces {
         StoreParts(Arc::clone(&self.store))
     }
 
-    /// The record this store kept, in whichever form it kept it, and the
-    /// journaled form of it the next publication writes in. A record of the
-    /// older whole-JSON form is read as it is and written apart from the next
-    /// publication on.
+    /// The record this store kept, and the journaled form of it the next
+    /// publication writes in.
     fn kept(&self) -> Option<NativeAuthorityStorage> {
         if !self.keeps {
             return None;
@@ -117,25 +111,16 @@ impl PageWorkspaces {
                     *self.journaled.lock_recover() = Some(journaled);
                     return Some(record);
                 }
-                Ok(None) => {}
+                Ok(None) => return None,
                 Err(error) => {
                     tracing::warn!(%error, "the workspaces this page holds did not read");
                     return None;
                 }
             }
         }
-        let record = self
-            .store
+        self.store
             .load_workspaces()
-            .and_then(|bytes| serde_json::from_slice::<NativeAuthorityStorage>(&bytes).ok())?;
-        if self.parts {
-            *self.journaled.lock_recover() = Some(Journaled::start(&record));
-            // The whole-record copy an earlier build wrote is let go once a
-            // publication has written the record in parts: until then it is
-            // the only copy there is.
-            self.legacy.store(true, Ordering::Release);
-        }
-        Some(record)
+            .and_then(|bytes| serde_json::from_slice::<NativeAuthorityStorage>(&bytes).ok())
     }
 }
 
@@ -207,11 +192,6 @@ impl Store for PageWorkspaces {
         if let Err(error) = written {
             self.healthy.store(false, Ordering::Release);
             return Err(error);
-        }
-        if self.legacy.swap(false, Ordering::AcqRel)
-            && let Err(error) = self.store.save_workspaces(&[])
-        {
-            tracing::warn!(%error, "the workspaces' older copy was kept");
         }
         install();
         // A run the record no longer names moved to ownership's head.
