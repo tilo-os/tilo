@@ -117,9 +117,12 @@ fn home(
     );
     let (mut endpoint, mut listing) = match initial {
         Ok(found) => found,
+        // A root that serves no DAV at all: missing, a plain page, or one that refuses
+        // PROPFIND as Nextcloud's does. Its well-known path still may.
         Err(error)
-            if error == "CalDAV discovery returned HTTP 404"
-                || error == "CalDAV discovery returned HTTP 200" =>
+            if ["404", "405", "200"]
+                .iter()
+                .any(|status| error == format!("CalDAV discovery returned HTTP {status}")) =>
         {
             (server.clone(), Multistatus::default())
         }

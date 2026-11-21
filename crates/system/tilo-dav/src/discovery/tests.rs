@@ -47,39 +47,43 @@ fn subpath_well_known_and_different_principal_discover_multiple_calendars() {
                 .replacen("<d:href>", "<d:response><d:href>", 1)
         ),
     );
-    let server = Responder::start(vec![
-        Reply::status(404),
-        Reply::status(301).header("Location", "/cloud/dav/"),
-        Reply::status(207).body(principal),
-        Reply::status(207).body(home),
-        Reply::status(207).body(listing),
-    ]);
-    let found = calendars(
-        &client(),
-        &Url::parse(&format!("{}/cloud", server.url())).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(found.len(), 2);
-    assert_eq!(found[0].name, "Work & Team");
-    assert!(!found[0].read_only);
-    assert!(found[1].read_only);
-    assert!(
-        found[1]
-            .href
-            .ends_with("/cloud/calendars/internal-id/holidays/")
-    );
-    for (path, depth) in [
-        ("/cloud", "0"),
-        ("/cloud/.well-known/caldav", "0"),
-        ("/cloud/dav/", "0"),
-        ("/cloud/principals/internal-id/", "0"),
-        ("/cloud/calendars/internal-id/", "1"),
-    ] {
-        let request = server.next_request();
-        assert_eq!(request.target, path);
-        assert_eq!(request.method, "PROPFIND");
-        assert_eq!(request.header("depth"), Some(depth));
-        assert!(request.header("authorization").is_some());
+    // A root that is missing, or that refuses PROPFIND as Nextcloud's does, falls back to its
+    // well-known path.
+    for root in [404, 405] {
+        let server = Responder::start(vec![
+            Reply::status(root),
+            Reply::status(301).header("Location", "/cloud/dav/"),
+            Reply::status(207).body(principal.clone()),
+            Reply::status(207).body(home.clone()),
+            Reply::status(207).body(listing.clone()),
+        ]);
+        let found = calendars(
+            &client(),
+            &Url::parse(&format!("{}/cloud", server.url())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].name, "Work & Team");
+        assert!(!found[0].read_only);
+        assert!(found[1].read_only);
+        assert!(
+            found[1]
+                .href
+                .ends_with("/cloud/calendars/internal-id/holidays/")
+        );
+        for (path, depth) in [
+            ("/cloud", "0"),
+            ("/cloud/.well-known/caldav", "0"),
+            ("/cloud/dav/", "0"),
+            ("/cloud/principals/internal-id/", "0"),
+            ("/cloud/calendars/internal-id/", "1"),
+        ] {
+            let request = server.next_request();
+            assert_eq!(request.target, path);
+            assert_eq!(request.method, "PROPFIND");
+            assert_eq!(request.header("depth"), Some(depth));
+            assert!(request.header("authorization").is_some());
+        }
     }
 }
 
