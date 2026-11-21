@@ -123,8 +123,8 @@ checks build and test this image; `image-web-entry-context`, `image-web-entry`
 and `publish-web-entry` do the same for the web entry; `publish-lounge` and
 `publish-web-entry` publish both from one commit, so a change is built by
 naming the checks.
-The checks that run the programs without an image around them (`e2e`,
-`page-tour`) ask `lounge-binaries.sh` for the profile Cargo.toml's
+The checks that run the programs without an image around them (`e2e`)
+ask `lounge-binaries.sh` for the profile Cargo.toml's
 `lounge-check` names: the same code and optimisation level without the
 whole-program link the image's own build spends.
 `test-entrypoint.sh` asserts the environment-to-flags mapping and
@@ -137,20 +137,18 @@ whole-program link the image's own build spends.
 for this image, the API server and the web entry (`os/containers/tilo-sh`'s
 `stack.sh`), from what the checks beside it built, and every flow runs at the
 same time against that one site, relay and workspace, each as people of its own in
-headless Chromium: the page booting, two people chatting and calling, the
-shell's menus and gestures, an invitation, a shared link, a setup through an
-agent and its resumes, the startup identity approving a server key and the
+headless Chromium: the page booting, a setup through an agent and its
+resumes, the startup identity approving a server key and the
 visa run beside it, fresh visitors' entry into the Lounge, the wait list of a
 entry that takes people by invitation, a stranger's onboarding on a tilo.sh of
 its own (`test-onboarding.sh`: the wait list, the two mails, the invitation the
 person who runs the host sends from the workspace's wait list, and the
 workspace of their own with their agent set up in it, the passkey that brings
 them back on a browser that forgot the site, a second workspace, and a visitor
-still refused), and the chat read back after
-the server restarts. Each flow runs alone too:
+still refused). Each flow runs alone too:
 
 ```
-bash os/containers/tilo-lounge/test-e2e.sh out/web-entry/bundle /tmp/e2e people-call
+bash os/containers/tilo-lounge/test-e2e.sh out/web-entry/bundle /tmp/e2e boot
 bash os/containers/tilo-lounge/test-onboarding.sh out/web-entry/bundle /tmp/onboarding
 ```
 

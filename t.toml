@@ -880,12 +880,11 @@ egress = { to = ["nodejs.org:443"], pinned = true }
 run = "set -euo pipefail\nversion=24.22.3\ntarball=node-v$version-linux-x64\ncurl -sSfL -o /tmp/node.tar.xz \"https://nodejs.org/dist/v$version/$tarball.tar.xz\"\nprintf '%s  %s\\n' 4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb /tmp/node.tar.xz | sha256sum -c -\ntar --no-same-owner -xJf /tmp/node.tar.xz -C /tmp\nexport PATH=/tmp/$tarball/bin:$PATH\nnode --version\nnode --test crates/browser/tilo-browser-runtime/web/pairing.test.mjs crates/browser/tilo-browser-runtime/web/storage.test.mjs crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs crates/server/tilo-server/src/web/page/page.test.mjs\n"
 requires = ["arch=x86_64"]
 
-# The media editor's JavaScript and the mounted-resource accounts page, in a real browser: the
-# editor muxes and plays back media in the image's Chromium (CHROME), and the accounts page seeds
-# its two accounts in real browser storage. Both serve their pages on loopback only.
+# The media editor's JavaScript in a real browser: the editor muxes and plays back media in the
+# image's Chromium (CHROME), serving its page on loopback only.
 [[check]]
 name = "web-page-tests"
-run = "node --test crates/platform/tilo-media/web/tilo-media-edit.test.mjs crates/agent/agent-session/tests/mounted_resource/accounts.test.mjs"
+run = "node --test crates/platform/tilo-media/web/tilo-media-edit.test.mjs"
 requires = ["arch=x86_64"]
 timeout_secs = 900
 
@@ -1075,30 +1074,6 @@ fix = "cargo build --locked --quiet -p tilolang-cli --bin tilolang\npython3 -I t
 name = "sdk-linux"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked -p tilo-caps\ncargo test --locked -p tilo-app-cli --lib targets::\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=$CARGO_TARGET_DIR/debug\n\"$bin/tilo-app\" build --target linux apps/calculator\ncargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nTILO_PKG=$bin/tilo-app-package CARGO_PROFILE_THIN_APP_OPT_LEVEL=1 CARGO_PROFILE_THIN_APP_CODEGEN_UNITS=16 CARGO_PROFILE_THIN_APP_DEBUG=0 \"$bin/tilo-app\" package --target linux apps/calculator --output \"$TMPDIR/calculator.tapp\" --force\ntest -s \"$TMPDIR/calculator.tapp\"\n"
-on = ["dispatch", "idle"]
-heavy = true
-
-# The web desktop's start module, measured against its budget on every head: the one the page waits
-# for before anything shows.
-#
-# The bundle records the commit it was built from in `build.json`, which a person reading the bundle
-# looks at and the measurement never reads. A check that reads Git is keyed by the commit and reruns
-# on every one, which a page's whole wasm build cannot afford; the module's size follows the tree's
-# sources, which t keys by already. So this check has no Git view, and the bundle takes its revision
-# from `TILO_SOURCE_REVISION` when a build farm names one.
-# The same bundle qualified in Chromium: when dispatched, and when there is room.
-[[check]]
-name = "model-providers-web"
-# The node has no GPU, so the page draws through a software rasteriser: its steps are a
-# software-drawn machine's 20 s, as the lounge flows take there. A screenshot waits for the
-# page's next frame, and the proof's first one was measured at 13 s on this node, past the
-# default 15 s bound (3 steps of 5 s).
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "cargo build --locked -p tilo-app-cli --bin tilo-app\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/provider-chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/provider-chrome.txt\" | tail -n 1)\n\"$CARGO_TARGET_DIR/debug/tilo-app\" build --target web --bundle app apps/model-providers\nnode apps/model-providers/web/run.mjs \"$CARGO_TARGET_DIR/tilo-app/web/model-providers/bundle\"\n"
-needs = ["test-assets"]
-env = { TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_STEP_SECONDS = "20" }
-git = true
 on = ["dispatch", "idle"]
 heavy = true
 
@@ -1560,17 +1535,6 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/visual-baselines.sh"
 requires = ["arch=x86_64"]
 outputs = ["/target/visual-baseline-review/**"]
-cache = false
-git = true
-on = ["dispatch"]
-
-[[check]]
-name = "mounted-reopen"
-# dnf installs from Fedora's mirrors, which are no fixed host list.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "rm -rf target/mounted-resource-recovery target/mounted-reopen-probe \"$CARGO_TARGET_DIR/mounted-reopen-probe\"\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nstatus=0\nSOURCE_SHA=$(git rev-parse HEAD) python3 -I tools/ci/mounted_reopen_probe.py run || status=$?\nif [ -d target/mounted-reopen-probe ]; then cp -r target/mounted-reopen-probe \"$CARGO_TARGET_DIR/\"; fi\nexit $status\n"
-requires = ["arch=x86_64"]
-outputs = ["/target/mounted-reopen-probe/**"]
 cache = false
 git = true
 on = ["dispatch"]
@@ -6775,11 +6739,10 @@ default = false
 # API server and the web entry, with their images' entrypoints and environment behind production's Caddy)
 # from what the checks beside it built, so it compiles nothing; one headless Chromium started per
 # flow; then every flow at the same time against that one stack, each as people of its own
-# (os/containers/tilo-lounge/test-e2e.sh says which flows there are). Every app opening from the
-# search on the next frame is the desktop surface's in-process test, not a browser's walk. A change
-# to a page driver reruns only this, and the server, the API server, the site and the command are the
-# cached outputs the other checks share. One flow alone: `bash os/containers/tilo-lounge/test-e2e.sh
-# BUNDLE WORK people-call`.
+# (os/containers/tilo-lounge/test-e2e.sh says which flows there are). A change to a page driver
+# reruns only this, and the server, the API server, the site and the command are the cached outputs
+# the other checks share. One flow alone: `bash os/containers/tilo-lounge/test-e2e.sh BUNDLE WORK
+# boot`.
 #
 # Nested, because the stack's services are sandboxed with bwrap (stack.sh), which needs namespaces
 # of its own.
@@ -6829,7 +6792,7 @@ requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
 # own logs; the site it served is the web entry's laid-out context again.
-outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/people-call/**", "/target/e2e/people-shell/**", "/target/e2e/people-menus/**", "/target/e2e/people-invite/**", "/target/e2e/resign-in/**", "/target/e2e/share-link/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**", "/target/e2e/restart/**"]
+outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**"]
 # What a failure keeps of why: every service's log, which says which of them did not answer.
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1800
@@ -6888,29 +6851,6 @@ isolation = "nested"
 outputs = ["/target/entry/*.log", "/target/entry/entry/**", "/target/entry/state/logs/*.log"]
 evidence = ["/target/entry/state/logs/**"]
 timeout_secs = 600
-
-# One returning person reloading their workspace page twenty times in one browser, on the e2e
-# stack: per reload, how long the old page held the navigation and what its pagehide listeners
-# took, and the count of reloads that crashed the tab or never came back; then a second tab
-# beside the first, both editing the workspace's shell, and the first reloaded beside it, each tab
-# one device of its own. The reloads alone take most of a flow's usual 480 s on the stack, so the
-# flow has the check's time. Run when named, to chase a reload that kills its tab.
-[[check]]
-name = "e2e-reloads"
-# No egress: as e2e, it meets the stack on loopback alone; see e2e.
-run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-entry/bundle /target/e2e-reloads reloads"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
-# Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
-# changes as updates land, from mirrors no fixed list names.
-setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e-reloads/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", E2E_FLOW_SECONDS = "840" }
-requires = ["arch=x86_64"]
-isolation = "nested"
-outputs = ["/target/e2e-reloads/*.log", "/target/e2e-reloads/reloads/**"]
-evidence = ["/target/e2e-reloads/state/logs/**"]
-timeout_secs = 900
-default = false
-
 
 # A stranger at the front of a workspace that takes people by invitation, in a real browser, against
 # the Lounge's server (test-wait-list.sh): the wait list is what they see rather than the setup

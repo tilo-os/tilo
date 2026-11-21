@@ -619,10 +619,6 @@ check = "web-node-tests"
 suite = "crates/platform/tilo-media/web/tilo-media-edit.test.mjs"
 check = "web-page-tests"
 
-[[covered]]
-suite = "crates/agent/agent-session/tests/mounted_resource/accounts.test.mjs"
-check = "web-page-tests"
-
 [[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
@@ -1482,7 +1478,6 @@ readers = [
   "crates/agent/agent-session/tests/workspace_actions/packaged_model.rs",
   "crates/agent/agent-session/tests/workspace_actions/update_reads_older_writes.rs",
   "crates/agent/agent-session/examples/api-on-server.rs",
-  "crates/agent/agent-session/examples/mounted-resource.rs",
 ]
 
 [[cargo]]

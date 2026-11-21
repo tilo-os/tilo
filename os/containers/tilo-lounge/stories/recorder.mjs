@@ -118,8 +118,8 @@ export function recorder({id, out, logs = []}) {
    * browser the story already started, in a fresh profile of its own (a
    * context), for a check whose node starts no more than one more. */
   const person = async (name, {share = false} = {}) => {
-    // A synthetic microphone and no prompt for it, as people.mjs's people get:
-    // the people here can be called.
+    // A synthetic microphone and no prompt for it: the people here can be
+    // called.
     let launched = share ? browsers.at(-1) : undefined;
     if (!launched) {
       launched = await launch({media: true});

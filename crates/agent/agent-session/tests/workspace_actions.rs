@@ -259,10 +259,6 @@ mod slow_read;
 #[path = "workspace_actions/workspace_per_customer.rs"]
 mod workspace_per_customer;
 
-#[cfg(not(test))]
-#[path = "mounted_resource/mod.rs"]
-pub mod mounted_resource;
-
 // Workspace actions hold each record in a confined app worker: this binary,
 // started again.
 
@@ -270,6 +266,7 @@ pub mod mounted_resource;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(test)]
 use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
@@ -278,13 +275,17 @@ use tilo_session_client::Outbox;
 use ed25519_dalek::SigningKey;
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionAddress;
-use tilo_actions::remote::{CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget};
+#[cfg(test)]
+use tilo_actions::remote::CatalogueQuery;
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 #[cfg(test)]
 use tilo_actions::{
     ConfirmationPolicy,
     remote::{ActionCallError, Confirmation, ReceiptStatus, RemoteActionMessage},
 };
-use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed, resource_provider};
+#[cfg(test)]
+use tilo_agent_session::resource_provider;
+use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::ServerAddress;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};

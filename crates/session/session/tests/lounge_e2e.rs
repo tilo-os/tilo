@@ -9,10 +9,8 @@
 //! the session reads is the service's own: the entry, the directory's listing,
 //! the entry's invitation and the host's answer to the enrollment.
 //!
-//! What a person's *page* does in the Lounge is the publish check's
-//! (`os/containers/tilo-lounge/integration/people.mjs`, two real browsers);
-//! this binary is the same join from the desktop session itself, which no page
-//! test can reach: the session opens "Join a workspace", reads the site, joins
+//! This binary is the join from the desktop session itself, which no page test
+//! can reach: the session opens "Join a workspace", reads the site, joins
 //! through its entry, and shows what the member laid out and where their
 //! pointer is. A person nobody invited is refused in the entry's own words, and
 //! the shell is unchanged. An app the person opens in the joined workspace is

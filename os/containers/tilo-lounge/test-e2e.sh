@@ -25,22 +25,6 @@
 #                  every record it read on start read whole
 #   boot           the page arrives, joins and opens Notes with no exception
 #                  or panic (integration/page-boot.mjs)
-#   people-call    two people chat, see each other here and call each other
-#                  (integration/people.mjs, TILO_PEOPLE_CASE=call)
-#   people-shell    two people; the window menu, a few apps from the search,
-#                  the strip panned over Notes and Sheets swiped (case shell)
-#   people-menus   two people; a pinch, the text menu, the profile card's
-#                  Report a problem, the search chord, and none of it reaching
-#                  the browser (case menus)
-#   people-invite  a person made an owner while their page is open invites
-#                  a third, who arrives from the link (case invite)
-#   resign-in      a person who joined by invitation, whose certificate the
-#                  server turns away, is back in by themselves as the same
-#                  member and Settings' Agent models shows the server's answer;
-#                  with certifying refused at the network too, the page never
-#                  says it is ready while it is not (integration/resign-in.mjs)
-#   share-link     a document's link opens that document live for another
-#                  person on a phone-sized page; a run's link opens Console
 #   agent-setup    a person sets Tilo up through their agent (this commit's
 #                  `tilo`), comes back on a reload and signs in again on a
 #                  fresh browser
@@ -69,21 +53,14 @@
 #                  forgot the site, into a workspace of their own; a second
 #                  workspace they make; and a visitor with no invitation, still
 #                  refused (integration/onboarding.mjs)
-#   restart        the Lounge's server starts again on its volume, and a person
-#                  who was not here reads the chat people-call wrote and
-#                  writes in it
-#
-# Every app the page offers opening from the search on the next frame is the
-# desktop surface's own in-process test, not a browser's walk here.
 #
 # usage: test-e2e.sh BUNDLE WORK [FLOW…]
-# BUNDLE is the web desktop bundle the wait list's Lounge serves
+# BUNDLE is the web entry bundle the wait list's Lounge serves
 # (tools/ci/publish/web-entry-bundle.sh); the stack's site is
 # TILO_SH_SITE's. WORK keeps what each flow found under WORK/<flow>/ and its
 # output in WORK/<flow>.log, and the stack's state in WORK/state. FLOW names
-# the flows to run (default: all but `reloads`; E2E_FLOWS, space separated,
-# too); `visa`
-# brings `signin` with it and `restart` brings `people-call`. Needs node,
+# the flows to run (default: all; E2E_FLOWS, space separated, too); `visa`
+# brings `signin` with it. Needs node,
 # chromium, curl, bwrap, the stack's environment (TILO_SH_PROGRAMS,
 # TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY naming what t built), and
 # TILO_SERVER_BIN, TILO_CRYPTO_BIN, TILO_FONTS_DIR and TILO_CLI_BIN for the wait
@@ -129,12 +106,6 @@ print("ok: the directory lists the Lounge, joined at its entry as an editor")
 ' "$workspace"
       exit ;;
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$server_origin" "$out" ;;
-    people-call|people-shell|people-menus|people-invite)
-      TILO_PEOPLE_CASE=${flow#people-} exec node "$integration/people.mjs" "$site_origin" "$server_origin" \
-        "$server_origin" "$out" "$stack" ;;
-    resign-in) exec node "$integration/resign-in.mjs" "$site_origin" "$server_origin" "$stack" "$out" ;;
-    share-link) exec node "$integration/share-link.mjs" "$site_origin" "$server_origin" "$workspace" "$out" ;;
-    reloads) exec node "$integration/reloads.mjs" "$site_origin" "$out" ;;
     agent-setup|setup-resume)
       exec node "$integration/$flow.mjs" "$site_origin" "$server_origin" "$TILO_CLI_BIN" "$out" ;;
     signin|visa|entry|passkey) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
@@ -147,38 +118,22 @@ print("ok: the directory lists the Lounge, joined at its entry as an editor")
       # A whole tilo.sh of its own, on addresses of its own: the stack's entry
       # takes people by invitation, so it cannot be the one above.
       ONBOARDING_PORT_BASE=25100 exec bash "$lounge_dir/test-onboarding.sh" "$E2E_BUNDLE" "$out" ;;
-    restart)
-      earlier=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chat"])' \
-        "$E2E_WORK/people-call/report.json") || { echo 'FAIL: people-call left no chat message behind'; exit 1; }
-      # The Lounge's server alone, stopped and started again on the volume it
-      # kept, the site and the entry left serving: what a deployment's restart
-      # is.
-      bash "$tilo_sh/stack.sh" restart server
-      [[ $(cat "$TILO_SH_STATE/server/lounge/workspace-id") == "$workspace" ]] \
-        || { echo 'FAIL: a restart on the same volume served a different workspace'; exit 1; }
-      echo "ok: the Lounge started again on its own volume ($workspace)"
-      exec node "$integration/people.mjs" "$site_origin" "$server_origin" "$server_origin" "$out" "$stack" "$earlier" ;;
   esac
   exit 2
 fi
 bundle=${1:?$usage}
 work=${2:?$usage}
 shift 2
-all=(signin directory boot people-call people-shell people-menus people-invite resign-in share-link agent-setup setup-resume visa entry passkey wait-list onboarding restart)
-# Run only when named: a person reloading their workspace page twenty times
-# in one browser, counting the reloads that crash or never come back.
-named_only=(reloads)
+all=(signin directory boot agent-setup setup-resume visa entry passkey wait-list onboarding)
 asked=("$@")
 [[ ${#asked[@]} -gt 0 ]] || read -r -a asked <<< "${E2E_FLOWS:-${all[*]}}"
 for flow in "${asked[@]}"; do
-  [[ " ${all[*]} ${named_only[*]} " == *" $flow "* ]] \
-    || { echo "no flow $flow; the flows are: ${all[*]} ${named_only[*]}" >&2; exit 2; }
+  [[ " ${all[*]} " == *" $flow "* ]] \
+    || { echo "no flow $flow; the flows are: ${all[*]}" >&2; exit 2; }
 done
 wants() { [[ " ${asked[*]} " == *" $1 "* ]]; }
-# The visa run reads the key the startup approved, and the restart reads what
-# people-call wrote.
+# The visa run reads the key the startup approved.
 if wants visa && ! wants signin; then asked+=(signin); fi
-if wants restart && ! wants people-call; then asked+=(people-call); fi
 tilo_bin=${TILO_CLI_BIN:-}
 [[ -x $tilo_bin ]] || { echo 'TILO_CLI_BIN names no tilo command (the setups and the startup run it)' >&2; exit 2; }
 # How this run paces itself, for a node that draws every page's WebGPU in
@@ -206,8 +161,8 @@ timing() { printf 'TIMING %s seconds=%s total=%s\n' "$1" "$((SECONDS - phase_at)
 # so it compiles nothing. Its site is the web entry image's, its state is this
 # run's.
 export TILO_SH_STATE=${TILO_SH_STATE:-$work/state}
-# The pages here are people arriving at the Lounge to meet on its desktop, so
-# the deployment opens none of its apps in front of it.
+# The pages here are people arriving at the Lounge's own page, so the
+# deployment opens none of its apps in front of it.
 export TILO_SH_HOME_APP=
 # The stack runs no VM host here: what a workspace's own VM adds is
 # tilo-sh-local-vm's, on a node with KVM.
@@ -222,8 +177,7 @@ export TILO_SH_CLI_DIR=$release TILO_SH_TILO_BIN=$tilo_bin
 trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
 # Its flows' people arrive as strangers and enter the Lounge as guests: the
 # entry open to anyone, not production's, which takes people by invitation.
-# Exported, so the restart flow's `stack.sh restart server` brings the server
-# back with the same entry (the wait-list and onboarding flows set their own).
+# The wait-list and onboarding flows set their own.
 export TILO_SH_ADMISSION=${TILO_SH_ADMISSION:-open}
 bash "$tilo_sh/stack.sh" up --fresh
 # Sourced after it is up, for its addresses and its helpers (find_tilo,
@@ -348,7 +302,7 @@ if wants signin; then
 fi
 
 parallel=()
-for flow in "${asked[@]}"; do [[ $flow == restart || $flow == signin ]] || parallel+=("$flow"); done
+for flow in "${asked[@]}"; do [[ $flow == signin ]] || parallel+=("$flow"); done
 # The visa run has nothing to run without the key the startup approved.
 if [[ " ${parallel[*]} " == *' visa '* && " ${failed[*]} " == *' signin '* ]]; then
   echo 'TIMING flow=visa seconds=0 result=FAIL (the startup approved no key)'
@@ -363,7 +317,7 @@ fi
 # flow slower rather than the run shorter (measured: with nine flows and four
 # people cases at once, steps a run of three cases passes in 15-20 s ran out at
 # 45 s - a search opening, a composer showing, a call's channel).
-order=(setup-resume visa people-call people-invite resign-in people-shell people-menus boot wait-list onboarding share-link agent-setup entry passkey directory reloads)
+order=(setup-resume visa boot wait-list onboarding agent-setup entry passkey directory)
 queue=()
 for flow in "${order[@]}"; do [[ " ${parallel[*]} " == *" $flow "* ]] && queue+=("$flow"); done
 at_once=${E2E_PARALLEL:-4}
@@ -373,17 +327,6 @@ for flow in "${queue[@]}"; do
 done
 while ((${#running[@]})); do await_flow; done
 timing "phase=every flow side by side (${parallel[*]})"
-if wants restart; then
-  if [[ " ${failed[*]} " == *' people-call '* ]]; then
-    echo 'TIMING flow=restart seconds=0 result=FAIL (people-call wrote no chat to read back)'
-    failed+=(restart)
-  else
-    run_flow restart
-    await_flow
-    verify_records_read
-    timing 'phase=the Lounge started again on its volume'
-  fi
-fi
 
 # What the services complained about while the flows ran, on every run,
 # passing or not.
