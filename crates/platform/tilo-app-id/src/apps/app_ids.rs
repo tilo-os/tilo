@@ -1,4 +1,4 @@
-// Written by tools/first-party-catalogue.py from apps/*/tilo-app.toml;
+// Written by tools/first-party-catalogue.py from apps/*/tilo-app.toml and apps/tl/*/app.tl;
 // tools/policy checks it matches them. Do not edit by hand.
 
 first_party_apps! {
@@ -33,11 +33,13 @@ first_party_apps! {
     IMAGER => "so.tilo.imager",
     LAUNCHER => "so.tilo.launcher",
     LOGS => "so.tilo.logs",
+    MAIL => "so.tilo.mail",
     MAPS => "so.tilo.maps",
     MESSAGES => "so.tilo.messages",
     MODEL_PROVIDERS => "so.tilo.model-providers",
     MONITOR => "so.tilo.monitor",
     MUSIC => "so.tilo.music",
+    NOTES => "so.tilo.notes",
     OSK => "so.tilo.osk",
     PASSWORDS => "so.tilo.passwords",
     PDF_VIEWER => "so.tilo.pdf-viewer",
@@ -49,6 +51,7 @@ first_party_apps! {
     SCRATCHPAD => "so.tilo.scratchpad",
     SETTINGS => "so.tilo.settings",
     SHEETS => "so.tilo.sheets",
+    SHELL => "so.tilo.shell",
     SHORTCUTS => "so.tilo.shortcuts",
     SLIDES => "so.tilo.slides",
     SNIPPETS => "so.tilo.snippets",
@@ -59,6 +62,7 @@ first_party_apps! {
     THEMES => "so.tilo.themes",
     THUMBNAILS => "so.tilo.thumbnails",
     TOTP => "so.tilo.totp",
+    TUBE => "so.tilo.tube",
     TYPST_EDITOR => "so.tilo.typst-editor",
     VIDEO_EDITOR => "so.tilo.video-editor",
     VIDEO_PLAYER => "so.tilo.video-player",
