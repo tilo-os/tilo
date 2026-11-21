@@ -3949,7 +3949,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let _slow = slow_event::Span::begin("about_to_wait", "");
         // The wake's input goes before the loop waits, as far as the frame allows.
-        self.route_input_backlog(true);
+        {
+            let _input = slow_event::phase("input_backlog");
+            self.route_input_backlog(true);
+        }
         self.app.service_close_admission();
         if self.app.finish_close_if_ready() {
             self.closing.set(true);
@@ -4148,6 +4151,21 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             audience.window.request_redraw();
         }
         let force_theme = self.settings_store_changed.swap(false, Ordering::AcqRel);
+        // A display that has not shown the last frame within a tick is not
+        // pacing this window, and a key typed since waits on that callback.
+        // Paint the frame that answers it now, so the commit reaches the
+        // session with this pass's work rather than one pass later; the
+        // callback's own redraw later finds nothing new to show.
+        if self.input_backlog.answered_since_frame()
+            && self.render.is_some()
+            && !self.surface_suspended
+            && self
+                .undrawn
+                .owed_past_tick(self.primary_retry.known_occluded(), crate::time::now())
+        {
+            let _owed = slow_event::phase("owed_frame");
+            self.handle_redraw_requested(&window);
+        }
         let app = &mut self.app;
         if force_theme {
             if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750))
@@ -4164,14 +4182,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             app.layout.layout_dirty = true;
             request_primary_redraw();
         }
-        if app.pump_collab_presence() {
-            request_primary_redraw();
-        }
-        if app.presence_ctx.prune_interactions(crate::time::now()) {
-            request_primary_redraw();
-        }
-        if app.poll_model_invocations() {
-            request_primary_redraw();
+        {
+            let _collab = slow_event::phase("collab");
+            if app.pump_collab_presence() {
+                request_primary_redraw();
+            }
+            if app.presence_ctx.prune_interactions(crate::time::now()) {
+                request_primary_redraw();
+            }
+            if app.poll_model_invocations() {
+                request_primary_redraw();
+            }
         }
         // Not being drawn is not permission to stall. While the window takes
         // no frame (occluded, or a hidden surface that hears no frame
@@ -4260,9 +4281,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // The active page/view can change during `sync` (e.g. the initial
         // auto-select), which the post-event broadcast above wouldn't catch.
-        app.broadcast_location_presence();
-        app.broadcast_composing_presence();
-        app.broadcast_view_presence();
+        {
+            let _broadcast = slow_event::phase("broadcast");
+            app.broadcast_location_presence();
+            app.broadcast_composing_presence();
+            app.broadcast_view_presence();
+        }
 
         // Run here too, not only `RedrawRequested`, since painting isn't
         // guaranteed — a background tab, or a first frame behind a shader

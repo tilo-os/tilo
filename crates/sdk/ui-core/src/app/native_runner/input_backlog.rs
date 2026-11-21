@@ -103,6 +103,12 @@ impl InputBacklog {
         !self.queue.is_empty()
     }
 
+    /// Whether input was routed since the last frame began: what the person
+    /// typed is on its way to the frame that shows it.
+    pub(super) fn answered_since_frame(&self) -> bool {
+        self.waiting() || self.spent > Duration::ZERO
+    }
+
     /// When waiting input goes on even if no frame came.
     pub(super) fn wake_at(&self, budget: Duration) -> Option<Instant> {
         self.since
@@ -237,6 +243,36 @@ mod tests {
             assert_eq!(routed(&mut backlog, false), [Some(-2.0)], "a start routes at once");
             backlog.push(WindowId::dummy(), pixels(-3.0, TouchPhase::Moved));
             assert!(routed(&mut backlog, false).is_empty());
+        }
+
+        phase a_key_routed_since_the_last_frame_waits_for_the_frame_that_shows_it;
+        // What the person typed since the last frame began is owed a frame:
+        // a display that does not send that frame's callback robs them of
+        // the answer, so the host may paint it without one.
+        {
+            let start = crate::time::now();
+            let clock = Cell::new(start);
+            let mut backlog = InputBacklog::default();
+            assert!(!backlog.answered_since_frame(), "nothing typed yet");
+            backlog.push(
+                WindowId::dummy(),
+                crate::synthetic_input::key_input(
+                    &Key::Character("a".into()),
+                    ElementState::Pressed,
+                ),
+            );
+            backlog.route(Duration::MAX, true, || clock.get(), |_, _| {
+                clock.set(clock.get() + Duration::from_millis(1));
+            });
+            assert!(
+                backlog.answered_since_frame(),
+                "the key went into the window and its frame is owed"
+            );
+            backlog.frame_started(start + Duration::from_millis(2));
+            assert!(
+                !backlog.answered_since_frame(),
+                "the frame that shows the key took it"
+            );
         }
     }
 

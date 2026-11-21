@@ -133,6 +133,14 @@ impl UndrawnTicks {
         due
     }
 
+    /// Whether a frame went out and the display has not shown it within a
+    /// tick: it is not pacing this window, and what a person typed need not
+    /// wait for its callback. Occluded windows are left to their state
+    /// passes, as they have no callback to wait for.
+    pub(crate) fn owed_past_tick(&mut self, occluded: bool, now: Instant) -> bool {
+        self.frame_owed && !occluded && self.due(occluded, true, now)
+    }
+
     /// When the loop wakes for the next pass.
     pub(crate) fn deadline(&self) -> Option<Instant> {
         self.at
@@ -233,6 +241,33 @@ mod tests {
             );
             assert!(submit_redraw_frame(true, false));
             assert!(submit_redraw_frame(false, true));
+        }
+
+        phase a_frame_owed_past_a_tick_is_painted_without_the_displays_callback;
+        // A display shows a frame at its next refresh; one that has not
+        // shown the last frame within a tick is not pacing this window, and
+        // what the person typed need not wait for its callback.
+        {
+            let now = crate::time::now();
+            let mut owed = UndrawnTicks::default();
+            assert!(!owed.owed_past_tick(false, now), "no frame has gone out");
+            owed.presented();
+            assert!(
+                !owed.owed_past_tick(false, now),
+                "the callback may still come in time"
+            );
+            assert!(
+                !owed.owed_past_tick(true, now + UNDRAWN_TICK_INTERVAL),
+                "an occluded window waits for its own passes, not a frame"
+            );
+            assert!(
+                owed.owed_past_tick(false, now + UNDRAWN_TICK_INTERVAL),
+                "a display that has not shown the frame within a tick does not pace the next"
+            );
+            assert!(
+                !owed.owed_past_tick(false, now + UNDRAWN_TICK_INTERVAL),
+                "one frame past the tick, not one on every loop turn"
+            );
         }
 
         phase occlusion_backoff_caps_probes_and_survives_unrelated_outcomes;
