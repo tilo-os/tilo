@@ -49,9 +49,10 @@ pub fn record(launches: Arc<Launches>, cluster: Option<String>) {
     }
 }
 
-/// The process named as the endpoint, when this session runs where the trees are served by
-/// something other than the login's unit.
-fn named_endpoint() -> Option<u32> {
+/// The process a run named as the endpoint, when the trees are served by something other than
+/// the login's unit: a session in another desktop's window, or a check that mounts them itself.
+#[must_use]
+pub fn named_endpoint() -> Option<u32> {
     let named = std::env::var(ENDPOINT_PID).ok()?;
     match named.trim().parse::<u32>() {
         Ok(pid) if pid > 0 => Some(pid),

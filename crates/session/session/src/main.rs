@@ -706,10 +706,12 @@ fn start(
         hosted_browser,
         ..device_options(machine, config)
     };
-    // The person's files: the login's files daemon serves them as the Files app's windowless
-    // endpoint, so the session records its process before the daemon's connections to the broker
-    // arrive. A session in another desktop's window serves no files daemon of its own.
-    if machine.is_owned() {
+    // The person's files: the files daemon serves them as the Files app's windowless endpoint,
+    // so the session records its process before the daemon's connections to the broker arrive.
+    // The login runs the daemon on a machine this session owns; a session anywhere else serves
+    // one only when its run names the process that does — the session then attests that process
+    // and nothing beside it.
+    if machine.is_owned() || tilo_session::files_daemon::named_endpoint().is_some() {
         tilo_session::files_daemon::record(
             Arc::clone(&options.launches),
             collab_types::personal_cluster_of(&tilo_session::identity::own_person(&options))
