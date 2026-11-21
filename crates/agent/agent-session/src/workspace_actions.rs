@@ -1830,15 +1830,27 @@ impl Worker {
                     query,
                     caller,
                     done,
-                } => match self.shared.link.get() {
-                    Some(link) => feedback::answer_and_review(
-                        link,
-                        self.catalogue.clone(),
-                        workspace_id,
-                        caller,
-                        *query,
-                        done,
-                    ),
+                } => match self.shared.link.get().cloned() {
+                    Some(link) => {
+                        // It proves the destination through the record's registered read, and
+                        // projects its report from the committed source in a worker: that goes
+                        // on off this thread once it outlasts a call, and answers the caller
+                        // from there.
+                        let catalogue = self.catalogue.clone();
+                        let holder = DocumentRoute {
+                            app_id: "so.tilo.chat".into(),
+                            cluster_id: workspace_id.to_string(),
+                            document: String::new(),
+                        };
+                        let asked = self.hand(workspace_id, &holder, move || {
+                            feedback::answer_and_review(
+                                &link, catalogue, workspace_id, caller, *query, done,
+                            );
+                        });
+                        if asked.is_none() {
+                            self.await_completed(workspace_id);
+                        }
+                    }
                     None => done.complete(Err(ActionCallError::Unavailable {
                         reason: "feedback host unavailable".into(),
                     })),

@@ -9,13 +9,19 @@
 //! and then never mounted for its reads again. A record whose app does
 //! register readers keeps its prepared read while the record's heads stay
 //! where they were, checked against the caller's current policy each time.
+//!
+//! A kept read is a worker process too: what it answers, and the policy check
+//! that decides whether it may, go through the same off-thread wait as any
+//! other call ([`super::call_wait`]), so a large record's read never holds the
+//! thread that serves its workspace.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tilo_actions::ActionDescriptor;
-use tilo_actions::api::ActionAddress;
+use tilo_actions::api::{ActionAddress, ApiError};
 use tilo_actions::remote::Caller;
+use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
 use super::{AppCatalogue, DocumentRoute, WorkspaceDocumentsLink, call_wait, reads};
@@ -26,8 +32,38 @@ const KEPT: usize = 8;
 /// A prepared read, and the heads of the record it was prepared at.
 struct Kept {
     heads: Vec<[u8; 32]>,
-    read: reads::CanonicalRead,
+    /// Shared with the thread a call on it goes on in ([`super::call_wait`]).
+    read: Arc<Mutex<reads::CanonicalRead>>,
     used: u64,
+}
+
+/// What a caller asks a kept prepared read for.
+pub(super) struct KeptAsk<'a> {
+    pub(super) route: &'a DocumentRoute,
+    /// The heads the host holds of its record.
+    pub(super) heads: Option<&'a [[u8; 32]]>,
+    pub(super) address: &'a ActionAddress,
+    pub(super) arguments: &'a serde_json::Map<String, serde_json::Value>,
+    /// The revision its caller named, which the read must stand at.
+    pub(super) revision: Option<&'a str>,
+}
+
+/// What a kept read came to.
+pub(super) enum KeptRead {
+    Answered(tilo_actions::ActionOutput),
+    /// It does not offer that read now: one is prepared.
+    NotOffered,
+    /// The record moved past the revision its caller named.
+    Stale,
+    /// Its worker is still answering: the request waits off this thread for it.
+    Held,
+}
+
+/// What a kept read answered when asked off the thread.
+enum Looked {
+    Answered(tilo_actions::ActionOutput),
+    NotOffered,
+    Stale,
 }
 
 #[derive(Default)]
@@ -69,12 +105,20 @@ impl CanonicalReads {
             && kept.heads == heads
         {
             kept.used = self.clock;
-            if kept
-                .read
-                .recheck(link.as_ref(), workspace, caller, route)
-                .is_ok()
-            {
-                return Ok(kept.read.operations());
+            // The kept read answers from its warm worker, and checks the caller's policy there:
+            // off this thread once the call outlasts one.
+            let read = Arc::clone(&kept.read);
+            let (link, caller, asked) = (Arc::clone(link), caller.clone(), route.clone());
+            let asking = hand.hand(workspace, route, move || {
+                let mut read = read.lock_recover();
+                read.recheck(link.as_ref(), workspace, &caller, &asked)?;
+                Ok::<_, String>(read.operations())
+            });
+            let Some(asking) = asking else {
+                return Err("the app's worker is still answering".to_owned());
+            };
+            if let Ok(operations) = asking {
+                return Ok(operations);
             }
         }
         self.kept.remove(route);
@@ -126,7 +170,7 @@ impl CanonicalReads {
                 route.clone(),
                 Kept {
                     heads: heads.to_vec(),
-                    read,
+                    read: Arc::new(Mutex::new(read)),
                     used: self.clock,
                 },
             );
@@ -139,40 +183,80 @@ impl CanonicalReads {
         self.kept.retain(|route, _| !of(route));
     }
 
-    /// The registered read of the document at `route` for `caller` that
-    /// offers `address`, kept between calls while the document stands where
-    /// it was: the read a caller invoking it reuses rather than preparing its
-    /// own. `None` for an app that registers no reader, for a document whose
-    /// kept read is not known to stand where it did, and for one that offers
-    /// no such read — which is the caller's to answer otherwise.
-    pub(super) fn offering(
+    /// The kept read of the document at `route` for `caller` that offers `ask`, run for them now:
+    /// its answer, or that none is kept or offers it ([`KeptRead`]). Kept between calls while the
+    /// document stands where it was: the read a caller invoking it reuses rather than preparing
+    /// its own.
+    ///
+    /// # Errors
+    /// why the call was refused, for a read its component would not run.
+    pub(super) fn invoke_kept(
         &mut self,
-        link: &dyn WorkspaceDocumentsLink,
+        link: &Arc<dyn WorkspaceDocumentsLink>,
         workspace: WorkspaceId,
         caller: &Caller,
-        route: &DocumentRoute,
-        heads: Option<&[[u8; 32]]>,
-        address: &ActionAddress,
-    ) -> Option<&mut reads::CanonicalRead> {
-        if self.none.contains(&route.app_id) {
-            return None;
+        ask: &KeptAsk<'_>,
+        hand: &mut call_wait::Handing<'_>,
+    ) -> Result<KeptRead, ApiError> {
+        if self.none.contains(&ask.route.app_id) {
+            return Ok(KeptRead::NotOffered);
         }
-        let heads = heads?;
+        let Some(heads) = ask.heads else {
+            return Ok(KeptRead::NotOffered);
+        };
         self.clock = self.clock.wrapping_add(1);
-        let kept = self
+        let Some(kept) = self
             .kept
-            .get_mut(route)
-            .filter(|kept| kept.heads == heads)?;
+            .get_mut(ask.route)
+            .filter(|kept| kept.heads == heads)
+        else {
+            return Ok(KeptRead::NotOffered);
+        };
         kept.used = self.clock;
-        if kept.read.recheck(link, workspace, caller, route).is_ok()
-            && kept
-                .read
+        // The prepared read checks the caller's policy, offers the read and runs it, all in its
+        // own worker: off this thread once the call outlasts one.
+        let read = Arc::clone(&kept.read);
+        let (link, caller, asked) = (Arc::clone(link), caller.clone(), ask.route.clone());
+        let (address, arguments) = (ask.address.clone(), ask.arguments.clone());
+        let revision = ask.revision.map(str::to_owned);
+        let looked = hand.hand(workspace, ask.route, move || {
+            let mut read = read.lock_recover();
+            if read
+                .recheck(link.as_ref(), workspace, &caller, &asked)
+                .is_err()
+            {
+                return Ok(Looked::NotOffered);
+            }
+            if revision
+                .as_deref()
+                .is_some_and(|revision| revision != read.revision())
+            {
+                return Ok(Looked::Stale);
+            }
+            if !read
                 .operations()
                 .iter()
-                .any(|entry| &entry.address == address)
-        {
-            return Some(&mut kept.read);
-        }
-        None
+                .any(|entry| entry.address == address)
+            {
+                return Ok(Looked::NotOffered);
+            }
+            read.invoke(
+                link.as_ref(),
+                workspace,
+                &caller,
+                &asked,
+                &address,
+                &arguments,
+            )
+            .map(Looked::Answered)
+        });
+        let Some(looked) = looked else {
+            return Ok(KeptRead::Held);
+        };
+        Ok(match looked? {
+            Looked::Answered(output) => KeptRead::Answered(output),
+            Looked::NotOffered => KeptRead::NotOffered,
+            Looked::Stale => KeptRead::Stale,
+        })
     }
 }

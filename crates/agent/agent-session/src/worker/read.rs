@@ -57,6 +57,8 @@ impl ConfinedRead {
         source: Vec<u8>,
         policy: &ViewReadPolicy,
     ) -> Result<Self, String> {
+        #[cfg(feature = "test-support")]
+        crate::workspace_actions::slowed::wait(workspace, app_id);
         let mut process = Lease::new(Mode::Read, workspace);
         done(sent(
             &mut process,

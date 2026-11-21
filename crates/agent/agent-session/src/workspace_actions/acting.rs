@@ -471,33 +471,38 @@ impl Worker {
             .mounted
             .get(&self.holder_of(&route))
             .and_then(|mounted| mounted.merged.clone());
-        if let Some(read) = self.canonical.offering(
-            link.as_ref(),
-            workspace,
-            caller,
-            &route,
-            heads.as_deref(),
-            &request.target.address,
-        ) {
-            if revision
-                .as_deref()
-                .is_some_and(|revision| revision != read.revision())
-            {
+        let kept = {
+            let mut hand =
+                call_wait::Handing::of(&mut self.call_waits, &mut self.part_waits, &self.shared);
+            self.canonical.invoke_kept(
+                &link,
+                workspace,
+                caller,
+                &canonical::KeptAsk {
+                    route: &route,
+                    heads: heads.as_deref(),
+                    address: &request.target.address,
+                    arguments: &arguments,
+                    revision: revision.as_deref(),
+                },
+                &mut hand,
+            )
+        };
+        match kept {
+            Ok(canonical::KeptRead::Answered(output)) => return Ok(Some(output)),
+            Ok(canonical::KeptRead::NotOffered) => {}
+            Ok(canonical::KeptRead::Stale) => {
                 return Err(Box::new(Outcome::Rejected(ActionCallError::Refused {
                     reason: "the committed source changed".into(),
                 })));
             }
-            return read
-                .invoke(
-                    link.as_ref(),
-                    workspace,
-                    caller,
-                    &route,
-                    &request.target.address,
-                    &arguments,
-                )
-                .map(Some)
-                .map_err(|error| Box::new(api_outcome(&error)));
+            // Its worker answers it off this thread: the request waits for that answer.
+            Ok(canonical::KeptRead::Held) => {
+                return Err(Box::new(Outcome::Rejected(ActionCallError::Unavailable {
+                    reason: "the app's worker is still answering".into(),
+                })));
+            }
+            Err(error) => return Err(Box::new(api_outcome(&error))),
         }
         self.registered_read(workspace, caller, &route, request, revision, arguments)
     }

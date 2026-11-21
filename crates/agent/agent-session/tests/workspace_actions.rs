@@ -268,6 +268,9 @@ mod person_before_agent;
 #[path = "workspace_actions/slow_call.rs"]
 mod slow_call;
 #[cfg(test)]
+#[path = "workspace_actions/slow_read.rs"]
+mod slow_read;
+#[cfg(test)]
 #[path = "workspace_actions/slow_view.rs"]
 mod slow_view;
 
