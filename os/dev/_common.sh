@@ -241,10 +241,19 @@ composefs_sealed_digest() {
 # compute different digests for the same image (bootc#2334); the image's own bootc reads
 # the digest install takes from the image's layers in this machine's container storage,
 # the way install reads them. reseal-image.sh then rewrites the UKI in a /boot-only COPY
-# layer, which leaves that digest as it was. An image already sealed with it is kept.
+# layer, which leaves that digest as it was. An image already sealed with it is kept, and
+# an unsealed one (a lean dev image carries no UKI) has nothing to seal.
 seal_image_for_install() {
-  local image="$1" id store scratch want had
+  local image="$1" id store scratch want had cmdlines
   id="$(podman image inspect --format '{{.Id}}' "$image")" || die "$image is not in local container storage"
+  cmdlines="$(podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -c \
+      'for uki in /boot/EFI/Linux/*.efi; do
+         [ -e "$uki" ] || continue; /usr/libexec/tilo-uki-cmdline show "$uki" || exit 1; done')" \
+    || die "could not read the command line of the UKI in $image"
+  if [ -z "$cmdlines" ]; then
+    msg "$image carries no UKI, so there is no composefs digest to seal"
+    return 0
+  fi
   store="$(podman info --format '{{.Store.GraphRoot}}')" || die "podman names no container storage"
   # The digest's scratch composefs repository needs a filesystem that takes O_TMPFILE,
   # which neither a container's overlay root nor a shared build directory (virtiofs, which
@@ -258,9 +267,7 @@ seal_image_for_install() {
     || { rm -rf "$scratch"; die "could not compute the composefs digest bootc install takes for $image"; }
   rm -rf "$scratch"
   [[ "$want" =~ ^[0-9a-f]{128}$ ]] || die "bootc computed no composefs digest for $image: $want"
-  had="$(podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -c \
-      'for uki in /boot/EFI/Linux/*.efi; do /usr/libexec/tilo-uki-cmdline show "$uki"; done' \
-    | tr ' ' '\n' | sed -n 's/^composefs=//p')"
+  had="$(printf '%s\n' "$cmdlines" | tr ' ' '\n' | sed -n 's/^composefs=//p')"
   if [ "$had" = "$want" ]; then
     msg "the UKI of $image already seals the composefs digest install computes"
     return 0
