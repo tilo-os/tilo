@@ -119,10 +119,7 @@ impl Reader {
 
     /// Where `page` stands with `record`: its keys when it reads, and what it holds.
     fn holds(page: &Link, record: &DocumentRoute) -> Vec<String> {
-        let Ok(Some(bytes)) =
-            page.engine()
-                .record(&record.cluster_id, &record.app_id, &record.document)
-        else {
+        let Some(bytes) = crate::support::record_of(page, record) else {
             return Vec::new();
         };
         automerge::AutoCommit::load(&bytes).map_or_else(
@@ -156,12 +153,7 @@ impl Reader {
             if !self.watched.contains(&route) {
                 continue;
             }
-            match page.engine().document_update(
-                &route.cluster_id,
-                &route.app_id,
-                &route.document,
-                None,
-            ) {
+            match crate::support::reading_of(page, &route, None) {
                 Ok(_) => *self.reads.entry(route.document.clone()).or_default() += 1,
                 Err(error) => self
                     .refusals

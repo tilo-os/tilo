@@ -33,6 +33,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
@@ -174,12 +175,14 @@ async fn chat_read_by_guest(
                 Event::Landed { route, .. } if route == *chat => {
                     quiet_since = Instant::now();
                     match page
-                        .engine()
-                        .record(&chat.cluster_id, &chat.app_id, &chat.document)
+                        .documents()
+                        .read(&chat.cluster_id, &chat.app_id, &chat.document, None)
                     {
-                        Ok(Some(bytes)) => shown = holds_every_message(&bytes),
+                        Ok(DocumentRead::Whole { bytes, .. }) => {
+                            shown = holds_every_message(&bytes);
+                        }
                         // Still arriving (its keys): it lands again.
-                        Ok(None) => {}
+                        Ok(_) => {}
                         Err(error) => refusals.push(error),
                     }
                 }

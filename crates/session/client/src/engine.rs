@@ -45,8 +45,8 @@ use crate::identity;
 use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
 
+mod documents;
 mod replica_documents;
-mod writes;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it
 /// under, so the state it wrote is still read.
@@ -1311,6 +1311,27 @@ impl Engine {
             .with_current(workspace, |view| view.peer().governance().governed_policy())
     }
 
+    /// Whether this device reads `app`'s `document` of `workspace` now, as its governance decides
+    /// it: a record the workspace lets no one here read, or one its reader set leaves this device
+    /// out, is not read. Decided on the governance this device holds, without opening the record:
+    /// a predicate for what lists and copies may include.
+    pub fn document_read_policy(
+        &self,
+        workspace: WorkspaceId,
+    ) -> impl Fn(&str, &str) -> bool + use<> {
+        let owner = self.owner.clone();
+        let own = self.identity.device_cert.device_public_key;
+        move |app, document_id| {
+            owner
+                .with_current(workspace, |view| {
+                    let reader = Admission::of(view, own).reader(own);
+                    view.peer()
+                        .check_document_read(reader, app, document_id, tilo_clock::wall())
+                })
+                .is_ok()
+        }
+    }
+
     /// The workspace's own document as this device holds it, whole: its governance, and the layout
     /// it keeps at its root. `None` when this device holds no workspace by that id.
     #[must_use]
@@ -2159,7 +2180,7 @@ mod tests {
         };
 
         let (copy, _) = device_of([0x44; 32], DeviceCapabilities::member());
-        let copy = engine(state.path(), copy);
+        let copy = Arc::new(engine(state.path(), copy));
         copy.note_link(workspace, lapses);
         assert!(
             !copy.invitations_open(now),
@@ -2247,18 +2268,22 @@ mod tests {
         }
 
         let (copy, _) = device_of([0x44; 32], DeviceCapabilities::member());
-        let copy = engine(state.path(), copy);
+        let copy = Arc::new(engine(state.path(), copy));
         // The keys the copy holds of the workspace.
-        copy.hand_keys(workspace, keys.clone());
+        copy.hand_keys(workspace, keys);
         let id = workspace.to_string();
         assert!(
             copy.awaited_host(workspace).is_some(),
             "the copy waits for the workspace to admit it"
         );
-        let read = copy
-            .record(&id, "so.tilo.notes", "note")
+        let read = match copy
+            .documents()
+            .read(&id, "so.tilo.notes", "note", None)
             .expect("the copy reads the note it holds")
-            .expect("the note is here");
+        {
+            tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. } => bytes,
+            read => panic!("the note is here, not {read:?}"),
+        };
         let read = automerge::AutoCommit::load(&read).expect("a note");
         assert_eq!(
             automerge::ReadDoc::get(&read, automerge::ROOT, "title")
@@ -2267,7 +2292,10 @@ mod tests {
             Some("\"Kept\"".to_owned())
         );
         assert!(
-            !matches!(copy.record(&id, "so.tilo.notes", "other"), Ok(Some(_))),
+            !matches!(
+                copy.documents().read(&id, "so.tilo.notes", "other", None),
+                Ok(tilo_peer_state::workspace_documents::DocumentRead::Whole { .. })
+            ),
             "what the copy does not hold reads as nothing"
         );
     }

@@ -31,6 +31,7 @@ use tilo_actions::remote::{
 };
 
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
 use tilo_server_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
@@ -206,14 +207,11 @@ impl Page {
             // Kept when it was published.
             return None;
         }
-        let read = self
-            .peer
-            .engine()
-            .record(&route.cluster_id, &route.app_id, &route.document);
+        let read = self.read(&route);
         // Keys that arrived open what the writers before them wrote; keys that open nothing new
         // say nobody wrote anything.
         match (read, author.or_else(|| self.unopened.remove(&route))) {
-            (Ok(Some(bytes)), Some(author)) => {
+            (Some(bytes), Some(author)) => {
                 self.documents
                     .entry(route)
                     .or_default()
@@ -225,6 +223,18 @@ impl Page {
             (_, None) => {}
         }
         None
+    }
+
+    /// What this page's holder reads of `route`: the record whole, when it reads.
+    fn read(&self, route: &DocumentRoute) -> Option<Vec<u8>> {
+        match self
+            .peer
+            .documents()
+            .read(&route.cluster_id, &route.app_id, &route.document, None)
+        {
+            Ok(DocumentRead::Whole { bytes, .. }) => Some(bytes),
+            _ => None,
+        }
     }
 
     /// The records whose writes reached this page before it could open them.
@@ -325,11 +335,7 @@ impl Page {
     pub fn layout(&mut self) -> Option<tilo_desktop_model::ownership::SharedDesktop> {
         self.pump();
         let layout = self.layout_route();
-        let read = self
-            .peer
-            .engine()
-            .record(&layout.cluster_id, &layout.app_id, &layout.document);
-        let bytes = read.ok()??;
+        let bytes = self.read(&layout)?;
         tilo_desktop_model::shared_resource::read(&automerge::AutoCommit::load(&bytes).ok()?, None)
     }
 
@@ -338,13 +344,7 @@ impl Page {
     pub fn asked_views(&mut self) -> Vec<tilo_desktop_model::asked::AskedView> {
         self.pump();
         let layout = self.layout_route();
-        let Some(bytes) = self
-            .peer
-            .engine()
-            .record(&layout.cluster_id, &layout.app_id, &layout.document)
-            .ok()
-            .flatten()
-        else {
+        let Some(bytes) = self.read(&layout) else {
             return Vec::new();
         };
         automerge::AutoCommit::load(&bytes).map_or_else(

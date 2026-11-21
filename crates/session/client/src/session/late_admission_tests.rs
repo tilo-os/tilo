@@ -109,7 +109,16 @@ fn a_record_sent_before_the_pages_admission_is_read_once_it_is_admitted() {
         !task.replicas.admits_this_device(workspace_id),
         "the governance so far does not admit the page"
     );
-    let read = || link.engine().record(&workspace, APP, "");
+    let read = || {
+        link.documents()
+            .read(&workspace, APP, "", None)
+            .map(|read| match read {
+                tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. } => {
+                    Some(bytes)
+                }
+                _ => None,
+            })
+    };
     assert!(
         !heard_landed(&events),
         "a record is not taken to its readers before the page is admitted: they would read it as \

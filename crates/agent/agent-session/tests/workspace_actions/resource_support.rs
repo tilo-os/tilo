@@ -2,7 +2,8 @@
 use super::{Browser, Device, Hosted, RevocationList, ServerAddress, ready, start_peer};
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_server::workspaces::IssueInvitationRequest;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_peer_state::workspace_documents::DocumentRead;
+use tilo_session_client::{Cmd, Link, Outbox};
 
 pub(super) async fn open_admitted_peer(
     hosted: &Hosted,
@@ -171,15 +172,16 @@ pub(super) fn part_route(
     }
 }
 
-/// Each part of the notes the replica `engine` holds of `workspace`, oldest first, as
+/// Each part of the notes the page `peer` holds of `workspace`, oldest first, as
 /// its document.
 pub(super) fn notes_part_docs(
-    engine: &tilo_session_client::engine::Engine,
+    peer: &Link,
     workspace: &str,
 ) -> Vec<(u64, automerge::AutoCommit)> {
     let chain = notes::note_list::chain();
-    let mut parts: Vec<(u64, automerge::AutoCommit)> = engine
-        .documents(workspace)
+    let documents = peer.documents();
+    let mut parts: Vec<(u64, automerge::AutoCommit)> = documents
+        .listing(workspace)
         .unwrap_or_default()
         .into_iter()
         .filter(|(app, _)| app == ui::apps::NOTES)
@@ -188,7 +190,11 @@ pub(super) fn notes_part_docs(
             if of != chain {
                 return None;
             }
-            let bytes = engine.record(workspace, ui::apps::NOTES, &record).ok()??;
+            let Ok(DocumentRead::Whole { bytes, .. }) =
+                documents.read(workspace, ui::apps::NOTES, &record, None)
+            else {
+                return None;
+            };
             Some((index, automerge::AutoCommit::load(&bytes).ok()?))
         })
         .collect();
@@ -196,12 +202,12 @@ pub(super) fn notes_part_docs(
     parts
 }
 
-/// Each part of the notes the replica `engine` holds of `workspace`, oldest first, read.
+/// Each part of the notes the page `peer` holds of `workspace`, oldest first, read.
 pub(super) fn notes_parts(
-    engine: &tilo_session_client::engine::Engine,
+    peer: &Link,
     workspace: &str,
 ) -> Vec<(u64, std::rc::Rc<notes::NoteList>)> {
-    notes_part_docs(engine, workspace)
+    notes_part_docs(peer, workspace)
         .into_iter()
         .filter_map(|(index, doc)| {
             let part = <notes::NoteList as ui::tilo_resource::Resource>::read(&doc).ok()?;

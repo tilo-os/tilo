@@ -22,6 +22,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use sha2::{Digest as _, Sha256};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server::certify::{ApproverDecision, ApproverReply};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
@@ -678,12 +679,31 @@ pub fn say(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
     }
 }
 
+/// What `peer`'s page holder holds of `route` now: the record whole, when it reads.
+pub fn record_of(peer: &Link, route: &DocumentRoute) -> Option<Vec<u8>> {
+    match peer
+        .documents()
+        .read(&route.cluster_id, &route.app_id, &route.document, None)
+    {
+        Ok(DocumentRead::Whole { bytes, .. }) => Some(bytes),
+        _ => None,
+    }
+}
+
+/// What `peer`'s page holder reads of `route` for a reader holding `heads`: the record whole, the
+/// changes since, where it stands, or that it is on its way.
+pub fn reading_of(
+    peer: &Link,
+    route: &DocumentRoute,
+    heads: Option<&[[u8; 32]]>,
+) -> Result<DocumentRead, String> {
+    peer.documents()
+        .read(&route.cluster_id, &route.app_id, &route.document, heads)
+}
+
 /// What `peer`'s replica of its workspace holds of `route` now, when it reads.
 pub fn resource_of(peer: &Link, route: &DocumentRoute) -> Option<AutoCommit> {
-    let bytes = peer
-        .engine()
-        .record(&route.cluster_id, &route.app_id, &route.document)
-        .ok()??;
+    let bytes = record_of(peer, route)?;
     AutoCommit::load(&bytes).ok()
 }
 
@@ -718,9 +738,7 @@ async fn in_replica<T>(
         assert!(
             std::time::Instant::now() < deadline,
             "timed out waiting for {what}; the replica reads {:?}; channels:\n{}\nfailures: {:?}",
-            peer.engine()
-                .record(&route.cluster_id, &route.app_id, &route.document)
-                .map(|bytes| bytes.map(|bytes| bytes.len())),
+            record_of(peer, route).map(|bytes| bytes.len()),
             peer.status().key_state,
             peer.status().failures
         );

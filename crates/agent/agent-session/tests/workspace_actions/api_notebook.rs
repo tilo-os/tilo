@@ -49,7 +49,7 @@ fn notes_held(
     reader: &Browser,
     workspace: &str,
 ) -> Option<BTreeMap<String, (String, Option<String>)>> {
-    let parts = super::resource_support::notes_parts(reader.peer.engine(), workspace);
+    let parts = super::resource_support::notes_parts(&reader.peer, workspace);
     if parts.is_empty() {
         return None;
     }
@@ -328,7 +328,7 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
 
 /// Note `title`'s body as the notebook `reader` holds it, as Markdown.
 fn note_body(reader: &Browser, workspace: &str, title: &str) -> Option<String> {
-    let docs = super::resource_support::notes_part_docs(reader.peer.engine(), workspace);
+    let docs = super::resource_support::notes_part_docs(&reader.peer, workspace);
     let (page, doc) = docs.iter().find_map(|(_, doc)| {
         let part = <notes::NoteList as ui::tilo_resource::Resource>::read(doc).ok()?;
         let (id, _) = part.pages.iter().find(|(_, note)| note.title == title)?;

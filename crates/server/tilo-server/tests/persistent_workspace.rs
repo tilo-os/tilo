@@ -10,6 +10,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_session_client::{Cmd, Outbox};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -726,10 +727,11 @@ async fn assert_page_reads_the_chat(
                     }
                     // The workspace's other records land too; only the chat is read.
                     Event::Landed { route: landed, .. } if landed == route => {
-                        if let Ok(Some(bytes)) = visiting.engine().record(
+                        if let Ok(DocumentRead::Whole { bytes, .. }) = visiting.documents().read(
                             &route.cluster_id,
                             &route.app_id,
                             &route.document,
+                            None,
                         ) {
                             doc = automerge::AutoCommit::load(&bytes).unwrap();
                         }

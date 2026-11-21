@@ -557,7 +557,7 @@ pub struct Held(
 
 impl Held {
     /// The held writes, to read or change.
-    pub fn lock(
+    pub(crate) fn lock(
         &self,
     ) -> std::sync::MutexGuard<
         '_,
@@ -591,10 +591,11 @@ impl Link {
         }
     }
 
-    /// This device's writes its session has not drafted and admitted yet.
+    /// This device's documents, read and written through the replica this link's engine holds: the
+    /// holder a page reads and writes its workspaces' records through.
     #[must_use]
-    pub fn held(&self) -> &Held {
-        &self.held
+    pub fn documents(&self) -> Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments> {
+        self.engine.documents()
     }
 
     /// Whether this device holds a write of `route` its session has not drafted and admitted yet.

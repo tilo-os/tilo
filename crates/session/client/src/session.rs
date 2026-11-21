@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::{
-    CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureKind, Held, Link, Outbox, PageShown,
+    CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureKind, Link, Outbox, PageShown,
     PeerStatus, Reports, TransportPhase, content::Kept,
 };
 use std::time::Duration;
@@ -32,6 +32,7 @@ use tilo_server_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
+use crate::link::Held;
 use crate::membership_check::{PeerEntry, PeerStore};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -337,6 +338,7 @@ fn session_task(
     crate::surfaces::decide_with_kept_surfaces();
     let task = Task {
         engine: Arc::clone(&engine),
+        documents: engine.documents(),
         held: held.clone(),
         replicas,
         commands: commands.downgrade(),
@@ -531,6 +533,9 @@ struct Task {
     surface_wants: neighbour_wire::content::ContentWants<()>,
     /// Live frames waiting for their record's keys.
     held_live: crate::held_live::HeldLive,
+    /// This device's documents, read through the replica this session's engine holds: what a
+    /// landing asks before it tells a reader of a record.
+    documents: Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
     /// This device's writes its session has not drafted and admitted yet, shared with its links:
     /// each waits here for its record's keys, or for the record it changes, and readers count it.
     held: Held,

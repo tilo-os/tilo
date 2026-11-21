@@ -30,9 +30,9 @@ use fs_protocol::{TreeChunk, TreeChunks};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_fs::namespace::{Namespace, ROOT_INO};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
 use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
@@ -215,15 +215,14 @@ impl Reader {
         let chunks = std::mem::take(&mut self.unread);
         for chunk in chunks {
             let route = route(&self.workspace, chunk);
-            let reading = self.link.engine().document_update(
-                &route.cluster_id,
-                &route.app_id,
-                &route.document,
+            let reading = crate::support::reading_of(
+                &self.link,
+                &route,
                 self.heads.get(&chunk).map(Vec::as_slice),
             );
             let Ok(
-                ResourceReading::Captured { heads, bytes, .. }
-                | ResourceReading::Changes { heads, bytes, .. },
+                DocumentRead::Whole { heads, bytes, .. }
+                | DocumentRead::Changes { heads, bytes, .. },
             ) = reading
             else {
                 continue;

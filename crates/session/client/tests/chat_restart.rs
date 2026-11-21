@@ -44,9 +44,9 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
 use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
@@ -116,10 +116,7 @@ async fn arrive(
 
 /// What `page`'s replica holds of `route` now, when it reads.
 fn held(page: &Link, route: &DocumentRoute) -> Option<AutoCommit> {
-    let bytes = page
-        .engine()
-        .record(&route.cluster_id, &route.app_id, &route.document)
-        .ok()??;
+    let bytes = crate::support::record_of(page, route)?;
     AutoCommit::load(&bytes).ok()
 }
 
@@ -320,10 +317,8 @@ async fn reads_whole(
 ) {
     let deadline = Instant::now() + tilo_test_env::hang_bound();
     loop {
-        let read =
-            page.engine()
-                .document_update(&route.cluster_id, &route.app_id, &route.document, None);
-        if let Ok(ResourceReading::Captured { bytes, .. }) = &read {
+        let read = crate::support::reading_of(page, route, None);
+        if let Ok(DocumentRead::Whole { bytes, .. }) = &read {
             let doc = AutoCommit::load(bytes).unwrap();
             let has: BTreeSet<String> = doc.keys(automerge::ROOT).collect();
             if keys.is_subset(&has) {
@@ -349,7 +344,7 @@ async fn reads_whole(
                 Instant::now() < deadline,
                 "seed {seed}: {what}: the chat's {:?} never read whole: {:?}",
                 route.document,
-                read.map(|read| matches!(read, ResourceReading::Pending))
+                read.map(|read| matches!(read, DocumentRead::Pending))
             );
         }
         tokio::time::sleep(Duration::from_millis(10)).await;

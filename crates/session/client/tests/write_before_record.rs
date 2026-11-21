@@ -24,9 +24,9 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
 use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
@@ -137,7 +137,8 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
     assert!(
         !early
             .engine()
-            .holds_resource(&chat.cluster_id, &chat.app_id, &chat.document),
+            .documents()
+            .holds(&chat.cluster_id, &chat.app_id, &chat.document),
         "the early page holds no record before it is founded"
     );
     early.write(chat.clone(), &first).unwrap();
@@ -165,13 +166,8 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let last = match guest.engine().document_update(
-            &chat.cluster_id,
-            &chat.app_id,
-            &chat.document,
-            None,
-        ) {
-            Ok(ResourceReading::Captured { bytes, .. }) => {
+        let last = match crate::support::reading_of(&guest, &chat, None) {
+            Ok(DocumentRead::Whole { bytes, .. }) => {
                 let doc = AutoCommit::load(&bytes).unwrap();
                 let keys: Vec<String> = doc.keys(automerge::ROOT).collect();
                 if keys.len() == 3 {

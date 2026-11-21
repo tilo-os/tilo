@@ -322,15 +322,12 @@ async fn a_viewers_widths_show_in_their_second_browser() {
         .expect("a viewer writes their own view of the layout");
 
     let kept = wait_for("the width on the person's other browser", || {
-        let view = second
-            .engine()
-            .record(
-                &workspace,
-                DESKTOP,
-                &tilo_desktop_model::person_view::resource_of(&person),
-            )
-            .ok()
-            .flatten()
+        let route = DocumentRoute {
+            app_id: DESKTOP.into(),
+            cluster_id: workspace.clone(),
+            document: tilo_desktop_model::person_view::resource_of(&person),
+        };
+        let view = crate::support::record_of(&second, &route)
             .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
             .map(|doc| tilo_desktop_model::person_view::PersonView::read(&doc));
         async move { view.filter(|view| !view.widths.is_empty()) }

@@ -45,8 +45,8 @@ impl Task {
         // is not a landing, and a reader told of it would have its read
         // refused. It lands when its first write does.
         if !self
-            .engine
-            .holds_resource(&route.cluster_id, &route.app_id, &route.document)
+            .documents
+            .holds(&route.cluster_id, &route.app_id, &route.document)
         {
             return;
         }

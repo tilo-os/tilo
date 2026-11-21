@@ -1,51 +1,22 @@
-//! What a device whose engine holds its workspaces' records in its own replica reads of them: the
-//! page and the sessions a device runs without a workspace service of its own, and the command
-//! line's peer, which mirrors them into a folder. A desktop session reads and writes its
-//! workspaces' records through the device's workspace service instead.
+//! What the command line's peer reads of the workspaces its engine holds in its own replica: it
+//! mirrors them into a folder, and reads what changed since the heads it holds. A page reads and
+//! writes through its device's holder ([`super::documents`]) and a desktop session through the
+//! device's workspace service; neither reads its replica through here.
 
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::owner::Holding;
 
-use super::{Admission, Engine, MAX_DOCUMENT_BYTES, ResourceReading};
+use super::{Engine, MAX_DOCUMENT_BYTES, ResourceReading};
 
 impl Engine {
-    /// What the workspace `workspace` holds of the app `app`'s `record`: the document
-    /// as the workspace last admitted it, also what it held before this device joined.
-    /// A sealed record opens with this device's group keys, which reach back past the
-    /// membership it joined in; a device that holds none yet asks for them
-    /// ([`Self::seal_keys`]) and reads the record once they are here. A record the
-    /// hosts send only once asked is asked for on its first read.
-    /// # Errors
-    /// The workspace is not held here, this device may not read the record, the record
-    /// is sealed and this device holds no keys of it, or the document cannot be read.
-    pub fn record(
-        &self,
-        workspace: &str,
-        app: &str,
-        record: &str,
-    ) -> Result<Option<Vec<u8>>, String> {
-        Ok(
-            match self.read_resource(
-                workspace,
-                (app, record),
-                Holding::default(),
-                MAX_DOCUMENT_BYTES,
-            )? {
-                ResourceReading::Captured { bytes, .. } => Some(bytes),
-                ResourceReading::Changes { .. }
-                | ResourceReading::Unchanged(_)
-                | ResourceReading::Pending => None,
-            },
-        )
-    }
-
     /// What `workspace` holds of `app`'s `record` for a reader that merged it last at the sorted
     /// `heads` an earlier read handed out, or holds nothing of it: only the changes since those
     /// heads where the record holds them ([`ResourceReading::Changes`]), the record whole where it
     /// does not, so a reader that follows a record merges what changed rather than all of it.
     /// # Errors
-    /// As [`Self::record`].
+    /// The workspace is not held here, this device may not read the record, the record is sealed
+    /// and this device holds no keys of it, or the document cannot be read.
     pub fn document_update(
         &self,
         workspace: &str,
@@ -73,7 +44,7 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, this device may not read the record, the record is sealed
     /// and this device holds no keys of it, or the document cannot be read.
-    pub fn read_resource(
+    pub(crate) fn read_resource(
         &self,
         workspace: &str,
         (app, record): (&str, &str),
@@ -150,41 +121,4 @@ impl Engine {
             .resource_answer(workspace, &group)
     }
 
-    /// A live local document read check for consumers of cached copies.
-    pub fn document_read_policy(
-        &self,
-        workspace: WorkspaceId,
-    ) -> impl Fn(&str, &str) -> bool + use<> {
-        let owner = self.owner.clone();
-        let own = self.identity.device_cert.device_public_key;
-        move |app, document_id| {
-            owner
-                .with_current(workspace, |view| {
-                    let reader = Admission::of(view, own).reader(own);
-                    view.peer()
-                        .check_document_read(reader, app, document_id, tilo_clock::wall())
-                })
-                .is_ok()
-        }
-    }
-
-    /// Every document the replica holds for `workspace`, by its app and id. A workspace this device
-    /// does not hold lists nothing.
-    /// # Errors
-    /// The workspace is not held here, or its documents cannot be listed now.
-    pub fn documents(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let own = self.identity.device_cert.device_public_key;
-        let now = tilo_clock::wall();
-        self.owner.with_current(id, |view| {
-            let reader = Admission::of(view, own).reader(own);
-            let mut documents = view.peer().records();
-            documents.retain(|(app, document_id)| {
-                view.peer()
-                    .check_document_read(reader, app, document_id, now)
-                    .is_ok()
-            });
-            Ok(documents)
-        })
-    }
 }

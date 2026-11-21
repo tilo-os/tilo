@@ -38,10 +38,10 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_server_client::ServerAddress;
 use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::device::{Entering, entry_request};
-use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
@@ -196,12 +196,7 @@ async fn guest_takes_in(
             let route = if record == chat.document { chat } else { part };
             let heads = read_so_far.get(&record).map(|(heads, _)| heads.clone());
             work.reads += 1;
-            let read = page.engine().document_update(
-                &route.cluster_id,
-                &route.app_id,
-                &route.document,
-                heads.as_deref(),
-            );
+            let read = crate::support::reading_of(page, route, heads.as_deref());
             // A read refused while the record is still arriving (a write that builds on one
             // not here yet) is work the page did for nothing: it reads again at the next landing.
             let Ok(read) = read else {
@@ -209,18 +204,20 @@ async fn guest_takes_in(
                 continue;
             };
             match read {
-                ResourceReading::Captured { bytes, heads, .. } => {
+                DocumentRead::Whole { bytes, heads, .. } => {
                     if record == part.document {
                         work.whole_read = bytes.len();
                     }
                     read_so_far.insert(record, (heads, AutoCommit::load(&bytes).unwrap()));
                 }
-                ResourceReading::Changes { bytes, heads, .. } => {
+                DocumentRead::Changes { bytes, heads, .. } => {
                     let (kept, doc) = read_so_far.get_mut(&record).unwrap();
                     doc.load_incoming(&bytes).unwrap();
                     *kept = heads;
                 }
-                ResourceReading::Unchanged(_) | ResourceReading::Pending => {}
+                DocumentRead::Unchanged(_)
+                | DocumentRead::Pending
+                | DocumentRead::Absent => {}
             }
         }
         let read_whole = |record: &str, keys: usize| {
