@@ -96,10 +96,11 @@ publications build from.
 - `changes` and `lint-head` read the commits a push added, and the whole-tree
   checks (`fmt`, `hakari`, `lockfile`, `deny`, `machete`, `policy/{step}`) run
   on the same head, so no push's run stands in for another's.
-- Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
-  push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
-  the full suite on both native architectures as the coverage backstop, and the
-  artifact builds carry their own nightly schedule.
+- Release and artifact workflows (`release-*.yml`) trigger on a push to
+  `stable` or on a version tag, never on `main`. The whole-tree coverage
+  backstop is t's nightly set (`nightly-*`, `nightly-fuzz-*`, `certify`,
+  `goldens`, `wasm`), scheduled at 03:00, and the environment publish chains
+  run on their own crons; the artifact builds carry their own nightly schedule.
 
 ## Forks on GitHub Actions or stock Forgejo
 

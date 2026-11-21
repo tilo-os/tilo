@@ -250,7 +250,7 @@ FEATURE_CONFIG_FILE = ".config/hakari.toml"
 # The workspace builds them only as path dependencies, so Cargo selection never
 # runs their tests; t's `vendored` check does
 # (tools/ci/test-vendored-crates.sh) when one of these paths or the runner
-# changes, and ci-nightly.yml runs every one.
+# changes.
 VENDORED_TEST_CRATES = {
     "vendor/automerge": ("vendor/automerge/", "vendor/automerge-test/"),
 }

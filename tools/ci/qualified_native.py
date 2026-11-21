@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
-import subprocess
 
 
 INPUTS = (
     "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
-    ".config/nextest.toml", ".forgejo/workflows/ci-nightly.yml", "tools/test-env.sh",
+    ".config/nextest.toml", "tools/test-env.sh",
     "tools/test-env-setup.sh",
     "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "tools/cargo-runner.sh",
     ".config/nextest-filters.toml", "tools/ci/nextest_filters.py", "tools/ci/clippy-check.sh",
@@ -18,7 +16,6 @@ INPUTS = (
     "tools/ci/compiler_inputs.py", "tools/ci/measure.sh", "tools/ci/process_progress.py",
     "tools/ci/cgroup_memory.py", "scripts/ci-run.sh",
     "os/dev/assert-native-arch.sh", "tools/font-catalog.py",
-    ".forgejo/actions/prepare-rust-build/action.yml",
     ".forgejo/actions/restore-cargo-downloads/action.yml",
     ".forgejo/actions/merge-main/action.yml",
 )
@@ -50,17 +47,8 @@ def placement(root: Path, names: set[str], arch: str) -> dict:
                 or not 0 < proof["cgroup_memory_peak_bytes"] < 3 * 1024**3
                 or any(proof[key] != 0 for key in ("memory_max_events", "oom_events", "oom_kill_events"))):
             return {}
-        # Selection uses the merged tree; an older PR can still execute its
-        # older workflow, whose empty certification would exceed this envelope.
-        head = os.environ.get("HEAD_SHA")
-        if not head:
-            return {}
-        workflow = subprocess.check_output(
-            ["git", "show", f"{head}:.forgejo/workflows/ci-nightly.yml"], cwd=root, stderr=subprocess.DEVNULL)
-        if workflow != (root / ".forgejo/workflows/ci-nightly.yml").read_bytes():
-            return {}
         if receipt["schema"] == 1 and receipt["input_sha256"] == fingerprint(root):
             return {"qualified_runner": "runner-quality", "qualified_builders": receipt["builders"]}
-    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError):
+    except (OSError, ValueError, KeyError, TypeError):
         pass
     return {}

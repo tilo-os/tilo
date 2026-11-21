@@ -371,7 +371,7 @@ unify = "workspace-unify"
 packages = ["ebook", "tilo-ui"]
 wrapper = ["bash", "-c", "export TILO_FONT_ASSET_CACHE=\"$CARGO_TARGET_DIR/font-artifacts\"; exec bash tools/test-env.sh \"$@\"", "goldens"]
 args = ["--locked", "--profile", "ci", "--tests", "--no-tests=pass", "-E", "(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline)))"]
-on = ["idle"]
+on = ["schedule:0 3 * * *", "idle"]
 
 # The repository policy suite, one check per step of `tools/policy/steps.toml`: the step's own
 # command, so `t test policy` runs the suite and `t test policy/<step>` one step. That file is the
@@ -847,7 +847,7 @@ name = "wasm"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/check-wasm.sh $(python3 -I tools/ci/package_sets.py browser)"
 env = { CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS = "-D warnings" }
-on = ["dispatch", "idle"]
+on = ["schedule:0 3 * * *", "dispatch", "idle"]
 heavy = true
 
 [[check]]
@@ -943,7 +943,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace"
 env = { TILO_REQUIRE_GPU = "1", TILO_CERTIFY_SURFACES = "/target/certify/surfaces" }
 outputs = ["/target/certify/surfaces/**"]
-on = ["dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 heavy = true
 
 [[check]]
@@ -1412,7 +1412,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo check --workspace --locked --all-targets\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 requires = ["arch=x86_64"]
-on = ["dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 
 [[check]]
 name = "nightly-examples"
@@ -1420,7 +1420,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source TILO_TEST_NTFS_FIXTURES=0\nbash tools/test-env.sh cargo test --workspace --examples --locked\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 requires = ["arch=x86_64"]
-on = ["dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 
 [[check]]
 name = "nightly-live-music"
@@ -1444,7 +1444,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo check --workspace --locked --all-targets\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
 requires = ["arch=arm64"]
-on = ["dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 
 [[check]]
 name = "nightly-arm64-examples"
@@ -1452,7 +1452,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source TILO_TEST_NTFS_FIXTURES=0\nbash tools/test-env.sh cargo test --workspace --examples --locked\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
 requires = ["arch=arm64"]
-on = ["dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 
 [[check]]
 name = "nightly-arm64-certify"
@@ -1460,7 +1460,7 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source\ncargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace\n"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1" }
 requires = ["arch=arm64"]
-on = ["dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 
 [[check]]
 name = "nightly-arm64-goldens"
@@ -1469,7 +1469,7 @@ run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --
 image = "registry.tilo.so/tilo/tilo-builder@sha256:e4763a8c16005f544dde0206014c2cc088fff0d5d28f1857ea24961677c666f6"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=arm64"]
-on = ["dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 
 [[check]]
 name = "nightly-fuzz-{target}"
@@ -1479,7 +1479,7 @@ run = "set -e\nexport RUSTUP_HOME=/opt/fuzz/rustup PATH=/opt/fuzz/cargo-fuzz/bin
 env = { RUST_BACKTRACE = "1" }
 isolation = "vm"
 timeout_secs = 2700
-on = ["dispatch"]
+on = ["schedule:0 3 * * *", "dispatch"]
 heavy = true
 [check.matrix]
 target = ["tapp_ingress", "workspace_invitation", "identity_wire", "sandbox_policy", "render_scene"]
@@ -3836,7 +3836,7 @@ run = "bash tools/ci/publish/env-runtime.sh release /target/publish/env-runtime/
 needs = ["image-env-runtime", "sign-env-runtime", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/env-runtime/image/receipt.json"]
-on = ["dispatch"]
+on = ["schedule:41 */4 * * *", "dispatch"]
 id_token = ["registry.tilo.so"]
 
 # ---- The frozen RPM package set
@@ -4306,7 +4306,7 @@ run = "bash tools/ci/publish/env-tools-release.sh release /target/publish/env-to
 needs = ["env-tools-plan", "image-env-tools", "sign-env-tools", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 outputs = ["/target/publish/env-tools/image/receipt.json"]
-on = ["dispatch"]
+on = ["schedule:11 */6 * * *", "dispatch"]
 id_token = ["registry.tilo.so"]
 
 [[check]]
