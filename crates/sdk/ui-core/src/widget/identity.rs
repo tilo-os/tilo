@@ -46,9 +46,14 @@ impl super::Decorator for Identified {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        self.content
-            .accessibility()
-            .map(|node| node.with_action(self.identity.clone()))
+        // What the control does is said where a press reaches it: a control that draws a button
+        // of its own (an empty state's action) says it on that button, whose box a person, a
+        // screen reader and an agent press. Said on the box around it, it would name a control
+        // nothing answers at.
+        self.content.accessibility().map(|node| match self.content.pressable_child() {
+            Some(part) => node.with_action_on_child(part, self.identity.clone()),
+            None => node.with_action(self.identity.clone()),
+        })
     }
 
     fn identify(&mut self, identity: &str) -> bool {
@@ -123,6 +128,30 @@ mod tests {
             identified.identify("notes.Notebook\u{1f}new_task");
             let node = super::Widget::accessibility(&identified).expect("the control describes itself");
             assert_eq!(node.action.as_deref(), Some("notes.Notebook\u{1f}new_task"));
+        }
+
+        phase a_control_that_holds_its_own_button_says_what_it_does_on_that_button;
+        {
+            let state = crate::widget::EmptyState::new("Start your first note")
+                .with_action("New note")
+                .with_action_id("first-note");
+            let identified = Identified::new(Box::new(state), "notes.Notebook\u{1f}new_note");
+            let node = super::Widget::accessibility(&identified).expect("the state describes itself");
+            assert_eq!(
+                node.action, None,
+                "the box around the button is not what a press reaches"
+            );
+            let action = node
+                .children
+                .iter()
+                .find(|child| child.role == Role::Button)
+                .expect("the state describes its action as a button");
+            assert_eq!(action.name.as_deref(), Some("New note"));
+            assert_eq!(
+                action.action.as_deref(),
+                Some("notes.Notebook\u{1f}new_note"),
+                "the button says what the state does"
+            );
         }
     }
 }

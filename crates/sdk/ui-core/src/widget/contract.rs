@@ -540,6 +540,14 @@ pub trait Widget {
         None
     }
 
+    /// Which child of [`Self::accessibility`] is the button a press reaches, for a widget that
+    /// draws its own control inside a larger box ([`crate::widget::EmptyState`]'s action): what the
+    /// control does is said on that child, where a person, a screen reader and an agent press it,
+    /// and never on the box around it. `None` for a widget whose own node is what a press reaches.
+    fn pressable_child(&self) -> Option<usize> {
+        None
+    }
+
     /// Take `identity` as what this control does ([`crate::widget::Identified`]) where it says so
     /// itself: `false` for one that holds no identity of its own, which the host builds again.
     fn identify(&mut self, identity: &str) -> bool {

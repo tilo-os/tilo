@@ -75,8 +75,9 @@ impl super::Session {
     }
 
     /// The centre of the control that does `identity`: the action the app publishes, on the kind
-    /// of record it acts on. Where it is the window's business — its bar while it lists nothing,
-    /// its columns' header once it does — and so is what the person's language calls it.
+    /// of record it acts on. Where it is the window's business — its bar or an empty state's call
+    /// to action while it lists nothing, its columns' header once it does — and so is what the
+    /// person's language calls it.
     pub(super) fn control(&mut self, identity: &(String, String)) -> (f64, f64) {
         let (kind, action) = identity;
         // The addresses the instance publishes the action under on documents of the kind: what an
@@ -297,6 +298,38 @@ fn a_new_note_is_invoked_at_the_api_by_what_its_control_does() {
         session.titles(),
         ["Untitled".to_owned()],
         "the note New note makes is in the notebook"
+    );
+}
+
+/// An empty window's state offers the primary action and its bar keeps its own: the two are the
+/// one control, so a caller that names what it does finds one — a button, where a press reaches
+/// it, at the button's box and never the state's.
+#[test]
+fn an_empty_windows_state_and_bar_offer_the_primary_action_as_one_control() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = super::Session::live_notes();
+    let new_note = session.identity_doing("Notebook", "new_note");
+    let shown: Vec<ShownControl> = session
+        .controls()
+        .into_iter()
+        .filter(|control| control.doing.as_deref() == Some(new_note.as_str()))
+        .collect();
+    assert_eq!(
+        shown.len(),
+        1,
+        "one control does new_note, wherever the window shows it: {shown:?}"
+    );
+    assert_eq!(shown[0].name, "New note");
+    let (x, y) = (
+        shown[0].at.0 + shown[0].at.2 / 2.0,
+        shown[0].at.1 + shown[0].at.3 / 2.0,
+    );
+    session.window.click_at(x, y);
+    session.settle();
+    assert_eq!(
+        session.titles(),
+        ["Untitled".to_owned()],
+        "the press reaches the action where the control stands"
     );
 }
 

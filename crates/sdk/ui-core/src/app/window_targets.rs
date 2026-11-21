@@ -100,6 +100,17 @@ impl App {
             if !operable && identity.is_none() {
                 continue;
             }
+            // One operation is one control to name: where a window offers it in more than one
+            // place — the bar's primary and the empty state that presents it — a caller that asks
+            // for the control that does it gets one answer, the first the window reads. Every such
+            // place runs the same action, so it is the same control wherever it stands.
+            if let Some(identity) = identity
+                && targets
+                    .iter()
+                    .any(|known: &WindowTarget| known.identity.as_deref() == Some(identity))
+            {
+                continue;
+            }
             targets.push(WindowTarget {
                 role: format!("{:?}", described.role()),
                 name: name.unwrap_or_default().to_owned(),

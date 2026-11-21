@@ -1913,6 +1913,12 @@ impl Widget for EmptyState {
         self.rect
     }
 
+    /// The action is the state's own button, drawn inside it: that is what a press reaches, and
+    /// where it says what the state does.
+    fn pressable_child(&self) -> Option<usize> {
+        self.lists_action().then_some(0)
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Politeness, Role};
         let waiting = crate::workspace_sync::waiting();

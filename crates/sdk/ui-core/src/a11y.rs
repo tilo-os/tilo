@@ -475,6 +475,32 @@ impl AccessNode {
         self
     }
 
+    /// Say what this control does on the part of itself a press reaches: the child at `part`,
+    /// which the widget describes as the button its own action is drawn as (an empty state's
+    /// action), when that child is a button with nothing of its own to do, and on the node itself
+    /// otherwise.
+    ///
+    /// A control that holds a button of its own is pressed at that button: a person points at it,
+    /// a screen reader activates it and an agent presses it by its box. The node around it stands
+    /// for the whole control and is no press target itself, so a press at the middle of it answers
+    /// nothing, and the action said there would name a control no one can operate.
+    pub fn with_action_on_child(mut self, part: usize, action: impl Into<String>) -> Self {
+        let action = Some(action.into()).filter(|action| !action.is_empty());
+        let pressed = self.action.is_none()
+            && self.action_target.is_none()
+            && self.children.get(part).is_some_and(|child| {
+                child.role == Role::Button
+                    && child.action_target.is_some()
+                    && child.action.is_none()
+            });
+        if pressed {
+            self.children[part].action = action;
+        } else {
+            self.action = action;
+        }
+        self
+    }
+
     /// Say which item of its collection this node shows ([`Self::item`]).
     pub fn with_item(mut self, item: impl Into<String>) -> Self {
         self.item = Some(item.into()).filter(|item| !item.is_empty());

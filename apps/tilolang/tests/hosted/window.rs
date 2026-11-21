@@ -387,21 +387,32 @@ fn a_notebook_is_its_tree_with_the_chosen_note_beside_it_naming_the_window() {
     );
 }
 
-/// An empty notebook says so once, in place of both columns; its primary action stands once, in
-/// the bar, and what it makes opens beside the tree.
+/// An empty notebook says so in each column — the tree holds none yet, the body says what starts
+/// the first — and the body's state offers the window's primary action where the bar also keeps
+/// it: the one operation, offered where a person looks. What it makes opens beside the tree.
 #[test]
-fn an_empty_notebook_says_so_once_and_its_bar_makes_the_first_note() {
+fn an_empty_notebook_says_so_in_both_columns_and_its_states_action_makes_the_first_note() {
     let mut session = Session::notes();
     let shell_tree = composed(&mut session);
     let empty = shell_tree.of_kind("ui.EmptyState");
-    assert_eq!(empty.len(), 1, "one state, once: {empty:?}");
-    assert_eq!(prop(empty[0], "title").as_deref(), Some("No notes yet"));
+    assert_eq!(empty.len(), 2, "a state where each column stands: {empty:?}");
     assert!(
         empty
             .iter()
-            .all(|state| !state.props.contains_key("action")),
-        "the state draws no call to action beside the bar's"
+            .any(|state| prop(state, "title").as_deref() == Some("No notes yet")),
+        "the tree's column says it holds none yet: {empty:?}"
     );
+    assert!(
+        empty.iter().any(|state| prop(state, "title").as_deref() == Some("Start your first note")),
+        "the body says what starts the first: {empty:?}"
+    );
+    let offered: Vec<&UiNode> = empty
+        .iter()
+        .filter(|state| state.props.contains_key("action"))
+        .copied()
+        .collect();
+    assert_eq!(offered.len(), 1, "one state offers the action: {empty:?}");
+    assert_eq!(prop(offered[0], "action").as_deref(), Some("New note"));
     assert_eq!(
         buttons_in(&shell_tree, "actions")
             .iter()
