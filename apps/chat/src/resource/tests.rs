@@ -793,7 +793,11 @@ fn channel_drafts_reach_members_with_read_access() {
     };
     assert_eq!(shown(&mut bob), "hello from Ada");
     assert!(!ada.read_document(|doc| crate::projection::has_draft(doc, &channel)));
+    // A Viewer reads the workspace's drafts by their role; one taken out of
+    // the workspace reads none of them.
     bob.set_role(ui::permissions::Role::Viewer);
+    assert!(to.may_read());
+    bob.leave_workspace();
     assert!(!to.may_read());
     assert_eq!(shown(&mut bob), "");
 }
