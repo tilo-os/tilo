@@ -92,20 +92,12 @@ filter memfd was positioned at EOF after writing; Bubblewrap read an empty
 program and `PR_SET_SECCOMP` returned `EINVAL`. Rewinding before inheritance
 resolved this failure without changing the syscall policy.
 
-Run the integration regression explicitly on Linux with Bubblewrap and
-unprivileged user namespaces available:
-
-```sh
-cargo test -p compat-service --locked \
-  executor_retains_directories_after_path_replacement -- --ignored --nocapture
-```
-
-This passed on native ARM with Rust 1.97.1, both without a filter and with
-the `tilo-default` filter loaded by Bubblewrap. The normal service suite
-also passed all 48 tests; the environment-dependent regression is excluded
-from the default suite and was run separately. The shell integration check
-passed. These tests validate descriptor transfer, mounts, and filter
-loading; they do not replace the full capsule/Landlock runtime acceptance.
+The descriptor, mount and filter-loading behaviour was validated on native ARM
+with Rust 1.97.1, both without a filter and with the `tilo-default` filter loaded
+by Bubblewrap. It needs Bubblewrap and unprivileged user namespaces, which a job
+sandbox does not give, so no check exercises it: the service's plan tests cover
+the generated plan, and neither they nor this exercise replace the full
+capsule/Landlock runtime acceptance.
 
 ## Native translated-runtime supervisor
 
