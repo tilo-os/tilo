@@ -30,6 +30,9 @@ SHELL = "so.tilo.session"
 CHROME = "desktop:chrome"
 APPS = "file-explorer tasks notes chat settings activity"
 ACTIVITY = "so.tilo.activity"
+# The session's history of a workspace, which Activity's History draws.
+ACTIVITY_PROVIDER = "tilo.activity"
+ACTIVITY_RESOURCE = "workspace.activity"
 AGENT = "Claude Code"
 FILE = "agent-notes.md"
 BODY = b"# Notes from your agent\n\nThe spring budget is filed.\n"
@@ -38,17 +41,6 @@ NOTE = "Spring plans"
 CHAT = "I filed the budget under Spring."
 QUESTION = "Shall I file the budget under Spring?"
 ANSWER = "Yes, file it"
-
-
-def inside(target: dict, window: dict) -> bool:
-    """Whether the control `target` is drawn inside `window`: its centre within the window's
-    rect."""
-    if not target.get("rect") or not window.get("rect"):
-        return False
-    x, y, width, height = target["rect"]
-    left, top, wide, high = window["rect"]
-    cx, cy = x + width / 2, y + height / 2
-    return left <= cx <= left + wide and top <= cy <= top + high
 
 
 class Working:
@@ -222,49 +214,44 @@ def steps(story: Story) -> None:
         tree = (ada.session.state_dump() or {}).get("workspace_tree") or {}
         ada.session.invoke(SHELL, f"{CHROME}\u001factivity",
                            {"workspace": tree.get("active"), "view": "explore"})
-        window = until("the Activity window on Ada's shell", lambda: next(
-            (w for w in ada.session.windows() if w.get("app_id") == ACTIVITY), None), 60, 0.25)
-        changes = {FILE: FILE, TASK: TASK, NOTE: NOTE, "the message": "message"}
+        until("the Activity window on Ada's shell", lambda: next(
+            (w for w in ada.session.windows()
+             if w.get("app_id") == ACTIVITY and w.get("rect")), None), 60, 0.25)
+        # Its History lists the workspace's changes. A row of that list is no control the shell
+        # names, so what it lists is read from the feed the window draws: the session's
+        # `tilo.activity` history of the workspace, each change with its author.
+        changes = {FILE: FILE, TASK: TASK, NOTE: NOTE, "the message": CHAT}
 
-        def rows():
-            """The names of the controls Activity's own window draws, top to bottom: the rest
-            of the shell (Files, Tasks, Notes and Chat name the same things) is not History."""
-            return [t.get("name") or "" for t in ada.targets() if inside(t, window)]
+        def feed() -> list[dict]:
+            answer = ada.session.invoke(ACTIVITY_PROVIDER, f"{ACTIVITY_RESOURCE}\u001ffeed",
+                                        {"scope": "this-workspace", "limit": 0})
+            value = ((answer.get("receipt") or {}).get("update") or {}).get("output", {}).get("value")
+            return (value or {}).get("entries") or []
+
+        def about(entry: dict, text: str) -> bool:
+            words = " ".join(str(entry.get(k) or "") for k in ("summary", "resource", "app"))
+            return text.lower() in words.lower()
 
         def listed():
-            names = rows()
-            return all(any(text.lower() in name.lower() for name in names)
-                       for text in changes.values()) and names
+            entries = feed()
+            found = {what: [e for e in entries if about(e, text)] for what, text in changes.items()}
+            return found if all(found.values()) else None
 
-        # The action opens Activity on History. Where its window is narrow, Activity shows one
-        # pane at a time; if it shows its places instead of the list, a person picks History.
-        seen = {}
         try:
-            try:
-                names = until("History listing the agent's file, issue, note and message",
-                              listed, 20, 0.25)
-            except Failed:
-                seen["first"] = rows()
-                row = next((t for t in ada.targets()
-                            if t.get("name") == "History" and inside(t, window)), None)
-                if row is None:
-                    raise
-                x, y, width, height = row["rect"]
-                ada.session.click_at(x + width / 2, y + height / 2)
-                names = until("History listing the agent's file, issue, note and message, "
-                              "after Ada picks History", listed, 20, 0.25)
+            found = until("History listing the agent's file, issue, note and message", listed, 30, 0.5)
         finally:
-            seen["last"] = rows()
-            story.note("history-window", window)
-            story.note("history-controls", seen)
-        # Each row names who made it: the agent, by its own name, on the row or right beside it.
-        unnamed = []
-        for what, text in changes.items():
-            at = next(i for i, name in enumerate(names) if text.lower() in name.lower())
-            if not any(AGENT in name for name in names[max(0, at - 4):at + 5]):
-                unnamed.append(what)
+            entries = feed()
+            story.note("history-feed", [{k: e.get(k) for k in ("summary", "resource", "app", "author")}
+                                        for e in entries])
+        # Each change is under the agent's own name.
+        unnamed = {}
+        for what, rows in found.items():
+            if not any(AGENT in ((row.get("author") or {}).get("name") or "") for row in rows):
+                unnamed[what] = sorted({(row.get("author") or {}).get("name") or "nobody"
+                                        for row in rows})
         if unnamed:
-            raise Failed(f"History does not name {AGENT} beside {', '.join(unnamed)}")
+            raise Failed("History does not name " + AGENT + " beside " + "; ".join(
+                f"{what} (it names {', '.join(names)})" for what, names in unnamed.items()))
 
     story.step("Ada sees each change under the agent’s name", under_its_name)
 

@@ -211,11 +211,12 @@ def steps(story: Story) -> None:
         until("Grace's shell to hold Garden club",
               lambda: any(w.get("id") == wanted for w in workspaces(grace)), 240, 0.5)
         stand_in(grace, wanted)
-        # A computer new to Tilo knows no name for its person yet: Grace gives hers.
-        name_self(grace, "Grace")
-        story.timing("Grace's join, to standing in Garden club", (time.monotonic() - began) * 1000)
         until(f"Grace's top bar saying she is in {WORKSPACE}",
               lambda: in_front_named(grace, WORKSPACE), 30, 0.2)
+        story.timing("Grace's join, to standing in Garden club", (time.monotonic() - began) * 1000)
+        # A computer new to Tilo knows no name for its person yet: Grace gives hers, once her
+        # shell has settled in the workspace (switching closes what the top bar had open).
+        name_self(grace, "Grace")
 
     story.step(f"Grace joins {WORKSPACE}", grace_joins)
 
