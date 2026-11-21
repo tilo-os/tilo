@@ -34,7 +34,7 @@ fn median(mut samples: Vec<Duration>) -> Duration {
 /// A view of the resource `(id, kind)` of the record at `route`.
 fn view_of(route: &DocumentRoute, (id, kind): (&str, &str)) -> CatalogueQuery {
     CatalogueQuery {
-        provider: Some(record_provider(route)),
+        provider: Some(resource_provider(route)),
         view_resource: Some(ViewResourceQuery {
             id: id.to_owned(),
             kind: kind.to_owned(),
@@ -54,7 +54,7 @@ async fn viewable(
         .query(
             person,
             CatalogueQuery {
-                provider: Some(record_provider(route)),
+                provider: Some(resource_provider(route)),
                 max_results: 256,
                 ..CatalogueQuery::default()
             },
@@ -141,7 +141,7 @@ fn approved(route: &DocumentRoute) -> Submission {
             "0123456789abcdef0123456789abcdef".into(),
             Destination {
                 workspace: route.cluster_id.clone(),
-                provider: record_provider(route),
+                provider: resource_provider(route),
                 channel: "feedback".into(),
             },
         )

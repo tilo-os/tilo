@@ -91,7 +91,7 @@ async fn workspace_skills_are_shared_and_use_the_members_role() {
         .query(
             &owner,
             CatalogueQuery {
-                provider: Some(tilo_agent_session::record_provider(&route)),
+                provider: Some(tilo_agent_session::resource_provider(&route)),
                 resource_name: Some(SKILLS.into()),
                 ..CatalogueQuery::default()
             },
