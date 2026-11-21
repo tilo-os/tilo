@@ -136,5 +136,4 @@ beside it.
   devices working in one Browser tab, the tab's record, review, and a form as
   typed actions.
 - [Session UI inventory](ui-inventory.md): which shell surfaces still lay
-  themselves out by hand, what replaces each, and the policy that stops new
-  ones.
+  themselves out by hand, and what replaces each.

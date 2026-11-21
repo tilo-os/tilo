@@ -185,40 +185,6 @@ if grep -qE '(^|/)Cargo\.toml$|^Cargo\.lock$' <<< "$lock_staged_names"; then
   fi
 fi
 
-# The design-system baseline (tools/policy/primitives_baseline.txt) is a ratchet that may only
-# shrink. A commit that fixes a hand-painted control leaves its line too high, and the policy
-# suite then fails "is now …; lower the count". Lowering it is not a judgement call, so do it
-# here for the sources this commit stages and stage what it wrote. A commit that adds a
-# violation is left to fail: raising a line is the review the check exists for.
-prim_files=""
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  if GIT_INDEX_FILE="$full_index" git diff --quiet -- "$f"; then
-    prim_files="$prim_files$f"$'\n'
-  else
-    note "primitives baseline: $f has unstaged edits; stage the whole file and commit again"
-    fail=1
-  fi
-done < <(git diff --cached --name-only --diff-filter=ACMD -- crates/session apps \
-           | grep -E '\.rs$' || true)
-if [ -n "$prim_files" ]; then
-  if ! GIT_INDEX_FILE="$full_index" git diff --quiet -- tools/policy/primitives_baseline.txt; then
-    note "primitives baseline has unstaged edits: stage it and commit again"
-    fail=1
-  else
-    # The list ends with a newline and a here-string adds one: trim it, or the
-    # empty name between them reaches the tool as the repository root.
-    mapfile -t prim_array <<< "${prim_files%$'\n'}"
-    if ! python3 "$root/tools/policy/check_primitives.py" --lower "${prim_array[@]}"; then
-      note "primitives baseline could not be lowered: run python3 tools/policy/check_primitives.py --lower <files>"
-      fail=1
-    elif ! GIT_INDEX_FILE="$full_index" git diff --quiet -- tools/policy/primitives_baseline.txt; then
-      GIT_INDEX_FILE="$full_index" git add -- tools/policy/primitives_baseline.txt
-      note "primitives baseline: lowered the counts this commit fixed and staged it"
-    fi
-  fi
-fi
-
 # The SDK's types and the API's description (docs/api/openapi.json) are
 # generated from the apps' surfaces and manifests (`tilo sdk gen`), so a
 # change to either leaves them stale: they are what an

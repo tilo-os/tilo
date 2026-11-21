@@ -7,14 +7,7 @@ the stock-take before the conversion: which surfaces still lay themselves out
 by hand, what each draws, which shared component replaces it, and whether that
 component exists yet.
 
-The guard is `tools/policy/check_primitives.py` (the session-surface rules
-below `hand-rolled`). Each existing instance is in its baseline
-(`primitives_baseline.txt`), and a count only shrinks: a surface that starts
-painting its own ground, words, geometry or scrolling fails the policy suite
-with the component it should use named in the message. A surface converted
-from this list must lower its line.
-
-## The rules the guard enforces
+## The rules
 
 | Rule | What it refuses | Build it from |
 | --- | --- | --- |
@@ -25,58 +18,55 @@ from this list must lower its line.
 | `own-scroll` | a scroll position the surface keeps and clamps itself | `Scrollable` (a body), `Scroll` (a list's rows), `ScrollRegion` (a painted host) |
 | `own-draw` | a `Decorator` whose `draw` paints into the scene around the widget it wraps | the shared widget draws it; a wrapper only reads input or forwards `draw` |
 
-The rules count under `crates/session/`, except `crates/session/compositor/`:
-the compositor shapes a client's buffer (a foreign window's corners and
-shadow) and has no toolkit tree to compose from. `apps/` keep the older four
-rules only; the shell apps (`apps/launcher`, `apps/osk`, `apps/settings`) are
-already composed and are checked when they paint by hand as any app is.
+`crates/session/compositor/` is outside them: the compositor shapes a
+client's buffer (a foreign window's corners and shadow) and has no toolkit
+tree to compose from.
 
 A rounded rect passed to `push_layer` is a clip mask (a fade or a reveal
-around the wrapped widget), not a painted panel, and is not counted.
+around the wrapped widget), not a painted panel.
 
 ## How to read the table
 
 Sorted by how visible the surface is to a person: what they meet without
 asking for it first (the bar, banners, the lock screen, a sheet they open)
-before what they go looking for (overview, switcher, pickers, widgets).
-The counts are this tree's baseline for that file, across the six rules. A
+before what they go looking for (overview, switcher, pickers, widgets). A
 file with one visible surface and several helpers is one row.
 
 ## Surfaces, most visible first
 
-| # | Surface | Files | Counts | What it draws by hand | Replace with | Exists? |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | **Top bar: status cluster (tray pill, badges, media indicator)** | `crates/session/desktop/src/topbar/tray.rs` | 0 (converted) | — (`StatusCluster` for the pill, badge and critical battery; `BarChipFace` for the media indicator; `BarControlFace::paint_lift` for a tray icon) | `StatusCluster`, `BarChip` | yes |
-| 2 | **Top bar: clock area** | `crates/session/desktop/src/topbar/clock.rs` | 0 (converted) | — (`TextLineFace` for the time and the live activity, `BarControlFace::paint_lift` for the activity's pill) | `TextLineFace` | yes |
-| 3 | **Top bar: people, sharing and invite chips** | `topbar/people.rs`, `topbar/sharing.rs`, `topbar/avatar_ask.rs`, `topbar/workspace.rs`, `topbar/controls.rs` | 0 (converted) | — (`BarChipFace` for the people, invite, watching and sharing chips, `BarControlFace::paint_lift` for the Tilo mark, `FloatingPanelFace` for the ask pill, `FactsFace` for its words, `paint_focus_ring` for the bar's ring) | `BarChip`, `paint_focus_ring` | yes |
-| 4 | **Top bar: strips and workspace name** | `topbar/strips.rs`, `topbar.rs` | 0 (converted) | — (`BarChipFace` for the strip's name, `TextInput` for the naming field, `paint_bar_body` for the bar's own body) | `BarChip`, `TextInput`, `paint_bar_body` | yes |
-| 5 | **Notification banners (stack, toasts, "more" card, lock redaction)** | `desktop-surface/src/notifications/stack.rs`, `notifications/reader.rs` | 0 (converted) | — (`ToastCard`/`paint_card` for the cards' ground, `TextLineFace` for their labels, `TextBlockFace` for the reader's page) | `ToastCard`, `TextLineFace`, `TextBlockFace` | yes |
-| 6 | **Notification centre (the retained list)** | `desktop-surface/src/notifications/center.rs` | 0 (converted) | — (`paint_control_row` for a row, a group's band and the cleared band; `paint_severity_rail` for the rail; `TextLineFace`/`TextBlockFace` for every line; `paint_focus_ring` for the selection; `ButtonFace` for every button) | `paint_control_row`, `TextLineFace`, `paint_severity_rail` | yes |
-| 7 | **Lock screen** | `crates/session/sheets/src/lock.rs` | 0 | — (the one `RoundedRect` is a clip mask for the refusal shake and the idle fade, not a panel; the screen is `Text`, `TextInput`, `Button` and `PasscodeKeyboard` on `ui::auth_backdrop`) | — | yes |
-| 8 | **"Join a workspace…" sheet** | `crates/session/sheets/src/directory.rs` | 0 | — (converted: `ModalDialog`, `ListRow`, `TextInput`; the decorator only reads Enter/Escape) | — | yes |
-| 9 | **Sheets built on `ModalDialog`** | `sheets/src/{add_app,uninstall,portal/view,displays,shortcut_guide,workspace_settings/*}.rs` | 0 | — | — | yes |
-| 10 | **Consent and question panels** | `sheets/src/display_confirm.rs`, `sheets/src/dictation.rs` | 0 | — (`FloatingPanel` + `Button`; the decorators read input only) | — | yes |
-| 11 | **File chooser sheet** | `crates/session/sheets/src/file_picker/mod.rs` | 0 | — (`ui::widget::FilePicker`; the decorator reads input only) | — | yes |
-| 12 | **Quick settings panel and its pages** | `crates/session/quick-settings/src/view/*.rs`, `faces.rs` | 0 | — (`FloatingPanel`, `QuickTile`, `ListRow`, `Section`, `Slider`, `Button`; `faces.rs` is plain data) | — | yes |
-| 13 | **Power menu, window menu, workspace menu, About sheet** | `sheets/src/power.rs`, `window-menu/src/surface.rs`, `desktop/src/workspace_menu.rs`, `desktop/src/about.rs` | 0 | — (`ContextMenu`, `MenuItem`, `ModalDialog`) | — | yes |
-| 17 | **Workspace overview (Super+Tab panel) and its picture** | `desktop/src/overview_panel.rs` (5), `overview_panel/layout.rs` (6), `overview_panel/input.rs` (2), `overview_panel/paint.rs` (21), `desktop/src/overview_picture.rs` (3) | 37 (panel 10, text 13, scroll 1) | the panel's ground, edge and shadow, the "where you are" block, share rows, the go-to list, workspace rows and list rows, each tile and its strip label, the naming field, the face stack and app marks; and the shared picture's strip names, window titles and empty-strip words | `paint_surface`/`FloatingPanelFace` for the panel, `ListRowFace` for its rows, `TileHost`/`WindowPreview` for the pictured windows, `FaceStack` for the faces, `ScrollRegion` for its scroll (it clamps `scroll_y` by hand), `SearchField`/`TextInput` for the naming field | largely: `FloatingPanelFace`, `ListRowFace`, `TileHost`, `WindowPreview`, `ScrollRegion` exist; a **workspace-overview panel** (workspaces, each with pictured windows, one shared scroll) does not |
-| 18 | **Window switcher (Alt+Tab)** | `desktop/src/window_switcher.rs` | 9 (panel 7, text 2) | the panel, its cards and their wells, the hover ring, the hint line | `FloatingPanelFace` for the panel, `Card`/`WindowWell` for a card and its window, `KeyHintsFace` for the hints, `Text` for labels | partly: `FloatingPanelFace`, `Card`, `WindowWell`, `KeyHintsFace` exist; a **window switcher card** (a well with a title and an app mark, lifted when chosen) does not |
-| 19 | **Emoji picker** | `desktop/src/emoji_picker.rs` | 11 (panel 6, text 4, row 1) | the card's ground and edge, group segments, the grid's cells and their selection, the tone row | `FloatingPanelFace` for the card, `SearchField` (already used) and `ToggleGroup`/`SegmentedFace` for groups, `Card`/`ButtonFace` for a cell, `Popover` for the tone row | mostly: the picker's **grid cell** (a glyph, its name and its selection) as a shared component does not exist; `apps/osk`'s emoji panel draws the same thing and should share it |
-| 20 | **Widgets (team, calendar, monitor, music)** | `desktop/src/widgets/paint.rs` | 29 (panel 15, text 13, row 1) | each widget's glance ground, its open card's header, team rows, calendar grid, monitor readings, music art and transport, the grip, the pin and remove controls, the badge | `Card`/`ListRowFace` for the open card, `FaceStack` for the team, `DataTable`/`StatTile` for the monitor, `MediaTransport` for music, `ButtonFace`/`BarControlFace` for the controls, `Card`'s grip | partly: `Card`, `FaceStack`, `StatTile`, `MediaTransport` exist; the **widget glance/expand frame** (a glance that becomes a card at a size stage) is specific to the shell and has no shared component |
-| 22 | **Member roster** | `desktop/src/people.rs` | 7 (text 2, scroll 5) | the roster's own scroll offset (computed and clamped itself); two labels | `ScrollRegion` for the list (the rows are already `ListRowFace`), `Text` for the labels | yes: `ScrollRegion` |
-| 23 | **Strip switcher and strip navigator** | `desktop/src/strip_switcher.rs` (2), `strip_navigator.rs` (7) | 9 (panel 1, text 1, scroll 7) | a label's ground, a label's text, the ribbon's own scroll position | `paint_surface`/`ChromeRole::Control` for the label, `Text` for its name, `ScrollRegion` for the rail | partly: the label should be a row (`ListRowFace` with `rail()`); a **strip rail/ribbon** exists as `ui::chrome::shell::{StripRail, StripRibbon}` |
-| 24 | **Launchpad (first use)** | `desktop/src/launchpad.rs` | 6 (panel 1, text 5) | the empty workspace's cards' titles, subtitles and hints | `Card`, `TextStackFace`, `KeyHintsFace`, `EmptyState`; the "Open an app" button already uses `ButtonFace` | yes |
-| 25 | **Hardware readout (OSD)** | `desktop/src/osd.rs` | 6 (panel 3, text 3) | the pill's level bar, its glyph, its name and its value | `ProgressBar`/`paint_level_gauge` for the level, `Icon` for the glyph, `TextStack` for the words | partly: `paint_level_gauge` exists; an **OSD pill** (a glyph, a device name, a value and a level bar on the floating material) does not |
-| 26 | **Display "which is which" cards** | `desktop/src/display_identify.rs` | 2 (text 2) | each display's number and name (the card ground already comes from `floating_surface::paint_card`) | `Text`/`TextStack` on a `FloatingPanelFace` | yes |
-| 27 | **Feedback picker** | `desktop/src/feedback_picker.rs` | 3 (panel 1, text 2) | the dim, the picked part's outline, the hint pill | `paint_see_through` for the bar (already), `Chip`/`Banner` for the hint, `KeyHintsFace` for its chords | partly: a **pick outline** (a lit part's bounds over the dim) is drawing, not chrome, and stays a painting surface |
-| 29 | **Drill-in pages (Wi-Fi, Bluetooth, VPN, sound, devices)** | `desktop-surface/src/drill_in.rs` | 6 (panel 2, text 4) | the shared control ground and its focus ring, list rows, the empty state's words | `ListRowFace`/`ControlRow` for the rows, `EmptyState.paint` for the empty state, `ButtonFace` for the back control | yes; `drill_in.rs` is exactly the kind of local copy the rules retire: it is the Quick Settings list language, drawn once for the panel and once for the notification centre |
-| 30 | **Notifications over the strip** | `desktop-surface/src/surface/notices.rs` (1), `surface/arrivals.rs` (3) | 4 (panel 3, text 1) | the arrival hint's pill, its presence dot and its text | `Chip`/`Banner` for the hint, `Avatar`'s presence ring for the dot | partly: an **arrival hint** (a person's colour, a dot, a sentence, an arrow) has no shared component |
-| 31 | **Hung-app card** | `desktop-surface/src/surface/hung.rs` | 2 (text 2) | its heading and body text (the card ground already comes from `floating_surface::paint_card`) | `TextStack` and `Text`; the two buttons already use `ButtonFace` | yes |
-| 32 | **Strip paging and the desktop surface's own scroll** | `desktop-surface/src/surface/paging.rs` (2), `surface.rs` (2) | 4 (scroll 4) | the strip's pan position, clamped itself | `ScrollRegion` (a horizontal region) or `ui::motion` for the pan | yes: `ScrollRegion` |
-| 33 | **Workspace title and panel geometry** | `desktop/src/composition.rs` (1) | 1 (metric 1) | a `with_gap(0.0)` on a column that should name its rhythm | `Rhythm`/`Spacing` | yes |
-| 34 | **Onboarding pages** | `crates/session/onboarding/src/compose.rs` (2) | 2 (metric 2) | two written-out gaps in otherwise-composed pages | `Rhythm`/`Spacing` | yes |
-| 35 | **Onboarding ceremony backdrop** | `crates/session/onboarding/src/ceremony.rs` | 0 | the dim and the two blooms are the backdrop itself, not chrome | `ui::backdrop` if it gains a ceremony backdrop; `auth_backdrop` covers the authentication screens | partly |
-| 36 | **Capture bar** | `crates/session/capture-studio/src/surface.rs` | 1 (text 1) | one label on the see-through material | `Text` on `paint_see_through` (already used for the ground) | yes |
+| # | Surface | Files | What it draws by hand | Replace with | Exists? |
+| --- | --- | --- | --- | --- | --- |
+| 1 | **Top bar: status cluster (tray pill, badges, media indicator)** | `crates/session/desktop/src/topbar/tray.rs` | — (`StatusCluster` for the pill, badge and critical battery; `BarChipFace` for the media indicator; `BarControlFace::paint_lift` for a tray icon) | `StatusCluster`, `BarChip` | yes |
+| 2 | **Top bar: clock area** | `crates/session/desktop/src/topbar/clock.rs` | — (`TextLineFace` for the time and the live activity, `BarControlFace::paint_lift` for the activity's pill) | `TextLineFace` | yes |
+| 3 | **Top bar: people, sharing and invite chips** | `topbar/people.rs`, `topbar/sharing.rs`, `topbar/avatar_ask.rs`, `topbar/workspace.rs`, `topbar/controls.rs` | — (`BarChipFace` for the people, invite, watching and sharing chips, `BarControlFace::paint_lift` for the Tilo mark, `FloatingPanelFace` for the ask pill, `FactsFace` for its words, `paint_focus_ring` for the bar's ring) | `BarChip`, `paint_focus_ring` | yes |
+| 4 | **Top bar: strips and workspace name** | `topbar/strips.rs`, `topbar.rs` | — (`BarChipFace` for the strip's name, `TextInput` for the naming field, `paint_bar_body` for the bar's own body) | `BarChip`, `TextInput`, `paint_bar_body` | yes |
+| 5 | **Notification banners (stack, toasts, "more" card, lock redaction)** | `desktop-surface/src/notifications/stack.rs`, `notifications/reader.rs` | — (`ToastCard`/`paint_card` for the cards' ground, `TextLineFace` for their labels, `TextBlockFace` for the reader's page) | `ToastCard`, `TextLineFace`, `TextBlockFace` | yes |
+| 6 | **Notification centre (the retained list)** | `desktop-surface/src/notifications/center.rs` | — (`paint_control_row` for a row, a group's band and the cleared band; `paint_severity_rail` for the rail; `TextLineFace`/`TextBlockFace` for every line; `paint_focus_ring` for the selection; `ButtonFace` for every button) | `paint_control_row`, `TextLineFace`, `paint_severity_rail` | yes |
+| 7 | **Lock screen** | `crates/session/sheets/src/lock.rs` | — (the one `RoundedRect` is a clip mask for the refusal shake and the idle fade, not a panel; the screen is `Text`, `TextInput`, `Button` and `PasscodeKeyboard` on `ui::auth_backdrop`) | — | yes |
+| 8 | **"Join a workspace…" sheet** | `crates/session/sheets/src/directory.rs` | — (converted: `ModalDialog`, `ListRow`, `TextInput`; the decorator only reads Enter/Escape) | — | yes |
+| 9 | **Sheets built on `ModalDialog`** | `sheets/src/{add_app,uninstall,portal/view,displays,shortcut_guide,workspace_settings/*}.rs` | — | — | yes |
+| 10 | **Consent and question panels** | `sheets/src/display_confirm.rs`, `sheets/src/dictation.rs` | — (`FloatingPanel` + `Button`; the decorators read input only) | — | yes |
+| 11 | **File chooser sheet** | `crates/session/sheets/src/file_picker/mod.rs` | — (`ui::widget::FilePicker`; the decorator reads input only) | — | yes |
+| 12 | **Quick settings panel and its pages** | `crates/session/quick-settings/src/view/*.rs`, `faces.rs` | — (`FloatingPanel`, `QuickTile`, `ListRow`, `Section`, `Slider`, `Button`; `faces.rs` is plain data) | — | yes |
+| 13 | **Power menu, window menu, workspace menu, About sheet** | `sheets/src/power.rs`, `window-menu/src/surface.rs`, `desktop/src/workspace_menu.rs`, `desktop/src/about.rs` | — (`ContextMenu`, `MenuItem`, `ModalDialog`) | — | yes |
+| 17 | **Workspace overview (Super+Tab panel) and its picture** | `desktop/src/overview_panel.rs`, `overview_panel/layout.rs`, `overview_panel/input.rs`, `overview_panel/paint.rs`, `desktop/src/overview_picture.rs` | the panel's ground, edge and shadow, the "where you are" block, share rows, the go-to list, workspace rows and list rows, each tile and its strip label, the naming field, the face stack and app marks; and the shared picture's strip names, window titles and empty-strip words | `paint_surface`/`FloatingPanelFace` for the panel, `ListRowFace` for its rows, `TileHost`/`WindowPreview` for the pictured windows, `FaceStack` for the faces, `ScrollRegion` for its scroll (it clamps `scroll_y` by hand), `SearchField`/`TextInput` for the naming field | largely: `FloatingPanelFace`, `ListRowFace`, `TileHost`, `WindowPreview`, `ScrollRegion` exist; a **workspace-overview panel** (workspaces, each with pictured windows, one shared scroll) does not |
+| 18 | **Window switcher (Alt+Tab)** | `desktop/src/window_switcher.rs` | the panel, its cards and their wells, the hover ring, the hint line | `FloatingPanelFace` for the panel, `Card`/`WindowWell` for a card and its window, `KeyHintsFace` for the hints, `Text` for labels | partly: `FloatingPanelFace`, `Card`, `WindowWell`, `KeyHintsFace` exist; a **window switcher card** (a well with a title and an app mark, lifted when chosen) does not |
+| 19 | **Emoji picker** | `desktop/src/emoji_picker.rs` | the card's ground and edge, group segments, the grid's cells and their selection, the tone row | `FloatingPanelFace` for the card, `SearchField` (already used) and `ToggleGroup`/`SegmentedFace` for groups, `Card`/`ButtonFace` for a cell, `Popover` for the tone row | mostly: the picker's **grid cell** (a glyph, its name and its selection) as a shared component does not exist; `apps/osk`'s emoji panel draws the same thing and should share it |
+| 20 | **Widgets (team, calendar, monitor, music)** | `desktop/src/widgets/paint.rs` | each widget's glance ground, its open card's header, team rows, calendar grid, monitor readings, music art and transport, the grip, the pin and remove controls, the badge | `Card`/`ListRowFace` for the open card, `FaceStack` for the team, `DataTable`/`StatTile` for the monitor, `MediaTransport` for music, `ButtonFace`/`BarControlFace` for the controls, `Card`'s grip | partly: `Card`, `FaceStack`, `StatTile`, `MediaTransport` exist; the **widget glance/expand frame** (a glance that becomes a card at a size stage) is specific to the shell and has no shared component |
+| 22 | **Member roster** | `desktop/src/people.rs` | the roster's own scroll offset (computed and clamped itself); two labels | `ScrollRegion` for the list (the rows are already `ListRowFace`), `Text` for the labels | yes: `ScrollRegion` |
+| 23 | **Strip switcher and strip navigator** | `desktop/src/strip_switcher.rs`, `strip_navigator.rs` | a label's ground, a label's text, the ribbon's own scroll position | `paint_surface`/`ChromeRole::Control` for the label, `Text` for its name, `ScrollRegion` for the rail | partly: the label should be a row (`ListRowFace` with `rail()`); a **strip rail/ribbon** exists as `ui::chrome::shell::{StripRail, StripRibbon}` |
+| 24 | **Launchpad (first use)** | `desktop/src/launchpad.rs` | the empty workspace's cards' titles, subtitles and hints | `Card`, `TextStackFace`, `KeyHintsFace`, `EmptyState`; the "Open an app" button already uses `ButtonFace` | yes |
+| 25 | **Hardware readout (OSD)** | `desktop/src/osd.rs` | the pill's level bar, its glyph, its name and its value | `ProgressBar`/`paint_level_gauge` for the level, `Icon` for the glyph, `TextStack` for the words | partly: `paint_level_gauge` exists; an **OSD pill** (a glyph, a device name, a value and a level bar on the floating material) does not |
+| 26 | **Display "which is which" cards** | `desktop/src/display_identify.rs` | each display's number and name (the card ground already comes from `floating_surface::paint_card`) | `Text`/`TextStack` on a `FloatingPanelFace` | yes |
+| 27 | **Feedback picker** | `desktop/src/feedback_picker.rs` | the dim, the picked part's outline, the hint pill | `paint_see_through` for the bar (already), `Chip`/`Banner` for the hint, `KeyHintsFace` for its chords | partly: a **pick outline** (a lit part's bounds over the dim) is drawing, not chrome, and stays a painting surface |
+| 29 | **Drill-in pages (Wi-Fi, Bluetooth, VPN, sound, devices)** | `desktop-surface/src/drill_in.rs` | the shared control ground and its focus ring, list rows, the empty state's words | `ListRowFace`/`ControlRow` for the rows, `EmptyState.paint` for the empty state, `ButtonFace` for the back control | yes; `drill_in.rs` is exactly the kind of local copy the rules retire: it is the Quick Settings list language, drawn once for the panel and once for the notification centre |
+| 30 | **Notifications over the strip** | `desktop-surface/src/surface/notices.rs`, `surface/arrivals.rs` | the arrival hint's pill, its presence dot and its text | `Chip`/`Banner` for the hint, `Avatar`'s presence ring for the dot | partly: an **arrival hint** (a person's colour, a dot, a sentence, an arrow) has no shared component |
+| 31 | **Hung-app card** | `desktop-surface/src/surface/hung.rs` | its heading and body text (the card ground already comes from `floating_surface::paint_card`) | `TextStack` and `Text`; the two buttons already use `ButtonFace` | yes |
+| 32 | **Strip paging and the desktop surface's own scroll** | `desktop-surface/src/surface/paging.rs`, `surface.rs` | the strip's pan position, clamped itself | `ScrollRegion` (a horizontal region) or `ui::motion` for the pan | yes: `ScrollRegion` |
+| 33 | **Workspace title and panel geometry** | `desktop/src/composition.rs` | a `with_gap(0.0)` on a column that should name its rhythm | `Rhythm`/`Spacing` | yes |
+| 34 | **Onboarding pages** | `crates/session/onboarding/src/compose.rs` | two written-out gaps in otherwise-composed pages | `Rhythm`/`Spacing` | yes |
+| 35 | **Onboarding ceremony backdrop** | `crates/session/onboarding/src/ceremony.rs` | the dim and the two blooms are the backdrop itself, not chrome | `ui::backdrop` if it gains a ceremony backdrop; `auth_backdrop` covers the authentication screens | partly |
+| 36 | **Capture bar** | `crates/session/capture-studio/src/surface.rs` | one label on the see-through material | `Text` on `paint_see_through` (already used for the ground) | yes |
 
 ## Converted (no count against them)
 
@@ -160,9 +150,7 @@ component serves both.
 
 ## How this list shrinks
 
-A surface is converted when its file's baseline lines are lowered (or the
-lines drop out) and the shared component it uses is the one named in its row;
+A surface is converted when it composes the shared component named in its row;
 a component lands in `crates/sdk/ui-core` with its own catalogue entry
 (`crates/dev/ui-graph/components.json`) and tests, and the local copies above
-are deleted in the same change. A new surface that hand-lays itself fails
-`tools/policy/run.sh` before it can land.
+are deleted in the same change.

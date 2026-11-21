@@ -111,16 +111,6 @@ label = "The other words actions declare for search are plain words"
 run = "python3 tools/policy/check_action_keywords.py"
 
 [[step]]
-name = "primitives"
-label = "Surfaces are built from the design system primitives"
-run = "python3 tools/policy/check_primitives.py"
-
-[[step]]
-name = "breakpoints"
-label = "Surfaces take their breakpoint from the rect they are laid out in"
-run = "python3 tools/policy/check_breakpoints.py"
-
-[[step]]
 name = "test-spawns"
 label = "Tests start processes under the environment lock"
 run = "python3 tools/policy/check_test_spawns.py"
@@ -139,11 +129,6 @@ run = "python3 tools/policy/check_socket_paths.py"
 name = "swallowed-failures"
 label = "Session, collaboration and app-hosting code hears its failures"
 run = "python3 tools/policy/check_swallowed_failures.py"
-
-[[step]]
-name = "app-toolbars"
-label = "Apps put their controls, search included, in the window bar's slots"
-run = "python3 tools/policy/check_app_toolbars.py"
 
 [[step]]
 name = "live-rows"

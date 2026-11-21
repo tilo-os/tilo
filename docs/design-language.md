@@ -330,8 +330,8 @@ the theme: you pick it once and every device and member sees the same.
 One icon set (`ui::icons`, Lucide), 1.5 px stroke, in ink colours: 16 in rows
 and controls, 20 as a bar's leading app icon. Icons rest in secondary ink and
 turn primary on hover or while active. No emoji or Unicode glyphs as icons
-(arrows, check marks, crosses, dots, stars); `tools/policy/check_primitives.py`
-and `check_copy_language.py` refuse them.
+(arrows, check marks, crosses, dots, stars); `check_copy_language.py` refuses
+them in copy.
 
 ## Primitives
 
@@ -366,10 +366,9 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `EmptyState`, `Banner`, toast | on the tokens |
 
 A card is only for an object (a person, a file, a device), never for a group
-of settings. `tools/policy/check_primitives.py` refuses, in
-`crates/session/` and `apps/`, hand-painted rounded rects with text,
-separator-glyph joins and symbol icons in string literals, and raw colour
-literals.
+of settings. A rounded rect painted around text, a separator-glyph join in a
+string, a symbol used as an icon and a raw colour literal are the shapes the
+primitives exist to replace.
 
 ## Motion
 

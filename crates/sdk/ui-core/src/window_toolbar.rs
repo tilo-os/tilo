@@ -1363,8 +1363,7 @@ pub fn is_hosted() -> bool {
     }
 }
 
-/// Why a control of the app's own stays where it is although the bar has a part for it:
-/// the closed set of reasons `tools/policy/check_app_toolbars.py` accepts.
+/// Why a control of the app's own stays where it is although the bar has a part for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Exemption {
     Picker,
@@ -1380,9 +1379,7 @@ pub enum Exemption {
 /// `body` with the reason it keeps a control of its own although the bar has
 /// a part for it ([`Exemption`]).
 ///
-/// A reason outside [`Exemption`] does not compile, and the policy check
-/// reads this call rather than a comment, so tidying the comments around the
-/// control never takes the reason away from it. Wrap the expression that
+/// A reason outside [`Exemption`] does not compile. Wrap the expression that
 /// draws the control, not a statement that binds it: the body is a block.
 ///
 /// ```

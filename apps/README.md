@@ -130,9 +130,8 @@ selector, card, field, dialog, list row, or sidebar from raw rounded rectangles
 is not a normal implementation option. Custom painting is reserved for the app's
 domain visualization (for example a graph, map, waveform, or document canvas),
 and every interactive custom region must publish a stable semantic target, name,
-bounds, state, and the same action used by pointer input. Source presubmit
-ratchets app-owned rounded-rectangle painting at its existing debt ceiling, so
-new exceptions require an explicit baseline change and review.
+bounds, state, and the same action used by pointer input. A control painted by hand
+in an app is a toolkit gap to fill rather than a local exception.
 
 For a control inside a legitimate domain canvas, construct one shared face and
 reuse it for paint, input, and semantics. `minimum_target` preserves compact
