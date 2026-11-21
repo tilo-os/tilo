@@ -5037,6 +5037,7 @@ env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/server-plan-install-retry/**"]
+evidence = ["/target/server-plan-install-retry/**"]
 cache = false
 timeout_secs = 5400
 default = false
