@@ -1490,7 +1490,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
 
             #label_with_fn
 
-            #[allow(clippy::match_single_binding, reason = "a record may have no stored field")]
+            #[allow(clippy::match_single_binding, reason = "a record with no stored fields leaves only the fallback arm")]
             fn __field(
                 value: &dyn ::core::any::Any,
                 index: usize,
@@ -1502,7 +1502,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 }
             }
 
-            #[allow(clippy::match_single_binding, reason = "a record may have no stored field")]
+            #[allow(clippy::match_single_binding, reason = "a record with no stored fields leaves only the fallback arm")]
             fn __field_mut(
                 value: &mut dyn ::core::any::Any,
                 index: usize,
