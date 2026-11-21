@@ -169,7 +169,7 @@ pub fn check_prepared_choices(args: &[OsString], input: impl std::io::Read) -> R
     if !or_default("device_label", "", &device_label) {
         return refuse("prepared device label differs from authenticated choices");
     }
-    if !or_default("purpose", "computer", &purpose) {
+    if !is("purpose", &purpose) {
         return refuse("prepared purpose differs from authenticated choices");
     }
     if !(is("hostname", &hostname)

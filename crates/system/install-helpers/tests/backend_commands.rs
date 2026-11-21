@@ -210,7 +210,6 @@ tilo_test_env::scenario! {
         let mut defaults = profile();
         let map = defaults.as_object_mut().unwrap();
         map.remove("device_label");
-        map.remove("purpose");
         let mut choices = CHOICES;
         choices[5] = "";
         stdout(&check_choices(&defaults, &choices));

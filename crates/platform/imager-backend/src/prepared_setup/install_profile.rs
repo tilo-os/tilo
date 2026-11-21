@@ -7,7 +7,6 @@ use std::io;
 #[serde(deny_unknown_fields)]
 pub struct PublicInstallProfile {
     pub schema: u32,
-    #[serde(default = "install_profile_model::default_purpose")]
     pub purpose: String,
     pub username: String,
     pub full_name: String,

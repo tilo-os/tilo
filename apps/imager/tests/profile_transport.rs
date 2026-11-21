@@ -25,7 +25,7 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
     draft.user.username = "targetowner".into();
     draft.user.full_name = "Target Owner".into();
     draft.encryption_passphrase = "secret-must-stay-local".into();
-    let (restored, legacy) = public_profiles(&draft).unwrap();
+    let (restored, without_label) = public_profiles(&draft).unwrap();
     assert_eq!(restored.purpose, draft.purpose);
     assert_eq!(restored.device_label, draft.device_label);
     assert!(
@@ -33,7 +33,7 @@ fn prepared_profile_survives_live_transport_and_rejects_mutations() {
         "no self-referential ciphertext binding inside its own package"
     );
     assert!(restored.encryption_passphrase.is_empty());
-    assert_eq!(legacy.purpose, "computer");
+    assert_eq!(without_label.purpose, "server");
     profile::write_profile_block(&media, 131_072, &draft).unwrap();
     let output = root.path().join("live");
     let os = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../os/usr/libexec");
@@ -112,11 +112,12 @@ fn public_profiles(
     let authenticated =
         imager_backend::setup::prepared_setup::PublicInstallProfile::from_draft(draft)?;
     let restored = authenticated.to_draft()?;
-    let mut legacy = serde_json::to_value(&authenticated)?;
-    let object = legacy.as_object_mut().ok_or("profile must be an object")?;
-    object.remove("purpose");
+    let mut without_label = serde_json::to_value(&authenticated)?;
+    let object = without_label
+        .as_object_mut()
+        .ok_or("profile must be an object")?;
     object.remove("device_label");
-    let legacy: imager_backend::setup::prepared_setup::PublicInstallProfile =
-        serde_json::from_value(legacy)?;
-    Ok((restored, legacy.to_draft()?))
+    let without_label: imager_backend::setup::prepared_setup::PublicInstallProfile =
+        serde_json::from_value(without_label)?;
+    Ok((restored, without_label.to_draft()?))
 }
