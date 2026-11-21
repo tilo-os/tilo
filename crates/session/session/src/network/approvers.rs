@@ -140,7 +140,6 @@ fn sheet_ask(ask: &tilo_server_protocol::certify::AgentAsk) -> AgentAsk {
     AgentAsk {
         question: ask.question.clone(),
         choices: ask.choices.clone(),
-        typed: ask.typed,
         secret: ask.secret,
     }
 }
@@ -191,11 +190,9 @@ impl QuestionSheet for SessionSheet {
                     .map_or(ConfirmationAnswer::Deny, |typed| {
                         ConfirmationAnswer::Secret(TypedSecret::new(String::clone(&typed)))
                     }),
-                (Some(given), Some(ask)) => {
-                    let typed = given.values.first().map_or("", |typed| typed.as_str());
-                    ask.reply(given.choice, typed)
-                        .map_or(ConfirmationAnswer::Deny, ConfirmationAnswer::Reply)
-                }
+                (Some(given), Some(ask)) => ask
+                    .reply(given.choice)
+                    .map_or(ConfirmationAnswer::Deny, ConfirmationAnswer::Reply),
                 (Some(given), None) if allow_always => match given.choice {
                     Some(0) => ConfirmationAnswer::AllowOnce,
                     Some(ALLOW_ALWAYS) => ConfirmationAnswer::AllowAlways,

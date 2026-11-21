@@ -98,8 +98,8 @@ pub use application::{
     application_provider_resource, application_resource_target, valid_file_name,
 };
 pub use confirmation::{
-    ASK, ASK_PROVIDER, ASK_RESOURCE, Confirmation, ConfirmationQuestion, ConfirmationReply,
-    ConfirmedInvocation, MAX_ASK_CHARS, MAX_ASK_CHOICES, MAX_CHOICE_CHARS, MAX_REPLY_CHARS,
+    ASK, ASK_PROVIDER, ASK_RESOURCE, ASK_WITH_CHOICES, Confirmation, ConfirmationQuestion,
+    ConfirmationReply, ConfirmedInvocation, MAX_ASK_CHARS, MAX_ASK_CHOICES, MAX_CHOICE_CHARS,
     PersonAnswer, PersonAsk, argument_digest, ask_target, is_ask,
 };
 pub use providers::{

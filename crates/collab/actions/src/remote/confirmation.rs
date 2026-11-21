@@ -118,7 +118,7 @@ pub struct ConfirmationQuestion {
     pub undoable: bool,
     /// What the agent asks in its own words, where it asks the person
     /// something rather than to allow an action ([`ASK`]): the action fields
-    /// above are empty then, and the person answers with a reply.
+    /// above are empty then, and the person answers with one of its choices.
     #[serde(default)]
     pub ask: Option<PersonAsk>,
 }
@@ -130,8 +130,7 @@ pub enum ConfirmationReply {
     AllowOnce,
     /// Do not carry it out; for a [`PersonAsk`], the person chose not to answer.
     Deny,
-    /// The person's answer to a [`PersonAsk`]: one of its choices, or what
-    /// they typed.
+    /// The person's answer to a [`PersonAsk`]: one of its choices.
     Replied(String),
 }
 
@@ -149,8 +148,13 @@ pub const MAX_ASK_CHARS: usize = 2_000;
 pub const MAX_ASK_CHOICES: usize = 8;
 /// The longest choice, in characters.
 pub const MAX_CHOICE_CHARS: usize = 80;
-/// The longest typed answer, in characters.
-pub const MAX_REPLY_CHARS: usize = 4_000;
+
+/// What a question with no choices is refused with: words come as a reply in the conversation,
+/// and a secret only through the vault's `ask`.
+pub const ASK_WITH_CHOICES: &str = "choices: a question is answered only with one of its \
+     choices, at least one. To hear your person in their own words, ask in the conversation \
+     and read their reply there. For a password, a key or another secret, use the vault's \
+     `ask` (Ask your person for a secret).";
 
 /// What [`ASK`] is invoked on.
 #[must_use]
@@ -169,32 +173,32 @@ pub fn is_ask(target: &super::RemoteActionTarget) -> bool {
         && target.address.action == ASK
 }
 
-/// A question an agent puts to its person in its own words: a decision, or
-/// something only they know. It waits on their devices until they answer.
+/// A question an agent puts to its person in its own words, answered with one of its choices.
+/// It waits on their devices until they answer. Nothing in it holds words of the person's:
+/// what they want to say in their own words they say in the conversation.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PersonAsk {
     /// The question, as the agent words it.
     pub question: String,
-    /// The answers the person picks from, in order; none for a question
-    /// answered by typing.
+    /// The answers the person picks from, in order: at least one.
     pub choices: Vec<String>,
-    /// Whether the person may type an answer of their own: always where it
-    /// offers no choices.
-    pub typed: bool,
 }
 
 impl PersonAsk {
-    /// The question as it is put: trimmed, typed where it offers no choices.
+    /// The question as it is put: trimmed, with its choices.
     ///
     /// # Errors
-    /// What makes it no question to put: empty, too long, or choices that
-    /// are empty, repeated, too long or too many.
+    /// What makes it no question to put: empty, too long, no choices ([`ASK_WITH_CHOICES`]), or
+    /// choices that are empty, repeated, too long or too many.
     pub fn checked(mut self) -> Result<Self, String> {
         let question = self.question.trim().to_owned();
         self.question = question;
         if self.question.is_empty() || self.question.chars().count() > MAX_ASK_CHARS {
             return Err(format!("question: 1 to {MAX_ASK_CHARS} characters"));
+        }
+        if self.choices.is_empty() {
+            return Err(ASK_WITH_CHOICES.to_owned());
         }
         if self.choices.len() > MAX_ASK_CHOICES {
             return Err(format!("choices: at most {MAX_ASK_CHOICES}"));
@@ -215,27 +219,14 @@ impl PersonAsk {
         if !self.choices.iter().all(|choice| seen.insert(choice)) {
             return Err("choices: each once".to_owned());
         }
-        // What the person answers is the agent's to read: a secret is asked for in the
-        // system's protected field instead, never in a question's words.
-        if std::iter::once(&self.question)
-            .chain(&self.choices)
-            .any(|words| super::person_vault::asks_for_secret(words))
-        {
-            return Err(super::person_vault::ASK_INSTEAD.to_owned());
-        }
-        self.typed |= self.choices.is_empty();
         Ok(self)
     }
 
-    /// Whether `reply` answers it: one of its choices, or, where it takes a
-    /// typed answer, any text of at most [`MAX_REPLY_CHARS`].
+    /// Whether `reply` answers it: one of its choices.
     #[must_use]
     pub fn answered_by(&self, reply: &str) -> bool {
         let reply = reply.trim();
-        if self.choices.iter().any(|choice| choice == reply) {
-            return true;
-        }
-        self.typed && !reply.is_empty() && reply.chars().count() <= MAX_REPLY_CHARS
+        self.choices.iter().any(|choice| choice == reply)
     }
 }
 
@@ -243,8 +234,8 @@ impl PersonAsk {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersonAnswer {
-    /// The person's answer: one of the choices, or what they typed.
-    Answered { answer: String },
+    /// The choice the person picked, as the question words it.
+    Answered { choice: String },
     /// The person chose not to answer.
     Declined,
 }

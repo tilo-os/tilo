@@ -144,7 +144,6 @@ fn password_question(id: u8) -> PendingConfirmation {
                        alone."
                 .into(),
             choices: Vec::new(),
-            typed: true,
             secret: true,
         }),
         ..PendingConfirmation::default()

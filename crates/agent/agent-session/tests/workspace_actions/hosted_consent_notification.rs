@@ -118,7 +118,6 @@ async fn answers(
         message: question.clone(),
         answer: answer.to_owned(),
         device: Some("browser".to_owned()),
-        detail: None,
     };
     let catalogue = crate::common::catalogue();
     let governor = workspaces.governor().clone();

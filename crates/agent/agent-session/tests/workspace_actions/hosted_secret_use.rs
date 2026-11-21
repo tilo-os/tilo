@@ -381,7 +381,7 @@ impl Hosted {
     /// conversation's document as the person themselves at a device of theirs, the way their Chat
     /// window writes it. Nothing an agent may call answers a question, so this is no action of
     /// the server's service.
-    pub(super) async fn answers(&self, message: &Id, answer: &str, detail: serde_json::Value) {
+    pub(super) async fn answers(&self, message: &Id, answer: &str) {
         let saved = self
             .workspaces
             .resource_document(&self.workspace, CHAT, "")
@@ -394,7 +394,6 @@ impl Hosted {
             message: message.clone(),
             answer: answer.to_owned(),
             device: Some("browser".to_owned()),
-            detail: (!detail.is_null()).then_some(detail),
         };
         let catalogue = crate::common::catalogue();
         let governor = self.workspaces.governor().clone();
@@ -564,12 +563,11 @@ fn add_mail(call: &str, address: &str, reference: &str) -> Reply {
     )
 }
 
-/// The assistant asks for the password. It tries the conversation first, in words and by the kind
-/// of question that once asked for a secret there, and is refused both times, told to ask through
-/// the vault: no question is posted, so the password can't be answered into the conversation. Its
-/// ask through the vault ends at once; the server asks her own device in the protected field, in
-/// the system's words, keeps what she types in the workspace's vault, and wakes the assistant once
-/// with the reference. The reference.
+/// The assistant asks for the password. It tries the conversation first, with a question that
+/// offers no answers, which its person could answer only in words, and is refused: no question
+/// is posted. Its ask through the vault ends at once; the server asks her own device in the
+/// protected field, in the system's words, keeps what she types in the workspace's vault, and
+/// wakes the assistant once with the reference. The reference.
 pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
     hosted: &mut Hosted,
 ) -> String {
@@ -579,15 +577,6 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
         .turn(
             "Please connect my mail, ada@example.test.",
             vec![
-                does(
-                    "call-1",
-                    "chat/Messages#ask",
-                    &serde_json::json!({
-                        "channel": conversation.as_str(),
-                        "text": "What is the password of ada@example.test? Reply with it here.",
-                        "answers": [{"id": "later", "label": "Later"}],
-                    }),
-                ),
                 does(
                     "call-2",
                     "chat/Messages#ask",
@@ -611,9 +600,9 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
         .await;
     let results = hosted.tool_results();
     assert_eq!(
-        results.matches("vault's `ask`").count(),
-        2,
-        "both questions in the conversation are refused, and say where to ask: {results}"
+        results.matches("reply in the conversation").count(),
+        1,
+        "the question without answers is refused, and says where words go: {results}"
     );
     assert!(
         hosted.last_tool_result().contains("protected field"),
@@ -631,7 +620,7 @@ pub(super) async fn the_password_goes_from_the_persons_device_to_their_vault(
     // Her device is asked in the system's protected field, in the system's words.
     let asked = devices.asked(1).await;
     let ask = asked[0].ask.as_ref().expect("a question in words");
-    assert!(ask.secret && ask.typed && ask.choices.is_empty(), "{ask:?}");
+    assert!(ask.secret && ask.choices.is_empty(), "{ask:?}");
     for said in [
         format!("asks for the password of ada at {IMAP} and {SMTP}."),
         "never sees what you type: your vault keeps it for those places alone.".to_owned(),
@@ -704,9 +693,7 @@ pub(super) async fn the_first_use_asks_and_always_signs_in(hosted: &Hosted, refe
         "the item's address is withheld: {shown}"
     );
 
-    hosted
-        .answers(question, chat::question::ALWAYS, serde_json::Value::Null)
-        .await;
+    hosted.answers(question, chat::question::ALWAYS).await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {

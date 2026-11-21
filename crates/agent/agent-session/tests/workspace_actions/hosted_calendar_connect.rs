@@ -77,7 +77,7 @@ async fn she_tells_and_is_asked(hosted: &Hosted, devices: &Devices, address: &st
     let asked = devices.asked(1).await;
     assert_eq!(asked.len(), 1, "the telling asks for one password: {told}");
     let ask = asked[0].ask.as_ref().expect("a question in words");
-    assert!(ask.secret && ask.typed && ask.choices.is_empty(), "{ask:?}");
+    assert!(ask.secret && ask.choices.is_empty(), "{ask:?}");
     assert_eq!(asked[0].agent_id, SCOUT, "who asks is her assistant");
     ask.question.clone()
 }

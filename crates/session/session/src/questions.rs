@@ -114,9 +114,9 @@ enum Plan {
     Secrets { remember: Option<bool> },
     /// The sheet asks nothing this can answer: a code on show.
     Nothing,
-    /// An agent's question in its own words: the choice picked, or what was
-    /// typed where it takes typing ([`tilo_sheets::portal::AgentAsk`]).
-    Ask { choices: usize, typed: bool },
+    /// An agent's question in its own words: the choice picked
+    /// ([`tilo_sheets::portal::AgentAsk`]).
+    Ask { choices: usize },
     /// Taking back the allowance the person just gave.
     Revoke {
         app_id: String,
@@ -765,20 +765,12 @@ impl Shown {
                 choice: Some(0),
                 ..Answer::default()
             }),
-            Plan::Ask { choices, typed } => {
-                let entry = state.text(Field::Answer);
-                let entry = entry.trim();
-                let choice = (dialog.selected < *choices).then_some(dialog.selected);
-                if choice.is_none() && (entry.is_empty() || !typed) {
-                    return Err(word("agent-ask-pick-or-type"));
+            Plan::Ask { choices } => {
+                if dialog.selected >= *choices {
+                    return Err(word("agent-ask-pick"));
                 }
                 Ok(Answer {
-                    choice,
-                    values: if *typed && !entry.is_empty() {
-                        vec![zeroize::Zeroizing::new(entry.to_owned())]
-                    } else {
-                        Vec::new()
-                    },
+                    choice: Some(dialog.selected),
                     ..Answer::default()
                 })
             }
@@ -1069,7 +1061,6 @@ fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
         Some(ask) if ask.secret => Plan::Password { identity: 0 },
         Some(ask) => Plan::Ask {
             choices: ask.choices.len(),
-            typed: ask.typed,
         },
         None if asked.allow_always => Plan::Choose(vec![0, tilo_sheets::portal::ALLOW_ALWAYS]),
         None => Plan::Confirm,

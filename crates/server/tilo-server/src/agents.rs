@@ -1012,7 +1012,6 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 .map(|ask| tilo_server_protocol::certify::AgentAsk {
                     question: ask.question,
                     choices: ask.choices,
-                    typed: ask.typed,
                     // An agent's own question never asks for a secret: only this host words one.
                     secret: false,
                 }),

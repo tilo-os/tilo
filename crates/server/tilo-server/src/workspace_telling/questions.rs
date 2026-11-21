@@ -83,9 +83,8 @@ pub(super) fn questions(
 
 /// The waiting `question` of `message` as its person is told it: the
 /// message's words, where it is, and a button for each answer it offers,
-/// which invokes Chat's own answering verb as the person. No question asks
-/// for a secret: Chat refuses one, and a secret is typed into the system's
-/// protected field on the person's device instead.
+/// which invokes Chat's own answering verb as the person. An answer is one of
+/// those buttons and carries no words of the person's.
 fn telling(
     workspace: &str,
     (id, message): (&Id, &chat::chat::Message),
@@ -374,7 +373,6 @@ mod tests {
             answer: Atom("march".to_owned()),
             device: Atom("Ada's phone".to_owned()),
             at: 1,
-            detail: Atom(String::new()),
         });
         let mut taken_back = question(chat::question::CHOICE, &decks);
         taken_back.withdrawn = Some(Withdrawn {

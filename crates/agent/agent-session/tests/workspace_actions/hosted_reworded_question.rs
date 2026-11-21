@@ -91,9 +91,7 @@ async fn always_to_a_question_its_agent_reworded_does_nothing_and_lets_nothing_s
     let reworded = hosted.questions(chat::question::ACTION).await;
     assert!(reworded[0].1.edited, "the question shows other words now");
     assert_eq!(reworded[0].1.text, "May I tidy up our chat?");
-    hosted
-        .answers(&question, chat::question::ALWAYS, serde_json::Value::Null)
-        .await;
+    hosted.answers(&question, chat::question::ALWAYS).await;
     let ended = ended(&hosted).await;
     let signed_in = hosted.proved.lock().unwrap().len();
 

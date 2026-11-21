@@ -677,9 +677,7 @@ async fn the_assistant_has_a_sign_in_field_filled_with_a_password_only_the_page_
         "and shows nothing of the item but its kind: {shown}"
     );
 
-    hosted
-        .answers(question, chat::question::ALLOW, serde_json::Value::Null)
-        .await;
+    hosted.answers(question, chat::question::ALLOW).await;
     assert_eq!(reworded::ended(hosted).await, chat::question::DONE);
     assert!(
         signing.filled().is_empty(),
@@ -716,9 +714,7 @@ async fn a_no_fills_nothing_and_the_next_fill_asks_again() {
         .await;
     let asked = hosted.questions(chat::question::ACTION).await;
     assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    hosted
-        .answers(&asked[0].0, chat::question::DENY, serde_json::Value::Null)
-        .await;
+    hosted.answers(&asked[0].0, chat::question::DENY).await;
     let ended = reworded::ended(hosted).await;
 
     let told = signing
@@ -755,7 +751,7 @@ async fn always_to_an_edited_question_fills_nothing_and_lets_nothing_stand() {
     assert!(edited[0].1.edited, "the question shows other words now");
     signing
         .hosted
-        .answers(&question, chat::question::ALWAYS, serde_json::Value::Null)
+        .answers(&question, chat::question::ALWAYS)
         .await;
     let ended = reworded::ended(&signing.hosted).await;
 
@@ -807,9 +803,7 @@ async fn a_second_ask_for_one_fill_is_refused_and_one_allow_is_one_text() {
         .await;
     let asked = hosted.questions(chat::question::ACTION).await;
     assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    hosted
-        .answers(&asked[0].0, chat::question::ALLOW, serde_json::Value::Null)
-        .await;
+    hosted.answers(&asked[0].0, chat::question::ALLOW).await;
     assert_eq!(reworded::ended(hosted).await, chat::question::DONE);
 
     signing.shown.strays.lock().unwrap().twice = true;

@@ -280,7 +280,6 @@ impl Hosted {
             message: message.clone(),
             answer: answer.to_owned(),
             device: Some("browser".to_owned()),
-            detail: None,
         };
         self.writes(
             who,

@@ -332,7 +332,6 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
                            smtp.example.com. The assistant never sees what you type: your \
                            vault keeps it for those two servers alone."
                     .to_owned(),
-                typed: true,
                 secret: true,
                 ..super::AgentAsk::default()
             }),

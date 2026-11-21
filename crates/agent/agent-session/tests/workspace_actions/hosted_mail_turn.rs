@@ -424,9 +424,7 @@ async fn a_question_its_agent_edited_sends_nothing(hosted: &Hosted, servers: &Se
         writes_as(hosted, Other::HerAgent, edited).await,
         "an agent edits what it wrote"
     );
-    hosted
-        .answers(&question, chat::question::ALLOW, serde_json::Value::Null)
-        .await;
+    hosted.answers(&question, chat::question::ALLOW).await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert_eq!(outcome_of(hosted, &question).await, chat::question::FAILED);
     let asked = hosted.questions(chat::question::ACTION).await;
@@ -553,7 +551,6 @@ async fn answers_as(hosted: &Hosted, who: Other<'_>, message: &Id, answer: &str)
         message: message.clone(),
         answer: answer.to_owned(),
         device: Some("browser".to_owned()),
-        detail: None,
     };
     let answered = chat::parts::ChatMessages::ANSWER_QUESTION.with(answering);
     writes_as(hosted, who, answered).await
@@ -607,9 +604,7 @@ async fn only_her_own_answer_lets_it_leave_once(
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert!(servers.asked("send").is_empty(), "a restart sends nothing");
 
-    hosted
-        .answers(question, chat::question::ALLOW, serde_json::Value::Null)
-        .await;
+    hosted.answers(question, chat::question::ALLOW).await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert_eq!(outcome_of(hosted, question).await, chat::question::DONE);
     let left = format!("send {ACCOUNT} to {BO} copy to {CY} blind copy to : {ANSWER}");

@@ -10,16 +10,15 @@
 //! their own ([`Question::answer`]): never an agent, an automation or an app
 //! acting for them, never from a device that is not theirs, and nobody else
 //! in the workspace. An answer names one of the question's own answers and
-//! nothing wider. What a host does on it (run the one action that asked
-//! first) is its kind's, decided where the answer is read and never by the
-//! button.
+//! nothing wider: every kind offers its answers, and an answer carries no
+//! words of the person's. What a host does on it (run the one action that
+//! asked first) is its kind's, decided where the answer is read and never by
+//! the button.
 //!
-//! No question asks for a password, a key or another secret, in any kind:
-//! what its person answers is read by everyone in the conversation and by
-//! the agent that asked. A secret is asked for in the system's protected
-//! field on the person's own device, and only through the vault
-//! ([`tilo_actions::remote::person_vault::ASK`]); [`asks_for_no_secret`]
-//! refuses one that asks here.
+//! What a person wants to say in their own words, they say as a reply in the
+//! conversation. A password, a key or another secret is asked for only in the
+//! system's protected field on the person's own device, through the vault
+//! ([`tilo_actions::remote::person_vault::ASK`]).
 //!
 //! # Kinds
 //!
@@ -121,9 +120,6 @@ pub struct Answered {
     pub device: Atom,
     /// When, in milliseconds since the epoch.
     pub at: i64,
-    /// What the answer carries beyond the choice, as its kind says, as JSON;
-    /// empty when it carries nothing.
-    pub detail: Atom,
 }
 
 /// What came of an answer.
@@ -181,37 +177,6 @@ fn kept_detail(detail: Option<serde_json::Value>) -> Result<Atom, Refusal> {
     Ok(Atom(text))
 }
 
-/// The kind its asker once asked a secret with, and that no question has any more.
-const SECRET_KIND: &str = "secret";
-
-/// Refuse a question that asks for a password, a key or another secret, in its `text` or in
-/// the labels of its `answers`, or by the kind once used for one. A question of kind [`ACTION`]
-/// is its host's, worded by the host and answered with buttons alone, and is not read here.
-///
-/// # Errors
-/// Where to ask for a secret instead ([`tilo_actions::remote::person_vault::ASK_INSTEAD`]).
-pub fn asks_for_no_secret(
-    kind: Option<&str>,
-    text: &str,
-    answers: Option<&[Choice]>,
-) -> Result<(), Refusal> {
-    use tilo_actions::remote::person_vault::{ASK_INSTEAD, asks_for_secret};
-    if kind == Some(SECRET_KIND) {
-        return Err(Refusal::new(ASK_INSTEAD));
-    }
-    if kind == Some(ACTION) {
-        return Ok(());
-    }
-    let labels = answers
-        .unwrap_or_default()
-        .iter()
-        .map(|answer| answer.label.as_str());
-    if std::iter::once(text).chain(labels).any(asks_for_secret) {
-        return Err(Refusal::new(ASK_INSTEAD));
-    }
-    Ok(())
-}
-
 /// The person the invoker of `cx` acts for: who a question it asks is put to.
 ///
 /// # Errors
@@ -230,8 +195,9 @@ impl Question {
     /// offering `answers` and keeping `detail`.
     ///
     /// # Errors
-    /// A kind or an answer's id that is no word, answers that repeat or are
-    /// too many, a choice without labelled answers, or a detail too large.
+    /// A kind or an answer's id that is no word, no answers, answers that
+    /// repeat or are too many, a choice without labelled answers, or a detail
+    /// too large.
     pub fn asked(
         person: MemberId,
         kind: Option<String>,
@@ -241,6 +207,12 @@ impl Question {
         let kind = kind.unwrap_or_else(|| CHOICE.to_owned());
         if !is_word(&kind) {
             return Err(Refusal::new("a question's kind is one short word"));
+        }
+        if answers.is_empty() {
+            return Err(Refusal::new(
+                "a question offers at least one answer: what your person says in their own words \
+                 they say as a reply in the conversation",
+            ));
         }
         if answers.len() > MAX_ANSWERS {
             return Err(Refusal::new("a question offers a handful of answers"));
@@ -260,9 +232,7 @@ impl Question {
                 return Err(Refusal::new("each answer of a question is offered once"));
             }
         }
-        if kind == CHOICE
-            && (answers.is_empty() || answers.iter().any(|answer| answer.label.trim().is_empty()))
-        {
+        if kind == CHOICE && answers.iter().any(|answer| answer.label.trim().is_empty()) {
             return Err(Refusal::new(
                 "a choice offers at least one answer, each with what its button says",
             ));
@@ -327,7 +297,7 @@ impl Question {
     }
 
     /// Take `answer` as the answer of the invoker of `cx`, pressed on
-    /// `device` at `at`, carrying `detail`.
+    /// `device` at `at`.
     ///
     /// Giving the answer already given again changes nothing: the same
     /// person pressed it on a second device.
@@ -340,7 +310,6 @@ impl Question {
         cx: &ActionCx,
         answer: &str,
         device: Option<String>,
-        detail: Option<serde_json::Value>,
         at: i64,
     ) -> Result<(), Refusal> {
         // The envelope's own account of who acts: a person themselves, at a
@@ -369,14 +338,7 @@ impl Question {
                 return Err(Refusal::new("the question was taken back"));
             }
         }
-        // A kind that offers no answers of its own (a field its card draws)
-        // names its answer by a word.
-        let offered = if self.answers.is_empty() {
-            is_word(answer)
-        } else {
-            self.answers.iter().any(|offered| offered.id == answer)
-        };
-        if !offered {
+        if !self.answers.iter().any(|offered| offered.id == answer) {
             return Err(Refusal::new("the question offers no such answer"));
         }
         let device = device.unwrap_or_default();
@@ -387,7 +349,6 @@ impl Question {
             answer: Atom(answer.to_owned()),
             device: Atom(device),
             at,
-            detail: kept_detail(detail)?,
         });
         Ok(())
     }

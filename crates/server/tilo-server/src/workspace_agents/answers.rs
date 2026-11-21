@@ -133,11 +133,6 @@ pub(super) fn answered_in(
             let said = question
                 .label(&given.answer.0)
                 .unwrap_or(given.answer.0.as_str());
-            let carried = if given.detail.0.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", given.detail.0)
-            };
             Some(Wake {
                 key: key_of(id.as_str()),
                 kind: ANSWER,
@@ -146,7 +141,7 @@ pub(super) fn answered_in(
                 label: label_of(&message.text),
                 text: format!(
                     "Your person answered a question you asked them.\nYou asked: {}\nThey \
-                     answered: {said}{carried}\nGo on from where you asked.",
+                     answered: {said}\nGo on from where you asked.",
                     message.text.trim()
                 ),
             })

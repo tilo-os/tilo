@@ -482,7 +482,8 @@ pub struct PendingConfirmation {
     pub page: Option<PageDeparture>,
     /// What the agent asks in its own words, where it asks the person
     /// something rather than to allow an action: the action fields are
-    /// empty then, and the person answers with [`ConfirmationAnswer::Reply`].
+    /// empty then, and the person answers with one of its choices
+    /// ([`ConfirmationAnswer::Reply`]).
     /// Written even when there is none, as [`Self::page`] is.
     pub ask: Option<AgentAsk>,
     /// A lasting workspace grant is offered for the action shown.
@@ -554,19 +555,18 @@ impl From<ConfirmationWire> for PendingConfirmation {
     }
 }
 
-/// A question an agent puts to its person in its own words.
+/// A question an agent puts to its person in its own words, answered with one of its choices;
+/// or the host's own ask for a secret, typed into a protected field.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAsk {
     /// The question, as the agent words it.
     pub question: String,
-    /// The answers the person picks from, in order; none where they type one.
+    /// The answers the person picks from, in order; none for a secret.
     pub choices: Vec<String>,
-    /// Whether the person may type an answer of their own.
-    pub typed: bool,
-    /// Whether what they type is a secret, such as a password the host keeps in their vault:
-    /// the field hides it, and the answer is [`ConfirmationAnswer::Secret`], never a
-    /// [`ConfirmationAnswer::Reply`]. The question is then the host's own words, not the
-    /// agent's.
+    /// Whether it asks for a secret, such as a password the host keeps in their vault: the
+    /// person types it into a field that hides it, and the answer is
+    /// [`ConfirmationAnswer::Secret`], never a [`ConfirmationAnswer::Reply`]. The question is
+    /// then the host's own words, not the agent's.
     #[serde(default)]
     pub secret: bool,
 }
@@ -643,8 +643,7 @@ pub enum ConfirmationAnswer {
     AllowOnce,
     /// Do not carry it out; to an [`AgentAsk`], the person chose not to answer.
     Deny,
-    /// The person's answer to an [`AgentAsk`]: one of its choices, or what
-    /// they typed.
+    /// The person's answer to an [`AgentAsk`]: one of its choices.
     Reply(String),
     /// Carry out this invocation and keep a workspace grant for its scope.
     AllowAlways,
@@ -654,9 +653,9 @@ pub enum ConfirmationAnswer {
 
 impl ConfirmationAnswer {
     /// Whether it answers `question`: allowing or not for an action, a reply
-    /// one of its choices is, or that it takes typed, for an [`AgentAsk`];
-    /// declining answers either. A secret answers only a question that asks for one, and
-    /// such a question takes nothing else typed.
+    /// one of its choices is for an [`AgentAsk`]; declining answers either. A
+    /// secret answers only a question that asks for one, and such a question
+    /// takes no reply.
     #[must_use]
     pub fn answers(&self, question: &PendingConfirmation) -> bool {
         match (self, &question.ask) {
@@ -673,14 +672,10 @@ impl ConfirmationAnswer {
             (Self::Reply(reply), Some(ask)) => {
                 let reply = reply.trim();
                 ask.choices.iter().any(|choice| choice == reply)
-                    || (ask.typed && !reply.is_empty() && reply.chars().count() <= MAX_REPLY_CHARS)
             }
         }
     }
 }
-
-/// The longest typed answer to an [`AgentAsk`], in characters.
-pub const MAX_REPLY_CHARS: usize = 4_000;
 
 /// Host answer to an [`ApproverRequest`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -824,38 +819,29 @@ mod tests {
         }
     }
 
-    /// An agent's own question is answered with one of its choices, or with
-    /// what was typed where it takes typing, or declined; never allowed as an
-    /// action is. An action's question takes no reply.
+    /// An agent's own question is answered with one of its choices, or
+    /// declined; never with other words, and never allowed as an action is.
+    /// An action's question takes no reply.
     #[test]
     fn a_reply_answers_only_the_question_it_fits() {
-        let ask = |typed| PendingConfirmation {
+        let ask = || PendingConfirmation {
             ask: Some(AgentAsk {
                 question: "Which consulate?".into(),
                 choices: vec!["Berlin".into(), "Munich".into()],
-                typed,
                 secret: false,
             }),
             ..PendingConfirmation::default()
         };
         let reply = |text: &str| ConfirmationAnswer::Reply(text.into());
-        assert!(reply("Munich").answers(&ask(false)));
-        assert!(!reply("Hamburg").answers(&ask(false)), "no such choice");
-        assert!(
-            reply("Hamburg").answers(&ask(true)),
-            "typed where it takes typing"
-        );
-        assert!(
-            !reply("  ").answers(&ask(true)),
-            "nothing typed answers nothing"
-        );
-        assert!(!reply(&"x".repeat(MAX_REPLY_CHARS + 1)).answers(&ask(true)));
-        assert!(ConfirmationAnswer::Deny.answers(&ask(false)));
-        assert!(!ConfirmationAnswer::AllowOnce.answers(&ask(false)));
+        assert!(reply("Munich").answers(&ask()));
+        assert!(!reply("Hamburg").answers(&ask()), "no such choice");
+        assert!(!reply("  ").answers(&ask()), "nothing answers nothing");
+        assert!(ConfirmationAnswer::Deny.answers(&ask()));
+        assert!(!ConfirmationAnswer::AllowOnce.answers(&ask()));
         let action = PendingConfirmation::default();
         assert!(ConfirmationAnswer::AllowOnce.answers(&action));
         assert!(!ConfirmationAnswer::AllowAlways.answers(&action));
-        assert!(!ConfirmationAnswer::AllowAlways.answers(&ask(false)));
+        assert!(!ConfirmationAnswer::AllowAlways.answers(&ask()));
         assert!(
             ConfirmationAnswer::AllowAlways.answers(&PendingConfirmation {
                 allow_always: true,
@@ -872,7 +858,6 @@ mod tests {
         let password = PendingConfirmation {
             ask: Some(AgentAsk {
                 question: "The password of ada@example.com".into(),
-                typed: true,
                 secret: true,
                 ..AgentAsk::default()
             }),
@@ -890,7 +875,7 @@ mod tests {
         assert!(!ConfirmationAnswer::AllowOnce.answers(&password));
         let words = PendingConfirmation {
             ask: Some(AgentAsk {
-                typed: true,
+                choices: vec!["Later".into()],
                 ..AgentAsk::default()
             }),
             ..PendingConfirmation::default()

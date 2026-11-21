@@ -25,7 +25,7 @@ use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, an
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::portal::{
-    ALLOW_ALWAYS, AgentAsk, AgentQuestion, Dialog, DrawnSheet, Field, PortalEffect, PortalState,
+    ALLOW_ALWAYS, AgentAsk, AgentQuestion, Dialog, DrawnSheet, PortalEffect, PortalState,
 };
 use tokio::sync::mpsc;
 use wasm_bindgen::prelude::*;
@@ -210,7 +210,6 @@ fn asked_words(question: &PendingConfirmation) -> Option<AgentAsk> {
     question.ask.as_ref().map(|ask| AgentAsk {
         question: ask.question.clone(),
         choices: ask.choices.clone(),
-        typed: ask.typed,
         secret: ask.secret,
     })
 }
@@ -410,16 +409,16 @@ impl PageQuestions {
                     continue;
                 }
                 (PortalEffect::Answer { index, .. }, Some(ask)) => {
-                    match ask.reply(usize::try_from(index).ok(), "") {
+                    match ask.reply(usize::try_from(index).ok()) {
                         Some(reply) => ConfirmationAnswer::Reply(reply),
                         None => continue,
                     }
                 }
                 (PortalEffect::Confirm { .. }, Some(ask)) => {
                     let chosen = self.state.dialog().map(|shown| shown.selected);
-                    let Some(reply) = ask.reply(chosen, &self.state.text(Field::Answer)) else {
+                    let Some(reply) = ask.reply(chosen) else {
                         if let Some(mut shown) = self.state.dialog() {
-                            shown.error = Some(tilo_sheets::word("agent-ask-pick-or-type"));
+                            shown.error = Some(tilo_sheets::word("agent-ask-pick"));
                             self.state.show(Some(shown));
                             changed = true;
                         }

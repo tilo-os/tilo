@@ -396,7 +396,6 @@ pub fn secret_question(
         ask: Some(tilo_server_protocol::certify::AgentAsk {
             question: asked.words(by),
             choices: Vec::new(),
-            typed: true,
             secret: true,
         }),
         ..tilo_server_protocol::certify::PendingConfirmation::default()

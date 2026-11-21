@@ -1,8 +1,8 @@
 //! What an agent asks its person in its own words through the API server
 //! (`tilo_ask`): the question waits where every question an agent puts to its
 //! person waits, on the person's own devices, and the agent's call answers
-//! with what they said there: one of its choices, what they typed, or that
-//! they chose not to answer.
+//! with what they said there: one of its choices, or that they chose not to
+//! answer. A question offers choices; words come as a reply in the conversation.
 use super::api::{ISSUER, Mcp};
 use super::api_on_server::api_on_server;
 use super::api_questions::agent_with_a_book;
@@ -113,27 +113,8 @@ async fn the_person_answers_what_the_agent_asks_and_the_agent_hears_it() {
     assert_eq!(ask.question, "Which consulate should I book?");
     assert_eq!(ask.choices, ["Berlin", "Munich"]);
     assert!(
-        !ask.typed,
-        "a question with choices takes no typing unless it says so"
-    );
-    assert!(
         question.action_label.is_empty(),
         "it asks to allow no action"
-    );
-
-    // Something only the person knows: they type it.
-    let (reply, seen) = Box::pin(asked(
-        &mut agent,
-        &approver,
-        &ada,
-        json!({"question": "Which dates can Jane travel?"}),
-        |_| ConfirmationAnswer::Reply("12 to 19 March".into()),
-    ))
-    .await;
-    assert_eq!(said(&reply), "answered: 12 to 19 March");
-    assert!(
-        seen[0].ask.as_ref().is_some_and(|ask| ask.typed),
-        "a question without choices is answered by typing"
     );
 
     // Not now: the agent hears that the person chose not to answer.
@@ -166,4 +147,20 @@ async fn a_question_that_is_no_question_is_refused_before_anyone_is_asked() {
     assert_eq!(status, 200, "{reply}");
     assert_eq!(reply["result"]["isError"], true, "{reply}");
     assert!(reply.to_string().contains("each once"), "{reply}");
+
+    // A question without choices could be answered only in the person's own words: it is
+    // refused, and the agent is told to ask in the conversation and read the reply there.
+    let (status, reply) = agent
+        .post(json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                     "params": {"name": "tilo_ask",
+                                "arguments": {"question": "Which dates can Jane travel?"}}}))
+        .await;
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    assert!(
+        reply
+            .to_string()
+            .contains("ask in the conversation and read their reply there"),
+        "{reply}"
+    );
 }

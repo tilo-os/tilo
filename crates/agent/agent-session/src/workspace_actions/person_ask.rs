@@ -8,7 +8,7 @@
 //! place and on the same sheet. It names the agent and the agent session it asks in, as
 //! the system knows them, never as the agent words them. The invocation is
 //! answered accepted at once and succeeds with the person's answer
-//! ([`PersonAnswer`]): one of the question's choices, or what they typed. A
+//! ([`PersonAnswer`]): the one of the question's choices they picked. A
 //! person who chooses not to answer ends it declined; one who never answers
 //! ends it failed once the question expires.
 
@@ -94,7 +94,7 @@ impl Worker {
             agent,
             workspace,
             title,
-            ask: Some(ask),
+            ask: Some(ask.clone()),
             ..ConfirmationQuestion::default()
         };
         let asked = self
@@ -106,7 +106,7 @@ impl Worker {
         let log = std::sync::Arc::clone(&self.shared);
         let invocation = request.invocation;
         asked.then(move |reply| {
-            let update = answered(invocation, reply);
+            let update = answered(invocation, &ask, reply);
             let mut held = log.log.lock_recover();
             if let Some(entry) = held.entries.get_mut(&invocation)
                 && !entry.update.is_terminal()
@@ -121,15 +121,21 @@ impl Worker {
     }
 }
 
-/// How the invocation `invocation` ends on the person's `reply`.
+/// How the invocation `invocation` ends on the person's `reply` to `ask`: one
+/// of its choices, declined, or failed on anything else.
 fn answered(
     invocation: tilo_actions::InvocationId,
+    ask: &PersonAsk,
     reply: Option<Result<ConfirmationReply, ActionCallError>>,
 ) -> InvocationUpdate {
     let answer = match reply {
-        Some(Ok(ConfirmationReply::Replied(answer))) => PersonAnswer::Answered { answer },
+        Some(Ok(ConfirmationReply::Replied(choice))) if ask.answered_by(&choice) => {
+            PersonAnswer::Answered {
+                choice: choice.trim().to_owned(),
+            }
+        }
         Some(Ok(ConfirmationReply::Deny)) => PersonAnswer::Declined,
-        Some(Ok(ConfirmationReply::AllowOnce) | Err(_)) | None => {
+        Some(Ok(ConfirmationReply::AllowOnce | ConfirmationReply::Replied(_)) | Err(_)) | None => {
             return InvocationUpdate::Failed {
                 invocation,
                 error: ActionFailure {

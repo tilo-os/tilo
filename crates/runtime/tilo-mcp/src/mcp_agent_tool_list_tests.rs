@@ -42,3 +42,32 @@ fn an_agent_is_offered_the_small_tools_it_can_use_and_no_classic_ones() {
         assert!(refused["error"].is_object(), "{refused}");
     });
 }
+
+/// `tilo_ask` takes choices and nothing else from the person: a question without them, or one
+/// that asks to be answered in words, is refused before anyone is asked, in words that send the
+/// agent to the conversation for a reply in the person's own words.
+#[test]
+fn a_question_without_choices_is_refused_and_sent_to_the_conversation() {
+    let host = Notes::new(true);
+    run(async {
+        let server = agent(&host);
+        let (text, failed) = tool(
+            &server,
+            "tilo_ask",
+            json!({"question":"Which dates can Jane travel?"}),
+        )
+        .await;
+        assert!(failed, "{text}");
+        assert!(
+            text.contains("ask in the conversation and read their reply there"),
+            "{text}"
+        );
+        let (text, failed) = tool(
+            &server,
+            "tilo_ask",
+            json!({"question":"Shall I?","choices":["Yes"],"typed":true}),
+        )
+        .await;
+        assert!(failed, "a question takes no typed answer: {text}");
+    });
+}

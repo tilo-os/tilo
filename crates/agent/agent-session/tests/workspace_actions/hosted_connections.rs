@@ -326,9 +326,7 @@ async fn a_command_that_changes_something_asks_first(
 /// The person's own "Always" calls the command once, with the arguments they were shown, after
 /// the turn that asked has ended; and nothing calls it a second time.
 async fn always_calls_it_once(hosted: &Hosted, service: &Service, question: &Id) {
-    hosted
-        .answers(question, chat::question::ALWAYS, serde_json::Value::Null)
-        .await;
+    hosted.answers(question, chat::question::ALWAYS).await;
     assert_eq!(ended(hosted, 0).await, chat::question::DONE);
     assert_eq!(
         service.calls_of("plant_tree"),
@@ -428,9 +426,7 @@ async fn taken_back_it_asks_again(hosted: &mut Hosted, service: &Service, id: &s
     assert_eq!(service.calls_of("plant_tree").len(), 2, "not called");
     let asked = hosted.questions(chat::question::ACTION).await;
     assert_eq!(asked.len(), 2, "it asks again");
-    hosted
-        .answers(&asked[1].0, chat::question::DENY, serde_json::Value::Null)
-        .await;
+    hosted.answers(&asked[1].0, chat::question::DENY).await;
     assert_eq!(ended(hosted, 1).await, chat::question::DROPPED);
     assert_eq!(
         service.calls_of("plant_tree").len(),
@@ -467,9 +463,7 @@ async fn a_reworded_question_calls_nothing_and_lets_nothing_stand(
         reworded[nth].1.text
     );
 
-    hosted
-        .answers(&question, chat::question::ALWAYS, serde_json::Value::Null)
-        .await;
+    hosted.answers(&question, chat::question::ALWAYS).await;
     assert_eq!(ended(hosted, nth).await, chat::question::FAILED);
     assert_eq!(
         service.calls_of("plant_tree").len(),

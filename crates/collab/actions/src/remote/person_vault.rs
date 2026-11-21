@@ -73,9 +73,9 @@ pub const FILL_PAGE: &str = "fill-page";
 /// Ask the person for a secret ([`AskForItem`]): the one way an agent comes by one. The person
 /// types it into the system's protected password field on a device of their own, in the
 /// system's words ([`AskForItem::words`]), and the workspace's vault keeps it for the places asked for
-/// alone. Whoever asked is answered the item's reference ([`Asked`]), never the secret. No
-/// question in a conversation asks for a secret ([`asks_for_secret`]): what a person answers
-/// there is read by everyone in it, and by the agent's model.
+/// alone. Whoever asked is answered the item's reference ([`Asked`]), never the secret. An
+/// agent's question is answered only with its choices, and what a person says in a conversation
+/// is read by everyone in it and by the agent's model, so neither is a way to one.
 pub const ASK: &str = "ask";
 
 /// The kind of resource a reference is the address of: what a parameter that
@@ -854,8 +854,8 @@ pub fn ask_row() -> CatalogueRow {
         (PROVIDER, RESOURCE, "Vault"),
         (ASK, "Ask your person for a secret"),
         "Ask your person for a password, a key or another secret. This is the one way to get \
-         one: a question in a conversation never asks for a secret, and one that does is \
-         refused. Your person types it into the system's protected field on their own device, \
+         one: never ask for one in the conversation, where everyone in it and you read what \
+         they write. Your person types it into the system's protected field on their own device, \
          in words the system writes; you never see it. The workspace's vault keeps it for the places in \
          `belongsTo` alone: a site as `https://example.com`, a server as \
          `imap://mail.example.com:993` or `ssh://git.example.com`. You are told the \
@@ -888,67 +888,6 @@ pub fn ask_row() -> CatalogueRow {
         ],
     )
 }
-
-/// Whether `words` ask for a password, a key or another secret: what no question in a
-/// conversation asks for, since what the person answers there is read by everyone in it and by
-/// the agent's model ([`ASK`] asks instead). A first check on the words alone, in the languages
-/// Tilo speaks: it catches a plain question, and never decides what an answer may hold.
-#[must_use]
-pub fn asks_for_secret(words: &str) -> bool {
-    const ALONE: [&str; 14] = [
-        "password",
-        "passwords",
-        "passphrase",
-        "passcode",
-        "passcodes",
-        "credential",
-        "credentials",
-        "cvv",
-        "cvc",
-        "2fa",
-        "otp",
-        "passwort",
-        "kennwort",
-        "zugangsdaten",
-    ];
-    const PAIRS: [(&str, &str); 17] = [
-        ("pin", "code"),
-        ("pin", "number"),
-        ("your", "pin"),
-        ("api", "key"),
-        ("access", "key"),
-        ("secret", "key"),
-        ("private", "key"),
-        ("ssh", "key"),
-        ("recovery", "key"),
-        ("access", "token"),
-        ("api", "token"),
-        ("auth", "token"),
-        ("bearer", "token"),
-        ("verification", "code"),
-        ("recovery", "code"),
-        ("security", "code"),
-        ("card", "number"),
-    ];
-    let lower = words.to_lowercase();
-    let tokens: Vec<&str> = lower
-        .split(|sign: char| !sign.is_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .collect();
-    tokens.iter().any(|token| {
-        ALONE.contains(token) || token.ends_with("passwort") || token.ends_with("password")
-    }) || tokens
-        .iter()
-        .zip(tokens.iter().skip(1))
-        .any(|(first, second)| PAIRS.contains(&(*first, *second)))
-}
-
-/// What a question that asks for a secret is refused with: where to ask instead.
-pub const ASK_INSTEAD: &str = "A question here never asks for a password, a key or another \
-     secret: what your person answers is read by everyone in the conversation, and by you. Ask \
-     with the vault's `ask` (Ask your person for a secret) instead: they type it into a \
-     protected field on their own device, and you are told the reference the workspace's vault keeps it \
-     under.";
 
 /// What every call that sends an item's secret out says of being asked
 /// first.
@@ -1079,32 +1018,6 @@ mod tests {
     use super::*;
 
     const ID: &str = "0123456789abcdef0123456789abcdef";
-
-    /// A question that asks for a secret is told apart from one that only mentions a word
-    /// near one: what a person would type a password, a key or a code into is caught.
-    #[test]
-    fn a_question_for_a_secret_is_told_apart() {
-        for asking in [
-            "What is your Fastmail password?",
-            "Could you paste the API key for OpenRouter?",
-            "Send me the access token, please",
-            "What's the PIN code of the card?",
-            "Your 2FA code?",
-            "Wie lautet dein Passwort?",
-            "Type your app-password here",
-            "the card number and CVV",
-        ] {
-            assert!(asks_for_secret(asking), "{asking}");
-        }
-        for plain in [
-            "Should I pin this message?",
-            "Which calendar should the meeting go in?",
-            "Shall I book the 9:40 train or the 10:10 one?",
-            "Is the key meeting on Monday?",
-        ] {
-            assert!(!asks_for_secret(plain), "{plain}");
-        }
-    }
 
     /// An ask names only places a secret can belong to, and the person reads the system's
     /// words for it, which say where it goes and who never sees it.

@@ -46,7 +46,6 @@ impl ChatApp {
                 message: Id::from_raw(message),
                 answer: answer.to_owned(),
                 device: self.answering_device(),
-                detail: None,
             }),
         );
         if given.is_ok()

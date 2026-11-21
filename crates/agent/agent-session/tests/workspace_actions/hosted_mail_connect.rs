@@ -124,7 +124,7 @@ fn she_types(devices: &Devices, place: usize, typed: &str) {
 /// a secret, and the words name her account and its servers.
 fn asks_for_her_password(asked: &PendingConfirmation, servers: &[&str]) -> String {
     let ask = asked.ask.as_ref().expect("a question in words");
-    assert!(ask.secret && ask.typed && ask.choices.is_empty(), "{ask:?}");
+    assert!(ask.secret && ask.choices.is_empty(), "{ask:?}");
     assert!(asked.action_label.is_empty(), "it asks to allow no action");
     assert!(
         servers.iter().all(|part| ask.question.contains(part)),

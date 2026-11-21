@@ -96,9 +96,9 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_ask",
-            "Ask your person what only they know, and wait. choices: answers to offer (none: they type one; typed: true: both). Answers `answered: …`, `declined`, or past wait_ms `pending <id>` for tilo_status. Not to allow an action (tilo_do asks), nor for a secret (vault/vault#ask).",
-            json!({"question":string,"choices":{"type":"array","items":{"type":"string"},"maxItems":tilo_actions::remote::MAX_ASK_CHOICES},"typed":{"type":"boolean"},"wait_ms":integer}),
-            json!(["question"]),
+            "Ask your person to pick one of your choices, and wait. Answers `answered: <choice>`, `declined`, or past wait_ms `pending <id>` for tilo_status. For their own words, ask in the conversation. Not to allow an action (tilo_do asks), nor for a secret (vault/vault#ask).",
+            json!({"question":string,"choices":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":tilo_actions::remote::MAX_ASK_CHOICES},"wait_ms":integer}),
+            json!(["question", "choices"]),
             // Only what differs from MCP's defaults (writes, not idempotently).
             json!({"destructiveHint":false,"openWorldHint":false}),
         ),

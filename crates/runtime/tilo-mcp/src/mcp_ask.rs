@@ -1,8 +1,9 @@
-//! `tilo_ask`: the agent asks the person it works for something only they
-//! can answer, a decision or something only they know, and waits for their
-//! answer ([`tilo_actions::remote::ASK`]). The question waits on the person's
-//! own devices, beside every other question their agents put to them, and
-//! the call answers with what they said. A question still unanswered when
+//! `tilo_ask`: the agent asks the person it works for to pick between its
+//! choices, and waits for their answer ([`tilo_actions::remote::ASK`]). The
+//! question waits on the person's own devices, beside every other question
+//! their agents put to them, and the call answers with the choice they
+//! picked. A question without choices is refused: what the person says in
+//! their own words they say in the conversation. A question still unanswered when
 //! the call's wait ends is answered `pending`: `tilo_status` with its
 //! invocation id answers it once the person did.
 
@@ -25,8 +26,6 @@ pub(super) struct AskArgs {
     #[serde(default)]
     choices: Vec<String>,
     #[serde(default)]
-    typed: bool,
-    #[serde(default)]
     wait_ms: Option<u64>,
 }
 
@@ -40,7 +39,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let ask = PersonAsk {
             question: args.question,
             choices: args.choices,
-            typed: args.typed,
         }
         .checked()?;
         let argument = match serde_json::to_value(&ask) {
@@ -88,12 +86,10 @@ fn asked_reply(value: &Value, structured: bool) -> Reply {
                 .value
                 .and_then(|answer| serde_json::from_value(answer).ok())
             {
-                Some(PersonAnswer::Answered { answer }) => {
-                    let mut reply = Reply::ok(format!("answered: {answer}"));
+                Some(PersonAnswer::Answered { choice }) => {
+                    let mut reply = Reply::ok(format!("answered: {choice}"));
                     reply.structured =
-                        structured.then(|| json!({"answered": answer, "invocation_id": id}));
-                    // What the person typed is theirs, never an instruction from elsewhere;
-                    // it is still text to reason about.
+                        structured.then(|| json!({"answered": choice, "invocation_id": id}));
                     return reply;
                 }
                 Some(PersonAnswer::Declined) => Reply::ok(

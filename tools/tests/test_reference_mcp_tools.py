@@ -60,14 +60,13 @@ TOOLS = [
     tool("tilo_get", "Download a file.", {"content": {"type": "string", "description": "The reference."}}, ("content",), READ),
     tool(
         "tilo_ask",
-        "Ask your person what only they can answer, and wait for their answer.",
+        "Ask your person to pick one of your choices, and wait for their answer.",
         {
             "question": {"type": "string", "description": "What to ask."},
             "choices": {"type": "array", "items": {"type": "string"}, "description": "The options to choose between."},
-            "typed": {"type": "boolean", "description": "Whether they may type an answer besides the choices."},
             "wait_ms": {"type": "integer", "description": "How long to wait for the answer."},
         },
-        ("question",),
+        ("question", "choices"),
         {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
     ),
     tool("tilo_devices", "List your other devices.", {}, (), {"readOnlyHint": True, "openWorldHint": True}),

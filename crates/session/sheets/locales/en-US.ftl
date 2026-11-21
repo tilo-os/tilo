@@ -538,7 +538,7 @@ agent-ask-password = Password
 agent-ask-sign-in = Sign in
 agent-ask-notice-app = Agents
 agent-ask-answer = Answer
-agent-ask-pick-or-type = Pick an answer or type one.
+agent-ask-pick = Pick an answer.
 agent-question-more-label = Also waiting
 agent-question-more = { $count ->
     [one] 1 more question

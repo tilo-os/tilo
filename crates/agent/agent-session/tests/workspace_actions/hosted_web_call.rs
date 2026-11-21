@@ -130,9 +130,7 @@ async fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
     );
 
     // They allow it. The server says how that ended, and still sends nothing by itself.
-    hosted
-        .answers(question, chat::question::ALLOW, serde_json::Value::Null)
-        .await;
+    hosted.answers(question, chat::question::ALLOW).await;
     hosted.agents.look(&hosted.workspace).await.unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {

@@ -931,10 +931,12 @@ impl ChatMessages {
     /// is posted as their own message. Only they answer it, and
     /// `withdraw-question` takes it back.
     ///
-    /// Never ask here for a password, a key or any other secret: what your
-    /// person answers is read by everyone in the conversation, so a question
-    /// that asks for one is refused. The vault's `ask` asks for it in a
-    /// protected field on their own device instead.
+    /// A question is answered only with one of its `answers`, so it offers
+    /// at least one. To hear your person in their own words, ask in a plain
+    /// message and read their reply. Never ask in the conversation for a
+    /// password, a key or any other secret: everyone in it reads what your
+    /// person writes. The vault's `ask` asks for it in a protected field on
+    /// their own device instead.
     #[action(incoming_message, audience = "agents")]
     pub fn ask(
         &mut self,
@@ -950,7 +952,6 @@ impl ChatMessages {
         #[param("The message it answers in a thread")] parent: Option<Id>,
     ) -> Result<(), Refusal> {
         let person = crate::question::asked_person(cx)?;
-        crate::question::asks_for_no_secret(kind.as_deref(), text.as_str(), answers.as_deref())?;
         let question = Question::asked(person, kind, answers.unwrap_or_default(), detail)?;
         let id = cx.id();
         let ts = cx.now_ms();
@@ -983,12 +984,9 @@ impl ChatMessages {
         #[param("The device it is answered on; filled in where it is pressed")] device: Option<
             String,
         >,
-        #[param("What the answer carries, as the question's kind says; leave it out")]
-        detail: Option<serde_json::Value>,
     ) -> Result<(), Refusal> {
         let at = cx.now_ms();
-        self.question_of(message)?
-            .answer(cx, &answer, device, detail, at)
+        self.question_of(message)?.answer(cx, &answer, device, at)
     }
 
     /// Withdraw a question.

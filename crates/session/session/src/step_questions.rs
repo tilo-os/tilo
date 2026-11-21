@@ -97,7 +97,7 @@ impl Sheet {
 
     /// Ask the person `ask` in the agent's own words, as `request` names the
     /// agent and its workspace: the sheet a workspace host asks an agent's
-    /// question on, with its choices and, where it takes one, a typed answer.
+    /// question on, with its choices.
     /// `None` when nobody here is asked questions.
     fn ask_in_words(
         &self,
@@ -120,7 +120,6 @@ impl Sheet {
                 ask: Some(AgentAsk {
                     question: ask.question.clone(),
                     choices: ask.choices.clone(),
-                    typed: ask.typed,
                     secret: false,
                 }),
                 ..AgentQuestion::default()
@@ -141,20 +140,12 @@ impl Sheet {
                     () = waiting.closed() => return,
                 }
             };
-            // The choice they picked, or what they typed where the question
-            // takes one; Declining, Escape, or a sheet closed without an
-            // answer is no answer at all.
+            // The choice they picked; Declining, Escape, or a sheet closed
+            // without an answer is no answer at all, and nothing typed is one.
             let reply = chosen.and_then(|given| {
                 given
                     .choice
                     .and_then(|index| ask.choices.get(index).cloned())
-                    .or_else(|| {
-                        given
-                            .values
-                            .first()
-                            .map(|typed| typed.trim().to_owned())
-                            .filter(|typed| ask.typed && !typed.is_empty())
-                    })
             });
             if let Some(answer) = answer.take() {
                 let _ = answer.send(match reply {
@@ -316,11 +307,11 @@ mod tests {
     }
 
     /// An agent's question in its own words goes on the sheet a workspace host
-    /// asks it on: the person picks a choice, or types one where it takes that,
-    /// and decline answers nothing.
+    /// asks it on: the person picks a choice, words typed are no answer, and
+    /// decline answers nothing.
     #[tokio::test]
     async fn an_agents_question_is_asked_with_its_choices_and_answered_with_what_they_pick() {
-        async fn asked(typed: bool, answer: tilo_service::Answer) -> Option<AppActionAnswer> {
+        async fn asked(answer: tilo_service::Answer) -> Option<AppActionAnswer> {
             let questions = Questions::new();
             let sheet = Sheet::new(questions.clone(), AgentSessions::new());
             let mut question = request(Some("Claude Code"));
@@ -328,7 +319,6 @@ mod tests {
             question.ask = Some(tilo_actions::remote::PersonAsk {
                 question: "Shall I file the budget under Spring?".into(),
                 choices: vec!["Yes, file it".into(), "Leave it for now".into()],
-                typed,
             });
             let answered = sheet.ask(question).expect("asked");
             let pending = questions.pending();
@@ -340,7 +330,6 @@ mod tests {
             let ask = shown.ask.expect("the question in the agent's words");
             assert_eq!(ask.question, "Shall I file the budget under Spring?");
             assert_eq!(ask.choices, ["Yes, file it", "Leave it for now"]);
-            assert_eq!(ask.typed, typed);
             assert!(!ask.secret, "an agent's own question asks for no secret");
             if questions.answer(&pending[0].handle, answer) {
                 answered.await.ok()
@@ -350,28 +339,22 @@ mod tests {
             }
         }
 
-        let picked = asked(
-            false,
-            tilo_service::Answer {
-                choice: Some(1),
-                ..tilo_service::Answer::default()
-            },
-        )
+        let picked = asked(tilo_service::Answer {
+            choice: Some(1),
+            ..tilo_service::Answer::default()
+        })
         .await
         .expect("answered");
         assert_eq!(picked.reply.as_deref(), Some("Leave it for now"));
         assert!(picked.allowed());
 
-        let typed = asked(
-            true,
-            tilo_service::Answer {
-                values: vec![zeroize::Zeroizing::new("File it next week".to_owned())],
-                ..tilo_service::Answer::default()
-            },
-        )
+        let typed = asked(tilo_service::Answer {
+            values: vec![zeroize::Zeroizing::new("File it next week".to_owned())],
+            ..tilo_service::Answer::default()
+        })
         .await
         .expect("answered");
-        assert_eq!(typed.reply.as_deref(), Some("File it next week"));
+        assert_eq!(typed, AppActionAnswer::DENY, "words typed answer nothing");
 
         // Declining (or Escape) is no answer at all.
         let questions = Questions::new();
@@ -381,7 +364,6 @@ mod tests {
         question.ask = Some(tilo_actions::remote::PersonAsk {
             question: "Shall I file the budget under Spring?".into(),
             choices: vec!["Yes, file it".into()],
-            typed: false,
         });
         let answered = sheet.ask(question).expect("asked");
         assert!(questions.decline(&questions.pending()[0].handle));

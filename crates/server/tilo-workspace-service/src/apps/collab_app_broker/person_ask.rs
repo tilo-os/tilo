@@ -4,8 +4,8 @@
 //!
 //! The question is put on this device's sheet ([`AppActionConsentPrompter`]),
 //! beside every other question their agents' steps raise, and the invocation
-//! answers with what they said: one of the question's choices, or what they
-//! typed. A person who chooses not to answer ends it declined; one who never
+//! answers with the one of the question's choices they picked. A person who
+//! chooses not to answer ends it declined; one who never
 //! answers leaves it waiting, as their answer on the sheet is the invocation's
 //! own outcome.
 //!
@@ -138,7 +138,7 @@ impl AppBrokerState {
             moderation: None,
             scope: caller.agent_name().map(str::to_owned),
             draft: None,
-            ask: Some(ask),
+            ask: Some(ask.clone()),
         };
         let handle = question.handle.clone();
         let Some(answer) = prompter.ask(question) else {
@@ -172,7 +172,7 @@ impl AppBrokerState {
         };
         runtime.spawn(async move {
             let mut asked = asked;
-            let update = answered(invocation, answer.await);
+            let update = answered(invocation, &ask, answer.await);
             asked.answered = true;
             state.record_completion(job, owner, update);
         });
@@ -180,19 +180,22 @@ impl AppBrokerState {
     }
 }
 
-/// How the invocation `invocation` ends on the person's `answer`: with what
-/// they said, declined where they chose not to answer, or failed where the
-/// sheet went without one.
+/// How the invocation `invocation` ends on the person's `answer` to `ask`: with
+/// the choice they picked, declined where they chose not to answer, or failed
+/// where the sheet went without one of its choices.
 fn answered(
     invocation: InvocationId,
+    ask: &PersonAsk,
     answer: Result<AppActionAnswer, tokio::sync::oneshot::error::RecvError>,
 ) -> InvocationUpdate {
     let value = match answer {
         Ok(AppActionAnswer {
             reply: Some(reply), ..
-        }) => PersonAnswer::Answered { answer: reply },
+        }) if ask.answered_by(&reply) => PersonAnswer::Answered {
+            choice: reply.trim().to_owned(),
+        },
         Ok(AppActionAnswer { reply: None, .. }) => PersonAnswer::Declined,
-        Err(_) => {
+        Ok(AppActionAnswer { reply: Some(_), .. }) | Err(_) => {
             return InvocationUpdate::Failed {
                 invocation,
                 error: ActionFailure {
@@ -387,7 +390,7 @@ mod tests {
             assert_eq!(
                 asked_update(&update),
                 PersonAnswer::Answered {
-                    answer: "Yes, file it".to_owned()
+                    choice: "Yes, file it".to_owned()
                 }
             );
 
@@ -462,6 +465,8 @@ mod tests {
             for argument in [
                 serde_json::json!({"question": "  "}),
                 serde_json::json!({"question": "Shall I?", "choices": ["yes", "yes"]}),
+                serde_json::json!({"question": "Which dates suit you?"}),
+                serde_json::json!({"question": "Shall I?", "choices": ["yes"], "typed": true}),
             ] {
                 let asked = request(&argument);
                 assert!(matches!(

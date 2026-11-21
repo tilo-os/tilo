@@ -241,7 +241,6 @@ pub(super) async fn ask_for_password(workspaces: &Workspaces, open: &dyn PutAsk)
         ask: Some(AgentAsk {
             question: open.said(),
             choices: Vec::new(),
-            typed: true,
             secret: true,
         }),
         ..PendingConfirmation::default()
