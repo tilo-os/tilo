@@ -14,6 +14,7 @@ use automerge::{AutoCommit, ChangeHash, ReadDoc as _};
 use collab_types::ArtifactKind;
 use ui::history_source::{AuthorDirectory, HistoryLog, HistorySource};
 use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+use ui::time::SystemTime;
 use ui::widget::{HistoryEntry, HistoryEntryId};
 
 use super::ActivityTree;
@@ -456,7 +457,11 @@ impl WorkspaceHistoryIndex {
                     // carry rows from an owner absent from the new admission. Unavailable
                     // documents cannot establish seen heads.
                     for row in self.entries.iter().filter(|row| row.id.origin == origin) {
-                        by_id.insert(row.id.clone(), row.clone());
+                        let place = Placed {
+                            time: row.entry.timestamp,
+                            seq: by_id.len(),
+                        };
+                        by_id.insert(row.id.clone(), (place, row.clone()));
                     }
                     if let Some(log) = self.logs.remove(&origin.key()) {
                         logs.insert(origin.key(), log);
@@ -495,13 +500,15 @@ impl WorkspaceHistoryIndex {
             coverage.indexed_resources = coverage.indexed_resources.saturating_add(1);
         }
         self.logs = logs;
-        let mut entries = by_id.into_values().collect::<Vec<_>>();
-        entries.compact_sort_by(|a, b| {
-            a.entry
-                .timestamp
-                .cmp(&b.entry.timestamp)
-                .then_with(|| a.id.cmp(&b.id))
-        });
+        // Each document's changes in its own causal order, merged by when they were made: a
+        // change's clock is whole seconds and may run behind what it builds on, so the clock only
+        // orders documents against each other ([`insert_rows`]).
+        let mut placed = by_id.into_values().collect::<Vec<_>>();
+        placed.compact_sort_by_key(|(place, _)| *place);
+        let mut entries = placed
+            .into_iter()
+            .map(|(_, entry)| entry)
+            .collect::<Vec<_>>();
         if entries.len() > limit {
             entries.drain(..entries.len().saturating_sub(limit));
         }
@@ -580,12 +587,26 @@ impl WorkspaceHistoryIndex {
 /// The feed lists what people did to the workspace: housekeeping about a document (a read marker, a
 /// reading position) and content that came from outside (a refresh's articles, a process's output)
 /// stay in that document's own history.
+/// Where a row goes in the merged history: when it was made, no earlier than anything its document
+/// listed before it, then the order it was read in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Placed {
+    time: SystemTime,
+    seq: usize,
+}
+
+/// Add `rows`, one producer's changes in its causal order (a change after what it builds on), to
+/// `target`. A change made in the same second as the one it builds on, or stamped by a clock behind
+/// it, is placed after it all the same: its time is never earlier than its document's changes
+/// before it.
 fn insert_rows(
-    target: &mut BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry>,
+    target: &mut BTreeMap<WorkspaceHistoryId, (Placed, WorkspaceHistoryEntry)>,
     origin: &HistoryOrigin,
     rows: Vec<HistoryEntry>,
 ) {
+    let mut latest = SystemTime::UNIX_EPOCH;
     for entry in rows {
+        latest = latest.max(entry.timestamp);
         if !entry
             .context
             .as_ref()
@@ -597,9 +618,13 @@ fn insert_rows(
             origin: origin.clone(),
             change: entry.id,
         };
+        let place = Placed {
+            time: latest,
+            seq: target.len(),
+        };
         target
             .entry(id.clone())
-            .or_insert(WorkspaceHistoryEntry { id, entry });
+            .or_insert((place, WorkspaceHistoryEntry { id, entry }));
     }
 }
 

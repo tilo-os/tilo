@@ -304,6 +304,65 @@ tilo_test_env::scenario! {
         assert_eq!(feed.people, ["Ada"]);
     }
 
+    phase workspace_activity_lists_a_change_after_what_it_builds_on_in_the_same_second;
+    // A record's changes a second apart or less tie on their clock. Ordering the tie by anything
+    // but the record's own causal order (its change hashes, say) lists an append below the note it
+    // appended to, newest first, for about half of all pairs: each pair here must fail that.
+    {
+        use automerge::{ActorId, transaction::CommitOptions};
+        use tilo_actions::{ActionContext, ActionKey, Described, Did};
+        use tilo_desktop::activity::*;
+        use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+        let step = |verb: &str| {
+            ActionContext::for_resource("notes.note:spring", "notes.note", "Spring plans")
+                .with_app("so.tilo.notes", "Notes")
+                .with_described(Described::new(Did::verb(
+                    ActionKey::new("so.tilo.notes", "notes.note", verb),
+                    [],
+                )))
+        };
+        for seed in 0..8_u8 {
+            let mut tree = design();
+            let mut note = AutoCommit::new().with_actor(ActorId::from([seed; 16].as_slice()));
+            for (verb, text) in [("new-note", "Spring plans"), ("append-to-note", "- book the trip")] {
+                note.put(ROOT, "text", text).unwrap();
+                note.commit_with(
+                    CommitOptions::default()
+                        .with_time(1_800_000_000)
+                        .with_message(step(verb).change_message().unwrap()),
+                );
+            }
+            let mut pane = WorkspaceActivityPane::new();
+            pane.refresh(&mut tree);
+            pane.refresh_detached_records(
+                &mut tree,
+                vec![DetachedRecordHistory {
+                    app: "so.tilo.notes".into(),
+                    checkout: DocumentCheckout::new(
+                        DocumentId::for_tab(1),
+                        ResourceType::new("notes.note"),
+                    ),
+                    tree_chunks: Vec::new(),
+                    document: Some(note),
+                }],
+            );
+            let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+            let summaries = feed
+                .entries
+                .iter()
+                .map(|entry| entry.summary.as_str())
+                .collect::<Vec<_>>();
+            assert!(
+                matches!(
+                    summaries.as_slice(),
+                    [appended, made] if appended.starts_with("Append to note")
+                        && made.starts_with("New note")
+                ),
+                "newest first, the append above the note it appended to: {summaries:?}"
+            );
+        }
+    }
+
     phase workspace_activity_unsettled_refresh_retains_only_current_admission_rows;
     {
         use tilo_desktop::activity::*;
