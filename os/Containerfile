@@ -510,6 +510,8 @@ ENV CARGO_INCREMENTAL=0 \
 # And `bootc install --source-booted` (0007) copies the booted image out of the
 # booted composefs repository into the target's as it is stored, so the
 # installer writes the image to the disk once.
+# And the install labels the composefs repository's objects with one label
+# lookup and several threads (0008), not a lookup and a write per object in turn.
 # It builds in the OS builder (the base's own libraries, Fedora's Rust), with
 # the ostree, zstd and OpenSSL headers it links against from the frozen RPM snapshot: the CI
 # builder image is an older Fedora, whose installed libraries the snapshot's
@@ -535,10 +537,15 @@ COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
     os/external-assets/bootc-runtime/0004-composefs-rs-from-its-source-archive.patch \
     os/external-assets/bootc-runtime/0005-export-uncompressed-layers.patch \
     os/external-assets/bootc-runtime/0006-merge-etc-at-every-finalize.patch \
-    os/external-assets/bootc-runtime/0007-install-the-booted-image.patch /patches/
-# composefs-rs's own patches: a layer's objects are stored in parallel (0001), which
-# an install from the booted repository spends nearly all its time on.
-COPY os/external-assets/composefs-rs/0001-store-a-layers-objects-in-parallel.patch /composefs-patches/
+    os/external-assets/bootc-runtime/0007-install-the-booted-image.patch \
+    os/external-assets/bootc-runtime/0008-label-a-composefs-repositorys-objects-at-once.patch /patches/
+# composefs-rs's own patches: a layer's objects are stored in parallel (0001), and
+# a copy between two repositories on one machine, as the install from the booted
+# repository is, takes the layers as their stored objects (0002), without writing
+# them out as tar and hashing them again.
+COPY os/external-assets/composefs-rs/0001-store-a-layers-objects-in-parallel.patch \
+    os/external-assets/composefs-rs/0002-copy-a-local-repositorys-layers-by-their-objects.patch \
+    /composefs-patches/
 # zlink-macros with its generated enum variants in a fixed order (0002 patches
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.

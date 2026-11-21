@@ -1,0 +1,192 @@
+From: Tilo <noreply@tilo.so>
+Subject: [PATCH] install: label a composefs repository's objects at once
+
+After a composefs install, the whole repository was labelled as if it were
+/usr one path at a time: a policy lookup and a label write per object, on one
+thread. Objects are files named by their digests under objects/<2 hex
+digits>/, and the policy has no context for one hex name that it lacks for
+another, so the label of the first fan-out directory and of the first object
+are now looked up once and written to all of them by several threads.
+Anything else in objects/, and the rest of the repository, is still looked up
+path by path.
+---
+--- a/crates/lib/src/install.rs
++++ b/crates/lib/src/install.rs
+@@ -2128,10 +2128,9 @@
+         // default_t (which has no policy match).
+         if let Some(policy) = state.load_policy()? {
+             tracing::info!("Labeling composefs objects as /usr");
+-            crate::lsm::relabel_recurse(
++            crate::lsm::relabel_composefs_repo(
+                 &rootfs.physical_root,
+-                "composefs",
+-                Some("/usr".into()),
++                "composefs".into(),
+                 &policy,
+             )
+             .context("SELinux labeling of composefs objects")?;
+--- a/crates/lib/src/lsm.rs
++++ b/crates/lib/src/lsm.rs
+@@ -454,6 +454,162 @@
+     relabel_recurse_inner(root, &mut path, as_path.as_mut(), policy)
+ }
+ 
++/// Whether `name` could be a composefs object's file or fan-out directory name:
++/// lowercase hex digits only.
++fn is_object_name(name: &str) -> bool {
++    !name.is_empty() && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
++}
++
++/// Label the composefs repository at `path` as if it were `/usr`, as
++/// [`relabel_recurse`] would with `/usr` as the path to label it as.
++///
++/// Nearly all of a repository is its objects, files named by their digests
++/// under `objects/<2 hex digits>/`. Their label depends only on their path, and
++/// the policy has no context for one hex name that it lacks for another, so
++/// the label of the first fan-out directory and of the first object are looked
++/// up once and given to all of them, by several threads. Anything else in
++/// `objects/`, and the rest of the repository (its streams, images and
++/// metadata), is looked up path by path.
++pub(crate) fn relabel_composefs_repo(
++    root: &Dir,
++    path: &Utf8Path,
++    policy: &ostree::SePolicy,
++) -> Result<()> {
++    assert!(!path.starts_with("/"));
++    let as_root = Utf8Path::new("/usr");
++    relabel(root, &root.dir_metadata()?, path, Some(as_root), policy)?;
++    for ent in root.read_dir(path)? {
++        let ent = ent?;
++        let metadata = ent.metadata()?;
++        let name = ent.file_name();
++        let name = name
++            .to_str()
++            .ok_or_else(|| anyhow::anyhow!("Invalid non-UTF-8 filename: {name:?}"))?;
++        let (child, as_child) = (path.join(name), as_root.join(name));
++        if name == "objects" && metadata.is_dir() {
++            relabel(root, &metadata, &child, Some(&as_child), policy)?;
++            relabel_objects(&root.open_dir(&child)?, &as_child, policy)
++                .with_context(|| format!("Labeling {child}"))?;
++        } else if metadata.is_dir() {
++            relabel_recurse(root, &child, Some(&as_child), policy)?;
++        } else {
++            relabel(root, &metadata, &child, Some(&as_child), policy)?;
++        }
++    }
++    Ok(())
++}
++
++/// Label a composefs repository's `objects/` directory, `objects`, as if it
++/// were at `as_path`; see [`relabel_composefs_repo`].
++fn relabel_objects(objects: &Dir, as_path: &Utf8Path, policy: &ostree::SePolicy) -> Result<()> {
++    let mut fanout = Vec::new();
++    for ent in objects.entries()? {
++        let ent = ent?;
++        let name = ent.file_name();
++        let name = name
++            .to_str()
++            .ok_or_else(|| anyhow::anyhow!("Invalid non-UTF-8 filename: {name:?}"))?;
++        let metadata = ent.metadata()?;
++        if metadata.is_dir() && is_object_name(name) {
++            fanout.push((name.to_owned(), metadata));
++        } else if metadata.is_dir() {
++            relabel_recurse(objects, name, Some(&as_path.join(name)), policy)?;
++        } else {
++            relabel(
++                objects,
++                &metadata,
++                Utf8Path::new(name),
++                Some(&as_path.join(name)),
++                policy,
++            )?;
++        }
++    }
++    let Some((first, first_meta)) = fanout.first() else {
++        return Ok(());
++    };
++    let dir_label = require_label(policy, &as_path.join(first), first_meta.mode())?;
++    // The first object found, for the label every object takes.
++    let mut object_label = None;
++    for (dir, _) in &fanout {
++        for ent in objects.open_dir(dir)?.entries()? {
++            let ent = ent?;
++            let name = ent.file_name();
++            if let Some(name) = name.to_str().filter(|n| is_object_name(n)) {
++                let metadata = ent.metadata()?;
++                if metadata.is_file() {
++                    let as_object = as_path.join(dir).join(name);
++                    object_label = Some(require_label(policy, &as_object, metadata.mode())?);
++                    break;
++                }
++            }
++        }
++        if object_label.is_some() {
++            break;
++        }
++    }
++    let dir_label = dir_label.as_bytes();
++    let object_label = object_label.as_ref().map(|l| l.as_bytes());
++
++    // Entries that are not objects, which are looked up one by one after the
++    // threads are done, since the policy handle stays on this thread.
++    let others = std::sync::Mutex::new(Vec::new());
++    let next = std::sync::atomic::AtomicUsize::new(0);
++    let threads = std::thread::available_parallelism()
++        .map_or(4, |n| n.get())
++        .clamp(2, 16);
++    std::thread::scope(|scope| -> Result<()> {
++        let workers: Vec<_> = (0..threads)
++            .map(|_| {
++                scope.spawn(|| -> Result<()> {
++                    loop {
++                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++                        let Some((dir, _)) = fanout.get(i) else {
++                            return Ok(());
++                        };
++                        set_security_selinux_path(objects, Utf8Path::new(dir), dir_label)?;
++                        let fan = objects.open_dir(dir)?;
++                        for ent in fan.entries()? {
++                            let ent = ent?;
++                            let name = ent.file_name();
++                            match (name.to_str(), object_label) {
++                                (Some(name), Some(label))
++                                    if is_object_name(name) && ent.file_type()?.is_file() =>
++                                {
++                                    set_security_selinux_path(&fan, Utf8Path::new(name), label)?;
++                                }
++                                _ => others.lock().unwrap().push((dir.clone(), name)),
++                            }
++                        }
++                    }
++                })
++            })
++            .collect();
++        workers
++            .into_iter()
++            .try_for_each(|w| w.join().expect("an object labeling thread panicked"))
++    })?;
++    for (dir, name) in others.into_inner().unwrap() {
++        let fan = objects.open_dir(&dir)?;
++        let name = name
++            .to_str()
++            .ok_or_else(|| anyhow::anyhow!("Invalid non-UTF-8 filename: {name:?}"))?;
++        let as_entry = as_path.join(&dir).join(name);
++        let metadata = fan.symlink_metadata(name)?;
++        if metadata.is_dir() {
++            relabel_recurse(&fan, name, Some(&as_entry), policy)?;
++        } else {
++            relabel(
++                &fan,
++                &metadata,
++                Utf8Path::new(name),
++                Some(&as_entry),
++                policy,
++            )?;
++        }
++    }
++    Ok(())
++}
++
+ /// Recursively ensure all files under a directory have SELinux labels.
+ /// Uses the `walk` API with `noxdev` and `skip_mountpoints` to avoid crossing
+ /// mount point boundaries

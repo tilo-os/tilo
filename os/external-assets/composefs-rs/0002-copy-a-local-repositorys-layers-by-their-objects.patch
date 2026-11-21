@@ -1,0 +1,257 @@
+From: Tilo <noreply@tilo.so>
+Subject: [PATCH] oci: copy a local repository's layers by their objects
+
+`cfsctl oci copy --from` between two repositories on this machine sent each
+layer through GetLayer and PutLayer: the source wrote the layer out as tar
+around its objects, and the destination read that tar back, hashed all of it
+for the diff ID and wrote a new splitstream. A layer's splitstream already
+names its objects by their fs-verity digests, so when both repositories use
+one hash type the layers the destination lacks are now copied as they are
+stored: the splitstreams and the objects they name, on several threads, with
+no content hashed in userspace. The destination's kernel measures each copied
+object as it enables fs-verity, and an object that measures differently from
+its name fails the copy. The varlink copy then finds the layers there and
+writes only the manifest and config.
+---
+--- a/crates/composefs-oci/src/lib.rs
++++ b/crates/composefs-oci/src/lib.rs
+@@ -22,6 +22,7 @@
+ pub(crate) mod delta;
+ pub mod image;
+ pub mod layer;
++pub mod layer_copy;
+ pub mod layer_sync;
+ pub mod layer_transport;
+ pub mod oci_image;
+--- a/crates/composefs-ctl/src/lib.rs
++++ b/crates/composefs-ctl/src/lib.rs
+@@ -1972,6 +1972,37 @@
+                     .map_err(|e| anyhow::anyhow!("OpenRepository failed on destination: {e:?}"))?
+                     .handle;
+ 
++                // Two repositories of one hash type on this machine: the layers the
++                // destination lacks are copied as their splitstreams and the objects
++                // those name, so the varlink copy below finds them there and only
++                // writes the manifest and config.
++                if src_hash == dest_hash {
++                    use crate::varlink::proxy::OciProxy;
++                    let source = Arc::new(
++                        open_repo_at::<ObjectID>(from, args.insecure, args.require_verity, true)
++                            .with_context(|| {
++                                format!("opening source repository {}", from.display())
++                            })?,
++                    );
++                    let inspect = conn_src
++                        .inspect(handle_src, &image.to_string())
++                        .await
++                        .context("zlink transport error calling Inspect")?
++                        .map_err(|e| anyhow::anyhow!("Inspect failed: {e:?}"))?;
++                    let diff_ids =
++                        composefs_oci::extract_layer_ids(&inspect.manifest, &inspect.config)
++                            .context("extracting layer identifiers")?
++                            .iter()
++                            .map(|id| id.parse())
++                            .collect::<std::result::Result<Vec<composefs_oci::OciDigest>, _>>()
++                            .context("parsing layer identifiers")?;
++                    let copied = composefs_oci::layer_copy::copy_layers_by_object_id(
++                        &source, &repo, &diff_ids,
++                    )
++                    .await?;
++                    println!("Copied {copied} layers by their objects");
++                }
++
+                 let finalize_reply = copy_image(
+                     &mut conn_src,
+                     &mut conn_dest,
+--- /dev/null
++++ b/crates/composefs-oci/src/layer_copy.rs
+@@ -0,0 +1,189 @@
++//! Copying layers between two local repositories object by object.
++//!
++//! A layer's splitstream names every file it holds by the file's fs-verity
++//! digest, so a repository on this machine can take a layer from another one
++//! without the layer being written out as tar and imported again: the
++//! splitstream and the objects it names are copied as they are stored. No
++//! content is hashed in userspace; the destination's kernel measures each
++//! copied object as it enables fs-verity, and an object that measures
++//! differently from its name fails the copy.
++
++use std::collections::HashSet;
++use std::fs::File;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++use anyhow::{Context, Result, bail, ensure};
++use composefs::{
++    fsverity::FsVerityHashValue,
++    repository::{ImportContext, Repository},
++};
++
++use crate::{OciDigest, layer_identifier};
++
++/// How many threads copy objects at once: the copy waits on the disks, so a
++/// few more than the cores keep both busy.
++fn copy_workers() -> usize {
++    std::thread::available_parallelism()
++        .map_or(4, |n| n.get())
++        .clamp(4, 16)
++}
++
++/// Copies the layers among `diff_ids` that `dest` lacks from `source`, each
++/// as its splitstream and the objects it names, and returns how many it
++/// copied. A layer `dest` already holds is left as it is. The objects of all
++/// the layers are copied in one pass, so many small layers keep every copy
++/// thread as busy as one large one does.
++pub async fn copy_layers_by_object_id<ObjectID: FsVerityHashValue>(
++    source: &Arc<Repository<ObjectID>>,
++    dest: &Arc<Repository<ObjectID>>,
++    diff_ids: &[OciDigest],
++) -> Result<usize> {
++    let mut layers = Vec::new();
++    let mut objects = HashSet::new();
++    for diff_id in diff_ids {
++        let content_id = layer_identifier(diff_id);
++        if dest.has_stream(&content_id)?.is_some() {
++            continue;
++        }
++        let Some(stream_id) = source.has_stream(&content_id)? else {
++            bail!("the source repository holds no layer {diff_id}");
++        };
++        let mut stream = source
++            .open_stream(&content_id, Some(&stream_id), None)
++            .with_context(|| format!("opening layer {diff_id} in the source repository"))?;
++        ensure!(
++            stream.iter_named_refs().next().is_none(),
++            "layer {diff_id} refers to other streams, which a layer copy does not follow"
++        );
++        stream
++            .get_object_refs(|id| {
++                objects.insert(id.clone());
++            })
++            .with_context(|| format!("reading the objects of layer {diff_id}"))?;
++        objects.insert(stream_id.clone());
++        layers.push((content_id, stream_id));
++    }
++    let objects: Vec<ObjectID> = objects.into_iter().collect();
++    let (from, to) = (Arc::clone(source), Arc::clone(dest));
++    tokio::task::spawn_blocking(move || copy_objects(&from, &to, &objects))
++        .await
++        .context("the object copy stopped")?
++        .context("copying the layers' objects")?;
++    // Each layer is named only once everything it refers to is on the disk,
++    // which register_stream's sync makes sure of; after the first, the others
++    // find nothing left to write.
++    for (content_id, stream_id) in &layers {
++        dest.register_stream(stream_id, content_id, None)
++            .await
++            .with_context(|| format!("naming {content_id} in the destination repository"))?;
++    }
++    Ok(layers.len())
++}
++
++/// Copies each of `objects` from `source` to `dest`, on several threads.
++fn copy_objects<ObjectID: FsVerityHashValue>(
++    source: &Repository<ObjectID>,
++    dest: &Repository<ObjectID>,
++    objects: &[ObjectID],
++) -> Result<()> {
++    let next = AtomicUsize::new(0);
++    std::thread::scope(|scope| {
++        let workers: Vec<_> = (0..copy_workers().min(objects.len().max(1)))
++            .map(|_| {
++                scope.spawn(|| -> Result<()> {
++                    let mut ctx = ImportContext::default();
++                    while let Some(id) = objects.get(next.fetch_add(1, Ordering::Relaxed)) {
++                        let file = File::from(source.open_object(id)?);
++                        let size = file.metadata()?.len();
++                        let (stored, _) = dest.ensure_object_from_file(&file, size, &mut ctx)?;
++                        ensure!(
++                            &stored == id,
++                            "object {} measured as {} once copied",
++                            id.to_hex(),
++                            stored.to_hex()
++                        );
++                    }
++                    Ok(())
++                })
++            })
++            .collect();
++        workers
++            .into_iter()
++            .try_for_each(|worker| worker.join().expect("an object copy thread panicked"))
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use composefs::digest::{Digest as _, Sha256};
++    use composefs::{fsverity::Sha256HashValue, test::TestRepo};
++
++    use crate::test_util::build_oci_tar_layer;
++
++    fn objects_of(
++        repo: &Repository<Sha256HashValue>,
++        content_id: &str,
++    ) -> HashSet<Sha256HashValue> {
++        let mut objects = HashSet::new();
++        repo.open_stream(content_id, None, None)
++            .unwrap()
++            .get_object_refs(|id| {
++                objects.insert(id.clone());
++            })
++            .unwrap();
++        objects
++    }
++
++    #[tokio::test]
++    async fn a_layer_copied_by_object_id_is_the_layer_imported() {
++        let source = TestRepo::<Sha256HashValue>::new();
++        let dest = TestRepo::<Sha256HashValue>::new();
++        let tar = build_oci_tar_layer(70_000);
++        let diff_id = crate::sha256_output_to_digest(Sha256::digest(&tar));
++        crate::import_layer(&source.repo, &diff_id, None, &tar[..])
++            .await
++            .unwrap();
++        let content_id = layer_identifier(&diff_id);
++        let diff_ids = [diff_id];
++
++        assert_eq!(
++            copy_layers_by_object_id(&source.repo, &dest.repo, &diff_ids)
++                .await
++                .unwrap(),
++            1
++        );
++        assert_eq!(
++            dest.repo.has_stream(&content_id).unwrap(),
++            source.repo.has_stream(&content_id).unwrap()
++        );
++        let objects = objects_of(&dest.repo, &content_id);
++        assert!(!objects.is_empty(), "the 70 kB file is stored as an object");
++        assert_eq!(objects, objects_of(&source.repo, &content_id));
++        for id in &objects {
++            assert_eq!(
++                dest.repo.read_object(id).unwrap(),
++                source.repo.read_object(id).unwrap()
++            );
++        }
++        // A second copy finds the layer there and leaves it.
++        assert_eq!(
++            copy_layers_by_object_id(&source.repo, &dest.repo, &diff_ids)
++                .await
++                .unwrap(),
++            0
++        );
++    }
++
++    #[tokio::test]
++    async fn a_layer_the_source_lacks_fails_the_copy() {
++        let source = TestRepo::<Sha256HashValue>::new();
++        let dest = TestRepo::<Sha256HashValue>::new();
++        let missing: OciDigest = format!("sha256:{}", "0".repeat(64)).parse().unwrap();
++        let error = copy_layers_by_object_id(&source.repo, &dest.repo, &[missing])
++            .await
++            .unwrap_err();
++        assert!(format!("{error:#}").contains("holds no layer"), "{error:#}");
++    }
++}
