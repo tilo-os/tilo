@@ -965,6 +965,10 @@ pub(crate) fn build_root<A: ResourceApp>(
             record.open(&storage);
         }
     }
+    // What the declarations opened shows once it arrived, also what is on its way from
+    // another member's device: the view is built once, and built before it would read that
+    // the workspace has none of it.
+    let declared = storage.declared_arriving();
     let shows = run.launched.shows.clone();
     let effects = if runs_effects {
         Some(Effects::live(
@@ -994,10 +998,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     // A record the workspace may hold shows once the workspace's holdings arrived;
     // the app's view says nothing about it. Holdings already here (no
     // shell hosts the window, or the workspace synced) need no stand-in.
-    let content: Element = match awaiting {
-        Some(holdings) if workspace_pending(&holdings) => cx.arriving_workspace(&holdings, A::view),
-        _ => A::view(&mut cx),
-    };
+    let content = arrived_content::<A>(&mut cx, awaiting, declared);
     let live = permissions.is_some();
     let mut root = ResourceRoot::new(
         (app.title(), icon(app), live_label::<A>),
@@ -1026,6 +1027,29 @@ pub(crate) fn build_root<A: ResourceApp>(
         return root.drawing_past(super::preview::draw_past::<A>);
     }
     root
+}
+
+/// Something of the workspace a window waits for.
+type WorkspaceArrival =
+    ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>;
+
+/// The window's view, once what it waits for arrived: the workspace's holdings and the
+/// documents the app's declarations opened.
+fn arrived_content<A: ResourceApp>(
+    cx: &mut ViewCx<A::Resource>,
+    holdings: Option<WorkspaceArrival>,
+    declared: Option<WorkspaceArrival>,
+) -> Element {
+    match (holdings, declared) {
+        (Some(holdings), declared) if workspace_pending(&holdings) => {
+            cx.arriving_workspace(&holdings, move |cx| match &declared {
+                Some(declared) => cx.arriving_workspace(declared, A::view),
+                None => A::view(cx),
+            })
+        }
+        (_, Some(declared)) => cx.arriving_workspace(&declared, A::view),
+        (_, None) => A::view(cx),
+    }
 }
 
 /// Whether the workspace's holdings are still on their way.

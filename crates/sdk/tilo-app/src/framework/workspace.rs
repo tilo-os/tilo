@@ -17,11 +17,13 @@ use std::rc::{Rc, Weak};
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
+use ui_core::arriving::{ArrivalWriter, Arriving, Source};
 use ui_core::history_mode::HistoryOwner;
 use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
 use ui_core::resource::StoredResource;
 use ui_core::resource::workspace::WorkspaceResources;
 use ui_core::wake::WakeHandle;
+use ui_core::workspace_sync::WorkspaceUnreachable;
 
 use super::live::Live;
 use super::resources::{Held, ResourceApi};
@@ -983,7 +985,15 @@ pub(crate) struct WorkspaceState {
     asked: RefCell<Vec<(OpenKey, Weak<()>)>>,
     /// The parts to build again: what they asked for has opened since they were built.
     arrived: RefCell<Vec<Weak<()>>>,
+    /// What the window's view waits for before it is built: the documents its app declared
+    /// that were on its way when the window opened, answered once every one of them opened
+    /// ([`Self::declared_arriving`]).
+    awaited: RefCell<Vec<Awaited>>,
 }
+
+/// The documents a window's view waits for, and how to tell it they all opened
+/// ([`WorkspaceState::declared_arriving`]).
+type Awaited = (Vec<OpenKey>, ArrivalWriter<(), WorkspaceUnreachable>);
 
 /// A part of a view being built ([`WorkspaceState::building`]), until this is dropped.
 pub(crate) struct Building(Rc<WorkspaceState>);
@@ -1016,7 +1026,44 @@ impl WorkspaceState {
             building: RefCell::default(),
             asked: RefCell::default(),
             arrived: RefCell::default(),
+            awaited: RefCell::default(),
         }
+    }
+
+    /// The documents asked for so far that are still on their way, as one arrival that is
+    /// answered once every one of them opened: none when all of them are here. A window asks
+    /// right after its app's declarations opened what they keep, and shows its view once this
+    /// is answered: a view built once reads a declared document once, and one built while the
+    /// document was on its way would go on reading that the workspace has none.
+    pub(crate) fn declared_arriving(&self) -> Option<Arriving<(), WorkspaceUnreachable>> {
+        let keys: Vec<OpenKey> = self.unopened.borrow().keys().cloned().collect();
+        if keys.is_empty() {
+            return None;
+        }
+        let arriving = Arriving::pending(Source::Remote);
+        self.awaited.borrow_mut().push((keys, arriving.writer()));
+        Some(arriving)
+    }
+
+    /// The document `key` arrived but could not be read, which is logged: the view waiting for
+    /// it is built without it rather than waiting for good.
+    fn no_longer_awaited(&self, key: &OpenKey) {
+        for (keys, _) in self.awaited.borrow_mut().iter_mut() {
+            keys.retain(|waited| waited != key);
+        }
+        self.answer_awaited();
+    }
+
+    /// Answer each wait whose documents all opened ([`Self::declared_arriving`]).
+    fn answer_awaited(&self) {
+        let unopened = self.unopened.borrow();
+        self.awaited.borrow_mut().retain(|(keys, writer)| {
+            let waiting = keys.iter().any(|key| unopened.contains_key(key));
+            if !waiting {
+                writer.ready(());
+            }
+            waiting
+        });
     }
 
     /// The part of a view kept alive by `part` is being built, until what this returns is
@@ -1183,6 +1230,7 @@ impl WorkspaceState {
         match open(&self.records) {
             Ok(opened) => {
                 self.unopened.borrow_mut().remove(&key);
+                self.answer_awaited();
                 self.opened_for_parts(&key);
                 self.held(key, Some(opened))
             }
@@ -1198,7 +1246,10 @@ impl WorkspaceState {
                 self.unopened.borrow_mut().insert(key, (arrived, again));
                 None
             }
-            Err(Unopened::Failed) => None,
+            Err(Unopened::Failed) => {
+                self.no_longer_awaited(&key);
+                None
+            }
         }
     }
 

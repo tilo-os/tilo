@@ -123,3 +123,69 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// Browser as a window that reads the workspace's bookmarks once, when its view is built.
+struct ReadsOnce;
+
+impl ResourceApp for ReadsOnce {
+    type Resource = Shelf;
+    const ID: &'static str = BROWSER;
+    const TITLE: &'static str = "Browser";
+    const PERSON_RESOURCES: &'static [PersonKind] = &[PersonKind::shared::<Bookmarks>()];
+
+    fn view(cx: &mut ViewCx<Shelf>) -> Element {
+        let said = match cx.shared_workspace::<Bookmarks>(BROWSER) {
+            Some(bookmarks) if pages(&bookmarks).is_empty() => "nothing bookmarked".to_owned(),
+            Some(bookmarks) => pages(&bookmarks).join(", "),
+            None => "the bookmarks are not here".to_owned(),
+        };
+        Box::new(Column::new().push(Box::new(Text::new(&said))))
+    }
+}
+
+/// Whether `app`'s window says `text`, to a screen reader or in what it draws.
+fn says(app: &mut TestApp<ReadsOnce>, text: &str) -> bool {
+    let read = app.harness().a11y_nodes().iter().any(|(_, node)| {
+        [node.label(), node.value(), node.description()]
+            .into_iter()
+            .flatten()
+            .any(|said| said.contains(text))
+    });
+    read || app
+        .harness()
+        .inspection_json()
+        .is_ok_and(|drawn| drawn.contains(text))
+}
+
+/// A window opened on a device the workspace's record has not reached yet, another member
+/// having made it, waits for it before it shows its view, and shows what arrived: a view built
+/// once while the record was on its way would go on reading that the workspace has none, and
+/// what the person then kept would stay on this device.
+#[test]
+fn a_window_shows_the_workspaces_record_once_it_arrived() {
+    let mut app = TestApp::<ReadsOnce>::awaiting_the_workspace(
+        tilo_app::framework::headless::TEST_WORKSPACE,
+        BROWSER,
+    )
+    .unwrap();
+    app.frame();
+    assert!(
+        !says(&mut app, "the bookmarks are not here"),
+        "on their way, the bookmarks are not read as missing"
+    );
+    assert!(!says(&mut app, "nothing bookmarked"), "nor as none");
+
+    app.workspace_delivers::<Bookmarks>(BROWSER, |bookmarks| {
+        bookmarks
+            .invoke(&Bookmarks::KEEP.with("from-bob"))
+            .map_err(|error| error.to_string())
+    })
+    .unwrap();
+    for _ in 0..4 {
+        app.frame();
+    }
+    assert!(
+        says(&mut app, "from-bob"),
+        "the window shows what the other member kept, with no reload"
+    );
+}

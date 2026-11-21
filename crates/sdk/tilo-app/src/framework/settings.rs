@@ -817,6 +817,15 @@ impl ViewStorage {
             .is_some_and(|workspace| workspace.open_arrived())
     }
 
+    /// What the window's view waits for: the documents its app's declarations asked for that
+    /// are still on their way ([`super::workspace::WorkspaceState::declared_arriving`]).
+    pub(crate) fn declared_arriving(
+        &self,
+    ) -> Option<ui_core::arriving::Arriving<(), ui_core::workspace_sync::WorkspaceUnreachable>>
+    {
+        self.workspace.as_ref()?.declared_arriving()
+    }
+
     /// The part of a view kept alive by `part` is being built, until what this returns is
     /// dropped ([`super::workspace::WorkspaceState::building`]). `None` in a window that
     /// opens no documents of a workspace.
