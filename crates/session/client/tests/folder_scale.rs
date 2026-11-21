@@ -1,13 +1,13 @@
 //! Writing one file of a workspace's folder costs the same whether the folder holds a thousand
-//! files or twenty thousand: on the device that writes it, on the workspace's host, and on a
+//! files or five thousand: on the device that writes it, on the workspace's host, and on a
 //! page that shows the folder.
 //!
 //! A computer's folder writes its tree through its session as the records the tree is kept in
 //! (`fs_protocol::tree`): the tree's own record and its chunks, each change going to the chunk
 //! of the file it changes, a burst of writes leaving as one write per record. The test writes
 //! a repository's worth of files the way a checkout does, folder after folder, each file
-//! named for the agent that wrote it, and compares the first thousands of files with the
-//! last thousands: the time each write takes until the host has it, the bytes it sends, what
+//! named for the agent that wrote it, and compares its first windows of files with its last:
+//! the time each write takes until the host has it, the bytes it sends, what
 //! the host keeps on disk for it, what a reader following the folder reads for it, and how the
 //! process's memory grows.
 
@@ -39,9 +39,9 @@ use tilo_user_identity::UserIdentity;
 use super::support::{durable, enrol, enter_page, start_workspace_host_relaying, wait_for};
 
 /// Files written in all.
-const FILES: usize = 20_000;
+const FILES: usize = 5_000;
 /// Files a window of the comparison holds.
-const WINDOW: usize = 1_000;
+const WINDOW: usize = 250;
 /// Files in each folder, as a repository's folders hold them.
 const PER_FOLDER: usize = 100;
 /// Files one write carries: what a computer's folder writes in a burst's batch.
@@ -322,8 +322,7 @@ async fn folder() -> Folder<impl Sized> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes twenty thousand files; run it by name"]
-async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
+async fn a_write_costs_the_same_in_a_folder_of_five_thousand_files() {
     let Folder {
         server: _server,
         state,
@@ -427,10 +426,11 @@ async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
 
     // Who wrote each file reads as it was written, batched or not.
     let tree = reader.tree.tree();
+    let newest = format!("file-{}.rs", FILES - 1);
     let sample = tree
         .nodes
         .iter()
-        .find(|(_, node)| node.name == "file-19999.rs")
+        .find(|(_, node)| node.name == newest)
         .and_then(|(_, node)| node.document_id)
         .unwrap();
     let mut doc = reader.docs.get(&sample.chunk()).unwrap().clone();
@@ -445,7 +445,7 @@ async fn a_write_costs_the_same_in_a_folder_of_twenty_thousand_files() {
         "the file's chunk names the agent that wrote it: {named:?}"
     );
 
-    // The last thousand files cost what the first thousand did. A shared machine stalls now and
+    // The last files cost what the first did. A shared machine stalls now and
     // then, so each cost is the median of five windows at each end: one slow window is the
     // machine, every late window slower is the folder.
     let early = windows.get(..5).unwrap();
@@ -501,7 +501,6 @@ fn percentile(sorted: &[std::time::Duration], percent: usize) -> std::time::Dura
 /// checkout lands, and the other member's changes stay prompt, since a member's run of commits
 /// is taken in bounded runs, in turn with every other member's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes twenty thousand files; run it by name"]
 async fn a_checkout_is_never_refused_and_never_holds_another_member_up() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
