@@ -59,6 +59,7 @@
 #   ./os/dev/vm.sh shutdown                    request a clean guest shutdown over SSH
 #   ./os/dev/vm.sh cmd "HMP"                   raw QEMU monitor command
 #   ./os/dev/vm.sh serial [GREP]               dump the boot serial console log
+#   ./os/dev/vm.sh this-boot                   what the guest's current boot printed on it
 #   ./os/dev/vm.sh journal [GREP]             offline journal extract (VM stopped)
 #   ./os/dev/vm.sh status                       is it running?
 #   ./os/dev/vm.sh stop                         power off
@@ -582,6 +583,18 @@ cmd_serial() {
     tr -d '\000' < "$TILO_SERIAL" | sed 's/\r//g'; fi
 }
 
+# What the guest's current boot printed on its serial line: the log after the last
+# boot's start. QEMU starts the log afresh, but a guest that reboots inside one QEMU
+# keeps writing to it, so a prompt an earlier boot printed would otherwise read as this
+# boot's. The firmware names the entry it starts on every boot (`BdsDxe:`, on x86_64
+# and aarch64 alike); the kernel's banner, which a `quiet` command line never prints,
+# marks a later point of the same boot where it does appear.
+cmd_this_boot() {
+  [ -f "$TILO_SERIAL" ] || return 0
+  tr -d '\000' < "$TILO_SERIAL" | sed 's/\r//g' \
+    | awk '/BdsDxe: |Linux version/ { n = 0; next } { line[++n] = $0 } END { for (i = 1; i <= n; i++) print line[i] }'
+}
+
 cmd_status() { if vm_running; then echo "running (pid $(cat "$TILO_PIDFILE"))"; else echo "stopped"; fi; }
 
 # Evidence barrier for a logout driven through Tilo's visible power menu. The
@@ -700,12 +713,13 @@ case "$sub" in
     name="$1"; shift; cmd_with_tests "\"\$TILO_GUEST_TESTS/$name\"" "$@";;
   with-tests) cmd_with_tests "$@";;
   serial) cmd_serial "$@";;
+  this-boot) cmd_this_boot;;
   journal) cmd_journal "$@";;
   status) cmd_status;;
   stop) cmd_stop;;
   capture-boot) cmd_capture_boot "$@";;
   greeter-acceptance) cmd_greeter_acceptance "$@";;
   check-frame) cmd_check_frame "$@";;
-  -h|--help|"") sed -n '2,61p' "$0";;
+  -h|--help|"") awk 'NR > 1 && !/^#/ { exit } NR > 1' "$0";;
   *) die "unknown subcommand: $sub (try --help)";;
 esac

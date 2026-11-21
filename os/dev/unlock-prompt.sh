@@ -21,8 +21,10 @@
 #
 # Once this boot has reached a login prompt the volume is open, and a secret
 # sent there becomes part of a login attempt and breaks the harness's own
-# sign-in. So the log is read first: a login prompt after this boot's kernel
-# banner means do nothing.
+# sign-in. So what this boot printed is read first (`vm.sh this-boot`): a login
+# prompt in it means do nothing. Not TILO_CONSOLE_LOG: it holds only what a
+# reader was connected for, and a `quiet` boot prints no kernel banner to tell
+# its boots apart, so an earlier boot's prompt would stop every secret.
 #
 # A serial connection that cannot be made means another reader has the socket;
 # the caller tries again. Without a socket (a harness that boots no serial
@@ -36,13 +38,10 @@ set -euo pipefail
 secret=${1:-${TILO_UNLOCK_SECRET:-}}
 [ -n "$secret" ] || { echo 'unlock-prompt: no secret (argument or TILO_UNLOCK_SECRET)' >&2; exit 2; }
 log=${TILO_CONSOLE_LOG:-}
-if [ -n "$log" ] && [ -f "$log" ]; then
-  recent=$(tail -c 20000 "$log" 2>/dev/null || true)
-  case "${recent##*Linux version}" in
-    *login:*) exit 0 ;;
-  esac
-fi
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$("$here/vm.sh" this-boot 2>/dev/null || true)" in
+  *login:*) exit 0 ;;
+esac
 socket=${TILO_SERIAL_SOCKET:-}
 if [ -n "$socket" ] && [ -S "$socket" ]; then
   exec python3 -I "$here/serial-console.py" "$socket" \

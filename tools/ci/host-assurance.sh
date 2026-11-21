@@ -593,13 +593,14 @@ refuse() {
 
 # The prompt comes before any network, so the serial console is the only input,
 # and the console runner cannot be used to ask whether the guest is up: while
-# the volume is closed it waits out its own deadline. The log the unlock helper
-# keeps is the signal instead: a login prompt in it means the volume opened.
+# the volume is closed it waits out its own deadline. What this boot printed on
+# the serial line is the signal instead: a login prompt in it means the volume
+# opened.
 unlock_until_console() {
   local tries="${1:-120}"
   for _ in $(seq 1 "$tries"); do
     ./os/dev/unlock-prompt.sh "$TILO_UNLOCK_SECRET" >/dev/null 2>&1 || true
-    if tail -c 20000 "$TILO_CONSOLE_LOG" 2>/dev/null | grep -qi 'login:'; then
+    if ./os/dev/vm.sh this-boot | grep -qi 'login:'; then
       console 'true' >/dev/null 2>&1 && return 0
     fi
     sleep 3
@@ -921,15 +922,13 @@ boot_vm
 # Nothing is typed from here: the boot reaching the console's login prompt is
 # the volume opening by itself, which is what the PIN-less keyslot is for.
 unattended_unlock() {
-  local tries=${1:-120} recent
+  local tries=${1:-120}
   for _ in $(seq 1 "$tries"); do
-    recent=$(tail -c 20000 "$TILO_CONSOLE_LOG" 2>/dev/null || true)
     # Only what this boot printed: a prompt from an earlier boot says nothing
     # about the volume this one opened. Either a login prompt or a session
     # already signed in counts, as bash prints it with or without the
     # account-and-host bracket.
-    if printf '%s' "${recent##*Linux version}" \
-         | grep -Eq 'login: |(^\[[^]]*\])?[#$] '; then
+    if ./os/dev/vm.sh this-boot | grep -Eq 'login: |(^\[[^]]*\])?[#$] '; then
       console 'true' >/dev/null 2>&1 && return 0
     fi
     sleep 3
@@ -942,10 +941,10 @@ unattended_unlock || { ./os/dev/vm.sh serial > "$out/unattended-serial.log" 2>&1
 # the console, so either place the unlock recorded itself counts.
 as_root 'journalctl -b --no-pager 2>/dev/null' > "$out/unattended-journal.txt" 2>&1 || true
 if grep -q 'unsealed to /run/cryptsetup-keys.d/root.key' "$out/unattended-journal.txt" \
-   || grep -q 'unsealed to /run/cryptsetup-keys.d/root.key' "$TILO_CONSOLE_LOG"; then
+   || ./os/dev/vm.sh this-boot | grep -q 'unsealed to /run/cryptsetup-keys.d/root.key'; then
   ok 'the boot unlocked through the TPM keyslot, not a typed secret'
 else
-  tail -40 "$TILO_CONSOLE_LOG" >&2 || true
+  ./os/dev/vm.sh this-boot | tail -40 >&2 || true
   die 'the disk opened by itself, but nothing recorded the TPM keyslot as what opened it'
 fi
 as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
