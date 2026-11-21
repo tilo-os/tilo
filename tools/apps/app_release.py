@@ -127,6 +127,49 @@ def architecture_matrix(
     }
 
 
+def tilolang_runtime(root: Path = ROOT) -> str:
+    """The tilolang runtime every tilolang app executes, as its bundle provides it."""
+    manifest = root / "apps/tilolang/tilo-runtime.toml"
+    provides = tomllib.loads(manifest.read_text())["package"]["provides"]
+    if not provides.startswith("tilolang/"):
+        raise ValueError(f"{manifest}: provides {provides!r}, not a tilolang runtime")
+    return provides
+
+
+def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
+    """The tilolang packages of `apps/tl`, under the name `tl/<directory>`.
+
+    A package has no Cargo package and no binary of its own: `tilolang build` compiles it into
+    its tapp, which runs on the tilolang runtime bundle. Its id and title are what its `app`
+    declaration says, as the language's own parser reads them.
+    """
+    result: dict[str, dict[str, str]] = {}
+    runtime = tilolang_runtime(root)
+    for source in sorted((root / "apps/tl").glob("*/app.tl")):
+        if not (source.parent / "app.ids").is_file():
+            continue
+        text = source.read_text()
+        declared = re.search(r'^\s*app\s+(\S+)\s+"([^"]*)"', text, re.MULTILINE)
+        if declared is None:
+            raise ValueError(f"{source}: no `app` declaration")
+        app_id, title = declared.group(1), declared.group(2)
+        name = f"tl/{source.parent.name}"
+        result[name] = {
+            "name": name,
+            "kind": "tilolang",
+            "package": "",
+            "binary": "",
+            "id": app_id,
+            "title": title,
+            "version": "0.1.0",
+            "runtime": "tilo-runtime/2026.07",
+            "tilolang_runtime": runtime,
+            "manifest": str(source.relative_to(root)),
+            "dir": str(source.parent.relative_to(root)),
+        }
+    return result
+
+
 def app_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
     result: dict[str, dict[str, str]] = {}
     for manifest in sorted((root / "apps").glob("*/tilo-app.toml")):
@@ -137,6 +180,7 @@ def app_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
         binary = Path(app["entrypoint"]["bin"]).name
         result[name] = {
             "name": name,
+            "kind": "native",
             "package": cargo["package"]["name"],
             "binary": binary,
             "id": app["package"]["id"],
@@ -144,8 +188,18 @@ def app_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
             "runtime": app["package"]["runtime"],
             "manifest": str(manifest.relative_to(root)),
         }
+    result.update(tilolang_catalog(root))
     if not result:
         raise ValueError("no apps/*/tilo-app.toml manifests found")
+    # One app per id: a tilolang package takes over a native app's id only in the change that
+    # deletes the native app, so a collection can never ship both as one name in the launcher.
+    claimed: dict[str, str] = {}
+    for name, app in sorted(result.items()):
+        earlier = claimed.setdefault(app["id"], name)
+        if earlier != name:
+            raise ValueError(
+                f"apps {earlier} and {name} both claim the id {app['id']}"
+            )
     return result
 
 
@@ -169,7 +223,12 @@ def resolve_collection(name: str, catalog: dict[str, dict], cfg: dict) -> list[s
             selected.update(visit(parent))
         includes = spec.get("include", [])
         if "*" in includes:
-            selected.update(catalog)
+            # `*` is every native app. A tilolang package is named in a collection itself
+            # (`tl/notes`), so switching one app from its native build to its package is one
+            # line to read, and the collection never grows a package nothing asked for.
+            selected.update(
+                name for name, app in catalog.items() if app["kind"] == "native"
+            )
         selected.update(item for item in includes if item != "*")
         selected.difference_update(spec.get("exclude", []))
         visiting.remove(current)
@@ -277,6 +336,16 @@ def apps_from_changes(
     root: Path = ROOT,
     lock_affected_packages: set[str] | None = None,
 ) -> list[str]:
+    # A tilolang package is its directory under apps/tl. One that declares an app selects
+    # itself; a library beside it is built into every package that uses it, so its change
+    # selects every tilolang app, as does a change to the toolchain or runtime they run on.
+    tilolang = {
+        name for name, app in catalog.items() if app["kind"] == "tilolang"
+    }
+    shared = any(
+        path.startswith(("apps/tilolang/", "crates/lang/tilolang", "crates/platform/tilolang"))
+        for path in paths
+    )
     if any(
         (
             path in GLOBAL_INPUTS
@@ -289,7 +358,9 @@ def apps_from_changes(
         or (path.startswith("apps/") and path.endswith("/Cargo.toml"))
         for path in paths
     ):
-        return sorted(catalog)
+        # A global input rebuilds every native app and only the tilolang packages a change
+        # names: a package is not in the native runtime's graph, so nothing else rebuilds it.
+        return sorted({name for name, app in catalog.items() if app["kind"] == "native"})
     selected = {
         parts[1]
         for path in paths
@@ -297,11 +368,32 @@ def apps_from_changes(
         and parts[0] == "apps"
         and parts[1] in catalog
     }
+    # A tilolang package is its directory under apps/tl. One that declares an app selects
+    # itself; a library beside it is built into every package that uses it, so its change
+    # selects every tilolang app, as does a change to the runtime the packages execute.
+    tilolang = {
+        name for name, app in catalog.items() if app["kind"] == "tilolang"
+    }
+    for path in paths:
+        parts = Path(path).parts
+        if len(parts) >= 3 and parts[0] == "apps" and parts[1] == "tl":
+            name = f"tl/{parts[2]}"
+            if name in catalog:
+                selected.add(name)
+            else:
+                selected.update(tilolang)
+        elif path.startswith("apps/tilolang/"):
+            selected.update(tilolang)
+    if shared:
+        selected.update(tilolang)
     if metadata is not None:
         packages, by_dir = ci_select.package_maps(metadata, root)
         if any(path.startswith(("apps/", "crates/", "fs/"))
                and ci_select.owner_for(path, by_dir) is None for path in paths):
-            return sorted(catalog)
+            return sorted(
+                selected
+                | {name for name, app in catalog.items() if app["kind"] == "native"}
+            )
         seeds = {
             owner
             for path in paths
@@ -310,7 +402,10 @@ def apps_from_changes(
         seeds.update(lock_affected_packages or ())
         affected = ci_select.closure(seeds, ci_select.reverse_dependencies(packages, root))
         if affected & (FLEET_BUILD_PACKAGES | runtime_engines(root)):
-            return sorted(catalog)
+            return sorted(
+                selected
+                | {name for name, app in catalog.items() if app["kind"] == "native"}
+            )
         selected.update(
             name for name, app in catalog.items() if app["package"] in affected
         )
@@ -390,6 +485,8 @@ def plan(args: argparse.Namespace) -> dict:
         raise ValueError(f"unknown apps: {', '.join(sorted(unknown))}")
     features = cfg.get("features", {})
     for name in selected:
+        if catalog[name]["kind"] != "native":
+            continue
         cargo_manifest = args.root / "apps" / name / "Cargo.toml"
         if not features.get(name) or not cargo_manifest.is_file():
             continue
@@ -403,6 +500,7 @@ def plan(args: argparse.Namespace) -> dict:
     cargo_features = [
         f"{catalog[name]['package']}/{feature}"
         for name in selected
+        if catalog[name]["kind"] == "native"
         for feature in features.get(name, [])
     ]
     return {
@@ -410,7 +508,22 @@ def plan(args: argparse.Namespace) -> dict:
         "input_classification": classification,
         "count": len(selected),
         "apps": selected,
-        "packages": [catalog[name]["package"] for name in selected],
+        "packages": [
+            catalog[name]["package"]
+            for name in selected
+            if catalog[name]["kind"] == "native"
+        ],
+        "tilolang": [
+            {
+                "app": name,
+                "dir": catalog[name]["dir"],
+                "id": catalog[name]["id"],
+                "version": catalog[name]["version"],
+                "runtime": catalog[name]["tilolang_runtime"],
+            }
+            for name in selected
+            if catalog[name]["kind"] == "tilolang"
+        ],
         "features": cargo_features,
         "catalog": [catalog[name] for name in selected],
     }
