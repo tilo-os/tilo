@@ -89,6 +89,7 @@ pub struct Launch<'a> {
     setup: Option<SetupHook<'a>>,
     status: Option<OwnedFd>,
     netns: Option<BorrowedFd<'a>>,
+    mount_ns: Option<BorrowedFd<'a>>,
 }
 
 impl<'a> Launch<'a> {
@@ -104,6 +105,7 @@ impl<'a> Launch<'a> {
             setup: None,
             status: None,
             netns: None,
+            mount_ns: None,
         }
     }
 
@@ -147,6 +149,21 @@ impl<'a> Launch<'a> {
         self
     }
 
+    /// Make the job's mount namespace a copy of `ns` (a mount namespace's descriptor) rather than
+    /// of the caller's. A new mount namespace copies every mount of the one it is made from, under
+    /// the kernel's lock on all mount namespaces: from a caller holding a mount for each of
+    /// hundreds of running jobs, each start copied them all and, starts coming together, waited on
+    /// each other (20-35 ms a copy of 840 mounts against 3-4 ms of 13, on a CI node). The job still
+    /// sees what it would made from the caller's: every bind, an overlay's layers too, is a tree
+    /// taken from the caller's before the job's namespace is made (idmapped where it can be, plain
+    /// where it can't), never a path looked up in `ns`, which lacks the caller's mounts made after
+    /// it. `ns` holds only where the job's root is staged.
+    #[must_use]
+    pub fn mount_ns(mut self, ns: BorrowedFd<'a>) -> Self {
+        self.mount_ns = Some(ns);
+        self
+    }
+
     /// Let the job outlive the thread and the process that start it. Its init is born the caller's
     /// parent's child (`CLONE_PARENT`) with no parent-death signal, and when the command ends it
     /// writes the raw 4-byte wait status at offset 0 of `status` and syncs it; a job that is killed
@@ -187,6 +204,7 @@ impl<'a> Launch<'a> {
         let mode = linux::runner::Mode {
             status: self.status,
             netns: self.netns,
+            mount_ns: self.mount_ns,
         };
         linux::runner::spawn(&plan, self.spec.ids, fds, self.cgroup, hook, mode)
     }
@@ -204,6 +222,7 @@ impl<'a> Launch<'a> {
             self.setup,
             self.status,
             self.netns,
+            self.mount_ns,
         );
         Err(SpawnError::Unsupported(format!(
             "jobs run only on Linux; this is {}",

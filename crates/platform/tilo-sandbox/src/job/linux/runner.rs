@@ -1116,6 +1116,9 @@ pub struct Mode<'a> {
     pub status: Option<OwnedFd>,
     /// A network namespace to join instead of a new one.
     pub netns: Option<BorrowedFd<'a>>,
+    /// The mount namespace the job's is made a copy of, instead of the caller's
+    /// ([`crate::job::Launch::mount_ns`]).
+    pub mount_ns: Option<BorrowedFd<'a>>,
 }
 
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1580,9 +1583,9 @@ pub fn spawn(
     let mut scratch = vec![-1; layout.moves.len()];
     let mut pidfd: RawFd = -1;
     let clone_cfg = clone_args(cgroup.map(|c| c.as_raw_fd()), &mut pidfd, plan, detached);
-    // The child is born in the calling thread's network namespace: enter the one to join for the
-    // clone, and come back right after.
-    let home_net = mode.netns.map(enter_netns).transpose()?;
+    // The child is born in the namespaces the job's are made from: enter those for the clone, and
+    // come back right after.
+    let homes = Homes::enter(mode.netns, mode.mount_ns)?;
     let mut child = PreExec {
         moves: &layout.moves,
         scratch: &mut scratch,
@@ -1608,10 +1611,10 @@ pub fn spawn(
         libc::pthread_sigmask(libc::SIG_SETMASK, &raw const old, std::ptr::null_mut());
         ret
     };
-    let back = home_net.as_ref().map(|home| setns(home.as_raw_fd()));
-    if let (true, Some(Err(e))) = (ret < 0, &back) {
+    let back = homes.leave();
+    if let (true, Err((namespace, e))) = (ret < 0, &back) {
         return Err(SpawnError::Setup(format!(
-            "returning to the caller's network namespace: {e}"
+            "returning to the caller's {namespace} namespace: {e}"
         )));
     }
     if ret < 0 {
@@ -1633,10 +1636,11 @@ pub fn spawn(
         exit: None,
         unmapped: plan.unmapped.clone(),
     };
-    if let Some(Err(e)) = back {
-        // This thread would go on in the job's network: refuse, which kills the job (dropped here).
+    if let Err((namespace, e)) = back {
+        // This thread would go on in the job's namespaces: refuse, which kills the job (dropped
+        // here).
         return Err(SpawnError::Setup(format!(
-            "returning to the caller's network namespace after starting the job: {e}"
+            "returning to the caller's {namespace} namespace after starting the job: {e}"
         )));
     }
     // From here on, an error drops `job`, which kills and reaps the init.
@@ -1671,6 +1675,114 @@ fn enter_netns(ns: BorrowedFd<'_>) -> Result<OwnedFd, SpawnError> {
     setns(ns.as_raw_fd())
         .map_err(|e| SpawnError::Setup(format!("entering the job's network namespace: {e}")))?;
     Ok(home)
+}
+
+/// The mount namespace and working directory a thread left for another ([`enter_mntns`]), to come
+/// back to.
+struct HomeMnt {
+    ns: OwnedFd,
+    cwd: OwnedFd,
+}
+
+/// Join the mount namespace `ns` on this thread; returns where it was. A thread joins a mount
+/// namespace only with a filesystem context of its own (`CLONE_FS` unshared), which it keeps: its
+/// root and working directory are its own from then on, as they were the process's, and set back on
+/// return.
+fn enter_mntns(ns: BorrowedFd<'_>) -> Result<HomeMnt, SpawnError> {
+    // SAFETY: unshare of this thread's filesystem context, a copy of the process's.
+    if unsafe { libc::unshare(libc::CLONE_FS) } != 0 {
+        let e = io::Error::last_os_error();
+        return Err(SpawnError::Setup(format!(
+            "a filesystem context of the starting thread's own: {e}"
+        )));
+    }
+    let open = |path: &CStr, flags: libc::c_int, what: &str| {
+        // SAFETY: open of a NUL-terminated path; the descriptor is new and ours.
+        let fd = unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC) };
+        if fd < 0 {
+            let e = io::Error::last_os_error();
+            return Err(SpawnError::Setup(format!("opening {what}: {e}")));
+        }
+        // SAFETY: just opened.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    };
+    let home = HomeMnt {
+        ns: open(
+            c"/proc/thread-self/ns/mnt",
+            libc::O_RDONLY,
+            "this thread's mount namespace",
+        )?,
+        cwd: open(
+            c".",
+            libc::O_PATH | libc::O_DIRECTORY,
+            "this thread's working directory",
+        )?,
+    };
+    // SAFETY: setns on a mount namespace descriptor the caller holds.
+    if unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS) } != 0 {
+        let e = io::Error::last_os_error();
+        return Err(SpawnError::Setup(format!(
+            "entering the mount namespace to make the job's from: {e}"
+        )));
+    }
+    Ok(home)
+}
+
+/// Come back to the mount namespace and working directory `home`.
+fn leave_mntns(home: &HomeMnt) -> io::Result<()> {
+    // SAFETY: setns and fchdir on descriptors `home` holds.
+    unsafe {
+        if libc::setns(home.ns.as_raw_fd(), libc::CLONE_NEWNS) != 0
+            || libc::fchdir(home.cwd.as_raw_fd()) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// The namespaces a start leaves the calling thread in, to come back to: the network namespace it
+/// joined and the mount namespace whose copy the job's is made from.
+struct Homes {
+    net: Option<OwnedFd>,
+    mnt: Option<HomeMnt>,
+}
+
+impl Homes {
+    /// Enter the namespace to join and the one to copy, as the clone needs them.
+    fn enter(
+        netns: Option<BorrowedFd<'_>>,
+        mount_ns: Option<BorrowedFd<'_>>,
+    ) -> Result<Self, SpawnError> {
+        let net = netns.map(enter_netns).transpose()?;
+        let mnt = match mount_ns {
+            Some(ns) => match enter_mntns(ns) {
+                Ok(home) => Some(home),
+                Err(e) => {
+                    if let Some(home) = &net {
+                        let _ = setns(home.as_raw_fd());
+                    }
+                    return Err(e);
+                }
+            },
+            None => None,
+        };
+        Ok(Self { net, mnt })
+    }
+
+    /// Come back to the caller's namespaces. Both are tried; the failure names the namespace the
+    /// thread would go on in.
+    fn leave(&self) -> Result<(), (&'static str, io::Error)> {
+        let mnt = self.mnt.as_ref().map(leave_mntns);
+        let net = self.net.as_ref().map(|home| setns(home.as_raw_fd()));
+        if let Some(Err(e)) = mnt {
+            return Err(("mount", e));
+        }
+        if let Some(Err(e)) = net {
+            return Err(("network", e));
+        }
+        Ok(())
+    }
 }
 
 fn setns(fd: RawFd) -> io::Result<()> {
