@@ -9,6 +9,9 @@
 //! process answered again, and at most once in [`QUIET`].
 //!
 //! Nothing is watched in a process that never called [`watch`]: [`doing`] then costs a load.
+//! A page has no threads to watch with and never watches: what watches is not compiled there,
+//! because std has no clock in a browser page and a read of one that could never run is still a
+//! read the page's lint refuses.
 #![cfg_attr(
     target_family = "wasm",
     allow(
@@ -18,11 +21,17 @@
 )]
 
 use std::borrow::Cow;
+#[cfg(not(target_family = "wasm"))]
 use std::collections::BTreeMap;
+#[cfg(not(target_family = "wasm"))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(not(target_family = "wasm"))]
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_family = "wasm"))]
+use std::time::Instant;
 
+#[cfg(not(target_family = "wasm"))]
 use tilo_lock::MutexRecover as _;
 
 /// The least time between two reports: a stall that clears and comes back at once is one stall.
@@ -37,8 +46,10 @@ const MOST_STACK_TEXT: usize = 256 * 1024;
 /// The longest a stack reader may take before it is given up.
 const STACK_READ: Duration = Duration::from_secs(20);
 
+#[cfg(not(target_family = "wasm"))]
 static WATCH: OnceLock<Watch> = OnceLock::new();
 
+#[cfg(not(target_family = "wasm"))]
 struct Watch {
     /// How long a piece of work may take, or the heartbeat stay quiet, before it is a stall.
     threshold: Duration,
@@ -85,36 +96,48 @@ pub fn watch(threshold: Duration) {
 /// the runtime ran it. A runtime whose workers are all held stops beating, and the watch says
 /// so. Nothing without [`watch`].
 pub fn heartbeat(handle: &tokio::runtime::Handle) {
-    let Some(watch) = WATCH.get() else {
-        return;
-    };
-    if watch.beating.swap(true, Ordering::AcqRel) {
-        return;
-    }
-    handle.spawn(async move {
-        loop {
-            watch
-                .beat
-                .store(watch.since_start().max(1), Ordering::Release);
-            crate::sleep(LOOK).await;
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let Some(watch) = WATCH.get() else {
+            return;
+        };
+        if watch.beating.swap(true, Ordering::AcqRel) {
+            return;
         }
-    });
+        handle.spawn(async move {
+            loop {
+                watch
+                    .beat
+                    .store(watch.since_start().max(1), Ordering::Release);
+                crate::sleep(LOOK).await;
+            }
+        });
+    }
+    #[cfg(target_family = "wasm")]
+    let _ = handle;
 }
 
 /// The work `what` is under way until the answer is dropped: past the watch's threshold it is
 /// a stall, and named in the report. Nothing without [`watch`].
 #[must_use = "the work is watched until this is dropped"]
 pub fn doing(what: impl Into<Cow<'static, str>>) -> Doing {
-    let Some(watch) = WATCH.get() else {
-        return Doing(None);
+    #[cfg(not(target_family = "wasm"))]
+    let number = WATCH.get().map(|watch| {
+        let number = watch.next.fetch_add(1, Ordering::Relaxed);
+        watch
+            .doing
+            .lock_recover()
+            .insert(number, (what.into(), watch.started.elapsed()));
+        number
+    });
+    #[cfg(target_family = "wasm")]
+    let number = {
+        // A page watches nothing and never reports a stall: the name the work goes by is only
+        // dropped here.
+        let _named: Cow<'static, str> = what.into();
+        None::<u64>
     };
-    let number = watch.next.fetch_add(1, Ordering::Relaxed);
-    let began = watch.started.elapsed();
-    watch
-        .doing
-        .lock_recover()
-        .insert(number, (what.into(), began));
-    Doing(Some(number))
+    Doing(number)
 }
 
 /// A piece of work under watch ([`doing`]), until it is dropped.
@@ -122,12 +145,14 @@ pub struct Doing(Option<u64>);
 
 impl Drop for Doing {
     fn drop(&mut self) {
+        #[cfg(not(target_family = "wasm"))]
         if let (Some(number), Some(watch)) = (self.0, WATCH.get()) {
             watch.doing.lock_recover().remove(&number);
         }
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl Watch {
     fn since_start(&self) -> u64 {
         u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
