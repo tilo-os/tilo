@@ -2584,8 +2584,10 @@ down() {
   for name in web releases api server tls discord fake-oauth models; do
     stop_native "$name"
   done
-  if vm_host_running; then
-    vm_host down || say 'the VM host did not stop; sudo -E bash '"$here"'/vm-host.sh down'
+  # The VM host's disk and identity outlive a plain down, as the stack's state
+  # does: the next up is the same member with the workspaces' files it keeps.
+  if vm_host_running || [[ -n $wipe && -d $vm_state/vm ]]; then
+    vm_host down ${wipe:+--wipe} || say 'the VM host did not stop; sudo -E bash '"$here"'/vm-host.sh down'"${wipe:+ --wipe}"
   fi
   if command -v podman >/dev/null; then
     for name in web api server tls; do

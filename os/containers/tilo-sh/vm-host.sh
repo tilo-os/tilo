@@ -6,12 +6,14 @@
 # under it locally: a workspace's Linux programs and its Browser run in its VM
 # here, and its browser session joins the workspace at the server beside it.
 #
-# usage: vm-host.sh up|down|status|env
+# usage: vm-host.sh up|down [--wipe]|status|env
 #
 #   up       make the state disk, certify this host's member device under the
 #            server's root, ready the guest image, start the placer and
 #            vm-host-0
-#   down     stop both, and remove the state disk and the host's identities
+#   down     stop both; the state disk and the host's identity stay, so the
+#            next up is the same member device with its VMs and the
+#            workspaces' files it keeps. --wipe removes them too
 #   status   what is up, and the VMs the host holds
 #   env      the variables the server reads to place here (nothing while the
 #            host is down)
@@ -363,8 +365,12 @@ down() {
   local loop
   loop=$(state_loop)
   if [ -n "$loop" ]; then losetup --detach "$loop"; fi
-  rm -rf "$vm"
-  say 'the VM host is down'
+  if [ "${1:-}" = --wipe ]; then
+    rm -rf "$vm"
+    say 'the VM host is down, and its state disk and identity are gone'
+  else
+    say "the VM host is down; its state disk and identity stay in $vm (down --wipe removes them)"
+  fi
 }
 
 status() {
@@ -404,8 +410,8 @@ ENV
 
 case ${1:-} in
   up) up ;;
-  down) down ;;
+  down) down "${2:-}" ;;
   status) status ;;
   env) server_env ;;
-  *) fail 'usage: vm-host.sh up|down|status|env' ;;
+  *) fail 'usage: vm-host.sh up|down [--wipe]|status|env' ;;
 esac
