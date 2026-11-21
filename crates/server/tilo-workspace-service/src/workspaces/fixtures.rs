@@ -292,15 +292,13 @@ impl GroupKeys for TestGroupKeys {
         create: bool,
     ) -> GroupKeysAnswerFuture<'a> {
         Box::pin(async move {
-            // A record that needs its own group asks with that group's id; anything else with
-            // its workspace's, whose every-member group this fixture opens.
-            let asked = collab_types::WorkspaceId::parse(workspace).expect("a group id");
-            let group = if asked.is_document_key_group() {
-                asked
-            } else {
-                collab_types::reader_group(asked, readers)?
-            }
-            .to_string();
+            // The route the endpoint seals for: a workspace's every-member group, or the
+            // record's own group when the route names one.
+            let _ = readers;
+            let group = neighbour_wire::KeyScope::parse(workspace)
+                .expect("a key scope")
+                .group()
+                .to_string();
             let workspace = group.as_str();
             let held = {
                 let keys = self.held.lock().expect("the fixture's keys");
