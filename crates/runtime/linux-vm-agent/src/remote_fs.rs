@@ -159,10 +159,7 @@ impl<S: Read + Write + Send + 'static> Filesystem for RemoteFs<S> {
     }
 
     fn forget(&self, _: &Request, ino: INodeNo, count: u64) {
-        let _ = self.remote.ask(&FsRequest::Forget {
-            node: ino.0,
-            count,
-        });
+        let _ = self.remote.ask(&FsRequest::Forget { node: ino.0, count });
     }
 
     fn getattr(&self, _: &Request, ino: INodeNo, _: Option<FileHandle>, reply: ReplyAttr) {

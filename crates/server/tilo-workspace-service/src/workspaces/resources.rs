@@ -739,7 +739,8 @@ impl Workspaces {
             // Whoever follows the workspace's writes (its bots) is woken by a resource's
             // change as by any, while the workspace is held, so it reads the change.
             let written = (app_id.clone(), document_id.clone());
-            self.tell_followers(&governed, author, written, &message).await;
+            self.tell_followers(&governed, author, written, &message)
+                .await;
         }
         drop(governed);
         // A write by a device of no editor changes nothing here, and is no document write

@@ -168,12 +168,16 @@ impl EngineRecords {
     /// Every record the workspaces' copy holds of `workspace`, by app and route: none while the
     /// copy is not here, or holds no such workspace.
     pub(crate) fn listing(&self, workspace: &str) -> Vec<(String, String)> {
-        self.0.reads.borrow().as_ref().map_or_else(Vec::new, |reads| {
-            reads.listing(workspace).unwrap_or_else(|error| {
-                tracing::debug!(%error, %workspace, "the workspace's records were not listed");
-                Vec::new()
+        self.0
+            .reads
+            .borrow()
+            .as_ref()
+            .map_or_else(Vec::new, |reads| {
+                reads.listing(workspace).unwrap_or_else(|error| {
+                    tracing::debug!(%error, %workspace, "the workspace's records were not listed");
+                    Vec::new()
+                })
             })
-        })
     }
 
     /// The members' own records the workspaces' copy holds of `workspace`, each with whose it is.

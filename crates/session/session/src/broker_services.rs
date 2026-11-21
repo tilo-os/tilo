@@ -167,7 +167,9 @@ pub(crate) type HeldResources =
 
 /// The resources this session reads outside their apps: the workspaces this device's own service
 /// holds, the ones it governs and the ones it joined at a device serving them alike.
-pub(crate) fn document_reads(service: tilo_workspace_service::service::ServiceSlot) -> HeldDocuments {
+pub(crate) fn document_reads(
+    service: tilo_workspace_service::service::ServiceSlot,
+) -> HeldDocuments {
     BrokerService::served(Arc::new(
         tilo_workspace_service::apps::service_reads::ServiceReads::on(service),
     )

@@ -1066,8 +1066,14 @@ mod tests {
         };
         let text = invitation_for(person.user);
         let link = format!("http://tilo.localhost:26320/#/w/{WORKSPACE}?invite={text}");
-        assert_eq!(invited_workspace(&text, &person).expect("its text"), WORKSPACE);
-        assert_eq!(invited_workspace(&link, &person).expect("its link"), WORKSPACE);
+        assert_eq!(
+            invited_workspace(&text, &person).expect("its text"),
+            WORKSPACE
+        );
+        assert_eq!(
+            invited_workspace(&link, &person).expect("its link"),
+            WORKSPACE
+        );
         let stranger = Person {
             user: [0x26; 32],
             name: "Bo".to_owned(),

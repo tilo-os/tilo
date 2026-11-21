@@ -2295,15 +2295,17 @@ impl PeerDocuments {
     /// Hand one app write the session wrote through this device's workspace service to this
     /// device's apps on its route.
     pub(crate) fn deliver_write(&self, write: tilo_peer_state::owner::AppWrite) {
-        self.deliver(tilo_workspace_service::apps::collab_inbound::RemoteDocument {
-            app_id: write.app_id,
-            cluster_id: write.cluster_id,
-            document_id: write.document_id,
-            author: write.author,
-            replayed: write.replayed,
-            envelope: write.envelope,
-            own: write.own,
-        });
+        self.deliver(
+            tilo_workspace_service::apps::collab_inbound::RemoteDocument {
+                app_id: write.app_id,
+                cluster_id: write.cluster_id,
+                document_id: write.document_id,
+                author: write.author,
+                replayed: write.replayed,
+                envelope: write.envelope,
+                own: write.own,
+            },
+        );
     }
 
     /// Hand one app write to this device's apps on its route: another device's, or one the
@@ -2314,7 +2316,11 @@ impl PeerDocuments {
             document.app_id.clone(),
             document.document_id.clone(),
         );
-        tilo_workspace_service::apps::collab_inbound::deliver(&self.channels, &self.fanout, document);
+        tilo_workspace_service::apps::collab_inbound::deliver(
+            &self.channels,
+            &self.fanout,
+            document,
+        );
         // What search holds of the record is read again from what was written into it.
         if let Some(changes) = &self.changes {
             changes.changed(&workspace, &app, &record);

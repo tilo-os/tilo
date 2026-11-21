@@ -14,9 +14,7 @@ use tilo_session_client::network::Event;
 
 use super::adopt::{Carrier, enter, redeem};
 use super::own_service::open as open_own_service;
-use super::{
-    DesktopEvent, DeviceActions, Engine, Enrolled, HostCmd, KeyLink, endpoint_for,
-};
+use super::{DesktopEvent, DeviceActions, Engine, Enrolled, HostCmd, KeyLink, endpoint_for};
 use tilo_network_actor::WorkspaceId;
 
 /// What the peer actor heard, as the client's own vocabulary says it: the transport keeps the
@@ -689,13 +687,8 @@ async fn listening(
         documents.follow(service.workspaces());
     }
     let founding_link = link.clone();
-    let (events, carrying, attending) = heard(
-        identity.is_some(),
-        arrivals,
-        desktop_events,
-        wake,
-        link,
-    );
+    let (events, carrying, attending) =
+        heard(identity.is_some(), arrivals, desktop_events, wake, link);
     // A workspace this device makes is founded on its own service from now on, carried here.
     if let (true, Some(service), Some(identity), Some(engine)) =
         (opened, &own_service, identity, engine)
@@ -833,7 +826,10 @@ async fn take_in(
             {
                 continue;
             }
-            if matches!(input.message(), neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+            if matches!(
+                input.message(),
+                neighbour_wire::NeighbourMsg::AppDocument { .. }
+            ) {
                 continue;
             }
             if run
