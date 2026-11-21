@@ -251,9 +251,7 @@
             }
           },
           {
-            "form": {
-              "submit": "Tag"
-            }
+            "key": "Enter"
           },
           {
             "wait_for": "travel"

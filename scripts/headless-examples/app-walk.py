@@ -617,10 +617,10 @@ class Walk:
     def op_tree(self, value) -> dict:
         """What a person sees of the notes' tree: `{"rows": [...]}` that each of
         them is a row the window draws, all at one leading edge (rows at the top
-        of the tree, in the order they read), and `{"under": [child, parent]}`
-        that the child stands indented under the parent — the note an action
-        made under the note it was made in. A row that is not drawn is the
-        finding: the app may hold what its window does not show."""
+        of the tree), and `{"under": [child, parent]}` that a row of the child's
+        words stands indented under the parent's — the note an action made under
+        the note it was made in. A row that is not drawn is the finding: the app
+        may hold what its window does not show."""
         def row(name: str) -> dict:
             return until_value(
                 f"the row {name!r} in the window",
@@ -628,14 +628,25 @@ class Walk:
 
         if "under" in value:
             child_name, parent_name = value["under"]
-            child = row(child_name)
             parent = row(parent_name)
-            cx, cy = child["rect"][0], child["rect"][1]
-            px, py = parent["rect"][0], parent["rect"][1]
-            if not (cx > px and cy > py):
-                raise Failed(
-                    f"{child_name!r} is not drawn indented under {parent_name!r}: "
-                    f"its row stands at {child['rect']}, the note's at {parent['rect']}")
+            px, py, _pw, _ph = parent["rect"]
+
+            def under() -> dict | None:
+                # The child's words may name other notes too: the row sought is
+                # the one drawn indented under the parent, the first of them.
+                drawn_under = [
+                    target
+                    for target in self.session.targets()
+                    if target.get("name") == child_name
+                    and drawn(target)
+                    and target["rect"][0] > px
+                    and target["rect"][1] > py
+                    and target["rect"][0] < px + 320.0
+                ]
+                return min(drawn_under, key=lambda target: target["rect"][1]) if drawn_under else None
+
+            child = until_value(
+                f"the row {child_name!r} under {parent_name!r}", under, 30)
             return {"under": value["under"], "child": child["rect"], "parent": parent["rect"]}
         rows = [row(name) for name in value["rows"]]
         lefts = sorted({round(found["rect"][0]) for found in rows})
