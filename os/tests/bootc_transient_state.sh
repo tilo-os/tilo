@@ -29,16 +29,18 @@ else
   bad 'greetd portal mask is not declared in tmpfiles.d/tilo.conf'
 fi
 
-if grep -Fq 'clean-bootc-transient-state.py' "$containerfile" \
-   && grep -Fq 'python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py' "$containerfile" \
+# bootc lint reads the composed image (os-image-contracts in t.toml), which the rootfs's
+# cleanup has already run in.
+if grep -Fq 'python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py' "$containerfile" \
    && awk '
-        /tilo-clean-bootc-transient-state[.]py/ { seen_clean = 1 }
-        seen_clean && /bootc container lint/ { found = 1 }
+        /^name = "os-image-contracts"$/ { inside = 1; next }
+        inside && /^\[\[check\]\]/ { inside = 0 }
+        inside && /bootc container lint/ { found = 1 }
         END { exit found ? 0 : 1 }
-      ' "$containerfile"; then
-  ok 'rootfs Containerfile clears transient state immediately before bootc lint'
+      ' "$repo/t.toml"; then
+  ok 'the rootfs clears transient state, and bootc lint runs on the composed image'
 else
-  bad 'rootfs Containerfile does not run transient-state cleanup before bootc lint'
+  bad 'the rootfs does not clear transient state, or os-image-contracts runs no bootc lint'
 fi
 
 if grep -Fq "target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro" "$containerfile" \

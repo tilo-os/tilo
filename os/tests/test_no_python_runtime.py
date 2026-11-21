@@ -83,9 +83,11 @@ class PythonCheck(unittest.TestCase):
                 self.assert_rejected(result, 'some-tool')
 
     def test_the_image_runs_the_check_on_the_finished_rootfs(self):
-        text = CONTAINERFILE.read_text()
-        self.assertIn('bash /usr/local/bin/verify-no-python-runtime.sh', text)
-        self.assertIn('os/scripts/verify-no-python-runtime.sh', text)
+        # os-image-contracts runs it in the composed image, after the build's last change.
+        text = (REPO / 't.toml').read_text()
+        contracts = text[text.index('name = "os-image-contracts"'):]
+        contracts = contracts[:contracts.index('[[check]]')]
+        self.assertIn('bash /repo/os/scripts/verify-no-python-runtime.sh', contracts)
 
 
 if __name__ == '__main__':

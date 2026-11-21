@@ -41,24 +41,14 @@ RUN --mount=type=bind,source=os/hardware/firmware/${TILO_HARDWARE_PROFILE},targe
     TILO_GREETER_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
         bash /run/tilo-build-initramfs.sh "$kver"
 
-# Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
-# state it once did: offering `tilo-install --encrypt` while carrying no
-# initramfs, which leaves the kernel able to see the LUKS device and unable to
-# open it. Also bundled so an operator can re-run it on a live machine.
-COPY os/tests/boot_chain_invariants.sh /usr/libexec/tilo/boot-chain-test.sh
-RUN chmod 0755 /usr/libexec/tilo/boot-chain-test.sh \
-    && OS_ROOT=/ bash /usr/libexec/tilo/boot-chain-test.sh
-
-# Enrolment invariants, likewise at BUILD time. A build container has no
-# /dev/tpm*, which is exactly the path this needs to exercise: the machine with
-# no TPM, whose owner has nothing but the passphrase they were asked for. The
-# image once shipped an `enrol` that added no passphrase key slot on that path,
-# so the volume it produced could not be opened by the secret it had just asked
-# for and printed no usable recovery key either. Runs against a throwaway sparse
-# file, needs no device-mapper, and takes about ten seconds.
-COPY os/tests/luks_enrolment.sh /usr/libexec/tilo/luks-enrolment-test.sh
-RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
-    && bash /usr/libexec/tilo/luks-enrolment-test.sh
+# Boot-chain invariants (the image once offered `tilo-install --encrypt` while
+# carrying no initramfs, which leaves the kernel able to see the LUKS device and
+# unable to open it) and enrolment invariants (an `enrol` once added no
+# passphrase key slot on a machine with no TPM). Bundled so an operator can rerun
+# them on a live machine; os-image-contracts runs both against the composed
+# image, beside the build rather than inside it.
+COPY --chmod=0755 os/tests/boot_chain_invariants.sh /usr/libexec/tilo/boot-chain-test.sh
+COPY --chmod=0755 os/tests/luks_enrolment.sh /usr/libexec/tilo/luks-enrolment-test.sh
 
 # ---- The generation --------------------------------------------------------
 # Last before the final check, and not beside the rollback machinery it belongs
@@ -179,22 +169,19 @@ RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,targ
     && /usr/libexec/tilo-prepared-setup --verify-home-consumer-capability \
     && /usr/libexec/tilo-prepared-setup --verify-home-consumer-capability --check >/dev/null
 
-# Validate.
+# Finish the rootfs.
 #
-# This stays at the end of the rootfs stage, ahead of the kernel split rather than
-# moved before it defensively.
-# The worry was that lint would reject a split-kernel rootfs — `bootc container
-# split-kernel-and-rootfs` moves vmlinuz and initramfs.img out of
-# /usr/lib/modules/$kver and into a UKI under /boot — and would have to run
-# before the split. It does not: checked against a built split-kernel UKI image
-# under bootc 1.16.4, lint exits 0. The `kernel` check counts
-# /usr/lib/modules/$kver *directories*, and the split leaves that directory in
-# place, so one kernel is still one kernel; `nonempty-boot` is a warning, not a
-# fatal, so a UKI in /boot does not fail it either.
 # The package payloads no Tilo path loads were removed at the end of the system
 # layer (os/image/system.Containerfile), the last that changes packages; that none
 # is back, in a package file or in anything copied in since, is checked here.
-# Then drop build-time /run, /tmp and /var state (issue #71) so bootc lint
+# What only reads the finished image runs in os-image-contracts against the
+# composed image instead of inside this build: that no Python program of Tilo's
+# ships (os/scripts/verify-no-python-runtime.sh), that every file of a package
+# this build installed is what the rpmdb records (os/scripts/verify-rpm-files.sh),
+# and `bootc container lint`. Lint passes on the split-kernel image: its `kernel`
+# check counts /usr/lib/modules/$kver directories, which the split leaves in place,
+# and `nonempty-boot` is a warning, not a fatal, so the UKI in /boot does not fail it.
+# Then drop build-time /run, /tmp and /var state so bootc lint
 # does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles
 # warnings. greetd's portal mask is declared in tmpfiles.d/tilo.conf and is
 # recreated on first boot rather than baked into the image.
@@ -204,7 +191,6 @@ RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /et
 RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
     --mount=type=bind,source=os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf,target=/usr/local/libexec/tilo-ldconfig-image-cache.conf,ro \
     --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
-    --mount=type=bind,source=os/scripts/verify-rpm-files.sh,target=/usr/local/libexec/tilo-verify-rpm-files.sh,ro \
     --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
     --mount=type=bind,source=os/scripts/seed-env-runtime.py,target=/usr/local/libexec/tilo-seed-env-runtime.py,ro \
     --mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,target=/usr/local/libexec/tilo-apps-built,ro \
@@ -224,7 +210,6 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     # The base image's tool for deriving base images, a Python program no
     # package owns; a derived image never runs it.
     && rm -f /usr/libexec/bootc-base-imagectl \
-    && bash /usr/local/bin/verify-no-python-runtime.sh \
     && rm -f /usr/local/bin/verify-no-python-runtime.sh \
              /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
     # The system font cache, written once here: fontconfig records each font
@@ -263,7 +248,6 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          /usr/share/tilo-apps /usr/local/libexec/tilo-apps-built / \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bash /usr/local/libexec/tilo-verify-boot-ordering.sh \
-    && sh /usr/local/libexec/tilo-verify-rpm-files.sh \
     # The system is Tilo: its name in the boot menu and on the console, and the
     # hostname a disk keeps until one is chosen. ID and VERSION_ID stay
     # Fedora's for the tools keyed off them. Edited after the package check,
@@ -274,8 +258,7 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && grep -qx 'DEFAULT_HOSTNAME="tilo"' /usr/lib/os-release \
     && grep -qx 'ID=fedora' /usr/lib/os-release \
     && test "$(readlink -f /etc/os-release)" = /usr/lib/os-release \
-    && test "$(bootc --version)" = "bootc $(rpm -q --qf '%{VERSION}' bootc)" \
-    && bootc container lint
+    && test "$(bootc --version)" = "bootc $(rpm -q --qf '%{VERSION}' bootc)"
 
 # COPY is a separate build operation, with no DNS mount in /run. Copy the
 # containing directory so builders preserve its only entry, the symlink,

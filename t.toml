@@ -7937,10 +7937,12 @@ id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch"]
 
-# The OS image's own contracts, run against the image the chain composed as an OCI layout: the
-# build runs them while it assembles, and this reruns each from the composed image itself, so a
-# broken encrypted-boot, filesystem, LUKS-enrolment or rollback contract names its test against
-# the image rather than only a red image build.
+# The OS image's checks that only read the finished image, run against the image the chain
+# composed as an OCI layout rather than inside its build, where each lengthened the image layer
+# a change to any binary rebuilds: the encrypted-boot, LUKS-enrolment, filesystem and rollback
+# contracts, that no Python program of Tilo's ships, that every file of a package the build
+# installed is what the rpmdb records (dated by the image's clock, which tells the build's
+# packages from the base's), and `bootc container lint`.
 [[check]]
 name = "os-image-contracts"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
@@ -7958,6 +7960,11 @@ trap '"${podman[@]}" image rm "$image" >/dev/null 2>&1 || true' EXIT
   --entrypoint bash "$image" -c 'OS_ROOT=/ bash /run/tilo-collaborative-files-image-contract.sh image'
 "${podman[@]}" run --rm --mount "type=bind,src=$PWD/os,dst=/repo/os,ro" \
   --entrypoint bash "$image" -c 'bash /repo/os/tests/rollback-wrappers.sh /usr/libexec/tilo/tilo-rollback'
+epoch=$("${podman[@]}" image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$image")
+case $epoch in ''|*[!0-9]*) echo "the image carries no clock but '$epoch'" >&2; exit 1 ;; esac
+"${podman[@]}" run --rm --network none --mount "type=bind,src=$PWD/os/scripts,dst=/repo/os/scripts,ro" \
+  --env "SOURCE_DATE_EPOCH=$epoch" --entrypoint bash "$image" -c \
+  'bash /repo/os/scripts/verify-no-python-runtime.sh && sh /repo/os/scripts/verify-rpm-files.sh && bootc container lint'
 '''
 needs = ["os-image-x86_64"]
 requires = ["arch=x86_64", "disk-100g"]
