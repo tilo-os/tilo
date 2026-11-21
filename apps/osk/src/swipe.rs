@@ -824,15 +824,4 @@ mod tests {
         );
     }
 
-    #[test]
-    #[ignore = "measurement; run with --release --ignored --nocapture"]
-    fn decode_time() {
-        // The budget is 30 ms per decode in a release build.
-        let (layout, geom) = qwerty_geom();
-        let model = GeometricSwipeModel::english();
-        let path = path_through("keyboard", &geom, &layout);
-        let t0 = ui::time::now();
-        let _ = model.decode_top(&path, &geom, &layout, 8);
-        println!("swipe decode of \"keyboard\": {:?}", t0.elapsed());
-    }
 }

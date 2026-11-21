@@ -118,27 +118,3 @@ fn an_empty_workspace_keeps_the_empty_state_it_had() {
         "and offers the one action it had: {said:?}"
     );
 }
-
-#[test]
-#[ignore = "writes the empty state's PNGs for review, it asserts nothing"]
-fn capture_the_empty_state_with_and_without_the_workspaces_documents() {
-    let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
-    let (name, id, doc) = application_pdf();
-    let mut with = TestApp::<PdfViewerShell>::with_named_resources(&mut [
-        (name, id, doc),
-        (
-            "contract-2026.pdf",
-            markup_resource("/papers/contract-2026.pdf"),
-            paper(12, [0xc0; 32], 96_512, "contract-2026.pdf"),
-        ),
-    ])
-    .expect("a reader on the workspace the papers are in");
-    with.harness().resize((1440, 900)).expect("a window");
-    with.settle();
-    with.harness().render_png(&out.join("pdf-empty-two.png"));
-    let mut none = TestApp::<PdfViewerShell>::new().expect("a reader on an empty workspace");
-    none.harness().resize((1440, 900)).expect("a window");
-    none.settle();
-    none.harness().render_png(&out.join("pdf-empty-none.png"));
-    eprintln!("captures in {}", out.display());
-}

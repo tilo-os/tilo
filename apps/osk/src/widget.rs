@@ -3099,6 +3099,3 @@ pub fn input_purpose_name(purpose: InputPurpose) -> &'static str {
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-#[path = "visual_review.rs"]
-mod visual_review;
