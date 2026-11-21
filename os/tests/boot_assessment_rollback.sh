@@ -111,7 +111,16 @@ mkdir -p "$OUT"
 
 step() { printf '\n=== %s\n' "$*" >&2; }
 ok()   { printf 'ok    %s\n' "$*" >&2; }
-fail() { printf 'FAIL  %s\n' "$*" >&2; printf 'FAIL %s\n' "$*" > "$OUT/verdict.txt"; exit 1; }
+# A failed check may keep no files, so the last boot's record goes to the log too.
+fail() {
+  printf 'FAIL  %s\n' "$*" >&2
+  printf 'FAIL %s\n' "$*" > "$OUT/verdict.txt"
+  if [ -n "${LAST_RECORD:-}" ] && [ -s "$OUT/$LAST_RECORD.txt" ]; then
+    printf -- '--- %s\n' "$OUT/$LAST_RECORD.txt" >&2
+    tr -d '\r' < "$OUT/$LAST_RECORD.txt" | tail -n 150 >&2
+  fi
+  exit 1
+}
 
 guest() { $RUNNER "$1"; }
 # The command line is quoted once for the guest's login shell.
@@ -241,6 +250,7 @@ wait_blessed() {
 
 record_boot() {
   local name="$1"
+  LAST_RECORD=$name
   as_root 'echo "cmdline: $(cat /proc/cmdline)"; echo; bootctl status --no-pager 2>&1 | sed -n "/Current Entry/p;/Default Entry/p"; echo
            ls -l /boot/loader/entries /boot/loader/entries.staged /boot/efi/loader/entries /boot/efi/loader/entries.staged 2>&1; echo
            systemctl --no-pager status tilo-boot-health.service greetd.service systemd-bless-boot.service tilo-boot-entries.service 2>&1 | head -80; echo
@@ -539,6 +549,7 @@ while :; do
   b_now="$(entry_for "$TABLE" entries "$B_DIGEST")" || b_now=""
   printf '      entry %s, composefs %.16s, health %s, broken entry now %s\n' \
     "$entry" "$digest" "$verdict" "${b_now:-<gone>}" >&2
+  printf '      on the ESP: %s\n' "$(awk '{ printf "%s/%s (%.16s) ", $1, $2, $3 }' <<<"$TABLE")" >&2
   if [ "$digest" = "$B_DIGEST" ]; then
     [ "$entry" = "$B_ENTRY" ] || fail "boot $attempt runs composefs ${B_DIGEST:0:16} but the boot loader reports entry $entry, not $B_ENTRY"
     [ "$attempt" -le "$TRIES" ] || fail "boot $attempt chose the broken entry with no tries left"
