@@ -12,6 +12,9 @@
 # And every finalize of a staged deployment merges its /etc again (0006), so
 # the one at shutdown carries over what /etc became after the finalize Tilo
 # makes right after staging.
+# And `bootc install --source-booted` (0007) copies the booted image out of the
+# booted composefs repository into the target's as it is stored, so the
+# installer writes the image to the disk once.
 # It builds in the OS builder (the base's own libraries, Fedora's Rust), with
 # the ostree, zstd and OpenSSL headers it links against from the frozen RPM snapshot: the CI
 # builder image is an older Fedora, whose installed libraries the snapshot's
@@ -36,7 +39,8 @@ COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
     os/external-assets/bootc-runtime/0003-space-check-counts-missing-layers.patch \
     os/external-assets/bootc-runtime/0004-composefs-rs-from-its-source-archive.patch \
     os/external-assets/bootc-runtime/0005-export-uncompressed-layers.patch \
-    os/external-assets/bootc-runtime/0006-merge-etc-at-every-finalize.patch /patches/
+    os/external-assets/bootc-runtime/0006-merge-etc-at-every-finalize.patch \
+    os/external-assets/bootc-runtime/0007-install-the-booted-image.patch /patches/
 # zlink-macros with its generated enum variants in a fixed order (0002 patches
 # bootc's build onto it): the release emits them in HashMap order, so no two
 # bootc builds matched and the image was not reproducible.

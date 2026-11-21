@@ -1,0 +1,213 @@
+From: Tilo <noreply@tilo.so>
+Subject: [PATCH] install: --source-booted copies the booted image as it is stored
+
+`bootc install to-filesystem --source-booted` installs the image this system
+booted by copying it out of the booted composefs repository into the
+target's, as `cfsctl oci copy` does: manifest, config and layers as they are
+stored, each layer checked against its diff id on the way in. It runs on the
+host, with no container engine. An installer used to export the booted image
+as an OCI layout, load that into container storage and have bootc pull it
+back out, writing the whole image three times to install it once and giving
+the installed deployment the export's manifest digest instead of the booted
+image's. The disk space check reads the manifest from the booted repository.
+---
+diff --git a/crates/lib/src/bootc_composefs/repo.rs b/crates/lib/src/bootc_composefs/repo.rs
+index 9a12624..600f041 100644
+--- a/crates/lib/src/bootc_composefs/repo.rs
++++ b/crates/lib/src/bootc_composefs/repo.rs
+@@ -130,7 +130,15 @@ pub(crate) async fn initialize_composefs_repository(
+ 
+     let repo = Arc::new(repo);
+ 
+-    let pull_result = if use_unified {
++    let pull_result = if let Some(source_repo) = state.source.composefs_repo.as_deref() {
++        copy_composefs_image(
++            &repo,
++            &root_setup.physical_root_path.join("composefs"),
++            source_repo,
++            state.source.digest.as_deref().unwrap_or_default(),
++        )
++        .await?
++    } else if use_unified {
+         // Unified path: first into containers-storage on the target
+         // rootfs, then cstor zero-copy into composefs. This ensures the image
+         // is available for `podman run` from first boot.
+@@ -181,6 +189,65 @@ pub(crate) async fn initialize_composefs_repository(
+     Ok(pull_result)
+ }
+ 
++/// Copy the image `manifest_digest` names from the composefs repository at
++/// `source_repo` into `repo`, the target's, which is at `repo_path`. Its manifest,
++/// config and layers are copied as they are stored, so the image keeps its manifest
++/// digest; each layer is checked against its diff id on the way in.
++async fn copy_composefs_image(
++    repo: &crate::store::ComposefsRepository,
++    repo_path: &camino::Utf8Path,
++    source_repo: &str,
++    manifest_digest: &str,
++) -> Result<PullResult<Sha512HashValue>> {
++    tracing::info!("Copying {manifest_digest} from the composefs repository {source_repo}");
++    composefs_ctl::run_from_iter([
++        "--repo".to_owned(),
++        repo_path.as_str().to_owned(),
++        "oci".to_owned(),
++        "copy".to_owned(),
++        format!("@{manifest_digest}"),
++        "--from".to_owned(),
++        source_repo.to_owned(),
++    ])
++    .await
++    .with_context(|| format!("Copying {manifest_digest} from {source_repo}"))?;
++    let digest: composefs_oci::OciDigest = manifest_digest
++        .parse()
++        .with_context(|| format!("Parsing manifest digest {manifest_digest}"))?;
++    let image = composefs_oci::oci_image::OciImage::open(repo, &digest, None)
++        .context("Opening the copied image")?;
++    Ok(PullResult {
++        manifest_digest: image.manifest_digest().clone(),
++        manifest_verity: image.manifest_verity().clone(),
++        config_digest: image.config_digest().clone(),
++        config_verity: image.config_verity().clone(),
++        stats: Default::default(),
++    })
++}
++
++/// The manifest and config of the image `manifest_digest` names in the composefs
++/// repository at `source_repo`, as an install from that repository copies them.
++pub(crate) fn composefs_image_manifest_and_config(
++    source_repo: &str,
++    manifest_digest: &str,
++) -> Result<crate::bootc_composefs::status::ImgConfigManifest> {
++    let repo = crate::store::ComposefsRepository::open_path(rustix::fs::CWD, source_repo)
++        .with_context(|| format!("Opening the composefs repository {source_repo}"))?;
++    let digest: composefs_oci::OciDigest = manifest_digest
++        .parse()
++        .with_context(|| format!("Parsing manifest digest {manifest_digest}"))?;
++    let image = composefs_oci::oci_image::OciImage::open(&repo, &digest, None)
++        .with_context(|| format!("Opening {manifest_digest} in {source_repo}"))?;
++    let config = image
++        .config()
++        .cloned()
++        .ok_or_else(|| anyhow::anyhow!("{manifest_digest} in {source_repo} has no config"))?;
++    Ok(crate::bootc_composefs::status::ImgConfigManifest {
++        config,
++        manifest: image.manifest().clone(),
++    })
++}
++
+ /// Result of pulling a composefs repository, including the OCI manifest digest
+ /// needed to reconstruct image metadata from the local composefs repo.
+ pub(crate) struct PullRepoResult {
+diff --git a/crates/lib/src/install.rs b/crates/lib/src/install.rs
+index 13d12c1..ad95854 100644
+--- a/crates/lib/src/install.rs
++++ b/crates/lib/src/install.rs
+@@ -306,6 +306,13 @@ pub(crate) struct InstallSourceOpts {
+     /// in the previous paragraph. See skopeo(1) for accepted formats.
+     #[clap(long)]
+     pub(crate) source_imgref: Option<String>,
++
++    /// Install the image this system booted, copying it out of the booted composefs
++    /// repository as it is stored: nothing is pulled, exported or unpacked, and the
++    /// installed deployment records the booted image's own manifest digest.
++    #[clap(long, conflicts_with = "source_imgref")]
++    #[serde(default)]
++    pub(crate) source_booted: bool,
+ }
+ 
+ #[derive(ValueEnum, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+@@ -615,6 +622,9 @@ pub(crate) struct SourceInfo {
+     pub(crate) selinux: bool,
+     /// Whether the source is available in the host mount namespace
+     pub(crate) in_host_mountns: bool,
++    /// The composefs repository the image is copied from instead of pulled
++    /// (--source-booted); `digest` is then its manifest digest.
++    pub(crate) composefs_repo: Option<String>,
+ }
+ 
+ // Shared read-only global state
+@@ -839,6 +849,44 @@ impl SourceInfo {
+         Self::new(imageref, Some(digest), root, true)
+     }
+ 
++    /// The image this system booted, in the booted composefs repository.
++    #[context("Gathering source info from the booted image")]
++    pub(crate) async fn from_booted(root: &Dir) -> Result<Self> {
++        let storage = crate::cli::get_storage().await?;
++        let crate::store::BootedStorageKind::Composefs(booted) = storage.kind()? else {
++            anyhow::bail!("--source-booted needs a system booted from a composefs image");
++        };
++        let host = crate::bootc_composefs::status::get_composefs_status(&storage, &booted).await?;
++        let entry = host
++            .status
++            .booted
++            .as_ref()
++            .ok_or_else(|| anyhow!("No booted deployment"))?;
++        let image = entry
++            .image
++            .as_ref()
++            .ok_or_else(|| anyhow!("The booted deployment names no image"))?;
++        let verity = &entry.require_composefs()?.verity;
++        let (_, manifest_digest) =
++            crate::bootc_composefs::status::get_imginfo(&storage, verity)?;
++        let manifest_digest = if manifest_digest.starts_with("sha256:") {
++            manifest_digest
++        } else {
++            format!("sha256:{manifest_digest}")
++        };
++        let imageref = ostree_container::ImageReference {
++            transport: ostree_container::Transport::try_from(image.image.transport.as_str())?,
++            name: image.image.image.clone(),
++        };
++        let mut source = Self::new(imageref, Some(manifest_digest), root, false)?;
++        source.composefs_repo = Some(format!(
++            "/{}/{}",
++            crate::store::SYSROOT,
++            crate::store::COMPOSEFS
++        ));
++        Ok(source)
++    }
++
+     #[context("Creating source info from a given imageref")]
+     pub(crate) fn from_imageref(imageref: &str, root: &Dir) -> Result<Self> {
+         let imageref = ostree_container::ImageReference::try_from(imageref)?;
+@@ -878,6 +926,7 @@ impl SourceInfo {
+             digest,
+             selinux,
+             in_host_mountns,
++            composefs_repo: None,
+         })
+     }
+ }
+@@ -1554,8 +1603,15 @@ async fn prepare_install(
+         .context("Opening /")?;
+ 
+     let host_is_container = crate::containerenv::is_container(&rootfs);
+-    let external_source = source_opts.source_imgref.is_some();
++    let external_source = source_opts.source_imgref.is_some() || source_opts.source_booted;
+     let (source, target_rootfs) = match source_opts.source_imgref {
++        None if source_opts.source_booted => {
++            crate::cli::require_root(false)?;
++            let source = SourceInfo::from_booted(&rootfs).await?;
++            // Only the composefs backend stores images in a composefs repository.
++            composefs_options.composefs_backend = true;
++            (source, None)
++        }
+         None => {
+             ensure!(
+                 host_is_container,
+@@ -2025,7 +2081,13 @@ async fn install_to_filesystem_impl(
+         // Pre-flight disk space check for native composefs install path.
+         {
+             let imgref = &state.source.imageref;
+-            let img_manifest_config = get_container_manifest_and_config(&imgref).await?;
++            let img_manifest_config = match state.source.composefs_repo.as_deref() {
++                Some(source_repo) => crate::bootc_composefs::repo::composefs_image_manifest_and_config(
++                    source_repo,
++                    state.source.digest.as_deref().unwrap_or_default(),
++                )?,
++                None => get_container_manifest_and_config(&imgref).await?,
++            };
+             crate::store::ensure_composefs_dir(&rootfs.physical_root)?;
+             // Use init_path since the repo may not exist yet during install
+             let config =

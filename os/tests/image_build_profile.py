@@ -346,6 +346,7 @@ print(json.dumps({'signed_rootfs_id': identity}))
             "os/Containerfile.bootc-alongside-helper",
             "os/external-assets/bootc/0001-probe-missing-partition-metadata.patch",
             "os/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch",
+            "os/external-assets/bootc-runtime/0007-install-the-booted-image.patch",
         ):
             self.write(path, (REPO / path).read_text())
 

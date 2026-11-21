@@ -163,6 +163,7 @@ else
     "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
     "$TILO_OS_DIR/external-assets/bootc/0001-probe-missing-partition-metadata.patch" \
     "$TILO_OS_DIR/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch" \
+    "$TILO_OS_DIR/external-assets/bootc-runtime/0007-install-the-booted-image.patch" \
     | sha256sum | cut -c1-16)"
   alongside_bootc_ref="localhost/tilo-bootc-alongside-helper:${alongside_bootc_key}"
   if ! podman image exists "$alongside_bootc_ref"; then
@@ -223,11 +224,11 @@ if [ "$IMAGE_ONLY" = 1 ]; then
 fi
 
 msg "3/3 disk image -> installer qcow2"
-# The live root holds both the booted composefs tree and a second unpacked image
-# in /var/lib/containers (`bootc image copy-to-storage`) before `bootc install`.
-# Size it from the actual image rather than a stale guess. Three times the OCI
-# image size covers both trees plus overlay metadata; 40 GiB is the tested floor
-# for the full Windows-compatibility payload. The pristine qcow2 remains sparse.
+# The live root holds the booted composefs tree, and an offline target imported
+# into /var/lib/containers beside it before `bootc install`. Size it from the
+# actual image rather than a stale guess. Three times the OCI image size covers
+# both trees plus overlay metadata; 40 GiB is the tested floor for the full
+# Windows-compatibility payload. The pristine qcow2 remains sparse.
 #
 # `tilo.install` is not passed here — it lives in the image, as
 # /usr/lib/bootc/kargs.d/50-installer.toml (see os/Containerfile.installer).
