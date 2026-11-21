@@ -137,7 +137,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Note(Resource):
     """Note — `tl.so.tilo.lang.notes.Note`."""
-    __surface__ = "so.tilo.lang.notes@1ceec32c41c46d8a"
+    __surface__ = "so.tilo.lang.notes@0f7ba6ca9d5c382a"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -280,8 +280,9 @@ class Note(Resource):
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.lang.notes.Notebook`."""
-    __surface__ = "so.tilo.lang.notes@1ceec32c41c46d8a"
+    __surface__ = "so.tilo.lang.notes@0f7ba6ca9d5c382a"
     tmqqtkeb: list[Entry[Note]]  # notes
+    qgq6mcy7: list[Entry[Note]]  # set_aside
 
     def new_note(self,
         *,
@@ -423,5 +424,5 @@ class Notebook(Resource):
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.lang.notes`."""
-    __surface__ = "so.tilo.lang.notes@1ceec32c41c46d8a"
+    __surface__ = "so.tilo.lang.notes@0f7ba6ca9d5c382a"
 

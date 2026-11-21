@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.notes@1ceec32c41c46d8a";
+export const SURFACE = "so.tilo.lang.notes@0f7ba6ca9d5c382a";
 
 /** The arguments of `pin`. */
 export interface PinArgs {
@@ -211,6 +211,7 @@ export function note(ws: tilo.Workspace, path: string): Note {
 /** Notebook — `tl.so.tilo.lang.notes.Notebook`. */
 export interface Notebook extends tilo.Resource {
   tmqqtkeb: Array<tilo.Entry<Note>>;  // notes
+  qgq6mcy7: Array<tilo.Entry<Note>>;  // set_aside
   /** Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the caller knows them already. Started from the notebook both are empty: what is typed first names it. */
   new_note(args?: {
     title?: string;
