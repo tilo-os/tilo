@@ -432,8 +432,9 @@ fn kill_mid_transfer_child() {
     }
 }
 
+/// The paste the kill test above starts as its own process; an ordinary run
+/// of the suite returns at once.
 #[test]
-#[ignore = "started by a_killed_paste_leaves_every_file_whole_or_untouched"]
 fn kill_mid_transfer() {
     kill_mid_transfer_child();
 }
@@ -444,7 +445,6 @@ fn kill_under(stage: &str, source: &Path, destination: &Path) -> std::process::E
         .args([
             "--exact",
             "clipboard_files::kill_mid_transfer",
-            "--ignored",
             "--nocapture",
         ])
         .env("CLIPBOARD_KILL_AT", stage)

@@ -597,9 +597,6 @@ impl Encoder for GstEncoder {
 }
 
 #[cfg(test)]
-mod cost_tests;
-
-#[cfg(test)]
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

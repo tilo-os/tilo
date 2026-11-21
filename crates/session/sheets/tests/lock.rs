@@ -854,20 +854,3 @@ fn the_screen_reads_in_the_persons_language() {
         );
     }
 }
-
-#[test]
-#[ignore = "timing: the numbers are the report, run by hand"]
-fn the_unlock_dissolve_paints_its_frames_within_a_frame() {
-    use ui::framework::testing::perf;
-    let (mut app, state, _asked) = locked(screen());
-    state.show(Shown {
-        unlocking: true,
-        ..state.shown()
-    });
-    let report = perf::measure(&mut app, "lock-unlock", (1, 1), |app, _| {
-        for _ in 0..24 {
-            let _painted = app.frame();
-        }
-    });
-    report.print();
-}

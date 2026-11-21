@@ -290,12 +290,9 @@ mod tests {
     /// entry to match, so any sane stack denies it, giving a stable deny
     /// oracle across environments.
     ///
-    /// `#[ignore]` by default: a failed auth trips `pam_unix`'s ~2s fail
-    /// delay and can feed `pam_faillock`, so it stays out of the default
-    /// suite. Opt in with:
-    ///   `cargo test -p tilo-unlock-helper -- --ignored real_pam_denies_unknown_user`
+    /// A failed auth trips `pam_unix`'s ~2s fail delay; the unknown user has
+    /// no entry for `pam_faillock` to count against.
     #[test]
-    #[ignore = "runs a real PAM auth (fail delay + faillock side effects)"]
     fn real_pam_denies_unknown_user() {
         let service =
             std::env::var("TILO_UNLOCK_PAM_SERVICE").unwrap_or_else(|_| "login".to_string());
