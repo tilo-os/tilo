@@ -57,7 +57,7 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOC: Counting = Counting;
 
 fn mib(b: usize) -> f64 {
-    #[allow(clippy::cast_precision_loss, reason = "display only")]
+    #[allow(clippy::cast_precision_loss, reason = "a byte count shown in MiB")]
     let v = b as f64 / (1024.0 * 1024.0);
     v
 }

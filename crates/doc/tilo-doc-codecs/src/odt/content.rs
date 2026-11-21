@@ -640,7 +640,7 @@ impl BodyState {
         self.cur_para_marks.clear();
     }
 
-    #[allow(clippy::too_many_lines, reason = "see comment above the function")]
+    #[allow(clippy::too_many_lines, reason = "one arm per ODF element the reader maps")]
     fn handle_start(
         &mut self,
         e: &BytesStart,
@@ -916,7 +916,7 @@ impl BodyState {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "see comment above handle_start")]
+    #[allow(clippy::too_many_lines, reason = "one arm per ODF element the reader maps")]
     fn handle_empty(
         &mut self,
         e: &BytesStart,
