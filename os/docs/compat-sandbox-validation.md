@@ -128,20 +128,15 @@ early server exit, mode validation, and exit/signal status translation.
 The service suite passes 55 tests, with the environment-dependent Bubblewrap
 regression still run separately. Strict Clippy also passes with Rust 1.97.1.
 
-`os/tests/managed-fex-wine-smoke.py` exercises the helper with fresh
-32-bit and 64-bit Wine prefixes. For each architecture it requires an exact
-console marker and propagation of guest exit code 23 on a second invocation.
-Unlike the earlier Wine fixture, it starts no external FEXServer: the native
-Tilo helper must own readiness, monitoring, Wine-server wait, and teardown.
-All four checks passed on native ARM on 2026-09-16; the result and logs are
-retained under `managed-fex-runtime-tracked-results` in the preparation tree.
-Run it in the same offline, capability-free container described by the Wine
-fixture, with the guest filesystem at `/opt/tilo/x86`, the helper at `/helper`,
-and empty writable output directory `/results`:
-
-```sh
-python3 /test.py --helper /helper --output-dir /results
-```
+The managed-fex-wine-smoke fixture exercised the helper with fresh 32-bit and
+64-bit Wine prefixes. For each architecture it required an exact console marker
+and propagation of guest exit code 23 on a second invocation. Unlike the
+earlier Wine fixture, it started no external FEXServer: the native Tilo helper
+owned readiness, monitoring, Wine-server wait, and teardown. All four checks
+passed on native ARM on 2026-09-16; the result and logs are retained under
+`managed-fex-runtime-tracked-results` in the preparation tree. The fixture
+needed a verified x86 guest rootfs and a writable `/run/tilo` that no job
+produces, so it has been deleted; the helper's unit tests above stand.
 
 The OS recipe builds and installs the helper at
 `/usr/libexec/tilo-windows-runtime`.

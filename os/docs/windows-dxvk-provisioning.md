@@ -136,8 +136,9 @@ mixed-architecture row is not accepted merely because `syswow64` contains the
 execution evidence. Export lookup does not establish Direct3D device creation,
 Vulkan translation, or rendering.
 
-`os/tests/managed-fex-wine-smoke.py` requires a disposable writable `/run/tilo`
-mount and the complete guest payload. It checks console output, exit codes,
+The managed-fex-wine-smoke fixture required a disposable writable `/run/tilo`
+mount and the complete guest payload. It checked console output, exit codes,
 and all installed DLL hashes, retaining its test prefixes inside the disposable
-container. Full graphics, Tilo-kernel sandbox, and final-image acceptance remain
-separate requirements.
+container; it has been deleted with the guest environment nothing builds. Full
+graphics, Tilo-kernel sandbox, and final-image acceptance remain separate
+requirements.

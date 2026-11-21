@@ -2040,10 +2040,6 @@ check = "image-fex-buildroot"
 reason = "proves the pinned NASM 2.16.03 the FEX build uses keeps the SMSW operand-size encodings; image-fex-buildroot runs it while it builds that assembler, and the system NASM is a newer major on purpose"
 
 [[unrequired]]
-suite = "os/tests/fex-wine-smoke.py"
-reason = "needs an installed native FEX runtime, a verified x86 guest rootfs and an init process in a disposable container; t builds FEX only into the artifact payload image (image-fex-payload, which runs nothing) and the guest rootfs only inside the windows-compat OS layer, so no check has an environment to give it"
-
-[[unrequired]]
 suite = "os/tests/initramfs_trust_native.py"
 check = "development-signing-x86_64"
 reason = "the development-source fixture builds and runs it in a privileged container with disposable keys, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
@@ -2079,26 +2075,14 @@ check = "loop-device-native"
 reason = "needs real root, loop devices and vfat/Btrfs mounts, which only a micro-VM step gives; loop-device-native dispatches it"
 
 [[unrequired]]
-suite = "os/tests/kernel-arm-capsule-smoke.py"
-reason = "boots QEMU on native ARM from a native OCI root, with the FEX and x86 guest root inputs and the exported capsule plans no check builds"
-
-[[unrequired]]
 suite = "os/tests/kernel-landlock-private-tmp.sh"
 reason = "needs a compiled kernel and QEMU"
 check = "kernel-landlock-x86_64"
 
 [[unrequired]]
-suite = "os/tests/kernel_runtime_probe.sh"
-reason = "needs a local kernel source build tree (arch/x86/boot/bzImage, gen_init_cpio and a module built for one release), not the kernel image image-kernel packages; kernel-acceptance checks module trust through the packaged RPM (os/kernel/tests/test-rpm.sh)"
-
-[[unrequired]]
 suite = "os/tests/luks_enrolment.sh"
 check = "os-image-contracts"
 reason = "needs the built image's tilo-disk-encrypt and systemd-cryptenroll, which the ci-fast image does not hold; os-image-contracts runs it from the composed image when dispatched"
-
-[[unrequired]]
-suite = "os/tests/managed-fex-wine-smoke.py"
-reason = "needs the native capsule helper, a verified x86 guest rootfs with its DXVK payload, native FEX, a writable /run/tilo and an init process in a disposable ARM container; no check produces that environment (FEX exists only in the artifact payload image, which runs nothing)"
 
 [[unrequired]]
 suite = "os/tests/projection-boot-check.sh"
@@ -2109,10 +2093,6 @@ check = "os-acceptance-{arch}"
 suite = "os/tests/h264-boot-check.py"
 reason = "runs inside a booted guest: it decodes with the image's own GStreamer and reads the decoder the kernel and the pipeline actually chose (os/dev/test-installed-desktop.sh)"
 check = "os-acceptance-{arch}"
-
-[[unrequired]]
-suite = "os/tests/prove_kernel_failure_cache.py"
-reason = "drives `docker buildx build` against a live BuildKit daemon; a t job's userspace has Podman and no docker daemon or buildx plugin, and podman builds do not speak that frontend, so no check can host it"
 
 [[unrequired]]
 suite = "os/tests/prove_kernel_failure_cache_local.py"
@@ -2189,10 +2169,6 @@ reason = "destructive, root: loop devices"
 check = "staging-loop"
 
 [[unrequired]]
-suite = "os/tests/system_extension_boot_pack_stage.sh"
-reason = "asks a running systemd manager to execute a systemd-run profile; a t micro-VM step's init is not systemd, and the installed-image checks boot the image over SSH without naming this script, so nothing in CI gives it a manager"
-
-[[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"
 check = "development-signing-x86_64"
 reason = "the development-source fixture builds and runs it in a privileged container, which takes the builder image and hours; development-signing-x86_64 dispatches the whole fixture"
@@ -2205,10 +2181,6 @@ check = "os-build-contracts"
 suite = "os/tests/test_signing_spool.py"
 check = "signing-spool-native"
 reason = "needs the built tilo-crypto installed root-owned at /usr/local/bin and a real signer, which only a micro-VM step gives; signing-spool-native dispatches it"
-
-[[unrequired]]
-suite = "os/tests/test_write_verified_installer_media.py"
-reason = "the helper it imports takes its write path through msvcrt and os.O_BINARY, so on Linux the three write tests raise AttributeError; it needs a Windows host with a Python that has msvcrt"
 
 [[unrequired]]
 suite = "os/tests/tilo-session-lifecycle.sh"
@@ -2229,14 +2201,6 @@ check = "vendored"
 suite = "os/tests/trust_input_copy_equivalence.py"
 check = "disposable-root-podman"
 reason = "builds real images with rootful Podman and compares mounted filesystems, which the ci-fast image cannot give; disposable-root-podman dispatches the Podman fixtures together"
-
-[[unrequired]]
-suite = "os/tests/ush-systemd-terminal-probe.py"
-reason = "drives the socket-activated tilo-ush unit inside an installed Fedora VM session"
-
-[[unrequired]]
-suite = "os/tests/ush-systemd-terminal-vm.sh"
-reason = "runs as the graphical user inside an installed Fedora VM with the shipped tilo-ush units"
 
 [[covered]]
 suite = "os/tests/windows_vm_schema.sh"
@@ -2334,10 +2298,6 @@ readers = ["apps/video-player/build.rs"]
 [[covered]]
 suite = "tools/android/mediation/prepare-res.py"
 by = "tools/tests/test_android_fixture_resources.py"
-
-[[unrequired]]
-suite = "os/tests/flatpak_default_initialization_test.py"
-reason = "requires native Flatpak, GPG and bubblewrap user namespaces; the digest-pinned ci-fast image has no Flatpak; run explicitly with python3 os/tests/flatpak_default_initialization_test.py, failing when prerequisites are absent"
 
 [[cargo]]
 package = "install"

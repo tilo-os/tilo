@@ -577,10 +577,6 @@ done
 grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_socket"
 grep -Fqx 'WantedBy=tilo-graphical-session.target' "$ush_socket"
 grep -Fq 'activated_socket(socket)' "$ush_source"
-ush_vm_probe="$repo/os/tests/ush-systemd-terminal-vm.sh"
-grep -Fq 'systemctl --user start tilo-ush.socket' "$ush_vm_probe"
-grep -Fq 'ush-systemd-terminal-probe.py' "$ush_vm_probe"
-grep -Fq 'TILO_USH_SYSTEMD_OK-root' "$repo/os/tests/ush-systemd-terminal-probe.py"
 # Activation may omit a pathname; an explicit path must still be the socket.
 activation_src="$repo/crates/platform/tilo-files/src/native/private.rs"
 grep -Fq 'std::env::var("LISTEN_PID")' "$activation_src"
