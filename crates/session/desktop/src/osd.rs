@@ -1265,7 +1265,9 @@ impl Widget for OsdSlab {
         _presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
-        let now = ui::time::now();
+        // The frame's instant, the one its layout draws the readout at: at the clock, a pip still
+        // on its way was read past where the frame had placed it.
+        let now = ui::motion::frame_now();
         self.follow(now);
         let Some(raised) = self.raised.as_ref() else {
             return;
@@ -1312,7 +1314,7 @@ impl Widget for OsdSlab {
     }
 
     fn needs_redraw(&self) -> bool {
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         self.raised
             .as_ref()
             .is_some_and(|raised| live(raised, now) || raised.presence.is_visible(now))

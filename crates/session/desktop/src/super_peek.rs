@@ -161,7 +161,9 @@ impl SuperPeek {
         theme: &Theme,
         host: Rect,
     ) {
-        let now = ui::time::now();
+        // The frame's instant, the one the card is drawn at: at the clock, a card still opening
+        // was read a step past where the frame had sized it.
+        let now = ui::motion::frame_now();
         let motion = theme.motion();
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;
