@@ -306,6 +306,74 @@ fn every_page_is_handed_what_composing_it_all_gives() {
     }
 }
 
+/// A tree's rows pointed at one after another, each frame drawn at rest: the row pointed at
+/// paints again and so does the tree around it, while the other rows stand as they were. What a
+/// page is handed is still what composing the whole window gives, each row with its disclosure
+/// and its notes once.
+#[test]
+fn a_tree_pointed_across_is_handed_what_composing_it_all_gives() {
+    crate::support::installed("gallery");
+    let mut app = TestApp::<TlApp>::drive_at("custom", (1280, 800)).expect("the scenario stages");
+    let harness = app.harness();
+    harness.set_scene_drawn(false);
+    harness.set_coalesce_input_frames(true);
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+        let _ = harness.compose_frame();
+    }
+    let (x, y) = words_at(harness.presented_composition(), "Data").expect("the sidebar names Data");
+    harness.click_at(x, y);
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+        let _ = harness.compose_frame();
+    }
+    let rows: Vec<(f64, f64)> = harness
+        .presented_composition()
+        .map(|composition| {
+            let mut rows = Vec::new();
+            let mut nodes = vec![&composition.root];
+            while let Some(node) = nodes.pop() {
+                let [x, y, width, height] = node.rect;
+                if node.widget == "ListRow"
+                    && node.path.contains("TreeView")
+                    && width > 0.0
+                    && height > 0.0
+                    && y > 0.0
+                    && y + height < 800.0
+                {
+                    rows.push((x + width / 2.0, y + height / 2.0));
+                }
+                nodes.extend(&node.children);
+            }
+            rows
+        })
+        .unwrap_or_default();
+    assert!(rows.len() > 2, "the page shows a tree's rows");
+    let started = ui::time::now();
+    for (step, &(x, y)) in rows.iter().chain(rows.iter().rev()).enumerate() {
+        harness.hover_at(x, y);
+        for again in 0..2_u64 {
+            let frame = u64::try_from(step)
+                .unwrap_or(u64::MAX)
+                .saturating_mul(2)
+                .saturating_add(again);
+            let at = started
+                + std::time::Duration::from_millis(frame.saturating_add(1).saturating_mul(17));
+            ui::time::testing::with_monotonic_time(at, || {
+                let _ = harness.poll_frame();
+                let whole = harness.composition();
+                let _ = harness.compose_frame();
+                let presented = harness
+                    .presented_composition()
+                    .expect("a composition was handed over");
+                if let Some(differs) = first_difference(&presented.root, &whole.root) {
+                    panic!("the pointer at the row at ({x}, {y}): {differs}");
+                }
+            });
+        }
+    }
+}
+
 /// The first part where `shown` and `whole` differ, and how.
 fn first_difference(
     shown: &ui::composition::Composed,

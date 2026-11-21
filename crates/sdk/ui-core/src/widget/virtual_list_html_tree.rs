@@ -56,10 +56,19 @@ impl VirtualRows {
     /// The list's rows as elements: a flat list where the list is not a tree, and otherwise
     /// each row's notes nested in a `<ul>` inside the row's own element, with a branch row's
     /// disclosure where its chevron does.
-    pub(crate) fn tree_html_rows(&self, rows: Vec<Composed>, theme: &Theme) -> Vec<Composed> {
+    pub(crate) fn tree_html_rows(&self, mut rows: Vec<Composed>, theme: &Theme) -> Vec<Composed> {
         let Some(marks) = self.tree.as_ref() else {
             return rows;
         };
+        // A row the last frame composed and this one keeps as it was holds the disclosure and
+        // notes given it then: they are taken out, so each row is given them once, from the rows
+        // this frame holds.
+        for row in &mut rows {
+            let disclosure = format!("{}/disclosure", row.path);
+            let notes = format!("{}/notes", row.path);
+            row.children
+                .retain(|child| child.path != disclosure && child.path != notes);
+        }
         // Pair each composed row with the row the list holds. The composition lays out the rows
         // the list holds, in the order it holds them, so that order is what names them when the
         // two are the same set; a row whose box drifted from the one the list laid out (a page
