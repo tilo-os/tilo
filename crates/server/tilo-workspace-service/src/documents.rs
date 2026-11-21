@@ -32,8 +32,11 @@ use tilo_lock::MutexRecover as _;
 use web_time::SystemTime;
 
 /// The device a document was opened as, and the epoch of the keys that opened it, `None` for one
-/// held in the clear: what was opened under other keys (the workspace rotated them, as removing a
-/// member does) is let go, and the resource opens whole under the keys held now.
+/// held in the clear: what was opened under keys the device holds no more (the workspace rotated
+/// them, as removing a member does) is let go, and the resource opens whole under the keys held
+/// now. Keys that moved on to a later epoch and still hold that one open the same history, as
+/// they do after a member is admitted: what was opened stands, and only what was sealed since is
+/// opened.
 pub(crate) type OpenedWith = ([u8; 32], Option<u64>);
 
 /// One resource as this device last opened it; `None` until a read opened it.
@@ -221,7 +224,7 @@ pub(crate) fn finish(
     let mut opened = keys.as_deref().map(DocumentKeys::open);
     // What this device opened of the resource before is read on, so a read opens only the
     // writes sealed since rather than the whole history again.
-    let mut held = held(kept.take(), used);
+    let mut held = held(kept.take(), used, keys.as_deref());
     let read = match peer.open_document(
         reader,
         (app, resource),
@@ -256,12 +259,20 @@ pub(crate) fn finish(
     read
 }
 
-/// What the previous read of `route` opened, where it opened it as the same device under the
-/// same key epoch.
-fn held(kept: Kept, used: OpenedWith) -> KeptDocument {
-    kept.filter(|(opened_with, _)| *opened_with == used)
-        .map(|(_, kept)| kept)
-        .unwrap_or_default()
+/// What the previous read of `route` opened, where it opened it as the same device under keys
+/// `keys` still hold: the epoch it was opened under, or none for both when it is in the clear.
+/// Opened under `used`'s epoch or an earlier one the keys hold, it reads on from there.
+fn held(kept: Kept, used: OpenedWith, keys: Option<&DocumentKeys>) -> KeptDocument {
+    kept.filter(|((device, epoch), _)| {
+        *device == used.0
+            && match (*epoch, keys) {
+                (None, None) => true,
+                (Some(epoch), Some(keys)) => keys.keys.holds_epoch(epoch),
+                _ => false,
+            }
+    })
+    .map(|(_, kept)| kept)
+    .unwrap_or_default()
 }
 
 /// Whether `app`'s `resource` of `workspace` reads for this device now: held here, its checkpoint
