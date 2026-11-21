@@ -136,7 +136,7 @@ fn check_keeper_session(
     }
     if cert.user_public_key != link.user_public_key {
         return Err(ActionCallError::Refused {
-            reason: "this host can only provision roster signing sessions for its own account; guest keepers are not eligible".into(),
+            reason: "This server cannot approve hosted agents for guest accounts yet.".into(),
         });
     }
     Ok(())
