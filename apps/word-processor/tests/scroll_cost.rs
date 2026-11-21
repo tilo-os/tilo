@@ -6,9 +6,6 @@
     reason = "statistics over a few hundred frames and blocks"
 )]
 
-use std::time::Duration;
-use tilo_test_env::SpawnUnderEnvLock as _;
-
 use tilo_document::action::{RegionKind, RichTextAction};
 use tilo_document::{ClipAttr, ClipBlock};
 use ui::app::{App, AppSurface, SurfaceDamage};
@@ -126,8 +123,6 @@ pub(crate) struct Host {
 #[derive(Clone, Copy)]
 pub(crate) struct Step {
     pub(crate) cpu_ms: f64,
-    drew: bool,
-    whole: bool,
 }
 
 impl Host {
@@ -159,16 +154,12 @@ impl Host {
         for event in events {
             app.surface_input(&Window, event, false);
         }
-        let (drew, whole) = self.frame(app);
+        self.frame(app);
         let cpu_ms = match (before, ui::rt::thread_cpu_time()) {
             (Some(a), Some(b)) => b.saturating_sub(a).as_secs_f64() * 1000.0,
             _ => 0.0,
         };
-        Step {
-            cpu_ms,
-            drew,
-            whole,
-        }
+        Step { cpu_ms }
     }
 
     pub(crate) fn settle(&mut self, app: &mut App) {
@@ -226,131 +217,25 @@ pub(crate) fn caret_in_the_middle(app: &mut App, host: &mut Host) {
     host.settle(app);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ScrollInput {
-    Wheel,
-    Fling,
-    TouchDrag,
-}
-
-fn finger(
-    fingers: &mut ui::interaction::TouchPointerEmulator,
-    phase: TouchPhase,
-    y: f64,
-) -> Vec<WindowEvent> {
-    let contact = winit::event::Touch {
-        device_id: winit::event::DeviceId::dummy(),
-        phase,
-        location: winit::dpi::PhysicalPosition::new(AT.0, y),
-        force: None,
-        id: 0,
-    };
-    fingers
-        .events(&contact, |_| false)
-        .into_iter()
-        .map(|event| event.window_event(winit::event::DeviceId::dummy()))
-        .collect()
-}
-
-fn scroll_events(
-    input: ScrollInput,
-    frame: usize,
-    fingers: &mut ui::interaction::TouchPointerEmulator,
-) -> Vec<WindowEvent> {
-    let line = |phase| WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-        phase,
-    };
-    match input {
-        ScrollInput::Wheel => {
-            if frame.is_multiple_of(4) {
-                vec![line(TouchPhase::Moved)]
-            } else {
-                Vec::new()
-            }
-        }
-        ScrollInput::Fling => match frame % 60 {
-            0 => vec![wheel(-36.0, TouchPhase::Started)],
-            1..=9 => vec![wheel(-36.0, TouchPhase::Moved)],
-            10 => vec![wheel(0.0, TouchPhase::Ended)],
-            _ => Vec::new(),
-        },
-        ScrollInput::TouchDrag => {
-            let step = frame % 60;
-            let y = AT.1 + 200.0 - 20.0 * step.min(20) as f64;
-            match step {
-                0 => finger(fingers, TouchPhase::Started, y),
-                1..=19 => finger(fingers, TouchPhase::Moved, y),
-                20 => finger(fingers, TouchPhase::Ended, y),
-                _ => Vec::new(),
-            }
-        }
+/// A wheel notch every fourth frame, as a person scrolling a long document sends.
+fn scroll_events(frame: usize) -> Vec<WindowEvent> {
+    if frame.is_multiple_of(4) {
+        vec![WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: TouchPhase::Moved,
+        }]
+    } else {
+        Vec::new()
     }
 }
 
-fn percentile(values: &mut [f64], p: f64) -> f64 {
-    values.sort_by(f64::total_cmp);
-    if values.is_empty() {
-        return 0.0;
-    }
-    let index = ((values.len() - 1) as f64 * p).round() as usize;
-    values[index]
-}
-
-fn quantiles(mut values: Vec<f64>) -> String {
-    let p50 = percentile(&mut values, 0.5);
-    let p95 = percentile(&mut values, 0.95);
-    let max = values.last().copied().unwrap_or(0.0);
-    format!("p50 {p50:6.2} p95 {p95:6.2} max {max:6.2}")
-}
-
-fn two_cores() {
-    let Ok(status) = std::fs::read_to_string("/proc/self/status") else {
-        return;
-    };
-    let Some(list) = status
-        .lines()
-        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
-    else {
-        return;
-    };
-    let mut cpus = Vec::new();
-    for part in list.trim().split(',') {
-        match part.split_once('-') {
-            Some((a, b)) => {
-                let (a, b): (usize, usize) = (a.parse().unwrap(), b.parse().unwrap());
-                cpus.extend(a..=b);
-            }
-            None => cpus.push(part.parse().unwrap()),
-        }
-    }
-    if cpus.len() < 2 {
-        return;
-    }
-    let status = std::process::Command::new("taskset")
-        .args([
-            "-a",
-            "-p",
-            "-c",
-            &format!("{},{}", cpus[0], cpus[1]),
-            &std::process::id().to_string(),
-        ])
-        .status_locked();
-    eprintln!("pinned to cpus {},{}: {status:?}", cpus[0], cpus[1]);
-}
-
-#[test]
-#[ignore = "measurement"]
-fn measure_frame_cost_by_document_length() {
-    measure();
-}
-
-#[test]
-#[ignore = "measurement"]
-fn measure_frame_cost_on_two_cores() {
-    two_cores();
-    measure();
+fn key_steps(app: &mut App, host: &mut Host, key: NamedKey) -> f64 {
+    let events = vec![
+        ui::synthetic_input::key_input(&Key::Named(key), ElementState::Pressed),
+        ui::synthetic_input::key_input(&Key::Named(key), ElementState::Released),
+    ];
+    host.step(app, events).cpu_ms
 }
 
 fn counted(
@@ -469,9 +354,8 @@ fn forty_caret_moves(app: &mut App, host: &mut Host) {
 }
 
 fn a_hundred_and_sixty_wheel_frames(app: &mut App, host: &mut Host) {
-    let mut fingers = ui::interaction::TouchPointerEmulator::default();
     for frame in 0..160 {
-        host.step(app, scroll_events(ScrollInput::Wheel, frame, &mut fingers));
+        host.step(app, scroll_events(frame));
     }
 }
 
@@ -554,107 +438,4 @@ fn a_new_table_is_published() {
     );
     assert!(calls(&inserted, "framework.resource_tree") > 0);
     assert_eq!(after.get(), before.get() + 1);
-}
-
-fn print_phases(label: &str, steps: usize, phases: Vec<ui::tilo_resource::profiling::Sample>) {
-    use std::fmt::Write as _;
-    let mut line = format!("  phases {label}:");
-    for sample in phases {
-        let _ = write!(
-            line,
-            " {}={:.2}ms/{:.2}x",
-            sample.phase,
-            sample.elapsed_ns as f64 / 1e6 / steps as f64,
-            sample.calls as f64 / steps as f64
-        );
-    }
-    eprintln!("{line}");
-}
-
-fn key_steps(app: &mut App, host: &mut Host, key: NamedKey) -> f64 {
-    let events = vec![
-        ui::synthetic_input::key_input(&Key::Named(key), ElementState::Pressed),
-        ui::synthetic_input::key_input(&Key::Named(key), ElementState::Released),
-    ];
-    host.step(app, events).cpu_ms
-}
-
-fn measure() {
-    const FRAMES: usize = 600;
-    const EARLY: usize = 18;
-    ui::i18n::I18nManager::init("en-US");
-    for blocks in [50, 500, 5000] {
-        ui::framework::testing::drive_live_window::<WordProcessorApp, _>(|app| {
-            let mut host = Host::new();
-            opened(app, &mut host, blocks);
-            for input in [
-                ScrollInput::Wheel,
-                ScrollInput::Fling,
-                ScrollInput::TouchDrag,
-            ] {
-                host.step(app, vec![wheel(1.0e9, TouchPhase::Moved)]);
-                host.settle(app);
-                let mut fingers = ui::interaction::TouchPointerEmulator::default();
-                let period = Duration::from_micros(16_667);
-                let (steps, phases) = ui::tilo_resource::profiling::observe(|| {
-                    let mut next = ui::time::now();
-                    let mut steps = Vec::with_capacity(FRAMES);
-                    for frame in 0..FRAMES {
-                        next += period;
-                        steps.push(host.step(app, scroll_events(input, frame, &mut fingers)));
-                        let now = ui::time::now();
-                        if next > now {
-                            std::thread::sleep(next - now);
-                        } else {
-                            next = now;
-                        }
-                    }
-                    steps
-                });
-                let drawn = |steps: &[Step]| -> Vec<f64> {
-                    steps.iter().filter(|s| s.drew).map(|s| s.cpu_ms).collect()
-                };
-                let (early, late) = steps.split_at(EARLY);
-                eprintln!(
-                    "WP {blocks:5} blocks {input:?}: drew {}, whole {}, scrolled to {:.0}\n  first 0.3 s  {}\n  after 0.3 s  {}",
-                    steps.iter().filter(|s| s.drew).count(),
-                    steps.iter().filter(|s| s.whole).count(),
-                    observe(app)["offset_y"].as_f64().unwrap_or(0.0),
-                    quantiles(drawn(early)),
-                    quantiles(drawn(late)),
-                );
-                print_phases("scroll", FRAMES, phases);
-            }
-            caret_in_the_middle(app, &mut host);
-            let (typed, phases) = ui::tilo_resource::profiling::observe(|| {
-                (0..120)
-                    .map(|_| {
-                        host.step(app, vec![ui::synthetic_input::char_key("x")])
-                            .cpu_ms
-                    })
-                    .collect::<Vec<f64>>()
-            });
-            print_phases("typing", 120, phases);
-            let (moved, phases) = ui::tilo_resource::profiling::observe(|| {
-                (0..120)
-                    .map(|i| {
-                        let key = if i % 2 == 0 {
-                            NamedKey::ArrowDown
-                        } else {
-                            NamedKey::ArrowRight
-                        };
-                        key_steps(app, &mut host, key)
-                    })
-                    .collect::<Vec<f64>>()
-            });
-            print_phases("caret", 120, phases);
-            eprintln!(
-                "WP {blocks:5} blocks typing  {}\nWP {blocks:5} blocks caret   {}\n  caret at {}",
-                quantiles(typed),
-                quantiles(moved),
-                observe(app)["caret_block"]
-            );
-        })
-        .expect("the window opens");
-    }
 }
