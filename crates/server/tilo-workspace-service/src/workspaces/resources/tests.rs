@@ -716,6 +716,11 @@ async fn index_retained_checkpoint(
         .await
         .unwrap_err();
     assert!(refused.contains("has not opened this resource's signed history"));
+    let refused = workspaces
+        .resource_command(&context, Command::Batch(vec![put_signed_issue("Unsigned")]))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("has not opened this resource's signed history"));
     assert_eq!(records.retained(workspace_id).await.unwrap(), before);
     assert!(watches.try_recv().is_err());
     assert_eq!(
@@ -760,6 +765,213 @@ fn put_signed_issue(title: &str) -> Command {
         resource: signed_issue(title),
         stamp: Stamp::default(),
     }
+}
+
+#[tokio::test]
+async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let created = workspaces.create("Tasks").await.unwrap();
+    let workspace = created.workspace;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    workspaces
+        .own_route_keys(&route, true)
+        .await
+        .unwrap()
+        .unwrap();
+    let context = context(&workspace, &cert);
+    let registry = &workspaces.inner.host.workspaces;
+    let records = &workspaces.inner.host.records;
+    let before = records.retained(created.workspace_id).await.unwrap();
+    let hosted = registry.lock().await.remove(&created.workspace_id).unwrap();
+    let result = workspaces
+        .resource_command(&context, put_signed_issue("Refused"))
+        .await;
+    registry.lock().await.insert(created.workspace_id, hosted);
+    assert_eq!(result.unwrap_err(), "the workspace is not hosted here");
+    assert_eq!(
+        records.retained(created.workspace_id).await.unwrap(),
+        before
+    );
+    let title = title_through_service(&workspaces, &context, "i-1").await;
+    assert_eq!(
+        title, None,
+        "a first write without a durable frame is invisible"
+    );
+
+    let state = workspaces.workspace(&workspace).await.unwrap();
+    let registry_guard = registry.lock().await;
+    let cancelled = tokio::spawn({
+        let workspaces = workspaces.clone();
+        let context = context.clone();
+        async move {
+            workspaces
+                .resource_command(&context, put_signed_issue("Cancelled"))
+                .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the write reaches the workspace");
+    cancelled.abort();
+    assert!(cancelled.await.unwrap_err().is_cancelled());
+    drop(
+        tokio::time::timeout(std::time::Duration::from_secs(5), state.lock())
+            .await
+            .expect("cancellation releases the workspace before admission"),
+    );
+    drop(registry_guard);
+    assert_eq!(
+        records.retained(created.workspace_id).await.unwrap(),
+        before
+    );
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        None
+    );
+    drop(state);
+
+    let batch = Command::Batch(vec![
+        put_signed_issue("First"),
+        put_signed_issue("Second"),
+        Command::Remove {
+            kind: KIND.into(),
+            id: "missing".into(),
+            stamp: Stamp::default(),
+        },
+    ]);
+    let refused = workspaces
+        .resource_command(&context, batch)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("missing"));
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        Some(Value::Text("Second".into())),
+        "the admitted prefix advances the same document twice"
+    );
+    let root = {
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        let governed = state.lock().await;
+        governed.resources.root.clone()
+    };
+    drop(workspaces);
+    server.shutdown().await;
+
+    // Model interruption after retention but before the resource projection reached disk.
+    std::fs::remove_dir_all(root).unwrap();
+    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert,
+        signer: Arc::new(key),
+    }));
+    assert_eq!(
+        title_through_service(&workspaces, &context, "i-1").await,
+        Some(Value::Text("Second".into())),
+        "the signed checkpoint and delta rebuild the projection"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
+    use super::super::fixtures::{device_cert, signed_pre_admission};
+
+    let owner_dir = tempfile::tempdir().unwrap();
+    let member_dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (owner_key, owner_cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let owner = test_host_holding(owner_dir.path(), &owner_key, &owner_cert, keys.clone()).await;
+    let created = owner.workspaces().create("Tasks").await.unwrap();
+    let workspace = created.workspace;
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.into(),
+        cluster_id: workspace.clone(),
+        document: String::new(),
+    };
+    owner
+        .workspaces()
+        .own_route_keys(&route, true)
+        .await
+        .unwrap()
+        .unwrap();
+    let (key, cert) = device_cert(
+        &SigningKey::from_bytes(&[37; 32]),
+        "member",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    let invite = owner
+        .workspaces()
+        .pre_admit(
+            &owner_cert,
+            super::super::PreAdmitRequest {
+                request_id: [37; 32],
+                grant: signed_pre_admission(&workspace, b"resource-writer"),
+                recipient_user_public_key: Some(cert.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let member = test_host_holding(member_dir.path(), &key, &cert, keys).await;
+    member
+        .workspaces()
+        .set_member_device(Arc::new(super::super::MemberDevice {
+            cert: cert.clone(),
+            signer: Arc::new(key),
+        }));
+    let invite = tilo_peer_state::join::encode_invitation_text(&invite.signed_invitation);
+    assert_eq!(
+        member.workspaces().join_member(&invite).await.unwrap(),
+        created.workspace_id
+    );
+    let context = context(&workspace, &cert);
+    member
+        .workspaces()
+        .resource_command(&context, put_signed_issue("Member"))
+        .await
+        .unwrap();
+    let retained = member
+        .workspace_documents()
+        .retained(created.workspace_id)
+        .await
+        .unwrap();
+    assert!(retained.iter().any(|frame| {
+        frame.author == cert.device_public_key
+            && matches!(NeighbourMsg::from_kept(&frame.body), Ok(NeighbourMsg::AppDocument {
+                app_id, envelope, ..
+            }) if app_id == APP && envelope.is_whole_resource())
+    }));
+    let expected = Some(Value::Text("Member".into()));
+    assert_eq!(
+        title_through_service(member.workspaces(), &context, "i-1").await,
+        expected
+    );
+    tilo_test_env::within("the serving device projects the member's resource", async {
+        while title(owner.workspaces(), &workspace, "i-1").await != expected {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    member.shutdown().await;
+    owner.shutdown().await;
 }
 
 #[tokio::test]

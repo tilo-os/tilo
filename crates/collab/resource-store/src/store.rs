@@ -38,6 +38,7 @@
 //! resources stay indexed.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{
@@ -143,7 +144,7 @@ pub type Source = Box<dyn FnMut(&str) -> Option<Vec<u8>> + Send>;
 #[derive(Default)]
 pub struct Store {
     /// The documents in memory.
-    docs: HashMap<String, Automerge>,
+    docs: HashMap<String, Arc<Automerge>>,
     filled: HashMap<(String, String), Filled>,
     index: Index,
     source: Option<Source>,
@@ -188,6 +189,57 @@ impl Store {
             source: Some(source),
             ..Self::default()
         }
+    }
+
+    /// Run a command against a private copy of the store. The command can follow the placement,
+    /// index and undo history of its earlier steps without publishing any of them.
+    pub(crate) fn stage<T>(
+        &mut self,
+        scope: &crate::wire::DraftScope,
+        command: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let (index, filled) = if scope.undo {
+            (self.index.clone(), self.filled.clone())
+        } else {
+            let filled = scope
+                .placements
+                .iter()
+                .filter_map(|key| self.filled.get(key).map(|filled| (key.clone(), *filled)))
+                .collect();
+            (self.index.selected(&scope.resources), filled)
+        };
+        let mut staged = Self {
+            docs: self.docs.clone(),
+            filled,
+            index,
+            source: self.source.take(),
+            ..Self::default()
+        };
+        let result = command(&mut staged);
+        self.source = staged.source.take();
+        result
+    }
+
+    /// Check a staged write against the live document and the same schema a received write uses.
+    ///
+    /// # Errors
+    /// The change has no local base or the resource schema refuses it.
+    pub fn check_write(&mut self, write: &Written, author: [u8; 32]) -> Result<(), Refusal> {
+        let doc = self.doc(&write.doc).map_err(|_| Refusal::Unplaced)?;
+        if write.change.deps().iter().any(|dep| !doc.has_change(dep)) {
+            return Err(Refusal::Unplaced);
+        }
+        let received = Received {
+            change: write.change.clone(),
+            author,
+        };
+        self.judge(
+            &write.doc,
+            &write.readers,
+            &received,
+            None,
+            &|_: &Proposal<'_>| true,
+        )
     }
 
     /// The index of everything the store holds, whoever may read it.
@@ -368,10 +420,11 @@ impl Store {
                 Some(bytes) => Automerge::load(&bytes)?,
                 None => Automerge::new(),
             };
-            self.docs.insert(doc.to_owned(), read);
+            self.docs.insert(doc.to_owned(), Arc::new(read));
         }
         self.docs
             .get_mut(doc)
+            .map(Arc::make_mut)
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))
     }
 
@@ -647,9 +700,10 @@ impl Store {
             let Some(bytes) = self.source.as_mut().and_then(|source| source(doc)) else {
                 return Ok(None);
             };
-            self.docs.insert(doc.to_owned(), Automerge::load(&bytes)?);
+            self.docs
+                .insert(doc.to_owned(), Arc::new(Automerge::load(&bytes)?));
         }
-        Ok(self.docs.get_mut(doc))
+        Ok(self.docs.get_mut(doc).map(Arc::make_mut))
     }
 
     /// The content document of the resource `id` of `kind`, and its reader set.
@@ -1502,7 +1556,7 @@ impl Store {
             })
             .collect();
         self.index.forget(doc_id);
-        self.docs.insert(doc_id.to_owned(), doc);
+        self.docs.insert(doc_id.to_owned(), Arc::new(doc));
         self.index_resources(doc_id, &readers, None)?;
         for (kind, id, parent) in held {
             if self.index.get(&kind, &id).is_none() {
@@ -1644,7 +1698,7 @@ impl Store {
             let readers = readers
                 .or_else(|| text_at(&back, &ROOT, READERS))
                 .unwrap_or_default();
-            self.docs.insert(doc.to_owned(), back);
+            self.docs.insert(doc.to_owned(), Arc::new(back));
             self.index_resources(doc, &readers, None)?;
         }
         Ok(())
@@ -1653,7 +1707,7 @@ impl Store {
     /// The document `doc` as it stands in memory, for whoever keeps or sends it whole.
     #[must_use]
     pub fn document(&self, doc: &str) -> Option<&Automerge> {
-        self.docs.get(doc)
+        self.docs.get(doc).map(Arc::as_ref)
     }
 
     /// How many documents are in memory.

@@ -118,6 +118,13 @@ impl<'peer> PeerPublication<'peer> {
             .unwrap_or_default()
     }
 
+    /// Whether the replica admitted this exact sealed write into the record's history.
+    #[must_use]
+    pub fn has_sealed_write(self, app: &str, record: &str, envelope: &SignedOp) -> bool {
+        self.document((app, record))
+            .is_ok_and(|document| document.sealed.iter().any(|held| held == envelope))
+    }
+
     /// Once a document starts using its own group, keep it scoped through
     /// subsequent writes and compaction.
     #[must_use]

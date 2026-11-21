@@ -32,12 +32,36 @@ use tilo_peer_state::join::{
 };
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::session::hosted_by;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_peer_state::owner_commit::{
+    CommitBinding, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest,
+};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
-use crate::workspace_documents::HostCommit;
+use crate::workspace_documents::{HostCommit, WorkspaceAdmission};
+
+/// An authenticated local write queued in the workspace's retention order.
+pub(super) struct LocalDocumentAdmission {
+    message: NeighbourMsg,
+    binding: CommitBinding,
+    aggregate_hash: [u8; 32],
+    admission: WorkspaceAdmission,
+}
+
+impl LocalDocumentAdmission {
+    pub(super) async fn durable(self) -> Result<(NeighbourMsg, OwnerCommitReceipt), String> {
+        let order = self.admission.durable().await?;
+        Ok((
+            self.message,
+            OwnerCommitReceipt {
+                binding: self.binding,
+                generation: order.max(1),
+                aggregate_hash: self.aggregate_hash,
+            },
+        ))
+    }
+}
 
 /// The member copies a device holds: the links of the workspaces it joined,
 /// by workspace while each is up, and the device they act as.
@@ -717,11 +741,7 @@ impl Workspaces {
             return Err("this workspace is not held here as a member copy".into());
         }
         let device = self.member_identity()?;
-        let mut up = self.member_up(workspace_id)?;
-        tokio::time::timeout(REACHED_WITHIN, up.wait_for(|up| *up))
-            .await
-            .map_err(|_| "the device serving the workspace was not reached in time")?
-            .map_err(|_| "the member copy's link closed")?;
+        self.wait_member_link(workspace_id).await?;
         let body = commit.body.clone();
         let order = self
             .inner
@@ -742,16 +762,38 @@ impl Workspaces {
                 .await
                 .map_err(|error| error.to_string())?;
             let mut governed = state.lock().await;
-            if governed.take_served(device.device(), &message) {
-                self.keep_soon(&mut governed);
-            }
+            self.follow_member_document(&mut governed, device.device(), &message);
         }
+        self.forward_member_document(workspace_id, message);
+        Ok(order)
+    }
+
+    pub(super) async fn wait_member_link(&self, workspace_id: WorkspaceId) -> Result<(), String> {
+        let mut up = self.member_up(workspace_id)?;
+        tokio::time::timeout(REACHED_WITHIN, up.wait_for(|up| *up))
+            .await
+            .map_err(|_| "the device serving the workspace was not reached in time")?
+            .map_err(|_| "the member copy's link closed")?;
+        Ok(())
+    }
+
+    pub(super) fn follow_member_document(
+        &self,
+        governed: &mut GovernedWorkspace,
+        author: [u8; 32],
+        message: &NeighbourMsg,
+    ) {
+        if governed.take_served(author, message) {
+            self.keep_soon(governed);
+        }
+    }
+
+    pub(super) fn forward_member_document(&self, workspace_id: WorkspaceId, message: NeighbourMsg) {
         if let Some(link) = self.member_link(workspace_id)
             && let Err(error) = link.send(message)
         {
-            tracing::debug!(%workspace, %error, "a member write did not reach the serving device");
+            tracing::debug!(%workspace_id, %error, "a member write did not reach the serving device");
         }
-        Ok(order)
     }
 
     /// Keep `request`, a terminal effect receipt this device served in
@@ -933,6 +975,18 @@ impl Workspaces {
         author: [u8; 32],
         request: &OwnerCommitRequest,
     ) -> Result<(NeighbourMsg, OwnerCommitReceipt), String> {
+        self.enqueue_local_document(workspace_id, author, request)
+            .await?
+            .durable()
+            .await
+    }
+
+    pub(super) async fn enqueue_local_document(
+        &self,
+        workspace_id: WorkspaceId,
+        author: [u8; 32],
+        request: &OwnerCommitRequest,
+    ) -> Result<LocalDocumentAdmission, String> {
         let CommitOperation::Document {
             app,
             document: record,
@@ -963,7 +1017,7 @@ impl Workspaces {
             return Err("the write carries no retention route".into());
         };
         let aggregate_hash = *blake3::hash(&body).as_bytes();
-        let order = self
+        let admission = self
             .inner
             .host
             .records
@@ -976,17 +1030,13 @@ impl Workspaces {
                     checkpoint: retention == neighbour_wire::Retention::Checkpoint,
                 },
             )
-            .await?
-            .durable()
             .await?;
-        Ok((
+        Ok(LocalDocumentAdmission {
             message,
-            OwnerCommitReceipt {
-                binding,
-                generation: order.max(1),
-                aggregate_hash,
-            },
-        ))
+            binding,
+            aggregate_hash,
+            admission,
+        })
     }
 
     /// Write `command`, this device's own membership change (a lease it
@@ -1233,7 +1283,7 @@ impl Workspaces {
         state: &Arc<tokio::sync::Mutex<GovernedWorkspace>>,
         device: &MemberDevice,
     ) -> Result<(), String> {
-        let governed = state.lock().await;
+        let mut governed = state.lock().await;
         let member = governed
             .member
             .clone()
@@ -1242,6 +1292,8 @@ impl Workspaces {
         let name = governed.workspace().to_owned();
         let link = DirectSync::over(governed.peer.clone(), Arc::clone(&device.signer))
             .with_store(Arc::clone(&self.inner.store));
+        self.recall_member_resources(&mut governed, Some(&link))
+            .await?;
         drop(governed);
         if let Ok(mut links) = self.inner.member.links.lock() {
             links.insert(workspace_id, link.clone());
@@ -1271,6 +1323,41 @@ impl Workspaces {
                 tokio::time::sleep(REDIAL).await;
             }
         });
+        Ok(())
+    }
+
+    /// Project this copy's retained resource frames before starting its link.
+    pub(super) async fn recall_member_resources(
+        &self,
+        governed: &mut GovernedWorkspace,
+        link: Option<&DirectSync>,
+    ) -> Result<(), String> {
+        let retained = self
+            .inner
+            .host
+            .records
+            .retained(governed.workspace_id())
+            .await?;
+        for frame in retained {
+            let Ok(message) = NeighbourMsg::from_kept(&frame.body) else {
+                continue;
+            };
+            if matches!(&message, NeighbourMsg::AppDocument { document_id, .. }
+                if collab_types::is_store_document(document_id))
+            {
+                self.follow_member_document(governed, frame.author, &message);
+                let admitted = self
+                    .replay_resource_write(governed, frame.author, &message)
+                    .await;
+                if admitted
+                    && self.member_device_key() == Some(frame.author)
+                    && let Some(link) = link
+                {
+                    // Fill the link's catch-up history if this copy ended after retention.
+                    link.send(message)?;
+                }
+            }
+        }
         Ok(())
     }
 

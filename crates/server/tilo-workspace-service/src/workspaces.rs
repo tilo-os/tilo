@@ -2222,7 +2222,7 @@ impl Workspaces {
         let mut workspace = workspace.lock().await;
         crate::timing::window("workspace.follow_wait", waiting);
         if workspace.peer().holds_document(&app_id, &document_id) {
-            self.follow_write(&mut workspace, author, message, (app_id, document_id))
+            self.follow_write(&mut workspace, author, message, (app_id, document_id), true)
                 .await;
             return Ok(());
         }
@@ -2583,6 +2583,7 @@ impl Workspaces {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
         (app, record): (String, String),
+        compact: bool,
     ) {
         let following = crate::timing::start();
         let followed = workspace.follow(author, message.clone());
@@ -2600,13 +2601,15 @@ impl Workspaces {
         }
         crate::timing::window("workspace.follow", following);
         #[cfg(any(feature = "agents", feature = "web"))]
-        {
+        if compact {
             let compacting = crate::timing::start();
             if let Err(error) = self.compact_sealed_histories(workspace).await {
                 tracing::warn!(workspace = %workspace.workspace(), %error, "governed workspace did not compact a sealed record");
             }
             crate::timing::window("workspace.compact", compacting);
         }
+        #[cfg(not(any(feature = "agents", feature = "web")))]
+        let _ = compact;
         self.tell_followers(workspace, author, (app, record), &message)
             .await;
     }

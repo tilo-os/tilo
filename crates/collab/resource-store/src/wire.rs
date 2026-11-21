@@ -6,6 +6,8 @@
 //! change, which the device publishes as its own; [`read`] answers a read of only what the
 //! reader check admits. Redo is the undo of an undo: the undo's own invocation, taken back.
 
+use std::collections::BTreeSet;
+
 use automerge::transaction::{Transactable as _, Transaction};
 use automerge::{ObjId, ObjType, ReadDoc as _, ScalarValue};
 use serde::{Deserialize, Serialize};
@@ -179,6 +181,51 @@ pub fn write(store: &mut Store, command: Command) -> Result<Vec<Written>, Box<Re
     match write_into(store, command, &mut written) {
         Ok(()) => Ok(written),
         Err(error) => Err(Box::new(Refused { error, written })),
+    }
+}
+
+/// Draft the writes a command makes, keeping the live store untouched. A refused batch returns
+/// the same prefix as [`write`].
+///
+/// # Errors
+/// When the command is a read or the store refused a step.
+pub fn draft(store: &mut Store, command: Command) -> Result<Vec<Written>, Box<Refused>> {
+    let mut scope = DraftScope::default();
+    scope.add(&command);
+    store.stage(&scope, |staged| write(staged, command))
+}
+
+/// The live index rows and placement counters a command may consult while staging.
+#[derive(Default)]
+pub(crate) struct DraftScope {
+    pub(crate) resources: BTreeSet<(String, String)>,
+    pub(crate) placements: BTreeSet<(String, String)>,
+    pub(crate) undo: bool,
+}
+
+impl DraftScope {
+    fn add(&mut self, command: &Command) {
+        match command {
+            Command::Put {
+                kind, id, resource, ..
+            } => {
+                self.resources.insert((kind.clone(), id.clone()));
+                self.placements.insert((
+                    resource.readers.clone(),
+                    resource.parent.as_ref().unwrap_or(kind).clone(),
+                ));
+            }
+            Command::Remove { kind, id, .. } | Command::Edit { kind, id, .. } => {
+                self.resources.insert((kind.clone(), id.clone()));
+            }
+            Command::Undo { .. } => self.undo = true,
+            Command::Batch(commands) => {
+                for step in commands {
+                    self.add(step);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

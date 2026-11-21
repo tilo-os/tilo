@@ -26,7 +26,31 @@ impl GovernedWorkspace {
         sealed: Option<&key_group::ContentKeys>,
         now: SystemTime,
     ) -> Result<(OwnerCommitRequest, tilo_action_policy::MemberAccess), WriteRefusal> {
-        let peer = self.peer();
+        self.draft_document_write_from(
+            &self.peer(),
+            device,
+            (app, document, readers),
+            changes,
+            founding,
+            sealed,
+            now,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "same write described against a staged peer"
+    )]
+    pub(super) fn draft_document_write_from(
+        &self,
+        peer: &tilo_peer_state::StatePeer,
+        device: &[u8; 32],
+        (app, document, readers): (&str, &str, Option<&str>),
+        changes: &[u8],
+        founding: bool,
+        sealed: Option<&key_group::ContentKeys>,
+        now: SystemTime,
+    ) -> Result<(OwnerCommitRequest, tilo_action_policy::MemberAccess), WriteRefusal> {
         if founding && peer.document(app, document).is_some() {
             return Err(WriteRefusal::Refused(format!(
                 "{document} of {app} is in the workspace already"
@@ -62,7 +86,6 @@ impl GovernedWorkspace {
             )
             .map_err(WriteRefusal::Refused)?;
         let own = peer.own_write(app, document, device);
-        drop(peer);
         Ok((
             OwnerCommitRequest {
                 workspace: self.workspace().to_owned(),

@@ -379,6 +379,8 @@ impl Workspaces {
             let followed = workspace
                 .follow_kept(retained.author, message.clone())
                 .await;
+            self.replay_resource_write(workspace, retained.author, &message)
+                .await;
             // The link keeps what the workspace holds from before a device
             // joins it, this start's replay included: a device that joins now
             // reads the history the workspace was founded with.

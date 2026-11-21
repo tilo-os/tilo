@@ -601,58 +601,10 @@ impl GovernedWorkspace {
         Ok(applied)
     }
 
-    /// Makes the write `command` in the store as `device`, and answers each document's change
-    /// prepared to commit as this device's signed write: sealed for the document's reader set,
-    /// the whole document where the replica holds none of it yet. A batch the store refused
-    /// partway answers what it wrote before the refusal, which the store holds, with the refusal.
-    ///
-    /// # Errors
-    /// This device holds no keys of a document's readers, or a document's write could not be
-    /// drafted.
-    #[cfg(feature = "apps")]
-    pub(super) async fn prepare_resource_write(
-        &mut self,
-        device: &super::MemberDevice,
-        app: &str,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<(Vec<OwnerCommitRequest>, Option<String>), String> {
-        let (written, refused) =
-            match tilo_resource_store::wire::write(self.store_with_surfaces(), command) {
-                Ok(written) => (written, None),
-                Err(refused) => {
-                    let refusal = refused.error.to_string();
-                    (refused.written, Some(refusal))
-                }
-            };
-        // Every write is drafted before any is kept: one this device cannot sign or seal (no
-        // keys of its readers yet) is taken back out of the store with the rest, so the app
-        // never reads what no peer will receive.
-        let mut requests = Vec::with_capacity(written.len());
-        for write in &written {
-            match self.draft_resource_document(device, app, write).await {
-                Ok(request) => requests.push(request),
-                Err(error) => {
-                    for write in written.iter().rev() {
-                        self.resources
-                            .store_mut()
-                            .take_back(&write.doc, write.change.deps())
-                            .map_err(|error| error.to_string())?;
-                    }
-                    return Err(error);
-                }
-            }
-        }
-        // What the store took is kept before it answers: a document nobody's later change
-        // reaches again would otherwise leave memory with nothing of it on disk.
-        for write in &written {
-            self.resources.kept(&write.doc, write.change.deps())?;
-        }
-        Ok((requests, refused))
-    }
-
     #[cfg(any(feature = "apps", feature = "agents"))]
     async fn draft_resource_document(
-        &mut self,
+        &self,
+        peer: &tilo_peer_state::StatePeer,
         device: &super::MemberDevice,
         app: &str,
         write: &tilo_resource_store::Written,
@@ -661,7 +613,7 @@ impl GovernedWorkspace {
         let named = (collab_types::is_store_document(&write.doc)
             && write.readers != collab_types::EVERY_MEMBER)
             .then_some(write.readers.as_str());
-        let isolated = self.peer().requires_document_keys(app, &write.doc, now)?;
+        let isolated = peer.requires_document_keys(app, &write.doc, now)?;
         let group = if isolated {
             let workspace =
                 collab_types::WorkspaceId::parse(self.workspace()).ok_or("invalid workspace id")?;
@@ -678,17 +630,22 @@ impl GovernedWorkspace {
             .group_keys(&group, &write.readers, isolated)
             .await
             .ok_or("this device holds no keys of the document's readers yet")??;
-        let founding = !self.peer().holds_document(app, &write.doc);
+        let founding = !peer.holds_document(app, &write.doc);
         let bytes = if founding {
-            self.store_with_surfaces()
-                .document(&write.doc)
-                .map(Automerge::save)
-                .ok_or_else(|| format!("the store holds no document of {}", write.doc))?
+            if !write.change.deps().is_empty() {
+                return Err("the workspace has not opened this resource's signed history".into());
+            }
+            let mut document = Automerge::new();
+            document
+                .apply_changes([write.change.clone()])
+                .map_err(|error| error.to_string())?;
+            document.save()
         } else {
             write.change.raw_bytes().to_vec()
         };
         let (mut request, _) = self
-            .draft_document_write(
+            .draft_document_write_from(
+                peer,
                 &device.device(),
                 (app, &write.doc, named),
                 &bytes,
@@ -705,6 +662,43 @@ impl GovernedWorkspace {
 }
 
 impl Workspaces {
+    /// Restore the store projection of a sealed frame that passed peer admission.
+    pub(super) async fn replay_resource_write(
+        &self,
+        governed: &mut GovernedWorkspace,
+        author: [u8; 32],
+        message: &neighbour_wire::NeighbourMsg,
+    ) -> bool {
+        let neighbour_wire::NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            envelope,
+            readers,
+            ..
+        } = message
+        else {
+            return false;
+        };
+        if !is_store_document(document_id)
+            || envelope.encryption.is_none()
+            || !governed
+                .peer()
+                .publication()
+                .has_sealed_write(app_id, document_id, envelope)
+        {
+            return false;
+        }
+        #[cfg(any(feature = "apps", feature = "agents"))]
+        governed.store_with_surfaces();
+        if let Err(error) = governed
+            .take_resources(author, (app_id, document_id), envelope, readers.as_deref())
+            .await
+        {
+            tracing::warn!(workspace = %governed.workspace(), %document_id, %error, "a retained resource write was not restored");
+        }
+        true
+    }
+
     /// Takes `message`, `author`'s write, into `workspace`'s store when it writes a document the
     /// store placed, and hands it back so the workspace's replica keeps it; any other write is
     /// handed back untaken.
@@ -772,8 +766,6 @@ impl Workspaces {
         write: &tilo_resource_store::Written,
         still_live: impl FnOnce(&GovernedWorkspace) -> bool,
     ) -> Result<(), String> {
-        use neighbour_wire::NeighbourMsg;
-
         let document = &write.doc;
         let author = device.device();
         let now = tilo_clock::wall();
@@ -786,7 +778,42 @@ impl Workspaces {
                 return Err("the workspace has not opened this resource's signed history".into());
             }
         }
-        let request = governed.draft_resource_document(device, app, write).await?;
+        let mut candidate = governed.peer().clone();
+        let request = self
+            .admit_resource_write(governed, &mut candidate, device, app, write)
+            .await?;
+        if !still_live(governed) {
+            return Err("the resource writer is no longer authorized".into());
+        }
+        self.keep_resource_write(
+            governed,
+            device,
+            app,
+            (write, &request),
+            std::future::pending(),
+            true,
+        )
+        .await
+    }
+
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    async fn admit_resource_write(
+        &self,
+        governed: &GovernedWorkspace,
+        candidate: &mut tilo_peer_state::StatePeer,
+        device: &super::MemberDevice,
+        app: &str,
+        write: &tilo_resource_store::Written,
+    ) -> Result<OwnerCommitRequest, String> {
+        use neighbour_wire::NeighbourMsg;
+
+        let document = &write.doc;
+        let author = device.device();
+        let now = tilo_clock::wall();
+        governed.may_start(author, (app, document), now)?;
+        let request = governed
+            .draft_resource_document(candidate, device, app, write)
+            .await?;
         let CommitOperation::Document {
             envelope,
             own,
@@ -819,7 +846,6 @@ impl Workspaces {
             Some(write.readers.clone()),
         )
         .await?;
-        let mut candidate = governed.peer().clone();
         candidate
             .receive_from(
                 tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
@@ -837,26 +863,57 @@ impl Workspaces {
         {
             return Err("the staged resource change did not pass document admission".into());
         }
-        if !still_live(governed) {
-            return Err("the resource writer is no longer authorized".into());
-        }
-        let (message, _) = self
-            .retain_local_document(governed.workspace_id(), author, &request)
-            .await?;
+        Ok(request)
+    }
+
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    async fn keep_resource_write(
+        &self,
+        governed: &mut GovernedWorkspace,
+        device: &super::MemberDevice,
+        app: &str,
+        (write, request): (&tilo_resource_store::Written, &OwnerCommitRequest),
+        cancelled: impl Future<Output = ()>,
+        compact: bool,
+    ) -> Result<(), String> {
+        let author = device.device();
+        let document = &write.doc;
+        governed
+            .store_with_surfaces()
+            .check_write(write, author)
+            .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
+        let admission = tokio::select! {
+            biased;
+            () = cancelled => return Err("the resource writer was cancelled".into()),
+            result = self.enqueue_local_document(governed.workspace_id(), author, request) => result?,
+        };
+        let (message, _) = admission.durable().await?;
+        let neighbour_wire::NeighbourMsg::AppDocument {
+            envelope, readers, ..
+        } = &message
+        else {
+            return Err("a resource write must name its document".into());
+        };
         if !governed
             .take_resources(author, (app, document), envelope, readers.as_deref())
             .await?
         {
             return Err("the retained resource change did not reach the store".into());
         }
-        self.follow_write(
-            governed,
-            author,
-            message.clone(),
-            (app.to_owned(), document.clone()),
-        )
-        .await;
-        self.carry_to_links(governed.workspace(), author, &message);
+        if governed.member.is_some() {
+            self.follow_member_document(governed, author, &message);
+            self.forward_member_document(governed.workspace_id(), message);
+        } else {
+            self.follow_write(
+                governed,
+                author,
+                message.clone(),
+                (app.to_owned(), document.clone()),
+                compact,
+            )
+            .await;
+            self.carry_to_links(governed.workspace(), author, &message);
+        }
         Ok(())
     }
 
@@ -913,8 +970,8 @@ impl Workspaces {
             drop(governed);
             return Ok(answer);
         }
-        let (requests, refused) = {
-            let mut governed = state.lock().await;
+        let mut governed = state.lock_owned().await;
+        {
             if let Command::Put {
                 kind,
                 id,
@@ -956,14 +1013,66 @@ impl Workspaces {
                 }
                 return Ok(Reply::Written);
             }
-            governed
-                .prepare_resource_write(&device, context.app_id(), command)
-                .await?
-        };
-        for request in requests {
-            self.commit_local_document(workspace, request).await?;
         }
-        refused.map_or(Ok(Reply::Written), Err)
+
+        let (writes, refusal) =
+            match tilo_resource_store::wire::draft(governed.store_with_surfaces(), command) {
+                Ok(writes) => (writes, None),
+                Err(refused) => (refused.written, Some(refused.error.to_string())),
+            };
+        let app = context.app_id().to_owned();
+        let mut candidate = governed.peer().clone();
+        let mut documents = BTreeSet::new();
+        if writes.iter().any(|write| {
+            documents.insert(&write.doc)
+                && !write.change.deps().is_empty()
+                && !candidate.holds_document(&app, &write.doc)
+        }) {
+            if governed.member.is_some() {
+                self.recall_member_resources(&mut governed, None).await?;
+            } else {
+                self.recall(&mut governed).await?;
+            }
+            candidate = governed.peer().clone();
+        }
+        let mut requests = Vec::with_capacity(writes.len());
+        for write in &writes {
+            requests.push(
+                self.admit_resource_write(&governed, &mut candidate, &device, &app, write)
+                    .await?,
+            );
+        }
+
+        if governed.member.is_some() && !requests.is_empty() {
+            self.wait_member_link(governed.workspace_id()).await?;
+        }
+        let (mut complete, answer) = tokio::sync::oneshot::channel();
+        let workspaces = self.clone();
+        // Once retention starts, finish applying that frame even if the caller goes away.
+        // A cancelled caller never starts the next frame of a batch.
+        tokio::spawn(async move {
+            let result = async {
+                for (index, (write, request)) in writes.iter().zip(&requests).enumerate() {
+                    workspaces
+                        .keep_resource_write(
+                            &mut governed,
+                            &device,
+                            &app,
+                            (write, request),
+                            complete.closed(),
+                            // Compaction can consume a sequence the batch already drafted.
+                            index.saturating_add(1) == requests.len(),
+                        )
+                        .await?;
+                }
+                refusal.map_or(Ok(Reply::Written), Err)
+            }
+            .await;
+            let _ = complete.send(result);
+        });
+        answer
+            .await
+            .map_err(|_| "the resource writer stopped".to_owned())?
     }
 }
 

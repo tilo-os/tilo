@@ -158,7 +158,7 @@ impl Placed {
 }
 
 /// The resources of one kind, wherever they are stored, and their orders.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Table {
     rows: BTreeMap<String, Indexed>,
     /// Every resource by its place.
@@ -846,7 +846,7 @@ struct Held {
 
 /// Every kind's resources, as the commits so far left them, kept apart by who may read them.
 /// See the crate docs.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Index {
     /// Per kind, a table per reader set.
     kinds: HashMap<String, HashMap<String, Table>>,
@@ -857,6 +857,32 @@ impl Index {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The rows a draft command can look up by kind and id.
+    pub(crate) fn selected(&self, resources: &BTreeSet<(String, String)>) -> Self {
+        let mut index = Self::new();
+        for (kind, id) in resources {
+            let Some(row) = self.get(kind, id) else {
+                continue;
+            };
+            let Some(held) = self.docs.get(&row.doc) else {
+                continue;
+            };
+            index.committed(&Commit {
+                doc: &row.doc,
+                readers: &held.readers,
+                heads: &held.heads,
+                changes: &[Change::Put {
+                    kind: kind.clone(),
+                    id: id.clone(),
+                    parent: row.parent.clone(),
+                    order: row.order.clone(),
+                    fields: row.fields.clone(),
+                }],
+            });
+        }
+        index
     }
 
     /// The heads of `doc` the index reflects; `None` for a document no commit reached it from.
