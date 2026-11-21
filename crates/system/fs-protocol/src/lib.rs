@@ -34,8 +34,8 @@ pub use file_invite::{
 };
 pub use files::{
     AttributedWriter, ContentHash, FILE_BINDING_VERSION, FIRST_TREE_CHUNK, FileActor,
-    FileBindingV1, FileDocumentError, FileDocumentId, FileMetadataV1, FileNameV1, FileNodeKind,
-    FilePropertiesV1, IndexStatus, MAX_FILE_NAME_BYTES, PreviewStatus, PreviewVariant, TreeChunk,
+    FileBindingV1, FileDocumentError, FileDocumentId, FileNameV1, FileNodeKind, FilePropertiesV1,
+    MAX_FILE_NAME_BYTES, TreeChunk,
 };
 pub use projection::{
     AVAILABILITY_CONTROL_XATTR, AVAILABILITY_XATTR, AvailabilityPolicy, AvailabilityProjectionV1,

@@ -8,12 +8,9 @@ use uuid::Uuid;
 
 use collab_types::Ed25519PublicKey;
 
-pub const FILE_METADATA_VERSION: u16 = 2;
 pub const FILE_PROPERTIES_VERSION: u16 = 1;
 pub const FILE_BINDING_VERSION: u16 = 1;
-pub const MAX_MIME_BYTES: usize = 255;
 pub const MAX_FILE_NAME_BYTES: usize = 255;
-pub const MAX_PREVIEW_VARIANTS: usize = 8;
 pub const MAX_METADATA_TOKEN_BYTES: usize = 64;
 pub const MAX_IMAGE_DIMENSION: u32 = 1_000_000;
 pub const MAX_MEDIA_DURATION_MS: u64 = 100 * 365 * 24 * 60 * 60 * 1_000;
@@ -230,32 +227,6 @@ impl FileBindingV1 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum PreviewStatus {
-    Pending,
-    Ready,
-    Failed,
-    Unsupported,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PreviewVariant {
-    pub max_edge: u32,
-    pub hash: Option<ContentHash>,
-    pub status: PreviewStatus,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum IndexStatus {
-    Pending,
-    Indexed,
-    Failed,
-    Excluded,
-}
-
 /// Bounded metadata that can replicate and render without fetching file bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -311,41 +282,6 @@ impl FilePropertiesV1 {
             && self.container.is_none()
         {
             return Err(FileDocumentError::EmptyFileProperties);
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FileMetadataV1 {
-    pub schema_version: u16,
-    pub document_id: FileDocumentId,
-    pub content_hash: Option<ContentHash>,
-    pub byte_len: u64,
-    pub mime: Option<String>,
-    pub previews: Vec<PreviewVariant>,
-    pub latest_actor: Option<FileActor>,
-    pub observed_at_ms: u64,
-    pub index_status: IndexStatus,
-    #[serde(default)]
-    pub properties: Option<FilePropertiesV1>,
-}
-
-impl FileMetadataV1 {
-    /// Validate the metadata schema and every bounded nested value.
-    pub fn validate(&self) -> Result<(), FileDocumentError> {
-        if self.schema_version != FILE_METADATA_VERSION {
-            return Err(FileDocumentError::UnsupportedVersion(self.schema_version));
-        }
-        if self.mime.as_ref().is_some_and(|s| s.len() > MAX_MIME_BYTES) {
-            return Err(FileDocumentError::MimeTooLong);
-        }
-        if self.previews.len() > MAX_PREVIEW_VARIANTS {
-            return Err(FileDocumentError::TooManyPreviews);
-        }
-        if let Some(properties) = &self.properties {
-            properties.validate()?;
         }
         Ok(())
     }
@@ -416,8 +352,6 @@ impl AttributedWriter {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum FileDocumentError {
-    #[error("unsupported file metadata version {0}")]
-    UnsupportedVersion(u16),
     #[error("unsupported file properties version {0}")]
     UnsupportedPropertiesVersion(u16),
     #[error("image dimensions are incomplete or outside the wire bound")]
@@ -442,10 +376,6 @@ pub enum FileDocumentError {
     InvalidRootBinding,
     #[error("file binding name is invalid")]
     InvalidBindingName,
-    #[error("MIME value exceeds the wire bound")]
-    MimeTooLong,
-    #[error("too many preview variants")]
-    TooManyPreviews,
 }
 
 #[cfg(test)]
@@ -453,85 +383,22 @@ mod tests {
     use super::*;
     use collab_types::canonical_bytes;
 
-    /// Metadata round-trips rich properties; rich properties enforce strict bounds; metadata is
-    /// versioned, bounded and canonical.
+    /// Rich properties enforce strict bounds.
     #[test]
-    fn file_metadata_is_versioned_bounded_and_canonical() {
-        // Phase: metadata_v2_round_trips_rich_properties.
-        {
-            let metadata = FileMetadataV1 {
-                schema_version: FILE_METADATA_VERSION,
-                document_id: FileDocumentId::new(),
-                content_hash: None,
-                byte_len: 12,
-                mime: Some("image/png".into()),
-                previews: Vec::new(),
-                latest_actor: None,
-                observed_at_ms: 1,
-                index_status: IndexStatus::Indexed,
-                properties: Some(FilePropertiesV1 {
-                    schema_version: FILE_PROPERTIES_VERSION,
-                    image_width: Some(640),
-                    image_height: Some(480),
-                    duration_ms: None,
-                    page_count: None,
-                    codec: Some("png".into()),
-                    container: Some("png".into()),
-                }),
-            };
-            let encoded = postcard::to_allocvec(&metadata).unwrap();
-            assert_eq!(
-                postcard::from_bytes::<FileMetadataV1>(&encoded).unwrap(),
-                metadata
-            );
-            let json = serde_json::to_vec(&metadata).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<FileMetadataV1>(&json).unwrap(),
-                metadata
-            );
-        }
-
-        // Phase: rich_properties_enforce_strict_bounds.
-        {
-            let invalid = FilePropertiesV1 {
-                schema_version: FILE_PROPERTIES_VERSION,
-                image_width: Some(MAX_IMAGE_DIMENSION + 1),
-                image_height: Some(1),
-                duration_ms: None,
-                page_count: None,
-                codec: Some("png".into()),
-                container: None,
-            };
-            assert_eq!(
-                invalid.validate(),
-                Err(FileDocumentError::InvalidImageDimensions)
-            );
-        }
-
-        // Phase: metadata_is_versioned_bounded_and_canonical.
-        {
-            let metadata = FileMetadataV1 {
-                schema_version: FILE_METADATA_VERSION,
-                document_id: FileDocumentId::new(),
-                content_hash: Some(ContentHash([3; 32])),
-                byte_len: 42,
-                mime: Some("image/png".into()),
-                previews: vec![PreviewVariant {
-                    max_edge: 256,
-                    hash: Some(ContentHash([4; 32])),
-                    status: PreviewStatus::Ready,
-                }],
-                latest_actor: Some(actor()),
-                observed_at_ms: 9,
-                index_status: IndexStatus::Indexed,
-                properties: None,
-            };
-            metadata.validate().unwrap();
-            let bytes = collab_types::canonical::canonical_bytes(&metadata).unwrap();
-            let decoded: FileMetadataV1 =
-                collab_types::canonical::from_canonical_bytes(&bytes).unwrap();
-            assert_eq!(decoded, metadata);
-        }
+    fn rich_properties_enforce_strict_bounds() {
+        let invalid = FilePropertiesV1 {
+            schema_version: FILE_PROPERTIES_VERSION,
+            image_width: Some(MAX_IMAGE_DIMENSION + 1),
+            image_height: Some(1),
+            duration_ms: None,
+            page_count: None,
+            codec: Some("png".into()),
+            container: None,
+        };
+        assert_eq!(
+            invalid.validate(),
+            Err(FileDocumentError::InvalidImageDimensions)
+        );
     }
 
     fn actor() -> FileActor {
