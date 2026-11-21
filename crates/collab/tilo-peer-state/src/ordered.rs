@@ -293,7 +293,7 @@ impl<K: Ord + Clone, V: Clone> FromIterator<(K, V)> for Ordered<K, V> {
 
 impl<K: Ord, V> std::ops::Index<&K> for Ordered<K, V> {
     type Output = V;
-    #[allow(clippy::panic, reason = "indexing a map names a key it holds")]
+    #[allow(clippy::panic, reason = "`Index` panics on a key the map lacks, as the standard maps do")]
     fn index(&self, key: &K) -> &V {
         self.get(key)
             .unwrap_or_else(|| panic!("no entry for the key"))
