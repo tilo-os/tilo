@@ -32,7 +32,7 @@ use tilo_workspace_keys::{
 };
 use tokio::task::JoinHandle;
 
-use crate::workspaces::{DeviceKeyGroups, Held, KeySink, Workspaces};
+use crate::workspaces::{DeviceKeyGroups, Held, KeySink, WeakWorkspaces, Workspaces};
 
 /// The device's key service: its keys and the thread settling the groups of the workspaces its
 /// own service holds. Stops when dropped.
@@ -126,7 +126,7 @@ impl KeyService {
             .founders
             .lock_recover()
             .insert(workspaces.host_device());
-        *self.link.directory.workspaces.lock_recover() = Some(workspaces.clone());
+        *self.link.directory.workspaces.lock_recover() = Some(workspaces.downgrade());
         let (publish, mut outgoing) = tokio::sync::mpsc::unbounded_channel();
         *self.link.publish.lock_recover() = Some(publish);
         let writing = workspaces.clone();
@@ -237,15 +237,17 @@ impl GovernanceTransport for Link {
 /// Who may read each group of the workspaces the service holds, as their replicas stand.
 #[derive(Clone)]
 struct Directory {
-    /// The service's workspaces, once it is open.
-    workspaces: Arc<Mutex<Option<Workspaces>>>,
+    /// The service's workspaces, once it is open, held without keeping them alive: they hold
+    /// this directory's link as their key sink, and through them the device's endpoint, whose
+    /// socket a stopped server would otherwise never let go of.
+    workspaces: Arc<Mutex<Option<WeakWorkspaces>>>,
     /// The devices a workspace this device founds was founded by: the device, and its service.
     founders: Arc<Mutex<BTreeSet<[u8; 32]>>>,
 }
 
 impl Directory {
     fn workspaces(&self) -> Option<Workspaces> {
-        self.workspaces.lock_recover().clone()
+        self.workspaces.lock_recover().as_ref()?.upgrade()
     }
 
     /// What `read` makes of `workspace`'s replica as it stands, and how the service holds it.
