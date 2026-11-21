@@ -802,9 +802,11 @@ view note_details(n: Note) {
             }
         }
         // The facts are as wide as their words (`fill: 0`), so the trail takes the room they
-        // leave and elides its middle where that is not enough, never the other way round.
+        // leave and elides its middle where that is not enough, never the other way round. One
+        // fact never breaks: where the line is short of room the whole fact moves down to the
+        // next line, beside the trail.
         // The gap separates one fact from the next; no glyph stands between them.
-        row(gap: .related, align: .center, fill: 0.0) {
+        row(gap: .related, align: .center, fill: 0.0, wrap: true) {
             // A page brought over from another service says where it came from and whose words
             // it is, once, before the facts of this notebook: it was not made here.
             if n.service != "" {
