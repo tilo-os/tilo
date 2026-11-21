@@ -57,6 +57,7 @@ impl App {
     fn sibling(&self) -> App {
         App {
             json: self.json,
+            local: false,
             target: None,
             worktree: None,
             registry_path: self.registry_path.clone(),

@@ -19,6 +19,10 @@ pub struct Cli {
     /// Registered development target; overrides `TILO_VM`, `.tilo-vm` and the default.
     #[arg(long, global = true)]
     pub target: Option<String>,
+    /// Talk to this machine's own tilo-vmd with no SSH and no dev-VM registry: for an
+    /// installed server applying prebuilt layers at its first boot. Needs root.
+    #[arg(long, global = true)]
+    pub local: bool,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -146,6 +150,19 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm import-layer launcher --archive launcher.tar --archive-sha256 <producer-sha256> --provenance launcher.json --manifest os/components.toml\n\nThe archive hash pins the producer bytes. Local provenance stays non-promotable.\nThe daemon validates and verifies the native layer; apply its returned hash with\n  tilo-vm swap launcher --account <account> --from layer:<hash>\nafterwards."
     )]
     ImportLayer(LocalLayerImport),
+    /// Apply the prebuilt component layers an installation left for this machine's first boot.
+    #[command(
+        after_help = "Examples:\n  tilo-vm --local apply-incoming\n  tilo-vm --local apply-incoming --dir /var/lib/tilo-vm/incoming --manifest /usr/share/tilo/components.toml\n\nRuns on the machine it applies to (no SSH, no dev-VM registry) and needs root,
+so run it as root (`sudo`).\nThe directory holds one `<component>.tar` and `<component>.json` provenance per\ncomponent, which `tilo-vm layer-pack --component <name> --profile <profile>\n--incoming <dir>` writes. Components apply in os/components.toml order: a vm-scope\none into the vm account, a session-scope one into the device account, which merges\nit VM-wide. Each applied pair is removed; a bad layer stops the run and fails."
+    )]
+    ApplyIncoming {
+        /// The directory of `<component>.tar` + `<component>.json` pairs.
+        #[arg(long, default_value = crate::incoming::INCOMING_DIR)]
+        dir: PathBuf,
+        /// The component manifest whose declaration order decides the order.
+        #[arg(long, default_value = crate::incoming::INSTALLED_MANIFEST)]
+        manifest: PathBuf,
+    },
     /// Put a build of a component (or an app) into an account and restart what it needs.
     #[command(
         after_help = "Examples:\n  tilo-vm swap tilo-session                      # your account, built in the VM from this worktree\n  tilo-vm swap tilo-session --profile dev        # faster compile, slower binary\n  tilo-vm swap --account vm fs               # VM-wide component into the vm account\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap tilo-session --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap tilo-session --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap tilo-session --builder host       # build on this Linux host instead\n  tilo-vm swap --account review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --account vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
@@ -287,6 +304,10 @@ pub enum Command {
         /// Stream bounded raw chunks with a verified footer instead of base64.
         #[arg(long)]
         binary: bool,
+        /// Write `<component>.tar` and `<component>.json` here for a machine's
+        /// incoming layers instead of the framed stream.
+        #[arg(long)]
+        incoming: Option<PathBuf>,
     },
     /// Package one app on the architecture-configured remote builder.
     #[command(

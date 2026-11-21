@@ -6,7 +6,7 @@ use crate::error::CliError;
 use crate::local_layer::Prepared;
 use crate::remote::Remote;
 
-fn import(remote: &mut Remote, prepared: &mut Prepared) -> Result<(String, bool), CliError> {
+pub(super) fn import(remote: &mut Remote, prepared: &mut Prepared) -> Result<(String, bool), CliError> {
     let upload = remote.upload(prepared.archive.as_file_mut())?;
     let imported = remote.call(LayerImport {
         source: LayerSource::Upload(upload),
@@ -34,13 +34,17 @@ impl App {
         request: &LocalLayerImport,
     ) -> Result<Outcome, CliError> {
         let mut prepared = crate::local_layer::prepare(request)?;
-        let vm = self.resolve_vm(None)?;
         // Importing an inert layer never starts or wakes a stopped VM.
-        let mut remote = self.connect(&vm)?;
+        let mut remote = if self.local {
+            self.connect_here()?
+        } else {
+            let vm = self.resolve_vm(None)?;
+            self.connect(&vm)?
+        };
         let expected_target = format!("{}-unknown-linux-gnu", remote.hello.arch);
         if prepared.provenance.target.as_deref() != Some(expected_target.as_str()) {
             return Err(CliError::InvalidInput(
-                "local layer target does not match the selected VM".into(),
+                "local layer target does not match the machine it is imported into".into(),
             ));
         }
         let (hash, existed) = self

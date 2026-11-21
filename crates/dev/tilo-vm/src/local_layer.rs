@@ -186,12 +186,17 @@ pub(crate) fn prepare(request: &LocalLayerImport) -> Result<Prepared, CliError> 
             .cargo_lock_hash
             .as_deref()
             .is_some_and(|s| digest(s, 64))
-        || provenance.dirty_tree_hash.is_some()
+        // A layer built from a changed tree records the change rather than
+        // claiming the commit alone; it stays a local, non-promotable layer.
+        || provenance
+            .dirty_tree_hash
+            .as_deref()
+            .is_some_and(|s| !digest(s, 64))
         || provenance.toolchain.as_deref().is_none_or(str::is_empty)
         || provenance.target.as_deref().is_none_or(str::is_empty)
     {
         return Err(invalid(
-            "exact-source local producer provenance is required; CI authority is not inferred",
+            "recorded local producer provenance is required; CI authority is not inferred",
         ));
     }
     let mut archive = freeze(request)?;

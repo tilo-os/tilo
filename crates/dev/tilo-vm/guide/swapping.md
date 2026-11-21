@@ -38,6 +38,50 @@ defaults to the one named after your branch. Components and their scope
 come from `os/components.toml`
 (`python3 os/scripts/install-components.py --list`).
 
+## This machine's own daemon (`--local`)
+
+`--local` reaches the `tilo-vmd` of the machine it runs on as a child process,
+with no SSH and no dev-VM registry, so an installed server can apply layers at
+its first boot:
+
+```sh
+sudo tilo-vm --local import-layer server --archive server.tar \
+  --archive-sha256 <sha256> --provenance server.json --manifest /usr/share/tilo/components.toml
+sudo tilo-vm --local swap server --account vm --from layer:<hash>
+```
+
+It needs root (`/usr/libexec/tilo/tilo-vmd`, the `vmd` component's path) and
+works with `import-layer`, `apply-incoming` and `swap --from layer:<hash>`; it
+builds nothing. `TILO_VM_LOCAL_DAEMON` names another daemon command.
+
+## Incoming layers
+
+An installation can leave prebuilt layers in `/var/lib/tilo-vm/incoming` for
+the machine's first boot. Each component is a pair:
+
+- `<component>.tar`: the uncompressed archive `import-layer --archive` takes,
+  laid out by `os/scripts/install-components.py`;
+- `<component>.json`: its provenance, as `import-layer --provenance` takes
+  (the source commit and, for a changed tree, its hash; the Cargo.lock
+  digest, target and toolchain). It stays a local, non-promotable layer.
+
+`tilo-vm layer-pack --component <name> --profile <profile> --incoming <dir>`
+writes exactly that pair. Then:
+
+```sh
+sudo tilo-vm --local apply-incoming          # --dir and --manifest default to the installed paths
+```
+
+Components apply in `os/components.toml` declaration order, each with the same
+checks `import-layer` and `swap` make: a `vm`-scope component goes into the
+`vm` account, a `session`-scope one into the `device` account, which merges it
+VM-wide. Each pair is removed once it applied, and one line per component
+(`applied <component> <layer> <account>`) is printed. A bad layer, a missing
+pair or an undeclared component stops the run and leaves what it had not
+applied in place; it never skips a layer. `tilo-vm-incoming.service`
+(`ConditionDirectoryNotEmpty=/var/lib/tilo-vm/incoming`, ordered before
+`tilo-server.service`) runs the command on a dev image that ships it.
+
 ## A daemon at another protocol
 
 Every operation requires the daemon's protocol to be the client's. A device

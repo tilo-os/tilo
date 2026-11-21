@@ -55,6 +55,7 @@ fn import_case(cached: bool, component: &str, corrupt: bool) {
     let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
     let mut app = App {
         json: true,
+        local: false,
         target: None,
         worktree: None,
         registry_path: dir.path().join("vms.toml"),
@@ -109,6 +110,7 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App {
             json: true,
+            local: false,
             target: None,
             worktree: None,
             registry_path: dir.path().join("vms.toml"),
@@ -167,6 +169,7 @@ tilo_test_env::scenario! {
             let dir = tempfile::tempdir().unwrap();
             let mut app = App {
                 json: true,
+                local: false,
                 target: None,
                 worktree: None,
                 registry_path: dir.path().join("vms.toml"),
@@ -230,6 +233,7 @@ tilo_test_env::scenario! {
         };
         let mut app = App {
             json: true,
+            local: false,
             target: None,
             worktree: Some(worktree),
             registry_path: dir.path().join("vms.toml"),

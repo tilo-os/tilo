@@ -57,6 +57,7 @@ mod daemon;
 mod device;
 #[cfg(test)]
 mod forwarded_port_tests;
+mod incoming;
 mod kernel;
 mod local_layer;
 mod reach;
@@ -392,6 +393,9 @@ impl Plan {
 
 pub struct App {
     pub json: bool,
+    /// `--local`: this machine's own tilo-vmd, with no SSH and no dev-VM
+    /// registry, for an installed server's first boot.
+    pub local: bool,
     pub target: Option<String>,
     pub worktree: Option<Worktree>,
     pub registry_path: PathBuf,
@@ -653,6 +657,83 @@ impl App {
         self.connect_with_wake(vm, true)
     }
 
+    /// This machine's own daemon, for `--local`: no SSH, no dev-VM registry,
+    /// no hypervisor. Only root may compose the machine's `/usr`, restart its
+    /// units and manage its accounts.
+    pub(crate) fn connect_here(&mut self) -> Result<Remote, CliError> {
+        remote::require_root()?;
+        self.peer = None;
+        let line = remote::local_daemon_command();
+        let remote = Remote::connect_local(&line)?;
+        for issue in &remote.hello.issues {
+            self.warnings.push(format!(
+                "account {}: {}; {}",
+                issue.account, issue.problem, issue.hint
+            ));
+        }
+        self.receipt.set("route", json!({ "local": true }));
+        Ok(remote)
+    }
+
+    /// `--local swap <component> --from layer:<hash>`: put a layer this machine
+    /// already imported into one of its accounts. Building, CI sources and boot
+    /// components need the development routes.
+    fn swap_local(
+        &mut self,
+        account: Option<String>,
+        component: &str,
+        from: &str,
+    ) -> Result<Outcome, CliError> {
+        let Some(layer) = from.strip_prefix("layer:") else {
+            return Err(CliError::InvalidInput(format!(
+                "--local applies a layer this machine already imported; pass --from layer:<hash>, not '{from}'"
+            )));
+        };
+        if layer.len() != 64
+            || !layer
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(CliError::InvalidInput(
+                "--from layer: takes a lowercase SHA-256 layer hash".into(),
+            ));
+        }
+        if component.starts_with("app:") {
+            return Err(CliError::Unsupported {
+                what: "--local with an app".into(),
+                alternative: "install apps through the app store; --local swaps components".into(),
+            });
+        }
+        let account = account.ok_or_else(|| {
+            CliError::InvalidInput(
+                "--local swaps into an account this machine runs; name it, e.g. --account vm or --account device"
+                    .into(),
+            )
+        })?;
+        self.receipt.set("account", &account);
+        self.receipt.set("component", component);
+        self.receipt.set("layer", layer);
+        let mut remote = self.connect_here()?;
+        if component == "vmd" {
+            remote = daemon::handoff_local(&remote, layer)?;
+            self.receipt.set("applying_daemon_layer", layer);
+        }
+        let result = self.receipt.phase("apply", || {
+            remote.call(Swap {
+                account: account.clone(),
+                component: component.to_owned(),
+                layer: layer.to_owned(),
+                info: None,
+                partner: None,
+            })
+        })?;
+        self.warnings.extend(result.warnings.iter().cloned());
+        Ok(Outcome::new(
+            format!("{} ({component} {})", describe_apply(&result), short(layer)),
+            json!(result),
+        ))
+    }
+
     fn prepare_swap_connection(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
         let mut remote = self.connect_with_wake(vm, true)?;
         self.check_vm_space(&mut remote, vm)?;
@@ -842,7 +923,26 @@ impl App {
         Ok(outcome)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per command, each a couple of lines"
+    )]
     fn dispatch(&mut self, command: Option<Command>) -> Result<Outcome, CliError> {
+        if self.local
+            && !matches!(
+                command.as_ref(),
+                Some(
+                    Command::ImportLayer(_)
+                        | Command::ApplyIncoming { .. }
+                        | Command::Swap { .. }
+                )
+            )
+        {
+            return Err(CliError::Unsupported {
+                what: "--local here".into(),
+                alternative: "use it with import-layer, apply-incoming, or swap --from layer:<hash>".into(),
+            });
+        }
         match command {
             None => self.status(None),
             Some(Command::Status { account }) => self.status(account),
@@ -855,6 +955,9 @@ impl App {
             Some(Command::Account(command)) => self.account(command),
             Some(Command::SwapArtifact(request)) => self.swap_artifact(&request),
             Some(Command::ImportLayer(request)) => self.import_local_layer(&request),
+            Some(Command::ApplyIncoming { dir, manifest }) => {
+                self.apply_incoming(&dir, &manifest)
+            }
             Some(Command::Swap {
                 component,
                 account,
@@ -953,6 +1056,7 @@ impl App {
                 source_inventory,
                 cached_layer,
                 binary,
+                incoming,
             } => Self::packed(crate::builderlayer::pack_with_source(
                 &component,
                 &profile,
@@ -960,6 +1064,7 @@ impl App {
                 source_inventory.as_deref(),
                 &cached_layer,
                 binary,
+                incoming.as_deref(),
             )),
             Command::AppPack {
                 app,
@@ -4230,6 +4335,23 @@ impl App {
         frame_cpu_trace: bool,
         kernel: KernelFlags,
     ) -> Result<Outcome, CliError> {
+        if self.local {
+            if builder.is_some()
+                || profile.is_some()
+                || frame_cpu_trace
+                || kernel.direct
+                || kernel.jobs.is_some()
+                || kernel.cmdline.is_some()
+            {
+                return Err(CliError::Unsupported {
+                    what: "--local with a build, profile or kernel flag".into(),
+                    alternative:
+                        "apply-incoming imports prebuilt layers; --local swap only swaps an already imported layer"
+                            .into(),
+                });
+            }
+            return self.swap_local(account, &component, from);
+        }
         validate_frame_cpu_component(&component, frame_cpu_trace)?;
         // Boot components first: the kernel swaps VM-wide (its account is `vm`
         // unless named), the others go to their scenario.
@@ -8366,6 +8488,7 @@ mod tests {
     fn app_with_empty_registry(dir: &Path) -> App {
         App {
             json: false,
+            local: false,
             target: None,
             worktree: None,
             registry_path: dir.join("vms.toml"),

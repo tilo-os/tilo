@@ -308,6 +308,7 @@ fn component_swap_resumes_both_initial_and_preapply_connections() {
 fn run_component_swap(root: &Path) {
     let mut app = App {
         json: true,
+        local: false,
         target: Some("fixture".into()),
         worktree: None,
         registry_path: root.join("vms.toml"),

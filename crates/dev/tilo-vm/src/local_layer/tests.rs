@@ -114,6 +114,24 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase a_changed_tree_is_recorded_and_still_local;
+    {
+        let (_dir, request) = fixture(&[("usr/libexec/tilo/tilo-launcher", 0o755)]);
+        let read = |request: &LocalLayerImport| -> Provenance {
+            serde_json::from_slice(&std::fs::read(&request.provenance).unwrap()).unwrap()
+        };
+        let mut provenance = read(&request);
+        provenance.dirty_tree_hash = Some("c".repeat(64));
+        std::fs::write(&request.provenance, serde_json::to_vec(&provenance).unwrap()).unwrap();
+        let prepared = prepare(&request).unwrap();
+        assert_eq!(prepared.provenance.authority, "local");
+        assert!(prepared.provenance.dirty_tree_hash.is_some());
+
+        provenance.dirty_tree_hash = Some("not-a-hash".into());
+        std::fs::write(&request.provenance, serde_json::to_vec(&provenance).unwrap()).unwrap();
+        assert!(prepare(&request).is_err());
+    }
+
     phase signed_image_cohorts_are_not_imported_as_local_components;
     {
         let (_dir, mut request) = fixture(&[("usr/libexec/tilo/tilo-launcher", 0o755)]);

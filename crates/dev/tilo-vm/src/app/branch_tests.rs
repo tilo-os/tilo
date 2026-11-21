@@ -139,6 +139,7 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let app = App {
             json: false,
+            local: false,
             target: None,
             worktree: None,
             registry_path: dir.path().join("vms.toml"),

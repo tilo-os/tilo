@@ -13,6 +13,49 @@ mod keepawake;
 
 pub const DEFAULT_DAEMON: &str = "tilo-vmd rpc";
 
+/// The daemon an installed Tilo image runs (`vmd` in os/components.toml), for
+/// `--local`: the machine's own tilo-vmd, with no SSH and no dev-VM registry.
+pub const LOCAL_DAEMON: &str = "/usr/libexec/tilo/tilo-vmd";
+
+/// The command that serves this machine's daemon over stdin/stdout.
+/// `TILO_VM_LOCAL_DAEMON` names another one (a drop-in or a test's stand-in),
+/// as `TILO_VM_SSH` names another ssh.
+pub fn local_daemon_command() -> CommandLine {
+    if let Some(line) = std::env::var_os("TILO_VM_LOCAL_DAEMON").filter(|line| !line.is_empty()) {
+        let words: Vec<String> = line
+            .to_string_lossy()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        if let Some((program, args)) = words.split_first() {
+            return CommandLine::new(program, &args.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+    }
+    CommandLine::new(LOCAL_DAEMON, &["rpc"])
+}
+
+/// `--local` runs the daemon that composes this machine's `/usr`, restarts its
+/// units and manages its accounts, so it is root's. A clear refusal beats a
+/// half-applied first boot.
+pub fn require_root() -> Result<(), CliError> {
+    match effective_uid() {
+        Some(0) => Ok(()),
+        Some(uid) => Err(CliError::LocalNotRoot { uid }),
+        None => Err(CliError::Unsupported {
+            what: "--local on this machine".into(),
+            alternative: "run it on the Tilo machine whose tilo-vmd it applies to".into(),
+        }),
+    }
+}
+
+/// The process's effective uid, from `/proc/self/status` (Linux, which is the
+/// only place an installed Tilo server runs `--local`).
+fn effective_uid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("Uid:"))?;
+    line.split_whitespace().nth(2)?.parse().ok()
+}
+
 /// The already-imported daemon must apply its own replacement: the old RPC
 /// process keeps executing its old mount-composition code after a sysext swap.
 /// Preserve the configured RPC flags and the authenticated daemon's state root.
@@ -343,36 +386,50 @@ impl Remote {
         Self::connect_line(vm, &line, endpoint, debug)
     }
 
+    fn spawn(line: &CommandLine) -> Result<Child, std::io::Error> {
+        let mut command = Command::new(&line.program);
+        command
+            .args(&line.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (key, value) in &line.env {
+            command.env(key, value);
+        }
+        command.spawn()
+    }
+
+    /// The JSON-RPC session on a spawned daemon's pipes.
+    fn handshake(
+        child: &mut Child,
+    ) -> Result<(Client<BufReader<ChildStdout>, ChildStdin>, HelloResult), ClientError> {
+        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
+            return Err(ClientError::Closed);
+        };
+        let mut client = Client::new(BufReader::new(stdout), stdin);
+        client.enable_binary_uploads();
+        let hello = client.hello(env!("CARGO_PKG_VERSION"))?;
+        Ok((client, hello))
+    }
+
     fn connect_line(
         vm: &str,
         line: &CommandLine,
         endpoint: &SshEndpoint,
         debug: Vec<String>,
     ) -> Result<Self, CliError> {
-        let mut child = Command::new(&line.program)
-            .args(&line.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    CliError::ToolMissing {
-                        tool: "ssh".into(),
-                        purpose: "reach the VM".into(),
-                    }
-                } else {
-                    CliError::io("start ssh")(e)
+        let mut child = Self::spawn(line).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                CliError::ToolMissing {
+                    tool: "ssh".into(),
+                    purpose: "reach the VM".into(),
                 }
-            })?;
-        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
-            return Err(CliError::io("start ssh")(std::io::Error::other("no pipes")));
-        };
-        let mut client = Client::new(BufReader::new(stdout), stdin);
-        client.enable_binary_uploads();
-        let handshake = client.hello(env!("CARGO_PKG_VERSION"));
-        match handshake {
-            Ok(hello) => {
+            } else {
+                CliError::io("start ssh")(e)
+            }
+        })?;
+        match Self::handshake(&mut child) {
+            Ok((client, hello)) => {
                 let (vm, line, endpoint) = (vm.to_owned(), line.clone(), endpoint.clone());
                 let redial: Redial =
                     Box::new(move || Self::connect_line(&vm, &line, &endpoint, debug.clone()));
@@ -427,6 +484,73 @@ impl Remote {
                 Err(error.into())
             }
         }
+    }
+
+    /// The daemon of this machine, started as a child over stdin/stdout: what
+    /// an installed server applies its incoming layers through before anything
+    /// else of its own runs.
+    pub fn connect_local(line: &CommandLine) -> Result<Self, CliError> {
+        let mut child = Self::spawn(line).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                CliError::LocalDaemon {
+                    detail: format!("{} is not installed", line.program),
+                }
+            } else {
+                CliError::io(format!("start {}", line.program))(e)
+            }
+        })?;
+        match Self::handshake(&mut child) {
+            Ok((client, hello)) => {
+                let line = line.clone();
+                let redial: Redial = Box::new(move || Self::connect_local(&line));
+                Ok(Self {
+                    child,
+                    client: Some(client),
+                    hello,
+                    peer: false,
+                    redial: Some(redial),
+                })
+            }
+            Err(ClientError::Io(_) | ClientError::Closed) => {
+                let _ = child.kill();
+                let status = child.wait().ok().and_then(|s| s.code());
+                let mut stderr = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_string(&mut stderr);
+                }
+                let stderr = stderr.trim();
+                Err(CliError::LocalDaemon {
+                    detail: if stderr.is_empty() {
+                        format!(
+                            "{} ended without answering (exit {})",
+                            line.program,
+                            status.map_or_else(|| "?".into(), |code| code.to_string())
+                        )
+                    } else {
+                        stderr.to_owned()
+                    },
+                })
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(error.into())
+            }
+        }
+    }
+
+    /// The replacement daemon of an imported layer, started on this machine:
+    /// the local counterpart of [`Self::handoff`], with no SSH.
+    pub(crate) fn handoff_here(&self, line: &CommandLine) -> Result<Self, CliError> {
+        let replacement = Self::connect_local(line)?;
+        if replacement.hello.root != self.hello.root || replacement.hello.arch != self.hello.arch {
+            return Err(CliError::io("upgrade the guest daemon")(
+                std::io::Error::other(
+                    "imported daemon answered for a different state root or architecture",
+                ),
+            ));
+        }
+        Ok(replacement)
     }
 
     pub(crate) fn handoff(

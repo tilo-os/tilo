@@ -79,9 +79,13 @@ pub fn remote_command(builder: &[String], component: &Component, extra: &[String
 }
 
 pub fn pack(name: &str, profile: &str, extra: &[String]) -> Result<(), CliError> {
-    pack_with_source(name, profile, extra, None, &[], false)
+    pack_with_source(name, profile, extra, None, &[], false, None)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the build, assembly and framing steps read as one sequence"
+)]
 pub(crate) fn pack_with_source(
     name: &str,
     profile: &str,
@@ -89,6 +93,7 @@ pub(crate) fn pack_with_source(
     inventory: Option<&Path>,
     cached: &[String],
     binary: bool,
+    incoming: Option<&Path>,
 ) -> Result<(), CliError> {
     if cached.len() > 8 || cached.iter().any(|hash| !valid_hash(hash)) {
         return Err(CliError::InvalidInput(
@@ -179,6 +184,9 @@ pub(crate) fn pack_with_source(
     }
     let facts = build::first_elf(&tree).unwrap_or_default();
     log_native_facts(&component.name, &facts, source_digest.as_deref());
+    if let Some(incoming) = incoming {
+        return write_incoming(incoming, &root, &component, extra, &tree);
+    }
     let packed = Packed {
         component: component.name,
         binary,
@@ -203,6 +211,90 @@ fn log_native_facts(component: &str, facts: &build::ElfFacts, source_digest: Opt
             .map(|value| value.chars().take(160).collect::<String>()),
         source_digest,
     );
+}
+
+/// Write the pair a machine's incoming directory holds: `<component>.tar` with
+/// the archive the importer takes, and `<component>.json` with the provenance
+/// that pins it (its source commit, and the hash of an uncommitted tree when
+/// there is one: the layer stays local and non-promotable either way).
+fn write_incoming(
+    dir: &Path,
+    root: &Path,
+    component: &Component,
+    extra: &[String],
+    tree: &Path,
+) -> Result<(), CliError> {
+    let worktree = crate::context::Worktree::detect(root).ok_or_else(|| {
+        CliError::InvalidInput(
+            "incoming layers record their source commit, so they need a git worktree".into(),
+        )
+    })?;
+    let mut runner = crate::hypervisor::SystemRunner {
+        cwd: Some(worktree.root.clone()),
+    };
+    let provenance = build::provenance(
+        &mut runner,
+        &worktree,
+        component,
+        component.build_features(extra),
+        tree,
+    );
+    if provenance.cargo_lock_hash.is_none()
+        || provenance.target.as_deref().is_none_or(str::is_empty)
+        || provenance.toolchain.as_deref().is_none_or(str::is_empty)
+    {
+        return Err(CliError::InvalidInput(format!(
+            "{} has no built binary or Cargo.lock to record an incoming layer's provenance",
+            component.name
+        )));
+    }
+    std::fs::create_dir_all(dir)
+        .map_err(CliError::io(format!("create {}", dir.display())))?;
+    let archive_path = dir.join(format!("{}.tar", component.name));
+    let mut archive = std::fs::File::create(&archive_path)
+        .map_err(CliError::io(format!("create {}", archive_path.display())))?;
+    let mut hasher = Sha256::new();
+    build::pack_into(
+        tree,
+        &mut Hashing {
+            out: &mut archive,
+            hasher: &mut hasher,
+        },
+    )?;
+    archive
+        .flush()
+        .map_err(CliError::io(format!("finish {}", archive_path.display())))?;
+    drop(archive);
+    let sha256 = hex::encode(hasher.finalize());
+    let provenance_path = dir.join(format!("{}.json", component.name));
+    let bytes = serde_json::to_vec(&provenance)
+        .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+    std::fs::write(&provenance_path, bytes)
+        .map_err(CliError::io(format!("write {}", provenance_path.display())))?;
+    println!(
+        "incoming {}/{} sha256 {sha256}",
+        dir.display(),
+        component.name
+    );
+    Ok(())
+}
+
+/// Counts the archive's exact bytes as `tar` writes them.
+struct Hashing<'a> {
+    out: &'a mut std::fs::File,
+    hasher: &'a mut Sha256,
+}
+
+impl std::io::Write for Hashing<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.out.write(buf)?;
+        self.hasher.update(buf.get(..written).unwrap_or_default());
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
 }
 
 fn valid_hash(hash: &str) -> bool {

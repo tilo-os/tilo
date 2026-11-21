@@ -23,6 +23,7 @@ pub mod host;
 pub mod hypervisor;
 pub mod image;
 pub mod imageup;
+pub mod incoming;
 pub mod lan;
 mod local_layer;
 pub mod panel;

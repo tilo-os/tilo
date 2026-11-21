@@ -7,6 +7,7 @@ use tilo_vm_protocol::manifest::Component;
 
 use super::{App, Resolved, daemon_import_receipt};
 use crate::error::CliError;
+use crate::hypervisor::CommandLine;
 use crate::remote::{self, Remote};
 use crate::vmbuild;
 
@@ -115,4 +116,26 @@ impl App {
             ));
         }
     }
+}
+
+/// The local counterpart of [`App::handoff_daemon`]: the imported daemon of
+/// `layer` takes over through this machine's own process, with no SSH, before
+/// the swap it applies.
+pub(super) fn handoff_local(remote: &Remote, layer: &str) -> Result<Remote, CliError> {
+    let command = remote::imported_daemon_command(None, &remote.hello.root, layer)?;
+    let Some((program, rest)) = command.split_first() else {
+        return Err(CliError::InvalidInput(
+            "imported daemon command is empty".into(),
+        ));
+    };
+    let args: Vec<&str> = rest.iter().map(String::as_str).collect();
+    let line = CommandLine::new(program, &args);
+    let mut imported = remote.handoff_here(&line)?;
+    let verified = imported.call(tilo_vm_protocol::LayerVerify { hash: layer.into() })?;
+    if verified.hash != layer {
+        return Err(CliError::InvalidInput(
+            "replacement daemon refused imported layer integrity".into(),
+        ));
+    }
+    Ok(imported)
 }

@@ -5,6 +5,7 @@ use serde_json::json;
 use tilo_vm_protocol::RpcError;
 
 use crate::host::Missing;
+use crate::remote::LOCAL_DAEMON;
 
 pub const LOCAL_BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 
@@ -170,6 +171,10 @@ pub enum CliError {
     },
     #[error("this host is {host} but the VM would be {requested}")]
     ArchMismatch { host: String, requested: String },
+    #[error("--local runs this machine's own tilo-vmd, which manages its /usr, units and accounts, and this is not root (uid {uid})")]
+    LocalNotRoot { uid: u32 },
+    #[error("this machine's tilo-vmd did not answer: {detail}")]
+    LocalDaemon { detail: String },
     #[error("not enough space on {place}: {free} is free, and tilo-vm keeps at least {floor} free")]
     LowDisk {
         place: String,
@@ -434,6 +439,12 @@ impl CliError {
             Self::ArchMismatch { .. } => {
                 "use a VM of the host's architecture, or opt into slow emulation with --emulated".into()
             }
+            Self::LocalNotRoot { .. } => {
+                "run it as root: sudo tilo-vm --local <the same arguments>".into()
+            }
+            Self::LocalDaemon { .. } => format!(
+                "check the daemon this machine installs: {LOCAL_DAEMON} --version   (on a Tilo image it comes with the `vmd` component, os/components.toml)"
+            ),
             Self::LowDisk { .. } => {
                 "free space there (tilo-vm gc --dry-run, then tilo-vm gc)   |   or keep the VM's disk on a filesystem with room: tilo-vm vm create <name> --disk /path/on/another/filesystem.qcow2".into()
             }
@@ -615,6 +626,8 @@ impl CliError {
             Self::Unreachable { .. }
             | Self::DaemonMissing { .. }
             | Self::ProtocolMismatch { .. }
+            | Self::LocalNotRoot { .. }
+            | Self::LocalDaemon { .. }
             | Self::ToolMissing { .. }
             | Self::ForgeAuth { .. }
             | Self::CommandFailed { .. }
@@ -804,6 +817,10 @@ mod tests {
             CliError::ArchMismatch {
                 host: "x86_64".into(),
                 requested: "aarch64".into(),
+            },
+            CliError::LocalNotRoot { uid: 1000 },
+            CliError::LocalDaemon {
+                detail: "exit 1: no state root".into(),
             },
             CliError::LowDisk {
                 place: "VM".into(),
@@ -1069,6 +1086,8 @@ mod tests {
                 | CliError::BootComponent { .. }
                 | CliError::ScopeMismatch { .. }
                 | CliError::ArchMismatch { .. }
+                | CliError::LocalNotRoot { .. }
+                | CliError::LocalDaemon { .. }
                 | CliError::LowDisk { .. }
                 | CliError::RawWrite { .. }
                 | CliError::InvalidSource(_)

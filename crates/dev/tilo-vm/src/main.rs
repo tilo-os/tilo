@@ -25,6 +25,7 @@ fn main() -> ExitCode {
     let keep_receipt = writes_receipt(cli.command.as_ref());
     let mut app = App {
         json: json_mode,
+        local: cli.local,
         target: cli.target,
         runner: SystemRunner {
             cwd: worktree.as_ref().map(|w| w.root.clone()),

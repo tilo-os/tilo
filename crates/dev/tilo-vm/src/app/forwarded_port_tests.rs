@@ -9,6 +9,7 @@ use crate::host::tests::{LIBVIRT, linux};
 fn app(dir: &Path) -> App {
     App {
         json: false,
+        local: false,
         target: None,
         worktree: None,
         registry_path: dir.join("vms.toml"),
