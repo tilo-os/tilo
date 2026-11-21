@@ -1125,7 +1125,7 @@ impl<'a> Device<'a> for TextDevice {
                 )]
                 let step = loose.width() / count as f32;
                 for (i, ch) in text.chars().enumerate() {
-                    #[allow(clippy::cast_precision_loss, reason = "as above")]
+                    #[allow(clippy::cast_precision_loss, reason = "the same handful of characters the line above counts")]
                     let x = loose.x0 + step * i as f32;
                     let part =
                         Rect::from_corners(Point::new(x, loose.y0), Point::new(x + step, loose.y1));
