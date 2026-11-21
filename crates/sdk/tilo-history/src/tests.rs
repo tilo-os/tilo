@@ -736,3 +736,26 @@ fn an_app_message_wins_and_another_apps_words_are_not_borrowed() {
         "Wrote more in “Spring plans”"
     );
 }
+
+#[test]
+fn a_record_the_reader_holds_itself_reads_in_its_declared_words() {
+    // The session holds the workspace's agents itself: no app publishes them, and the change
+    // records whichever app id applied it.
+    let mut labels = ActionLabels::default();
+    labels.learn_declared(
+        "tilo.workspace.agent",
+        [("create_agent", "Create agent", Some("added the agent"))],
+    );
+    let reader = Reader::new("en-US").with_labels(&labels);
+    for app in ["org.tilo.Tilo", "so.tilo.assistant"] {
+        let made = ActionContext::for_resource("tilo.workspace.agent", "tilo.workspace.agent", "Agents")
+            .with_described(
+                Described::new(Did::verb(
+                    ActionKey::new(app, "tilo.workspace.agent", "create-agent"),
+                    [],
+                ))
+                .on("agent-1", "Claude Code"),
+            );
+        assert_eq!(reader.sentence(&made), "Added the agent “Claude Code”", "{app}");
+    }
+}

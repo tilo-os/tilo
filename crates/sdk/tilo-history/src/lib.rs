@@ -149,6 +149,18 @@ impl ActionLabels {
         }
     }
 
+    /// Remember the words of the actions a record of `kind` declares (id, label, what it did)
+    /// that the reader holds itself rather than hears from an app: the session's own records.
+    pub fn learn_declared<'a>(
+        &mut self,
+        kind: &str,
+        declared: impl IntoIterator<Item = (&'a str, &'a str, Option<&'a str>)>,
+    ) {
+        for (id, label, did) in declared {
+            self.know("", kind, id, label, did);
+        }
+    }
+
     fn know(&mut self, app: &str, kind: &str, by: &str, label: &str, did: Option<&str>) {
         // A change says a native verb by its declared name (`append_to_note`), and a surface may
         // publish it spelled for callers (`append-to-note`): one action either way.

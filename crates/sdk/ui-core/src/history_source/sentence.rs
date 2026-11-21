@@ -388,6 +388,20 @@ pub fn learn_published(app: &str, actions: &[tilo_actions::published::PublishedA
     ACTION_LABELS.with(|labels| labels.borrow_mut().learn_published(app, actions));
 }
 
+/// Remember the words of the actions the record type `R` declares, for a reader that holds such
+/// records itself (the session's workspace agents): each action's label and what it did.
+pub fn learn_declared<R: tilo_resource::Resource>() {
+    let declared = R::declarations();
+    ACTION_LABELS.with(|labels| {
+        labels.borrow_mut().learn_declared(
+            R::KIND,
+            declared
+                .iter()
+                .map(|decl| (decl.id, decl.label.as_str(), decl.did.as_deref())),
+        );
+    });
+}
+
 /// Remember the titles of the fields `shape` lays out (and those of its
 /// nested records and items), so entries name a field by its title.
 pub fn learn_field_titles(shape: &tilo_resource::Shape) {

@@ -246,6 +246,8 @@ impl Inner {
             return;
         }
         learned.set(Some(generation));
+        // The workspace's agents are a record the session holds, published by no app's surface.
+        ui::history_source::sentence::learn_declared::<tilo_app::tilo_workspace_agent::WorkspaceAgents>();
         // A live surface is listed before the one kept from before its app closed: learned last,
         // its words are the ones kept.
         for surface in broker.published_surfaces().iter().rev() {
