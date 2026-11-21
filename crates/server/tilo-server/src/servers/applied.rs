@@ -33,9 +33,6 @@ use tilo_workspace_service::workspaces::{Offer, ResourceWrite, Workspaces};
 use super::{SERVERS, admin_workspace_id, device, device_id, policy, read};
 use tilo_lock::MutexRecover as _;
 
-/// How often this device looks for an operation asked of it, besides the
-/// changes its write watch hears.
-const PENDING_TICK: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Where a server writes what its entry asks of the machine, for the root
 /// helpers to apply.
@@ -228,9 +225,6 @@ pub fn follow(
                     Err(error) => Err(error),
                 },
                 change = governance.recv() => change.map(|workspace| workspace == admin),
-                // What is asked of this server may land in a copy the write
-                // watch does not hear, so it is looked for now and then too.
-                () = tokio::time::sleep(PENDING_TICK) => Ok(false),
             };
             match ours {
                 Ok(true) => apply_now(&workspaces, &requests, endpoint.as_ref()).await,

@@ -347,6 +347,10 @@ impl Workspaces {
     ) {
         let (mut changed, mut again) = (false, false);
         let mut windows = Vec::new();
+        // The documents this replay changed: whoever follows them is told, as a write taken in
+        // as it is made tells them, since a replay runs again whenever something a write waited
+        // for lands, long after those followers first read the copy.
+        let mut written = std::collections::BTreeSet::new();
         for retained in retained {
             let own = retained.author == self.inner.host.cert.device_public_key;
             let message = match neighbour_wire::NeighbourMsg::decode(&retained.body) {
@@ -408,6 +412,15 @@ impl Workspaces {
             } = followed;
             changed |= took;
             again |= replay_wanted;
+            if took
+                && let neighbour_wire::NeighbourMsg::AppDocument {
+                    app_id,
+                    document_id,
+                    ..
+                } = &message
+            {
+                written.insert((app_id.clone(), document_id.clone()));
+            }
             if let Some(reason) = refused {
                 let filed = workspace.refused(
                     &self.inner.host.cert,
@@ -422,6 +435,9 @@ impl Workspaces {
         }
         if changed {
             workspace.keep_followed();
+        }
+        for (app, record) in written {
+            self.note_document_write(workspace.workspace(), &app, &record);
         }
         self.recall_windows(workspace, windows).await;
         // What a write let go waited for landed in this replay: the server's
