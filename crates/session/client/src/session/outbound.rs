@@ -122,7 +122,7 @@ impl Task {
     /// writes; only writes the workspace refuses for good are let go, and a barrier waiting on
     /// them completes with the refusal: a write let go is never answered as saved.
     pub(super) async fn commit_held(&mut self) {
-        self.commit_signed_waiting().await;
+        self.commit_signed_waiting();
         if !std::mem::take(&mut self.outbound_due) {
             return;
         }
@@ -193,7 +193,7 @@ impl Task {
     /// already, as its outgoing ownership: ownership carries it as it is and its host answers
     /// for it, as for any write of this device's. A publication that has to wait (its record is
     /// not here yet, or this device has not signed it) is kept and tried again.
-    pub(super) async fn publish_signed(
+    pub(super) fn publish_signed(
         &mut self,
         route: &DocumentRoute,
         op: collab_types::SignedOp,
@@ -224,11 +224,11 @@ impl Task {
                 readers: None,
             },
         };
-        self.publish_request(route, workspace, request).await;
+        self.publish_request(route, workspace, request);
     }
 
     /// Commit the signed writes still waiting for what they need, in the turn.
-    pub(super) async fn commit_signed_waiting(&mut self) {
+    pub(super) fn commit_signed_waiting(&mut self) {
         if self.pending_signed.is_empty() {
             return;
         }
@@ -238,14 +238,14 @@ impl Task {
                 continue;
             };
             for request in requests {
-                self.publish_request(&route, workspace, request).await;
+                self.publish_request(&route, workspace, request);
             }
         }
     }
 
     /// Take `request` into this device's ownership: the op as it was signed, once, answered for
     /// by the host as any write of this device's is.
-    async fn publish_request(
+    fn publish_request(
         &mut self,
         route: &DocumentRoute,
         workspace: tilo_desktop_model::WorkspaceId,

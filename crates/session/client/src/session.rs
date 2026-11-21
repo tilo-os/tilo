@@ -324,16 +324,7 @@ fn session_task(
             open_keys(&replicas, &key_state, vault, &signer, &checks)
         })
     });
-    let engine = Arc::new(crate::engine::Engine::holding(
-        replicas.owner(),
-        Arc::default(),
-        tilo_identity::identity_store::DeviceIdentity::kept(
-            config.cert.clone(),
-            Arc::clone(&signer),
-        ),
-        Arc::new(crate::membership_check::SessionMembership),
-        Arc::new(crate::engine::Founders::default()),
-    ));
+    let engine = session_engine(&config, &signer, &replicas);
     engine.keys().set(Some(workspace_keys.clone()));
     engine.held_writes().lock().extend(key_state.held());
     #[cfg(feature = "toolkit")]
@@ -405,6 +396,25 @@ fn session_task(
     // The link's own queue is there before the session says anything.
     let link = Link::new(Arc::new(Commands(commands)), engine, reports);
     (task, link, receiver)
+}
+
+/// The engine a session writes its workspaces through: this device's identity, kept beside
+/// the signer, with the membership check and founders a workspace's session runs.
+fn session_engine(
+    config: &PeerConfig,
+    signer: &Arc<dyn DeviceSigner>,
+    replicas: &crate::replica::Replicas,
+) -> Arc<crate::engine::Engine> {
+    Arc::new(crate::engine::Engine::holding(
+        replicas.owner(),
+        Arc::default(),
+        tilo_identity::identity_store::DeviceIdentity::kept(
+            config.cert.clone(),
+            Arc::clone(signer),
+        ),
+        Arc::new(crate::membership_check::SessionMembership),
+        Arc::new(crate::engine::Founders::default()),
+    ))
 }
 
 /// The session's own sender: what its links say the client's commands through.
@@ -1726,7 +1736,7 @@ impl Task {
             }
             // Its holder signed it and this replica admitted it: ownership takes it as it is.
             Command::Client(Cmd::PublishSigned(route, op)) => {
-                self.publish_signed(&route, *op).await;
+                self.publish_signed(&route, *op);
                 true
             }
             Command::Client(Cmd::Barrier(done)) => {
