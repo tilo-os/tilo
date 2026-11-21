@@ -241,7 +241,7 @@ fn answer_to_bo() -> serde_json::Value {
 
 /// Every device of hers goes off: the workspace's account and its mail are the server's to keep
 /// from here until she comes back.
-fn every_device_of_hers_goes_off(hosted: &mut Hosted) {
+fn every_device_of_hers_goes_off(hosted: &Hosted) {
     hosted.page.peer.close();
 }
 
@@ -691,7 +691,7 @@ async fn with_every_device_off_the_assistant_reads_arrived_mail_drafts_and_asks_
     // The account: signed in to with a password the assistant never saw.
     let reference = the_password_goes_from_the_persons_device_to_their_vault(&mut hosted).await;
     the_first_use_asks_and_always_signs_in(&hosted, &reference).await;
-    every_device_of_hers_goes_off(&mut hosted);
+    every_device_of_hers_goes_off(&hosted);
 
     // Something on the server listens for the workspace's mail, as an event with a mail trigger
     // does.
