@@ -101,9 +101,10 @@ fn a_member_whose_part_does_not_let_them_invite_is_refused() {
 }
 
 /// The link a device hands out right after its session starts names the server it is reached
-/// through: an address signed before its endpoint reached one names only the network the device
-/// stands in, and reaches nobody the link is given to. Nothing else is in the workspace, so making
-/// the link is what makes the device reachable at all.
+/// through: the compact link is read off the signed invitation as it is handed over, so an
+/// invitation signed before its endpoint reached a relay names only the network the device stands
+/// in, and reaches nobody the link is given to. Nothing else is in the workspace, so making the
+/// link is what makes the device reachable at all.
 #[test]
 fn a_link_made_right_after_start_names_the_relay_the_device_is_reached_through() {
     let ada = Person::new("Ada");
@@ -126,30 +127,26 @@ fn a_link_made_right_after_start_names_the_relay_the_device_is_reached_through()
         .expect("the workspace the laptop made is in front");
     laptop.wait_holding(&workspace);
     let link = shared_invitation(&laptop, "editor", ada.public);
-    let join = tilo_workspace_join::decode_and_verify_invitation_text(
-        &link,
-        None,
-        &tilo_user_identity::RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap_or_else(|error| {
+    // The link is the compact one a device opens: it names the workspace's invitation, the key
+    // that resolves it and where to dial, so a device handed it fetches the signed invitation
+    // from the holder that made it.
+    let locator = tilo_workspace_join::native::InvitationLink::parse(&link).unwrap_or_else(|| {
         panic!(
-            "{}'s link is an invitation: {error}\n{}",
+            "{}'s link is a native invitation link: {link:?}\n{}",
             laptop.label,
             laptop.diagnostic()
         )
     });
-    let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
-        &join.grant().transport[0],
-    )
-    .expect("the invitation names its host's address");
+    assert_eq!(
+        locator.reference.workspace.to_string(),
+        workspace,
+        "the link names the workspace the laptop made: {link:?}"
+    );
     let server = test_server::loopback_url();
-    assert!(
-        hint.endpoint_addr
-            .relay_urls()
-            .any(|url| url.as_str() == server),
-        "the link names the relay this device is reached through ({server}): {:?}\n{}",
-        hint.endpoint_addr,
+    assert_eq!(
+        locator.relay.as_deref(),
+        Some(server.as_str()),
+        "the link names the relay this device is reached through ({server}): {link:?}\n{}",
         laptop.diagnostic()
     );
 }
