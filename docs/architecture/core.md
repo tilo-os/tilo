@@ -558,8 +558,8 @@ workspace vault, despite their names.
   members is a reader rule on a record, never a private store.
 - **What is a person's alone** (their keys, devices, appearance, the list of
   their workspaces, their servers) lives in the person's own workspace,
-  whose only member is them, like the Servers workspace does today. There is
-  no second kind of store for it.
+  where no other person is a member (their agents may be, acting for
+  them). There is no second kind of store for it.
 
 ### What goes
 
