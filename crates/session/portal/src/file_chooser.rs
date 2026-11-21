@@ -162,11 +162,6 @@ impl FileChooser {
             .portal
             .authenticate(header, handle, app_id, Some(parent_window))
             .await?;
-        if (question.save || question.writable_directory)
-            && lockdown::current_policy().disable_save_to_disk
-        {
-            return Err(Ended::Cancelled);
-        }
         let path = handle.as_str();
         self.portal
             .requests
@@ -193,40 +188,10 @@ pub async fn pick(
     question: FileChooserQuestion,
 ) -> Outcome {
     let writable_directory = question.directory && question.writable_directory;
-    // What the choice gives the app, and how the frontend words the answer:
-    // one source, so an answer can never widen what the store was told.
-    let kind = if question.save {
-        tilo_documents::Kind::Save
-    } else if question.directory {
-        tilo_documents::Kind::Folder {
-            write: writable_directory,
-        }
-    } else {
-        tilo_documents::Kind::Read
-    };
-    let writable = kind.writes();
-    let asked = portal.questions.ask(Question {
-        handle: question_handle(path),
-        kind: FILE_CHOOSER_QUESTION.into(),
-        app_id: Some(caller.app_id.clone()),
-        label: caller.app_id.clone(),
-        details: serde_json::to_value(&question).unwrap_or_default(),
-    });
-    let chosen = asked.await.ok_or(Ended::Cancelled)?;
-    let paths = chosen
-        .uris
-        .iter()
-        .map(|uri| path_of_uri(uri))
-        .collect::<Option<Vec<_>>>()
-        .or_fail()?;
-    if paths.len() > 1 && !question.multiple && !question.save {
-        return Err(Ended::Failed);
-    }
-    if writable_directory && (paths.len() != 1 || !paths.iter().all(|path| path.is_dir())) {
-        return Err(Ended::Failed);
-    }
+    let kind = kind_of(&question);
+    let paths = choose(&portal.questions, caller, question_handle(path), &question).await?;
     let exports = doc_store::exports(portal.documents(), caller, &paths, kind);
-    let mut results = paths_to_open_response(Some(exports), writable)?;
+    let mut results = paths_to_open_response(Some(exports), kind.writes())?;
     if writable_directory {
         let choices = vec![(
             tilo_dialogs::portal::WRITABLE_DIRECTORY_CHOICE.to_owned(),
@@ -237,6 +202,68 @@ pub async fn pick(
         }
     }
     Ok(results)
+}
+
+/// What a choice answering `question` gives the app: what the documents store is told, and how
+/// the frontend words the answer, from one source, so an answer can never widen what the store
+/// was told.
+#[must_use]
+pub const fn kind_of(question: &FileChooserQuestion) -> tilo_documents::Kind {
+    if question.save {
+        tilo_documents::Kind::Save
+    } else if question.directory {
+        tilo_documents::Kind::Folder {
+            write: question.writable_directory,
+        }
+    } else {
+        tilo_documents::Kind::Read
+    }
+}
+
+/// Ask the person `question` for `caller` in the session's file chooser, under the question
+/// handle `handle`, and answer the host paths they chose: what every way an app asks for a file
+/// goes through, the desktop portal and the shell's own chooser service alike. Nothing is
+/// exported here; the caller hands the choice on ([`doc_store::exports`]) or reads it itself.
+///
+/// # Errors
+/// [`Ended::Cancelled`] when the person chose nothing or the lockdown forbids saving, and
+/// [`Ended::Failed`] for an answer that does not fit the question.
+pub async fn choose(
+    questions: &tilo_service::Questions,
+    caller: &PortalCaller,
+    handle: String,
+    question: &FileChooserQuestion,
+) -> Result<Vec<PathBuf>, Ended> {
+    if (question.save || question.writable_directory)
+        && lockdown::current_policy().disable_save_to_disk
+    {
+        return Err(Ended::Cancelled);
+    }
+    let writable_directory = question.directory && question.writable_directory;
+    let asked = questions.ask(Question {
+        handle,
+        kind: FILE_CHOOSER_QUESTION.into(),
+        app_id: Some(caller.app_id.clone()),
+        label: caller.app_id.clone(),
+        details: serde_json::to_value(question).unwrap_or_default(),
+    });
+    let chosen = asked.await.ok_or(Ended::Cancelled)?;
+    let paths = chosen
+        .uris
+        .iter()
+        .map(|uri| path_of_uri(uri))
+        .collect::<Option<Vec<_>>>()
+        .or_fail()?;
+    if paths.is_empty() {
+        return Err(Ended::Cancelled);
+    }
+    if paths.len() > 1 && !question.multiple && !question.save {
+        return Err(Ended::Failed);
+    }
+    if writable_directory && (paths.len() != 1 || !paths.iter().all(|path| path.is_dir())) {
+        return Err(Ended::Failed);
+    }
+    Ok(paths)
 }
 
 /// The local path a chosen `file://` URI names; `None` for anything else.
