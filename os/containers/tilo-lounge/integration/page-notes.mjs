@@ -209,6 +209,27 @@ try {
   const title = `document.querySelector('#tilo-page textarea')`;
 
   await arrive({label: 'first'});
+
+  // The workspace's own page, before any app: who is in the workspace, and who
+  // of them is here now.
+  await openPage('home', '');
+  await look('00-home');
+  const people = JSON.parse(await tab.evaluate(`(() => {
+    const section = document.querySelector('#tilo-page .tilo-people');
+    return JSON.stringify({
+      count: section?.querySelector('.tilo-people-count')?.textContent ?? null,
+      rows: [...(section?.querySelectorAll('.tilo-person') ?? [])].map(row => ({
+        name: row.querySelector('.tilo-person-name')?.textContent ?? '',
+        role: row.querySelector('.tilo-person-kind')?.textContent ?? '',
+        present: row.hasAttribute('data-present'),
+      })),
+    });
+  })()`));
+  step('00-home people', people);
+  if (!people.rows.length) problems.push('the workspace page lists no people');
+  if (!people.rows.some(row => row.present)) problems.push('the workspace page shows nobody as here');
+  if (!/\d+ here/.test(people.count ?? '')) problems.push(`the workspace page counts nobody here (${JSON.stringify(people.count)})`);
+
   await openPage('first open');
   await look('01-notes-wide');
 
