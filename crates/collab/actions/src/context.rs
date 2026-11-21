@@ -165,8 +165,8 @@ pub const COMPENSATION_BUDGET: usize = 128 * 1024;
 /// The most a change documents whole of the action it records, its payload inline: a larger
 /// action keeps its long parts as content ([`crate::content`]) and names them instead. Every
 /// device a change reaches reads that entry to verify the change, so what one change carries
-/// of an action stays small: 256 KiB of payload is a few hundred items of an import, or a page
-/// of pasted pictures.
+/// of an action stays small: 256 KiB of payload is a few hundred items of an import, or a long
+/// note's body.
 pub const WHOLE_ACTION_BUDGET: usize = 256 * 1024;
 
 /// The most an entry's [`action`](ActionContext::action) may take, its large parts kept as
