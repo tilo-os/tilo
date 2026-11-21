@@ -1,4 +1,3 @@
-use ui::widget::document_line::DocumentLine as _;
 use ui::widget::{EventCtx, Widget};
 use winit::event::{KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
