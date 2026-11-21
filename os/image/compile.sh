@@ -109,7 +109,10 @@ if [[ ${1:-} == --apps ]]; then
          tilo-runtime-bundle tilo-app-package tilo-install tilo-cli-shim)
   [[ ! -f $from/runtime-engines ]] || mapfile -t -O "${#files[@]}" files < "$from/runtime-engines"
   files+=(apps language-packs)
-  for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps app-models prebuilt-apps prebuilt-runtime fonts app-plan.json; do
+  # The tilolang packages the app plan names are built with `tilolang` and run by the
+  # `tilolang-process` host the packing bakes into their runtime bundle.
+  for f in "${files[@]}" runtime-bundle-publisher.hex thin-apps app-models prebuilt-apps prebuilt-runtime fonts app-plan.json \
+      tilolang tilolang-process; do
     [[ -e $from/$f ]] || continue
     cp -a "$from/$f" "$out/"
   done
