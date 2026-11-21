@@ -136,18 +136,15 @@ fn a_scaffolded_manifest_carries_the_offers_its_code_publishes() {
         let mut offer = serde_json::Map::new();
         let (resource, action, label) = match template {
             Template::Starter => ("so.tilo.notes.greeting", "clear", "Forget the name"),
-            Template::Document => ("so.tilo.notes.document", "clear", "Clear"),
-            Template::Collection => ("so.tilo.notes.items", "add", "Add"),
-            Template::Graph => ("so.tilo.notes.graph-project", "create", "Create"),
+            Template::Document => ("so.tilo.notes.document", "clear", "Erase the document"),
+            Template::Collection => ("so.tilo.notes.items", "add", "Add an item"),
+            Template::Graph => ("so.tilo.notes.graph-project", "create", "Create a project"),
         };
         offer.insert("resource".into(), resource.into());
         offer.insert("action".into(), action.into());
         offer.insert("label".into(), label.into());
         offer.insert("kind".into(), "undoable".into());
         offer.insert("operation".into(), "document".into());
-        if template == Template::Document {
-            offer.insert("confirm".into(), true.into());
-        }
         if template == Template::Collection {
             offer.insert("asks".into(), "title".into());
         }

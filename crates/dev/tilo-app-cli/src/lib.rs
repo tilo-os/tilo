@@ -9763,8 +9763,8 @@ fn app_manifest(spec: &AppSpec) -> Result<String> {
 /// The actions the template's code offers a person while its app is closed, as its manifest's
 /// `[[offers]]`: what `tilo-app surface` writes for the app it scaffolds. A verb the view
 /// publishes that reaches people, takes nothing or one line they write, and acts on nothing
-/// chosen; a destructive one asks first. Kept beside the template so a freshly scaffolded app
-/// checks clean before it is built.
+/// chosen. Kept beside the template so a freshly scaffolded app checks clean before it is
+/// built.
 fn scaffold_offers(spec: &AppSpec) -> String {
     const HEADER: &str = "# What the app offers a person while it is closed: written by `tilo-app surface` from\n\
                           # what its code publishes. Invoking one opens the app and invokes it there.\n";
@@ -9772,9 +9772,9 @@ fn scaffold_offers(spec: &AppSpec) -> String {
     // names that verb while it is closed, and what it needs beyond that.
     let (resource, action, label, extra) = match spec.template {
         Template::Starter => (".greeting", "clear", "Forget the name", ""),
-        Template::Document => (".document", "clear", "Clear", "confirm = true\n"),
-        Template::Collection => (".items", "add", "Add", "asks = \"title\"\n"),
-        Template::Graph => (".graph-project", "create", "Create", ""),
+        Template::Document => (".document", "clear", "Erase the document", ""),
+        Template::Collection => (".items", "add", "Add an item", "asks = \"title\"\n"),
+        Template::Graph => (".graph-project", "create", "Create a project", ""),
     };
     format!(
         "\n{HEADER}\n[[offers]]\nresource = {resource:?}\naction = {action:?}\nlabel = {label:?}\noperation = \"document\"\n{extra}",
