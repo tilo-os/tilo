@@ -16,6 +16,7 @@ use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::chart_legend::SeriesToggles;
+use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
 use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
@@ -854,6 +855,10 @@ impl ChartStyle {
     }
 }
 
+/// How far a sparkline's readout card may stand outside its line: enough for the card beside
+/// the point, since a line this small cannot hold one.
+const SPARK_READOUT_REACH: f64 = 120.0;
+
 pub struct Sparkline {
     data: Vec<f32>,
     color: Option<Color>,
@@ -864,6 +869,10 @@ pub struct Sparkline {
     rect: Rect,
     pub(crate) label: Option<String>,
     pub(crate) tone: Option<crate::widget::Tone>,
+    /// What its readings count, written after them in the hover readout ("/s", "h").
+    unit: String,
+    /// What the pointer reads: the nearest sample.
+    inspection: ChartInspection<usize>,
 
     dirty: bool,
 }
@@ -894,6 +903,8 @@ impl Sparkline {
             rect: Rect::ZERO,
             label: None,
             tone: None,
+            unit: String::new(),
+            inspection: ChartInspection::default(),
         }
     }
 
@@ -934,6 +945,83 @@ impl Sparkline {
         self.width = width;
         self.height = height;
         self
+    }
+
+    /// What its readings count, written after them in the hover readout: a sign such as `/s` against
+    /// the number, or a word after it.
+    #[must_use]
+    pub fn with_unit(mut self, unit: impl Into<String>) -> Self {
+        self.unit = unit.into();
+        self
+    }
+
+    /// The sample nearest to `x`, on the line's own spacing.
+    fn nearest(&self, x: f64) -> Option<usize> {
+        let len = self.data.len();
+        if len == 0 || self.rect.width() <= 0.0 {
+            return None;
+        }
+        if len == 1 {
+            return Some(0);
+        }
+        let step = self.rect.width() / (f64_of_usize(len) - 1.0);
+        let at = ((x - self.rect.x0) / step).round();
+        Some(crate::num::usize_of_f64(at).min(len - 1))
+    }
+
+    /// Where the sample `at` stands, as the line is drawn.
+    fn point_at(&self, at: usize) -> Option<Point> {
+        Sparkline::points(self.rect, &self.data, self.range())
+            .get(at)
+            .copied()
+    }
+
+    fn range(&self) -> TrendRange {
+        TrendRange::up_to(f64::from(self.ceiling()))
+    }
+
+    /// The sample nearest the pointer anywhere over the line: what hovering reads.
+    fn hit(&self, point: Point) -> Option<usize> {
+        (self.rect.contains(point))
+            .then(|| self.nearest(point.x))
+            .flatten()
+    }
+
+    /// What the line reads at the inspected sample: a guide through it, a dot on it and a card
+    /// naming what the trend is of and what the sample is, in its unit.
+    fn readout(&self, theme: &Theme) -> Option<Readout> {
+        let at = self.inspection.hovered?;
+        let point = self.point_at(at)?;
+        let value = *self.data.get(at)?;
+        let colour = self.painted_colour(theme);
+        let bounds = self.rect.inflate(SPARK_READOUT_REACH, SPARK_READOUT_REACH);
+        let mut readout = Readout::new(self.label.clone().unwrap_or_default(), point, bounds);
+        readout
+            .mark(Highlight::Guide {
+                x: point.x,
+                y0: self.rect.y0,
+                y1: self.rect.y1,
+            })
+            .mark(Highlight::Dot {
+                at: point,
+                color: colour,
+            })
+            .value(
+                None,
+                "",
+                crate::widget::chart_readout::number(f64::from(value), &self.unit),
+                true,
+            );
+        Some(readout)
+    }
+
+    /// What of the inspection the picture itself shows: the sample under the pointer, so the
+    /// guide and the dot are drawn again as it moves.
+    fn shown_inspection(&self) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        self.inspection.hovered.hash(&mut hash);
+        hash.finish()
     }
 
     pub fn set_data(&mut self, data: Vec<f32>) {
@@ -996,10 +1084,21 @@ impl Sparkline {
 }
 
 impl Widget for Sparkline {
-    /// Its line: a picture, named by what it traces.
+    /// Its line: a picture, named by what it traces, under what it reads at the sample the
+    /// pointer is on as the page's own elements.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("span");
-        cx.picture();
+        let theme = cx.theme();
+        let shown = (
+            self.shown_inspection(),
+            cx.semantics()
+                .map(|node| serde_json::to_string(node).unwrap_or_default())
+                .unwrap_or_default(),
+        );
+        cx.node().painted_of(&shown);
+        if let Some(readout) = self.readout(theme) {
+            readout.compose(cx.node(), theme);
+        }
     }
 
     crate::described!();
@@ -1024,7 +1123,7 @@ impl Widget for Sparkline {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        tr: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
@@ -1034,10 +1133,24 @@ impl Widget for Sparkline {
             transform,
             self.rect,
             &self.data,
-            TrendRange::up_to(f64::from(self.ceiling())),
+            self.range(),
             self.painted_colour(theme),
             &self.style,
         );
+        if !crate::widget::chart_readout::readouts_left_out()
+            && let Some(readout) = self.readout(theme)
+        {
+            readout.paint(scene, transform, tr, theme);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        self.dirty = true;
+        handle_chart_event(self, event, ctx);
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1062,6 +1175,30 @@ impl Widget for Sparkline {
     }
 }
 
+impl InteractiveChart for Sparkline {
+    type Hover = usize;
+
+    fn inspection(&mut self) -> &mut ChartInspection<usize> {
+        &mut self.inspection
+    }
+
+    fn keyboard_items(&self) -> Vec<usize> {
+        (0..self.data.len()).collect()
+    }
+
+    fn anchor(&self, item: &usize) -> Option<Point> {
+        self.point_at(*item)
+    }
+
+    fn update_hover(&mut self) {
+        self.inspection.hovered = self.hit(self.inspection.pointer);
+    }
+
+    fn activate_hovered(&mut self) -> bool {
+        false
+    }
+}
+
 mod chart_component;
 mod sparkline_component;
 pub use chart_component::{ChartLine, ChartProps, series_description};
@@ -1078,6 +1215,64 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count()
+    }
+
+    /// A sparkline reads the sample nearest the pointer with the same card a chart does: a guide
+    /// through it, a dot on it and the value in the line's own unit; off the line there is
+    /// nothing.
+    #[test]
+    fn a_sparkline_reads_the_nearest_sample_under_the_pointer() {
+        use crate::widget::chart_navigation::InteractiveChart as _;
+        let theme = Theme::light();
+        let mut spark = Sparkline::accented(vec![3.0, 5.0, 4.0, 8.0, 9.0]).with_unit("/s");
+        spark.label = Some("Requests per second".to_owned());
+        spark.rect = Rect::new(0.0, 0.0, 64.0, 20.0);
+        // Just past the middle sample of five: the middle one, at x = 32.
+        let point = Point::new(34.0, 10.0);
+        assert_eq!(spark.hit(point), Some(2));
+        spark.inspection.pointer = point;
+        spark.update_hover();
+        let readout = spark.readout(&theme).expect("a readout");
+        assert_eq!(readout.words(), "Requests per second: 4/s");
+        assert!(matches!(readout.marks[0], Highlight::Guide { x, .. } if (x - 32.0).abs() < 1e-9));
+        assert!(matches!(readout.marks[1], Highlight::Dot { .. }));
+        spark.inspection.pointer = Point::new(200.0, 10.0);
+        spark.update_hover();
+        assert!(
+            spark.readout(&theme).is_none(),
+            "off the line reads nothing"
+        );
+    }
+
+    /// Moving the pointer over a sparkline reads it without solving the layout again: the tree is
+    /// retained, the readout composed as the page's own elements, and no layout pass.
+    #[test]
+    fn a_sparkline_hover_solves_no_layout() {
+        let spark = Sparkline::accented(vec![1.0, 4.0, 2.0, 5.0]);
+        let mut frame = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(spark),
+            (200, 120),
+            Theme::light(),
+        );
+        frame.relayout();
+        let _ = crate::profiling::layout_counts::take();
+        let rect = frame.composition().root.rect;
+        frame.hover_at(rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0);
+        frame.relayout();
+        let solved = crate::profiling::layout_counts::take();
+        assert_eq!(solved.solves, 0, "a hover solves no layout: {solved:?}");
+        assert!(!frame.last_relayout().rebuilt, "the tree is retained");
+        let composed = frame.composition();
+        assert!(
+            composed
+                .root
+                .children
+                .iter()
+                .any(|part| part.widget == "ChartReadout"),
+            "the readout is the page's own elements: {:?}",
+            composed.root.children
+        );
     }
 
     /// `chart` placed in `rect` as the layout places it, and its marks painted.

@@ -977,6 +977,13 @@
               }
             }
           }
+        },
+        {
+          "name": "unit",
+          "doc": "What its readings count, written after them in the hover readout (\"/s\", \"h\").",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {

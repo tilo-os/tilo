@@ -126,12 +126,14 @@ view feedback(g: Gallery) {
                     [3.0, 5.0, 4.0, 8.0, 6.0, 9.0],
                     label: "Requests per second",
                     tone: .success,
+                    unit: .some("/s"),
                 )
                 ui.Sparkline(
                     [9.0, 6.0, 8.0, 4.0, 5.0, 3.0],
                     label: "Errors per minute",
                     smooth: true,
                     filled: false,
+                    unit: .some("/min"),
                 )
             }
         }

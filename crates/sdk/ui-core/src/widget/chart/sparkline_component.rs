@@ -27,6 +27,8 @@ pub struct SparklineProps {
     pub leading_dot: Option<f64>,
     /// What its line means, when it means something: a status, a person.
     pub tone: Option<Tone>,
+    /// What its readings count, written after them in the hover readout ("/s", "h").
+    pub unit: Option<String>,
 }
 
 impl Described for Sparkline {
@@ -45,6 +47,7 @@ impl Described for Sparkline {
             smooth,
             leading_dot,
             tone,
+            unit,
         } = props;
         let data: Vec<f32> = samples.iter().map(|sample| *sample as f32).collect();
         let mut spark = Self::accented(data);
@@ -54,6 +57,7 @@ impl Described for Sparkline {
         }
         spark.label = label;
         spark.tone = tone;
+        spark.unit = unit.unwrap_or_default();
         spark
     }
 
@@ -73,6 +77,7 @@ impl Described for Sparkline {
         );
         self.label = props.label;
         self.tone = props.tone;
+        self.unit = props.unit.unwrap_or_default();
         true
     }
 }

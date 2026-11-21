@@ -59,6 +59,11 @@ surface and one behaviour:
 Hover, touch, keyboard stepping, focus, activation, legend toggles and the
 accessibility tree live in `Plot`, so they behave the same in every type.
 
+The standalone `Sparkline` widget answers the pointer the same way: it snaps to
+the nearest sample, draws the guide and the dot, and reads the value — in its
+`unit` — on the same card, so a trend cell in a table explains itself without a
+chart around it.
+
 ## Interactive gallery
 
 The catalogue is executable example code rather than a static mockup. It
