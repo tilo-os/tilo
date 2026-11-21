@@ -429,3 +429,124 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
         "the document names the item, never its secret"
     );
 }
+
+/// A member names a vault item for the machine before any window made the record: the app's
+/// record is founded so its document has somewhere to stand, the record's declared verbs are
+/// offered there, and the document the server's machine secrets read names the item.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_names_a_vault_item_before_any_window_made_the_record() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server_device = enrol(&root, "home-server", DeviceCapabilities::member());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
+        &root,
+        &server_device,
+        state.path(),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let mut page = Browser::open(&hosted, &browser_device, &server_device).await;
+    // The person keeps the token in the vault from their browser, which answers its reference.
+    let kept = page
+        .invoke_on(
+            person_vault::PROVIDER,
+            ActionAddress::new(person_vault::RESOURCE, person_vault::ADD),
+            InvokeArgument::Json(
+                json!({"kind": "key", "belongsTo": ["https://api.anthropic.com"], "secret": TOKEN})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .expect("the vault keeps the token")
+        .value
+        .unwrap_or_default();
+    let reference = kept["reference"].as_str().expect("a reference").to_owned();
+    let workspaces = hosted.server.workspaces().unwrap().clone();
+    let route = secrets_route();
+    assert!(
+        workspaces
+            .resource_document(WORKSPACE, ui::apps::TERMINAL, DOCUMENT)
+            .await
+            .unwrap()
+            .is_none(),
+        "nobody made the record yet"
+    );
+    // Its own listing offers what the record declares, its `add-secret` among them; the record's
+    // resources stand under the app's own, which the page lists first.
+    let provider = resource_provider(&route);
+    let top = page
+        .catalogue(CatalogueQuery {
+            provider: Some(provider.clone()),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        top.rows
+            .iter()
+            .any(|row| row.resource.id == "terminal.session"),
+        "the page stands on the app's own record, which publishes the document: {:?}",
+        top.rows
+    );
+    let listed = page
+        .catalogue(CatalogueQuery {
+            provider: Some(provider.clone()),
+            parent_resource: Some("terminal.session".to_owned()),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
+        .await
+        .unwrap();
+    let offered: Vec<String> = listed
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .map(|action| format!("{}#{}", action.address.resource, action.address.action))
+        .collect();
+    assert!(
+        offered
+            .iter()
+            .any(|shown| shown == "terminal.machine-secrets#add-secret"),
+        "the record offers add-secret: {offered:?} of {:?}",
+        listed.rows
+    );
+    // The member invokes it as `tilo do` does.
+    let added = page
+        .invoke_settled(request(
+            &provider,
+            ActionAddress::new("terminal.machine-secrets", "add-secret"),
+            InvokeArgument::Json(
+                json!({"variable": VARIABLE, "item": reference})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        ))
+        .await;
+    assert!(
+        matches!(added.status, ReceiptStatus::Completed { .. }),
+        "a member names the item: {added:?}"
+    );
+    // What the server reads when a program starts in the machine names the item.
+    let caller = tilo_actions::remote::Caller::authenticated(
+        root.verifying_key().to_bytes(),
+        browser_device.cert.device_public_key,
+    )
+    .in_workspace(WORKSPACE);
+    let named = workspaces
+        .machine_secrets(WORKSPACE, &caller)
+        .await
+        .expect("the machine's secrets read");
+    assert_eq!(
+        named,
+        vec![tilo_actions::remote::environment_commands::VmSecret {
+            variable: VARIABLE.into(),
+            value: TOKEN.into(),
+        }],
+        "the document the server reads names the item"
+    );
+}

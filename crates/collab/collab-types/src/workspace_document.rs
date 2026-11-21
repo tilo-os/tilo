@@ -26,6 +26,13 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
         app: "so.tilo.chat",
         kind: "tilo.workspace.emoji",
     },
+    // Which vault items the workspace's Linux machine hands the programs it
+    // starts, and in which variable: Terminal keeps it, and the server reads it
+    // when a program starts there (`tilo_environment::machine_secrets`).
+    WorkspaceDocument {
+        app: "so.tilo.terminal",
+        kind: "terminal.machine-secrets",
+    },
     WorkspaceDocument {
         app: "so.tilo.chat",
         kind: "chat.skills",

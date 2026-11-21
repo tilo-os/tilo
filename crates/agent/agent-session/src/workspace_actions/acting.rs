@@ -131,6 +131,19 @@ impl Worker {
         }
         let workspace = workspace.ok_or_else(unknown_action)?;
         let route = resource_of(&target.provider, &workspace).ok_or_else(unknown_action)?;
+        // A document an app keeps for its whole workspace is reached through the record the app
+        // keeps, which publishes it beside itself: mounted over that, its verbs are the app's own
+        // to run, and what they write lands on the document's route.
+        let (route, state) = match self.holder_of_workspace_document(
+            workspace_id,
+            caller,
+            &workspace,
+            &route,
+            state.clone(),
+        ) {
+            Some((holder, state)) => (holder, state),
+            None => (route, state),
+        };
         // The package of the version `workspace` installs, when this device
         // keeps it: an installed app's action is applied from the model its
         // package carries, whichever device built the app, because that is the
@@ -417,6 +430,60 @@ impl Worker {
         }
         self.behind_all_but(&Writer::Mounted(holder), &wrote);
         Ok(())
+    }
+
+    /// The record of `app` that holds the document at `route` in a listing, with the state it is
+    /// held in: a document an app keeps for its whole workspace
+    /// ([`collab_types::WORKSPACE_DOCUMENTS`], Terminal's machine secrets) is published by the
+    /// app's replica over the record the app keeps, never mounted on its own. `None` for a route
+    /// that is no such document.
+    ///
+    /// The app's own record is founded as `caller` when the workspace holds none, so the first
+    /// caller naming one of the app's documents reaches what the app declares there: the record
+    /// the app keeps is where those rows stand.
+    pub(super) fn holder_of_workspace_document(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        workspace: &str,
+        route: &DocumentRoute,
+        state: super::WorkspaceState,
+    ) -> Option<(DocumentRoute, super::WorkspaceState)> {
+        collab_types::workspace_document(&route.app_id, &route.document)?;
+        if let Some(holder) = self.holding_record(route, &state) {
+            return Some((holder, state));
+        }
+        let who = if self.acts_for_owner(caller) {
+            None
+        } else {
+            self.bounded(caller)
+        };
+        self.open_new(workspace_id, workspace, &route.app_id, who.as_ref())
+            .ok()?;
+        let state = self.refresh(workspace_id, Needs::Workspace).ok()?;
+        Some((self.holding_record(route, &state)?, state))
+    }
+
+    /// The route of a record `app` keeps in `state`, the app's own: what its replica is mounted
+    /// over, and what publishes the app's documents for its workspace beside it.
+    fn holding_record(
+        &self,
+        route: &DocumentRoute,
+        state: &super::WorkspaceState,
+    ) -> Option<DocumentRoute> {
+        state
+            .documents
+            .iter()
+            .find(|held| {
+                held.app_id == route.app_id
+                    && held.cluster_id == route.cluster_id
+                    && held.document != route.document
+                    && self
+                        .catalogue
+                        .get(&held.app_id)
+                        .is_some_and(|app| opens_as_its_own(app, &held.document))
+            })
+            .cloned()
     }
 
     /// Whether `caller` is the host's own person, whom the service acts for.

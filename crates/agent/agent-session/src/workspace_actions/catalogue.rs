@@ -37,9 +37,6 @@ impl Worker {
         let refresh_began = std::time::Instant::now();
         let state = self.refresh(workspace_id, keys.read())?;
         let refresh_ms = refresh_began.elapsed().as_millis();
-        // The revision of what this page reads: another app's writes leave it where it is, so
-        // a page read on from a cursor still reads one snapshot of it while they land.
-        let revision = state.revision_of(query.provider.as_deref());
         // A workspace nothing was written in yet is named by the provider
         // asked for, so its new records are offered; one this member's replica
         // holds nothing of yet — a public workspace sends its records when a
@@ -59,20 +56,24 @@ impl Worker {
                     .and_then(|workspace| workspace.cluster_id(workspace_id))
             })
         else {
-            return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
+            return Ok(CataloguePage::from_rows(
+                state.revision_of(query.provider.as_deref()),
+                Vec::new(),
+                query,
+            ));
         };
         let routes = self.documents(Some(workspace_id), &state, &cluster_id);
         let own_provider = workspace_provider(&cluster_id);
-        let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
-            Some(provider) if provider == own_provider => Vec::new(),
-            Some(provider) => {
-                let route = resource_of(provider, &cluster_id)
-                    .filter(|route| routes.contains(route))
-                    .ok_or(ActionCallError::UnknownAction)?;
-                vec![route]
-            }
-            None => routes.iter().take(DEFAULT_DOCUMENTS).cloned().collect(),
-        };
+        let (wanted, state) = self.wanted_routes(
+            workspace_id,
+            caller,
+            (&cluster_id, &routes, &own_provider),
+            state,
+            query,
+        )?;
+        // The revision of what this page reads: another app's writes leave it where it is, so
+        // a page read on from a cursor still reads one snapshot of it while they land.
+        let revision = state.revision_of(query.provider.as_deref());
         let bounded = self.bounded(caller);
         let page_began = std::time::Instant::now();
         let own_rows = self.own_rows(workspace_id, caller, (&cluster_id, &own_provider), query);
@@ -171,6 +172,46 @@ impl Worker {
             }
         }
         rows
+    }
+
+    /// The records a page of `query` lists in `cluster_id`, with the state they are listed in:
+    /// the one its provider names, every app's rows, or the first of the workspace's records. A
+    /// document an app keeps for its whole workspace is listed through the record the app keeps,
+    /// which publishes it beside itself, founded as `caller` when the workspace holds none of the
+    /// app's record: the first caller naming one of the app's documents reaches what it declares.
+    fn wanted_routes(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        (cluster_id, routes, own_provider): (&str, &[DocumentRoute], &str),
+        state: WorkspaceState,
+        query: &CatalogueQuery,
+    ) -> Result<(Vec<DocumentRoute>, WorkspaceState), ActionCallError> {
+        let wanted = match query.provider.as_deref() {
+            Some(provider) if provider == own_provider => Vec::new(),
+            Some(provider) => {
+                let route =
+                    resource_of(provider, cluster_id).ok_or(ActionCallError::UnknownAction)?;
+                if collab_types::workspace_document(&route.app_id, &route.document).is_some() {
+                    let (holder, state) = self
+                        .holder_of_workspace_document(
+                            workspace_id,
+                            caller,
+                            cluster_id,
+                            &route,
+                            state,
+                        )
+                        .ok_or(ActionCallError::UnknownAction)?;
+                    return Ok((vec![holder], state));
+                }
+                if !routes.contains(&route) {
+                    return Err(ActionCallError::UnknownAction);
+                }
+                vec![route]
+            }
+            None => routes.iter().take(DEFAULT_DOCUMENTS).cloned().collect(),
+        };
+        Ok((wanted, state))
     }
 
     /// The workspace's own rows `query` asks for, as `caller` is shown them: its apps, to

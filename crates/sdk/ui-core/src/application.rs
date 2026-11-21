@@ -607,7 +607,11 @@ impl ProcessContext {
                 (checkout, Some(reservation))
             }
             LaunchTarget::Record { checkout, .. } => {
-                if checkout.kind != definition.resource_type
+                // The app's own kind, or one of the kinds it declares (a document every app of
+                // the workspace opens, which a host opens as the record it is): no other app's.
+                let declared = crate::app_surface::app_of_kind(checkout.kind.as_str())
+                    .is_some_and(|app| app == definition.app_id());
+                if (!declared && checkout.kind != definition.resource_type)
                     || !checkout.id.is_package_primary()
                         && DocumentId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
                 {
@@ -1106,7 +1110,11 @@ impl ApplicationDefinition {
         target: LaunchTarget,
         restore: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
-        if context.app_id != self.app_id || context.record.kind != self.resource_type {
+        if context.app_id != self.app_id
+            || context.record.kind != self.resource_type
+                && crate::app_surface::app_of_kind(context.record.kind.as_str())
+                    .is_none_or(|app| app != self.app_id())
+        {
             return Err(mismatch("a context of another app or record kind"));
         }
         if matches!(target, LaunchTarget::New) && context.record.id.is_package_primary()

@@ -50,7 +50,11 @@ pub(crate) fn register<A: ResourceApp>() {
             .hosted_by(app.id(), app.title())
             .named(name::<A>),
     );
+    // Every kind the app declares is the app's, so a host opening one of its records — a part
+    // of a chain, a document every app of the workspace opens — reads it as the app does.
+    ui_core::app_surface::register_kind(<A::Resource as Resource>::KIND, app.id());
     for chain in declared.into_chains() {
+        ui_core::app_surface::register_kind(chain.kind(), app.id());
         hosted.0.insert(chain.hosted_by(app.id(), app.title()));
     }
     let kind = <A::Resource as Resource>::KIND;

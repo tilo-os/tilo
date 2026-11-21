@@ -10,8 +10,13 @@
 
 use tilo_resource::{JsonSchema, Model, resource};
 
-/// The workspace's one document of them, in Terminal.
-pub const DOCUMENT: &str = "uuid:587bfde5-3070-4a56-9b1b-bb5abd3a599b";
+/// The kind this document's record is of.
+pub const KIND: &str = "terminal.machine-secrets";
+
+/// The workspace's one document of them, in Terminal: a workspace document of Terminal's
+/// (`collab_types::WORKSPACE_DOCUMENTS`), named by its kind so every device and its server
+/// derive the same id and opening it needs no window.
+pub const DOCUMENT: &str = "derived:terminal.machine-secrets@tab:0000000000000000";
 
 /// What the address of a vault item begins with.
 const ITEM_PREFIX: &str = "vault.item:";
@@ -146,6 +151,16 @@ mod tests {
     use tilo_resource::Replica;
 
     const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn the_document_is_terminals_workspace_document_of_this_kind() {
+        assert_eq!(DOCUMENT, collab_types::workspace_document_id(KIND));
+        assert_eq!(
+            collab_types::workspace_document("so.tilo.terminal", DOCUMENT).map(|kept| kept.kind),
+            Some(KIND),
+            "every device and its server name the one document by its kind"
+        );
+    }
 
     fn replica() -> Replica<MachineSecrets> {
         let mut doc = tilo_resource::Doc::new();

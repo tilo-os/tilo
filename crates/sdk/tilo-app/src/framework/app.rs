@@ -597,7 +597,6 @@ struct DefinitionKey<A>(std::marker::PhantomData<A>);
 pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
     leaked(TypeId::of::<DefinitionKey<A>>(), || {
         super::kinds::register::<A>();
-        ui_core::app_surface::register_kind(<A::Resource as Resource>::KIND, hooks::<A>().id());
         definition_of::<A>()
     })
 }

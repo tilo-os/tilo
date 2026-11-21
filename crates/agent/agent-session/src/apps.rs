@@ -2265,7 +2265,13 @@ fn seeded(
             } else {
                 DocumentCheckout::new(DocumentId::minted(), definition.resource_type.clone())
             };
-            let bytes = genesis(definition, workspace, &checkout, kind, member)?;
+            let bytes = genesis(
+                definition,
+                workspace,
+                &checkout,
+                record_resource(definition, kind, &checkout),
+                member,
+            )?;
             (checkout, bytes, true)
         }
         Seed::NewAt(record) => {
@@ -2274,8 +2280,17 @@ fn seeded(
                     "record route does not match the app's workspace scope".into(),
                 ));
             }
-            let checkout = DocumentCheckout::new(record, definition.resource_type.clone());
-            let bytes = genesis(definition, workspace, &checkout, kind, member)?;
+            let checkout = DocumentCheckout::new(
+                record.clone(),
+                record_kind(definition, &record, None),
+            );
+            let bytes = genesis(
+                definition,
+                workspace,
+                &checkout,
+                record_resource(definition, kind, &checkout),
+                member,
+            )?;
             (checkout, bytes, true)
         }
         Seed::Existing { record, changes } => {
@@ -2289,17 +2304,64 @@ fn seeded(
                 tilo_automerge::ApplyIncoming::load_incoming(&mut doc, change)
                     .map_err(|error| AppError::Merge(error.to_string()))?;
             }
-            let checkout = DocumentCheckout::new(record, definition.resource_type.clone());
+            let held = ui::resource::identity(&doc).filter(|found| found.id == record);
+            let checkout = DocumentCheckout::new(
+                record.clone(),
+                record_kind(definition, &record, held.as_ref()),
+            );
             (checkout, doc.save(), false)
         }
     };
     let doc =
         ui::tilo_resource::Doc::load(&bytes).map_err(|error| AppError::Merge(error.to_string()))?;
-    if !kind.holds_or_older(&doc) {
-        kind.read(&doc)
+    let opened_as = record_resource(definition, kind, &checkout);
+    if !opened_as.holds_or_older(&doc) {
+        opened_as
+            .read(&doc)
             .map_err(|error| AppError::Merge(error.to_string()))?;
     }
     Ok((checkout, bytes, created))
+}
+
+/// The resource kind the record `record` of `definition`'s app is of: the identity it was handed
+/// over with, else the kind the app keeps it under — a document every app of the workspace opens
+/// (Terminal's machine secrets), or a protected record of a fixed id (`terminal.history`) — and
+/// the app's own kind for a record of its own. A host opening the record binds it to this kind,
+/// as the device that made it did.
+fn record_kind(
+    definition: &ApplicationDefinition,
+    record: &DocumentId,
+    held: Option<&DocumentCheckout>,
+) -> ui::resource::ResourceType {
+    held.map(|found| found.kind.clone())
+        .or_else(|| {
+            collab_types::workspace_document(definition.app_id(), record.as_str())
+                .map(|kept| ui::resource::ResourceType::new(kept.kind))
+        })
+        .or_else(|| {
+            tilo_actions::policy::roles::protected_resource_kind(
+                definition.app_id(),
+                record.as_str(),
+            )
+            .map(ui::resource::ResourceType::new)
+        })
+        .unwrap_or_else(|| definition.resource_type.clone())
+}
+
+/// [`record_kind`] as this process reads and initializes records of that kind: the app's own
+/// kind's reader for a record of its own, and the kind's reader for one the app keeps besides.
+fn record_resource(
+    definition: &ApplicationDefinition,
+    kind: ResourceKind,
+    checkout: &DocumentCheckout,
+) -> ResourceKind {
+    if checkout.kind == definition.resource_type {
+        return kind;
+    }
+    ui::framework::hosted_kinds()
+        .get(checkout.kind.as_str())
+        .copied()
+        .unwrap_or(kind)
 }
 
 fn genesis(

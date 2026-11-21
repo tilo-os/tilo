@@ -115,7 +115,9 @@ pub(super) fn log_outcome(
 /// record per workspace opens that one, and what it keeps as records of its own beside it (a
 /// chain's parts); a person's record of some kind, kept beside the app's for that person (Files'
 /// tree of the workspace's folder, and the chunks that tree is kept in), is read where it is kept,
-/// never mounted as the app's, which refuses it as not the app's workspace record.
+/// never mounted as the app's, which refuses it as not the app's workspace record. So is a
+/// document the app keeps for the whole workspace: its replica publishes it over the record the
+/// app keeps.
 pub(super) fn opens_as_its_own(app: &ui::application::ApplicationDefinition, record: &str) -> bool {
     // The empty route is the app's own record where it keeps one per workspace, and its index of
     // the workspace's named records where it keeps none: the index is read where it is kept,
@@ -125,6 +127,11 @@ pub(super) fn opens_as_its_own(app: &ui::application::ApplicationDefinition, rec
     }
     // A tree's own record and its chunks are one folder, read record by record where it is kept.
     if fs_protocol::tree::chunk_of_record(record).is_some() {
+        return false;
+    }
+    // A document the app keeps for the whole workspace beside its own record is published by the
+    // app's replica over the record it keeps, never mounted on its own.
+    if collab_types::workspace_document(app.app_id(), record).is_some() {
         return false;
     }
     !app.keeps_workspace_resource() || collab_types::person_resource_type(record).is_none()
