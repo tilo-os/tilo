@@ -57,6 +57,9 @@ pub(crate) async fn start(
         content: Arc::clone(&content),
     });
     let (wakes, wake_events) = tokio::sync::mpsc::unbounded_channel();
+    // Follow the session's news before the sync opens a record, so the host's answers and the
+    // records' landings that follow are kept for it.
+    let events = link.events_where(takes);
     let replica = TreeReplica::start(tilo_fs::tree_sync::Config {
         workspace: name,
         device,
@@ -78,7 +81,7 @@ pub(crate) async fn start(
     let notify = Arc::clone(&wake);
     link.on_change(Arc::new(move || notify.notify_waiters()));
     tokio::spawn(forward(
-        link.events_where(takes),
+        events,
         wake,
         wakes,
         Arc::clone(&content),
