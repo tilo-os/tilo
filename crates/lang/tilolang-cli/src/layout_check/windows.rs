@@ -2032,11 +2032,13 @@ fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
 #[test]
 fn the_windows_main_action_stands_in_its_row_as_the_primary_button() {
     tilo_app_window::i18n::ensure();
-    for (app, scenario, action) in [
-        ("tasks", "a busy week", "New task"),
-        ("notes", "a first note", "New note"),
+    // Each app's directory under `apps/tl` and the id it answers to: Notes took the id the
+    // native app had, so a directory's name does not say its app's id.
+    for (dir, app, scenario, action) in [
+        ("tasks", "so.tilo.lang.tasks", "a busy week", "New task"),
+        ("notes", "so.tilo.notes", "a first note", "New note"),
     ] {
-        let packages = app_packages(app);
+        let packages = app_packages(dir);
         the_main_action_of(app, &packages, scenario, action);
     }
 }
@@ -2056,7 +2058,7 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
             ui::Theme::light()
         };
         let mut staged = stage::Staged::over(
-            &format!("so.tilo.lang.{app}"),
+            app,
             packages,
             scenario,
             size,

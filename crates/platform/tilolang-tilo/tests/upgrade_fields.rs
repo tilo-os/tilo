@@ -6,6 +6,7 @@
 //! and running the upgrade again writes nothing.
 
 use automerge::AutoCommit;
+use tilolang::source::PackageSource;
 use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
 use tilolang_runtime::value::ResourceRef;
@@ -154,8 +155,13 @@ fn rich_body(replica: &Replica, id: &str) -> (FieldValue, ResourceRef) {
 }
 
 /// The fixture's workspace, opened by the build keeping the body as rich text, and the ids of its
-/// notes: nothing is written yet, the notes still hold the plain text the old build wrote.
+/// notes: nothing is written yet, the notes still hold the plain text the old build wrote. The
+/// old build was published as `so.tilo.lang.notes`; Notes says so (`previously:`), and the
+/// installed catalogue believes it, as it does for the Notes the image ships.
 fn workspace() -> (Replica, Vec<String>) {
+    let (app, previously, _) = PackageSource::single(SOURCE).header_with_previously();
+    assert_eq!(app.as_deref(), Some(APP));
+    tilolang_tilo::schema::register_previously(APP, &previously);
     let workspace = saved(include_str!("legacy/notes.hex"));
     let replica = Replica::new(
         "ada",

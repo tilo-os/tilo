@@ -5,7 +5,10 @@
 use super::FleetApp;
 
 /// `(an id an app answers by besides its own, the app it names)`.
-pub(super) const PREVIOUS: &[(&str, &str)] = &[("so.tilo.lang.todo", "so.tilo.lang.tasks")];
+pub(super) const PREVIOUS: &[(&str, &str)] = &[
+    ("so.tilo.lang.notes", "so.tilo.notes"),
+    ("so.tilo.lang.todo", "so.tilo.lang.tasks"),
+];
 
 /// `(app, kind)` of each kind an app's members each keep as their own (`[resources] own`).
 pub(super) const OWN_KINDS: &[(&str, &str)] = &[];
