@@ -36,6 +36,11 @@ profile_env() {
   # and this device's key where TILO_IDENTITY_ROOT names: one identity for the
   # profile, not two.
   export TILO_IDENTITY_ROOT="$root/config/tilo/identity"
+  # The profile's own bus answers no Secret Service, so its secrets (the
+  # channels' group keys a sealed write needs among them) go to the sealed
+  # file store a headless machine uses, as dist/dev/nested-session.sh and the
+  # hosted guest's headless session name it.
+  export TILO_SECRETS_DIR="$root/secrets"
   export TILO_WORKSPACE_ROOTS=""
   export TILO_TEST_CONTROL="$root/runtime/control.sock"
   export RUST_LOG="${RUST_LOG:-warn}"
@@ -47,10 +52,10 @@ profile_env() {
 
 prepare() {
   local dir
-  for dir in runtime config data state cache home logs; do
+  for dir in runtime config data state cache home logs secrets; do
     mkdir -p "$root/$dir"
   done
-  chmod 700 "$root/runtime"
+  chmod 700 "$root/runtime" "$root/secrets"
 }
 
 start_bus() {
