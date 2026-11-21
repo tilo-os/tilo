@@ -454,6 +454,17 @@ that workspace environment's own, never in a guest sharing the host's kernel
   unchanged. A program whose input and output are the session's terminal
   runs on a terminal in the VM: the keys are relayed as typed, the size
   follows, and the output is recorded like any other.
+- **The agent socket:** a program in the VM finds Tilo's MCP server where an
+  environment's programs find it on a device, `/run/tilo/agent.sock`, named in
+  `TILO_AGENT_SOCK` (above, "Coding agents"). The guest agent serves it to the
+  programs a host started for a workspace shell's session
+  (`LaunchServingAgents`) and to their descendants alone, by the connecting
+  process the kernel names; anything else is closed unread. Each connection
+  travels to the host on the program's own connection to the agent, and ush
+  hands it to the workspace's server with the workspace, environment and
+  session it came from (`ush::hosted_vm::MachineAgents`), which decides what
+  it is. It ends with the program
+  ([`agent_socket.rs`](../../crates/runtime/linux-vm-agent/src/agent_socket.rs)).
 - **The guest image** is one signed OCI image holding two files: an
   uncompressed x86-64 kernel built from a pinned kernel.org longterm release
   with everything a VM needs built in (virtio-mmio, blk, net, vsock, FUSE,

@@ -21,6 +21,14 @@
 //!
 //! A program whose input and output are the session's terminal runs on a pseudo-terminal
 //! in the VM ([`Relay::Terminal`]), so editors, prompts and pagers work as on a device.
+//!
+//! Where the host serves its workspaces' agents ([`HostedPrograms::serving_agents`]), each
+//! program finds Tilo's MCP server where an environment's programs find it on a device
+//! (`/run/tilo/agent.sock`, which `tilo-runtime --connect` reads from `TILO_AGENT_SOCK`): the
+//! VM's agent carries each connection one of the program's own processes makes there to
+//! this host on the program's own connection ([`client::launch_serving_agents`]), and the
+//! host hands it to [`MachineAgents`], which decides what it is. The connections end with
+//! the program.
 //! [`SOCKET_ENV`], [`ACCOUNT_ENV`], [`SIZE_ENV`] and [`PLANS_ENV`] turn this on for a
 //! host's sessions.
 
@@ -81,6 +89,30 @@ impl HostedTarget {
 
 type Shares = dyn Fn() -> Vec<ShareRequest> + Send + Sync;
 
+/// Where a connection to a machine's agent socket came from: the workspace's environment
+/// whose program made it, and the shell session that started the program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentConnection {
+    pub workspace: String,
+    /// The environment's record key: what the agent is named after.
+    pub environment: String,
+    /// The session of the workspace's shells whose command started the program.
+    pub session: String,
+    /// Whether an agent's command started it, rather than a person's.
+    pub agent: bool,
+    /// The executable of the process that connected, as the machine names it.
+    pub program: String,
+}
+
+/// What serves the connections a workspace's programs make to their machine's agent
+/// socket: the workspace's server, which asks the person whether each may work in the
+/// workspace as an agent of its own, and serves it as that agent once they allow it.
+pub trait MachineAgents: Send + Sync {
+    /// Serve `stream`, the host's end of the connection `from` describes, for as long as it
+    /// lasts; it ends when the program closes it or the program that made it ends.
+    fn serve(&self, from: AgentConnection, stream: std::os::unix::net::UnixStream);
+}
+
 /// The terminal a session's programs run on, when it has one: its pseudo-terminal's slave,
 /// shared by whoever needs it while the session is attached to it.
 pub type TerminalSlot = std::sync::Arc<std::sync::Mutex<Option<OwnedFd>>>;
@@ -96,6 +128,8 @@ pub struct HostedPrograms {
     terminal: TerminalSlot,
     refusals: Option<std::sync::Arc<std::sync::Mutex<Option<server_account::Refusal>>>>,
     secrets: Option<crate::workspace_shell::Secrets>,
+    /// Who serves the machine's agent socket to the programs, and the session they are of.
+    agents: Option<(std::sync::Arc<dyn MachineAgents>, String)>,
 }
 
 impl HostedPrograms {
@@ -115,7 +149,41 @@ impl HostedPrograms {
             terminal: TerminalSlot::default(),
             refusals: None,
             secrets: None,
+            agents: None,
         }
+    }
+
+    /// Serve each program's connections to the machine's agent socket with `agents`, as
+    /// programs of the shell session `session`.
+    #[must_use]
+    pub fn serving_agents(
+        mut self,
+        agents: std::sync::Arc<dyn MachineAgents>,
+        session: impl Into<String>,
+    ) -> Self {
+        self.agents = Some((agents, session.into()));
+        self
+    }
+
+    /// What serves the agent socket to a program `agent` asked for, when the host serves it.
+    fn agent_server(&self, agent: bool) -> Option<client::AgentServer> {
+        let (agents, session) = self.agents.as_ref()?;
+        let (workspace, environment, session) = (
+            self.workspace.clone(),
+            self.environment.clone(),
+            session.clone(),
+        );
+        let agents = std::sync::Arc::clone(agents);
+        Some(std::sync::Arc::new(move |caller: client::AgentCaller, stream| {
+            let from = AgentConnection {
+                workspace: workspace.clone(),
+                environment: environment.clone(),
+                session: session.clone(),
+                agent,
+                program: caller.program,
+            };
+            agents.serve(from, stream);
+        }))
     }
 
     /// Start each program with what `slot` holds when it starts, set over the shell's
@@ -535,21 +603,24 @@ impl Programs for HostedPrograms {
         let (mut stdout, mut stderr) = (OutputWriter(&io.stdout), OutputWriter(&io.stderr));
         let (handing, handed) = std::sync::mpsc::channel::<LaunchSignals<AgentStream>>();
         let finished = AtomicBool::new(false);
+        let agents = self.agent_server(agent);
         let result = std::thread::scope(|scope| {
             let running = scope.spawn(|| {
-                let result = client::launch(
-                    stream,
-                    &launch,
-                    LaunchIo {
-                        stdin,
-                        stdout: &mut stdout,
-                        stderr: &mut stderr,
-                        started: &mut |_| {},
-                    },
-                    move |signals| {
-                        let _ = handing.send(signals);
-                    },
-                );
+                let io = LaunchIo {
+                    stdin,
+                    stdout: &mut stdout,
+                    stderr: &mut stderr,
+                    started: &mut |_| {},
+                };
+                let handed = move |signals| {
+                    let _ = handing.send(signals);
+                };
+                let result = match &agents {
+                    Some(agents) => {
+                        client::launch_serving_agents(stream, &launch, io, agents, handed)
+                    }
+                    None => client::launch(stream, &launch, io, handed),
+                };
                 finished.store(true, Ordering::SeqCst);
                 result
             });
@@ -720,7 +791,10 @@ pub(crate) mod testing {
             home: std::env::temp_dir(),
             shell: "/bin/sh".into(),
         };
-        let agent = std::sync::Arc::new(linux_vm_agent::server::Agent::new(user, "boot".into()));
+        let agent = std::sync::Arc::new(
+            linux_vm_agent::server::Agent::new(user, "boot".into())
+                .with_agent_socket(dir.join("run/tilo/agent.sock")),
+        );
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
@@ -940,6 +1014,119 @@ mod tests {
                 0
             );
             assert_ne!(modes.c_lflag & libc::ICANON, 0);
+        }
+    }
+
+    /// The workspace's server, as far as the machine's agent socket sees it: it answers each
+    /// line a connection sends with `admitted <line>`, and keeps where each came from.
+    #[derive(Default)]
+    struct Admitting(std::sync::Mutex<Vec<AgentConnection>>);
+
+    impl MachineAgents for Admitting {
+        fn serve(&self, mut from: AgentConnection, mut stream: std::os::unix::net::UnixStream) {
+            assert!(from.program.contains("python"), "{from:?}");
+            from.program.clear();
+            self.0.lock().unwrap().push(from);
+            let mut line = Vec::new();
+            let mut byte = [0_u8; 1];
+            while std::io::Read::read(&mut stream, &mut byte).is_ok_and(|read| read == 1) {
+                if byte[0] == b'\n' {
+                    let answer = format!("admitted {}\n", String::from_utf8_lossy(&line));
+                    let _ = stream.write_all(answer.as_bytes());
+                    line.clear();
+                } else {
+                    line.push(byte[0]);
+                }
+            }
+        }
+    }
+
+    /// A stand-in for `tilo-runtime --connect`: connects where `TILO_AGENT_SOCK` says, says
+    /// one line and prints its answer.
+    const CONNECTS: &str = r#"
+import os, socket
+s = socket.socket(socket.AF_UNIX)
+s.connect(os.environ["TILO_AGENT_SOCK"])
+s.sendall(b"initialize\n")
+print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
+"#;
+
+    tilo_test_env::scenario! {
+        fn a_program_in_the_machine_reaches_the_workspaces_server_at_its_agent_socket;
+
+        phase its_connection_reaches_the_server_named_by_its_workspace_and_session;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_service(dir.path(), fake_vm(dir.path()));
+            let server = std::sync::Arc::new(Admitting::default());
+            let programs = HostedPrograms::new(
+                HostedTarget {
+                    socket,
+                    account: "acct-1".into(),
+                    size: VmSize::Small,
+                    plans: None,
+                },
+                "ws1".into(),
+                "dev".into(),
+                Box::new(Vec::new),
+            )
+            .serving_agents(std::sync::Arc::clone(&server) as std::sync::Arc<dyn MachineAgents>, "s1");
+            let (stdout, out) = Output::buffer();
+            let io = Stdio {
+                stdout,
+                ..Stdio::null()
+            };
+            let ran = programs.run(
+                &["python3".into(), "-I".into(), "-c".into(), CONNECTS.into()],
+                &[],
+                Path::new("/"),
+                &io,
+                None,
+            );
+            let out = String::from_utf8(out.take()).unwrap();
+            assert_eq!(ran, Program::Exited(0), "{out}");
+            assert!(out.contains("answered admitted initialize"), "{out}");
+            assert_eq!(
+                *server.0.lock().unwrap(),
+                [AgentConnection {
+                    workspace: "ws1".into(),
+                    environment: "dev".into(),
+                    session: "s1".into(),
+                    agent: false,
+                    program: String::new(),
+                }]
+            );
+        }
+
+        phase a_host_that_serves_no_agents_leaves_the_socket_unnamed;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = fake_service(dir.path(), fake_vm(dir.path()));
+            let programs = HostedPrograms::new(
+                HostedTarget {
+                    socket,
+                    account: "acct-1".into(),
+                    size: VmSize::Small,
+                    plans: None,
+                },
+                "ws1".into(),
+                "dev".into(),
+                Box::new(Vec::new),
+            );
+            let (stdout, out) = Output::buffer();
+            let io = Stdio {
+                stdout,
+                ..Stdio::null()
+            };
+            let ran = programs.run(
+                &["/bin/sh".into(), "-c".into(), "echo \"[${TILO_AGENT_SOCK-}]\"".into()],
+                &[],
+                Path::new("/"),
+                &io,
+                None,
+            );
+            assert_eq!(ran, Program::Exited(0));
+            assert_eq!(String::from_utf8(out.take()).unwrap(), "[]\n");
         }
     }
 

@@ -78,6 +78,8 @@ pub struct WorkspaceShells {
     /// The hosted-VM service the workspaces' Browser starts on, when it is
     /// not the one the environment names.
     browsers: Option<PathBuf>,
+    /// Who serves the agent socket of the workspaces' machines to their sessions' programs.
+    agents: Option<Arc<dyn crate::hosted_vm::MachineAgents>>,
     sessions: Arc<Mutex<HashMap<(String, String), Shared>>>,
 }
 
@@ -170,8 +172,18 @@ impl WorkspaceShells {
             vms,
             on_machine: false,
             browsers: None,
+            agents: None,
             sessions: Arc::default(),
         }
+    }
+
+    /// The same shells, whose sessions' programs in a workspace's machine find Tilo's MCP
+    /// server at the machine's agent socket, each connection served by `agents`
+    /// ([`crate::hosted_vm::MachineAgents`]).
+    #[must_use]
+    pub fn serving_agents(mut self, agents: Arc<dyn crate::hosted_vm::MachineAgents>) -> Self {
+        self.agents = Some(agents);
+        self
     }
 
     #[must_use]
@@ -358,7 +370,7 @@ impl WorkspaceShells {
         if let Some(open) = open {
             return Ok(open);
         }
-        let opened = Arc::new(Mutex::new(self.open(workspace, payer)?));
+        let opened = Arc::new(Mutex::new(self.open(workspace, session, payer)?));
         Ok(Arc::clone(
             self.sessions
                 .lock()
@@ -410,7 +422,7 @@ impl WorkspaceShells {
         Ok(Some((programs, files)))
     }
 
-    fn open(&self, workspace: &str, payer: Option<&Payer>) -> io::Result<Session> {
+    fn open(&self, workspace: &str, session: &str, payer: Option<&Payer>) -> io::Result<Session> {
         let root = self.state.join(safe(workspace));
         let files = self.files(workspace);
         std::fs::create_dir_all(&files)?;
@@ -435,17 +447,19 @@ impl WorkspaceShells {
         let programs: Arc<dyn Programs> = match target {
             Some(target) => {
                 let shared = files.clone();
-                Arc::new(
-                    HostedPrograms::new(
-                        target,
-                        workspace.to_owned(),
-                        ENVIRONMENT.to_owned(),
-                        Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
-                    )
-                    .reporting_refusals(Arc::clone(&refused))
-                    .on_terminal_of(Arc::clone(&terminal))
-                    .carrying_secrets(Arc::clone(&secrets)),
+                let programs = HostedPrograms::new(
+                    target,
+                    workspace.to_owned(),
+                    ENVIRONMENT.to_owned(),
+                    Box::new(move || shares_of(vec![shared.clone()], Vec::new())),
                 )
+                .reporting_refusals(Arc::clone(&refused))
+                .on_terminal_of(Arc::clone(&terminal))
+                .carrying_secrets(Arc::clone(&secrets));
+                Arc::new(match &self.agents {
+                    Some(agents) => programs.serving_agents(Arc::clone(agents), session),
+                    None => programs,
+                })
             }
             None if programs_here => Arc::new(MachinePrograms),
             None => Arc::new(NoPrograms),
