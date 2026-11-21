@@ -19,13 +19,13 @@ pub const DEFAULT_TILOLANG_RUNTIME: &str =
     concat!("tilolang/", env!("CARGO_PKG_VERSION"), "+tilolang");
 pub const DEFAULT_TILO_RUNTIME: &str = "tilo-runtime/2026.07";
 
-/// Where a tilolang app runs: where its runtime bundle runs (`apps/tilolang/tilo-runtime.toml`).
-/// The bundle is a Linux binary, baked into the OS image beside the Tilo runtime and executed by
-/// the session's launcher; a Tilo OS device is a Linux one, so it is covered. Neither macOS nor a
-/// browser tab has the runtime, so a package names this rather than taking the manifest default.
-pub const PLATFORMS: &str = "[\"linux\"]";
+/// Where a tilolang app runs: where its runtime runs (`apps/tilolang/tilo-runtime.toml`), as a
+/// Linux binary baked into the OS image and as its web bundle in a browser tab. No macOS build of
+/// the runtime exists, so a package names this rather than taking the manifest default.
+pub const PLATFORMS: &str = "[\"linux\", \"web\"]";
 /// Why a tilolang app narrows `package.platforms`, as its manifest must say.
-pub const PLATFORM_REASON: &str = "Runs on the tilolang runtime, which is a Linux binary.";
+pub const PLATFORM_REASON: &str =
+    "Runs on the tilolang runtime, which is built for Linux and the browser.";
 
 /// What a build makes of the package in a directory and the packages it uses.
 #[derive(Clone, Debug)]

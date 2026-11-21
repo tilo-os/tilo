@@ -62,7 +62,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         // elsewhere is told so rather than failing to start it.
         assert_eq!(
             manifest.package.platforms(),
-            [Platform::Linux],
+            [Platform::Linux, Platform::Web],
             "{} names the platforms its runtime runs on",
             app.app
         );
