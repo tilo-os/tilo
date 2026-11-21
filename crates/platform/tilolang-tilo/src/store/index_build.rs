@@ -565,7 +565,7 @@ impl Inner {
             return Vec::new();
         }
         // An index file still being opened is not known to miss any chunk: the one an earlier
-        // run kept reflects the document, and a window over it reads no chunk it does not show.
+        // attempt kept reflects the document, and a window over it reads no chunk it does not show.
         // What it does not reflect is read once it is in ([`Inner::take_opened`]).
         if self
             .apps

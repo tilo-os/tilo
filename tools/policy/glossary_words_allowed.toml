@@ -2031,3 +2031,14 @@ reason = "The resource model's existing `Slot`, the place a value is written, wh
 words = ["slot"]
 identifiers = ["Slot"]
 paths = ["crates/doc/tilo-document/src/field.rs"]
+
+[[allow]]
+reason = "The page's account of a workspace's VM running t: the verb, as a person's machine runs a command."
+words = ["run"]
+paths = ["docs/hosted-browser.md"]
+
+[[allow]]
+reason = "The hosted t launcher's tests: the launcher is what a VM runs, and Python's own `subprocess.run` and the helper named for it."
+words = ["run"]
+identifiers = ["run", "run_launcher"]
+paths = ["tools/tests/test_hosted_t_launcher.py"]

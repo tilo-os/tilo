@@ -6,9 +6,9 @@ use tilo_resource::{self, Atom, Collection, Id, Model, Refusal, Set, resource};
 pub struct Passwords {}
 
 impl Passwords {
-    /// What the record holds: nothing of its own. Its entries are the
-    /// sealed document beside it, which a reader opens under its keys; a
-    /// caller with no window open still learns that the record is there.
+    /// What the vault holds: nothing of its own. Its entries are the sealed
+    /// document beside it, which a reader opens under its keys; a caller with
+    /// no window open still learns that the vault is there.
     pub fn read_document(
         &self,
         item: Option<&tilo_resource::Id>,
