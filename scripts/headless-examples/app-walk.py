@@ -270,7 +270,8 @@ class Walk:
     def targets(self) -> list[dict]:
         """The controls the desktop offers now, as the walk records them where a
         step could not be walked: a name or an identity, and where it is."""
-        return [{"name": t.get("name"), "identity": t.get("identity"), "rect": t.get("rect")}
+        return [{"name": t.get("name"), "identity": t.get("identity"), "rect": t.get("rect"),
+                 "level": t.get("level")}
                 for t in self.session.targets()]
 
     def actions(self, only_app: bool = False) -> list[dict]:
@@ -634,15 +635,25 @@ class Walk:
 
             def under() -> dict | None:
                 # The child's words may name other notes too: the row sought is
-                # the one drawn indented under the parent, the first of them.
+                # the one drawn under the parent — deeper in the tree's own
+                # levels, where the window publishes them, and the row the
+                # parent's own leading edge does not reach where it does not.
+                parent_level = parent.get("level")
+
+                def below(target: dict) -> bool:
+                    if target["rect"][1] <= py or target["rect"][0] >= px + 320.0:
+                        return False
+                    level = target.get("level")
+                    if parent_level is not None and level is not None:
+                        return level > parent_level
+                    return target["rect"][0] > px
+
                 drawn_under = [
                     target
                     for target in self.session.targets()
                     if target.get("name") == child_name
                     and drawn(target)
-                    and target["rect"][0] > px
-                    and target["rect"][1] > py
-                    and target["rect"][0] < px + 320.0
+                    and below(target)
                 ]
                 return min(drawn_under, key=lambda target: target["rect"][1]) if drawn_under else None
 

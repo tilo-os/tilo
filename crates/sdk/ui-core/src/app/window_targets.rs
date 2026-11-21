@@ -32,6 +32,7 @@ impl App {
                     name: target.name,
                     identity: target.identity,
                     rect: (x0, y0, x1 - x0, y1 - y0),
+                    level: target.level,
                 }
             })
             .collect()
@@ -122,6 +123,7 @@ impl App {
                 identity: identity.map(str::to_owned),
                 rect: [bounds.x0, bounds.y0, bounds.x1, bounds.y1],
                 actions,
+                level: described.level(),
             });
         }
         targets

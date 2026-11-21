@@ -43,6 +43,10 @@ pub struct WindowTarget {
     /// Where it is drawn in the window's content, in logical pixels.
     pub rect: [f64; 4],
     pub actions: Vec<TargetAction>,
+    /// How deep it stands in the tree it is a row of, as a reader hears it: 1 at the top level.
+    /// Absent for a control that is no row of one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<usize>,
 }
 
 impl WindowTarget {
@@ -61,4 +65,6 @@ pub struct WindowControl {
     pub name: String,
     pub identity: Option<String>,
     pub rect: (f64, f64, f64, f64),
+    /// How deep it stands in the tree it is a row of ([`WindowTarget::level`]).
+    pub level: Option<usize>,
 }

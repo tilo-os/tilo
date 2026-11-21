@@ -767,6 +767,7 @@ impl crate::Published for WidgetSurface {
                 name,
                 identity: None,
                 rect: self.logical(rect),
+                level: None,
             })
             .collect()
     }

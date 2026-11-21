@@ -737,6 +737,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "WindowTarget" = "struct"
 "WindowTarget.actions" = "Vec<TargetAction>"
 "WindowTarget.identity" = "Option<String> optional"
+"WindowTarget.level" = "Option<usize> optional"
 "WindowTarget.name" = "String"
 "WindowTarget.rect" = "[f64; 4]"
 "WindowTarget.role" = "String"

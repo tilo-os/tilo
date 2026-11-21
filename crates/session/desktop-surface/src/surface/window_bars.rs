@@ -161,6 +161,7 @@ impl DesktopHandle {
                         target.rect[2] - target.rect[0],
                         target.rect[3] - target.rect[1],
                     ),
+                    level: target.level,
                 });
             }
         }
