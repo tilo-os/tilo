@@ -17,7 +17,6 @@ INPUTS = (
     "tools/ci/cgroup_memory.py", "scripts/ci-run.sh",
     "os/dev/assert-native-arch.sh", "tools/font-catalog.py",
     ".forgejo/actions/restore-cargo-downloads/action.yml",
-    ".forgejo/actions/merge-main/action.yml",
 )
 PACKAGES = ("crates/collab/collab-types", "crates/platform/tilo-clock", "crates/system/wire-frame")
 
