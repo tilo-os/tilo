@@ -147,12 +147,22 @@ impl Hydrator {
         {
             eprintln!("could not certify this device to {}: {error:#}", peer.id);
         }
+        let opening = Instant::now();
         let connection = tokio::time::timeout(
             CONNECT_TIMEOUT,
             self.net.connect(peer.clone(), iroh_blobs::ALPN),
         )
         .await
         .map_err(|_| anyhow!("connecting to {} timed out", peer.id))??;
+        // A first read that is slow because its route had to be set up says so: the
+        // certificate exchange and this connect are what a warm route was for.
+        if opening.elapsed() > Duration::from_millis(100) {
+            eprintln!(
+                "content connection to {} opened in {:?}",
+                peer.id,
+                opening.elapsed()
+            );
+        }
         let mut pool = self.blob_connections.lock().await;
         // Another caller may have connected meanwhile; keep one.
         if let Some(existing) = pool.get(&key)
