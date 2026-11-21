@@ -110,7 +110,7 @@ pub fn document_access_pane(
             {
                 name
             } else {
-                format!("{name} · {document}")
+                format!("{name}: {document}")
             };
             ((app, document), label)
         })

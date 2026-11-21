@@ -298,7 +298,7 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
         .chain(person.extra.as_deref())
         .collect();
     if !details.is_empty() {
-        row = row.secondary(details.join(" · "));
+        row = row.secondary(details.join(", "));
     }
     if person.offers == Offers::Nothing {
         return Box::new(row.value(person.role.clone()));
