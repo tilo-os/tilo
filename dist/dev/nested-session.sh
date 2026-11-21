@@ -861,6 +861,21 @@ else
     sed 's/^/    fs: /' "$logs/files-workspace.log" >&2 2>/dev/null || true
 fi
 
+# The person's cloud account folders, served as a Tilo device serves them
+# (`tilo-fs-cloud.service`): one mount per enabled cloud storage account under ~/Remote, the
+# account socket Settings lists and syncs them on, and the file socket Files browses and imports
+# through. Without it a Nextcloud or WebDAV account signs in and never shows its files.
+mkdir -p "$HOME/Remote" "$XDG_STATE_HOME/tilo/cloud" "$runtime/tilo-fs-cloud" "$runtime/tilo-fs-cloud-files"
+chmod 700 "$runtime/tilo-fs-cloud" "$runtime/tilo-fs-cloud-files"
+setsid "$bin/fs" cloud-service --mounts-root "$HOME/Remote" --state-root "$XDG_STATE_HOME/tilo/cloud" \
+    --fs-binary "$bin/fs" \
+    --control-socket "$runtime/tilo-fs-cloud/control.sock" \
+    --file-socket "$runtime/tilo-fs-cloud-files/files.sock" > "$logs/cloud.log" 2>&1 &
+cloud_pid=$!
+children+=("$cloud_pid")
+wait_for_socket "$runtime/tilo-fs-cloud/control.sock" "$cloud_pid" \
+    || say "the session's cloud account folders did not start: cloud accounts show no files (see $logs/cloud.log)"
+
 cat >&2 <<EOF
     drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control $( ((headless)) && echo 'snapshot /tmp/shot.png' || echo windows)
 EOF

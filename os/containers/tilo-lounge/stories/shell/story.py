@@ -613,6 +613,12 @@ def become_person(out: Path) -> None:
             continue
         for path in [top, *(top.rglob("*") if top.is_dir() else [])]:
             os.chown(path, account.pw_uid, account.pw_gid, follow_symlinks=False)
+    # A person mounts their workspace and their cloud accounts' folders through FUSE, which
+    # a Fedora machine's udev opens to every account. A check's machine runs no udev, so the
+    # device keeps the kernel's root-only mode until the machine opens it the same way.
+    fuse = Path("/dev/fuse")
+    if fuse.exists():
+        fuse.chmod(0o666)
     os.initgroups(PERSON_ACCOUNT, account.pw_gid)
     # Root stays the saved id, so `machine()` can take it back; what this starts runs as the
     # person alone, since a program started keeps only the id it runs as.
