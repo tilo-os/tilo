@@ -350,30 +350,27 @@ pub fn prepare_approval(
     // Every refusal happens before the token is redeemed: a refusal
     // after it would spend the token on a device that never hears back.
     let mut projection = approval_projection(options, identity)?;
-    let cert = redeem_pending(options, identity, pending)?;
-    // Whichever kind of device joined, it is a device of the person's and is
-    // handed the person's own store, which lists every device they certified:
-    // a server that received no session of theirs learns the others from it
-    // alone. The approving device hands the document it reads its own from.
+    // Whichever kind of device joined, it is a device of the person's: its
+    // certificate enters the person's own store when its token is redeemed, as
+    // every device's does, and it is handed that store, which lists every
+    // device they certified. A server that received no session of theirs
+    // learns the others from it alone.
     let store = options
         .identity_dir
         .map(|identity_dir| fleet_store(options.identity_root, identity_dir, options.person_uid))
-        .or_else(|| DeviceFleetStore::from_env().ok());
-    match store {
-        Some(store) => {
-            projection.fleet_json = Some(
-                store
-                    .transferred(&hex::encode(cert.user_public_key), &cert)
-                    .context("hand the joining device this identity's fleet")?,
-            );
-        }
+        .or_else(|| DeviceFleetStore::from_env().ok())
         // A personal device names its identity directory, so only a home peer
         // reaches this: without one the machine could never ask its person's
         // devices, which is what the enrollment is for.
-        None => bail!(
-            "this device holds no identity directory to hand the machine the person's devices from"
-        ),
-    }
+        .context(
+            "this device holds no identity directory to hand the machine the person's devices from",
+        )?;
+    let cert = redeem_pending(options, identity, pending, &store)?;
+    projection.fleet_json = Some(
+        store
+            .transferred(&hex::encode(cert.user_public_key), &cert)
+            .context("hand the joining device this identity's fleet")?,
+    );
     let signed = sign_response(
         ResponsePayload {
             nonce: pending.token.nonce,
@@ -408,11 +405,9 @@ fn redeem_pending(
     options: &ApprovalOptions<'_>,
     identity: &ApprovalIdentity,
     pending: &PendingApproval,
+    fleet: &DeviceFleetStore,
 ) -> anyhow::Result<DeviceCert> {
     let now = now_ns()?;
-    let fleet = options
-        .identity_dir
-        .map(|identity_dir| fleet_store(options.identity_root, identity_dir, options.person_uid));
     let sign_here = |digest: &[u8]| {
         let digest: &[u8; 32] = digest
             .try_into()
@@ -425,7 +420,7 @@ fn redeem_pending(
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
     tilo_identity::enrollment::redeem(
-        fleet.as_ref(),
+        Some(fleet),
         &NonceStore::under(options.identity_root),
         &Redemption {
             token: &pending.token,

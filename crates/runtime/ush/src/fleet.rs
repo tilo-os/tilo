@@ -3,8 +3,7 @@
 //! The images an environment stacks may come from any of the user's devices, so which
 //! those are is read afresh: this device's certificate from the identity, the fleet
 //! record the identity host keeps (`fleets/<user>.json`: every device enrolled and
-//! removed), and the home peers enrolled for the user (`peers/home-peers.json`), each
-//! with the certificate it was enrolled under. Nothing is remembered between reads, so a
+//! removed, the person's servers among them). Nothing is remembered between reads, so a
 //! removed device is refused as soon as the removal has synced.
 
 use std::path::{Path, PathBuf};
@@ -26,12 +25,6 @@ struct FleetRecord {
     identity_id: String,
     certificates: Vec<DeviceCert>,
     revocations: Vec<RevocationEntry>,
-}
-
-#[derive(serde::Deserialize)]
-struct HomePeer {
-    #[serde(default)]
-    device_cert: Option<DeviceCert>,
 }
 
 impl UserFleet {
@@ -78,19 +71,6 @@ impl FleetSource for UserFleet {
                 for entry in record.revocations {
                     let _ = fleet.revoke(entry);
                 }
-            }
-        }
-        let home_peers = self
-            .identity
-            .user_pubkey
-            .parent()
-            .and_then(Path::parent)
-            .map(tilo_user_identity::home_peer_registry_path);
-        if let Some(path) = home_peers
-            && let Some(peers) = read_json::<Vec<HomePeer>>(&path)?
-        {
-            for cert in peers.into_iter().filter_map(|peer| peer.device_cert) {
-                let _ = fleet.certify(cert);
             }
         }
         Ok(fleet)
@@ -170,27 +150,16 @@ mod tests {
             })
         };
         std::fs::write(&fleet_file, record(Vec::new()).to_string()).unwrap();
-        std::fs::create_dir_all(dir.path().join("system/peers")).unwrap();
-        std::fs::write(
-            tilo_user_identity::home_peer_registry_path(&dir.path().join("system")),
-            serde_json::json!([
-                { "label": "home", "device_cert": cert(&root, [4; 32]) },
-                { "label": "someone's", "device_cert": cert(&other_root, [5; 32]) },
-                { "label": "uncertified" },
-            ])
-            .to_string(),
-        )
-        .unwrap();
 
         let now = tilo_clock::unix_now_ns();
         let fleet = source.fleet().unwrap();
-        for device in [[1; 32], [2; 32], [4; 32]] {
+        for device in [[1; 32], [2; 32]] {
             assert_eq!(
                 fleet.certification(&device, now),
                 DeviceCertification::Certified
             );
         }
-        for device in [[3; 32], [5; 32], [6; 32]] {
+        for device in [[3; 32], [6; 32]] {
             assert_eq!(
                 fleet.certification(&device, now),
                 DeviceCertification::Uncertified

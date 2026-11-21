@@ -129,7 +129,7 @@ pub fn timers_reliable() -> bool {
     clock().is_some_and(|clock| clock.platform.reliable())
 }
 
-/// Whether writes to the identity directory and the home-peer registry, by
+/// Whether writes to the identity directory, by
 /// this process or any other, are announced. Without it a consumer that
 /// reads the device fleet keeps its one-second re-check while it does.
 ///
@@ -209,17 +209,10 @@ impl Clock {
 /// registry answer, each with whether its subdirectories are watched too.
 #[cfg(target_os = "linux")]
 fn identity_directories() -> Vec<(std::path::PathBuf, bool)> {
-    let mut directories = Vec::with_capacity(2);
-    if let Ok(registry) = crate::registry::IdentityRegistryStore::from_env() {
-        directories.push((registry.identity_dir().to_path_buf(), true));
-    }
-    let paths = crate::provisioning::collaboration_identity_paths();
-    if let Some(root) = paths.user_pubkey.parent().and_then(std::path::Path::parent)
-        && let Some(peers) = tilo_server_protocol::home_peer_registry_path(root).parent()
-    {
-        directories.push((peers.to_path_buf(), false));
-    }
-    directories
+    crate::registry::IdentityRegistryStore::from_env()
+        .map(|registry| (registry.identity_dir().to_path_buf(), true))
+        .into_iter()
+        .collect()
 }
 
 #[cfg(target_os = "linux")]

@@ -89,7 +89,7 @@ impl DeviceFleetStore {
         #[cfg(test)]
         LOADS.with(|loads| loads.set(loads.get().saturating_add(1)));
         let path = self.path(identity_id);
-        let mut fleet: DeviceFleet = if path.exists() {
+        let fleet: DeviceFleet = if path.exists() {
             serde_json::from_slice(&fs::read(path)?)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
         } else {
@@ -102,41 +102,12 @@ impl DeviceFleetStore {
             ));
         }
         fleet.check(identity_id)?;
-        // Home peers are enrolled by the privileged LAN broker rather than the
-        // ordinary device-completion UI. Their root-signed certificates live
-        // in the shared enrollment registry and are projected into the same
-        // fleet so list/revoke works identically for headless devices.
-        if let Some(registry) = self.home_peer_registry()
-            && let Ok(metadata) = fs::metadata(&registry)
-            && metadata.len() <= 1024 * 1024
-        {
-            let registrations: Vec<tilo_server_protocol::HomePeerRegistration> =
-                serde_json::from_slice(&fs::read(&registry)?)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            let identity = decode_hex_32(identity_id)?;
-            for cert in registrations
-                .into_iter()
-                .filter_map(|registration| registration.device_cert)
-                .filter(|cert| cert.user_public_key == identity)
-            {
-                verify_device_cert(&cert)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-                if !fleet
-                    .certificates
-                    .iter()
-                    .any(|known| known.device_public_key == cert.device_public_key)
-                {
-                    fleet.certificates.push(cert);
-                }
-            }
-        }
         Ok(fleet)
     }
 
     /// [`Self::load`] for authorization checks that run on every remote
     /// action and broker call. The verified fleet is served from memory while
-    /// none of its backing files (the fleet file and the home-peer registry)
-    /// changed: one `stat` each instead of reading, parsing and verifying
+    /// its file did not change: one `stat` instead of reading, parsing and verifying
     /// them. Every writer replaces the fleet file by rename and `Self::save`
     /// drops the entry, and a file another process rewrites in place changes
     /// its length or modification time, so a revocation is seen by the very
@@ -711,15 +682,6 @@ impl DeviceFleetStore {
             .join(format!("{identity_id}.json"))
     }
 
-    /// The shared home-peer enrollment registry projected into every fleet.
-    fn home_peer_registry(&self) -> Option<PathBuf> {
-        self.identity_paths
-            .user_pubkey
-            .parent()
-            .and_then(Path::parent)
-            .map(tilo_server_protocol::home_peer_registry_path)
-    }
-
     /// Stamps of the files [`Self::load_cached`] reads for `identity_id`, or
     /// `None` when one can't be examined: what a reader that derives something
     /// from the fleet — the person's record keeps the keys it certifies —
@@ -732,7 +694,6 @@ impl DeviceFleetStore {
     fn cache_key(&self, identity_id: &str) -> FleetKey {
         FleetKey {
             fleet: self.path(identity_id),
-            home_peers: self.home_peer_registry(),
         }
     }
 }
@@ -757,23 +718,18 @@ pub(crate) fn loads_on_this_thread() -> usize {
     LOADS.with(std::cell::Cell::get)
 }
 
-/// The files one fleet is loaded from.
+/// The file one fleet is loaded from.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct FleetKey {
     fleet: PathBuf,
-    home_peers: Option<PathBuf>,
 }
 
 impl FleetKey {
-    /// Stamps of both files, or `None` when either can't be examined (the
-    /// caller then loads from disk and caches nothing).
+    /// The file's stamp, or `None` when it can't be examined (the caller
+    /// then loads from disk and caches nothing).
     fn stamps(&self) -> Option<FleetStamps> {
         Some(FleetStamps {
             fleet: FileStamp::of(&self.fleet).ok()?,
-            home_peers: match &self.home_peers {
-                Some(path) => FileStamp::of(path).ok()?,
-                None => None,
-            },
         })
     }
 }
@@ -786,24 +742,16 @@ struct CachedFleet {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FleetStamps {
     fleet: Option<FileStamp>,
-    home_peers: Option<FileStamp>,
 }
 
 impl FleetStamps {
     pub(crate) fn settled(self) -> bool {
-        [self.fleet, self.home_peers]
-            .into_iter()
-            .flatten()
-            .all(FileStamp::settled)
+        self.fleet.is_none_or(FileStamp::settled)
     }
 
-    /// When the last of its files settles ([`FileStamp::settles_at`]).
+    /// When its file settles ([`FileStamp::settles_at`]).
     pub(crate) fn settles_at(self) -> Option<SystemTime> {
-        [self.fleet, self.home_peers]
-            .into_iter()
-            .flatten()
-            .map(FileStamp::settles_at)
-            .max()
+        self.fleet.map(FileStamp::settles_at)
     }
 }
 
