@@ -1,10 +1,10 @@
 use super::morning::{MorningCommand, MorningPreferences, MorningSource};
 use tilo_desktop_model::WorkspaceId;
 use tilo_sort::CompactSort as _;
+mod compare;
 mod morning_sources;
 mod runs;
 mod serve;
-mod compare;
 pub(crate) use compare::comparison_field_changes;
 use compare::{comparison_change_labels, detail_provenance};
 pub use serve::{ServedTree, is_document_write, is_personal, is_read, refused_to_agent};
@@ -2397,7 +2397,9 @@ impl WorkspaceChange {
         let recorded = counts.recorded.clone();
         Self {
             workspace: workspace_touched(doc, &patches, hash),
-            bookkeeping: is_workspace_bookkeeping(&patches, &|key| recorded.iter().any(|held| held == key)),
+            bookkeeping: is_workspace_bookkeeping(&patches, &|key| {
+                recorded.iter().any(|held| held == key)
+            }),
             counts,
         }
     }
