@@ -10,7 +10,7 @@
 #       --owner-disk DEV_DISK \
 #       (--fedora-image PATH | --fedora-url URL) --fedora-sha256 SHA256 \
 #       [--release-tag imager-vX.Y.Z] [--out DIRECTORY] \
-#       [--development-layers DIRECTORY]
+#       [--development-layers DIRECTORY] [--owner-layers DIRECTORY]
 #
 # One OVMF guest boots a real retained Fedora (Fedora Cloud Base, UEFI,
 # pinned by SHA-256) with a second, empty disk. The staging helper starts in a
@@ -27,9 +27,11 @@
 # back with `tilo server recovery-key`.
 #
 # With --development-layers, the staging request also carries a directory of
-# prebuilt installer layers: they ride beside the plan and the token into the
-# staged root, and the installed development server applies them at its first
-# boot.
+# component layers (`tilo-vm layer-pack --incoming`): they ride beside the plan
+# and the token into the staged root, and the installed development server
+# applies them at its first boot, before its services start. With
+# --owner-layers, the owner's device applies such a directory the same way
+# (`tilo-vm --local apply-incoming`) before its session starts.
 #
 # Evidence: every stage is recorded under OUT/evidence; serials that may hold
 # a secret are never copied.
@@ -43,7 +45,7 @@ die() { printf 'server plan install cycle: %s\n' "$*" >&2; exit 1; }
 note() { printf 'server plan install cycle: %s\n' "$*" >&2; }
 usage() { sed -n '2,35p' "$0" >&2; exit 2; }
 
-bundle_dir="" installer_disk="" imager="" owner_disk="" development_layers=""
+bundle_dir="" installer_disk="" imager="" owner_disk="" development_layers="" owner_layers=""
 fedora_image="" fedora_url="" fedora_sha256="" out=""
 release_tag="${TILO_INTERNAL_CYCLE_RELEASE_TAG:-imager-v0.0.0}"
 # The same Fedora Cloud Base the Linux VM end-to-end check pins.
@@ -60,6 +62,7 @@ while [ "$#" -gt 0 ]; do
     --fedora-sha256) fedora_sha256="${2:-}"; shift 2 ;;
     --release-tag) release_tag="${2:-}"; shift 2 ;;
     --development-layers) development_layers="${2:-}"; shift 2 ;;
+    --owner-layers) owner_layers="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage ;;
@@ -263,6 +266,24 @@ owner ssh 'mkdir -p /var/tmp' >/dev/null
 owner ssh "mkdir -p $owner_root" >/dev/null
 owner ssh "cat > $owner_driver" < "$dev_dir/server-plan-owner.sh" \
   || die 'the owner driver did not reach the guest'
+if [ -n "$owner_layers" ]; then
+  # The components this run rebuilt, applied as a developer swaps them into a
+  # device: imported and merged through the device's own tilo-vmd.
+  [ -d "$owner_layers" ] || die "--owner-layers must name a directory: $owner_layers"
+  owner ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' install -d -m 0700 /var/lib/tilo-vm/incoming" \
+    || die 'the owner device has no tilo-vm state to take layers into'
+  for layer in "$owner_layers"/*; do
+    [ -f "$layer" ] && [ ! -L "$layer" ] || die "--owner-layers holds something not a regular file: $layer"
+    owner ssh "cat > /var/tmp/$(basename "$layer")" < "$layer" \
+      || die "the owner device did not take $(basename "$layer")"
+    owner ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' install -m 0600 /var/tmp/$(basename "$layer") /var/lib/tilo-vm/incoming/ && rm -f /var/tmp/$(basename "$layer")" \
+      || die "the owner device did not stage $(basename "$layer")"
+  done
+  TILO_SSH_BOUND=600 owner ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' tilo-vm --local apply-incoming" \
+    > "$evidence/02-owner-layers.txt" 2>&1 \
+    || { cat "$evidence/02-owner-layers.txt" >&2; die 'the owner device did not apply its layers'; }
+  cat "$evidence/02-owner-layers.txt" >&2
+fi
 note 'the owner device is up'
 owner_profile start || die 'the owner profile did not start'
 owner_profile wait || die 'the owner session did not answer'
