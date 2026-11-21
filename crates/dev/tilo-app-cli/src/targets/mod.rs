@@ -31,7 +31,7 @@ pub mod workspace;
 #[derive(Clone, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent CLI-exposed build knob (release, assertions, \
+    reason = "each bool is an independent CLI-exposed build knob (release, assertions, names, \
               allow_planned, no_default_features), not combinatorial state: every combination is \
               a build someone can ask for"
 )]
@@ -44,6 +44,10 @@ pub struct TargetRequest {
     /// is never one that gained speed by dropping the qualification checks.
     /// Requires `release`.
     pub assertions: bool,
+    /// Web only: keep the module's function names (its wasm name section), so
+    /// a CPU profile of the page names what it spends its time in. Otherwise
+    /// the same optimised build. Requires `release`.
+    pub names: bool,
     /// Accept required capabilities whose backend is only planned.
     pub allow_planned: bool,
     /// Web only: which bundle to build.
@@ -59,6 +63,7 @@ impl TargetRequest {
             target,
             release: false,
             assertions: false,
+            names: false,
             allow_planned: false,
             bundle: WebBundle::App,
             features: Vec::new(),

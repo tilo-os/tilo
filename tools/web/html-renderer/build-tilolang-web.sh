@@ -6,15 +6,21 @@
 # tilolang.html to open it with. Runs where cargo builds (the builder, through
 # `$CARGO exec`); the output lands in $CARGO_TARGET_DIR/htmlrenderer/tilolang.
 #
-# usage: build-tilolang-web.sh [APP_DIR] [--search DIR]...   (default: apps/tl/gallery --search apps/tl)
+# `--names` keeps the module's function names, so a CPU profile of the page
+# (tilolang-perf.mjs --profile) names where its time goes; it lands in
+# htmlrenderer/tilolang-names instead.
+#
+# usage: build-tilolang-web.sh [--names] [APP_DIR] [--search DIR]...   (default: apps/tl/gallery --search apps/tl)
 set -euo pipefail
+names=()
+out=$CARGO_TARGET_DIR/htmlrenderer/tilolang
+if [[ ${1:-} == --names ]]; then names=(--names); out+=-names; shift; fi
 app_dir=${1:-apps/tl/gallery}
 shift || true
 search=("$@")
 if [[ ${#search[@]} -eq 0 ]]; then search=(--search apps/tl); fi
-out=$CARGO_TARGET_DIR/htmlrenderer/tilolang
 cargo build --locked -p tilo-app-cli --bin tilo-app -p tilolang-cli --bin tilolang
-"$CARGO_TARGET_DIR/debug/tilo-app" build --target web --bundle app --release apps/tilolang
+"$CARGO_TARGET_DIR/debug/tilo-app" build --target web --bundle app --release "${names[@]}" apps/tilolang
 rm -rf "$out"
 mkdir -p "$out"
 cp -r "$CARGO_TARGET_DIR/tilo-app/web/tilolang-app/bundle/." "$out/"

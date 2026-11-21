@@ -22,6 +22,10 @@ use crate::{DevRequest, PackageOutcome, PackageRequest, resolve_app_dir};
 const BUNDLE_MODULE: &str = "pkg/tilo_browser_runtime_bg.wasm";
 
 #[derive(Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a command-line flag of `tilo-app build --platform web`; they combine freely"
+)]
 pub struct WebBuildRequest {
     /// A directory to hold a copy of the bundle; the build itself stays in
     /// `<target>/tilo-app/web/<package>/bundle`.
@@ -36,6 +40,8 @@ pub struct WebBuildRequest {
     /// workspace's `wasm-assert` profile), so a measured or qualified bundle
     /// is never faster for having stopped checking.
     pub assertions: bool,
+    /// With `release`: keep the module's function names, for a profile of the page.
+    pub names: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,8 +87,7 @@ pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
         );
     }
     let started = Instant::now();
-    let outcome =
-        crate::targets::build(&app_dir, &app_bundle(request.release, request.assertions))?;
+    let outcome = crate::targets::build(&app_dir, &app_bundle(request))?;
     let output = match &request.output {
         Some(path) => {
             let output = crate::absolute_from(&app_dir, path);
@@ -106,10 +111,11 @@ pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
     })
 }
 
-fn app_bundle(release: bool, assertions: bool) -> TargetRequest {
+fn app_bundle(web: &WebBuildRequest) -> TargetRequest {
     let mut request = TargetRequest::new(Target::Web);
-    request.release = release;
-    request.assertions = assertions;
+    request.release = web.release;
+    request.assertions = web.assertions;
+    request.names = web.names;
     request
 }
 
@@ -173,7 +179,7 @@ fn serve_web(start: &Path, options: &WebDevOptions, watch: bool, debounce: Durat
         .with_context(|| format!("--bind {} is not an address and port", options.bind))?;
     crate::targets::run(
         start,
-        &app_bundle(false, false),
+        &app_bundle(&WebBuildRequest::default()),
         &[],
         &ServeOptions {
             address,
@@ -194,13 +200,21 @@ mod tests {
 
         phase the_profile_is_the_one_asked_for;
         {
-            let request = app_bundle(true, false);
+            let web = |assertions, names| WebBuildRequest {
+                release: true,
+                assertions,
+                names,
+                ..WebBuildRequest::default()
+            };
+            let request = app_bundle(&web(false, false));
             assert_eq!(request.target, Target::Web);
             assert!(request.release);
             assert!(!request.assertions);
-            // A qualification build asks for the asserting release profile; the
-            // request carries it rather than the bundle deciding for itself.
-            assert!(app_bundle(true, true).assertions);
+            assert!(!request.names);
+            // A qualification build asks for the asserting release profile, and a profiled one
+            // for the names; the request carries them rather than the bundle deciding for itself.
+            assert!(app_bundle(&web(true, false)).assertions);
+            assert!(app_bundle(&web(false, true)).names);
         }
 
         phase an_output_copy_replaces_what_was_there;

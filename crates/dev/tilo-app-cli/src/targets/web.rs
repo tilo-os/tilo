@@ -54,6 +54,9 @@ pub(super) fn build(project: &Project, request: &TargetRequest) -> Result<BuildO
         "--apps-json".into(),
         apps.display().to_string(),
     ];
+    if request.names {
+        args.push("--names".into());
+    }
     // A development bundle is brought up to date in place; a release bundle is
     // built whole, as it ships.
     if request.release || !bundle.join("build.json").is_file() {

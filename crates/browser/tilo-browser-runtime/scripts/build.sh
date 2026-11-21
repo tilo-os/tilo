@@ -55,7 +55,7 @@
 # copied again, and fonts, data and the compute module are kept. A loop that
 # edits only web/*.mjs takes seconds; one that edits Rust,
 # the compile, wasm-bindgen and, unless `--no-split`, the split.
-# `--names` (a bundle built from source) keeps the modules' function names (their wasm
+# `--names` (an app bundle, release or assert) keeps the module's function names (its wasm
 # name section), which a shipped bundle strips: a profile of the page then
 # names the functions it spends its time in rather than numbering them. It is
 # otherwise the same build, compiled, split and optimized alike, so it
@@ -164,7 +164,8 @@ esac
 # The runtime bundle is the web entry's: the pages the site serves, and the
 # module that gets a browser into a workspace. The apps' own code is not in
 # it — the page asks the server for them.
-[[ $names == 0 ]] || { echo '--names is for a bundle built from source, not the entry' >&2; exit 2; }
+[[ $names == 0 || $bundle == app ]] || { echo '--names is for an app bundle, not the entry' >&2; exit 2; }
+[[ $names == 0 || $profile == release || $profile == assert ]] || { echo '--names is for a release or assert bundle' >&2; exit 2; }
 [[ $profile != check && $profile != local ]] || { echo "--profile $profile is for a bundle built from source" >&2; exit 2; }
 case "$bundle" in
   runtime) package=tilo-browser-runtime ;;
@@ -193,6 +194,15 @@ else
   }
 fi
 bindgen_flags=()
+# `wasm-release` and `wasm-assert` strip the linked module's symbols; `wasm-split` and
+# `wasm-assert-split` are those profiles with them kept, for the name section.
+if [[ $names == 1 ]]; then
+  defines_profile wasm-split || { echo '--names needs the workspace'"'"'s wasm-split profiles' >&2; exit 2; }
+  case $profile in
+    release) cargo_profile=wasm-split ;;
+    assert) cargo_profile=wasm-assert-split ;;
+  esac
+fi
 # Cargo writes a profile's output under the profile's own name, but dev's
 # under `debug`.
 artifact=$cargo_profile

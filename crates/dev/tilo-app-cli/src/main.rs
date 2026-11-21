@@ -649,7 +649,7 @@ impl TargetArg {
 #[derive(clap::Args)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent CLI flag (release, assertions, allow_planned, \
+    reason = "each bool is an independent CLI flag (release, assertions, names, allow_planned, \
               no_default_features); every combination is a build someone can ask for"
 )]
 struct TargetOptions {
@@ -662,6 +662,11 @@ struct TargetOptions {
     /// checking.
     #[arg(long, requires = "release")]
     assertions: bool,
+    /// Web only: with `--release`, keep the module's function names (its wasm
+    /// name section), so a CPU profile of the page names the functions it
+    /// spends its time in. Otherwise the same optimised bundle.
+    #[arg(long, requires = "release")]
+    names: bool,
     /// Web only: which bundle to build.
     #[arg(long, value_enum, default_value = "app")]
     bundle: tilo_app_cli::targets::WebBundle,
@@ -684,6 +689,7 @@ impl TargetOptions {
         let mut request = tilo_app_cli::targets::TargetRequest::new(target);
         request.release = self.release;
         request.assertions = self.assertions;
+        request.names = self.names;
         request.allow_planned = self.allow_planned;
         request.bundle = self.bundle;
         request.features.clone_from(&self.features);
@@ -2145,6 +2151,7 @@ fn web_build_request(args: BuildArgs) -> tilo_app_cli::web::WebBuildRequest {
         app_only: args.app_only,
         release: args.options.release,
         assertions: args.options.assertions,
+        names: args.options.names,
     }
 }
 
@@ -2182,6 +2189,9 @@ fn build_android(
     }
     if args.options.assertions {
         anyhow::bail!("--assertions keeps a web bundle's assertions; it is for --platform web");
+    }
+    if args.options.names {
+        anyhow::bail!("--names keeps a web bundle's function names; it is for --platform web");
     }
     let build = tilo_app_cli::android::build(
         path,
@@ -2240,6 +2250,9 @@ fn build_native(
     }
     if args.options.assertions {
         anyhow::bail!("--assertions keeps a web bundle's assertions; it is for --platform web");
+    }
+    if args.options.names {
+        anyhow::bail!("--names keeps a web bundle's function names; it is for --platform web");
     }
     let build = tilo_app_cli::build_native(
         path,
