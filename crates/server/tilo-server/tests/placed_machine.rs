@@ -107,6 +107,8 @@ fn address_of(endpoint: &iroh::Endpoint) -> String {
 /// service beside it, and a placer: the two fakes answer as the test says.
 struct Fleet {
     hosted: Hosted,
+    /// The server's placement, which asks the member as the server's own device.
+    shells: Arc<PlacedShells>,
     machines: Arc<PlacedMachines>,
     placer_address: String,
     members: Members,
@@ -178,8 +180,6 @@ async fn fleet() -> Fleet {
     shells.ask_from(
         hosted.host.workspaces().action_service(),
         hosted.router.endpoint().clone(),
-    );
-    shells.read_leases(
         hosted.host.workspaces().clone(),
         tokio::runtime::Handle::current(),
     );
@@ -187,6 +187,7 @@ async fn fleet() -> Fleet {
     hosted.host.workspaces().machines(machines.clone());
     Fleet {
         hosted,
+        shells,
         machines,
         placer_address,
         members,
@@ -219,15 +220,10 @@ impl Fleet {
             .lock()
             .unwrap()
             .insert(format!("{workspace}/default"));
-        // Any request the server signs in the workspace's name makes the
+        // Any request the server places in the workspace's name makes the
         // member enter it, and then it looks at which VMs it keeps.
         let member = &self.members[VM_HOST];
         let address = tilo_server::placed_shells::member_address(member).unwrap();
-        let device = self.hosted.host.workspaces().action_service().remote(
-            self.hosted.router.endpoint(),
-            &address,
-            workspace,
-        );
         let probe = InvokeRequest {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
@@ -243,8 +239,11 @@ impl Fleet {
             appearance: None,
         };
         let caller = Caller::local_app("tilo.server");
+        let (shells, placed) = (Arc::clone(&self.shells), workspace.to_owned());
         let _ = tokio::task::spawn_blocking(move || {
-            device
+            shells
+                .member_device(&address, &placed)
+                .unwrap()
                 .invoke(&caller, probe)
                 .wait_timeout(std::time::Duration::from_secs(30))
         })
@@ -400,8 +399,6 @@ async fn a_branch_the_member_refuses_fails_in_its_words() {
     posing.ask_from(
         ActionService::new(stranger.sk.clone(), Arc::new(NoActions)),
         stranger_endpoint,
-    );
-    posing.read_leases(
         fleet.hosted.host.workspaces().clone(),
         tokio::runtime::Handle::current(),
     );

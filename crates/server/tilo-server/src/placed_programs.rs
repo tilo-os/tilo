@@ -155,7 +155,8 @@ pub fn serve_placed(
     workspace: &str,
     start: Start,
 ) -> Result<Arc<Carried>, String> {
-    let (action_service, endpoint) = placed.asking()?;
+    // A host not running yet asks its placer nothing.
+    placed.asking()?;
     let until = Instant::now().checked_add(PLACE_PATIENCE);
     let late = move || until.is_none_or(|until| Instant::now() >= until);
     let mut waited = None;
@@ -170,7 +171,7 @@ pub fn serve_placed(
         format!("the placer named {holder}, which holds no machines this server knows of")
     })?;
     let address = placed_shells::member_address(member)?;
-    let device = action_service.remote(endpoint, &address, workspace);
+    let device = placed.member_device(&address, workspace)?;
     serve(
         Arc::new(device),
         Caller::local_app("tilo.server"),

@@ -375,11 +375,17 @@ impl HostShells {
                 runtime,
             );
         }
-        if let (ShellsAt::Placed(placed), Some(workspaces)) = (&self.at, server.workspaces()) {
-            placed.ask_from(workspaces.action_service(), server.endpoint());
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                placed.read_leases(workspaces.clone(), runtime);
-            }
+        if let (ShellsAt::Placed(placed), Some(workspaces), Ok(runtime)) = (
+            &self.at,
+            server.workspaces(),
+            tokio::runtime::Handle::try_current(),
+        ) {
+            placed.ask_from(
+                workspaces.action_service(),
+                server.endpoint(),
+                workspaces.clone(),
+                runtime,
+            );
         }
         if let (Some(machines), Some(workspaces)) = (self.machines(), server.workspaces()) {
             workspaces.machines(machines);
@@ -1532,7 +1538,12 @@ fn attach_resources(
         });
         // The VM hosts start the sessions when this host's own device asks.
         if let Some(workspaces) = server.workspaces() {
-            browsers.ask_from(workspaces.action_service(), server.endpoint());
+            browsers.ask_from(
+                workspaces.action_service(),
+                server.endpoint(),
+                workspaces.clone(),
+                tokio::runtime::Handle::current(),
+            );
         }
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);

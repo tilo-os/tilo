@@ -282,6 +282,56 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn where_the_asker_serves_rides_the_request_and_is_not_what_it_asks() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    let dispatcher = Arc::new(TestProvider::new());
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+    let (b_endpoint, b_action_service) = asking(&b.0).await;
+    let placement = tilo_workspace_join::sign_transport_hint(
+        "iroh",
+        "where b serves the workspace",
+        b.1.clone(),
+        [4; 32],
+        &b.0,
+    )
+    .unwrap();
+    let remote = b_action_service.placing(&b_endpoint, &engine.addr(), WORKSPACE, &placement);
+    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
+
+    // A request that says where its device serves the workspace is answered
+    // as any other, and what the answering device runs and records is the
+    // request exactly as asked: the placement is not part of it.
+    let first = InvocationId::new();
+    assert!(matches!(
+        invoked(&remote, &caller, first).await,
+        Ok(ReceiptStatus::Completed { .. })
+    ));
+    let asked = dispatcher.asked();
+    assert_eq!(
+        asked,
+        vec![invoke(first)],
+        "the request as asked, and only it"
+    );
+    let recorded = serde_json::to_string(&asked[0]).unwrap();
+    assert!(
+        !recorded.contains("where b serves the workspace"),
+        "nothing of the placement is in what the action records: {recorded}"
+    );
+
+    engine.close().await;
+    b_endpoint.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_device_that_is_not_the_sender_is_refused() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let a = device(&root, 2);
@@ -323,6 +373,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
             source: engine.device(),
             target: engine.device(),
             message: catalogue(),
+            placement: None,
         },
         now_ns(),
         &a.0,
@@ -352,6 +403,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
             source: b.1.device_public_key,
             target: c.1.device_public_key,
             message: catalogue(),
+            placement: None,
         },
         now_ns(),
         &b.0,
@@ -737,6 +789,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
                     wait_ms: None,
                 },
             },
+            placement: None,
         },
         now_ns(),
         &b.0,

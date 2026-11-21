@@ -405,6 +405,7 @@ impl PeerWorkspaces for Reads {
     fn read_for<'a>(
         &'a self,
         asker: [u8; 32],
+        placement: Option<&'a tilo_peer_state::join::TransportHint>,
         workspace: &'a str,
         read: &'a mut (dyn FnMut(&StatePeer) + Send),
     ) -> ReadFuture<'a> {
@@ -420,7 +421,7 @@ impl PeerWorkspaces for Reads {
             let Some(entering) = entering else {
                 return false;
             };
-            if let Err(reason) = entering.enter(workspace).await {
+            if let Err(reason) = entering.enter(workspace, placement).await {
                 tracing::debug!(%workspace, %reason, "a workspace's request is refused here");
                 return false;
             }

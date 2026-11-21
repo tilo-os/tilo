@@ -308,10 +308,16 @@ pub trait BrowserSessions: Send + Sync {
     }
 
     /// Ask the hosts that run sessions as `actions`'s device, from `endpoint`:
-    /// this host's own, once it runs. Sessions that need no host to ask
-    /// ignore it.
-    fn ask_from(&self, actions: tilo_peer_state::actions::ActionService, endpoint: iroh::Endpoint) {
-        let _ = (actions, endpoint);
+    /// this host's own, once it runs, holding `workspaces` read on `runtime`.
+    /// Sessions that need no host to ask ignore it.
+    fn ask_from(
+        &self,
+        actions: tilo_peer_state::actions::ActionService,
+        endpoint: iroh::Endpoint,
+        workspaces: crate::workspaces::Workspaces,
+        runtime: tokio::runtime::Handle,
+    ) {
+        let _ = (actions, endpoint, workspaces, runtime);
     }
 }
 
@@ -621,8 +627,11 @@ impl HostedBrowsers {
         &self,
         actions: tilo_peer_state::actions::ActionService,
         endpoint: iroh::Endpoint,
+        workspaces: crate::workspaces::Workspaces,
+        runtime: tokio::runtime::Handle,
     ) {
-        self.sessions.ask_from(actions, endpoint);
+        self.sessions
+            .ask_from(actions, endpoint, workspaces, runtime);
     }
 
     /// The runtime this host serves on, when it runs: where what it follows between messages — an

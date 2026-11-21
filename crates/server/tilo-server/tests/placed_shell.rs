@@ -2,8 +2,8 @@
 //! VM: the server asks the placer which host runs it, waits while none has
 //! workspace, and asks that VM host's member device, a device of the server's own
 //! person, to run it over the device action service. The member holds the workspace as
-//! any member does — entering it the first time the server asks about it, with
-//! the invitation the server's own `workspace.enter` answers — and its command works
+//! any member does — entering it the first time the server asks about it, as a member
+//! copy held from where the server's request says it serves the workspace — and its command works
 //! on the member's copy of the workspace's files, its output coming back as
 //! the run.
 
@@ -190,6 +190,8 @@ pub(super) async fn placed() -> Arc<Placed> {
     shells.ask_from(
         hosted.host.workspaces().action_service(),
         hosted.router.endpoint().clone(),
+        hosted.host.workspaces().clone(),
+        tokio::runtime::Handle::current(),
     );
     Arc::new(Placed {
         workspace,

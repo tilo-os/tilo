@@ -42,8 +42,7 @@
 
 use super::service::ServiceWorkspaces;
 use ed25519_dalek::SigningKey;
-use iroh::{Endpoint, EndpointAddr, EndpointId};
-use std::net::ToSocketAddrs as _;
+use iroh::Endpoint;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::ActionProvider;
@@ -145,19 +144,6 @@ impl Server {
     #[must_use]
     pub fn address(&self) -> &str {
         &self.address
-    }
-
-    /// The server's endpoint, as a session with it is dialed.
-    pub(in crate::standalone) fn endpoint_addr(&self) -> Result<EndpointAddr, String> {
-        let id = EndpointId::from_bytes(&self.endpoint).map_err(|error| error.to_string())?;
-        let sockets = self
-            .address
-            .to_socket_addrs()
-            .map_err(|error| format!("{}: {error}", self.address))?;
-        Ok(EndpointAddr::from_parts(
-            id,
-            sockets.map(iroh::TransportAddr::Ip),
-        ))
     }
 }
 
@@ -453,10 +439,8 @@ impl Member {
 }
 
 /// How long the server is given to admit this member to a workspace it placed
-/// here: the session, the ask and the invitation redeemed.
+/// here: the membership proven and the workspace taken in.
 const ENTER_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
-/// How long the invitation this member redeems stays redeemable.
-const ENTER_INVITATION_SECONDS: u64 = 600;
 /// How long a refusal keeps this member from asking the server about the same
 /// workspace again.
 const REFUSED_FOR: std::time::Duration = std::time::Duration::from_secs(30);
@@ -465,10 +449,11 @@ const REFUSED_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 const KEPT_REFUSALS: usize = 64;
 
 /// The workspaces a member answers for, as its device action service reads
-/// them: those it holds, and on a miss the one the server it serves enters it
-/// into. What admits the member is the server's own decision, never the ask:
-/// the invitation it answers names a device of its own person, and a request
-/// another person's device makes is refused here.
+/// them: those it holds, and on a miss the one the server it serves places
+/// here, which the member holds as a member copy from the server's signed
+/// address. What admits the member is the workspace's own decision, never the
+/// ask: the server admits a device its governance names, and a request another
+/// device makes is refused here.
 pub(in crate::standalone) struct Entering {
     workspaces: Arc<ServiceWorkspaces>,
     /// The server that places this member's work: the one host this member
@@ -498,9 +483,13 @@ impl Entering {
         self.server.device()
     }
 
-    /// Enter `workspace`, unless the member holds it already or the server
-    /// refused it a moment ago.
-    pub(in crate::standalone) async fn enter(&self, workspace: &str) -> Result<(), String> {
+    /// Enter `workspace`, which the server placed here from `placement`, its signed address for
+    /// the workspace, unless the member holds it already or the server refused it a moment ago.
+    pub(in crate::standalone) async fn enter(
+        &self,
+        workspace: &str,
+        placement: Option<&tilo_peer_state::join::TransportHint>,
+    ) -> Result<(), String> {
         let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(workspace) else {
             return Err("the action service named no workspace".into());
         };
@@ -515,11 +504,11 @@ impl Entering {
             // What another request waited for this turn entered.
             return Ok(());
         }
-        let entered = match tokio::time::timeout(ENTER_WITHIN, self.ask_the_server(workspace)).await
-        {
-            Ok(entered) => entered,
-            Err(_) => Err("the server did not admit this member in time".into()),
-        };
+        let entered =
+            match tokio::time::timeout(ENTER_WITHIN, self.hold_from(workspace, placement)).await {
+                Ok(entered) => entered,
+                Err(_) => Err("the server did not admit this member in time".into()),
+            };
         if let Err(reason) = &entered {
             // A member that cannot enter the workspaces its server places here
             // can do none of their work: every run for one is refused until
@@ -531,30 +520,24 @@ impl Entering {
         entered
     }
 
-    /// Ask the server to enter this member into `workspace`, and hold what it
-    /// answers.
-    async fn ask_the_server(
+    /// Hold `workspace` as a member copy synced with the server, proving this member's
+    /// membership at `placement`, the address the server signed for it.
+    async fn hold_from(
         &self,
         workspace: tilo_desktop_model::WorkspaceId,
+        placement: Option<&tilo_peer_state::join::TransportHint>,
     ) -> Result<(), String> {
-        let client = tilo_server_session::ServerClient::connect_v2_to_own_device(
-            self.workspaces.endpoint(),
-            self.server.endpoint_addr()?,
-            self.workspaces.operator(),
-            self.server.device(),
-            self.workspaces.device_cert().clone(),
-            self.workspaces.signer(),
-            tilo_user_identity::RevocationList::new(),
-        )
-        .await
-        .map_err(|error| format!("this member could not reach its server: {error}"))?;
-        let invitation = tilo_server_session::workspaces::enter_invitation(
-            &client,
-            &workspace.to_string(),
-            ENTER_INVITATION_SECONDS,
-        )
-        .await?;
-        if self.workspaces.copies().join_member(&invitation).await? != workspace {
+        let placement = placement.ok_or("the server named no address for the workspace")?;
+        if placement.host.device_public_key != self.server.device() {
+            return Err("the workspace was placed here from another device's address".into());
+        }
+        if self
+            .workspaces
+            .copies()
+            .hold_as_member(workspace, placement)
+            .await?
+            != workspace
+        {
             return Err("the server admitted this member to another workspace".into());
         }
         // The workspace's files are held from the join on: the folder fills

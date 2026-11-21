@@ -93,9 +93,17 @@ impl PlacedBrowsers {
         self
     }
 
-    /// Ask as `action_service`'s device, from `endpoint`: this host's own.
-    pub fn ask_from(&self, action_service: ActionService, endpoint: iroh::Endpoint) {
-        self.placed.ask_from(action_service, endpoint);
+    /// Ask as `action_service`'s device, from `endpoint`: this host's own, holding `workspaces`
+    /// read on `runtime`.
+    pub fn ask_from(
+        &self,
+        action_service: ActionService,
+        endpoint: iroh::Endpoint,
+        workspaces: crate::workspaces::Workspaces,
+        runtime: tokio::runtime::Handle,
+    ) {
+        self.placed
+            .ask_from(action_service, endpoint, workspaces, runtime);
     }
 
     /// Start `launch` in `workspace`'s Linux apps session in its VM, starting
@@ -132,8 +140,10 @@ impl PlacedBrowsers {
             material: material.to_owned(),
             launch: launch.clone(),
         };
-        let (action_service, endpoint) = self.placed.asking().map_err(words)?;
-        let device = action_service.remote(endpoint, &address, workspace);
+        let device = self
+            .placed
+            .member_device(&address, workspace)
+            .map_err(words)?;
         let opened: OpenedBrowser = follow(&device, &asked, linux_apps::target())
             .map_err(|error| match error {
                 OnMember::Plan(refusal) => AppRefusal::Refused(refusal),
@@ -158,8 +168,7 @@ impl PlacedBrowsers {
             .placed(workspace, &mut None, None)?
             .ok_or_else(|| "the placer named no host".to_owned())?;
         let address = self.member(&host)?;
-        let (action_service, endpoint) = self.placed.asking()?;
-        let device = action_service.remote(endpoint, &address, workspace);
+        let device = self.placed.member_device(&address, workspace)?;
         let asked = OpenBrowser {
             workspace: workspace.to_owned(),
             account: String::new(),
@@ -198,8 +207,10 @@ impl PlacedBrowsers {
             account: self.placed.account().to_owned(),
             material: material.to_owned(),
         };
-        let (action_service, endpoint) = self.placed.asking().map_err(OpenError::Error)?;
-        let device = action_service.remote(endpoint, &address, workspace);
+        let device = self
+            .placed
+            .member_device(&address, workspace)
+            .map_err(OpenError::Error)?;
         let opened = open_on(&device, &asked).map_err(|error| match error {
             OnMember::Refused(words) => OpenError::Refused(words),
             OnMember::Plan(refusal) => OpenError::Refused(refusal.message),
@@ -223,8 +234,7 @@ impl PlacedBrowsers {
             .placed(workspace, &mut None, None)?
             .ok_or_else(|| "the placer named no host".to_owned())?;
         let address = self.member(&host)?;
-        let (action_service, endpoint) = self.placed.asking()?;
-        let device = action_service.remote(endpoint, &address, workspace);
+        let device = self.placed.member_device(&address, workspace)?;
         stop_on(&device, workspace).map_err(|words| format!("{host}: {words}"))
     }
 
@@ -454,8 +464,14 @@ impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
         }
     }
 
-    fn ask_from(&self, action_service: ActionService, endpoint: iroh::Endpoint) {
-        PlacedBrowsers::ask_from(self, action_service, endpoint);
+    fn ask_from(
+        &self,
+        action_service: ActionService,
+        endpoint: iroh::Endpoint,
+        workspaces: crate::workspaces::Workspaces,
+        runtime: tokio::runtime::Handle,
+    ) {
+        PlacedBrowsers::ask_from(self, action_service, endpoint, workspaces, runtime);
     }
 }
 

@@ -62,8 +62,7 @@ impl PlacedMachines {
             .get(host)
             .ok_or_else(|| format!("{host} is no VM machine this host knows"))?;
         let address = placed_shells::member_address(member)?;
-        let (action_service, endpoint) = self.placed.asking()?;
-        Ok(action_service.remote(endpoint, &address, workspace))
+        self.placed.member_device(&address, workspace)
     }
 }
 

@@ -138,14 +138,16 @@ pub trait Workspaces: Send + Sync {
     /// [`Self::read`] for a request the device `asker` signed, which the
     /// action service is deciding: a view that comes to hold a workspace on a
     /// device's request may do so here, and only here, for the devices it
-    /// trusts to ask. Every other read only reads.
+    /// trusts to ask, from `placement`, the address the asker signed for the
+    /// workspace when it sent one. Every other read only reads.
     fn read_for<'a>(
         &'a self,
         asker: [u8; 32],
+        placement: Option<&'a crate::join::TransportHint>,
         workspace: &'a str,
         read: &'a mut (dyn FnMut(&crate::StatePeer) + Send),
     ) -> ReadFuture<'a> {
-        let _ = asker;
+        let _ = (asker, placement);
         self.read(workspace, read)
     }
 }
@@ -415,11 +417,11 @@ impl ActionService {
         self.read_workspace_for(None, workspace, read).await
     }
 
-    /// [`Self::read_workspace`] while deciding a request `asker` signed
-    /// ([`Workspaces::read_for`]).
+    /// [`Self::read_workspace`] while deciding a request `asker` signed, with the
+    /// placement it carried ([`Workspaces::read_for`]).
     async fn read_workspace_for<R: Send>(
         &self,
-        asker: Option<[u8; 32]>,
+        asker: Option<([u8; 32], Option<&crate::join::TransportHint>)>,
         workspace: &str,
         mut read: impl FnMut(&crate::StatePeer) -> R + Send,
     ) -> Option<R> {
@@ -431,7 +433,11 @@ impl ActionService {
         let mut answer = None;
         let mut reading = |peer: &crate::StatePeer| answer = Some(read(peer));
         let held = match asker {
-            Some(asker) => workspaces.read_for(asker, workspace, &mut reading).await,
+            Some((asker, placement)) => {
+                workspaces
+                    .read_for(asker, placement, workspace, &mut reading)
+                    .await
+            }
             None => workspaces.read(workspace, &mut reading).await,
         };
         held.then_some(()).and(answer)
@@ -447,16 +453,38 @@ impl ActionService {
         addr: &EndpointAddr,
         workspace: &str,
     ) -> RemoteDevice {
-        RemoteDevice(self.device_at(endpoint, addr, workspace))
+        RemoteDevice(self.device_at(endpoint, addr, workspace, None))
+    }
+
+    /// [`Self::remote`] for a device this device places `workspace`'s work on: every request
+    /// carries `placement`, this device's signed address for the workspace, so a device that does
+    /// not hold the workspace yet holds it from here ([`Workspaces::read_for`]).
+    #[must_use]
+    pub fn placing(
+        &self,
+        endpoint: &Endpoint,
+        addr: &EndpointAddr,
+        workspace: &str,
+        placement: &crate::join::TransportHint,
+    ) -> RemoteDevice {
+        let placement = postcard::to_allocvec(placement).ok();
+        RemoteDevice(self.device_at(endpoint, addr, workspace, placement))
     }
 
     /// The connection to one device, opened on first use and kept while it
     /// lasts, as both actions and offers go over it.
-    fn device_at(&self, endpoint: &Endpoint, addr: &EndpointAddr, workspace: &str) -> Arc<Device> {
+    fn device_at(
+        &self,
+        endpoint: &Endpoint,
+        addr: &EndpointAddr,
+        workspace: &str,
+        placement: Option<Vec<u8>>,
+    ) -> Arc<Device> {
         Arc::new(Device {
             endpoint: endpoint.clone(),
             addr: addr.clone(),
             workspace: workspace.to_owned(),
+            placement,
             target: self.device_of(*addr.id.as_bytes()),
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
@@ -524,7 +552,7 @@ impl ActionService {
             .filter(|addr| *addr.id.as_bytes() != device)
             .map(|addr| {
                 let target = *addr.id.as_bytes();
-                let asker = self.device_at(endpoint, &addr, &workspace);
+                let asker = self.device_at(endpoint, &addr, &workspace, None);
                 let (route, work) = (route.clone(), work.clone());
                 (
                     target,
@@ -639,15 +667,24 @@ impl ActionService {
                 reason: error.to_string(),
             })?;
         let now = tilo_clock::wall();
+        // A placement that does not decode is no placement: the request is decided as any other.
+        let placement = action
+            .placement
+            .as_deref()
+            .and_then(|bytes| postcard::from_bytes::<crate::join::TransportHint>(bytes).ok());
         let (authority, certificate) = self
-            .read_workspace_for(Some(source), &action.workspace, |peer| {
-                let authority = peer.permissions(source, now);
-                let certificate = peer
-                    .certificates()
-                    .into_iter()
-                    .find(|certificate| certificate.device_public_key == source);
-                (authority, certificate)
-            })
+            .read_workspace_for(
+                Some((source, placement.as_ref())),
+                &action.workspace,
+                |peer| {
+                    let authority = peer.permissions(source, now);
+                    let certificate = peer
+                        .certificates()
+                        .into_iter()
+                        .find(|certificate| certificate.device_public_key == source);
+                    (authority, certificate)
+                },
+            )
             .await
             .ok_or_else(|| ActionCallError::Refused {
                 reason: "this device does not hold that workspace".into(),
@@ -971,6 +1008,9 @@ struct Device {
     endpoint: Endpoint,
     addr: EndpointAddr,
     workspace: String,
+    /// What every request carries of where this device serves the workspace, when it places the
+    /// workspace's work on the device ([`ActionService::placing`]).
+    placement: Option<Vec<u8>>,
     target: [u8; 32],
     key: Arc<dyn DeviceSigner>,
     runtime: tokio::runtime::Handle,
@@ -1093,6 +1133,7 @@ impl Device {
                 source: self.key.device_public_key(),
                 target: self.target,
                 message,
+                placement: self.placement.clone(),
             },
             now_ns(),
             self.key.as_ref(),

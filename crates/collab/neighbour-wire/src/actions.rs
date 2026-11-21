@@ -90,6 +90,12 @@ pub struct DeviceAction {
     /// is checked before the message is read.
     #[serde(with = "message_frame")]
     pub message: RemoteActionMessage,
+    /// Where the asking device serves `workspace`, for an answering device that does not hold it
+    /// yet and holds it from there: the asker's signed address for the workspace (a postcard
+    /// encoded `TransportHint`), which the answering device verifies before it trusts it. Part of
+    /// the request's signature, and never of what the action records.
+    #[serde(with = "serde_bytes")]
+    pub placement: Option<Vec<u8>>,
 }
 
 /// The action message as the bytes every transport carries it as.
@@ -372,6 +378,7 @@ mod tests {
                 correlation: 3,
                 query: CatalogueQuery::default(),
             },
+            placement: None,
         }
     }
 

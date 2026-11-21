@@ -96,9 +96,7 @@ fn splice(
     let Some(on_member) = placed.terminals().take(&hello.stream, &device) else {
         return Err(wire::refuse(to, NOT_HANDED));
     };
-    let (_, endpoint) = placed
-        .asking()
-        .map_err(|error| wire::refuse(to, &error))?;
+    let (_, endpoint) = placed.asking().map_err(|error| wire::refuse(to, &error))?;
     let runtime = tokio::runtime::Handle::current();
     let (connection, mut member_to, mut member_from) = dial(endpoint, on_member.address, &runtime)
         .map_err(|error| wire::refuse(to, &format!("the VM host is not reached: {error}")))?;
@@ -135,7 +133,8 @@ impl PlacedShells {
         secrets: Vec<VmSecret>,
         record: Recorder,
     ) -> Result<Opened, String> {
-        let (action_service, endpoint) = self.asking()?;
+        // A host not running yet asks its placer nothing.
+        self.asking()?;
         let mut waited = None;
         let host = self
             .placed(&opening.workspace, &mut waited, None)?
@@ -144,7 +143,7 @@ impl PlacedShells {
             format!("the placer named {host}, which is no VM host this host knows")
         })?;
         let address = member_address(member)?;
-        let device = action_service.remote(endpoint, &address, &opening.workspace);
+        let device = self.member_device(&address, &opening.workspace)?;
         let asked = OpenTerminal {
             session: opening.session.clone(),
             cols: opening.cols,
@@ -155,13 +154,10 @@ impl PlacedShells {
             size: self.size().as_str().to_owned(),
             secrets,
         };
-        let opened: TerminalOpened = crate::placed_machines::follow(
-            &device,
-            environment_terminals::target(),
-            &asked,
-        )?
-        .and_then(|value| serde_json::from_value(value).ok())
-        .ok_or_else(|| "the VM host answered no terminal".to_owned())?;
+        let opened: TerminalOpened =
+            crate::placed_machines::follow(&device, environment_terminals::target(), &asked)?
+                .and_then(|value| serde_json::from_value(value).ok())
+                .ok_or_else(|| "the VM host answered no terminal".to_owned())?;
         if let Some(runs) = opened.runs {
             self.follow_runs(address.clone(), runs, record)?;
         }
@@ -183,7 +179,12 @@ impl PlacedShells {
 
     /// Follow the runs the member at `address` handed this host as `runs`, recording each
     /// with `record`, until the session ends there.
-    fn follow_runs(&self, address: EndpointAddr, runs: String, record: Recorder) -> Result<(), String> {
+    fn follow_runs(
+        &self,
+        address: EndpointAddr,
+        runs: String,
+        record: Recorder,
+    ) -> Result<(), String> {
         let (_, endpoint) = self.asking()?;
         let (endpoint, runtime) = (endpoint.clone(), self.runtime()?.clone());
         std::thread::Builder::new()

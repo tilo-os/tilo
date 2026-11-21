@@ -186,6 +186,8 @@ async fn placed() -> Placed {
     shells.ask_from(
         hosted.host.workspaces().action_service(),
         hosted.router.endpoint().clone(),
+        hosted.host.workspaces().clone(),
+        tokio::runtime::Handle::current(),
     );
     Placed {
         workspace,

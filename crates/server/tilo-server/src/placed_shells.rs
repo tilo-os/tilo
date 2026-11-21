@@ -87,7 +87,8 @@ pub struct PlacedShells {
     /// The runtime this host dials its members on, once it asks them.
     runtime: OnceLock<tokio::runtime::Handle>,
     /// The workspaces this host holds, whose VM leases name the machine each
-    /// VM is kept on, and the runtime they are read on.
+    /// VM is kept on and whose holders name where this host serves each, and
+    /// the runtime they are read on.
     leases: OnceLock<(crate::workspaces::Workspaces, tokio::runtime::Handle)>,
     /// The terminal streams the members handed this host, handed on to the devices that
     /// opened them.
@@ -159,13 +160,19 @@ impl PlacedShells {
         }
     }
 
-    /// Ask as `action_service`'s device, from `endpoint`: this host's own.
-    /// Called on the runtime it dials them on.
-    pub fn ask_from(&self, action_service: ActionService, endpoint: Endpoint) {
+    /// Ask as `action_service`'s device, from `endpoint`: this host's own, dialing its members
+    /// on `runtime`. `workspaces`, the workspaces this host holds, say which machine keeps each VM
+    /// and where this host serves each workspace a member is asked in.
+    pub fn ask_from(
+        &self,
+        action_service: ActionService,
+        endpoint: Endpoint,
+        workspaces: crate::workspaces::Workspaces,
+        runtime: tokio::runtime::Handle,
+    ) {
         let _ = self.asking.set((action_service, endpoint));
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let _ = self.runtime.set(runtime);
-        }
+        let _ = self.runtime.set(runtime.clone());
+        let _ = self.leases.set((workspaces, runtime));
     }
 
     /// The runtime this host dials its members on.
@@ -173,16 +180,6 @@ impl PlacedShells {
         self.runtime
             .get()
             .ok_or_else(|| "the host is not running yet".to_owned())
-    }
-
-    /// Read which machine keeps each VM from the VM leases of `workspaces`,
-    /// the workspaces this host holds, on `runtime`.
-    pub fn read_leases(
-        &self,
-        workspaces: crate::workspaces::Workspaces,
-        runtime: tokio::runtime::Handle,
-    ) {
-        let _ = self.leases.set((workspaces, runtime));
     }
 
     /// The machine whose member holds `workspace`'s VM lease now, by the name
@@ -218,6 +215,36 @@ impl PlacedShells {
     /// The terminal streams the members handed this host.
     pub(crate) const fn terminals(&self) -> &crate::placed_terminals::MemberStreams {
         &self.terminals
+    }
+
+    /// The member device at `address`, asked in `workspace`'s name as this host's own device. Each
+    /// request carries this host's signed address for the workspace, so a member that does not
+    /// hold the workspace yet proves its membership here and holds it from here.
+    ///
+    /// # Errors
+    ///
+    /// The host is not running yet.
+    pub fn member_device(
+        &self,
+        address: &iroh::EndpointAddr,
+        workspace: &str,
+    ) -> Result<tilo_peer_state::actions::RemoteDevice, String> {
+        let (action_service, endpoint) = self.asking()?;
+        Ok(match self.own_address(workspace) {
+            Some(placement) => action_service.placing(endpoint, address, workspace, &placement),
+            None => action_service.remote(endpoint, address, workspace),
+        })
+    }
+
+    /// This host's signed address for `workspace`, when it holds the workspace.
+    fn own_address(&self, workspace: &str) -> Option<tilo_peer_state::join::TransportHint> {
+        let (workspaces, runtime) = self.leases.get()?;
+        let own = workspaces.host_device();
+        runtime
+            .block_on(workspaces.hosts(workspace))
+            .ok()?
+            .into_iter()
+            .find(|hint| hint.host.device_public_key == own)
     }
 
     /// Who pays for the VMs placed from here.
@@ -289,7 +316,8 @@ impl PlacedShells {
         secrets: Vec<VmSecret>,
         watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
-        let (action_service, endpoint) = self.asking()?;
+        // A host not running yet asks its placer nothing.
+        self.asking()?;
         let mut waited = None;
         let Some(host) = self.placed(workspace, &mut waited, watching.stop)? else {
             return Ok(shell_ran(stopped_before_start(command, waited)));
@@ -298,7 +326,7 @@ impl PlacedShells {
             format!("the placer named {host}, which is no VM host this host knows")
         })?;
         let address = member_address(member)?;
-        let device = action_service.remote(endpoint, &address, workspace);
+        let device = self.member_device(&address, workspace)?;
         let asked = CommandRequest {
             session: session.to_owned(),
             command: command.to_owned(),

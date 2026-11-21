@@ -15,12 +15,7 @@ tilo_test_env::scenario! {
         let server = Server::new(&device, "127.0.0.1:7703").unwrap();
         assert_eq!(server.device(), [0x11; 32]);
         assert_eq!(server.address(), "127.0.0.1:7703");
-        let address = server.endpoint_addr().unwrap();
-        assert_eq!(address.id.as_bytes(), &[0x11; 32]);
-        assert!(
-            address.ip_addrs().any(|socket| socket.port() == 7703),
-            "the server is reached where its address says"
-        );
+        assert_eq!(server.endpoint, [0x11; 32], "its endpoint is its device's");
     }
 
     phase a_server_named_by_something_that_is_no_device_key_is_refused;
@@ -63,23 +58,21 @@ tilo_test_env::scenario! {
             [0x22; 32],
             "requests are still the device's"
         );
-        assert_eq!(server.endpoint_addr().unwrap().id.as_bytes(), &endpoint);
+        assert_eq!(server.endpoint, endpoint);
         env.set(SERVER_ENDPOINT_ENV, "not hex");
         assert!(Server::from_env().is_err(), "an endpoint id that is no key");
     }
 
-    phase a_tilo_server_is_dialed_at_its_endpoint_and_its_requests_are_its_devices;
+    phase a_tilo_servers_requests_come_from_its_endpoint_and_are_its_devices;
     {
-        // A Tilo server keys its endpoint apart from its device: the member dials
-        // the endpoint, and takes requests signed by the device.
+        // A Tilo server keys its endpoint apart from its device: its requests come
+        // from the endpoint, signed by the device.
         let server = Server::new(&hex::encode([0x11; 32]), "127.0.0.1:7704")
             .unwrap()
             .with_endpoint(&hex::encode(public(4)))
             .unwrap();
         assert_eq!(server.device(), [0x11; 32]);
-        let address = server.endpoint_addr().unwrap();
-        assert_eq!(address.id.as_bytes(), &public(4));
-        assert!(address.ip_addrs().any(|socket| socket.port() == 7704));
+        assert_eq!(server.endpoint, public(4));
     }
 
     phase each_workspaces_files_are_a_directory_of_their_own_under_the_profile;
