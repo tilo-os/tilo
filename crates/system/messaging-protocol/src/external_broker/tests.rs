@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ui::prelude::Id;
+use ui::tilo_resource::SharedResource as _;
 
 /// Whether an accessible `label` says `text`: the whole label, or one part of
 /// a conversation line. The shared conversation list speaks each line as who
@@ -350,8 +351,7 @@ impl ui::framework::ResourceApp for AccountOwnerFixture {
     type Resource = tilo_messaging::PersonAccounts;
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Account metadata owner fixture";
-    fn view(cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
-        let _ = cx.shared_person::<tilo_messaging::PersonAccounts>();
+    fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
         Box::new(ui::widget::Column::new())
     }
 }
@@ -389,7 +389,9 @@ fn messages_actions_use_hosted_whatsapp_and_sms_and_keep_text_outside_shared_sta
             TestApp::<MessagesShell>::for_person_with_lent(&owner.actor, broker.client()).unwrap();
         project_account_metadata(&owner, &route, &mut app);
         let directory = app
-            .shared_person::<tilo_contact_directory::ContactDirectory>()
+            .shared_workspace::<tilo_contact_directory::ContactDirectory>(
+                tilo_contact_directory::ContactDirectory::OWNER,
+            )
             .unwrap();
         directory
             .invoke(
@@ -454,9 +456,8 @@ pub(crate) fn project_account_metadata(
     let mut settings =
         ui::framework::testing::TestApp::<AccountOwnerFixture>::for_person(&owner.actor).unwrap();
     let metadata = settings
-        .shared_person::<tilo_messaging::PersonAccounts>()
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .unwrap();
-    assert!(metadata.editable());
     metadata
         .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
             owner.account.clone(),
@@ -468,9 +469,8 @@ pub(crate) fn project_account_metadata(
         )))
         .unwrap();
     let accounts = app
-        .shared_person::<tilo_messaging::PersonAccounts>()
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .unwrap();
-    assert!(!accounts.editable());
     accounts
         .record()
         .merge_peer_document(metadata.record().document().unwrap())

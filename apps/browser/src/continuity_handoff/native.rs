@@ -21,15 +21,15 @@ fn failed() -> io::Error {
 trait ApplyCaptured {
     fn apply(
         &self,
-        bookmarks: &ui::framework::PersonResource<PersonalBookmarks>,
-        history: &ui::framework::PersonResource<BrowsingHistory>,
+        bookmarks: &ui::framework::WorkspaceResource<PersonalBookmarks>,
+        history: &ui::framework::WorkspaceResource<BrowsingHistory>,
     ) -> io::Result<()>;
 }
 impl ApplyCaptured for Captured {
     fn apply(
         &self,
-        bookmarks: &ui::framework::PersonResource<PersonalBookmarks>,
-        history: &ui::framework::PersonResource<BrowsingHistory>,
+        bookmarks: &ui::framework::WorkspaceResource<PersonalBookmarks>,
+        history: &ui::framework::WorkspaceResource<BrowsingHistory>,
     ) -> io::Result<()> {
         for capture in &self.profiles {
             if let Some(bundle) = &capture.bookmarks {
@@ -116,8 +116,8 @@ impl Controller {
     }
     pub(crate) fn poll(
         &mut self,
-        bookmarks: &ui::framework::PersonResource<PersonalBookmarks>,
-        history: &ui::framework::PersonResource<BrowsingHistory>,
+        bookmarks: &ui::framework::WorkspaceResource<PersonalBookmarks>,
+        history: &ui::framework::WorkspaceResource<BrowsingHistory>,
     ) -> bool {
         let Some(receiver) = &self.receiver else {
             return false;

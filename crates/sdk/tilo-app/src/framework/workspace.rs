@@ -123,6 +123,8 @@ struct Shared<P: Resource> {
     record: StoredResource,
     /// The app that keeps it: whose node the workspace's grants decide on.
     owner: &'static str,
+    /// The app whose window holds it.
+    app_id: &'static str,
     /// Where its changes are made, as their history names it.
     app_title: &'static str,
     me: tilo_resource::MemberId,
@@ -404,6 +406,7 @@ impl<P: Resource> WorkspaceResource<P> {
             shared: Rc::new(Shared::<P> {
                 record,
                 owner,
+                app_id: app.0,
                 app_title: app.1,
                 me,
                 permissions,
@@ -438,6 +441,11 @@ impl<P: Resource> WorkspaceResource<P> {
     pub fn get(&self) -> Rc<P::State> {
         self.shared.refresh();
         self.shared.state.with(Rc::clone)
+    }
+
+    /// Read the current state.
+    pub fn with<T>(&self, read: impl FnOnce(&P::State) -> T) -> T {
+        read(&self.get())
     }
 
     /// The current state, or `None` when the record could not be read now: the state is then what
@@ -537,9 +545,10 @@ impl<P: Resource> WorkspaceResource<P> {
     /// person, in its history and one undo step of theirs.
     ///
     /// # Errors
-    /// The arguments do not build the action, the grants refuse it, the
-    /// record does, or the record cannot be changed right now (for that,
-    /// [`Self::invoke_then`] waits).
+    /// The arguments do not build the action, the grants refuse it, or the
+    /// record does. Where the record's store is in use by whatever runs now
+    /// (a pass of the view), the change waits for the window's next settle and
+    /// is made then, in the order it was asked for.
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
         self.invoke_as(&super::resources::acting(&self.shared.me), invoke)
     }
@@ -549,7 +558,8 @@ impl<P: Resource> WorkspaceResource<P> {
     /// The grants are the ones this record was opened with, as for the person's own call.
     ///
     /// # Errors
-    /// The arguments do not build the action, the grants refuse it, or the record does.
+    /// The arguments do not build the action, the grants refuse it, or the record does; a
+    /// change asked for while its store is in use waits for the window's next settle.
     pub fn invoke_as(
         &self,
         invoker: &ActionInvoker,
@@ -565,9 +575,10 @@ impl<P: Resource> WorkspaceResource<P> {
                 self.shared.refresh();
                 result
             }
-            Applied::Waits => Err(ActionError::Refused(
-                ui_core::resource::HistoryUnavailable::StoreInUse.to_string(),
-            )),
+            Applied::Waits => {
+                self.wait(action, invoker);
+                Ok(())
+            }
         }
     }
 
@@ -583,7 +594,8 @@ impl<P: Resource> WorkspaceResource<P> {
     /// arguments build: the grants it was opened with decide it.
     ///
     /// # Errors
-    /// The grants refuse it, the document does, or it cannot be changed right now.
+    /// The grants refuse it or the document does; a change asked for while its store is in
+    /// use waits for the window's next settle.
     pub fn act_as(&self, invoker: &ActionInvoker, action: &P::Action) -> Result<(), ActionError> {
         let scope = self
             .independently_sealed()
@@ -595,9 +607,27 @@ impl<P: Resource> WorkspaceResource<P> {
                 self.shared.refresh();
                 result
             }
-            Applied::Waits => Err(ActionError::Refused(
-                ui_core::resource::HistoryUnavailable::StoreInUse.to_string(),
-            )),
+            Applied::Waits => {
+                self.wait(action.clone(), invoker);
+                Ok(())
+            }
+        }
+    }
+
+    /// Keep `action` for the record's next free moment: its store is in use by
+    /// whatever runs now (a pass of the view), so the change lands in the
+    /// window's next settle, in the order it was asked for, as an edit asked
+    /// for in a pass does ([`Self::invoke_then`]).
+    fn wait(&self, action: P::Action, invoker: &ActionInvoker) {
+        let shared = &self.shared;
+        shared.waiting.borrow_mut().push(Waiting {
+            action,
+            invoker: invoker.clone(),
+            then: Box::new(|_| {}),
+            woken: 0,
+        });
+        if let Some(window) = &shared.wake {
+            window.wake();
         }
     }
 
@@ -689,7 +719,7 @@ impl<P: Resource> WorkspaceResource<P> {
             ))
         };
         if let Some(verb) = verb_of::<P>(action) {
-            return if self.may(&verb) {
+            return if self.may(&verb) || self.keeps_its_own_housekeeping(&verb) {
                 Ok(())
             } else {
                 Err(refused())
@@ -724,6 +754,7 @@ impl<P: Resource> WorkspaceResource<P> {
             self.admitted(&action)?;
         } else if let Some(verb) = verb_of::<P>(&action)
             && !self.may(&verb)
+            && !self.keeps_its_own_housekeeping(&verb)
         {
             return Err(ActionError::Refused(format!(
                 "you may not change the workspace's {}",
@@ -731,6 +762,17 @@ impl<P: Resource> WorkspaceResource<P> {
             )));
         }
         Ok(action)
+    }
+
+    /// Whether `verb` is one the record's keeper makes for itself and offers no caller — its
+    /// tab's action log, a reading position: the keeper's own window makes it without a grant
+    /// on it, as it keeps the record. Every change an app of the workspace asks for is decided
+    /// by the grants.
+    fn keeps_its_own_housekeeping(&self, verb: &str) -> bool {
+        self.shared.owner == self.shared.app_id
+            && !P::declarations()
+                .into_iter()
+                .any(|declared| declared.id == verb)
     }
 
     /// The record underneath, for a test or host that carries it between

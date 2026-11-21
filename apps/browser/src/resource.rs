@@ -92,12 +92,14 @@ pub struct BrowserShell;
 impl ResourceApp for BrowserShell {
     type Resource = Browser;
     const ID: &'static str = tilo_webview::BROWSER_APP_ID;
-    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] = &[
-        ui::framework::PersonKind::profile::<crate::autofill::AddressBook>(),
-        ui::framework::PersonKind::profile::<crate::history::BrowsingHistory>(),
-        ui::framework::PersonKind::profile::<crate::page_resource::PageResource>(),
-        ui::framework::PersonKind::profile::<crate::personal_bookmarks::PersonalBookmarks>(),
-    ];
+    /// The records the workspace keeps for every app of it: what it browsed, its
+    /// bookmarks, the addresses it fills in and what operated each tab's page.
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources.shared_workspace::<crate::autofill::AddressBook>();
+        resources.shared_workspace::<crate::history::BrowsingHistory>();
+        resources.shared_workspace::<crate::page_resource::PageResource>();
+        resources.shared_workspace::<crate::personal_bookmarks::PersonalBookmarks>();
+    }
     const TITLE: &'static str = "Browser";
     const TITLE_KEY: &'static str = "browser-app-title";
     const ICON: Option<&'static str> = Some("browser");
@@ -359,23 +361,23 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     // Whether this window's pages are filled from vault items is its session's to say: a
     // session that holds a workspace's Browser lends them, a person's own does not.
     window.page_mut().attach_item_lending(cx.waker());
-    // Visits and addresses are the person's own: they follow them to their other
-    // devices and never reach a member; a private window keeps none. Downloads
-    // and side panel widths stay on this device.
+    // Visits, bookmarks, addresses and page recordings are the workspace's: every
+    // member reads them, and the window opens the records it keeps beside its own. A
+    // private window keeps none. Downloads and side panel widths stay on this device.
     if !cx.is_private() {
         window.attach_downloads(cx.storage().settings());
         window.attach_side_panel_widths(cx.storage().settings());
     }
     if !cx.is_private()
         && let Some(bookmarks) =
-            open_profile::<crate::personal_bookmarks::PersonalBookmarks>(cx, |state| {
+            open_record::<crate::personal_bookmarks::PersonalBookmarks>(cx, |state| {
                 crate::personal_bookmarks::PersonalBookmarks::RESTORE_PREVIOUS.with(state)
             })
     {
         window.attach_personal_bookmarks(bookmarks);
     }
     if !cx.is_private()
-        && let Some(history) = open_profile::<crate::history::BrowsingHistory>(cx, |state| {
+        && let Some(history) = open_record::<crate::history::BrowsingHistory>(cx, |state| {
             crate::history::BrowsingHistory::RESTORE_PREVIOUS.with(state)
         })
     {
@@ -383,7 +385,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     }
     // Page recordings belong to the profile. A private window keeps none.
     if !cx.is_private()
-        && let Some(record) = open_profile::<crate::page_resource::PageResource>(cx, |state| {
+        && let Some(record) = open_record::<crate::page_resource::PageResource>(cx, |state| {
             crate::page_resource::PageResource::RESTORE_PREVIOUS.with(state)
         })
     {
@@ -397,7 +399,7 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
             .attach_continuity(person, cx.storage().files(), cx.waker());
     }
     if ownership
-        && let Some(book) = open_profile::<crate::autofill::AddressBook>(cx, |state| {
+        && let Some(book) = open_record::<crate::autofill::AddressBook>(cx, |state| {
             crate::autofill::AddressBook::RESTORE_PREVIOUS.with(state)
         })
     {
@@ -412,30 +414,34 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
         .set_waker(Box::new(move || waker.wake()));
 }
 
-fn open_profile<P>(
+/// The workspace's record `P` that Browser keeps ([`crate::BrowserShell`]), opened on
+/// first use: the window's history, bookmarks, addresses and page recordings, the same
+/// record for every member of the workspace. What the person kept of it on this device
+/// before it became the workspace's is restored into it once.
+fn open_record<P>(
     cx: &ViewCx<Browser>,
     restore: impl FnOnce(serde_json::Value) -> Invoke<P>,
-) -> Option<ui::framework::PersonResource<P>>
+) -> Option<ui::framework::WorkspaceResource<P>>
 where
     P: ui::tilo_resource::Resource,
     P::State: ui::tilo_resource::Model + Default + PartialEq,
 {
-    let profile = cx.profile_resource::<P>()?;
-    if *profile.get() == P::State::default() {
+    let record = cx.shared_workspace::<P>(BrowserShell::ID)?;
+    if *record.get() == P::State::default() {
         let opener = cx.resource_opener::<P>(BrowserShell::ID);
         let result = opener.legacy_member_state().and_then(|previous| {
             if let Some(previous) = previous.filter(|previous| **previous != P::State::default()) {
-                profile
+                record
                     .invoke(&restore(ui::tilo_resource::Model::to_json(&*previous)))
                     .map_err(|error| error.to_string())?;
             }
             Ok(())
         });
         if let Err(error) = result {
-            tracing::warn!(kind = P::KIND, %error, "could not restore the previous browser profile");
+            tracing::warn!(kind = P::KIND, %error, "could not restore the previous browser record");
         }
     }
-    Some(profile)
+    Some(record)
 }
 
 #[cfg(test)]

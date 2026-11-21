@@ -8,9 +8,10 @@ use std::rc::Rc;
 use jiff::civil::Date;
 use tilo_contact_directory::ContactDirectory;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, LiveRow, PersonResource,
-    Publishes, Setting, ViewCx,
+    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, LiveRow, Publishes, Setting,
+    ViewCx, WorkspaceResource,
 };
+use ui::tilo_resource::SharedResource as _;
 use ui::widget::Element;
 use ui::widget::toast::ToastKind;
 
@@ -57,7 +58,7 @@ pub(crate) struct Store {
     pub(super) syncing: bool,
     pub(super) sync_requested: bool,
     pub(super) sync_reply: Option<EffectReply>,
-    pub(super) contact_directory: Option<PersonResource<ContactDirectory>>,
+    pub(super) contact_directory: Option<WorkspaceResource<ContactDirectory>>,
     pub(super) contact_event: Option<Id>,
     pub(super) asks: Vec<Ask>,
 }
@@ -443,11 +444,13 @@ pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
     app.attach_framework(cx.dispatcher(), accounts, sample.is_some());
     if live {
         app.notify_with(ui::process::current().notifications, cx.waker());
-        if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
+        if let Some(accounts) = cx.shared_workspace::<accounts::person::PersonAccounts>(
+            accounts::person::PersonAccounts::OWNER,
+        ) {
             app.follow_person_accounts(accounts);
         }
         app.state()
-            .follow_contacts(cx.shared_person::<ContactDirectory>());
+            .follow_contacts(cx.shared_workspace::<ContactDirectory>(ContactDirectory::OWNER));
     }
     let store = Rc::clone(&app.store);
     {

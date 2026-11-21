@@ -2,7 +2,7 @@ use super::*;
 use crate::model::*;
 use accounts::person::PersonAccounts;
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::{Replica, scope_contains};
+use ui::tilo_resource::{Replica, SharedResource as _, scope_contains};
 
 tilo_test_env::scenario! {
     /// An event with a copy on a server, when the server refuses it and when its upload is undone.
@@ -14,7 +14,7 @@ tilo_test_env::scenario! {
         let person = "cb".repeat(32);
         let mut settings = TestApp::<person_accounts::AccountsOwner>::for_person(&person).unwrap();
         let mut app = TestApp::<CalendarShell>::for_person(&person).expect("test app");
-        let kept = settings.shared_person::<PersonAccounts>().unwrap();
+        let kept = settings.shared_workspace::<PersonAccounts>(PersonAccounts::OWNER).unwrap();
         let mut account = crate::AccountStore::sample().accounts.remove(0);
         account.config.server_url = server.url();
         account.calendars.truncate(1);
@@ -22,7 +22,7 @@ tilo_test_env::scenario! {
         let remote = account.calendars[0].id.clone();
         kept.invoke(&PersonAccounts::saving(&account.to_stored_for_test()))
             .unwrap();
-        let read = app.shared_person::<PersonAccounts>().unwrap();
+        let read = app.shared_workspace::<PersonAccounts>(PersonAccounts::OWNER).unwrap();
         read.record()
             .merge_peer_document(kept.record().document().unwrap())
             .unwrap();
@@ -1099,7 +1099,9 @@ mod person_accounts {
     fn the_persons_caldav_accounts_reach_the_calendar_from_their_resource() {
         let mut settings = TestApp::<AccountsOwner>::for_person(&person()).unwrap();
         let mut calendar = TestApp::<CalendarShell>::for_person(&person()).unwrap();
-        let kept = settings.shared_person::<PersonAccounts>().unwrap();
+        let kept = settings
+            .shared_workspace::<PersonAccounts>(PersonAccounts::OWNER)
+            .unwrap();
         let mut account = crate::account::CalendarAccount::new(crate::account::CalDavConfig {
             display_name: "Work calendars".into(),
             username: "work-dav".into(),
@@ -1110,9 +1112,13 @@ mod person_accounts {
         kept.invoke(&PersonAccounts::saving(&stored)).unwrap();
 
         let read = calendar
-            .shared_person::<PersonAccounts>()
-            .expect("Calendar reads the person's accounts");
-        assert!(!read.editable());
+            .shared_workspace::<PersonAccounts>(PersonAccounts::OWNER)
+            .expect("Calendar reads the workspace's accounts");
+        assert_eq!(
+            read.record().route(),
+            kept.record().route(),
+            "the window reads the one record Settings keeps"
+        );
         read.record()
             .merge_peer_document(kept.record().document().unwrap())
             .unwrap();

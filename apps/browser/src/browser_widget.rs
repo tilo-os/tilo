@@ -528,19 +528,19 @@ pub struct BrowserWidget {
     /// A history-clear write failed: this profile's disk, not collaborative
     /// state.
     history_clear_error: Option<String>,
-    /// The person's browsing history; `None` keeps it nowhere (a private
-    /// window, a screenshot).
+    /// The workspace's personal bookmarks; `None` keeps them nowhere (a
+    /// private window, a screenshot).
     person_bookmarks:
-        Option<ui::framework::PersonResource<crate::personal_bookmarks::PersonalBookmarks>>,
+        Option<ui::framework::WorkspaceResource<crate::personal_bookmarks::PersonalBookmarks>>,
     personal_bookmarks: Rc<crate::personal_bookmarks::PersonalBookmarkState>,
     personal_bookmarks_revision: Option<u64>,
     personal_open: ui::LocalState<std::collections::BTreeMap<String, String>>,
     personal_bookmark_location: crate::personal_bookmark_view::Location,
-    person_history: Option<ui::framework::PersonResource<crate::history::BrowsingHistory>>,
+    person_history: Option<ui::framework::WorkspaceResource<crate::history::BrowsingHistory>>,
     untitled_visit: Option<String>,
     continuity: Option<crate::continuity_handoff::Controller>,
-    /// The person's address book, which new tabs fill forms from too.
-    address_book: Option<ui::framework::PersonResource<crate::autofill::AddressBook>>,
+    /// The workspace's address book, which new tabs fill forms from too.
+    address_book: Option<ui::framework::WorkspaceResource<crate::autofill::AddressBook>>,
     history_revision: Option<u64>,
     history: History,
     bookmarks: Bookmarks,
@@ -1238,7 +1238,7 @@ impl BrowserWidget {
 
     pub(crate) fn attach_history(
         &mut self,
-        record: ui::framework::PersonResource<crate::history::BrowsingHistory>,
+        record: ui::framework::WorkspaceResource<crate::history::BrowsingHistory>,
     ) {
         self.person_history = Some(record);
         self.history_revision = None;
@@ -1252,7 +1252,7 @@ impl BrowserWidget {
 
     pub(crate) fn attach_personal_bookmarks(
         &mut self,
-        record: ui::framework::PersonResource<crate::personal_bookmarks::PersonalBookmarks>,
+        record: ui::framework::WorkspaceResource<crate::personal_bookmarks::PersonalBookmarks>,
     ) {
         self.person_bookmarks = Some(record);
         self.personal_bookmarks_revision = None;
@@ -1296,7 +1296,7 @@ impl BrowserWidget {
 
     pub(crate) fn attach_address_book(
         &mut self,
-        book: ui::framework::PersonResource<crate::autofill::AddressBook>,
+        book: ui::framework::WorkspaceResource<crate::autofill::AddressBook>,
     ) {
         self.address_book = Some(book.clone());
         self.credentials.attach_address_book(book);

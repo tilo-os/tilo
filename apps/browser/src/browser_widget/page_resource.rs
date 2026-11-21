@@ -24,7 +24,7 @@ impl BrowserWidget {
     /// in the workspace it is open in, as a tab of the device `device`.
     pub(crate) fn attach_page_resource(
         &mut self,
-        record: ui::framework::PersonResource<PageResource>,
+        record: ui::framework::WorkspaceResource<PageResource>,
         device: &str,
     ) {
         self.page_resource.attach(record, device);

@@ -8,6 +8,7 @@ use tilo_messaging::{
 };
 use ui::framework::testing::TestApp;
 use ui::prelude::Id;
+use ui::tilo_resource::SharedResource as _;
 
 use crate::tests::live_messages_with_history;
 use crate::{MessagesEffect, MessagesShell};
@@ -167,7 +168,7 @@ fn late_history_cannot_reappear_after_navigation_or_contact_revocation() {
             .start_effect(&MessagesEffect::ReadHistory { choice: choice() })
             .expect("pending history job");
         if revoke {
-            app.shared_person::<ContactDirectory>()
+            app.shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
                 .expect("directory")
                 .invoke(&ContactDirectory::FORGET_ENDPOINT.with((
                     Id::from_raw("00000000-0000-4000-8000-000000000001"),
@@ -237,7 +238,7 @@ fn add_sms_route(app: &mut TestApp<MessagesShell>) -> String {
     let mut settings = TestApp::<crate::tests::AccountOwnerFixture>::for_person(&"11".repeat(32))
         .expect("original metadata owner");
     let owner = settings
-        .shared_person::<tilo_messaging::PersonAccounts>()
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .expect("accounts owner");
     owner
         .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
@@ -249,12 +250,12 @@ fn add_sms_route(app: &mut TestApp<MessagesShell>) -> String {
             0,
         )))
         .expect("second service metadata");
-    app.shared_person::<tilo_messaging::PersonAccounts>()
+    app.shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .expect("read-only accounts")
         .record()
         .merge_peer_document(owner.record().document().expect("owner document"))
         .expect("original resource sync");
-    app.shared_person::<ContactDirectory>()
+    app.shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
         .expect("contacts")
         .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
             Id::from_raw("00000000-0000-4000-8000-000000000001"),
@@ -497,7 +498,9 @@ fn forgotten_recipient_discards_draft_and_requires_explicit_route_selection() {
             &ui::a11y::Action::SetValue(DRAFT.into()),
         )
         .expect("private accessible draft");
-    let directory = app.shared_person::<ContactDirectory>().expect("contacts");
+    let directory = app
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+        .expect("contacts");
     let person = Id::from_raw("00000000-0000-4000-8000-000000000001");
     directory
         .invoke(&ContactDirectory::FORGET_ENDPOINT.with((person.clone(), Id::from_raw("signal"))))
@@ -648,7 +651,9 @@ fn capture_only_history_is_readable_in_narrow_wide_and_os_themes() {
 #[test]
 fn semantic_people_and_choices_keep_matching_names_separate_and_refuse_revocation() {
     let mut app = live_messages_with_history(None);
-    let directory = app.shared_person::<ContactDirectory>().expect("directory");
+    let directory = app
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+        .expect("directory");
     let second = "00000000-0000-4000-8000-000000000002";
     directory
         .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(second), "Alex".into())))

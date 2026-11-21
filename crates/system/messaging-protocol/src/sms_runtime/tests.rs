@@ -15,6 +15,7 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use super::*;
 use crate::external_broker::tests::speaks;
 use crate::routing::LinkState;
+use ui::tilo_resource::SharedResource as _;
 
 const MODEM_PATH: &str = "/org/freedesktop/ModemManager1/Modem/7";
 const SIM_PATH: &str = "/org/freedesktop/ModemManager1/SIM/7";
@@ -1333,7 +1334,9 @@ fn sms_messages_app(
     )
     .unwrap();
     crate::external_broker::tests::project_account_metadata(&owner(), route, &mut app);
-    let directory = app.shared_person::<ContactDirectory>().unwrap();
+    let directory = app
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+        .unwrap();
     directory
         .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))
         .unwrap();

@@ -268,7 +268,9 @@ pub(crate) fn window(cx: &ViewCx<crate::resource::Contacts>, mut app: ContactsAp
     app.attach_actions(&cx.actions());
     app.jobs = Some(cx.jobs());
     if cx.mode().is_live() {
-        app.identity_directory = cx.shared_person::<tilo_contact_directory::ContactDirectory>();
+        app.identity_directory = cx.shared_workspace::<tilo_contact_directory::ContactDirectory>(
+            <tilo_contact_directory::ContactDirectory as ui::tilo_resource::SharedResource>::OWNER,
+        );
     }
     // A vCard the app was opened with ("open with", a dropped file) is imported.
     if let Some(file) = cx.launch().file() {

@@ -184,7 +184,7 @@ fn history_roundtrip(
     url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let history = app
-        .profile_resource::<browser::history::BrowsingHistory>()
+        .shared_workspace::<browser::history::BrowsingHistory>(tilo_webview::BROWSER_APP_ID)
         .ok_or("missing ordinary Browser history resource")?;
     let visits = |url: &str| {
         history.with(|state| state.visits.get(url).map_or(0, |visit| visit.count.get()))

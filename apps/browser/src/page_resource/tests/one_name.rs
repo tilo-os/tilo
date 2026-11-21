@@ -44,7 +44,7 @@ fn from_here() -> (String, Option<String>, Option<String>) {
 
 /// The session each change an agent authored in the resource's history is by:
 /// the name its host knows it by.
-fn sessions_in_history(record: &PersonResource<PageResource>) -> Vec<Option<String>> {
+fn sessions_in_history(record: &WorkspaceResource<PageResource>) -> Vec<Option<String>> {
     record
         .record()
         .read(|doc| {

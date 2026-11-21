@@ -933,14 +933,14 @@ impl ResourceApp for FileExplorerShell {
             title: "Files",
             beside_resource: true,
         });
-    /// The person's own workspace tree: the resource the filesystem daemon
-    /// writes as files are created, renamed, moved and deleted, and the one
-    /// the person's other devices and a shared workspace's members hold. The
-    /// window shows it through the mount, and keeps it as theirs.
-    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
-        &[ui::framework::PersonKind::shared::<
-            fs_protocol::tree::FilesTree,
-        >()];
+    /// The workspace's tree: the resource the filesystem daemon writes as
+    /// files are created, renamed, moved and deleted, and the one every
+    /// device and member of the workspace holds. The window shows it through
+    /// the mount.
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources
+            .workspace_record::<fs_protocol::tree::FilesTree>(&fs_protocol::tree::document_id());
+    }
     /// A page shows the workspace's files in a window of its own (`crate::tree`), whose resource
     /// the workspace takes as the app's too.
     const OTHER_WINDOWS: &'static [ui::framework::OtherWindow] =
@@ -1188,7 +1188,9 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     }
     if cx.mode().is_live() {
         files.follow_cloud_status();
-        if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
+        if let Some(accounts) = cx.shared_workspace::<accounts::person::PersonAccounts>(
+            <accounts::person::PersonAccounts as ui::tilo_resource::SharedResource>::OWNER,
+        ) {
             files.follow_person_accounts(accounts);
         } else {
             tracing::warn!("the workspace's accounts are not open: Files shows none of them");

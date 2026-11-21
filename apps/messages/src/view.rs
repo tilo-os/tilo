@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use tilo_contact_directory::{ContactDirectory, routing};
 use tilo_messaging::PersonAccounts;
 use ui::LocalState;
-use ui::framework::{Actions, Effected, Fixture, Live, PersonResource, ViewCx};
+use ui::framework::{Actions, Effected, Fixture, Live, ViewCx, WorkspaceResource};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::{Collection, Id};
-use ui::tilo_resource::{MemberId, PersonId};
+use ui::tilo_resource::{MemberId, PersonId, SharedResource as _};
 use ui::widget::virtual_list::{VecListModel, VirtualList};
 use ui::widget::{
     Button, Column, Container, ConversationLine, ConversationList, DeliveryState, Element,
@@ -34,8 +34,8 @@ pub(crate) struct WorkspacePerson {
 
 #[derive(Clone)]
 pub(crate) struct Sources {
-    directory: Option<PersonResource<ContactDirectory>>,
-    accounts: Option<PersonResource<PersonAccounts>>,
+    directory: Option<WorkspaceResource<ContactDirectory>>,
+    accounts: Option<WorkspaceResource<PersonAccounts>>,
     record: Option<Live<Messages>>,
     pub(crate) tilo: bool,
     pub(crate) me: Option<PersonId>,
@@ -77,13 +77,13 @@ impl Sources {
     pub(crate) fn contacts(&self) -> Rc<ContactDirectory> {
         self.directory.as_ref().map_or_else(
             || Rc::new(self.fixture.directory.clone()),
-            PersonResource::get,
+            WorkspaceResource::get,
         )
     }
     pub(crate) fn accounts(&self) -> Rc<PersonAccounts> {
         self.accounts.as_ref().map_or_else(
             || Rc::new(self.fixture.accounts.clone()),
-            PersonResource::get,
+            WorkspaceResource::get,
         )
     }
     pub(crate) fn record(&self) -> Rc<Messages> {
@@ -93,8 +93,12 @@ impl Sources {
     }
     fn revision(&self) -> (u64, u64, u64) {
         (
-            self.directory.as_ref().map_or(0, PersonResource::revision),
-            self.accounts.as_ref().map_or(0, PersonResource::revision),
+            self.directory
+                .as_ref()
+                .map_or(0, WorkspaceResource::revision),
+            self.accounts
+                .as_ref()
+                .map_or(0, WorkspaceResource::revision),
             self.record.as_ref().map_or(0, Live::revision),
         )
     }
@@ -423,12 +427,12 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
     };
     Sources {
         directory: if live {
-            cx.shared_person::<ContactDirectory>()
+            cx.shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
         } else {
             None
         },
         accounts: if live {
-            cx.shared_person::<PersonAccounts>()
+            cx.shared_workspace::<PersonAccounts>(PersonAccounts::OWNER)
         } else {
             None
         },
@@ -1396,7 +1400,7 @@ mod route_tests {
     fn a_persons_row_carries_the_draft_of_the_route_it_belongs_to() {
         let mut app = TestApp::<MessagesShell>::for_person("drafts-fixture").expect("headless app");
         let directory = app
-            .shared_person::<ContactDirectory>()
+            .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
             .expect("shared directory");
         directory
             .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
@@ -1458,7 +1462,7 @@ mod route_tests {
     fn selected_route_is_retired_by_revocation_identity_revision_and_account_disconnect() {
         let mut app = TestApp::<MessagesShell>::for_person("route-fixture").expect("headless app");
         let directory = app
-            .shared_person::<ContactDirectory>()
+            .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
             .expect("shared directory");
         directory
             .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
@@ -1544,7 +1548,7 @@ mod route_tests {
     fn scoped_confirmation_cannot_substitute_another_person_sender_or_provider_namespace() {
         let mut app = TestApp::<MessagesShell>::for_person("scope-fixture").expect("headless app");
         let directory = app
-            .shared_person::<ContactDirectory>()
+            .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
             .expect("shared directory");
         for person in [PERSON, "00000000-0000-4000-8000-000000000002"] {
             directory

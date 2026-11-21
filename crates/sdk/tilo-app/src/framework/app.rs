@@ -359,11 +359,14 @@ pub trait ResourceApp: 'static {
         let _ = resources;
     }
 
-    /// The person's own records the app keeps
-    /// ([`PersonKind`](super::PersonKind)), declared with the app rather than
-    /// with the window showing it: each is opened with the window, kept in
-    /// the person's own scope instead of a workspace's, and part of the
-    /// app's committed surface whether or not a view has shown it.
+    /// The records the app keeps beside the one it shows, declared with the
+    /// app rather than with the window showing it
+    /// ([`PersonKind`](super::PersonKind)): each is opened with the window and
+    /// part of the app's committed surface whether or not a view has shown it.
+    /// A shared one ([`PersonKind::shared`](super::PersonKind::shared)) is a
+    /// record one app keeps for every app of the workspace; a profile one
+    /// ([`PersonKind::profile`](super::PersonKind::profile)) is the person's
+    /// own, kept in their own scope instead of a workspace's.
     ///
     /// ```ignore
     /// const PERSON_RESOURCES: &'static [PersonKind] =

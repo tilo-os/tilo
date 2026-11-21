@@ -237,7 +237,9 @@ mod tests {
         .unwrap();
         app.settle();
         let record = app
-            .profile_resource::<crate::personal_bookmarks::PersonalBookmarks>()
+            .shared_workspace::<crate::personal_bookmarks::PersonalBookmarks>(
+                tilo_webview::BROWSER_APP_ID,
+            )
             .unwrap();
         let trees = record.get().imported_trees();
         let tree = &trees[0];

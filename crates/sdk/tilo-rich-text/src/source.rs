@@ -12,7 +12,7 @@ use std::rc::Rc;
 use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::automerge::ObjId;
 use ui::automerge::transaction::Transactable;
-use ui::framework::{Dispatcher, Live, PersonResource, ResourceSelection};
+use ui::framework::{Dispatcher, Live, ResourceSelection, WorkspaceResource};
 use ui::presence::PresenceKey;
 use ui::rich_edit::PresenceKeyFn;
 use ui::tilo_actions::ActionError;
@@ -300,41 +300,6 @@ impl FieldState {
     }
 }
 
-enum FieldRecord<P: Resource> {
-    Person(PersonResource<P>),
-    Workspace(ui::framework::WorkspaceResource<P>),
-}
-
-impl<P: Resource> FieldRecord<P> {
-    fn read_allowed(&self) -> bool {
-        match self {
-            Self::Person(_) => true,
-            Self::Workspace(record) => record.may_read(),
-        }
-    }
-
-    fn get(&self) -> &ui::resource::StoredResource {
-        match self {
-            Self::Person(record) => record.record(),
-            Self::Workspace(record) => record.record(),
-        }
-    }
-
-    fn start(&self, action: &Invoke<P>) -> Result<(), ActionError> {
-        match self {
-            Self::Person(record) => record.invoke(action),
-            Self::Workspace(record) => record.invoke(action),
-        }
-    }
-
-    fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
-        match self {
-            Self::Person(record) => record.apply(action),
-            Self::Workspace(record) => record.act(action),
-        }
-    }
-}
-
 /// Rich text stored in a field of another resource — a message body, a
 /// note's page, a comment — edited as a child resource of it.
 ///
@@ -487,8 +452,8 @@ impl RichTextSource for RichTextField {
 /// Makes an edit of a person record's rich-text field the record's action.
 type Wrap<P> = Box<dyn Fn(&RichTextAction) -> <P as Resource>::Action>;
 
-/// Rich text in a personal or workspace record kept beside the document
-/// the app shows. Workspace fields follow the current grants.
+/// Rich text in a workspace record kept beside the document the app shows.
+/// The record's current grants authorize each read and edit.
 ///
 /// `locate` finds the field's map in the record; `wrap` turns an edit of
 /// it into the record's own action (a field edit at its path), so the
@@ -496,7 +461,7 @@ type Wrap<P> = Box<dyn Fn(&RichTextAction) -> <P as Resource>::Action>;
 /// that creates the field, applied before the first edit of a field that
 /// does not exist yet.
 pub struct PersonField<P: Resource> {
-    record: FieldRecord<P>,
+    record: WorkspaceResource<P>,
     locate: Locate,
     wrap: Wrap<P>,
     start: Option<Box<dyn Fn() -> Invoke<P>>>,
@@ -506,32 +471,16 @@ pub struct PersonField<P: Resource> {
 }
 
 impl<P: Resource> PersonField<P> {
-    /// The rich text `locate` finds in `record`, each edit applied as the
-    /// action `wrap` makes of it.
-    pub fn new(
-        record: PersonResource<P>,
-        locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
-        wrap: impl Fn(&RichTextAction) -> P::Action + 'static,
-    ) -> Self {
-        Self {
-            record: FieldRecord::Person(record),
-            locate: Box::new(locate),
-            wrap: Box::new(wrap),
-            start: None,
-            field: None,
-            heads: None,
-        }
-    }
-
-    /// The rich text field in a workspace record. The record's current
+    /// The rich text `locate` finds in the workspace's record `record`, each
+    /// edit applied as the action `wrap` makes of it. The record's current
     /// grants authorize each read and edit.
     pub fn workspace(
-        record: ui::framework::WorkspaceResource<P>,
+        record: WorkspaceResource<P>,
         locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
         wrap: impl Fn(&RichTextAction) -> P::Action + 'static,
     ) -> Self {
         Self {
-            record: FieldRecord::Workspace(record),
+            record,
             locate: Box::new(locate),
             wrap: Box::new(wrap),
             start: None,
@@ -554,7 +503,7 @@ impl<P: Resource> PersonField<P> {
         if self.field.is_none()
             && let Some(start) = &self.start
         {
-            self.record.start(&start())?;
+            self.record.invoke(&start())?;
             self.refresh();
         }
         Ok(())
@@ -563,12 +512,12 @@ impl<P: Resource> PersonField<P> {
     /// Read the field again from the record when the record moved: an
     /// edit here, or one from the person's other device.
     fn refresh(&mut self) {
-        if !self.record.read_allowed() {
+        if !self.record.may_read() {
             self.field = None;
             self.heads = None;
             return;
         }
-        let heads = self.record.get().heads();
+        let heads = self.record.record().heads();
         if self.heads.as_ref() == Some(&heads) && self.field.is_some() {
             return;
         }
@@ -576,7 +525,7 @@ impl<P: Resource> PersonField<P> {
             .field
             .as_ref()
             .map_or(0, |field| field.revision.wrapping_add(1));
-        let read = self.record.get().read(|doc| {
+        let read = self.record.record().read(|doc| {
             let root = (self.locate)(doc)?;
             FieldState::read_only(doc, root, revision).ok()
         });
@@ -587,14 +536,11 @@ impl<P: Resource> PersonField<P> {
 
 impl<P: Resource> RichTextSource for PersonField<P> {
     fn read_only(&self) -> bool {
-        match &self.record {
-            FieldRecord::Person(record) => !record.editable(),
-            FieldRecord::Workspace(record) => !record.may_read() || !record.may("start-draft"),
-        }
+        !self.record.may_read() || !self.record.may("start-draft")
     }
 
     fn can_read(&self) -> bool {
-        self.record.read_allowed()
+        self.record.may_read()
     }
 
     fn sync(&mut self, _doc: &Doc) {
@@ -613,13 +559,13 @@ impl<P: Resource> RichTextSource for PersonField<P> {
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
         self.field
             .as_ref()
-            .filter(|_| self.record.read_allowed())
+            .filter(|_| self.record.may_read())
             .map(|field| read(&field.state))
     }
 
     fn apply(&mut self, _edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError> {
         self.ensure()?;
-        self.record.apply(&(self.wrap)(edit))?;
+        self.record.act(&(self.wrap)(edit))?;
         self.refresh();
         Ok(())
     }

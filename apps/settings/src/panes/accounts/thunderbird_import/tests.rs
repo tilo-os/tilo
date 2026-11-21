@@ -181,7 +181,7 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     let mut app = TestApp::<crate::SettingsShell>::open_data_dir(&profile).unwrap();
     // A headless host does not take in the device's file; seed its resource instead.
     let person = app
-        .shared_person::<accounts::person::PersonAccounts>()
+        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
         .unwrap();
     person
         .invoke(&accounts::person::PersonAccounts::saving(&original))
@@ -198,7 +198,7 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     app.settle();
     let stored = root.store();
     assert_eq!(
-        app.shared_person::<accounts::person::PersonAccounts>()
+        app.shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
             .unwrap()
             .get()
             .store()
@@ -223,7 +223,7 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     crate::effects::show_pane(&mut reopened, crate::categories::Category::ExternalAccounts);
     assert_eq!(
         reopened
-            .shared_person::<accounts::person::PersonAccounts>()
+            .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
             .unwrap()
             .get()
             .store()

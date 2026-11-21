@@ -6,7 +6,7 @@ use crate::{
     resource::Browser,
 };
 use tilo_webview::AddressFields;
-use ui::framework::PersonResource;
+use ui::framework::WorkspaceResource;
 use ui::{
     LocalState,
     icons::Icon,
@@ -30,7 +30,7 @@ enum Action {
 }
 pub struct AddressControls {
     private: bool,
-    book: Option<PersonResource<AddressBook>>,
+    book: Option<WorkspaceResource<AddressBook>>,
     enabled: bool,
     profiles: Vec<AddressProfile>,
     selected: Option<String>,
@@ -55,7 +55,7 @@ impl AddressControls {
             notice: String::new(),
         }
     }
-    pub fn attach(&mut self, book: PersonResource<AddressBook>) {
+    pub fn attach(&mut self, book: WorkspaceResource<AddressBook>) {
         if !self.private {
             self.book = Some(book);
         }

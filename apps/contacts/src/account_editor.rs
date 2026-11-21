@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use tilo_contact_directory::ContactDirectory;
 use ui::LocalState;
-use ui::framework::{Actions, Dispatcher, Effected, LiveRow, PersonResource, ViewCx};
-use ui::tilo_resource::{self, Effect, Id, RowBindings};
+use ui::framework::{Actions, Dispatcher, Effected, LiveRow, ViewCx, WorkspaceResource};
+use ui::tilo_resource::{self, Effect, Id, RowBindings, SharedResource as _};
 use ui::widget::{
     Button, Column, Dropdown, Element, ModelView, Property, PropertyList, Row, Scrollable, Text,
     TextInput,
@@ -106,7 +106,7 @@ struct Selection {
 
 #[derive(Clone)]
 pub(crate) struct Editor {
-    directory: Option<PersonResource<ContactDirectory>>,
+    directory: Option<WorkspaceResource<ContactDirectory>>,
     selection: LocalState<Selection>,
     pub(crate) visible: LocalState<bool>,
 }
@@ -125,7 +125,7 @@ impl Editor {
     fn current(&self) -> Result<Rc<ContactDirectory>, String> {
         self.directory
             .as_ref()
-            .map(PersonResource::get)
+            .map(WorkspaceResource::get)
             .ok_or_else(|| CATALOG.t("contacts-accounts-unavailable"))
     }
 
@@ -369,7 +369,7 @@ impl Editor {
 pub(crate) fn build(cx: &ViewCx<Contacts>) -> Element {
     let editor = Editor {
         directory: if cx.mode().is_live() {
-            cx.shared_person::<ContactDirectory>()
+            cx.shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
         } else {
             None
         },
@@ -389,7 +389,7 @@ pub(crate) fn build(cx: &ViewCx<Contacts>) -> Element {
                 observed
                     .directory
                     .as_ref()
-                    .map_or(0, PersonResource::revision),
+                    .map_or(0, WorkspaceResource::revision),
                 observed.selection.get(),
             )
         },
@@ -805,7 +805,9 @@ mod tests {
     #[test]
     fn account_editor_add_review_cancel_revoke_and_revision_journey() {
         let (mut app, one, two) = fixture();
-        let directory = app.shared_person::<ContactDirectory>().unwrap();
+        let directory = app
+            .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+            .unwrap();
         review(&mut app, &one, "identity-1");
         assert!(
             directory
@@ -938,7 +940,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            app.shared_person::<ContactDirectory>()
+            app.shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
                 .unwrap()
                 .get()
                 .resolve_account(
@@ -969,7 +971,9 @@ mod tests {
             revision: String::new(),
         })
         .unwrap();
-        let directory = app.shared_person::<ContactDirectory>().unwrap();
+        let directory = app
+            .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+            .unwrap();
         assert!(
             !directory
                 .get()
@@ -1025,7 +1029,9 @@ mod tests {
         );
         review(&mut app, &one, "identity-1");
         confirm(&mut app);
-        let directory = app.shared_person::<ContactDirectory>().unwrap();
+        let directory = app
+            .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+            .unwrap();
         let senders = ["personal", "work"].map(|id| SenderAccount {
             id: Id::from_raw(id),
             service: "signal".into(),
@@ -1165,7 +1171,9 @@ mod input_journey {
             .unwrap();
         assert_eq!(pending.person, contact.id.to_string());
         assert_eq!(pending.recipient, "stable-user-id");
-        let directory = app.shared_person::<ContactDirectory>().unwrap();
+        let directory = app
+            .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+            .unwrap();
         assert!(directory.get().resolve("signal", "stable-user-id").is_err());
         let row = format!("contacts.account-review:{}", pending.token);
         app.effect_on_confirmed(

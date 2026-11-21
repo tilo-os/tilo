@@ -21,7 +21,7 @@ impl ui::framework::ResourceApp for AccountsOwner {
     }
 }
 
-type Accounts = ui::framework::PersonResource<accounts::person::PersonAccounts>;
+type Accounts = ui::framework::WorkspaceResource<accounts::person::PersonAccounts>;
 
 fn person() -> String {
     "fe".repeat(32)
@@ -33,7 +33,7 @@ fn fixture_record() -> (ui::framework::testing::TestApp<AccountsOwner>, Accounts
     let mut settings =
         ui::framework::testing::TestApp::<AccountsOwner>::for_person(&person()).unwrap();
     let kept = settings
-        .shared_person::<accounts::person::PersonAccounts>()
+        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
         .unwrap();
     for (id, provider) in PROVIDERS {
         let mut account = accounts::Account::new(id, provider);
@@ -237,12 +237,16 @@ fn an_account_saved_to_the_persons_accounts_shows_in_files_places_live() {
         ui::framework::testing::TestApp::<crate::resource::FileExplorerShell>::for_person(&person())
             .unwrap();
     let kept = settings
-        .shared_person::<accounts::person::PersonAccounts>()
+        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
         .unwrap();
     let read = files
-        .shared_person::<accounts::person::PersonAccounts>()
-        .expect("Files reads the person's accounts");
-    assert!(!read.editable(), "Files only reads the accounts record");
+        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .expect("Files reads the workspace's accounts");
+    assert_eq!(
+        read.record().route(),
+        kept.record().route(),
+        "Files reads the accounts record Settings keeps"
+    );
     files.settle();
     assert!(account_rows(&mut files).is_empty());
 

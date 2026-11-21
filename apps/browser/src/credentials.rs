@@ -111,7 +111,7 @@ impl Credentials {
     /// Fill forms from, and edit, the person's address book.
     pub fn attach_address_book(
         &mut self,
-        book: ui::framework::PersonResource<crate::autofill::AddressBook>,
+        book: ui::framework::WorkspaceResource<crate::autofill::AddressBook>,
     ) {
         self.addresses.attach(book);
     }

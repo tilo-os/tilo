@@ -1,7 +1,6 @@
-//! A record of a kind an app keeps beside the one it shows, in the
-//! workspace it is open in: edited through its actions with attribution,
-//! history and undo, the same record on each device that holds the
-//! workspace, and apart from the record the app shows.
+//! Records a person keeps for themselves beside the one an app shows: edited
+//! through their actions with attribution, history and undo, the same on each
+//! of their devices, and apart from the record the app shows.
 
 use tilo_app::prelude::*;
 
@@ -264,11 +263,11 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         let mut app = TestApp::<QueueApp>::for_person_shown_by(&ada(), &held).unwrap();
-        let owned = app.shared_person::<Saved>().unwrap();
-        owned.invoke(&Saved::SAVE.with("saved-in-the-app")).unwrap();
+        let owned = app.profile_resource::<Watched>().unwrap();
+        owned.invoke(&Watched::WATCH.with("saved-in-the-app")).unwrap();
 
         let kept = held
-            .open_existing_resource(ResourceType::new(Saved::KIND))
+            .open_existing_resource(ResourceType::new(Watched::KIND))
             .unwrap()
             .expect("the host keeps the record the app changed");
         assert_eq!(
@@ -278,87 +277,18 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_editors;
-    {
-        let mut owner_app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-        let mut editor_app = TestApp::<EditorApp>::for_person(&ada()).unwrap();
-        let mut reader_app = TestApp::<ReaderApp>::for_person(&ada()).unwrap();
-        let owned = owner_app.shared_person::<Saved>().unwrap();
-        let edited = editor_app.shared_person::<Saved>().unwrap();
-        let read = reader_app.shared_person::<Saved>().unwrap();
-        assert!(owned.editable() && edited.editable());
-        assert!(!read.editable());
-        for copy in [&edited, &read] {
-            assert_eq!(
-                copy.record().checkout().id,
-                owned.record().checkout().id,
-                "every app's copy is the owner's record"
-            );
-            assert!(
-                copy.record().syncs(),
-                "the person's own store carries it, so it reaches their other devices"
-            );
-            assert_eq!(
-                copy.record().route(),
-                owned.record().route(),
-                "every app of theirs opens the same record of the person's store"
-            );
-        }
-        let route = owned
-            .record()
-            .route()
-            .expect("the person's own store carries it");
-        assert_eq!(
-            route.app_id,
-            QueueApp::ID,
-            "the route names the app keeping the record"
-        );
-        assert_ne!(
-            route.document.as_deref(),
-            None,
-            "and the record, not the app's primary"
-        );
-
-        owned
-            .invoke(&Saved::SAVE.with("kept-by-the-owner"))
-            .unwrap();
-        edited
-            .invoke(&Saved::SAVE.with("added-by-the-editor"))
-            .unwrap();
-        owned
-            .record()
-            .merge_peer_document(edited.record().document().unwrap())
-            .unwrap();
-        read.record()
-            .merge_peer_document(owned.record().document().unwrap())
-            .unwrap();
-        assert_eq!(saved(&read), ["added-by-the-editor", "kept-by-the-owner"]);
-
-        assert!(
-            read.invoke(&Saved::SAVE.with("from-the-reader")).is_err(),
-            "a reader does not change it"
-        );
-        assert_eq!(saved(&read), ["added-by-the-editor", "kept-by-the-owner"]);
-
-        // The editor's copy is kept in its own store across launches.
-        drop(edited);
-        let mut editor_app = editor_app.reopen().unwrap();
-        let kept = editor_app.shared_person::<Saved>().unwrap();
-        assert_eq!(saved(&kept), ["added-by-the-editor"]);
-    }
-
     phase a_change_to_the_persons_record_from_another_device_wakes_the_window_reading_it;
     {
         let mut app = TestApp::<UndeclaredApp>::for_person(&ada()).unwrap();
         app.settle();
-        let read = app.shared_person::<Saved>().unwrap();
-        assert!(shows(&mut app, "0 saved"), "nothing is saved yet: {}", shown(&mut app));
+        let read = app.profile_resource::<Watched>().unwrap();
+        assert!(shows(&mut app, "0 watched"), "nothing is watched yet: {}", shown(&mut app));
 
-        // Their other device saves one: its copy of the record arrives here,
+        // Their other device watches one: its copy of the record arrives here,
         // as the person's own store carries it between their devices. Nothing
         // else tells this window, which has been idle since it opened.
-        let mut theirs = Replica::<Saved>::load(&read.record().document().unwrap()).unwrap();
-        theirs.apply(Saved::SAVE.with("from-their-phone")).unwrap();
+        let mut theirs = Replica::<Watched>::load(&read.record().document().unwrap()).unwrap();
+        theirs.apply(Watched::WATCH.with("from-their-phone")).unwrap();
         read.record()
             .merge_peer_document(theirs.save())
             .unwrap();
@@ -368,7 +298,7 @@ tilo_test_env::scenario! {
             "the window asks for a frame when the record changes under it"
         );
         assert!(
-            shows(&mut app, "1 saved"),
+            shows(&mut app, "1 watched"),
             "the frame the arrival asked for shows it: {}",
             shown(&mut app)
         );
@@ -380,35 +310,20 @@ tilo_test_env::scenario! {
         let resources = report["resources"].as_array().expect("resources");
         let declared = resources
             .iter()
-            .find(|resource| resource["kind"] == Saved::KIND)
+            .find(|resource| resource["kind"] == Watched::KIND)
             .unwrap_or_else(|| {
                 panic!(
                     "{} is part of the app's surface: {resources:?}",
-                    Saved::KIND
+                    Watched::KIND
                 )
             });
         assert_eq!(declared["person"], true, "{declared:?}");
 
-        // The declared record is open with the window, published beside the
-        // app's own, whether or not a view shows it.
+        // The declared record is open with the window, whether or not a view
+        // shows it.
         let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
         assert_eq!(app.open_person_resources(), 1);
-        assert!(app.shared_person::<Saved>().is_some());
-    }
-
-    phase a_record_a_view_opens_without_the_app_declaring_it_is_not_the_persons;
-    {
-        let report = tilo_app::framework::headless::surface_report::<UndeclaredApp>();
-        let resources = report["resources"].as_array().expect("resources");
-        let opened = resources
-            .iter()
-            .find(|resource| resource["kind"] == Saved::KIND)
-            .expect("the view opened it");
-        assert_eq!(
-            opened.get("person"),
-            None,
-            "the declaration decides what is the person's, not the open: {opened:?}"
-        );
+        assert!(app.profile_resource::<Watched>().is_some());
     }
 
     phase an_agent_reads_the_persons_own_record_now_and_at_a_version;
@@ -461,31 +376,6 @@ tilo_test_env::scenario! {
     }
 }
 
-/// What the person saved for later, which the queue app keeps for all of
-/// their apps; the editor app adds to it too.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Saved {
-    pub videos: Collection<String>,
-}
-
-#[resource(
-    kind = "test.saved",
-    app = "so.tilo.test-queue",
-    catalogue = "tests/locales"
-)]
-impl Saved {
-    /// Save a video for later.
-    #[action]
-    pub fn save(&mut self, cx: &mut ActionCx, video: String) {
-        self.videos.push(cx.id(), video);
-    }
-}
-
-impl tilo_app::tilo_resource::SharedResource for Saved {
-    const OWNER: &'static str = QueueApp::ID;
-    const EDITORS: &'static [&'static str] = &[EditorApp::ID];
-}
-
 /// Whether the window the app shows names `label` to assistive technology.
 fn shows(app: &mut TestApp<UndeclaredApp>, label: &str) -> bool {
     app.harness()
@@ -504,54 +394,22 @@ fn shown(app: &mut TestApp<UndeclaredApp>) -> String {
         .join(" | ")
 }
 
-fn saved(record: &PersonResource<Saved>) -> Vec<String> {
-    let mut videos: Vec<String> = record.with(|state| state.videos.values().cloned().collect());
-    videos.sort();
-    videos
-}
-
-/// Another app, adding to the history the queue app keeps.
-struct EditorApp;
-
-impl ResourceApp for EditorApp {
-    type Resource = Queue;
-    const ID: &'static str = "so.tilo.test-editor";
-    const TITLE: &'static str = "Editor";
-
-    fn view(_cx: &mut ViewCx<Queue>) -> Element {
-        Box::new(Column::new())
-    }
-}
-
-/// Another app, reading the history the queue app keeps.
-struct ReaderApp;
-
-impl ResourceApp for ReaderApp {
-    type Resource = Queue;
-    const ID: &'static str = "so.tilo.test-reader";
-    const TITLE: &'static str = "Reader";
-
-    fn view(_cx: &mut ViewCx<Queue>) -> Element {
-        Box::new(Column::new())
-    }
-}
-
-/// An app that declares the person's saved videos with itself and shows
-/// nothing of them.
+/// An app that declares the person's watch history with itself and shows
+/// nothing of it.
 struct DeclaringApp;
 
 impl ResourceApp for DeclaringApp {
     type Resource = Queue;
     const ID: &'static str = "so.tilo.test-declaring";
     const TITLE: &'static str = "Declaring";
-    const PERSON_RESOURCES: &'static [PersonKind] = &[PersonKind::shared::<Saved>()];
+    const PERSON_RESOURCES: &'static [PersonKind] = &[PersonKind::profile::<Watched>()];
 
     fn view(_cx: &mut ViewCx<Queue>) -> Element {
         Box::new(Column::new())
     }
 }
 
-/// An app reading the person's saved videos without declaring them.
+/// An app reading the person's watch history without declaring it.
 struct UndeclaredApp;
 
 impl ResourceApp for UndeclaredApp {
@@ -560,11 +418,11 @@ impl ResourceApp for UndeclaredApp {
     const TITLE: &'static str = "Undeclared";
 
     fn view(cx: &mut ViewCx<Queue>) -> Element {
-        let shown = match cx.shared_person::<Saved>() {
-            Some(saved) => Text::from_state(&saved.state(), |state| {
-                format!("{} saved", state.videos.len())
+        let shown = match cx.profile_resource::<Watched>() {
+            Some(watched) => Text::from_state(&watched.state(), |state| {
+                format!("{} watched", state.videos.len())
             }),
-            None => Text::new("none saved"),
+            None => Text::new("none watched"),
         };
         Box::new(Column::new().push(Box::new(shown)))
     }

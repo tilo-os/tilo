@@ -30,7 +30,7 @@ impl BrowserOpener for FakeBrowser {
 fn live_second_account_refusal_restores_already_published_metadata() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
     let record = app
-        .shared_person::<accounts::person::PersonAccounts>()
+        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
         .unwrap();
     let (_dir, root) = scratch_root();
     let root = root.with_person(record.clone());
@@ -72,7 +72,7 @@ fn live_second_account_refusal_restores_already_published_metadata() {
 fn live_pair_projection_failure_restores_person_metadata_and_keeps_recovery_intent() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
     let record = app
-        .shared_person::<accounts::person::PersonAccounts>()
+        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
         .unwrap();
     let (dir, root) = scratch_root();
     let root = root.with_person(record.clone());

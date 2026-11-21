@@ -250,8 +250,8 @@ fn two_agents_answer_the_form(app: &mut App, engine: &TestEngine) {
 }
 
 /// Browser's resource of page actions, as its window holds it.
-fn record(app: &mut App) -> PersonResource<PageResource> {
-    app.profile_resource::<PageResource>()
+fn record(app: &mut App) -> WorkspaceResource<PageResource> {
+    app.shared_workspace::<PageResource>(tilo_webview::BROWSER_APP_ID)
         .expect("Browser keeps a resource of page actions")
 }
 
@@ -300,7 +300,7 @@ fn as_typed(mut entry: Value) -> Value {
 }
 
 /// What `tab`'s resource keeps after the place `since`, as the engine lists it.
-fn kept_entries(resource: &PersonResource<PageResource>, tab: &str, since: u64) -> Vec<Value> {
+fn kept_entries(resource: &WorkspaceResource<PageResource>, tab: &str, since: u64) -> Vec<Value> {
     resource.with(|state| {
         state
             .page(tab, since)
@@ -318,14 +318,14 @@ fn kept_entries(resource: &PersonResource<PageResource>, tab: &str, since: u64) 
 }
 
 /// The one tab the resource holds.
-fn only_tab(record: &PersonResource<PageResource>) -> String {
+fn only_tab(record: &WorkspaceResource<PageResource>) -> String {
     let tabs: Vec<String> = record.with(|state| state.tabs.keys().cloned().collect());
     assert_eq!(tabs.len(), 1, "one tab acted: {tabs:?}");
     tabs.into_iter().next().unwrap_or_default()
 }
 
 /// What `tab`'s resource holds: each action's place, actor and action.
-fn held(record: &PersonResource<PageResource>, tab: &str) -> Vec<(u64, String, String)> {
+fn held(record: &WorkspaceResource<PageResource>, tab: &str) -> Vec<(u64, String, String)> {
     record.with(|state| {
         state
             .page(tab, 0)
@@ -345,7 +345,7 @@ fn held(record: &PersonResource<PageResource>, tab: &str) -> Vec<(u64, String, S
 
 /// One step of the resource's history: who made the change, how many actions
 /// of `tab` the resource held after it, and the newest of them.
-fn steps(record: &PersonResource<PageResource>, tab: &str) -> Vec<(Actor, usize, String)> {
+fn steps(record: &WorkspaceResource<PageResource>, tab: &str) -> Vec<(Actor, usize, String)> {
     record
         .record()
         .read(|doc| {
@@ -826,7 +826,7 @@ fn another_device_of_the_person_reads_the_same_resource() {
     let mut phone = open(&TestEngine::new());
     let (on_laptop, on_phone) = (record(&mut laptop), record(&mut phone));
     assert!(
-        on_laptop.syncs(),
+        on_laptop.record().syncs(),
         "the resource has a route in the workspace"
     );
     let route = on_laptop.record().route().expect("a route");
@@ -1311,7 +1311,7 @@ fn an_entry_of_a_secret_field_says_it_was_set_and_keeps_none_of_its_text() {
 
 /// Browser's resource of page actions in a window whose page nobody acted
 /// on, with the window that keeps it.
-fn quiet_window() -> (App, PersonResource<PageResource>) {
+fn quiet_window() -> (App, WorkspaceResource<PageResource>) {
     let mut app = open(&TestEngine::new());
     let record = record(&mut app);
     (app, record)
@@ -1329,7 +1329,7 @@ fn setting_down(tab: &str, entry: Value) -> Invoke<PageResource> {
 /// Set `entry` down in `tab` as a window does, authored by `by`: the invoker
 /// the API admitted the action for (nobody: the person at the window).
 fn set_down(
-    record: &PersonResource<PageResource>,
+    record: &WorkspaceResource<PageResource>,
     by: Option<&ActionInvoker>,
     tab: &str,
     entry: Value,

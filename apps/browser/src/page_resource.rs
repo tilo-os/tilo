@@ -84,7 +84,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 use tilo_webview::{PageActor, PageFailure, PageReply, PageRequest, PageResourceNote};
-use ui::framework::PersonResource;
+use ui::framework::WorkspaceResource;
 use ui::tilo_actions::{Acting, ActionInvoker, Actor, InvocationId, InvokerDevice};
 use ui::tilo_resource::{self, ActionCx, Atom, Map, Model, Refusal, resource};
 
@@ -691,7 +691,7 @@ struct Owed {
 /// place every answer names.
 #[derive(Default)]
 pub(crate) struct TabRecorder {
-    record: Option<PersonResource<PageResource>>,
+    record: Option<WorkspaceResource<PageResource>>,
     /// The tab's id in the resource.
     tab: String,
     /// The device this window runs on.
@@ -730,7 +730,7 @@ pub(crate) struct TabRecorder {
 
 impl TabRecorder {
     /// Keep the tab's resource in `record`, as a tab of the device `device`.
-    pub(crate) fn attach(&mut self, record: PersonResource<PageResource>, device: &str) {
+    pub(crate) fn attach(&mut self, record: WorkspaceResource<PageResource>, device: &str) {
         let mut key = [0; 32];
         for half in key.chunks_mut(16) {
             half.copy_from_slice(uuid::Uuid::new_v4().as_bytes());

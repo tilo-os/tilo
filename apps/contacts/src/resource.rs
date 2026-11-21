@@ -253,8 +253,8 @@ impl Scene {
 
 impl ContactsApp {
     /// Labels are a projection of this book's stable UUIDs. Service endpoints
-    /// are independently confirmed in the shared person-owned directory and
-    /// never inferred from matching names, emails or telephone numbers.
+    /// are independently confirmed in the shared directory the workspace keeps
+    /// and never inferred from matching names, emails or telephone numbers.
     pub(crate) fn project_identities(&self, state: &Book) {
         use tilo_contact_directory::{ContactDirectory, Projected};
         let Some(directory) = &self.identity_directory else {
@@ -296,13 +296,20 @@ impl ContactsApp {
             .filter(|id| current.people.get(id).is_none_or(|person| !person.removed))
             .collect();
         // One change for the whole book, however many people it touches.
+        // The directory shares this window's store, which the pass reading the
+        // book is in: the projection lands once it lets go, in the window's
+        // next settle, as an edit asked for in a pass does.
         for chunk in people.chunks(tilo_contact_directory::MAX_PROJECTED) {
-            let _ = directory
-                .invoke(&ContactDirectory::PROJECT_CONTACTS.with((chunk.to_vec(), Vec::new())));
+            directory.invoke_then(
+                &ContactDirectory::PROJECT_CONTACTS.with((chunk.to_vec(), Vec::new())),
+                |_| {},
+            );
         }
         if !removed.is_empty() {
-            let _ =
-                directory.invoke(&ContactDirectory::PROJECT_CONTACTS.with((Vec::new(), removed)));
+            directory.invoke_then(
+                &ContactDirectory::PROJECT_CONTACTS.with((Vec::new(), removed)),
+                |_| {},
+            );
         }
     }
 }

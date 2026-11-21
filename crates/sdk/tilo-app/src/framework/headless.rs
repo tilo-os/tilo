@@ -340,7 +340,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app as `person` (the hex of a root public key) opens it on a
     /// fresh profile: one of that person's devices, whose shared records
-    /// ([`ResourceEnv::shared_person`](super::ResourceEnv::shared_person)) are
+    /// ([`ResourceEnv::profile_resource`](super::ResourceEnv::profile_resource)) are
     /// theirs.
     pub fn for_person(person: &str) -> Result<Self, LaunchError> {
         Self::fresh(TEST_WORKSPACE, Role::Owner, person)
@@ -466,15 +466,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn profile_resource<P: Resource>(&mut self) -> Option<super::PersonResource<P>> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.storage.profile_resource::<P>())
-            .flatten()
-    }
-
-    /// The person's shared record `P`, as the app's views open it.
-    pub fn shared_person<P: tilo_resource::SharedResource>(
-        &mut self,
-    ) -> Option<super::PersonResource<P>> {
-        self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_person::<P>())
             .flatten()
     }
 

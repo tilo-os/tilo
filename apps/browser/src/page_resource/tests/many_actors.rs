@@ -73,13 +73,13 @@ fn crowd(n: usize) -> ActionInvoker {
 }
 
 /// What `tab`'s resource holds, as a reader of it is answered.
-pub(super) fn entries(record: &PersonResource<PageResource>, tab: &str) -> Vec<Value> {
+pub(super) fn entries(record: &WorkspaceResource<PageResource>, tab: &str) -> Vec<Value> {
     kept_entries(record, tab, 0)
 }
 
 /// The device each change an agent authored in the resource's history names.
 pub(super) fn devices_in_history(
-    record: &PersonResource<PageResource>,
+    record: &WorkspaceResource<PageResource>,
 ) -> Vec<Option<InvokerDevice>> {
     record
         .record()

@@ -1,7 +1,7 @@
 use crate::{MessagesEffect, MessagesShell};
 use tilo_contact_directory::ContactDirectory;
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::Id;
+use ui::tilo_resource::{Id, SharedResource as _};
 
 #[test]
 fn private_group_action_contracts_preserve_read_and_outside_grants() {
@@ -241,7 +241,7 @@ fn live_starts_empty_and_transport_action_is_explicitly_unavailable() {
     let mut app =
         TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
     let directory = app
-        .shared_person::<ContactDirectory>()
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
         .expect("shared directory");
     assert!(directory.get().people.is_empty());
     let send = MessagesEffect::Send {
@@ -264,7 +264,7 @@ fn account_or_recipient_cannot_be_substituted_into_a_dropdown_selection() {
     let mut app =
         TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
     let directory = app
-        .shared_person::<ContactDirectory>()
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
         .expect("shared directory");
     directory
         .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
@@ -278,11 +278,12 @@ fn account_or_recipient_cannot_be_substituted_into_a_dropdown_selection() {
         )))
         .expect("fixture endpoint");
     let accounts = app
-        .shared_person::<tilo_messaging::PersonAccounts>()
-        .expect("account resource");
-    assert!(
-        !accounts.editable(),
-        "Messages has no account-editor authority"
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
+        .expect("the workspace's accounts");
+    assert_eq!(
+        accounts.record().route().expect("accounts sync").app_id,
+        tilo_messaging::PersonAccounts::OWNER,
+        "Messages reads the accounts record Settings keeps"
     );
     app.settle();
     app.effect(&MessagesEffect::OpenPerson {
@@ -315,7 +316,7 @@ fn narrow_and_wide_surfaces_publish_accessible_routes_and_shared_navigation() {
     ] {
         let mut app =
             TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
-        app.shared_person::<ContactDirectory>()
+        app.shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
             .expect("shared directory")
             .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
             .expect("fixture contact");
@@ -404,7 +405,7 @@ fn public_route_action_refuses_revoked_identity_until_a_new_association_is_revie
     })
     .expect("original explicit route");
     let directory = app
-        .shared_person::<ContactDirectory>()
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
         .expect("shared directory");
     directory
         .invoke(
@@ -485,8 +486,7 @@ impl ui::framework::ResourceApp for AccountOwnerFixture {
     type Resource = crate::Messages;
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Metadata owner fixture";
-    fn view(cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
-        let _ = cx.shared_person::<tilo_messaging::PersonAccounts>();
+    fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
         Box::new(ui::widget::Column::new())
     }
 }
@@ -514,9 +514,8 @@ pub(crate) fn live_messages_with_service_and_scope<T: std::any::Any>(
     let person = "11".repeat(32);
     let mut settings = TestApp::<AccountOwnerFixture>::for_person(&person).expect("metadata owner");
     let account_resource = settings
-        .shared_person::<tilo_messaging::PersonAccounts>()
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .expect("owner account resource");
-    assert!(account_resource.editable());
     account_resource
         .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
             "fixture-signal".into(),
@@ -534,7 +533,7 @@ pub(crate) fn live_messages_with_service_and_scope<T: std::any::Any>(
     }
     .expect("live Messages host");
     let accounts = app
-        .shared_person::<tilo_messaging::PersonAccounts>()
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .expect("read-only accounts");
     assert_eq!(
         accounts.record().route(),
@@ -552,7 +551,6 @@ pub(crate) fn live_messages_with_service_and_scope<T: std::any::Any>(
         .expect("existing shared-record sync path");
     drop(account_resource);
     drop(settings);
-    assert!(!accounts.editable());
     assert!(
         accounts
             .get()
@@ -562,7 +560,7 @@ pub(crate) fn live_messages_with_service_and_scope<T: std::any::Any>(
         "shared metadata was persisted by its actual owner"
     );
     let directory = app
-        .shared_person::<ContactDirectory>()
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
         .expect("shared directory");
     directory
         .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
@@ -599,7 +597,7 @@ fn group_fixture(host: std::sync::Arc<GroupHostFixture>) -> TestApp<MessagesShel
     let mut owner =
         TestApp::<AccountOwnerFixture>::for_person(&"11".repeat(32)).expect("group account owner");
     let accounts = owner
-        .shared_person::<tilo_messaging::PersonAccounts>()
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .expect("group account resource");
     accounts
         .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
@@ -614,7 +612,7 @@ fn group_fixture(host: std::sync::Arc<GroupHostFixture>) -> TestApp<MessagesShel
     let mut app = TestApp::<MessagesShell>::for_person_with_lent(&"11".repeat(32), client)
         .expect("private Messages fixture");
     let linked = app
-        .shared_person::<tilo_messaging::PersonAccounts>()
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .expect("read-only account metadata");
     linked
         .record()

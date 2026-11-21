@@ -97,7 +97,7 @@ impl VaultOpener {
 }
 
 #[derive(Clone)]
-struct PersonAccountsResource(ui::framework::PersonResource<accounts::person::PersonAccounts>);
+struct PersonAccountsResource(ui::framework::WorkspaceResource<accounts::person::PersonAccounts>);
 
 impl std::fmt::Debug for PersonAccountsResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -135,7 +135,7 @@ impl AccountRoot {
     #[must_use]
     pub fn with_person(
         mut self,
-        record: ui::framework::PersonResource<accounts::person::PersonAccounts>,
+        record: ui::framework::WorkspaceResource<accounts::person::PersonAccounts>,
     ) -> Self {
         self.person = Some(PersonAccountsResource(record));
         self
@@ -773,7 +773,7 @@ mod tests {
 
         let mut publisher = TestApp::<crate::resource::SettingsShell>::for_person(&key).unwrap();
         let record = publisher
-            .shared_person::<accounts::person::PersonAccounts>()
+            .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
             .unwrap();
         let directory = tempfile::tempdir().unwrap();
         AccountRoot::at(directory.path())
@@ -816,7 +816,9 @@ mod tests {
                 &root_key,
             )
             .unwrap();
-        let record = app.shared_person::<PersonAccounts>().unwrap();
+        let record = app
+            .shared_workspace::<PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let root = AccountRoot::at(dir.path()).with_person(record.clone());
         root.publish_browser_identity(
@@ -904,7 +906,7 @@ mod tests {
         );
     }
 
-    /// In a host the accounts are the person's record: saving edits it,
+    /// In a host the accounts are the workspace's record: saving edits it,
     /// reading reads it, and this device's file follows as its projection.
     #[test]
     fn in_a_host_the_accounts_are_the_persons_resource_and_the_file_follows() {
@@ -912,9 +914,13 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");
         let record = app
-            .shared_person::<PersonAccounts>()
-            .expect("Settings keeps the person's accounts");
-        assert!(record.editable(), "Settings edits the person's accounts");
+            .shared_workspace::<PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .expect("Settings keeps the workspace's accounts");
+        assert_eq!(
+            record.record().route().expect("the accounts sync").app_id,
+            accounts::person::ACCOUNTS_OWNER,
+            "Settings keeps the workspace's accounts"
+        );
         let dir = tempfile::tempdir().unwrap();
         let root = AccountRoot::at(dir.path()).with_person(record.clone());
 
@@ -947,7 +953,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");
         let record = app
-            .shared_person::<PersonAccounts>()
+            .shared_workspace::<PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
             .expect("person accounts");
         let dir = tempfile::tempdir().unwrap();
         let root = AccountRoot::at(dir.path()).with_person(record.clone());

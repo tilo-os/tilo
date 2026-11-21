@@ -474,11 +474,11 @@ pub(super) fn bookmarked(pages: &[(&str, &str)]) -> crate::resource::Browser {
 
 pub(super) fn person_history() -> (
     ui::framework::testing::TestApp<crate::BrowserShell>,
-    ui::framework::PersonResource<crate::history::BrowsingHistory>,
+    ui::framework::WorkspaceResource<crate::history::BrowsingHistory>,
 ) {
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let record = app
-        .profile_resource::<crate::history::BrowsingHistory>()
+        .shared_workspace::<crate::history::BrowsingHistory>(tilo_webview::BROWSER_APP_ID)
         .expect("a test profile keeps person resources");
     (app, record)
 }

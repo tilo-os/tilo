@@ -25,6 +25,7 @@ use tilo_messaging_protocol::{
 };
 use ui::framework::testing::TestApp;
 use ui::prelude::Id;
+use ui::tilo_resource::SharedResource as _;
 const ACI: &str = "01234567-89ab-cdef-0123-456789abcdef";
 const OWN_ACI: &str = "11111111-1111-4111-8111-111111111111";
 const SCOPE: &str = "signal:11111111-1111-4111-8111-111111111111";
@@ -126,7 +127,9 @@ fn choice() -> String {
 fn open_app(client: MessagingClient) -> ui::framework::testing::TestApp<MessagesShell> {
     let mut app = live_messages_with_service(client);
     let directory = app
-        .shared_person::<tilo_contact_directory::ContactDirectory>()
+        .shared_workspace::<tilo_contact_directory::ContactDirectory>(
+            tilo_contact_directory::ContactDirectory::OWNER,
+        )
         .expect("contacts");
     directory
         .invoke(
@@ -607,8 +610,7 @@ impl ui::framework::ResourceApp for AccountOwnerFixture {
     type Resource = tilo_messaging::PersonAccounts;
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Metadata owner fixture";
-    fn view(cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
-        let _ = cx.shared_person::<tilo_messaging::PersonAccounts>();
+    fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
         Box::new(ui::widget::Column::new())
     }
 }
@@ -617,9 +619,8 @@ fn live_messages_with_service(client: MessagingClient) -> TestApp<MessagesShell>
     let person = "11".repeat(32);
     let mut settings = TestApp::<AccountOwnerFixture>::for_person(&person).expect("metadata owner");
     let account_entry = settings
-        .shared_person::<tilo_messaging::PersonAccounts>()
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .expect("owner account record");
-    assert!(account_entry.editable());
     account_entry
         .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
             "fixture-signal".into(),
@@ -633,7 +634,7 @@ fn live_messages_with_service(client: MessagingClient) -> TestApp<MessagesShell>
     let mut app = TestApp::<MessagesShell>::for_person_with_lent(&person, client)
         .expect("live Messages host");
     let accounts = app
-        .shared_person::<tilo_messaging::PersonAccounts>()
+        .shared_workspace::<tilo_messaging::PersonAccounts>(tilo_messaging::PersonAccounts::OWNER)
         .expect("read-only accounts");
     assert_eq!(
         accounts.record().route(),
@@ -651,7 +652,6 @@ fn live_messages_with_service(client: MessagingClient) -> TestApp<MessagesShell>
         .expect("existing shared-record sync path");
     drop(account_entry);
     drop(settings);
-    assert!(!accounts.editable());
     assert!(
         accounts
             .get()
@@ -661,7 +661,7 @@ fn live_messages_with_service(client: MessagingClient) -> TestApp<MessagesShell>
         "shared metadata was persisted by its actual owner"
     );
     let directory = app
-        .shared_person::<ContactDirectory>()
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
         .expect("shared directory");
     directory
         .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))

@@ -2777,19 +2777,22 @@ fn same_shape(bound: &ActionSpec, declared: &ActionSpec) -> bool {
         && bound.contract.risk == declared.contract.risk
 }
 
-/// A resource of the person's own one app keeps for all of theirs: their
-/// accounts, which Settings keeps and Mail signs in to. Each app holds its
-/// copy in its own store; the copies are one record, the same on every
-/// device, kept in the person's own scope, which no route carries yet. Only
-/// [`OWNER`](Self::OWNER) and [`EDITORS`](Self::EDITORS) change it; every
-/// other app reads it (`ViewCx::shared_person` in `tilo-app`).
+/// A resource that one app keeps for every app of the workspace: its
+/// accounts, which Settings keeps and Mail signs in to; the people it knows,
+/// which Contacts keeps and Mail, Calendar and Messages address. Opened as
+/// the workspace's record, at the keeper's route (`ViewCx::shared_workspace`
+/// in `tilo-app`): one record for every member, its changes decided by the
+/// workspace's grants on the keeper's resource.
 pub trait SharedResource: Resource {
-    /// The app that keeps the record.
+    /// The app that keeps the record: whose route holds it, and whose surface
+    /// its changes are decided against.
     const OWNER: &'static str;
-    /// The other apps whose edits the record takes.
+    /// The other apps that change the record by design. The workspace's
+    /// grants decide every change either way.
     const EDITORS: &'static [&'static str] = &[];
 
-    /// Whether the app `app_id` changes the record.
+    /// Whether `app_id` is one of the record's writers by design
+    /// ([`Self::OWNER`] or [`Self::EDITORS`]).
     #[must_use]
     fn edited_by(app_id: &str) -> bool {
         app_id == Self::OWNER || Self::EDITORS.contains(&app_id)

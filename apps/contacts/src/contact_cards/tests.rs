@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::{Effect as _, Invoke, Replica};
+use ui::tilo_resource::{Effect as _, Invoke, Replica, SharedResource as _};
 
 use crate::actions::{ContactsEffect, MergeField};
 use crate::contact_cards::{Book, ContactCards, contact_cards};
@@ -437,7 +437,9 @@ fn a_published_merge_merges_and_one_undo_restores_both() {
 fn stable_contacts_project_without_inferred_endpoints_and_deletions_disable_identity() {
     use tilo_contact_directory::ContactDirectory;
     let mut app = TestApp::<ContactsShell>::for_person("contacts-fixture-owner").unwrap();
-    let directory = app.shared_person::<ContactDirectory>().unwrap();
+    let directory = app
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+        .unwrap();
     let mut first = person("Alex", "");
     first.phones.push(Labeled::new("mobile", "+12025550123"));
     first.emails.push(Labeled::new("work", "Alex@EXAMPLE.test"));

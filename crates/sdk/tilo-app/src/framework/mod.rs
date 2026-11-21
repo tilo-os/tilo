@@ -189,10 +189,13 @@
 //! * **One record of a kind beside the one shown** — a workspace's watch
 //!   history, for example — is declared with [`Resources::workspace_record`].
 //!   Workspace roles govern who can read and edit it. The history attributes
-//!   each edit, and the record syncs with the workspace. The person's
-//!   accounts, contacts and agent models are declared with the app
-//!   ([`ResourceApp::PERSON_RESOURCES`]), kept in their own scope and carried
-//!   to their other devices by their personal store ([`PersonKind`]).
+//!   each edit, and the record syncs with the workspace. A record one app
+//!   keeps for every app of the workspace — its accounts, its contacts, what
+//!   it browsed — is declared with [`Resources::shared_workspace`] or the app
+//!   ([`ResourceApp::PERSON_RESOURCES`], [`PersonKind::shared`]). Records that
+//!   are a person's alone — the words taught to the keyboard, the signature
+//!   they sign with — are kept in their own scope and carried to their other
+//!   devices by their personal store ([`PersonKind::profile`]).
 //! * **What grows without end** — a chat's messages, a log — is a chain of
 //!   part records of another resource type kept beside the app's own in its
 //!   workspace ([`Chain`], [`Chained`]): declared in [`ResourceApp::records`],

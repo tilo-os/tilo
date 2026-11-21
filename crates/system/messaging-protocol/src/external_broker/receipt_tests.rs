@@ -1,6 +1,7 @@
 use super::*;
 use crate::signal_session::{Completion, SendJournal};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use ui::tilo_resource::SharedResource as _;
 use whatsapp_rust::wacore::types::{
     events::Receipt, message::MessageSource, presence::ReceiptType,
 };
@@ -313,7 +314,9 @@ pub(super) fn messages_with_client(
     )
     .unwrap();
     tests::project_account_metadata(&fixture.owner, &fixture.route, &mut app);
-    let directory = app.shared_person::<ContactDirectory>().unwrap();
+    let directory = app
+        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+        .unwrap();
     let route = &fixture.route;
     directory
         .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))

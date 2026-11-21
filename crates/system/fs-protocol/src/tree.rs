@@ -520,10 +520,10 @@ pub struct TreeEntry {
 
 /// A workspace's files, published as a record.
 ///
-/// The app that keeps the record declares it with its
-/// `ResourceApp::PERSON_RESOURCES` (`PersonKind::shared`), and the daemon that
-/// mounts the tree joins the same route, so a device's changes reach the
-/// person's other devices and the members of a shared workspace.
+/// The app that keeps the record opens it with its window
+/// (`Resources::workspace_record`), and the daemon that mounts the tree joins
+/// the same route, so a device's changes reach the person's other devices and
+/// the members of a shared workspace.
 pub struct FilesTree;
 
 impl Resource for FilesTree {

@@ -43,8 +43,9 @@ pub struct Surface {
     pub version: u32,
     /// A record of the person's own, kept in their store rather than the
     /// workspace of the window showing it: one the app declares with itself
-    /// (its `ResourceApp::PERSON_RESOURCES`). Only the kinds an app's surface
-    /// marks so may it keep in, or read from, the person's store.
+    /// (its `ResourceApp::PERSON_RESOURCES`, as `PersonKind::profile`). Only
+    /// the kinds an app's surface marks so may it keep in, or read from, the
+    /// person's store.
     #[serde(default, skip_serializing_if = "is_false")]
     pub person: bool,
     /// A member's own record in the workspace: one per member, which only

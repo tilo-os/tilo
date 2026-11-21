@@ -552,8 +552,13 @@ impl<R: Resource> ResourceEnv<R> {
         self.storage.person::<P>()
     }
 
-    /// The app's record of `P` in the person's profile. Its route is in the
-    /// person's own cluster, independent of which workspace opened the app.
+    /// The record `P` the person keeps for themselves, in their own scope
+    /// rather than in the window's workspace: presentation data only they use
+    /// on their own devices, such as the signature they sign documents with or
+    /// the words they taught the on-screen keyboard. No other member reads or
+    /// changes it, and it reaches the person's other devices with their
+    /// personal store. A record the workspace keeps is
+    /// [`Self::shared_workspace`]'s.
     pub fn profile_resource<P: Resource>(&self) -> Option<super::PersonResource<P>> {
         self.storage.profile_resource::<P>()
     }
@@ -597,18 +602,6 @@ impl<R: Resource> ResourceEnv<R> {
     /// ([`ResourceOpener::open`](super::ResourceOpener::open)).
     pub fn resource_opener<P: Resource>(&self, owner: &'static str) -> super::ResourceOpener<P> {
         super::ResourceOpener::new(Rc::clone(&self.storage), owner)
-    }
-
-    /// The person's record `P` that one app keeps for all of theirs — their
-    /// accounts, which Settings keeps: the same record on every device, held
-    /// here too and converging with the keeper's. Changed only by its owner
-    /// and editors ([`SharedResource`](tilo_resource::SharedResource),
-    /// [`PersonResource::editable`](super::PersonResource::editable)); its owner
-    /// opens it here too.
-    pub fn shared_person<P: tilo_resource::SharedResource>(
-        &self,
-    ) -> Option<super::PersonResource<P>> {
-        self.storage.shared_person::<P>()
     }
 
     /// The window's own route to the session's services, where it runs in one: what an app

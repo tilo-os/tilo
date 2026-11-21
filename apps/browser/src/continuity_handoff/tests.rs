@@ -114,10 +114,10 @@ fn authenticated_subset_commits_actual_personal_bookmarks_and_full_history_and_r
         let before = fixture.source_bytes()?;
         let mut app = live()?;
         let bookmarks = app
-            .profile_resource::<PersonalBookmarks>()
+            .shared_workspace::<PersonalBookmarks>(tilo_webview::BROWSER_APP_ID)
             .ok_or("personal resource is missing")?;
         let history = app
-            .profile_resource::<BrowsingHistory>()
+            .shared_workspace::<BrowsingHistory>(tilo_webview::BROWSER_APP_ID)
             .ok_or("personal resource is missing")?;
         bookmarks.invoke(&PersonalBookmarks::ADD_BOOKMARK.with((
             "https://existing.test/".to_owned(),
@@ -222,10 +222,10 @@ fn history_off_does_not_parse_or_import_history_and_wrong_person_writes_nothing(
         let before = fixture.source_bytes()?;
         let prepared = fixture.prepared(&fixture.plan.identity_public_key)?;
         let history = app
-            .profile_resource::<BrowsingHistory>()
+            .shared_workspace::<BrowsingHistory>(tilo_webview::BROWSER_APP_ID)
             .ok_or("personal resource is missing")?;
         let bookmarks = app
-            .profile_resource::<PersonalBookmarks>()
+            .shared_workspace::<PersonalBookmarks>(tilo_webview::BROWSER_APP_ID)
             .ok_or("personal resource is missing")?;
         prepared.capture.apply(&bookmarks, &history)?;
         assert!(history.get().entries().is_empty());
@@ -290,14 +290,14 @@ fn actual_browser_worker_and_semantic_status_finish_without_touching_shared_reso
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(
-            app.profile_resource::<PersonalBookmarks>()
+            app.shared_workspace::<PersonalBookmarks>(tilo_webview::BROWSER_APP_ID)
                 .ok_or("personal resource is missing")?
                 .get()
                 .bookmarks()
                 .contains("https://migration.test/bookmark")
         );
         assert_eq!(
-            app.profile_resource::<BrowsingHistory>()
+            app.shared_workspace::<BrowsingHistory>(tilo_webview::BROWSER_APP_ID)
                 .ok_or("personal resource is missing")?
                 .get()
                 .entries()
@@ -375,7 +375,7 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(
-            app.profile_resource::<PersonalBookmarks>()
+            app.shared_workspace::<PersonalBookmarks>(tilo_webview::BROWSER_APP_ID)
                 .ok_or("personal resource is missing")?
                 .get()
                 .bookmarks()
@@ -383,7 +383,7 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
                 .is_empty()
         );
         assert!(
-            app.profile_resource::<BrowsingHistory>()
+            app.shared_workspace::<BrowsingHistory>(tilo_webview::BROWSER_APP_ID)
                 .ok_or("personal resource is missing")?
                 .get()
                 .entries()
@@ -450,14 +450,14 @@ fn failed_browser_import_is_visible_in_empty_personal_library_and_bound_retry_fi
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(
-            app.profile_resource::<PersonalBookmarks>()
+            app.shared_workspace::<PersonalBookmarks>(tilo_webview::BROWSER_APP_ID)
                 .ok_or("personal resource is missing")?
                 .get()
                 .bookmarks()
                 .contains("https://migration.test/bookmark")
         );
         assert_eq!(
-            app.profile_resource::<BrowsingHistory>()
+            app.shared_workspace::<BrowsingHistory>(tilo_webview::BROWSER_APP_ID)
                 .ok_or("personal resource is missing")?
                 .get()
                 .entries()
@@ -537,7 +537,7 @@ fn unadmitted_service_effect_refuses_before_changing_the_existing_page() {
         assert!(std::sync::Arc::ptr_eq(&before.0, &after.0));
         assert_eq!(before.1, after.1);
         assert!(
-            app.profile_resource::<PersonalBookmarks>()
+            app.shared_workspace::<PersonalBookmarks>(tilo_webview::BROWSER_APP_ID)
                 .ok_or("personal resource is missing")?
                 .get()
                 .bookmarks()
@@ -545,7 +545,7 @@ fn unadmitted_service_effect_refuses_before_changing_the_existing_page() {
                 .is_empty()
         );
         assert!(
-            app.profile_resource::<BrowsingHistory>()
+            app.shared_workspace::<BrowsingHistory>(tilo_webview::BROWSER_APP_ID)
                 .ok_or("personal resource is missing")?
                 .get()
                 .entries()

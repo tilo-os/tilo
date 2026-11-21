@@ -228,7 +228,7 @@ pub struct ContactsApp {
     pub(crate) account_editor: Option<crate::account_editor::Editor>,
     account_pane: Option<Element>,
     pub(crate) identity_directory:
-        Option<ui::framework::PersonResource<tilo_contact_directory::ContactDirectory>>,
+        Option<ui::framework::WorkspaceResource<tilo_contact_directory::ContactDirectory>>,
     unconfirmed_save: Option<EditForm>,
     delete_undo: Cell<DeleteUndo>,
 }

@@ -3,7 +3,7 @@
 //! adding someone is checked, recorded and undone as typing their address is.
 
 use tilo_contact_directory::{ContactDirectory, EmailHint};
-use ui::framework::{LiveRow, PersonResource};
+use ui::framework::{LiveRow, WorkspaceResource};
 use ui::tilo_resource::{ActionDecl, SearchEntry};
 
 use super::CalendarApp;
@@ -57,7 +57,7 @@ impl Choice {
 }
 
 impl Store {
-    pub(crate) fn follow_contacts(&mut self, record: Option<PersonResource<ContactDirectory>>) {
+    pub(crate) fn follow_contacts(&mut self, record: Option<WorkspaceResource<ContactDirectory>>) {
         self.contact_directory = record;
     }
     fn contact_choices(&self) -> Vec<Choice> {
@@ -180,6 +180,7 @@ mod tests {
     use super::*;
     use ui::framework::{ResourceApp, ViewCx, testing::TestApp};
     use ui::tilo_resource::Id as DocumentId;
+    use ui::tilo_resource::SharedResource as _;
     use ui::widget::{Element, Text};
 
     struct ContactsOwner;
@@ -197,7 +198,9 @@ mod tests {
 
     fn fixture() -> (TestApp<ContactsOwner>, TestApp<crate::CalendarShell>, Id) {
         let mut owner = TestApp::<ContactsOwner>::new().unwrap();
-        let directory = owner.shared_person::<ContactDirectory>().unwrap();
+        let directory = owner
+            .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+            .unwrap();
         for person in [FIRST, SECOND] {
             let person = DocumentId::from_raw(person);
             directory
@@ -308,7 +311,9 @@ mod tests {
     fn a_changed_or_removed_contact_refuses_its_earlier_choice() {
         let (mut owner, mut calendar, event) = fixture();
         let chosen = open(&mut calendar, event)[0].clone();
-        let directory = owner.shared_person::<ContactDirectory>().unwrap();
+        let directory = owner
+            .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+            .unwrap();
         directory
             .invoke(&ContactDirectory::PROJECT_CONTACT.with((
                 DocumentId::from_raw(chosen.hint.person.clone()),
@@ -339,13 +344,20 @@ mod tests {
                 .is_err()
         );
         assert!(calendar.state().event(event).unwrap().attendees.is_empty());
-        assert!(
+        // The calendar reads the workspace's one address book, the record the
+        // Contacts window keeps, rather than a copy of its own.
+        assert_eq!(
             calendar
-                .shared_person::<ContactDirectory>()
+                .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
                 .unwrap()
-                .invoke(&ContactDirectory::REMOVE_CONTACT.with(DocumentId::from_raw(FIRST)))
-                .is_err(),
-            "Calendar cannot edit the address book"
+                .record()
+                .route(),
+            owner
+                .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
+                .unwrap()
+                .record()
+                .route(),
+            "the calendar reads the address book Contacts keeps"
         );
     }
 }

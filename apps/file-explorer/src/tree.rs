@@ -58,10 +58,10 @@ impl ResourceApp for FilesTreeShell {
     const ICON: Option<&'static str> = Some("file-explorer");
     /// The workspace's tree, the resource every member holds: the window shows it and its
     /// History reads its changes, so it is opened with the window.
-    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] =
-        &[ui::framework::PersonKind::shared::<
-            fs_protocol::tree::FilesTree,
-        >()];
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        resources
+            .workspace_record::<fs_protocol::tree::FilesTree>(&fs_protocol::tree::document_id());
+    }
     /// The folder this window shows: every file's changes in it, as one list, read from
     /// the tree record its rows are.
     const FOLDER_HISTORY: Option<ui::framework::FolderHistory> =

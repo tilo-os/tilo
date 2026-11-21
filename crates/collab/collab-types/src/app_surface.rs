@@ -323,9 +323,9 @@ pub fn shows(app_id: &str, action: &str) -> bool {
 }
 
 /// The person-record kinds `app_id`'s surface declares (its
-/// `ResourceApp::PERSON_RESOURCES`): the records it may keep in, or read from,
-/// the person's own workspace. Empty when this process holds no surface for
-/// it.
+/// `ResourceApp::PERSON_RESOURCES`, as `PersonKind::profile`): the records it
+/// may keep in, or read from, the person's own workspace. Empty when this
+/// process holds no surface for it.
 #[must_use]
 pub fn person_resource_types(app_id: &str) -> Vec<String> {
     surface_of(app_id)

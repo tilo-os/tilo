@@ -189,10 +189,9 @@ impl Hosted {
             .records
             .as_ref()
             .and_then(|(_, _, permissions)| permissions.clone());
-        // The person's records of the kinds the workspace keeps are opened in
-        // it, as the workspace's.
-        let records_of_workspace = self.workspace.as_ref().map(|(records, _)| records.clone());
-        let person_permissions = permissions.clone();
+        // The person's records the window opens are their own: one the
+        // workspace keeps is the window's workspace record, opened from
+        // `workspace` instead.
         let workspace = self.workspace.map(|(records, wake)| {
             let state = Rc::new(super::workspace::WorkspaceState::new(
                 records,
@@ -221,7 +220,6 @@ impl Hosted {
                         .ok()
                 });
                 super::person::PersonState::new(records, own, app_id, app_title, wake)
-                    .in_workspace(records_of_workspace, person_permissions)
             }),
             device: self.device,
             records: self.records.map(|(store, me, permissions)| {
@@ -373,7 +371,9 @@ impl ViewStorage {
         self.person.as_ref()?.open::<P>()
     }
 
-    /// Open the app's record of `P` in the person's profile.
+    /// Open the record `P` the person keeps for themselves, in their own scope
+    /// rather than in a workspace: presentation data only they use on their own
+    /// devices.
     pub(crate) fn profile_resource<P: tilo_resource::Resource>(
         &self,
     ) -> Option<super::person::PersonResource<P>> {
@@ -448,14 +448,6 @@ impl ViewStorage {
             return person.legacy_parts::<C>(owner, store);
         }
         Ok(None)
-    }
-
-    /// The shared record of the person's `P`.
-    pub(crate) fn shared_person<P: tilo_resource::SharedResource>(
-        &self,
-    ) -> Option<super::person::PersonResource<P>> {
-        super::controls::opened_resource::<P>();
-        self.person.as_ref()?.open_shared::<P>()
     }
 
     /// The records other than the app's own the views opened — the

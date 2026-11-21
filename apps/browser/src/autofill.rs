@@ -4,7 +4,7 @@
 
 use crate::browsing_mode::BrowsingMode;
 use serde::{Deserialize, Serialize};
-use ui::framework::PersonResource;
+use ui::framework::WorkspaceResource;
 use ui::tilo_resource::{self, Id, Identified, Invoke, Keyed, Model, Refusal, resource};
 
 const MAX_PROFILES: usize = 16;
@@ -134,11 +134,11 @@ impl AddressBook {
 /// The address book a window fills forms from: the person's resource, or nothing in a
 /// private window. Deliberately has no Debug implementation.
 pub struct AutofillStore {
-    record: Option<PersonResource<AddressBook>>,
+    record: Option<WorkspaceResource<AddressBook>>,
     saved: AddressBook,
 }
 impl AutofillStore {
-    pub fn open(mode: BrowsingMode, record: Option<PersonResource<AddressBook>>) -> Self {
+    pub fn open(mode: BrowsingMode, record: Option<WorkspaceResource<AddressBook>>) -> Self {
         let record = record.filter(|_| !mode.is_private());
         let saved = record
             .as_ref()
@@ -234,12 +234,12 @@ pub mod tests {
 
     pub fn address_book() -> (
         ui::framework::testing::TestApp<crate::BrowserShell>,
-        PersonResource<AddressBook>,
+        WorkspaceResource<AddressBook>,
     ) {
         let mut app =
             ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
         let record = app
-            .profile_resource::<AddressBook>()
+            .shared_workspace::<AddressBook>(tilo_webview::BROWSER_APP_ID)
             .expect("a test profile keeps person resources");
         (app, record)
     }
