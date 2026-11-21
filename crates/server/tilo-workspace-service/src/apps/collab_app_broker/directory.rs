@@ -96,24 +96,6 @@ impl LocalActionDirectoryRegistry {
 pub enum ActionDirectoryBridgeResponse {
     Page(runtime_collab::ActionDirectoryPage),
     Resolution(runtime_collab::ActionDirectoryResolution),
-    StartedDirectoryAction(StartedDirectoryAction),
-}
-
-/// Explicit consent supplied with an atomic directory invocation.  It is
-/// carried to the broker `LocalSet`, checked against the freshly resolved
-/// contract, and never retained in a shell search-result cache.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DirectoryActionConfirmation {
-    Confirmed,
-    Phrase(String),
-}
-
-/// Inert admission receipt for a directory action.  Progress remains
-/// available through the existing invocation-status subscription.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StartedDirectoryAction {
-    pub invocation_id: u64,
-    pub initial_update: tilo_actions::InvocationUpdate,
 }
 
 /// A bounded bridge failure.  `Busy` is deliberate backpressure: palette
@@ -326,25 +308,6 @@ pub(super) enum ActionDirectoryBridgeRequest {
         action: String,
         reply: DirectoryReply,
     },
-    Start {
-        actor: BrokerActor,
-        target: DirectoryActionTarget,
-        argument: Option<String>,
-        confirmation: Option<DirectoryActionConfirmation>,
-        reply: DirectoryReply,
-    },
-}
-
-/// One directory action as the caller chose it: the workspace cluster and
-/// live app peer that offered it, the directory revision it was chosen at,
-/// and its resource/action address. The broker re-resolves it at start;
-/// nothing here is trusted from an earlier page.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirectoryActionTarget {
-    pub cluster_id: String,
-    pub peer_id: u64,
-    pub revision: String,
-    pub address: tilo_actions::ActionAddress,
 }
 
 /// Thread-safe sender for palette/search code.  The receiver is drained only
@@ -424,7 +387,7 @@ impl ActionDirectoryRequestQueue {
         let revision = revision.into();
         let resource = resource.into();
         let action = action.into();
-        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None, None)
+        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None)
             .is_err()
         {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
@@ -479,7 +442,7 @@ impl ActionDirectoryRequestQueue {
         let revision = revision.into();
         let resource = resource.into();
         let action = action.into();
-        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None, None)
+        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None)
             .is_err()
         {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
@@ -502,43 +465,6 @@ impl ActionDirectoryRequestQueue {
         request: ActionDirectoryBridgeRequest,
     ) -> Result<(), ActionDirectoryBridgeError> {
         self.deliver(request)
-    }
-
-    pub fn try_start_resolved(
-        &self,
-        actor: BrokerActor,
-        target: DirectoryActionTarget,
-        argument: Option<String>,
-        confirmation: Option<DirectoryActionConfirmation>,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-        ActionDirectoryBridgeError,
-    > {
-        // A start names the revision its target was chosen at: the
-        // admission is bound to it, never to the directory as it is now.
-        if target.revision.is_empty()
-            || validate_directory_target_input(
-                &target.cluster_id,
-                &target.revision,
-                &target.address.resource,
-                &target.address.action,
-                argument.as_deref(),
-                confirmation.as_ref(),
-            )
-            .is_err()
-        {
-            return Err(ActionDirectoryBridgeError::InvalidRequest);
-        }
-        let (reply, response) = tokio::sync::oneshot::channel();
-        let reply = DirectoryReply::Oneshot(reply);
-        self.deliver(ActionDirectoryBridgeRequest::Start {
-            actor,
-            target,
-            argument,
-            confirmation,
-            reply,
-        })
-        .map(|()| response)
     }
 }
 
@@ -668,34 +594,12 @@ mod directory_query_input_tests {
     }
 }
 
-/// A directory target names a resource of the app and a revision.
-pub(super) fn check_directory_target(
-    target: &DirectoryActionTarget,
-    argument: Option<&str>,
-    confirmation: Option<&DirectoryActionConfirmation>,
-) -> Result<(), ActionDirectoryBridgeError> {
-    let address = &target.address;
-    if target.revision.is_empty() {
-        return Err(ActionDirectoryBridgeError::InvalidRequest);
-    }
-    validate_directory_target_input(
-        &target.cluster_id,
-        &target.revision,
-        &address.resource,
-        &address.action,
-        argument,
-        confirmation,
-    )
-    .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)
-}
-
 pub(super) fn validate_directory_target_input(
     cluster_id: &str,
     revision: &str,
     resource: &str,
     action: &str,
     argument: Option<&str>,
-    confirmation: Option<&DirectoryActionConfirmation>,
 ) -> Result<(), BrokerError> {
     validate_directory_identifier(
         cluster_id,
@@ -727,14 +631,6 @@ pub(super) fn validate_directory_target_input(
             "directory argument",
             DIRECTORY_MAX_PARAMS_BYTES,
             false,
-        )?;
-    }
-    if let Some(DirectoryActionConfirmation::Phrase(phrase)) = confirmation {
-        validate_directory_text(
-            phrase,
-            "directory confirmation",
-            DIRECTORY_MAX_CONFIRMATION_BYTES,
-            true,
         )?;
     }
     Ok(())
@@ -1250,30 +1146,6 @@ impl AppBrokerState {
                             });
                         reply.send(response);
                     }
-                    ActionDirectoryBridgeRequest::Start {
-                        actor,
-                        target,
-                        argument,
-                        confirmation,
-                        mut reply,
-                    } => {
-                        if reply.is_closed() {
-                            return;
-                        }
-                        let response = reply
-                            .awaited(state.start_action_directory_for_actor(
-                                &directories,
-                                &actor,
-                                &target,
-                                argument.as_deref(),
-                                confirmation,
-                            ))
-                            .await
-                            .and_then(|result| {
-                                result.map(ActionDirectoryBridgeResponse::StartedDirectoryAction)
-                            });
-                        reply.send(response);
-                    }
                 }
             });
         }
@@ -1371,7 +1243,7 @@ impl AppBrokerState {
         naming: bool,
     ) -> Result<runtime_collab::ActionDirectoryResolution, String> {
         let (revision, resource, action) = target;
-        validate_directory_target_input(cluster_id, revision, resource, action, None, None)
+        validate_directory_target_input(cluster_id, revision, resource, action, None)
             .map_err(|error| error.to_string())?;
         let registered = directories
             .registered(peer_id, cluster_id)
@@ -1458,7 +1330,7 @@ impl AppBrokerState {
         target: (&str, &str, &str),
     ) -> Result<runtime_collab::ActionDirectoryResolution, String> {
         let (revision, resource, action) = target;
-        validate_directory_target_input(cluster_id, revision, resource, action, None, None)
+        validate_directory_target_input(cluster_id, revision, resource, action, None)
             .map_err(|error| error.to_string())?;
         if revision.is_empty() {
             return Err("local admission requires an exact retained revision".into());
@@ -1501,189 +1373,6 @@ impl AppBrokerState {
             }
             other => Ok(other),
         }
-    }
-    /// Atomically resolve and start a directory action on the broker
-    /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
-    /// thread participates in admission.
-    #[allow(
-        clippy::future_not_send,
-        reason = "Admission needs the complete authenticated route and runs on the broker LocalSet with non-Send broker state."
-    )]
-    pub(super) async fn start_action_directory_for_actor(
-        &self,
-        directories: &LocalActionDirectoryRegistry,
-        actor: &BrokerActor,
-        target: &DirectoryActionTarget,
-        argument: Option<&str>,
-        confirmation: Option<DirectoryActionConfirmation>,
-    ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
-        let DirectoryActionTarget {
-            cluster_id,
-            peer_id,
-            revision,
-            address: tilo_actions::ActionAddress { resource, action },
-        } = target;
-        check_directory_target(target, argument, confirmation.as_ref())?;
-        let peer_id = *peer_id;
-        let registered = directories
-            .registered(peer_id, cluster_id)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let resolved = self
-            .resolve_action_directory_for_actor(
-                directories,
-                actor,
-                cluster_id,
-                peer_id,
-                (revision, resource, action),
-                false,
-            )
-            .await
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let runtime_collab::ActionDirectoryResolution::Found { row, .. } = resolved else {
-            return Err(match resolved {
-                runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                    ActionDirectoryBridgeError::StaleRevision
-                }
-                _ => ActionDirectoryBridgeError::NotFound,
-            });
-        };
-        let published = published_directory_action(&row)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        // Resolve rechecked the current capability and actor.  Re-run the
-        // validation immediately before constructing the invocation surface
-        // so a future local caller cannot bypass the same boundary.
-        if !permits_directory_row(
-            self,
-            cluster_id,
-            actor,
-            &registered.app_id,
-            registered.publishing_person.as_deref(),
-            &row,
-        )
-        .map_err(|_| ActionDirectoryBridgeError::Unavailable)?
-        {
-            return Err(ActionDirectoryBridgeError::NotFound);
-        }
-        let confirmation_token = self.directory_confirmation_token(
-            peer_id,
-            resource,
-            action,
-            argument,
-            actor,
-            &published.contract,
-            confirmation,
-        )?;
-        self.start_directory_invocation(
-            peer_id,
-            registered,
-            (published, revision.as_str()),
-            (argument, actor),
-            confirmation_token.as_deref(),
-        )
-        .await
-    }
-    /// Start the invocation `published` names on `peer_id`'s route, under the
-    /// caller's confirmation token.
-    #[allow(
-        clippy::future_not_send,
-        reason = "Admission needs the complete authenticated route and runs on the broker LocalSet with non-Send broker state."
-    )]
-    pub(super) async fn start_directory_invocation(
-        &self,
-        peer_id: u64,
-        registered: RegisteredActionDirectory,
-        (published, revision): (PublishedAction, &str),
-        (argument, actor): (Option<&str>, &BrokerActor),
-        confirmation_token: Option<&str>,
-    ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
-        let unavailable = |_: String| ActionDirectoryBridgeError::Unavailable;
-        let surface = PublishedSurface {
-            peer_id,
-            app_id: registered.app_id,
-            route: registered.route,
-            actions: vec![published.clone()],
-            live: true,
-        };
-        let job = self
-            .start_invocation_from_offered(
-                peer_id,
-                (surface, published),
-                InvocationInputs {
-                    original_request: None,
-                    requested: None,
-                    caller: None,
-                    execution: None,
-                    argument,
-                    actor,
-                    confirmation_token,
-                    context: None,
-                },
-                Some(revision),
-            )
-            .map_err(unavailable)?;
-        let job = job.start(self).await.map_err(unavailable)?;
-        let initial_update = self
-            .invocation_status(job.id)
-            .ok_or(ActionDirectoryBridgeError::Unavailable)?;
-        Ok(StartedDirectoryAction {
-            invocation_id: job.id,
-            initial_update,
-        })
-    }
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "the owned confirmation is intentionally matched without retaining caller-owned approval material"
-    )]
-    pub(super) fn directory_confirmation_token(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &BrokerActor,
-        contract: &tilo_actions::ActionContract,
-        confirmation: Option<DirectoryActionConfirmation>,
-    ) -> Result<Option<String>, ActionDirectoryBridgeError> {
-        // Only a person acting themselves confirms by their own word.
-        let confirmation = confirmation.filter(|_| actor.direct());
-        match &contract.confirmation {
-            tilo_actions::ConfirmationPolicy::Confirm | tilo_actions::ConfirmationPolicy::None
-                if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) =>
-            {
-                // Without a confirmation policy, a confirmation given anyway
-                // answers the workspace's ask, if the grants ask; admission
-                // decides whether they do.
-            }
-            tilo_actions::ConfirmationPolicy::None => return Ok(None),
-            tilo_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
-                {}
-            _ => return Err(ActionDirectoryBridgeError::ConfirmationRequired),
-        }
-        let token = uuid::Uuid::new_v4().to_string();
-        let mut grants = self
-            .confirmation_grants
-            .lock()
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let now = tilo_clock::now();
-        grants.retain(|_, grant| grant.expires >= now);
-        grants.insert(
-            token.clone(),
-            ConfirmationGrant {
-                peer_id,
-                resource: resource.to_string(),
-                action: action.to_string(),
-                argument_digest: argument_digest(argument),
-                actor: actor.member().clone(),
-                host_approved: None,
-                expires: now
-                    .checked_add(std::time::Duration::from_secs(60))
-                    .ok_or(ActionDirectoryBridgeError::Unavailable)?,
-            },
-        );
-        // Token ownership is now in the registry; do not retain its mutex
-        // while the caller begins the invocation it authorizes.
-        drop(grants);
-        Ok(Some(token))
     }
     /// Decide validated directory rows against the current workspace
     /// authority, not the authority that existed when a cursor was issued.

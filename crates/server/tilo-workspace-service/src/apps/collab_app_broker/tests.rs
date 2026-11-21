@@ -357,6 +357,78 @@ impl wire::DirectorySource for TestActionDirectoryServer {
 mod signed_worker {
     include!("../signed_worker_test_support.rs");
 }
+/// Start `action` on `resource` as `actor` on peer `peer`'s live surface,
+/// through the broker's own dispatch, under `token`'s confirmation.
+#[cfg(test)]
+fn start_confirmed(
+    state: &AppBrokerState,
+    peer: u64,
+    resource: &str,
+    action: &str,
+    argument: Option<&str>,
+    actor: &str,
+    token: Option<&str>,
+) -> Result<InvocationJob, String> {
+    state
+        .start_invocation_confirmed_for_origin(
+            peer,
+            resource,
+            action,
+            InvocationInputs {
+                original_request: None,
+                requested: None,
+                caller: None,
+                execution: None,
+                argument,
+                actor: &BrokerActor::person(actor),
+                confirmation_token: token,
+                context: None,
+            },
+            None,
+        )?
+        .start_blocking(state)
+}
+#[cfg(test)]
+fn start(
+    state: &AppBrokerState,
+    peer: u64,
+    resource: &str,
+    action: &str,
+    argument: Option<&str>,
+    actor: &str,
+) -> Result<InvocationJob, String> {
+    start_confirmed(state, peer, resource, action, argument, actor, None)
+}
+#[cfg(test)]
+fn invoke(
+    state: &AppBrokerState,
+    peer: u64,
+    resource: &str,
+    action: &str,
+    argument: Option<&str>,
+    actor: &str,
+) -> Result<std::sync::mpsc::Receiver<InvocationCompletion>, String> {
+    start(state, peer, resource, action, argument, actor).map(|job| job.completion)
+}
+/// The one-use grant admission mints once `actor` confirmed `action`.
+#[cfg(test)]
+fn prepare(
+    state: &AppBrokerState,
+    peer: u64,
+    resource: &str,
+    action: &str,
+    argument: Option<&str>,
+    actor: &str,
+) -> Result<String, String> {
+    let offered = state.surfaces.lock().unwrap()[&peer]
+        .actions
+        .iter()
+        .find(|offered| offered.resource == resource && offered.action == action)
+        .cloned()
+        .ok_or("the application no longer publishes that action")?;
+    state.mint_confirmation_grant(peer, &offered, argument, &BrokerActor::person(actor))
+}
+
 #[cfg(test)]
 include!("../owner_commit_tests.rs");
 #[cfg(test)]

@@ -1241,8 +1241,8 @@ mod owner_commit_tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
         let actions = broker.app_action_broker().unwrap();
-        let job = actions
-            .start(
+        let job = start(
+                actions.state(),
                 surface.peer_id,
                 &action.resource,
                 &action.action,
@@ -1296,15 +1296,15 @@ mod owner_commit_tests {
         *committed.lock().unwrap() = None;
         assert!(broker.connect_local_worker(route, &cert).is_err());
         assert!(
-            actions
-                .start(
-                    surface.peer_id,
-                    &action.resource,
-                    &action.action,
-                    None,
-                    &actor
-                )
-                .is_err()
+            start(
+                actions.state(),
+                surface.peer_id,
+                &action.resource,
+                &action.action,
+                None,
+                &actor
+            )
+            .is_err()
         );
         assert!(actions.invocation_host().is_err());
         app.close_components();

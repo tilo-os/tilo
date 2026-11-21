@@ -25,54 +25,6 @@
 
 use super::*;
 
-#[test]
-fn invocation_journal_admission_precedes_real_application_delivery() {
-    let root = tempfile::tempdir().expect("private test root");
-    let base = local_directory_fixture();
-    let membership = base.membership.as_ref().unwrap().clone();
-    membership.write().persist_path = Some(root.path().join("state.json"));
-    drop(base);
-    let mut fixture = local_directory_fixture_with_membership(membership);
-    let offered = PublishedSurface {
-        peer_id: fixture.peer_id,
-        app_id: fixture.route.app_id.clone(),
-        route: fixture.route.clone(),
-        actions: vec![published_directory_action(&fixture.directory_state.borrow().row()).unwrap()],
-        live: true,
-    };
-    fixture
-        .state
-        .surfaces
-        .lock()
-        .unwrap()
-        .insert(fixture.peer_id, offered);
-    let actor = fixture
-        .membership
-        .as_ref()
-        .unwrap()
-        .read()
-        .active_workspace()
-        .unwrap()
-        .owner()
-        .cloned()
-        .unwrap();
-    let job = fixture
-        .state
-        .start_invocation(fixture.peer_id, "workspace:atlas", "open", None, &actor)
-        .unwrap();
-    let delivered = fixture
-        .invocation_rx
-        .try_recv()
-        .expect("actual app invocation stream");
-    assert_eq!(delivered.id, job.id);
-    // What a restart would replay: the real broker must persist admission
-    // before delivering an application effect.
-    let snapshot =
-        invocation_journal::durable_snapshot(&root.path().join("state.json.invocations"));
-    assert_eq!(snapshot["records"].as_array().unwrap().len(), 1);
-    assert_eq!(snapshot["records"][0]["wire_id"], job.id);
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn ordinary_person_requested_uuid_survives_actual_delivery_and_completion() {
     use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
@@ -722,22 +674,36 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         "denied actions must be absent from discovery, not merely refused later"
     );
 
-    let completion = state
-        .invoke(7, "files.entry:/tmp/report", "reveal", None, "owner")
-        .expect("owner can invoke current offer");
+    let completion = invoke(
+        &state,
+        7,
+        "files.entry:/tmp/report",
+        "reveal",
+        None,
+        "owner",
+    )
+    .expect("owner can invoke current offer");
     let invocation = invocations.try_recv().expect("directed invocation");
     assert_eq!(invocation.resource, "files.entry:/tmp/report");
     assert!(
-        state
-            .start_invocation(7, "files.entry:/tmp/report", "erase", None, "owner")
-            .is_err(),
+        start(&state, 7, "files.entry:/tmp/report", "erase", None, "owner").is_err(),
         "a consequential action cannot bypass the confirmation protocol"
     );
-    let token = state
-        .prepare_confirmation(7, "files.entry:/tmp/report", "erase", None, "owner", None)
+    let token = prepare(&state, 7, "files.entry:/tmp/report", "erase", None, "owner")
         .expect("confirmation grant");
-    let erased = state
-        .start_invocation_confirmed(
+    let erased = start_confirmed(
+        &state,
+        7,
+        "files.entry:/tmp/report",
+        "erase",
+        None,
+        "owner",
+        Some(&token),
+    )
+    .expect("matching one-use grant");
+    assert!(
+        start_confirmed(
+            &state,
             7,
             "files.entry:/tmp/report",
             "erase",
@@ -745,26 +711,21 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
             "owner",
             Some(&token),
         )
-        .expect("matching one-use grant");
-    assert!(
-        state
-            .start_invocation_confirmed(
-                7,
-                "files.entry:/tmp/report",
-                "erase",
-                None,
-                "owner",
-                Some(&token),
-            )
-            .is_err(),
+        .is_err(),
         "confirmation grants are single use"
     );
     let erase_invocation = invocations.try_recv().expect("confirmed invocation");
     assert_eq!(erase_invocation.id, erased.id);
 
-    let refresh = state
-        .start_invocation(7, "files.entry:/tmp/report", "refresh", None, "owner")
-        .expect("cancellable job");
+    let refresh = start(
+        &state,
+        7,
+        "files.entry:/tmp/report",
+        "refresh",
+        None,
+        "owner",
+    )
+    .expect("cancellable job");
     let refresh_invocation = invocations.try_recv().expect("job invocation");
     assert_eq!(refresh_invocation.id, refresh.id);
     let retained_cancellation = state
@@ -841,15 +802,19 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         "action_timeout"
     );
     assert!(
-        state
-            .invoke(7, "files.entry:/tmp/report", "gone", None, "owner")
-            .is_err(),
+        invoke(&state, 7, "files.entry:/tmp/report", "gone", None, "owner").is_err(),
         "an address absent from the current level-triggered surface is stale"
     );
     assert!(
-        state
-            .invoke(7, "files.entry:/tmp/report", "reveal", None, "stranger")
-            .is_err(),
+        invoke(
+            &state,
+            7,
+            "files.entry:/tmp/report",
+            "reveal",
+            None,
+            "stranger"
+        )
+        .is_err(),
         "broker authorization is checked again at delivery time"
     );
     let pending = state

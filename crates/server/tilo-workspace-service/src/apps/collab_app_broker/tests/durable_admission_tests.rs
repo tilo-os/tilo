@@ -344,15 +344,11 @@ async fn a_delegated_caller_whose_admission_cannot_name_its_agent_is_refused() {
 async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            // Both legacy directions matter: a caller can reserve a future
-            // numeric UUID, or attempt to reuse a previously delivered one.
-            for scenario in [
-                "cross-device",
-                "caller-before-legacy",
-                "legacy-before-caller",
-            ] {
+            // Another device's caller reusing a delivered invocation's UUID.
+            {
+                let scenario = "cross-device";
                 let root = tempfile::tempdir().unwrap();
-                let (mut fixture, caller, mut request) = durable_fixture(root.path(), None);
+                let (mut fixture, caller, request) = durable_fixture(root.path(), None);
                 let other = fixture
                     .state
                     .verify_action_caller(
@@ -366,30 +362,11 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                         .unwrap(),
                     )
                     .unwrap();
-                if scenario == "caller-before-legacy" {
-                    request.invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(2));
-                }
-                let wire_id = if scenario == "legacy-before-caller" {
-                    let job = fixture
-                        .state
-                        .start_invocation(
-                            71,
-                            &request.resource,
-                            &request.action,
-                            None,
-                            &caller.admitted.actor_key,
-                        )
-                        .unwrap();
-                    request.invocation =
-                        tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job.id)));
-                    job.id
-                } else {
-                    fixture
-                        .state
-                        .start_verified_invocation(&caller, &request, None)
-                        .unwrap()
-                        .wire_id
-                };
+                let wire_id = fixture
+                    .state
+                    .start_verified_invocation(&caller, &request, None)
+                    .unwrap()
+                    .wire_id;
                 let (_, empty_rx) = mpsc::unbounded_channel();
                 let rx = Rc::new(AsyncMutex::new(std::mem::replace(
                     &mut fixture.invocation_rx,
@@ -403,23 +380,10 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                 assert_eq!(response.id, wire_id);
                 assert_eq!(response.invocation, request.invocation);
                 effect(root.path());
-                let conflict = if scenario == "caller-before-legacy" {
-                    fixture
-                        .state
-                        .start_invocation(
-                            71,
-                            &request.resource,
-                            &request.action,
-                            None,
-                            &caller.admitted.actor_key,
-                        )
-                        .map(|_| ())
-                } else {
-                    fixture
-                        .state
-                        .start_verified_invocation(&other, &request, None)
-                        .map(|_| ())
-                };
+                let conflict = fixture
+                    .state
+                    .start_verified_invocation(&other, &request, None)
+                    .map(|_| ());
                 assert!(
                     conflict
                         .err()
@@ -451,14 +415,12 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                     output: tilo_actions::ActionOutput::default(),
                 };
                 update_app(&channel, wire_id, &terminal).await.unwrap();
-                if scenario != "legacy-before-caller" {
-                    let duplicate = fixture
-                        .state
-                        .start_verified_invocation(&caller, &request, None)
-                        .unwrap();
-                    assert_eq!(duplicate.wire_id, wire_id);
-                    assert_eq!(duplicate.update, terminal);
-                }
+                let duplicate = fixture
+                    .state
+                    .start_verified_invocation(&caller, &request, None)
+                    .unwrap();
+                assert_eq!(duplicate.wire_id, wire_id);
+                assert_eq!(duplicate.update, terminal);
                 let membership = fixture.membership.as_ref().unwrap().clone();
                 drop(channel);
                 let gone = fixture.state.gone();
@@ -950,7 +912,7 @@ async fn invocation_journal_native_stream_negotiates_uuid_capability_explicitly(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn invocation_journal_invalid_updates_never_persist_and_legacy_completion_still_works() {
+async fn invocation_journal_invalid_updates_never_persist() {
     tokio::task::LocalSet::new().run_until(async {
         let root = tempfile::tempdir().unwrap();
         let (mut fixture, caller, request) = durable_fixture(root.path(), None);
@@ -984,13 +946,6 @@ async fn invocation_journal_invalid_updates_never_persist_and_legacy_completion_
         }
         channel.complete_invocation(admitted.wire_id, "", "").await.unwrap();
         assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == request.invocation));
-
-        // The legacy numeric local caller still receives and completes its original handle.
-        let legacy = fixture.state.start_invocation(71, &request.resource, &request.action, None, &caller.admitted.actor_key).unwrap();
-        let delivered = fixture.invocation_rx.try_recv().unwrap();
-        assert_eq!(delivered.invocation.0.as_u128(), u128::from(legacy.id));
-        channel.complete_invocation(legacy.id, "", "").await.unwrap();
-        assert!(legacy.completion.recv().unwrap().code.is_empty());
     }).await;
 }
 
@@ -1199,29 +1154,11 @@ async fn invocation_journal_confirmation_uuid_and_lifecycle_remain_authoritative
                     .start_verified_invocation(&caller, &request, None)
                     .is_err()
             );
-            assert!(
-                fixture
-                    .state
-                    .prepare_confirmation(
-                        71,
-                        &request.resource,
-                        &request.action,
-                        None,
-                        actor,
-                        Some("erase")
-                    )
-                    .is_err()
-            );
+            // The one-use grant admission mints once the person answered.
+            let offered = fixture.state.surfaces.lock().unwrap()[&71].actions[0].clone();
             let token = fixture
                 .state
-                .prepare_confirmation(
-                    71,
-                    &request.resource,
-                    &request.action,
-                    None,
-                    actor,
-                    Some("erase exactly"),
-                )
+                .mint_confirmation_grant(71, &offered, None, &BrokerActor::person(actor))
                 .unwrap();
             let admitted = fixture
                 .state

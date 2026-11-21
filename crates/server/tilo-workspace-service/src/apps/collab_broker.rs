@@ -604,35 +604,6 @@ impl AppActionBroker {
             .unwrap_or_default()
     }
 
-    /// Invoke one published application action.
-    pub fn invoke(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-    ) -> Result<
-        std::sync::mpsc::Receiver<crate::apps::collab_app_broker::InvocationCompletion>,
-        String,
-    > {
-        self.state
-            .while_live(|state| state.invoke(peer_id, resource, action, argument, actor))
-    }
-
-    /// Start a published action and return its lifecycle job.
-    pub fn start(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-    ) -> Result<crate::apps::collab_app_broker::InvocationJob, String> {
-        self.state
-            .while_live(|state| state.start_invocation(peer_id, resource, action, argument, actor))
-    }
-
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.state
             .while_live(|state| Ok(state.invocation_status(id)))
@@ -843,43 +814,6 @@ impl AppActionBroker {
         self.state
             .while_live(|state| Ok(state.can_cancel(id, actor)))
             .unwrap_or(false)
-    }
-
-    /// Prepare a one-use confirmation token for the exact invocation inputs.
-    pub fn prepare_confirmation(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-        phrase: Option<&str>,
-    ) -> Result<String, String> {
-        self.state.while_live(|state| {
-            state.prepare_confirmation(peer_id, resource, action, argument, actor, phrase)
-        })
-    }
-
-    /// Start a published action using a previously prepared confirmation token.
-    pub fn start_confirmed(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-        token: &str,
-    ) -> Result<crate::apps::collab_app_broker::InvocationJob, String> {
-        self.state.while_live(|state| {
-            state.start_invocation_confirmed(
-                peer_id,
-                resource,
-                action,
-                argument,
-                actor,
-                Some(token),
-            )
-        })
     }
 }
 

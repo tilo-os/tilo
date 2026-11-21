@@ -44,36 +44,6 @@ fn receipt_barriers(rig: &Rig) -> invocation_journal::Barriers {
         .barriers()
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn actor_only_local_dispatch_never_receives_certified_evidence() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let env = Environment::new();
-            let rig = Rig::new(&env).await;
-            let row = directory_state("original-r1").borrow().row();
-            rig.worker
-                .handle
-                .publish_actions(&[row.descriptor.unwrap()])
-                .await
-                .unwrap();
-            let actor = person_id_for_root(env.cert.user_public_key);
-            let job = rig
-                .state
-                .start_invocation_confirmed(903, "workspace:atlas", "open", None, &actor, None)
-                .expect("legacy local read remains supported");
-            let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-            let record = receipt_record(&rig, delivered.id);
-            assert!(
-                record.admission.is_none(),
-                "an actor string is not authenticated ownership"
-            );
-            assert!(record.terminal.is_none());
-            drop(job);
-            rig.stop().await;
-        })
-        .await;
-}
-
 /// The app's own published read, as it asks it over its channel: what the
 /// host answers.
 async fn ask_own_read(

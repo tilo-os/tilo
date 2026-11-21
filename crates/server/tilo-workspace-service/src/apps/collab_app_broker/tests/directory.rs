@@ -188,32 +188,6 @@ tilo_test_env::scenario! {
             ),
             Err(ActionDirectoryBridgeError::InvalidRequest)
         ));
-        let target = DirectoryActionTarget {
-            cluster_id: fixture.cluster_id.clone(),
-            peer_id: fixture.peer_id,
-            revision: "directory-r1".into(),
-            address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
-        };
-        assert!(matches!(
-            queue.try_start_resolved(
-                BrokerActor::person("actor-a"),
-                target.clone(),
-                Some("x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1))),
-                None,
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        assert!(matches!(
-            queue.try_start_resolved(
-                BrokerActor::person("actor-a"),
-                target,
-                None,
-                Some(DirectoryActionConfirmation::Phrase(
-                    "x".repeat(DIRECTORY_MAX_CONFIRMATION_BYTES.saturating_add(1)),
-                )),
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
         assert_eq!(
             fixture.directory_state.borrow().query_count,
             0,

@@ -205,7 +205,6 @@ impl AppBrokerState {
             &address.resource,
             &address.action,
             argument.as_deref(),
-            None,
         )
         .is_err()
         {
@@ -463,13 +462,6 @@ fn directory_page(
                 | runtime_collab::ActionDirectoryResolution::Unavailable => {}
             }
             Ok(page)
-        }
-        // Only a start request answers with a started action; a query or
-        // resolution never does.
-        ActionDirectoryBridgeResponse::StartedDirectoryAction(_) => {
-            Err(ActionCallError::Unavailable {
-                reason: "the action directory answered a different request".into(),
-            })
         }
     }
 }
