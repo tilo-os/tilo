@@ -161,18 +161,6 @@ fn open_place(app: &mut TestApp<TlApp>, label: &str) {
     settle(app);
 }
 
-/// The space the leading checkbox of the row titled `title` takes: the start of the row, as
-/// tall as its box.
-fn row_box(app: &mut TestApp<TlApp>, title: &str) -> [f64; 4] {
-    let [x, y, _, h] = rows(app)
-        .into_iter()
-        .find(|(name, _)| name == title)
-        .unwrap_or_else(|| panic!("the list shows {title}"))
-        .1;
-    let size = 22.0;
-    [x + 4.0, y + (h - size) / 2.0, size, size]
-}
-
 /// The space the list of rows takes: from the first row's top to the last one's bottom, as
 /// wide as the widest row, and one row taller, since a row a person adds arrives under the
 /// last one.
