@@ -191,14 +191,16 @@ fn walk_below<const BOUND: bool, V: A11yVisitor>(
 
 /// Walk `owner`'s synthetic `children`, in order, with the widgets `hosted` in them, into `scope`: what
 /// a visitor does with its node in [`A11yVisitor::close`], the ordinal being the child.
-pub(crate) fn walk_synthetic_children<const BOUND: bool, V: A11yVisitor>(
+pub(crate) fn walk_synthetic_children<'a, const BOUND: bool, V: A11yVisitor, C>(
     v: &mut V,
     owner: &dyn Widget,
-    children: &[AccessNode],
+    children: C,
     mut hosted: HostedByIndex<'_>,
     scope: &mut V::Scope,
-) {
-    for (index, child) in children.iter().enumerate() {
+) where
+    C: IntoIterator<Item = &'a AccessNode>,
+{
+    for (index, child) in children.into_iter().enumerate() {
         let hosted = hosted.remove(&index).unwrap_or_default();
         walk_synthetic::<BOUND, V>(v, owner, &mut vec![index], child, hosted, scope);
     }

@@ -5868,20 +5868,25 @@ impl FrameHarness {
     pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.drain_component_wakes();
         let mut resources = Vec::new();
+        let widgets = tilo_resource::profiling::Phase::start("ui.resources.widgets");
         crate::widget::collect_widget_resources(
             self.root.as_ref(),
             &self.state.doc,
             &mut resources,
         );
+        widgets.end();
+        // Only the nodes a control is published from are built, as a window
+        // publishes them: a long document's rows hold no control of their own.
+        let semantic = tilo_resource::profiling::Phase::start("ui.resources.controls");
         let mut semantics = crate::a11y_tree::SemanticTree::new();
-        semantics.refresh_bound(
+        semantics.refresh_action_projection(
             self.root.as_ref(),
             &self.node_map,
             &self.bindings.semantic_node_names(&self.node_map),
             self.focused,
-            &resources,
         );
         resources.extend(semantics.action_resources());
+        semantic.end();
         resources.push(crate::search::search_resource());
         resources
     }

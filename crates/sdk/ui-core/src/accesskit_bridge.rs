@@ -883,7 +883,7 @@ impl<const BOUND: bool> A11yVisitor for TreeWalk<'_, BOUND> {
         scope.in_focused_widget =
             (taffy_id.is_some() && taffy_id == self.focused) || represents_focus;
         let outer_active = self.owned_active_descendant.take();
-        walk_synthetic_children::<BOUND, Self>(self, w, &access.children, hosted, &mut scope);
+        walk_synthetic_children::<BOUND, Self, _>(self, w, &access.children, hosted, &mut scope);
         if let Some(active) = std::mem::replace(&mut self.owned_active_descendant, outer_active) {
             ak.set_active_descendant(active);
         }

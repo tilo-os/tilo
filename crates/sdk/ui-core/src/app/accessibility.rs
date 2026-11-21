@@ -1988,7 +1988,7 @@ impl crate::a11y_tree::walk::A11yVisitor for LiveRegionScan {
         _represented: Vec<&'w dyn Widget>,
         (): &mut (),
     ) {
-        crate::a11y_tree::walk::walk_synthetic_children::<true, Self>(
+        crate::a11y_tree::walk::walk_synthetic_children::<true, Self, _>(
             self,
             owner,
             &node.children,

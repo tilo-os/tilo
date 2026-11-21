@@ -169,6 +169,9 @@ mod slash_text_input;
 #[path = "paragraph_damage.rs"]
 mod paragraph_damage;
 
+#[path = "view_cost.rs"]
+mod view_cost;
+
 #[path = "perf_scroll.rs"]
 mod perf_scroll;
 

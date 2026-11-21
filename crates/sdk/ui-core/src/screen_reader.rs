@@ -758,7 +758,7 @@ pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
             _represented: Vec<&'w dyn Widget>,
             (): &mut (),
         ) {
-            walk_synthetic_children::<false, Self>(self, w, &children, hosted, &mut ());
+            walk_synthetic_children::<false, Self, _>(self, w, &children, hosted, &mut ());
         }
 
         fn open_synthetic(

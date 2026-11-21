@@ -93,6 +93,7 @@ impl OutlineNode {
 /// outline leaves out.
 #[must_use]
 pub fn outline(view: &dyn Widget) -> Outline {
+    let _outlining = tilo_resource::profiling::Phase::start("ui.semantic_outline");
     let mut walk = Walk {
         nodes: 0,
         omitted: 0,
@@ -101,18 +102,18 @@ pub fn outline(view: &dyn Widget) -> Outline {
     let mut tree = Vec::new();
     crate::a11y_tree::walk::walk::<true, _>(&mut walk, view, None, &mut tree);
     let mut text = String::new();
-    for node in &tree {
-        node_text(node, 0, &mut text);
-    }
-    if walk.omitted > 0 {
-        let _ =
-            std::fmt::Write::write_fmt(&mut text, format_args!("… {} more nodes", walk.omitted));
+    // The tree carries what the text shows and no more: a long document's lines past what
+    // the text has room for are counted, not sent as a tree nobody reads.
+    let cut = write_lines(&mut tree, 0, &mut text);
+    let omitted = walk.omitted.saturating_add(cut);
+    if omitted > 0 {
+        let _ = std::fmt::Write::write_fmt(&mut text, format_args!("… {omitted} more nodes"));
     }
     Outline {
         text,
         nodes: tree.iter().map(OutlineNode::count).sum(),
         tree,
-        omitted: walk.omitted,
+        omitted,
     }
 }
 
@@ -128,7 +129,10 @@ struct Walk {
 struct Opened {
     line: Option<OutlineNode>,
     hidden: bool,
-    synthetic: Vec<AccessNode>,
+    /// Shared with the frame that built them where the widget shares them
+    /// ([`Widget::accessibility_shared`]): a long document's thousands of rows
+    /// are read where they are, never copied for one outline.
+    synthetic: Vec<std::sync::Arc<AccessNode>>,
 }
 
 impl Walk {
@@ -174,12 +178,19 @@ impl A11yVisitor for Walk {
         if self.hidden > 0 || w.accessibility_hidden() {
             return Visit::Skip;
         }
-        let Some(mut access) = w.accessibility() else {
-            return Visit::Collapse;
+        let (mut access, shared) = match w.accessibility_shared() {
+            Some(crate::a11y::SharedAccessNode { node, children }) => (node, children),
+            None => match w.accessibility() {
+                Some(access) => (access, Vec::new()),
+                None => return Visit::Collapse,
+            },
         };
         crate::a11y_tree::walk::with_slot_words(&mut access, parent_child.as_ref());
-        let mut access = crate::a11y::with_synthetic_bounds(access, w);
-        let synthetic = std::mem::take(&mut access.children);
+        let synthetic = std::mem::take(&mut access.children)
+            .into_iter()
+            .map(std::sync::Arc::new)
+            .chain(shared)
+            .collect();
         let hidden = access.state.hidden;
         if hidden {
             self.hidden = self.hidden.saturating_add(1);
@@ -204,7 +215,13 @@ impl A11yVisitor for Walk {
         _represented: Vec<&'w dyn Widget>,
         parent: &mut Vec<OutlineNode>,
     ) {
-        walk_synthetic_children::<true, Self>(self, w, &opened.synthetic, hosted, &mut scope);
+        walk_synthetic_children::<true, Self, _>(
+            self,
+            w,
+            opened.synthetic.iter().map(|node| &**node),
+            hosted,
+            &mut scope,
+        );
         if opened.hidden {
             self.hidden = self.hidden.saturating_sub(1);
         }
@@ -213,8 +230,8 @@ impl A11yVisitor for Walk {
 
     fn open_synthetic(
         &mut self,
-        _owner: &dyn Widget,
-        _path: &[usize],
+        owner: &dyn Widget,
+        path: &[usize],
         node: &AccessNode,
         _parent: &mut Vec<OutlineNode>,
     ) -> ((Option<OutlineNode>, bool), Vec<OutlineNode>) {
@@ -223,10 +240,13 @@ impl A11yVisitor for Walk {
             self.hidden = self.hidden.saturating_add(1);
             return ((None, true), Vec::new());
         }
-        let rect = node
-            .bounds
-            .map_or(vello::kurbo::Rect::ZERO, crate::a11y::AccessBounds::to_rect);
-        let line = self.fits().then(|| node_line(node, rect));
+        // Where the node stands is asked of its owner only for a line the
+        // outline shows.
+        let line = self.fits().then(|| {
+            let rect = crate::a11y::synthetic_bounds(node, owner, path)
+                .map_or(vello::kurbo::Rect::ZERO, crate::a11y::AccessBounds::to_rect);
+            node_line(node, rect)
+        });
         ((line, false), Vec::new())
     }
 
@@ -354,12 +374,35 @@ fn words(text: Option<&str>) -> Option<String> {
     (!said.is_empty()).then_some(said)
 }
 
-/// Write `node` at `depth` as one line and its children's lines under it.
-fn node_text(node: &OutlineNode, depth: usize, out: &mut String) {
+/// Write `nodes` at `depth` as lines, each with its children's lines under it, while the
+/// text has room, and keep in `nodes` only the lines written: how many nodes were cut.
+fn write_lines(nodes: &mut Vec<OutlineNode>, depth: usize, out: &mut String) -> usize {
     use std::fmt::Write as _;
-    if out.len() >= MAX_TEXT_CHARS {
-        return;
+    let mut cut = 0_usize;
+    let mut wrote = 0_usize;
+    for node in nodes.iter_mut() {
+        if out.len() >= MAX_TEXT_CHARS {
+            break;
+        }
+        write_line(node, depth, out);
+        cut = cut.saturating_add(write_lines(&mut node.children, depth.saturating_add(1), out));
+        wrote = wrote.saturating_add(1);
     }
+    let left = nodes.get(wrote..).unwrap_or_default();
+    if depth > 0 && !left.is_empty() {
+        for _ in 0..depth {
+            out.push_str("  ");
+        }
+        let _ = writeln!(out, "… {} more", left.len());
+    }
+    cut = cut.saturating_add(left.iter().map(OutlineNode::count).sum::<usize>());
+    nodes.truncate(wrote);
+    cut
+}
+
+/// Write `node` at `depth` as one line.
+fn write_line(node: &OutlineNode, depth: usize, out: &mut String) {
+    use std::fmt::Write as _;
     for _ in 0..depth {
         out.push_str("  ");
     }
@@ -389,19 +432,78 @@ fn node_text(node: &OutlineNode, depth: usize, out: &mut String) {
         let _ = write!(out, " {{{action}}}");
     }
     out.push('\n');
-    let child_depth = depth.saturating_add(1);
-    let mut wrote = 0_usize;
-    for child in &node.children {
-        if out.len() >= MAX_TEXT_CHARS {
-            break;
-        }
-        node_text(child, child_depth, out);
-        wrote = wrote.saturating_add(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::a11y::Role;
+    use crate::widget::Column;
+
+    /// A document stating its paragraphs as nodes of its own, as an editor does.
+    struct Document {
+        inner: Column,
+        root: AccessNode,
     }
-    if wrote < node.children.len() {
-        for _ in 0..child_depth {
-            out.push_str("  ");
+
+    impl crate::widget::Decorator for Document {
+        type Inner = Column;
+        fn inner(&self) -> &Column {
+            &self.inner
         }
-        let _ = writeln!(out, "… {} more", node.children.len().saturating_sub(wrote));
+        fn inner_mut(&mut self) -> &mut Column {
+            &mut self.inner
+        }
+        fn accessibility(&self) -> Option<AccessNode> {
+            Some(self.root.clone())
+        }
+    }
+
+    /// A long document's outline carries the lines its text shows and counts the rest:
+    /// the tree is what the text says, never thousands of lines past it.
+    #[test]
+    fn a_long_documents_outline_carries_only_what_its_text_shows() {
+        let paragraphs = 5_000;
+        let document = Document {
+            inner: Column::new(),
+            root: AccessNode::new(Role::Document)
+                .with_name("Long note")
+                .with_children(
+                    (0..paragraphs)
+                        .map(|n| {
+                            AccessNode::new(Role::Paragraph).with_value(format!(
+                                "Paragraph {n}: the workspace keeps every record in sync"
+                            ))
+                        })
+                        .collect(),
+                ),
+        };
+        let outline = outline(&document);
+        let shown: usize = outline.tree.iter().map(OutlineNode::count).sum();
+        assert_eq!(outline.nodes, shown, "the count is the tree's");
+        assert!(
+            outline.nodes > 10 && outline.nodes < 500,
+            "the tree holds what the text has room for: {} nodes",
+            outline.nodes
+        );
+        assert_eq!(
+            outline.nodes + outline.omitted,
+            paragraphs + 1,
+            "every line is shown or counted"
+        );
+        let last = outline
+            .tree
+            .first()
+            .and_then(|document| document.children.last())
+            .and_then(|line| line.value.clone())
+            .expect("a last line");
+        assert!(
+            outline.text.contains(&last),
+            "the tree's last line is in the text: {last}"
+        );
+        assert!(
+            outline.text.ends_with(&format!("… {} more nodes", outline.omitted)),
+            "the text counts what it left out"
+        );
     }
 }
