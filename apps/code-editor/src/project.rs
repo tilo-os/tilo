@@ -377,6 +377,25 @@ impl Project {
         self.terminal()?.run(cx, terminal_requests, command)
     }
 
+    /// Open terminal
+    ///
+    /// Open the session's shell on a terminal for the caller's device, where the
+    /// workspace's host runs its sessions. A project's terminal runs its commands here.
+    #[action(
+        keywords = "open terminal, interactive shell, attach",
+        id = "open-terminal"
+    )]
+    pub fn open_in_terminal(
+        &mut self,
+        terminal_requests: &mut Outbox<CommandRequest, CommandAnswer>,
+        #[param("The window's width, in columns")] cols: Option<u16>,
+        #[param("The window's height, in rows")] rows: Option<u16>,
+        #[param("The session to come back to, by the id an open answered")] attach: Option<String>,
+    ) -> Result<(), Refusal> {
+        self.terminal()?
+            .open_terminal(terminal_requests, cols, rows, attach)
+    }
+
     /// Rerun in terminal
     ///
     /// Run one of the embedded terminal's runs again. The run is one of the

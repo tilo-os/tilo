@@ -116,6 +116,7 @@ code-editor-project-record-text = Record text
 code-editor-project-record-target = Record terminal target
 code-editor-project-record-relay-session = Record terminal relay session
 code-editor-project-claim-pane = Claim terminal pane
+code-editor-project-open-terminal = Open terminal
 code-editor-project-run = Run in terminal
 code-editor-project-rerun = Rerun in terminal
 code-editor-project-rerun-test = Rerun test in terminal

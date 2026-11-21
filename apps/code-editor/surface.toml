@@ -146,6 +146,16 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "open-terminal"
+kind = "outside"
+returns = { schema = { type = ["object", "array", "null"] } }
+params = [
+  { name = "cols", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 65535, minimum = 0 } },
+  { name = "rows", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 65535, minimum = 0 } },
+  { name = "attach", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "rerun"
 kind = "outside"
 returns = { schema = { type = ["object", "array", "null"] } }

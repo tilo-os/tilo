@@ -243,6 +243,13 @@ pub fn terminal(action: <terminal::resource::Terminal as Resource>::Action) -> A
         TerminalAction::Run(run) => ProjectAction::RunInTerminal(project::project::RunInTerminal {
             command: run.command,
         }),
+        TerminalAction::OpenTerminal(open) => {
+            ProjectAction::OpenInTerminal(project::project::OpenInTerminal {
+                cols: open.cols,
+                rows: open.rows,
+                attach: open.attach,
+            })
+        }
         TerminalAction::Stop(_) => {
             ProjectAction::StopInTerminal(project::project::StopInTerminal {})
         }

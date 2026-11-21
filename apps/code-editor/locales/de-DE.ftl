@@ -116,6 +116,7 @@ code-editor-project-record-text = Text erfassen
 code-editor-project-record-target = Terminalziel erfassen
 code-editor-project-record-relay-session = Terminal-Relay-Sitzung erfassen
 code-editor-project-claim-pane = Terminalbereich übernehmen
+code-editor-project-open-terminal = Terminal öffnen
 code-editor-project-run = Im Terminal ausführen
 code-editor-project-rerun = Im Terminal erneut ausführen
 code-editor-project-rerun-test = Test im Terminal erneut ausführen
