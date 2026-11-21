@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tomllib
@@ -79,14 +78,16 @@ def changed_paths(root: Path, base: str) -> list[str]:
 
 
 def unlisted_host_bins(root: Path) -> set[str]:
-    """The server image's programs no os/components.toml entry places, as
-    tools/ci/publish/server-binaries.sh builds them beside its `images = ["host"]` components."""
-    script = (root / "tools/ci/publish/server-binaries.sh").read_text(encoding="utf-8")
-    block = re.search(r"^  host\)\n(.*?);;", script, re.S | re.M)
-    bins = re.search(r"bins=\(([^)]*)\)", block.group(1)) if block else None
-    if not bins:
-        raise SystemExit("server-plan-retry: server-binaries.sh names no host programs")
-    return {word for word in bins.group(1).split() if not word.startswith(('"', "$"))}
+    """The server image's programs no os/components.toml entry places: what
+    tools/ci/publish/server-binaries.sh builds for it beside its `images = ["host"]` components."""
+    def listed(*command: str) -> set[str]:
+        return set(subprocess.check_output(command, cwd=root, text=True).split())
+    every = listed("bash", "tools/ci/publish/server-binaries.sh", "--list", "host")
+    placed = listed("python3", "os/scripts/install-components.py", "--dry-run", "--format", "bins",
+                    "--all", "--image", "host")
+    if not every or not placed <= every:
+        raise SystemExit("server-plan-retry: server-binaries.sh does not build the server image's components")
+    return every - placed
 
 
 def bin_roots(package: dict, root: Path) -> list[tuple[str, Path, bool]]:

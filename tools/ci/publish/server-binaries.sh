@@ -13,12 +13,21 @@
 # `host`, so a layer built later the same way passes the daemon's layer check there.
 #
 # usage: server-binaries.sh IMAGE [IMAGE...] OUT    (IMAGE: api, vm-host, server, host or host-dev)
+#        server-binaries.sh --list IMAGE [IMAGE...]  the programs it would build, one per line
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-usage='usage: server-binaries.sh IMAGE [IMAGE...] OUT    (IMAGE: api, vm-host, server, host or host-dev)'
-(($# >= 2)) || die "$usage"
-out=${!#}
-images=("${@:1:$#-1}")
+usage='usage: server-binaries.sh IMAGE [IMAGE...] OUT | --list IMAGE [IMAGE...]    (IMAGE: api, vm-host, server, host or host-dev)'
+list=false
+if [[ ${1:-} == --list ]]; then
+  list=true
+  shift
+  (($#)) || die "$usage"
+  images=("$@")
+else
+  (($# >= 2)) || die "$usage"
+  out=${!#}
+  images=("${@:1:$#-1}")
+fi
 cd "$repo_root"
 target=${CARGO_TARGET_DIR:-$repo_root/target}
 # Thin LTO keeps these programs fast for a fraction of the memory and time the whole-program link
@@ -95,6 +104,10 @@ for image in "${images[@]}"; do
       die "unknown server image $image: api, vm-host, server, host or host-dev" ;;
   esac
 done
+if $list; then
+  printf '%s\n' "${bins[@]}"
+  exit 0
+fi
 rm -rf "$out"
 mkdir -p "$out"
 cargo build --locked --release "${packages[@]}"
