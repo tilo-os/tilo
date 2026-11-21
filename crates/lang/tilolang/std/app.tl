@@ -608,12 +608,17 @@ template view tree<R, T>(
                         }
                     }
                 }
-                if items.is_empty() {
-                    ui.EmptyState(empty, icon: meta(of).icon)
-                } else {
-                    // The tree takes the room the map under it leaves, so a map of a few rows
-                    // never pushes the tree past the foot of the sidebar.
-                    stack(fill: 1.0) {
+                // The tree takes the room a map of the open item leaves under it, so a few
+                // headings never push the tree past the foot of the sidebar.
+                ui.Docked {
+                    foot: {
+                        if found.is_empty() {
+                            below
+                        }
+                    }
+                    if items.is_empty() {
+                        ui.EmptyState(empty, icon: meta(of).icon)
+                    } else {
                         std.tree_rows(
                             meta(of).title,
                             items,
@@ -630,11 +635,6 @@ template view tree<R, T>(
                             row(x)
                         }
                     }
-                }
-                // What the open item holds as a map of its own, under the tree: its headings,
-                // while a search is not what the sidebar shows.
-                if found.is_empty() {
-                    below
                 }
             }
         }
