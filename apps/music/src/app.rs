@@ -545,6 +545,7 @@ impl Music {
     pub(crate) fn offline() -> Self {
         let mut app = Self::with_bundled_covers(Self::new_with_device_profile(false));
         app.allow_network = false;
+        app.images = ImageStore::new(&(Arc::new(embedded_cover_bytes) as ui::Fetcher));
         app.search = render::SearchView::hermetic();
         app
     }
@@ -3256,7 +3257,11 @@ impl Music {
     /// first Play / search (an input event) — never during `--shots`.
     fn ensure_worker(&mut self) {
         if self.worker.is_none() {
-            self.worker = Some(StreamWorker::spawn());
+            self.worker = Some(if self.allow_network {
+                StreamWorker::spawn()
+            } else {
+                StreamWorker::spawn_offline()
+            });
         }
     }
 
