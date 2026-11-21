@@ -42,23 +42,37 @@ const STOP_GRACE: Duration = Duration::from_secs(20);
 /// Where served runs are started: a host's shells, in its workspaces'
 /// machines.
 pub trait Machines: Send + Sync {
-    /// Start `start` in `workspace`'s machine and answer its connection.
-    fn serve(&self, workspace: &str, start: ServeRun) -> Result<Arc<dyn Machine>, String>;
+    /// Start `start` in `workspace`'s machine for `by` and answer its connection.
+    fn serve(
+        &self,
+        workspace: &str,
+        by: &tilo_actions::remote::Caller,
+        start: ServeRun,
+    ) -> Result<Arc<dyn Machine>, String>;
 }
 
 impl Machines for crate::agents::HostShells {
     /// Beside the server, where it starts its workspaces' programs itself. Where their
     /// machines are on other computers, on the member device of the one that holds the
-    /// workspace's machine, held from here ([`crate::placed_programs`]).
-    fn serve(&self, workspace: &str, start: ServeRun) -> Result<Arc<dyn Machine>, String> {
-        match self {
-            Self::Here(terminals, _) => terminals
+    /// workspace's machine, held from here ([`crate::placed_programs`]). Either way it gets
+    /// the machine secrets the workspace names, read for `by` as it starts.
+    fn serve(
+        &self,
+        workspace: &str,
+        by: &tilo_actions::remote::Caller,
+        mut start: ServeRun,
+    ) -> Result<Arc<dyn Machine>, String> {
+        start.secrets = self.secrets_for(workspace, by)?;
+        match self.shells() {
+            crate::agents::ShellsAt::Here(terminals, _) => terminals
                 .shells()
                 .serve_run(workspace, None, start)
                 .map(|served| Arc::new(served) as Arc<dyn Machine>)
                 .map_err(|error| error.to_string()),
-            Self::Placed(placed) => crate::placed_programs::serve_placed(placed, workspace, start)
-                .map(|carried| carried as Arc<dyn Machine>),
+            crate::agents::ShellsAt::Placed(placed) => {
+                crate::placed_programs::serve_placed(placed, workspace, start)
+                    .map(|carried| carried as Arc<dyn Machine>)
+            }
         }
     }
 }
@@ -87,6 +101,16 @@ pub struct CodingAgent {
     /// The person's own agent its line of starters ends at: the agent a start that nobody
     /// was asked about is let for.
     pub under: String,
+}
+
+impl CodingAgent {
+    /// Who starts it: the agent its line of starters ends at, acting for its person, whose
+    /// grants decide what its program is handed.
+    #[must_use]
+    pub fn starter(&self) -> tilo_actions::remote::Caller {
+        tilo_actions::remote::Caller::local_person(self.person.clone())
+            .delegated_to(self.under.clone())
+    }
 }
 
 /// What says whether a coding agent may start without its person being
@@ -274,6 +298,7 @@ impl CodingAgents {
             .machines
             .serve(
                 &agent.workspace,
+                &agent.starter(),
                 ServeRun {
                     argv,
                     env: program.env,
@@ -281,6 +306,7 @@ impl CodingAgents {
                     endpoints: program.endpoints,
                     stop_grace: STOP_GRACE,
                     agent_program: wire::AGENT_PROGRAM.to_owned(),
+                    secrets: Vec::new(),
                 },
             )
             .map_err(NotTold::Failed)?;

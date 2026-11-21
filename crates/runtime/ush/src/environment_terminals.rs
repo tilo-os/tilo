@@ -36,7 +36,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use linux_vm_protocol::TerminalSize;
-use tilo_actions::remote::environment_commands::Person;
+use tilo_actions::remote::environment_commands::{Person, VmSecret};
 
 pub use crate::environment_programs::LEFT_AFTER;
 
@@ -215,6 +215,9 @@ pub struct TerminalAsk<'a> {
     pub ran: Option<RanTo>,
     /// The kept session to come back to instead, by its id.
     pub attach: Option<&'a str>,
+    /// What every program the session's shell starts in the VM is given, over any variable of
+    /// the same name: read once, as the session starts, and never the shell's own variables.
+    pub secrets: &'a [VmSecret],
 }
 
 /// A stream handed to a device: the one-use id it takes it by, and its session's id.
@@ -258,25 +261,25 @@ impl EnvironmentTerminals {
         &self.shells
     }
 
-    /// A stream on `workspace`'s Terminal session `session` running interactively, its window
-    /// `size`: the session's shell started on a new terminal, paid for by `payer`, as `person`,
-    /// its runs marked with `runs_key`, each told to `ran` as it ends; or, when that session is
-    /// already kept on a terminal, a new stream on it, superseding the one it had (and `ran`
-    /// dropped).
+    /// A stream on `asked`'s Terminal session running interactively in its window: the
+    /// session's shell started on a new terminal, paid for by its payer, as its person, its runs
+    /// marked with `runs_key`, each told to its `ran` as it ends, every program it starts in the
+    /// VM given its secrets; or, when that session is already kept on a terminal, a new stream
+    /// on it, superseding the one it had (and `ran` dropped). Its `attach` is not read here.
     ///
     /// # Errors
     ///
     /// No terminal could be made, or the session's shell could not start.
     pub fn open(
         &self,
-        workspace: &str,
-        session: &str,
-        payer: Option<&Payer>,
-        person: Option<&Person>,
-        size: TerminalSize,
+        asked: &TerminalAsk<'_>,
         runs_key: Option<String>,
-        ran: Option<RanTo>,
     ) -> io::Result<TerminalStream> {
+        let (workspace, session) = (asked.workspace, asked.session);
+        let size = TerminalSize {
+            cols: asked.cols,
+            rows: asked.rows,
+        };
         let running = lock(&self.kept)
             .values()
             .find(|kept| kept.workspace == workspace && kept.session == session && kept.live())
@@ -286,7 +289,7 @@ impl EnvironmentTerminals {
             return Ok(self.stream_on(running));
         }
         let (master, slave) = pty(size)?;
-        let runs = match ran {
+        let runs = match asked.ran.clone() {
             Some(to) => Some(Arc::new(SessionRuns {
                 master: std::fs::File::from(master.try_clone()?),
                 to: Mutex::new(Some(to)),
@@ -300,7 +303,15 @@ impl EnvironmentTerminals {
             .map(|runs| runs as Arc<dyn ush_shell::Runs>);
         let shell = self
             .shells
-            .interactive(workspace, session, payer, person, slave, runs_key, heard)?;
+            .interactive(
+                asked.workspace,
+                asked.session,
+                asked.payer,
+                asked.person,
+                slave,
+                ush_shell::Session { runs_key, runs: heard },
+                asked.secrets.to_vec(),
+            )?;
         let reading = master.try_clone()?;
         let mut id = [0_u8; 16];
         getrandom::fill(&mut id).map_err(io::Error::other)?;
@@ -350,18 +361,7 @@ impl EnvironmentTerminals {
                 .attach(asked.workspace, asked.session, id)
                 .ok_or_else(|| "the terminal session ended".to_owned())?,
             None => self
-                .open(
-                    asked.workspace,
-                    asked.session,
-                    asked.payer,
-                    asked.person,
-                    TerminalSize {
-                        cols: asked.cols,
-                        rows: asked.rows,
-                    },
-                    None,
-                    asked.ran.clone(),
-                )
+                .open(asked, None)
                 .map_err(|error| format!("the session's shell did not start: {error}"))?,
         };
         let session = stream.id().to_owned();

@@ -139,6 +139,9 @@ pub use person_vault::LoginAsked;
 // A secret used by reference by a turn this server carries out itself.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hosted_use;
+// The vault items a workspace's machine hands the programs it starts.
+#[cfg(feature = "agents")]
+pub mod machine_secrets;
 mod personal;
 mod weak;
 pub use weak::WeakWorkspaces;

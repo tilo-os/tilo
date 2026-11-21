@@ -320,8 +320,8 @@ impl WorkspaceShells {
     /// Run `workspace`'s Terminal session `session` interactively on the pseudo-terminal whose
     /// slave is `terminal`, until the shell exits or the terminal hangs up (its master closed).
     /// It is the shell [`Self::run_for`] runs commands in, kept by the same session, paid for
-    /// by `payer` the same way; `runs_key` marks its runs for Terminal, and `runs` hears each
-    /// ([`ush_shell::Session`]).
+    /// by `payer` the same way; `marked` marks its runs for Terminal and hears each
+    /// ([`ush_shell::Session`]), and every program it starts in the VM is given `secrets`.
     /// The session ends with the shell: a later run starts a new one.
     ///
     /// `person` is who the shell runs as for as long as it is on this terminal: whoever asks
@@ -337,8 +337,8 @@ impl WorkspaceShells {
         payer: Option<&Payer>,
         person: Option<&Person>,
         terminal: OwnedFd,
-        runs_key: Option<String>,
-        runs: Option<Arc<dyn ush_shell::Runs>>,
+        marked: ush_shell::Session,
+        secrets: Vec<VmSecret>,
     ) -> io::Result<Interactive> {
         let person = person.cloned();
         let key = (workspace.to_owned(), session.to_owned());
@@ -366,8 +366,7 @@ impl WorkspaceShells {
             .spawn(move || {
                 let status = {
                     let mut session = shared.lock().unwrap_or_else(PoisonError::into_inner);
-                    let marked = ush_shell::Session { runs_key, runs };
-                    session.interactive(terminal, io, &marked, person.as_ref())
+                    session.interactive(terminal, io, &marked, person.as_ref(), secrets)
                 };
                 let mut sessions = sessions.lock().unwrap_or_else(PoisonError::into_inner);
                 if sessions
@@ -532,9 +531,12 @@ impl Session {
         io: Stdio,
         session: &ush_shell::Session,
         person: Option<&Person>,
+        secrets: Vec<VmSecret>,
     ) -> i32 {
         let held = || self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
         *held() = Some(terminal);
+        // The session's secrets, read when it started, for every program it starts.
+        *self.secrets.lock().unwrap_or_else(PoisonError::into_inner) = secrets;
         self.stopped.store(false, Ordering::SeqCst);
         self.shell.set_stdio(io);
         self.shell.set_render(Render::Text);
@@ -548,6 +550,10 @@ impl Session {
         *self.identity.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.shell.set_stdio(Stdio::null());
         *held() = None;
+        self.secrets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         status
     }
 

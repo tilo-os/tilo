@@ -7,8 +7,8 @@
 //! itself and presents the stream's one-use id ([`wire::Hello`]): a stream handed to another
 //! device is refused there.
 //!
-//! - Shells that run here ([`HostShells::Here`]) carry the stream themselves.
-//! - Shells on the member device that holds the workspace's VM ([`HostShells::Placed`]): the
+//! - Shells that run here ([`ShellsAt::Here`]) carry the stream themselves.
+//! - Shells on the member device that holds the workspace's VM ([`ShellsAt::Placed`]): the
 //!   member opens the shell ([`environment_terminals`]) and hands its stream to this host's
 //!   own device, which dials the member's terminal streams and splices the two. The person's
 //!   device never reaches the member, and the member serves nobody but this host.
@@ -23,11 +23,12 @@ use std::sync::{Arc, OnceLock};
 
 use iroh::EndpointAddr;
 use tilo_actions::remote::environment_terminals::{self, OpenTerminal, TerminalOpened};
+use tilo_actions::remote::environment_commands::VmSecret;
 use tilo_agent_session::workspace_actions::{Opened, Opening, Recorder, ShellRan};
 use ush::environment_terminals::quic::{Receiving, Route, Sending, dial};
 use ush::environment_terminals::{HANDED_FOR, Handed, NOT_HANDED, Ran, wire};
 
-use crate::agents::HostShells;
+use crate::agents::{HostShells, ShellsAt};
 use crate::placed_shells::{PlacedShells, member_address};
 
 /// The shells whose terminal streams a host serves on [`ALPN`](ush::environment_terminals::ALPN), once they run.
@@ -76,9 +77,9 @@ pub fn member_streams() -> MemberStreams {
 /// Carry the stream the device `device` presents on `from`: one `shells` handed it, which
 /// they carry here or splice to the member that runs the shell.
 fn serve(shells: &HostShells, device: [u8; 32], from: Receiving, to: &mut Sending) -> io::Result<()> {
-    match shells {
-        HostShells::Here(terminals, _) => terminals.serve_handed(device, from, to).map(drop),
-        HostShells::Placed(placed) => splice(placed, device, from, to),
+    match shells.shells() {
+        ShellsAt::Here(terminals, _) => terminals.serve_handed(device, from, to).map(drop),
+        ShellsAt::Placed(placed) => splice(placed, device, from, to),
     }
 }
 
@@ -122,12 +123,18 @@ fn splice(
 
 impl PlacedShells {
     /// Open `opening`'s session on a terminal on the member that holds its workspace's VM,
-    /// as this host's device, and hand the stream on to the device that asked.
+    /// as this host's device, every program its shell starts in the VM given `secrets`, and
+    /// hand the stream on to the device that asked.
     ///
     /// # Errors
     ///
     /// The placer or the member could not be asked, or the member refused.
-    pub fn open_terminal(&self, opening: &Opening, record: Recorder) -> Result<Opened, String> {
+    pub fn open_terminal(
+        &self,
+        opening: &Opening,
+        secrets: Vec<VmSecret>,
+        record: Recorder,
+    ) -> Result<Opened, String> {
         let (action_service, endpoint) = self.asking()?;
         let mut waited = None;
         let host = self
@@ -146,6 +153,7 @@ impl PlacedShells {
             person: opening.person.clone(),
             account: self.account().to_owned(),
             size: self.size().as_str().to_owned(),
+            secrets,
         };
         let opened: TerminalOpened = crate::placed_machines::follow(
             &device,

@@ -200,6 +200,9 @@ mod joining;
 #[path = "workspace_actions/key_writes.rs"]
 mod key_writes;
 #[cfg(test)]
+#[path = "workspace_actions/machine_secrets.rs"]
+mod machine_secrets;
+#[cfg(test)]
 #[path = "workspace_actions/mail_delivery_rate.rs"]
 mod mail_delivery_rate;
 #[cfg(test)]

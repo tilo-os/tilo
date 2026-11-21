@@ -38,32 +38,44 @@ impl Host {
     }
 
     fn open(&self) -> TerminalStream {
-        self.open_with(None, None)
+        self.open_with(None, None, &[])
     }
 
     /// A stream on the session as `person` (nobody, when `None`).
     fn open_as(&self, person: Option<&Person>) -> TerminalStream {
-        self.open_with(person, None)
+        self.open_with(person, None, &[])
     }
 
     /// [`Self::open`], its runs told to `ran`.
     fn open_telling(&self, ran: Option<RanTo>) -> TerminalStream {
-        self.open_with(None, ran)
+        self.open_with(None, ran, &[])
     }
 
-    fn open_with(&self, person: Option<&Person>, ran: Option<RanTo>) -> TerminalStream {
+    /// [`Self::open`], every program the session starts in the VM given `secrets`.
+    fn open_giving(&self, secrets: &[VmSecret]) -> TerminalStream {
+        self.open_with(None, None, secrets)
+    }
+
+    fn open_with(
+        &self,
+        person: Option<&Person>,
+        ran: Option<RanTo>,
+        secrets: &[VmSecret],
+    ) -> TerminalStream {
         self.terminals
             .open(
-                "ws1",
-                "s1",
-                None,
-                person,
-                TerminalSize {
+                &TerminalAsk {
+                    workspace: "ws1",
+                    session: "s1",
+                    payer: None,
+                    person,
                     cols: 100,
                     rows: 30,
+                    ran,
+                    attach: None,
+                    secrets,
                 },
                 Some(KEY.into()),
-                ran,
             )
             .unwrap()
     }
@@ -177,6 +189,20 @@ tilo_test_env::scenario! {
         screen.until("on-a-terminal");
         screen.type_now("hello\r");
         screen.until("got hello");
+    }
+
+    phase the_sessions_secrets_reach_its_programs_in_the_vm_and_not_the_shell;
+    {
+        let terminals = Host::start(LEFT_AFTER);
+        let mut screen = screen(terminals.open_giving(&[VmSecret {
+            variable: "CLAUDE_CODE_OAUTH_TOKEN".into(),
+            value: "the-vaults-own".into(),
+        }]));
+        // The quotes keep the echoed command line from reading like its output.
+        screen.type_at_prompt("sh -c 'echo \"p[$CLAUDE_CODE_OAUTH_TOKEN]\"'\r");
+        screen.until("p[the-vaults-own]");
+        screen.type_at_prompt("echo \"s[$CLAUDE_CODE_OAUTH_TOKEN]\"\r");
+        screen.until("s[]");
     }
 
     phase the_vms_terminal_follows_the_window_size;

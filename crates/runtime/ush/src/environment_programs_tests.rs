@@ -89,6 +89,7 @@ fn serving(program: &Path, agent: &Path) -> InvokeRequest {
             agent_program: agent.display().to_string(),
             account: "acct-1".into(),
             size: "small".into(),
+            secrets: Vec::new(),
         },
     )
 }

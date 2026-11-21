@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use linux_vm_protocol::served::{self, FromRun, ToRun};
 use linux_vm_protocol::{recv, send};
+use tilo_actions::remote::environment_commands::VmSecret;
 use tilo_actions::remote::server_account::Refusal;
 use ush_shell::io::{PipeWriter, pipe};
 use ush_shell::{Input, Output, Program, Stdio};
@@ -57,6 +58,9 @@ pub struct ServeRun {
     /// The agent program in the machine: [`served::AGENT_PROGRAM`] wherever
     /// the machine is a hosted guest.
     pub agent_program: String,
+    /// Secrets the program gets in its variables, over any of the same name in `env`: in the
+    /// program's environment in the machine and nowhere else.
+    pub secrets: Vec<VmSecret>,
 }
 
 /// How a served run went, once it is over.
@@ -189,7 +193,9 @@ impl WorkspaceShells {
             ));
         };
         let refused = Arc::new(Mutex::new(None));
-        let programs = programs.reporting_refusals(Arc::clone(&refused));
+        let programs = programs
+            .reporting_refusals(Arc::clone(&refused))
+            .carrying_secrets(Arc::new(Mutex::new(start.secrets)));
         let endpoints: Vec<&str> = start.endpoints.iter().map(String::as_str).collect();
         let mut argv = vec![start.agent_program.clone()];
         argv.extend(served::arguments(&endpoints, start.stop_grace, &start.argv));

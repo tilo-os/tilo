@@ -132,6 +132,7 @@ impl Held {
             endpoints: asked.endpoints,
             stop_grace: Duration::from_millis(asked.stop_grace_ms),
             agent_program: asked.agent_program,
+            secrets: asked.secrets,
         };
         let served = match starts {
             Some(starts) => starts(workspace, &payer, start),

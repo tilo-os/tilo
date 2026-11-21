@@ -95,7 +95,7 @@ pub struct Watching<'a> {
 
 /// Where a host's workspaces run their shells.
 pub trait WorkspaceShell: Send + Sync {
-    /// Run `command` in `workspace`'s Terminal session `session`; `agent`
+    /// Run `command` in `workspace`'s Terminal session `session` for `by`, who asked; `agent`
     /// when an agent asked, whose output is rendered for it and whose
     /// refused program is not waited for. `person` is who it runs as, whose
     /// name and address the workspace's VM programs record as the author of
@@ -110,6 +110,7 @@ pub trait WorkspaceShell: Send + Sync {
         workspace: &str,
         session: &str,
         command: &str,
+        by: &Caller,
         agent: bool,
         person: Option<&Person>,
         watching: Watching<'_>,
@@ -121,8 +122,8 @@ pub trait WorkspaceShell: Send + Sync {
         let _ = (workspace, session, caller);
     }
 
-    /// Start `opening`'s session shell on a terminal and hand its stream to the device it
-    /// names.
+    /// Start `opening`'s session shell on a terminal for `by`, who asked, and hand its stream
+    /// to the device it names.
     ///
     /// # Errors
     ///
@@ -132,8 +133,8 @@ pub trait WorkspaceShell: Send + Sync {
     /// Each command line the shell runs from then on goes to `record` as it ends, attached or
     /// not, when this open started the shell; an open that came back to it records nothing
     /// more, its runs already going to the first.
-    fn open(&self, opening: &Opening, record: Recorder) -> Result<Opened, String> {
-        let _ = (opening, record);
+    fn open(&self, opening: &Opening, by: &Caller, record: Recorder) -> Result<Opened, String> {
+        let _ = (opening, by, record);
         Err("this host opens no terminals".into())
     }
 
@@ -314,6 +315,7 @@ impl Started {
                     &workspace,
                     &session,
                     &command,
+                    &ended.caller,
                     agent,
                     person.as_ref(),
                     watching,
@@ -537,7 +539,7 @@ impl Worker {
         let spawned = std::thread::Builder::new()
             .name("workspace-terminal-open".into())
             .spawn(move || {
-                let opened = shell.open(&opening, record);
+                let opened = shell.open(&opening, &caller, record);
                 let ended = OpenEnded {
                     workspace_id,
                     request,

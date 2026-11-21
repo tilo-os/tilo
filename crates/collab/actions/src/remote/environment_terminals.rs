@@ -60,6 +60,10 @@ pub struct OpenTerminal {
     pub account: String,
     /// The size of the workspace's VM (`small`, `default`, `large`, `xlarge`).
     pub size: String,
+    /// What every program the session's shell starts in the VM gets in its environment
+    /// besides the shell's variables: read as the session starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<super::environment_commands::VmSecret>,
 }
 
 /// An opened terminal: what the device that asked presents on the stream, and the session.

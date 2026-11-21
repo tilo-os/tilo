@@ -292,3 +292,34 @@ fields = [
   { name = "run", type = "text" },
 ]
 
+[[resources]]
+kind = "terminal.machine-secrets"
+label = "Machine secrets"
+version = 1
+fields = [
+  { path = "secrets", type = { list = { named = "MachineSecret" } } },
+]
+
+[[resources.verbs]]
+id = "add-secret"
+kind = "undoable"
+params = [
+  { name = "variable", type = "text", required = true, schema = { type = "string" } },
+  { name = "item", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-secret"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "variable", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.types]]
+name = "MachineSecret"
+fields = [
+  { name = "variable", type = "text" },
+  { name = "item", type = "text" },
+]
+

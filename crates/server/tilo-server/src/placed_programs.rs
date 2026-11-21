@@ -183,6 +183,7 @@ pub fn serve_placed(
             agent_program: start.agent_program,
             account: placed.account().to_owned(),
             size: placed.size().as_str().to_owned(),
+            secrets: start.secrets,
         },
     )
 }

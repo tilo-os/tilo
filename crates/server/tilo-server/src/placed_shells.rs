@@ -35,7 +35,9 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use linux_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
 use linux_vm::hosted::size::VmSize;
 use serde::Deserialize;
-use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan, CommandRequest};
+use tilo_actions::remote::environment_commands::{
+    self, CommandOutput, CommandRan, CommandRequest, VmSecret,
+};
 use tilo_actions::remote::{ActionProvider, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_agent_session::workspace_actions::{ShellRan, Watching};
@@ -271,8 +273,8 @@ impl PlacedShells {
     }
 
     /// Run `command` in `workspace`'s session `session` on the VM host the
-    /// placer names for the workspace, showing the caller what it prints
-    /// while it runs and stopping it there when the caller asks.
+    /// placer names for the workspace, its programs in the VM given `secrets`, showing the
+    /// caller what it prints while it runs and stopping it there when the caller asks.
     ///
     /// # Errors
     ///
@@ -284,6 +286,7 @@ impl PlacedShells {
         command: &str,
         agent: bool,
         person: Option<&tilo_actions::remote::environment_commands::Person>,
+        secrets: Vec<VmSecret>,
         watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
         let (action_service, endpoint) = self.asking()?;
@@ -302,7 +305,7 @@ impl PlacedShells {
             agent,
             account: self.account.clone(),
             size: self.size.as_str().to_owned(),
-            secrets: Vec::new(),
+            secrets,
             person: person.cloned(),
         };
         let mut ran = run_on(&device, &asked, watching)?;

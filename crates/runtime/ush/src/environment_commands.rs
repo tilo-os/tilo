@@ -317,6 +317,7 @@ impl Inner {
                     rows: asked.rows,
                     ran: Some(runs.to()),
                     attach: asked.attach.as_deref(),
+                    secrets: &asked.secrets,
                 },
             )
             .and_then(|opened| {

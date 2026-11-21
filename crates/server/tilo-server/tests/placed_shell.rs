@@ -214,6 +214,7 @@ async fn run(placed: &Arc<Placed>, session: &str, command: &str) -> Result<Shell
             &command,
             true,
             None,
+            Vec::new(),
             Watching::default(),
         )
     })
@@ -327,6 +328,7 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
             "pwd",
             true,
             None,
+            Vec::new(),
             Watching::default(),
         )
     })
@@ -377,6 +379,7 @@ async fn a_served_program_is_asked_of_the_member_holding_the_workspaces_machine(
             endpoints: Vec::new(),
             stop_grace: Duration::from_secs(1),
             agent_program: "/bin/true".into(),
+            secrets: Vec::new(),
         };
         let program = serve_placed(&shells, &workspace, start).unwrap();
         tilo_test_env::wait_for(
@@ -417,6 +420,7 @@ async fn a_served_program_is_asked_of_the_member_holding_the_workspaces_machine(
         agent_program: "/bin/true".into(),
         account: "acct-1".into(),
         size: "small".into(),
+        secrets: Vec::new(),
     };
     let telling = TellProgram {
         program: InvocationId::new(),
@@ -497,7 +501,7 @@ async fn only_the_server_makes_the_member_enter_a_workspace() {
     // The server's own run is what enters it.
     let (shells, asked) = (Arc::clone(&placed.shells), later.clone());
     let ran = tokio::task::spawn_blocking(move || {
-        shells.run(&asked, "run:1", "pwd", true, None, Watching::default())
+        shells.run(&asked, "run:1", "pwd", true, None, Vec::new(), Watching::default())
     })
     .await
     .unwrap()
@@ -532,6 +536,7 @@ async fn a_runs_output_reaches_the_caller_before_it_ends() {
             "echo first && sleep 3 && echo second",
             true,
             None,
+            Vec::new(),
             Watching {
                 seen: Some(&watch),
                 stop: None,
@@ -576,6 +581,7 @@ async fn a_cancel_ends_the_command_on_the_member() {
             "echo started && sleep 120 && echo never",
             true,
             None,
+            Vec::new(),
             Watching {
                 seen: Some(&watch),
                 stop: Some(&stop),

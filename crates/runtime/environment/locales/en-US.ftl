@@ -21,3 +21,7 @@ environment-append = Append text
 environment-write = Write file
 environment-restore = Restore file
 environment-revert = Take back
+
+terminal-machine-secrets = Machine secrets
+terminal-machine-secrets-add-secret = Add secret
+terminal-machine-secrets-remove-secret = Remove secret

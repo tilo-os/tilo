@@ -490,6 +490,19 @@ that workspace environment's own, never in a guest sharing the host's kernel
   ([`machine_agents.rs`](../../crates/server/tilo-server/src/machine_agents.rs)).
   This holds where the server runs its workspaces' shells itself; where their
   machines are on VM hosts, the hosts do not carry these connections back yet.
+- **Secrets:** a workspace hands items of its vault to the programs its VM
+  starts through one Terminal document, its machine secrets
+  (`tilo_environment::machine_secrets`): each names a vault item by its
+  reference and the variable it arrives in (`CLAUDE_CODE_OAUTH_TOKEN`), and
+  members change it with `add-secret` and `remove-secret` as the workspace's
+  policy lets them. When a command, a terminal session or a coding agent
+  starts in the VM, the server reads the document once and releases each item
+  for whoever started it, as the workspace's policy lets them read its vault;
+  an item the vault does not hold stops the start with "That item is not kept
+  here". The values go only into the environment of the programs started in
+  the VM, over any variable of the same name, never into the shell's own
+  variables, the command line, what Terminal keeps of it, an answer or a log
+  line.
 - **The guest image** is one signed OCI image holding two files: an
   uncompressed x86-64 kernel built from a pinned kernel.org longterm release
   with everything a VM needs built in (virtio-mmio, blk, net, vsock, FUSE,

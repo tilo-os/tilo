@@ -79,6 +79,10 @@ pub struct ServeProgram {
     pub account: String,
     /// The size of the workspace's machine (`small`, `default`, `large`, `xlarge`).
     pub size: String,
+    /// Secrets the program gets in its variables, in its environment in the machine alone:
+    /// never in its arguments, and never written down by either side.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<super::environment_commands::VmSecret>,
 }
 
 /// Frames in order, each as hex of its own bytes, the first numbered `first`.

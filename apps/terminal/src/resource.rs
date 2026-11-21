@@ -23,7 +23,7 @@ use crate::target::SessionTarget;
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
-/// A terminal session, as its resource holds it. Only the terminal running the session records these:
+/// A terminal session, as its resource holds it. Only the terminal running the session keeps these:
 /// facts about the world outside the document that no undo takes back.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Terminal {
@@ -725,6 +725,9 @@ impl ResourceApp for TerminalShell {
 
     fn resources(resources: &mut ui::framework::Resources<'_>) {
         resources.workspace_record::<crate::history::CommandHistory>(crate::history::DOCUMENT);
+        resources.workspace_record::<tilo_environment::machine_secrets::MachineSecrets>(
+            tilo_environment::machine_secrets::DOCUMENT,
+        );
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {

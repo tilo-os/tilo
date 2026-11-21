@@ -525,7 +525,12 @@ impl Local {
 }
 
 impl Machines for Local {
-    fn serve(&self, workspace: &str, start: ServeRun) -> Result<Arc<dyn Machine>, String> {
+    fn serve(
+        &self,
+        workspace: &str,
+        _by: &Caller,
+        start: ServeRun,
+    ) -> Result<Arc<dyn Machine>, String> {
         if let Some(member) = &self.member {
             let member: Arc<dyn ActionProvider + Send + Sync> = Arc::clone(member) as _;
             let asked = ServeProgram {
@@ -537,6 +542,7 @@ impl Machines for Local {
                 agent_program: start.agent_program,
                 account: "the-account-of-the-test".into(),
                 size: "small".into(),
+                secrets: start.secrets,
             };
             let server = Caller::authenticated(OPERATOR, SERVER).in_workspace(workspace);
             return crate::placed_programs::serve(member, server, &asked)

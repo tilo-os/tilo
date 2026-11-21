@@ -26,7 +26,7 @@ use tilo_agent_session::workspace_actions::{
     Opened, Opening, Recorder, ShellRan, WorkspaceShell as _,
 };
 use tilo_actions::remote::environment_commands::Person;
-use tilo_server::agents::HostShells;
+use tilo_server::agents::{HostShells, ShellsAt};
 use tilo_server::machine_agents::MachineAgentsServer;
 use ush::hosted_vm::test_host::TestHost;
 use tilo_server::placed_terminals::TerminalShells;
@@ -127,7 +127,8 @@ async fn open(
         attach: attach.map(str::to_owned),
     };
     let record = recorded.recorder();
-    tokio::task::spawn_blocking(move || shells.open(&opening, record))
+    let opener = tilo_actions::remote::Caller::local_person(hex::encode([1_u8; 32]));
+    tokio::task::spawn_blocking(move || shells.open(&opening, &opener, record))
         .await
         .unwrap()
 }
@@ -285,7 +286,7 @@ fn is_id(id: &str) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_terminal_on_the_vm_host_is_spliced_to_the_device_that_opened_it() {
     let placed = placed().await;
-    let shells = Arc::new(HostShells::Placed(Arc::clone(&placed.shells)));
+    let shells = Arc::new(HostShells::at(ShellsAt::Placed(Arc::clone(&placed.shells))));
     let streams = streams(&shells).await;
     let devices = devices().await;
     let workspace = placed.workspace.clone();
@@ -358,13 +359,13 @@ async fn a_terminal_on_the_host_itself_is_the_device_that_opened_it() {
     // A host selling the workspace's VM, which keeps what each program it starts was given.
     let vms = TestHost::start(state.path());
     vms.add_card("acct-1");
-    let shells = Arc::new(HostShells::Here(
+    let shells = Arc::new(HostShells::at(ShellsAt::Here(
         EnvironmentTerminals::new(Arc::new(ush::workspace_shell::WorkspaceShells::new(
             state.path().join("shells"),
             Some(vms.target("acct-1")),
         ))),
         Arc::new(MachineAgentsServer::new(None)),
-    ));
+    )));
     let streams = streams(&shells).await;
     let devices = devices().await;
 

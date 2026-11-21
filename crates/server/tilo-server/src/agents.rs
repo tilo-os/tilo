@@ -281,7 +281,7 @@ pub struct AgentOptions {
 pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
     let placed = crate::placed_shells::PlacedShells::shared_from_env()?;
     if let Some(placed) = placed {
-        return Ok(Arc::new(HostShells::Placed(placed)));
+        return Ok(Arc::new(HostShells::at(ShellsAt::Placed(placed))));
     }
     let agents = Arc::new(crate::machine_agents::MachineAgentsServer::new(Some(
         state.clone(),
@@ -289,7 +289,7 @@ pub fn host_shells(state: PathBuf) -> Result<Arc<HostShells>, String> {
     let shells = ush::workspace_shell::WorkspaceShells::from_env(state)
         .serving_agents(Arc::clone(&agents) as Arc<dyn ush::hosted_vm::MachineAgents>);
     let terminals = ush::environment_terminals::EnvironmentTerminals::new(Arc::new(shells));
-    Ok(Arc::new(HostShells::Here(terminals, agents)))
+    Ok(Arc::new(HostShells::at(ShellsAt::Here(terminals, agents))))
 }
 
 /// What a host lends its workspaces' records service: a model that looks
@@ -301,8 +301,17 @@ type Lent = (
     Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 );
 
-/// Where the workspace actions run a session's commands and open its terminal.
-pub enum HostShells {
+/// Where the workspace actions run a session's commands and open its terminal, and the
+/// secrets the workspaces' machines hand the programs started there.
+pub struct HostShells {
+    at: ShellsAt,
+    /// The workspaces whose machine secrets the programs get, and the runtime they are read
+    /// on: set once the server serves ([`Self::serve_from`]). Until then no program gets any.
+    secrets: std::sync::OnceLock<(crate::workspaces::Workspaces, tokio::runtime::Handle)>,
+}
+
+/// Where a host's shells are.
+pub enum ShellsAt {
     /// Here: ush's workspace shells, in this process, with their terminals, and who serves
     /// the agents their programs in the workspaces' machines start.
     Here(
@@ -313,25 +322,49 @@ pub enum HostShells {
     Placed(Arc<crate::placed_shells::PlacedShells>),
 }
 
+/// How long reading a workspace's machine secrets may take before the start is refused.
+const SECRETS_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl HostShells {
+    /// The shells `at`, handing no secrets until they serve a server's workspaces.
+    #[must_use]
+    pub fn at(at: ShellsAt) -> Self {
+        Self {
+            at,
+            secrets: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Where they are.
+    #[must_use]
+    pub const fn shells(&self) -> &ShellsAt {
+        &self.at
+    }
+
     /// Who serves the agents the programs in the workspaces' machines start, where this host
     /// runs its shells itself.
     #[must_use]
     pub fn machine_agents(&self) -> Option<&Arc<crate::machine_agents::MachineAgentsServer>> {
-        match self {
-            Self::Here(_, agents) => Some(agents),
-            Self::Placed(_) => None,
+        match &self.at {
+            ShellsAt::Here(_, agents) => Some(agents),
+            ShellsAt::Placed(_) => None,
         }
     }
 
     /// Ask VM hosts' members, if any, as `server`'s own device, reading which
     /// keeps each workspace's VM from the workspaces' VM leases, have the
     /// workspaces' machines branched and deleted with them, and serve the
-    /// terminal streams handed out on `server`'s endpoint.
+    /// terminal streams handed out on `server`'s endpoint. The programs started from now on
+    /// get the machine secrets `server`'s workspaces name.
     fn serve_from(self: &Arc<Self>, server: &Server, actions: &WorkspaceActions) {
         server.terminal_shells().serve_for(Arc::clone(self));
-        if let (Self::Here(_, agents), Some(workspaces), Ok(runtime)) = (
-            self.as_ref(),
+        if let (Some(workspaces), Ok(runtime)) =
+            (server.workspaces(), tokio::runtime::Handle::try_current())
+        {
+            let _ = self.secrets.set((workspaces.clone(), runtime));
+        }
+        if let (ShellsAt::Here(_, agents), Some(workspaces), Ok(runtime)) = (
+            &self.at,
             server.workspaces(),
             tokio::runtime::Handle::try_current(),
         ) {
@@ -342,7 +375,7 @@ impl HostShells {
                 runtime,
             );
         }
-        if let (Self::Placed(placed), Some(workspaces)) = (self.as_ref(), server.workspaces()) {
+        if let (ShellsAt::Placed(placed), Some(workspaces)) = (&self.at, server.workspaces()) {
             placed.ask_from(workspaces.action_service(), server.endpoint());
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 placed.read_leases(workspaces.clone(), runtime);
@@ -353,15 +386,43 @@ impl HostShells {
         }
     }
 
+    /// The secrets a program `by` starts in `workspace`'s machine gets, read once, now
+    /// ([`crate::workspaces::Workspaces::machine_secrets`]).
+    ///
+    /// # Errors
+    ///
+    /// Why the program may not start with them: it is not started without them.
+    pub fn secrets_for(
+        &self,
+        workspace: &str,
+        by: &Caller,
+    ) -> Result<Vec<tilo_actions::remote::environment_commands::VmSecret>, String> {
+        let Some((workspaces, runtime)) = self.secrets.get() else {
+            return Ok(Vec::new());
+        };
+        // Made on the runtime it is read on, whose clock its patience is kept by.
+        let reading = async {
+            tokio::time::timeout(SECRETS_PATIENCE, workspaces.machine_secrets(workspace, by)).await
+        };
+        // Waited for here: a command or a terminal starts on a thread of its own, and a coding
+        // agent's program may start on one of the runtime's.
+        let read = if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| runtime.block_on(reading))
+        } else {
+            runtime.block_on(reading)
+        };
+        read.map_err(|_| "the workspace's machine secrets could not be read in time".to_owned())?
+    }
+
     /// What branches and deletes the workspaces' Linux machines: the VM hosts'
     /// members, or the hosted-VM service a host running its shells here names;
     /// `None` when its shells run no Linux programs, so there are no machines.
     fn machines(&self) -> Option<Arc<dyn crate::workspaces::WorkspaceMachines>> {
-        match self {
-            Self::Placed(placed) => Some(Arc::new(crate::placed_machines::PlacedMachines::new(
-                Arc::clone(placed),
-            ))),
-            Self::Here(terminals, _) => terminals.shells().hosted().map(|target| {
+        match &self.at {
+            ShellsAt::Placed(placed) => Some(Arc::new(
+                crate::placed_machines::PlacedMachines::new(Arc::clone(placed)),
+            )),
+            ShellsAt::Here(terminals, _) => terminals.shells().hosted().map(|target| {
                 Arc::new(crate::placed_machines::LocalMachines::new(target.clone()))
                     as Arc<dyn crate::workspaces::WorkspaceMachines>
             }),
@@ -375,14 +436,16 @@ impl WorkspaceShell for HostShells {
         workspace: &str,
         session: &str,
         command: &str,
+        by: &Caller,
         agent: bool,
         person: Option<&tilo_actions::remote::environment_commands::Person>,
         watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
-        let terminals = match self {
-            Self::Here(terminals, _) => terminals,
-            Self::Placed(placed) => {
-                return placed.run(workspace, session, command, agent, person, watching);
+        let secrets = self.secrets_for(workspace, by)?;
+        let terminals = match &self.at {
+            ShellsAt::Here(terminals, _) => terminals,
+            ShellsAt::Placed(placed) => {
+                return placed.run(workspace, session, command, agent, person, secrets, watching);
             }
         };
         let ran = terminals
@@ -394,6 +457,7 @@ impl WorkspaceShell for HostShells {
                 agent,
                 ush::workspace_shell::RunWith {
                     person,
+                    secrets: &secrets,
                     stopping: watching.stop,
                     seen: watching.seen,
                     ..ush::workspace_shell::RunWith::default()
@@ -414,15 +478,21 @@ impl WorkspaceShell for HostShells {
     }
 
     fn started(&self, workspace: &str, session: &str, caller: &Caller) {
-        if let Self::Here(_, agents) = self {
+        if let ShellsAt::Here(_, agents) = &self.at {
             agents.started(workspace, session, caller);
         }
     }
 
-    fn open(&self, opening: &Opening, record: Recorder) -> Result<Opened, String> {
-        let terminals = match self {
-            Self::Here(terminals, _) => terminals,
-            Self::Placed(placed) => return placed.open_terminal(opening, record),
+    fn open(&self, opening: &Opening, by: &Caller, record: Recorder) -> Result<Opened, String> {
+        // Read for a new session's shell, which every program it starts is given; coming back
+        // to a kept one starts nothing.
+        let secrets = match opening.attach {
+            None => self.secrets_for(&opening.workspace, by)?,
+            Some(_) => Vec::new(),
+        };
+        let terminals = match &self.at {
+            ShellsAt::Here(terminals, _) => terminals,
+            ShellsAt::Placed(placed) => return placed.open_terminal(opening, secrets, record),
         };
         let opened = terminals.open_for(
             opening.device,
@@ -437,6 +507,7 @@ impl WorkspaceShell for HostShells {
                     record(crate::placed_terminals::shell_ran(ran));
                 })),
                 attach: opening.attach.as_deref(),
+                secrets: &secrets,
             },
         )?;
         Ok(Opened {
