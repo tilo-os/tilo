@@ -535,7 +535,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn an_identity_premise_states_the_account_this_process_executes_as() {
-        use super::{Account, non_root_identity, premise, root_identity};
+        use super::{
+            Account, effective_uid, file_permissions_confine, non_root_identity, premise,
+            root_identity,
+        };
         for (account, uid, confined) in [
             (Account::Ordinary, 1000, true),
             (Account::Ordinary, 0, true),
@@ -554,11 +557,16 @@ mod tests {
                 "{account:?} as uid {uid}, confined {confined}"
             );
         }
-        let confined = non_root_identity();
+        // Here: the ordinary account, real root, or a job sandbox's root, which executes as
+        // uid 0 with its capabilities dropped and so is neither.
+        let ordinary = non_root_identity();
         let root = root_identity();
-        assert!(
-            confined.is_ok() != root.is_ok(),
-            "exactly one account premise must hold here: non-root {confined:?}, root {root:?}"
+        let sandbox_root = effective_uid().unwrap() == 0 && file_permissions_confine().unwrap();
+        assert_eq!(
+            usize::from(ordinary.is_ok()) + usize::from(root.is_ok()),
+            usize::from(!sandbox_root),
+            "one account premise holds here unless this is a job sandbox's root: non-root \
+             {ordinary:?}, root {root:?}, sandbox root {sandbox_root}"
         );
     }
 
