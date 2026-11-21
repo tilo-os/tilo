@@ -17304,106 +17304,6 @@
           "null"
         ]
       },
-      "files.folder.import-mounted.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "paths": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "folder": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "device",
-          "paths",
-          "folder"
-        ],
-        "description": ""
-      },
-      "files.folder.import-mounted.Result": {
-        "type": [
-          "object",
-          "array",
-          "null"
-        ]
-      },
-      "files.folder.cloud-import.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {
-            "type": "string"
-          },
-          "job_id": {
-            "type": "string"
-          },
-          "account": {
-            "type": "string"
-          },
-          "entries": {
-            "items": {},
-            "type": "array"
-          },
-          "destination": {
-            "properties": {
-              "identity": {
-                "properties": {
-                  "device": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "inode": {
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "modified": {
-                    "maxItems": 3,
-                    "minItems": 3,
-                    "type": [
-                      "array",
-                      "null"
-                    ]
-                  }
-                },
-                "required": [
-                  "device",
-                  "inode"
-                ],
-                "type": "object"
-              },
-              "path": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "path",
-              "identity"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "device",
-          "job_id",
-          "account",
-          "entries",
-          "destination"
-        ],
-        "description": ""
-      },
-      "files.folder.cloud-import.Result": {
-        "type": [
-          "object",
-          "array",
-          "null"
-        ]
-      },
       "files.folder.write-file.Arguments": {
         "type": "object",
         "properties": {
@@ -17689,12 +17589,6 @@
         "description": ""
       },
       "files.folder.open-terminal.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "files.folder.cloud-progress.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -39375,18 +39269,6 @@
     {
       "app": "so.tilo.file-explorer",
       "resource": "files.folder",
-      "action": "import-mounted",
-      "arguments": "#/components/schemas/files.folder.import-mounted.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "files.folder",
-      "action": "cloud-import",
-      "arguments": "#/components/schemas/files.folder.cloud-import.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "files.folder",
       "action": "write-file",
       "arguments": "#/components/schemas/files.folder.write-file.Arguments"
     },
@@ -39455,12 +39337,6 @@
       "resource": "files.folder",
       "action": "open-terminal",
       "arguments": "#/components/schemas/files.folder.open-terminal.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "files.folder",
-      "action": "cloud-progress",
-      "arguments": "#/components/schemas/files.folder.cloud-progress.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",

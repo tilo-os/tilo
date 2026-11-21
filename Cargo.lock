@@ -18702,14 +18702,8 @@ dependencies = [
 name = "tilo-cloud-files"
 version = "0.1.0"
 dependencies = [
- "cap-fs-ext",
- "cap-std",
- "host-fs",
- "jiff",
  "serde",
- "serde_json",
  "tilo-fs-client",
- "uuid",
  "workspace-hack",
 ]
 
@@ -19843,7 +19837,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
- "tilo-cloud-files",
  "tilo-content",
  "tilo-content-device",
  "tilo-device-identity",
@@ -19878,7 +19871,6 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
- "tilo-advisory-lock",
  "tilo-files",
  "tilo-paths",
  "tilo-test-env",
