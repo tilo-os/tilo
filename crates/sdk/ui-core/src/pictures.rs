@@ -168,6 +168,74 @@ fn blob_bytes(hash: &str) -> Option<Vec<u8>> {
     None
 }
 
+/// The most a picture pasted or dropped into a document may hold: the size a document keeps a
+/// picture at, which a `File` of it may answer.
+pub const MAX_PICTURE_BYTES: usize = 1024 * 1024;
+
+/// A picture taken in from a paste or a drop, as a document keeps it: the name it came in as, and
+/// the address of its bytes (`tilo-blob://<hash>`), which every device of the workspace reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeptPicture {
+    /// What the picture is called, extension included (`Pasted image.png`).
+    pub name: String,
+    /// Where its bytes are: a content address.
+    pub address: String,
+}
+
+/// Keep the picture `bytes`, named `name`, in this process's content store and answer where it
+/// is: what an editor does with a picture the person pasted or dropped into a document. Only a
+/// picture is kept (PNG, JPEG, GIF, WebP or SVG, read from its own bytes), and only up to
+/// [`MAX_PICTURE_BYTES`]; `None` otherwise, or when this process holds no content store (the web
+/// answers its host for one) or the store refused it.
+#[must_use]
+pub fn keep_picture(name: &str, bytes: &[u8]) -> Option<KeptPicture> {
+    let format = tilo_content::image_format(bytes)?;
+    if bytes.is_empty() || bytes.len() > MAX_PICTURE_BYTES {
+        return None;
+    }
+    let store = device_store()?;
+    let hash = store.put(bytes).ok()?;
+    Some(KeptPicture {
+        name: if name.trim().is_empty() {
+            format!("Pasted image.{}", format.extension)
+        } else {
+            name.to_owned()
+        },
+        address: format!("{BLOB_SCHEME}{hash}"),
+    })
+}
+
+/// The store a picture is kept in: the device content store the launcher handed this process, and
+/// none in a build that keeps no such store (the web), where a host keeps the picture instead.
+#[cfg(feature = "native")]
+fn device_store() -> Option<crate::content::ContentStore> {
+    crate::content::device()
+}
+
+#[cfg(not(feature = "native"))]
+fn device_store() -> Option<crate::content::ContentStore> {
+    None
+}
+
+/// The picture the file at `path` holds, kept and answered as [`keep_picture`] does: a picture file
+/// dropped on a window. `None` when the file is no picture, holds more than [`MAX_PICTURE_BYTES`],
+/// or cannot be read.
+#[must_use]
+pub fn dropped_picture(path: &std::path::Path) -> Option<KeptPicture> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)?;
+    let (dir, file) = tilo_files::file_at(path).ok()?;
+    let bytes = tilo_files::blocking::read_bounded(
+        &dir,
+        &file,
+        MAX_PICTURE_BYTES.saturating_add(1),
+    )
+    .ok()??;
+    keep_picture(&name, &bytes)
+}
+
 /// The bytes a `data:` address carries (`data:image/png;base64,<data>`), when it is one: a picture that
 /// travels in its own address, which a document or a demo can hold.
 #[must_use]
@@ -291,5 +359,52 @@ mod tests {
             "a place draws what the session's media served"
         );
         lend_content(None);
+    }
+
+    /// A picture pasted or dropped into a document is kept only when it is one, and only up to
+    /// the size a document's picture may be: what the editor refuses, it refuses before anything
+    /// is written.
+    #[test]
+    fn only_a_picture_of_a_document_s_size_is_kept() {
+        let _env = tilo_test_env::lock();
+        let pixels = png();
+        // This process holds no device store, so a picture that fits answers nothing here — but
+        // a file that is no picture, or one past the size, is refused before the store is asked.
+        assert_eq!(
+            keep_picture("words.txt", b"not a picture"),
+            None,
+            "a text file is no picture"
+        );
+        assert_eq!(
+            keep_picture("huge.png", &[png(), vec![0; MAX_PICTURE_BYTES]].concat()),
+            None,
+            "a picture past what a document keeps is refused"
+        );
+        assert_eq!(keep_picture("fox.png", &pixels), None, "no store, no address");
+
+        let directory = tilo_test_env::runtime_tempdir().expect("a place for the drop");
+        let path = directory.path().join("fox.png");
+        std::fs::write(&path, &pixels).expect("the picture is written");
+        assert_eq!(
+            dropped_picture(&path),
+            None,
+            "a picture read from a drop is kept in the store this process holds, which is none"
+        );
+        let words = directory.path().join("words.txt");
+        std::fs::write(&words, b"not a picture").expect("the file is written");
+        assert_eq!(dropped_picture(&words), None, "a dropped text file is no picture");
+    }
+
+    /// A 2x2 PNG, written out rather than drawn: the test needs no image library to say what a
+    /// picture is.
+    fn png() -> Vec<u8> {
+        vec![
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x72, 0xb6, 0x0d, 0x24, 0x00, 0x00, 0x00, 0x16, b'I', b'D', b'A', b'T', 0x78,
+            0x9c, 0x63, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x08, 0x00,
+            0x01, 0x2c, 0x0a, 0x0b, 0x4e, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xae,
+            0x42, 0x60, 0x82,
+        ]
     }
 }

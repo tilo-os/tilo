@@ -86,3 +86,75 @@ fn ctrl_v_hands_a_copied_image_to_the_host() {
     code_takes_text_not_images();
     copied_text_pastes_as_text();
 }
+
+#[test]
+fn a_host_that_keeps_pictures_gets_the_picture_at_the_caret() {
+    fn kept(image: PictureIn<'_>) -> Option<ui::pictures::KeptPicture> {
+        match image {
+            PictureIn::Bytes { name, bytes, .. } => Some(ui::pictures::KeptPicture {
+                name: name.to_owned(),
+                address: format!("tilo-blob://{}", bytes.len()),
+            }),
+            PictureIn::Path(path) => Some(ui::pictures::KeptPicture {
+                name: path.file_name()?.to_str()?.to_owned(),
+                address: "tilo-blob://dropped".to_owned(),
+            }),
+        }
+    }
+
+    fn the_picture_goes_in_at_the_caret_as_one_edit() {
+        let (services, recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
+        recorder.copy_image_elsewhere(screenshot());
+        let picture = screenshot();
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("caption")]);
+        editor.focus_block(0, CursorPlacement::End);
+        editor.set_image_inserter(Some(Box::new(kept)));
+        let mut doc = AutoCommit::new();
+        assert!(ctrl_v(&mut editor, &mut doc));
+        let texts: Vec<String> = editor.blocks().iter().map(|b| b.text().to_owned()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "caption".to_owned(),
+                format!("![](tilo-blob://{})", picture.bytes.len())
+            ],
+            "the picture takes a line of its own under the words it was pasted after"
+        );
+        assert!(
+            !editor.take_edit_ops().is_empty(),
+            "the host hears of the picture as the document's edit"
+        );
+        assert!(
+            editor.take_pasted_images().is_empty(),
+            "the host that kept it has no request to place"
+        );
+    }
+
+    fn a_picture_dropped_on_the_editor_goes_in_the_same_way() {
+        let (services, _recorder) = ui::process::ProcessServices::recording();
+        let _host = ui::process::enter(&services);
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("caption")]);
+        editor.focus_block(0, CursorPlacement::End);
+        editor.set_image_inserter(Some(Box::new(kept)));
+        let doc = AutoCommit::new();
+        let handled = ui::testing::dispatch(
+            &mut editor,
+            &winit::event::WindowEvent::DroppedFile("/tmp/fox.png".into()),
+        );
+        editor.sync(&doc, &ROOT);
+        assert!(handled, "the editor took the drop the keyboard was in");
+        let texts: Vec<String> = editor.blocks().iter().map(|b| b.text().to_owned()).collect();
+        assert_eq!(
+            texts,
+            vec!["caption".to_owned(), "![](tilo-blob://dropped)".to_owned()],
+            "a dropped picture takes a line of its own too"
+        );
+        assert!(!editor.take_edit_ops().is_empty());
+    }
+
+    the_picture_goes_in_at_the_caret_as_one_edit();
+    a_picture_dropped_on_the_editor_goes_in_the_same_way();
+}

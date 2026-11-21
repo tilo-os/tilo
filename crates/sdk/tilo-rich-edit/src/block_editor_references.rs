@@ -10,6 +10,7 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::BlockEditor;
+use crate::block_editor::{ImageInserter, PictureIn};
 use crate::block_editor_body::BodyBinding;
 use ui::component::{Bound, Component, Described, Event, Link, Value};
 use ui::theme::Theme;
@@ -59,6 +60,11 @@ pub struct BlockEditorProps {
     /// The document's headings, in the order they stand, each time they change.
     #[component(event(value = Vec<String>))]
     pub headings: Event,
+    /// A picture pasted or dropped into the document, written in at the caret: its name, then the
+    /// `tilo-blob://` address its bytes were kept at. What an app that names the pictures its
+    /// document shows — an export writing each beside the note — records of one.
+    #[component(event(value = Vec<String>))]
+    pub image: Event,
 }
 
 /// The editor's references: how each reads, where each was painted, and what activating one does.
@@ -287,6 +293,23 @@ impl BlockEditor {
     }
 }
 
+/// The editor's picture inserter: keep the picture in the window's content store, answer where its
+/// bytes are so the editor writes it in at the caret, and tell the view — by its name and its
+/// address — for a document that keeps its pictures' names.
+fn picture_inserter(image: Event) -> ImageInserter {
+    Box::new(move |picture: PictureIn<'_>| {
+        let kept = match picture {
+            PictureIn::Bytes { name, bytes, .. } => ui::pictures::keep_picture(name, bytes),
+            PictureIn::Path(path) => ui::pictures::dropped_picture(path),
+        }?;
+        image.fire(Some(Value::List(vec![
+            Value::Text(kept.name.clone()),
+            Value::Text(kept.address.clone()),
+        ])));
+        Some(kept)
+    })
+}
+
 fn theme_fingerprint(theme: &Theme) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -318,6 +341,7 @@ impl Described for BlockEditor {
             commands,
             command,
             headings,
+            image,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         let mut editor = if editing {
@@ -346,6 +370,7 @@ impl Described for BlockEditor {
         );
         editor.set_image_store(Some(ui::pictures::Pictures::window().store().clone()));
         if editing {
+            editor.set_image_inserter(Some(picture_inserter(image)));
             let (body, placeholder) = BodyBinding::of(rich, markdown, placeholder);
             editor.set_empty_hint(&placeholder);
             editor.show_body(&body);
@@ -370,6 +395,7 @@ impl Described for BlockEditor {
             commands,
             command,
             headings,
+            image,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
         if editing != self.body.is_some() {
@@ -386,6 +412,10 @@ impl Described for BlockEditor {
             Some(open_reference),
         );
         self.set_find_replace_enabled(!showing);
+        if !showing {
+            // The view that bound the document hears of each picture that goes into it.
+            self.set_image_inserter(Some(picture_inserter(image)));
+        }
         let rebound = if showing {
             self.show_rich_text(&value.unwrap_or_default());
             true

@@ -734,6 +734,10 @@ pub struct BlockEditor {
     access_row_builds: std::cell::Cell<usize>,
     image_preview_rects: Vec<Option<Rect>>,
     image_store: Option<ui::ImageStore>,
+    /// Where a picture pasted or dropped into the document goes: the host keeps its bytes and
+    /// answers the address they are at, and the editor puts the picture in at the caret. Unset:
+    /// the picture is left to the host as an [`ImagePasteRequest`], which places it itself.
+    image_inserter: Option<ImageInserter>,
     link_pages_offered: bool,
     host_commands: Vec<SlashHostCommand>,
     view_commands: Vec<String>,
@@ -939,6 +943,7 @@ impl BlockEditor {
             access_row_builds: std::cell::Cell::new(0),
             image_preview_rects: Vec::new(),
             image_store: None,
+            image_inserter: None,
             link_pages_offered: false,
             host_commands: Vec::new(),
             view_commands: Vec::new(),
@@ -4109,6 +4114,14 @@ impl BlockEditor {
         self.structure_dirty = true;
     }
 
+    /// Where a picture pasted or dropped into the document goes: the host keeps its bytes and
+    /// answers the address they are at ([`ui::pictures::keep_picture`]), and the editor writes
+    /// the picture in at the caret, as one step of the document's own history. Unset, the
+    /// picture is left for the host as an [`ImagePasteRequest`], which places it itself.
+    pub fn set_image_inserter(&mut self, inserter: Option<ImageInserter>) {
+        self.image_inserter = inserter;
+    }
+
     /// A picture's sizing handle: a pill on the picture, ringed so it reads
     /// on light and dark pictures alike.
     fn draw_image_resize_handle(
@@ -4684,8 +4697,136 @@ impl BlockEditor {
         let Some(target) = self.image_paste_target() else {
             return false;
         };
+        // A host that keeps pictures itself is handed the paste, and the picture goes in at the
+        // caret here, as the host's own change of the document.
+        if let Some(inserter) = self.image_inserter.as_mut() {
+            let name = pasted_picture_name(image.mime);
+            let kept = inserter(PictureIn::Bytes {
+                name: &name,
+                media: image.mime,
+                bytes: &image.bytes,
+            });
+            if let Some(kept) = kept {
+                return self.place_picture(&kept, target);
+            }
+        }
         self.pasted_images.push(ImagePasteRequest { image, target });
         true
+    }
+
+    /// The picture file dropped on the editor, when it is one and the host keeps pictures: the
+    /// file's bytes are the host's to read, and the picture goes in at the caret.
+    fn drop_picture(&mut self, path: &std::path::Path) -> bool {
+        // A drop names no place, so the editor the pointer rests on takes it — or the one the
+        // keyboard is in, where a window that laid it out has not been pointed at yet.
+        if !self.rect.contains(self.last_mouse_pos) && !self.is_focused {
+            return false;
+        }
+        // A code fence or a table shows its words as they are written: a picture goes into prose.
+        let in_prose = self
+            .focused
+            .and_then(|index| self.blocks.get(index))
+            .is_some_and(|block| {
+                !matches!(
+                    block.kind,
+                    BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                )
+            });
+        if !in_prose {
+            return false;
+        }
+        let Some(target) = self.image_paste_target() else {
+            return false;
+        };
+        let kept = self
+            .image_inserter
+            .as_mut()
+            .and_then(|inserter| inserter(PictureIn::Path(path)));
+        let Some(kept) = kept else {
+            return false;
+        };
+        self.place_picture(&kept, target)
+    }
+
+    /// Write `picture` into the document where `target` says: after the block the caret is in, or
+    /// over the selection it was made across. One step of the document's history, as a paste is.
+    fn place_picture(
+        &mut self,
+        picture: &ui::pictures::KeptPicture,
+        target: ImagePasteTarget,
+    ) -> bool {
+        let markdown = format!("![]({})", picture.address);
+        let (selection, own_line) = match target {
+            ImagePasteTarget::After(id) => {
+                let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
+                    return false;
+                };
+                let Some(block) = self.blocks.get(index) else {
+                    return false;
+                };
+                let end = block.text().len();
+                let own_line = !block.text().trim().is_empty();
+                (
+                    DocumentSelection {
+                        anchor: DocumentPosition {
+                            block: index,
+                            byte: end,
+                        },
+                        cursor: DocumentPosition {
+                            block: index,
+                            byte: end,
+                        },
+                    },
+                    own_line,
+                )
+            }
+            ImagePasteTarget::Replace {
+                blocks,
+                start_byte,
+                end_byte,
+            } => {
+                let Some(start) = self
+                    .blocks
+                    .iter()
+                    .position(|held| held.content() == blocks[0])
+                else {
+                    return false;
+                };
+                (
+                    DocumentSelection {
+                        anchor: DocumentPosition {
+                            block: start,
+                            byte: start_byte,
+                        },
+                        cursor: DocumentPosition {
+                            block: start + blocks.len().saturating_sub(1),
+                            byte: end_byte,
+                        },
+                    },
+                    false,
+                )
+            }
+        };
+        self.document_selection = Some(selection);
+        // A picture at the end of a line of text takes a line of its own: the line it was typed
+        // on keeps its words, and the picture stands under them. A selection it was pasted or
+        // dropped over becomes the picture.
+        let mut blocks = Vec::new();
+        if own_line {
+            blocks.push(BlockContent::paragraph(
+                uuid::Uuid::new_v4().to_string(),
+                String::new(),
+            ));
+        }
+        blocks.push(BlockContent::paragraph(
+            uuid::Uuid::new_v4().to_string(),
+            markdown,
+        ));
+        let placed = self.replace_document_selection_with_blocks(blocks);
+        if placed {
+            self.dirty = true;
+        }
+        placed
     }
 
     fn try_paste_image_key(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
@@ -4991,6 +5132,36 @@ pub enum ImagePasteTarget {
         start_byte: usize,
         end_byte: usize,
     },
+}
+
+/// A picture the person pasted or dropped into the document: its bytes under the name and media
+/// type it came in as, or the file they dropped.
+#[derive(Debug, Clone)]
+pub enum PictureIn<'a> {
+    Bytes {
+        name: &'a str,
+        media: &'a str,
+        bytes: &'a [u8],
+    },
+    Path(&'a std::path::Path),
+}
+
+/// Where a picture the person pasted or dropped goes: the host keeps it and answers where its
+/// bytes are, or answers nothing to refuse it, which leaves the editor's document as it was.
+pub type ImageInserter =
+    Box<dyn for<'a> FnMut(PictureIn<'a>) -> Option<ui::pictures::KeptPicture>>;
+
+/// What a picture copied to the clipboard is called: the name a document writes beside its
+/// bytes, from the type it was copied as (`Pasted image.png`).
+fn pasted_picture_name(media: &str) -> String {
+    let extension = match media {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/svg+xml" => "svg",
+        _ => "png",
+    };
+    format!("Pasted image.{extension}")
 }
 
 /// Direction-preserving document selection. [`Self::ordered`] provides its
@@ -9751,6 +9922,16 @@ impl Widget for BlockEditor {
             if self.activate_reference(event) {
                 *ctx.handled = true;
             }
+            return;
+        }
+        // A picture file dropped on the document goes in where the pointer is, as one pasted
+        // into it does: the host keeps it, and a file it refuses leaves the document be.
+        if let WindowEvent::DroppedFile(path) = event
+            && self.image_inserter.is_some()
+            && self.drop_picture(path)
+        {
+            *ctx.handled = true;
+            let _ = self.take_body_edits();
             return;
         }
         self.begin_edit();

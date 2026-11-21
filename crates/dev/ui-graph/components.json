@@ -6196,6 +6196,13 @@
           "value": {
             "list": "text"
           }
+        },
+        {
+          "name": "image",
+          "doc": "A picture pasted or dropped into the document, written in at the caret: its name, then the `tilo-blob://` address its bytes were kept at. What an app that names the pictures its document shows — an export writing each beside the note — records of one.",
+          "value": {
+            "list": "text"
+          }
         }
       ],
       "bindings": [
