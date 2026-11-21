@@ -600,15 +600,84 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         },
         chat: &chat_part(&lounge.workspace),
     };
+    // A small workspace on the same host, seeded the same way: what the same
+    // guest's entry costs with no crowd behind it, measured in this run. A
+    // builder busy with other work stretches both, so the crowd is read as a
+    // ratio against it rather than against a wall-clock bound of its own.
+    let small = workspaces.create("Small").await.unwrap();
+    workspaces
+        .publish(
+            &small.workspace,
+            &host_device.cert,
+            tilo_server_protocol::directory::Listing {
+                description: "Few".into(),
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let small_desktop = DocumentRoute {
+        app_id: "so.tilo.browser-desktop".into(),
+        cluster_id: small.workspace.clone(),
+        document: "desktop".into(),
+    };
+    let mut small_base = desktop_base(64 * 1024);
+    let small_first = Member {
+        host: page_host(),
+        server_cert: host_device.cert.clone(),
+        workspace: small.workspace.clone(),
+        workspace_id: small.workspace_id,
+        desktop: small_desktop.clone(),
+    };
+    let small_author = small_first.arrive("Member 0").await;
+    small_author
+        .write(small_desktop.clone(), &DocumentMutation::Snapshot(small_base.save()))
+        .unwrap();
+    let small_note = DocumentRoute {
+        app_id: "so.tilo.notes".into(),
+        cluster_id: small.workspace.clone(),
+        document: "note-0".into(),
+    };
+    small_author.send(Cmd::OpenRoute(small_note.clone())).unwrap();
+    small_author
+        .write(
+            small_note.clone(),
+            &DocumentMutation::Snapshot(resource_of(100 * 1024, 7).save()),
+        )
+        .unwrap();
+    let small_chat = chat_part(&small.workspace);
+    small_author.send(Cmd::OpenRoute(small_chat.clone())).unwrap();
+    small_author
+        .write(
+            small_chat.clone(),
+            &DocumentMutation::Snapshot(resource_of(CHAT_BYTES, 3).save()),
+        )
+        .unwrap();
+    small_first
+        .leave_part("Member 0", &small_author, desktop_part(&mut small_base, 0, 600))
+        .await;
+    let small_place = Place {
+        https: &*https,
+        site: &site,
+        workspace: &small.workspace,
+        workspace_id: small.workspace_id,
+        host: address.id,
+        relay: relay_url.clone().expect("the host runs a packet relay"),
+        desktop: &small_desktop,
+        note: &small_note,
+        chat: &small_chat,
+    };
+
     // A fresh guest each way a device reaches the host, at each of
     // `ROUND_TRIPS`: with no delay, what the host and the page spend; with
     // one, every round trip the guest waits through one after another.
     for way in [Way::WebTransport, Way::PacketRelay] {
-        way.measure(&place).await;
+        way.measure(&place, Some(&small_place)).await;
     }
     for member in staying {
         member.close();
     }
+    small_author.close();
 }
 
 /// How many people come through the entry at once while the crowd is seeded.
@@ -847,14 +916,30 @@ impl Way {
     /// [`MAX_BYTES`], with the CPU each spent reported beside them. A
     /// regression that adds a step in sequence, sends the whole workspace
     /// before the desktop, or asks its server again fails here.
-    async fn measure(self, place: &Place<'_>) {
+    async fn measure(self, place: &Place<'_>, baseline: Option<&Place<'_>>) {
         let round_trips = self.round_trips();
         // Every point is measured [`TRIALS`] times: a builder busy with other work stretches one
         // measurement of the same work by a few percent, so the guest is its fastest, and what
         // the server and the page spend here is the no-round-trip guests' slowest: the same
         // work, measured rather than assumed, and never less than [`COMPUTE`].
         let mut entries = Vec::new();
-        let mut compute = COMPUTE;
+        // What the same guest's entry costs with no crowd, this run, and the
+        // most a crowded workspace's entry may cost beside it: a crowd adds
+        // work, and the bound says how much, as a ratio of the same
+        // measurement on the same node at the same moment.
+        let baseline_shown = match baseline {
+            Some(small) => {
+                let empty = guest_enters(small, self, Duration::ZERO).await;
+                eprintln!(
+                    "BASELINE {self:?}: an empty workspace's guest showed after {:?}",
+                    empty.shown
+                );
+                empty.shown
+            }
+            None => COMPUTE,
+        };
+        let floor = baseline_shown.mul_f64(CROWD_RATIO);
+        let mut compute = COMPUTE.max(floor);
         for round_trip in ROUND_TRIPS {
             let mut trials = Vec::new();
             for _ in 0..TRIALS {
@@ -889,8 +974,15 @@ impl Way {
             slow.received,
             slow.sent
         );
+        eprintln!(
+            "RATIO {self:?}: the crowd's guest at no round trip showed in {:.2} times an empty \
+             workspace's ({:?} against {:?}); the bound is {CROWD_RATIO}",
+            entries[0].1.shown.as_secs_f64() / baseline_shown.as_secs_f64(),
+            entries[0].1.shown,
+            baseline_shown
+        );
         for (round_trip, entry) in &entries {
-            let allowed = compute + round_trip.mul_f64(round_trips);
+            let allowed = compute + round_trip.mul_f64(round_trips + ROUND_TRIP_SLACK);
             assert!(
                 entry.shown <= allowed,
                 "over {self:?}, a fresh guest's desktop showed after {:?} at a {round_trip:?} \
@@ -970,6 +1062,21 @@ const WEB_ROUND_TRIPS: f64 = 3.25;
 /// measured here: the slowest of its entries with no round trip, never less
 /// than this.
 const COMPUTE: Duration = Duration::from_millis(1_300);
+
+/// How much slower a fresh guest's entry into the crowded workspace may be
+/// than the same guest's entry into an empty one on the same host in the same
+/// run. A crowd adds the members' parts to what a newcomer is sent and the
+/// workspace's governance to what it is told; what it must not add is a wait
+/// that grows with the crowd. The ratio is what a busy node cannot move: both
+/// sides are measured here, one after the other, so a node that stretches the
+/// empty entry stretches the crowded one with it.
+const CROWD_RATIO: f64 = 3.0;
+
+/// How much of one round trip a guest's entry may wait beyond the round trips
+/// it is held to, for a node scheduling other work: a quarter of one. A
+/// regression that waits a round trip more is a whole one above this, so the
+/// slack does not hide it.
+const ROUND_TRIP_SLACK: f64 = 0.25;
 
 /// How many round trips a fresh guest may wait over iroh through the packet
 /// relay, one after another, beside the compute measured here, floored at

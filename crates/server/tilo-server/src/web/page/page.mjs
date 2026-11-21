@@ -359,7 +359,17 @@ function start() {
   // A click that opened nothing would otherwise be lost: the page shows
   // what the workspace holds, not what the person pressed.
   let redrawing = false;
-  const redone = [];
+  // What a reopen lost, asked again once the page is back: a click or a
+  // choice in the order it was made, and for a field, only what the field
+  // holds last — its earlier values are text it has since grown past, and
+  // asking them again would put a shorter one over the longer.
+  let redone = [];
+  const lost = act => {
+    if (act && (act.action?.value !== undefined || act.action?.edit !== undefined)) {
+      redone = redone.filter((kept) => kept.id !== act.id);
+    }
+    redone.push(act);
+  };
   const reopened = asked => {
     if (!link) return;
     // Why the page is shown again, for whoever looks into it.
@@ -371,7 +381,7 @@ function start() {
       ask(asked.value, asked.tries + 1);
       return;
     }
-    if (asked?.value?.act) redone.push(asked.value.act);
+    if (asked?.value?.act) lost(asked.value.act);
     if (redrawing) return;
     redrawing = true;
     ask({open: addressOf()});
@@ -558,7 +568,9 @@ function start() {
       show(answer.shown);
       // What a reopen lost is asked again, in the order it was asked, now
       // that the page is back where the person left it.
-      while (redone.length) ask({act: redone.shift()});
+      const again = redone;
+      redone = [];
+      for (const act of again) ask({act});
     } else if (answer.patched) patch(answer.patched);
     else if (answer.refused) {
       say('refused', 'This page is not available here.');
