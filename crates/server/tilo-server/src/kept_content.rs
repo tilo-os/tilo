@@ -3,8 +3,10 @@
 //!
 //! A record never carries its binaries: a picture, an attachment, a file's
 //! bytes live in the content store beside it, and the record names them by
-//! reference — a `Bytes` field as `blake3:<hash>:<len>` (sealed, the
-//! ciphertext's address and the key that opens it), a Files node by its hash.
+//! reference — a `Bytes` value as `blake3:<hash>:<len>` (sealed, with the
+//! ciphertext's reference), an action's output as `tilo.content:<reference>`,
+//! a Files node by its hash. Only these name content: a value that merely
+//! looks like an address, as a device key or an id does, names nothing.
 //! The device whose member stored them answers whoever asks the workspace,
 //! while it runs; a device that leaves — a page that reloads, a VM whose host
 //! was replaced, a laptop gone offline — takes the only copy with it.
@@ -13,9 +15,9 @@
 //! ([`Workspaces::document_writes`]), and every record of a workspace when it
 //! starts governing it ([`Workspaces::workspace_document_routes`]), with the
 //! keys this host holds as a member of its channels
-//! ([`Workspaces::resource_document`]), for however the app laid it out: a
-//! `blake3:` reference, a 64-hex address a value holds whole, the text of a
-//! note. Only the written record is read, so a write costs one record.
+//! ([`Workspaces::resource_document`]). Only the written record is read, so a
+//! write costs one record, and a member who joins costs only the records the
+//! host could not open yet.
 //!
 //! For each address it lacks the host asks the workspace's members on its own
 //! presence ([`Workspaces::ask_members`]), tagged by the record that named it
@@ -101,6 +103,9 @@ struct State {
     /// record a workspace seals arrive after its host joins the channel that
     /// seals it.
     reopened: BTreeMap<Route, Retry>,
+    /// The workspaces whose records were all read: a change of their members
+    /// reads again only what did not open.
+    read: BTreeSet<String>,
 }
 
 /// The content a governed workspace's records reference, kept by the host that
@@ -166,11 +171,9 @@ impl KeptContent {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 },
-                // A workspace that appeared, or whose membership moved: its
-                // records are read, and one this host cannot open yet is asked
-                // about before its members write to it. The others did not move.
+                // A workspace that appeared, or whose membership moved.
                 change = governance.recv() => match change {
-                    Ok(workspace) => self.keep_workspace(&workspace).await,
+                    Ok(workspace) => self.membership_moved(&workspace).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         self.read_all().await;
                     }
@@ -278,6 +281,34 @@ impl KeptContent {
             .collect()
     }
 
+    /// `workspace` appeared, or its membership moved. One this host has not
+    /// read yet is read whole. For one it has, a member who joins or leaves
+    /// changes no record, only which of them this host opens: each record that
+    /// did not open is read again now, and one it cannot open yet is asked
+    /// about before its members write to it. Reading every record again
+    /// would make each admission cost the whole workspace.
+    async fn membership_moved(&self, workspace: &str) {
+        let not_opened: Option<Vec<Route>> = {
+            let state = self.state.lock_recover();
+            state.read.contains(workspace).then(|| {
+                state
+                    .reopened
+                    .keys()
+                    .filter(|(held, _, _)| held == workspace)
+                    .cloned()
+                    .collect()
+            })
+        };
+        match not_opened {
+            Some(routes) => {
+                for route in routes {
+                    self.keep(&route).await;
+                }
+            }
+            None => self.keep_workspace(workspace).await,
+        }
+    }
+
     /// Read every record of `workspace` the host can read, and ask for the
     /// content they name: what a workspace that appeared, whose membership
     /// moved or whose holder was reached leaves the host to look over again.
@@ -286,9 +317,11 @@ impl KeptContent {
             Ok(routes) => routes,
             Err(error) => {
                 tracing::debug!(%workspace, %error, "a workspace's records are not readable here");
+                self.state.lock_recover().read.remove(workspace);
                 return;
             }
         };
+        self.state.lock_recover().read.insert(workspace.to_owned());
         let mut missing = 0_usize;
         for (app, record) in routes {
             if another_keeper(&app) {
@@ -338,7 +371,7 @@ impl KeptContent {
             }
         };
         self.state.lock_recover().reopened.remove(route);
-        let Ok(addresses) = content_of(&bytes) else {
+        let Ok(addresses) = content_of(app, &bytes) else {
             tracing::debug!(%workspace, %app, %record, "a record of a governed workspace does not read");
             return 0;
         };
@@ -427,144 +460,100 @@ impl ContentKeeper for KeptContent {
     }
 }
 
-/// The content `document`, a saved Automerge record, names now: the address of
-/// every `Bytes` field it holds, the address of every 64-hex value it holds
-/// whole, and the addresses a note's text names.
+/// The content `document`, a saved Automerge record of `app`, names now, by
+/// the references records name content with: each value written as a kept
+/// `Bytes` value ([`tilo_resource::Bytes::stored_address`]) or as a
+/// `tilo.content:` address ([`tilo_actions::content_hash`]), and, in a record
+/// of the Files tree, the content of each file not in its trash and each
+/// version a branch kept. A value that only looks like an address (a device
+/// key, an id) names nothing: no content stands behind it to keep.
 ///
 /// # Errors
 ///
 /// Why it does not load.
-pub(crate) fn content_of(document: &[u8]) -> Result<Vec<String>, String> {
+pub(crate) fn content_of(app: &str, document: &[u8]) -> Result<Vec<String>, String> {
     let doc = AutoCommit::load(document).map_err(|error| error.to_string())?;
     let mut named = BTreeSet::new();
-    content_in(&doc, &ROOT, &mut named);
+    references_in(&doc, &ROOT, &mut named);
+    if app == tilo_app_id::apps::FILE_EXPLORER {
+        files_content(&doc, document, &mut named)?;
+    }
     Ok(named.into_iter().collect())
 }
 
-/// Add the content the objects under `obj` of `doc` name to `named`.
-fn content_in(doc: &AutoCommit, obj: &ObjId, named: &mut BTreeSet<String>) {
-    let children: Vec<ObjId> = match doc.object_type(obj) {
-        Ok(ObjType::Map | ObjType::Table) => {
-            // A node the Files tree marks as in its trash holds no content to
-            // keep: the file is not the workspace's any more.
-            if in_trash(doc, obj) {
-                return;
-            }
-            doc.map_range(obj, ..)
-                .filter_map(|item| {
-                    // An app may key content by its address (a map of chunks).
-                    whole_address(&item.key, named);
-                    // An author names the person or device a change is by, never bytes. A
-                    // device key is 64 hex like an address, so a node's author would be kept
-                    // as content nobody holds.
-                    let names_an_author = item.key == fs_protocol::tree::AUTHOR_KEY;
-                    match item.value {
-                        ValueRef::Object(_) => Some(item.id()),
-                        ValueRef::Scalar(_) if names_an_author => None,
-                        ValueRef::Scalar(scalar) => {
-                            scalar_content(scalar, named);
-                            None
-                        }
-                    }
-                })
-                .collect()
-        }
+/// Add the content every value under `obj` of `doc` names by reference to
+/// `named`.
+fn references_in(doc: &AutoCommit, obj: &ObjId, named: &mut BTreeSet<String>) {
+    let values: Vec<(Option<ObjId>, Option<String>)> = match doc.object_type(obj) {
+        Ok(ObjType::Map | ObjType::Table) => doc
+            .map_range(obj, ..)
+            .map(|item| value_of(item.id(), &item.value))
+            .collect(),
         Ok(ObjType::List) => doc
             .list_range(obj, ..)
-            .filter_map(|item| match item.value {
-                ValueRef::Object(_) => Some(item.id()),
-                ValueRef::Scalar(scalar) => {
-                    scalar_content(scalar, named);
-                    None
-                }
-            })
+            .map(|item| value_of(item.id(), &item.value))
             .collect(),
-        // Text is written a character at a time: an address in it is whole
-        // only in the text it makes.
-        Ok(ObjType::Text) => {
-            if let Ok(text) = doc.text(obj) {
-                addresses_in(text.as_bytes(), named);
-            }
-            return;
-        }
-        Err(_) => return,
+        Ok(ObjType::Text) | Err(_) => return,
     };
-    for child in children {
-        content_in(doc, &child, named);
-    }
-}
-
-/// Whether `obj` is a node the Files tree marks as in its trash.
-fn in_trash(doc: &AutoCommit, obj: &ObjId) -> bool {
-    matches!(
-        doc.get(obj, fs_protocol::tree::PARENT_KEY),
-        Ok(Some((Value::Scalar(parent), _)))
-            if matches!(
-                parent.as_ref(),
-                automerge::ScalarValue::Str(id) if id.as_str() == fs_protocol::tree::TRASH_ID
-            )
-    )
-}
-
-/// Add the content the scalar `value` names to `named`.
-fn scalar_content(value: ScalarValueRef<'_>, named: &mut BTreeSet<String>) {
-    match value {
-        ScalarValueRef::Str(text) => text_content(&text, named),
-        ScalarValueRef::Bytes(bytes) => {
-            if bytes.len() == 32 {
-                named.insert(hex::encode(&bytes));
-            } else {
-                addresses_in(&bytes, named);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Add the content the string `text` names to `named`: a `Bytes` field's
-/// reference, or the addresses it holds whole.
-fn text_content(text: &str, named: &mut BTreeSet<String>) {
-    if text.starts_with("blake3:") {
-        if let Some(address) = reference_address(text) {
+    for (child, text) in values {
+        if let Some(address) = text.as_deref().and_then(reference_address) {
             named.insert(address);
         }
-        return;
-    }
-    addresses_in(text.as_bytes(), named);
-}
-
-/// Add `text` to `named` when it is one content address whole.
-fn whole_address(text: &str, named: &mut BTreeSet<String>) {
-    if text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        named.insert(text.to_ascii_lowercase());
-    }
-}
-
-/// The address the stored `Bytes` value `text` names: its hash, or a sealed
-/// reference's ciphertext address, which is what the content store keys it
-/// under. `None` for text that is not a content reference ([`tilo_resource::Bytes`]'
-/// stored form, read by the same rules).
-fn reference_address(text: &str) -> Option<String> {
-    let rest = text.strip_prefix("blake3:")?;
-    let mut parts = rest.splitn(3, ':');
-    let hash = parts.next()?;
-    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
-    }
-    parts.next()?.parse::<u64>().ok()?;
-    match parts.next() {
-        Some(reference) if tilo_content::is_sealed(reference) => {
-            tilo_content::content_address(reference)
+        if let Some(child) = child {
+            references_in(doc, &child, named);
         }
-        Some(_) => None,
-        None => Some(hash.to_ascii_lowercase()),
     }
 }
 
-/// Add each stretch of exactly a content address's hex digits in `bytes` to
-/// `named`, in lower case. See [`crate::content::collection`].
-fn addresses_in(bytes: &[u8], named: &mut BTreeSet<String>) {
-    crate::content::collection::addresses_in(bytes, named);
+/// An item's object, to read under it, or its text, to read as a reference.
+fn value_of(id: ObjId, value: &ValueRef<'_>) -> (Option<ObjId>, Option<String>) {
+    match value {
+        ValueRef::Object(_) => (Some(id), None),
+        ValueRef::Scalar(ScalarValueRef::Str(text)) => (None, Some(text.to_string())),
+        ValueRef::Scalar(_) => (None, None),
+    }
+}
+
+/// The address the reference `text` names its content by, as the content
+/// store keeps it.
+fn reference_address(text: &str) -> Option<String> {
+    tilo_resource::Bytes::stored_address(text)
+        .or_else(|| tilo_actions::content_hash(text).and_then(tilo_content::content_address))
+}
+
+/// Add the content the Files tree `document` (its index or one of its chunks)
+/// names to `named`: each file's content, unless it is in the trash, and each
+/// earlier version a branch of the workspace kept.
+///
+/// # Errors
+///
+/// The tree's nodes are malformed.
+fn files_content(
+    doc: &AutoCommit,
+    document: &[u8],
+    named: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let tree = fs_protocol::tree::Tree::of_document(document).map_err(|error| error.to_string())?;
+    for (id, node) in &tree.nodes {
+        if tree.trashed(id) {
+            continue;
+        }
+        if let Some(address) = node.hash.as_deref().and_then(tilo_content::content_address) {
+            named.insert(address);
+        }
+    }
+    if let Ok(Some((Value::Object(ObjType::Map), aliases))) =
+        doc.get(ROOT, fs_protocol::tree::FILE_VERSION_ALIASES_KEY)
+    {
+        for item in doc.map_range(&aliases, ..) {
+            if let ValueRef::Scalar(ScalarValueRef::Str(version)) = item.value
+                && fs_protocol::tree::is_file_content_hash(&version)
+            {
+                named.insert(version.to_string());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The blobs of the content `address` names that `store` lacks: the content
@@ -627,15 +616,32 @@ mod tests {
         doc.save()
     }
 
-    tilo_test_env::scenario! {
-        fn a_record_names_the_content_its_values_reference;
+    const PHOTOS: &str = "so.tilo.photos";
+    const FILES: &str = tilo_app_id::apps::FILE_EXPLORER;
 
-        phase a_bytes_field_names_the_address_its_reference_keeps;
+    /// A Files tree record holding the node `id` under `parent` with content
+    /// `hash`, written by the device `author`.
+    fn files_node(doc: &mut AutoCommit, id: &str, parent: &str, hash: &str, author: &str) {
+        use fs_protocol::tree::{AUTHOR_KEY, HASH_KEY, NODES_KEY, PARENT_KEY};
+        let nodes = match doc.get(ROOT, NODES_KEY).unwrap() {
+            Some((_, nodes)) => nodes,
+            None => doc.put_object(ROOT, NODES_KEY, ObjType::Map).unwrap(),
+        };
+        let node = doc.put_object(&nodes, id, ObjType::Map).unwrap();
+        doc.put(&node, PARENT_KEY, parent).unwrap();
+        doc.put(&node, HASH_KEY, hash).unwrap();
+        doc.put(&node, AUTHOR_KEY, author).unwrap();
+    }
+
+    tilo_test_env::scenario! {
+        fn a_record_names_the_content_its_references_name_and_nothing_else;
+
+        phase a_bytes_value_names_the_address_its_reference_keeps;
         {
             let plain = "a1".repeat(32);
             let stored = format!("blake3:{plain}:12");
             let doc = record_of(&[("photo", stored.as_str())]);
-            assert_eq!(content_of(&doc).unwrap(), [plain]);
+            assert_eq!(content_of(PHOTOS, &doc).unwrap(), [plain]);
         }
 
         phase a_sealed_reference_names_its_ciphertext_address;
@@ -647,60 +653,72 @@ mod tests {
             let stored = format!("blake3:{plain}:4096:{reference}");
             let doc = record_of(&[("photo", stored.as_str())]);
             assert_eq!(
-                content_of(&doc).unwrap(),
+                content_of(PHOTOS, &doc).unwrap(),
                 [address],
                 "the host keeps and serves the ciphertext, which is keyed by its address"
             );
         }
 
-        phase a_value_that_holds_an_address_whole_names_it;
+        phase an_actions_content_address_names_its_content;
         {
-            let hash = "f6".repeat(32);
-            let doc = record_of(&[("file", hash.as_str())]);
-            assert_eq!(content_of(&doc).unwrap(), [hash]);
+            let hash = "b2".repeat(32);
+            let mut doc = AutoCommit::new();
+            let images = doc.put_object(ROOT, "images", ObjType::List).unwrap();
+            doc.insert(&images, 0, format!("tilo.content:{hash}")).unwrap();
+            assert_eq!(content_of(PHOTOS, &doc.save()).unwrap(), [hash]);
         }
 
-        phase a_note_that_names_an_address_names_it;
+        phase a_value_that_only_looks_like_an_address_names_nothing;
+        // A device key, an id, a hash a record keeps for its own reasons:
+        // nothing stands behind them for the host to keep, and asking the
+        // workspace for them would leave it lacking content forever.
         {
-            let hash = "17".repeat(32);
+            let key = "f6".repeat(32);
             let mut doc = AutoCommit::new();
+            doc.put(ROOT, "device", key.as_str()).unwrap();
+            doc.put(ROOT, "host", [7_u8; 32].to_vec()).unwrap();
+            let entries = doc.put_object(ROOT, "servers", ObjType::Map).unwrap();
+            doc.put_object(&entries, key.as_str(), ObjType::Map).unwrap();
             let note = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
-            doc.splice_text(&note, 0, 0, &format!("see blake3:{hash}:9"))
+            doc.splice_text(&note, 0, 0, &format!("see {key} and blake3:{key}:9"))
                 .unwrap();
-            assert_eq!(content_of(&doc.save()).unwrap(), [hash]);
-        }
-
-        phase a_file_in_the_trees_trash_names_no_content;
-        {
-            let hash = "28".repeat(32);
-            let mut doc = AutoCommit::new();
-            let nodes = doc.put_object(ROOT, fs_protocol::tree::NODES_KEY, ObjType::Map).unwrap();
-            let node = doc.put_object(&nodes, "device/0", ObjType::Map).unwrap();
-            doc.put(&node, fs_protocol::tree::PARENT_KEY, fs_protocol::tree::TRASH_ID).unwrap();
-            doc.put(&node, fs_protocol::tree::HASH_KEY, hash.as_str()).unwrap();
-            assert!(content_of(&doc.save()).unwrap().is_empty());
+            doc.put(ROOT, "label", format!("key {key}")).unwrap();
+            assert!(content_of(PHOTOS, &doc.save()).unwrap().is_empty());
         }
 
         phase a_files_node_names_its_content_and_not_the_device_that_wrote_it;
         {
             let hash = "39".repeat(32);
+            let trashed = "28".repeat(32);
             let device = "4a".repeat(32);
             let mut doc = AutoCommit::new();
-            let nodes = doc.put_object(ROOT, fs_protocol::tree::NODES_KEY, ObjType::Map).unwrap();
-            let node = doc.put_object(&nodes, "device/1", ObjType::Map).unwrap();
-            doc.put(&node, fs_protocol::tree::PARENT_KEY, fs_protocol::tree::ROOT_ID).unwrap();
-            doc.put(&node, fs_protocol::tree::HASH_KEY, hash.as_str()).unwrap();
-            doc.put(&node, fs_protocol::tree::AUTHOR_KEY, device.as_str()).unwrap();
+            files_node(&mut doc, "device/1", fs_protocol::tree::ROOT_ID, &hash, &device);
+            files_node(&mut doc, "device/2", fs_protocol::tree::TRASH_ID, &trashed, &device);
             assert_eq!(
-                content_of(&doc.save()).unwrap(),
-                [hash],
-                "a device key is 64 hex like an address, and names no bytes"
+                content_of(FILES, &doc.save()).unwrap(),
+                std::slice::from_ref(&hash),
+                "a file in the trash is not the workspace's any more, and its author names no bytes"
             );
+            assert!(
+                content_of(PHOTOS, &doc.save()).unwrap().is_empty(),
+                "a node's hash names content in the Files tree alone"
+            );
+        }
+
+        phase a_version_a_branch_kept_is_named;
+        {
+            let kept = "5b".repeat(32);
+            let mut doc = AutoCommit::new();
+            let aliases = doc
+                .put_object(ROOT, fs_protocol::tree::FILE_VERSION_ALIASES_KEY, ObjType::Map)
+                .unwrap();
+            doc.put(&aliases, "6c".repeat(32), kept.as_str()).unwrap();
+            assert_eq!(content_of(FILES, &doc.save()).unwrap(), [kept]);
         }
 
         phase a_record_that_does_not_load_names_nothing;
         {
-            assert!(content_of(b"not a document").is_err());
+            assert!(content_of(PHOTOS, b"not a document").is_err());
         }
     }
 }

@@ -775,6 +775,18 @@ impl Bytes {
         }
     }
 
+    /// The address the content store keeps the data a stored value names
+    /// under: what a holder of the record keeps, asks for and serves (a
+    /// sealed value's ciphertext address). `None` for text that is not a
+    /// stored value of data kept outside the document.
+    #[must_use]
+    pub fn stored_address(text: &str) -> Option<String> {
+        Self::parse_text(text)
+            .ok()?
+            .reference()
+            .and_then(|reference| tilo_content::content_address(&reference))
+    }
+
     fn parse_text(text: &str) -> Result<Self, ModelError> {
         let invalid = || ModelError::invalid(format!("not a content reference: {text}"));
         let rest = text.strip_prefix("blake3:").ok_or_else(invalid)?;
