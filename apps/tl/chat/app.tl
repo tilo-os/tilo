@@ -180,7 +180,9 @@ migration action carry_native_chat(all: Conversations) {
             let made = c.channels.insert(
                 TextChannel(
                     name: ch.texts.get("name") ?? "",
-                    topic: if topic == "" { "{kind} of the native Chat" } else { "{kind} of the native Chat: {topic}" },
+                    topic: if topic == "" {
+                        "{kind} of the native Chat"
+                    } else { "{kind} of the native Chat: {topic}" },
                 ),
                 id: ch.id,
             )
@@ -216,7 +218,9 @@ migration action carry_native_chat(all: Conversations) {
                     m.thread = t
                     for r in replies {
                         let reply = t.messages.insert(native_message(r), id: r.id)
-                        if (r.lists.get("quoted") ?? []).len() > 0 { reply.reply_to = m }
+                        if (r.lists.get("quoted") ?? []).len() > 0 {
+                            reply.reply_to = m
+                        }
                     }
                 }
             }
