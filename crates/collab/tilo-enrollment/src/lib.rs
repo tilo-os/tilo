@@ -16,6 +16,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod approval;
+pub mod certification;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod client;
 #[cfg(not(target_arch = "wasm32"))]

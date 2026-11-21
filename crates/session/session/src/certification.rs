@@ -480,7 +480,8 @@ fn answer_at_host(
     runtime.block_on(async {
         let approver = tilo_server_client::MemberApprover::new(host);
         let answered =
-            tilo_server_client::answer_pairing(&approver, &signer, digest, approve).await;
+            tilo_enrollment::certification::answer_pairing(&approver, &signer, digest, approve)
+                .await;
         approver.close().await;
         answered.map(drop).map_err(|error| error.to_string())
     })

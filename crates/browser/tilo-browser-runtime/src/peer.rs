@@ -1173,9 +1173,10 @@ impl PairingHost {
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| JsError::new("a request digest is 64 hex characters"))?;
-        let issued = tilo_server_client::answer_pairing(&self.0, &root, digest, approved)
-            .await
-            .map_err(js_error)?;
+        let issued =
+            tilo_enrollment::certification::answer_pairing(&self.0, &root, digest, approved)
+                .await
+                .map_err(js_error)?;
         if issued.is_some() {
             // One device more: whatever lists the person's devices on this
             // page has them read from the host once more.

@@ -1,7 +1,7 @@
 //! What a person's root gives their devices, and the pairing ceremony their
 //! server carries between them: a new device asks to be certified
 //! ([`certify`](crate::certify)), a root-holding device lists the waiting
-//! requests ([`pending_pairings`]) and answers one ([`answer_pairing`]).
+//! requests ([`pending_pairings`]) and sends an answer ([`decide_pairing`]).
 //!
 //! Only the root signs: the server carries and checks, and hands nothing on
 //! that a root did not sign for exactly that request.
@@ -15,8 +15,7 @@ use tilo_user_identity::{
     certification::{CERTIFICATION_CLOCK_ALLOWANCE_NS, MAX_CERTIFICATION_LABEL_BYTES},
     check_agent_grant, sign_device_cert_async, sign_revocation_entry_async, verify_device_cert_at,
 };
-// Answering a pairing is the dialer's: a page holds no root and answers none.
-#[cfg(any(feature = "dial", test))]
+#[cfg(test)]
 use tilo_user_identity::{RevocationList, issue_device_cert_async};
 
 #[cfg(feature = "dial")]
@@ -340,61 +339,13 @@ pub async fn next_pairings(
     }
 }
 
-/// Answer the pending request `request_digest` at `server`:
-/// approved, `root` certifies the device it names as a browser of that root,
-/// and the certificate it issued is answered for the root's own record.
-///
-/// # Errors
-///
-/// [`CertifyError::Denied`] when the request is gone or the server refuses, and
-/// [`CertifyError::Transport`] when it is not reached.
-#[cfg(feature = "dial")]
-pub async fn answer_pairing(
-    server: &impl MemberServer,
-    root: &dyn DeviceSigner,
-    request_digest: [u8; 32],
-    approved: bool,
-) -> Result<Option<DeviceCert>, CertifyError> {
-    let decision = if approved {
-        let pending = pending_pairings(server, root).await?;
-        let Some(found) = pending
-            .iter()
-            .find(|entry| entry.request_digest == request_digest)
-        else {
-            return Err(CertifyError::Denied("that device no longer waits".into()));
-        };
-        // The request the page shows is the request the root answers: its own
-        // signature, its window and the revocations decide what the device is
-        // granted, within what a browser may be granted.
-        let request = &found.request;
-        let policy = CertificationPolicy::browser();
-        let revocations = RevocationList::new();
-        let now = tilo_clock::unix_now_ns();
-        let cert = issue_device_cert_async(request, root, &policy, &revocations, now)
-            .await
-            .map_err(|error| CertifyError::Request(error.to_string()))?;
-        tilo_user_identity::verify_issued_cert(request, &cert, &policy, &revocations, now)
-            .map_err(|error| CertifyError::Request(error.to_string()))?;
-        ApproverDecision::Issue(cert)
-    } else {
-        ApproverDecision::Deny
-    };
-    let issued = match &decision {
-        ApproverDecision::Issue(cert) => Some(cert.clone()),
-        _ => None,
-    };
-    decide_pairing(server, root, request_digest, issued.clone())
-        .await
-        .map(|()| issued)
-}
-
 /// Answer the pending request `request_digest` at `server`, as
 /// `approver`: with `cert`, one the person's root already issued for exactly
 /// that request, or turned away without one.
 ///
 /// # Errors
 ///
-/// As [`answer_pairing`].
+/// The server was not reached or refused the answer.
 #[cfg(feature = "dial")]
 pub async fn decide_pairing(
     server: &impl MemberServer,

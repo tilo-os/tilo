@@ -1812,10 +1812,11 @@ async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
         panic!("one request waits for the tab: {waiting:?}")
     };
     assert_eq!(request.request.invite, invite);
-    let issued = tilo_server_client::answer_pairing(&tab, &person, request.request_digest, true)
-        .await
-        .unwrap()
-        .expect("a certificate");
+    let issued =
+        tilo_enrollment::certification::answer_pairing(&tab, &person, request.request_digest, true)
+            .await
+            .unwrap()
+            .expect("a certificate");
     let outcome = tilo_test_env::within("the tab's answer", asking).await;
     let CertificationOutcome::Issued { cert, .. } = outcome else {
         panic!("the computer is certified: {outcome:?}")

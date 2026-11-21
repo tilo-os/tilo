@@ -14,10 +14,12 @@
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use tilo_enrollment::certification::{VouchError, vouch_with_code};
+use tilo_enrollment::requester::certify;
 use tilo_server_client::invite::guest_certificate;
-use tilo_server_client::login_code;
+use tilo_server_client::{DeviceSigner, login_code};
 use tilo_server_protocol::login_code::{ClaimRefused, Report, Step};
-use tilo_user_identity::{DeviceCapabilities, UserIdentity};
+use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{enrol, enter as enter_as, entry_grant, start_workspace_host};
 
@@ -137,8 +139,11 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
     let mut chained = member_cert.clone();
     chained.device_public_key = signed_in_before.verifying_key().to_bytes();
     chained.issued_at_ns = tilo_clock::unix_now_ns();
-    chained.expires_at_ns =
-        Some(chained.issued_at_ns + tilo_user_identity::CertificationPolicy::browser().lifetime_ns);
+    chained.expires_at_ns = Some(
+        chained
+            .issued_at_ns
+            .saturating_add(CertificationPolicy::browser().lifetime_ns),
+    );
     chained.issuer = Some(Box::new(member_cert.clone()));
     tilo_user_identity::sign_device_cert(&mut chained, &laptop).unwrap();
     let chained = login_code::claim(
@@ -155,44 +160,93 @@ async fn a_tab_and_a_computer_go_through_a_code_with_the_one_client() {
         Some(ClaimRefused::NotADevice),
         "{chained:?}"
     );
-    let postcard = hex::encode(postcard::to_allocvec(&member_cert).unwrap());
-    login_code::claim(
+    let forged = vouch_with_code(
         &*https,
         &resolved.report,
-        postcard.clone(),
-        &laptop,
-        tilo_clock::unix_now_ns(),
-    )
-    .await
-    .unwrap();
-    let claimed = login_code::follow(&*https, &asking.follow, None)
-        .await
-        .unwrap()
-        .claimed
-        .expect("the tab learns whom it was claimed for");
-    assert_eq!(claimed.user, hex::encode(user));
-    assert_eq!(claimed.by, "Claude Code on build-box");
-
-    // A claim signed by another key than the certificate's is refused.
-    let again = login_code::create(&*https, None).await.unwrap();
-    login_code::follow(&*https, &again.follow, Some(offer(&again, None)))
-        .await
-        .unwrap();
-    let resolved = login_code::resolve(&*https, &again.code).await.unwrap();
-    let forged = login_code::claim(
-        &*https,
-        &resolved.report,
-        postcard,
         &new_key(),
-        tilo_clock::unix_now_ns(),
+        &member_cert,
+        None,
+        || panic!("the server accepted a claim signed by a different device"),
     )
     .await
     .unwrap_err();
+    let VouchError::Claim(forged) = forged else {
+        panic!("the signed claim should have been refused: {forged:?}")
+    };
     assert_eq!(
         forged.claim_refused(),
         Some(ClaimRefused::Signature),
         "{forged:?}"
     );
+
+    for root in [None, Some(&bob as &dyn DeviceSigner)] {
+        let asking = login_code::create(&*https, None).await.unwrap();
+        login_code::follow(&*https, &asking.follow, Some(offer(&asking, None)))
+            .await
+            .unwrap();
+        let resolved = login_code::resolve(&*https, &asking.code).await.unwrap();
+        let (claimed, claiming) = tokio::sync::oneshot::channel();
+        let vouch = vouch_with_code(
+            &*https,
+            &resolved.report,
+            &laptop,
+            &member_cert,
+            root,
+            || {
+                claimed.send(()).unwrap();
+            },
+        );
+        let fresh_tab = async {
+            claiming.await.unwrap();
+            let polled = login_code::follow(&*https, &asking.follow, None)
+                .await
+                .unwrap();
+            let claimed = polled
+                .claimed
+                .expect("the tab learns whom it was claimed for");
+            assert_eq!(claimed.user, hex::encode(user));
+            assert_eq!(claimed.by, "Claude Code on build-box");
+            let invite = hex::decode(claimed.invite).unwrap().try_into().unwrap();
+            certify(
+                &host.iroh(),
+                user,
+                "Returning browser",
+                invite,
+                &new_key(),
+                |_| {},
+            )
+            .await
+            .unwrap()
+        };
+        let (approved, (cert, server_cert, label)) =
+            tilo_test_env::within("sign in the returning browser", async {
+                tokio::join!(vouch, fresh_tab)
+            })
+            .await;
+        approved.unwrap();
+        assert_eq!(cert.user_public_key, user);
+        assert_eq!(cert.capabilities, DeviceCapabilities::member());
+        assert_eq!(
+            cert.expires_at_ns,
+            Some(
+                cert.issued_at_ns
+                    .saturating_add(CertificationPolicy::browser().lifetime_ns)
+            ),
+        );
+        assert_eq!(
+            cert.issuer.as_deref(),
+            root.is_none().then_some(&member_cert)
+        );
+        assert_eq!(
+            server_cert.device_public_key,
+            host_device.cert.device_public_key
+        );
+        assert!(label.starts_with("Returning browser"));
+        let polled = login_code::follow(&*https, &asking.follow, None)
+            .await
+            .unwrap();
+        assert!(polled.steps.contains(&Step::Approved), "{polled:?}");
+    }
 
     tab.close();
     drop(host.web);
