@@ -114,10 +114,15 @@ pub(super) struct Kept {
 }
 
 /// What a composition reads besides what each widget paints: the layout, the document and what
-/// it lets the person do, the window's size and density. A frame that moved none of it, a hover,
-/// a press's look, a focus ring, a chart's readout, changes only what its widgets paint.
+/// it lets the person do, the window's size and density, and whether the window shows its live
+/// content. A frame that moved none of it, a hover, a press's look, a focus ring, a chart's
+/// readout, changes only what its widgets paint.
 #[derive(PartialEq)]
 pub(super) struct Read {
+    /// The window shows its live content: it has no History, or its History is closed with
+    /// nothing in flight. An open History shows other times of the document than the one read
+    /// here, so no part composed while it is open is kept.
+    live: bool,
     layout: u64,
     document: (Vec<automerge::ChangeHash>, usize),
     presentation: u64,
@@ -192,15 +197,19 @@ impl<'a> Walk<'a> {
 
     /// The part the kept composition holds for `widget` at `path`, when composing it again would
     /// give the same: the widget, and every one under it, paints as it did ([`Widget::needs_redraw`]),
-    /// stands where it stood, scrolled as it was, on the same ground.
+    /// is the size it was, scrolled as it was, on the same ground.
+    ///
+    /// It may stand elsewhere: the layout is the one the kept composition read (see
+    /// [`Read`]), so a widget that moved, as a scrolled list's rows do, moved with everything in
+    /// it, and the part is the kept one moved as far.
     fn reuse(&self, node: NodeId, path: &str, widget: &dyn Widget) -> Option<Composed> {
         let kept = self.kept.as_ref()?;
         let before = *kept.parts.get(path)?;
         let rect = widget.get_rect();
         let ground = self.ground_colours.borrow().last().copied();
         let same = before.widget == widget.name()
-            && before.rect.map(f64::to_bits)
-                == [rect.x0, rect.y0, rect.width(), rect.height()].map(f64::to_bits)
+            && before.rect[2].to_bits() == rect.width().to_bits()
+            && before.rect[3].to_bits() == rect.height().to_bits()
             && kept.stood_on.get(path).copied() == ground
             && before.scroll
                 == widget.primary_vertical_scroll().map(|region| {
@@ -224,7 +233,12 @@ impl<'a> Walk<'a> {
             }
             carry.extend(&part.children);
         }
-        Some(before.clone())
+        let mut part = before.clone();
+        let moved = [rect.x0 - before.rect[0], rect.y0 - before.rect[1]];
+        if moved != [0.0, 0.0] {
+            part.translate(moved);
+        }
+        Some(part)
     }
 
     /// Every widget laid out at `node` or under it counts as placed, as composing it would count it.
@@ -413,7 +427,7 @@ impl FrameHarness {
         let previous = self.presented.kept.take();
         let reusable = previous
             .as_ref()
-            .filter(|kept| kept.read == read && self.history.is_none());
+            .filter(|kept| kept.read == read && read.live);
         let (composition, stood_on) = self.compose_with(reusable);
         if std::mem::take(&mut self.presented.drawn_owed) {
             self.root.mark_drawn();
@@ -446,6 +460,10 @@ impl FrameHarness {
 
     fn composition_read(&self) -> Read {
         Read {
+            live: self
+                .history
+                .as_ref()
+                .is_none_or(|history| history.at_rest()),
             layout: self.presented.layout_revision,
             document: crate::doc::settle_mark(&self.state.doc),
             presentation: crate::widget::resource_presentation_epoch(),

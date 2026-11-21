@@ -154,3 +154,55 @@ fn a_page_picked_in_the_sidebar_shows_in_the_frame_of_the_click() {
         );
     }
 }
+
+/// A long page scrolled a step at a time: each frame moves what it shows without laying anything
+/// out, and what a page is handed for it is what composing the whole window gives, with the parts
+/// that only moved at their new places.
+#[test]
+fn a_scrolled_page_is_handed_what_composing_it_all_gives() {
+    crate::support::installed("gallery");
+    let mut app = TestApp::<TlApp>::drive_at("custom", (1280, 800)).expect("the scenario stages");
+    let harness = app.harness();
+    harness.set_scene_drawn(false);
+    harness.set_coalesce_input_frames(true);
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+        let _ = harness.compose_frame();
+    }
+    let (x, y) = words_at(harness.presented_composition(), "Charts and views")
+        .expect("the sidebar names the page of charts");
+    harness.click_at(x, y);
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+        let _ = harness.compose_frame();
+    }
+    let scroller = harness
+        .presented_composition()
+        .and_then(|composition| {
+            let mut nodes = vec![&composition.root];
+            while let Some(node) = nodes.pop() {
+                if node.scroll.is_some() && node.rect[0] > 200.0 {
+                    return Some(node.path.clone());
+                }
+                nodes.extend(&node.children);
+            }
+            None
+        })
+        .expect("the page scrolls");
+    for step in 1..=6 {
+        let offset = f64::from(step) * 40.0;
+        assert!(
+            harness.scroll_composed(&scroller, offset),
+            "the page takes the scroll to {offset}"
+        );
+        let _ = harness.poll_frame();
+        let whole = harness.composition();
+        let composed = harness
+            .compose_frame()
+            .unwrap_or_else(|| panic!("scrolled to {offset}, and nothing was handed over"));
+        assert_eq!(
+            *composed, whole,
+            "scrolled to {offset}: what is handed over is the whole window's composition"
+        );
+    }
+}

@@ -1249,6 +1249,35 @@ impl Composed {
                 .zip(&before.children)
                 .all(|(now, then)| now.same_moved(then, by))
     }
+
+    /// The widget moved as a whole by `[dx, dy]` logical pixels: every rect it holds, its parts'
+    /// and its children's, stands that much further on.
+    pub(crate) fn translate(&mut self, [dx, dy]: [f64; 2]) {
+        let shift = |rect: &mut [f64; 4]| {
+            rect[0] += dx;
+            rect[1] += dy;
+        };
+        shift(&mut self.rect);
+        if let Some(clip) = self.clip.as_mut() {
+            shift(clip);
+        }
+        for (rect, _) in &mut self.surfaces {
+            shift(rect);
+        }
+        if let Some(bounds) = self
+            .semantics
+            .as_mut()
+            .and_then(|node| node.bounds.as_mut())
+        {
+            bounds.x0 += dx;
+            bounds.x1 += dx;
+            bounds.y0 += dy;
+            bounds.y1 += dy;
+        }
+        for child in &mut self.children {
+            child.translate([dx, dy]);
+        }
+    }
 }
 
 /// What a widget's [`html`](crate::widget::Widget::html) renders into: the element it is, what it shows
