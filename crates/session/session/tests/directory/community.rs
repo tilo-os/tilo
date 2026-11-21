@@ -48,9 +48,20 @@ fn community_here(session: &Session) -> Option<String> {
 }
 
 /// What it takes for the person's decisions to be on disk: a session writes them out as it goes,
-/// and one that ends here stands for the session ending.
-fn written() {
-    tilo_durable_writer::global().flush();
+/// and one that ends here stands for the session ending. The file they are kept in.
+fn written(state: &std::path::Path) -> std::path::PathBuf {
+    kept_file(state, "so.tilo.session-workspaces")
+}
+
+/// The file the device's store keeps the session's document `name` in under `state`, once what the
+/// session handed the store is written.
+fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use durable_store::DurableStore as _;
+    let root = state.join("tilo").join("documents");
+    app_state::shared_store(&root)
+        .flush(None)
+        .expect("what the session keeps is written");
+    root.join(name).join(app_state::DOCUMENT_FILE)
 }
 
 /// A community site: its entry names the home workspace `name` and the entry into
@@ -253,7 +264,7 @@ fn a_community_that_was_left_is_not_joined_again() {
         None,
         "the community's workspace is off the session"
     );
-    written();
+    written(state.path());
     drop(session);
     let mut again = session_keeping(state.path());
     run_turns(&mut again, 20);
@@ -290,24 +301,19 @@ fn a_persons_other_computer_does_not_join_their_community_again() {
         "the community's workspace is on the session",
         |session| community_here(session).is_some(),
     );
-    written();
+    let list = written(state.path());
     drop(session);
     // Their desktop: another device of theirs, holding the list their laptop agreed with them, as
     // their devices hand each other their workspaces.
     let _root = their_other_computer(&mut env);
     let elsewhere = tempfile::tempdir().expect("a directory for their other computer's state");
-    std::fs::create_dir_all(elsewhere.path().join("tilo")).expect("the state's directory");
-    std::fs::copy(
-        state
-            .path()
-            .join("tilo")
-            .join("personal-workspaces.postcard"),
-        elsewhere
-            .path()
-            .join("tilo")
-            .join("personal-workspaces.postcard"),
-    )
-    .expect("what their laptop decided reaches their desktop");
+    let there = elsewhere
+        .path()
+        .join("tilo/documents/so.tilo.session-workspaces")
+        .join(app_state::DOCUMENT_FILE);
+    std::fs::create_dir_all(there.parent().expect("the list's directory"))
+        .expect("the state's directory");
+    std::fs::copy(&list, &there).expect("what their laptop decided reaches their desktop");
     let mut other = session_keeping(elsewhere.path());
     run_turns(&mut other, 20);
     assert_eq!(

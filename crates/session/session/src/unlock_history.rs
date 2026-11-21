@@ -13,7 +13,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::platform::fabric::PersonDevices;
 use crate::platform::fabric::{DecisionOutcome, UnlockDecisionEntry};
@@ -27,9 +27,6 @@ use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 use crate::i18n::t;
 use crate::network::slot_name;
 
-/// The document beside the rest of this device's state.
-const FILE: &str = "device-unlock.automerge";
-
 /// The package the answers are listed under in the activity history: this session's own, not one an
 /// app is. The words of a row come from the session's catalogue (`unlock-approved`, `unlock-denied`
 /// ).
@@ -38,39 +35,71 @@ const APP: &str = "so.tilo.unlock";
 /// The kind of the person's own record of those answers.
 const KIND: &str = crate::platform::fabric::DEVICE_UNLOCK_ACTION;
 
-/// Where the document lives under `state` , this device's state directory.
-fn path(state: &Path) -> PathBuf {
-    state.join("tilo").join(FILE)
-}
-
-/// The document kept at `at` , and where it is kept: `None` there for one this build did not open,
+/// The document `kept` holds, and the writer that keeps it: none for one this build did not open,
 /// which is then never written over.
-fn open(at: &Path) -> (AutoCommit, Option<PathBuf>) {
-    let bytes = match std::fs::read(at) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return (AutoCommit::new(), Some(at.to_path_buf()));
-        }
+fn open(kept: crate::kept::Kept) -> (AutoCommit, Option<Saver>) {
+    let bytes = match kept.read() {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return (AutoCommit::new(), Some(Saver::new(kept, Vec::new(), 0))),
         Err(error) => {
-            tracing::warn!(path = %at.display(), %error, "the unlock record is not read");
+            tracing::warn!(%error, "the unlock record is not read");
             return (AutoCommit::new(), None);
         }
     };
     let options = automerge::LoadOptions::new().on_partial_load(OnPartialLoad::Ignore);
     match AutoCommit::load_with_options(&bytes, options) {
-        Ok(doc) => (doc, Some(at.to_path_buf())),
+        Ok(mut doc) => {
+            let heads = doc.get_heads();
+            (doc, Some(Saver::new(kept, heads, bytes.len())))
+        }
         Err(error) => {
-            tracing::warn!(path = %at.display(), %error, "the unlock record is not opened");
+            tracing::warn!(%error, "the unlock record is not opened");
             (AutoCommit::new(), None)
+        }
+    }
+}
+
+/// Keeps the document: each answer appends the changes since the last save, and the document is
+/// written whole again once what was appended outgrows it.
+struct Saver {
+    kept: crate::kept::Kept,
+    heads: Vec<ChangeHash>,
+    plan: app_state::SavePlan,
+}
+
+impl Saver {
+    fn new(kept: crate::kept::Kept, heads: Vec<ChangeHash>, whole: usize) -> Self {
+        Self {
+            kept,
+            heads,
+            plan: app_state::SavePlan::new(whole, 0),
+        }
+    }
+
+    fn save(&mut self, doc: &mut AutoCommit) {
+        let written = match self.plan.next() {
+            app_state::Save::Full => {
+                let bytes = doc.save();
+                let len = bytes.len();
+                self.kept.replace(bytes).map(|_| self.plan.stored_whole(len))
+            }
+            app_state::Save::Append => {
+                let bytes = doc.save_after(&self.heads);
+                let len = bytes.len();
+                self.kept.append(bytes).map(|_| self.plan.appended(len))
+            }
+        };
+        if written.is_some() {
+            self.heads = doc.get_heads();
         }
     }
 }
 
 pub(crate) struct UnlockHistory {
     doc: RefCell<AutoCommit>,
-    /// Where the document is kept: `None` on a session that keeps no state,
-    /// and on one that did not open the document on disk.
-    path: Option<PathBuf>,
+    /// What keeps the document: `None` on a session that keeps no state, and on one that did not
+    /// open the document it kept.
+    saver: RefCell<Option<Saver>>,
     /// The person's own record the answers belong to. `None` on a session with no certified person:
     /// it is on no fabric, so nothing answers.
     record: Option<DocumentCheckout>,
@@ -87,14 +116,14 @@ impl UnlockHistory {
     pub(crate) fn new(state: Option<&Path>, person: &str) -> Self {
         let record = DocumentId::of_member(person, KIND)
             .map(|id| DocumentCheckout::new(id, ResourceType::new(KIND)));
-        let (doc, path) = match state {
-            Some(state) => open(&path(state)),
+        let (doc, saver) = match state {
+            Some(state) => open(crate::kept::Kept::open(state, crate::kept::UNLOCK)),
             None => (AutoCommit::new(), None),
         };
         let kept = doc.keys(ROOT).collect();
         Self {
             doc: RefCell::new(doc),
-            path,
+            saver: RefCell::new(saver),
             record,
             link: RefCell::default(),
             kept: RefCell::new(kept),
@@ -146,8 +175,8 @@ impl UnlockHistory {
                 if doc.commit_with(options).is_none() {
                     continue;
                 }
-                if let Some(at) = &self.path {
-                    tilo_durable_writer::keep(at.clone(), doc.save());
+                if let Some(saver) = self.saver.borrow_mut().as_mut() {
+                    saver.save(&mut doc);
                 }
                 drop(doc);
                 self.kept.borrow_mut().insert(key);

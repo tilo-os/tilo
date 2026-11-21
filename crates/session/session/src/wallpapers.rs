@@ -19,7 +19,7 @@
 //! shows its gradient before the person's picture.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -27,19 +27,12 @@ use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
 use ui::peniko::ImageData;
 
-/// The file beside the rest of this device's state.
-const FILE: &str = "wallpapers.json";
-
 /// The record format this build reads.
 const SCHEMA: u32 = 1;
 
 /// The largest edge a picture of the person's own is decoded to: a 4K panel's picture covers the
 /// widest shell without holding more pixels.
 const CUSTOM_EDGE: u32 = 3840;
-
-fn path(state: &Path) -> PathBuf {
-    state.join("tilo").join(FILE)
-}
 
 /// What each workspace on this device shows: its own `appearance.wallpaper` value, else this
 /// device's default; no value at all is the picture the image ships.
@@ -103,11 +96,16 @@ struct Kept {
     records: Records,
 }
 
-fn load_at(path: &Path) -> Records {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Records::default();
+fn load_at(kept: &crate::kept::Kept) -> Records {
+    let bytes = match kept.read() {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return Records::default(),
+        Err(error) => {
+            tracing::warn!(%error, "the kept wallpapers are not read");
+            return Records::default();
+        }
     };
-    match serde_json::from_str::<Kept>(&text) {
+    match serde_json::from_slice::<Kept>(&bytes) {
         Ok(kept) if kept.schema == SCHEMA => kept.records,
         // A file a newer build wrote describes pictures this one cannot place.
         _ => {
@@ -117,18 +115,16 @@ fn load_at(path: &Path) -> Records {
     }
 }
 
-fn save_at(path: &Path, records: &Records) {
-    let written = (|| {
-        let kept = Kept {
-            schema: SCHEMA,
-            records: records.clone(),
-        };
-        // Written beside and moved into place: a session that dies mid-write leaves the wallpapers
-        // it had.
-        tilo_files::native::atomic::write_creating_parent(path, &serde_json::to_vec(&kept)?)
-    })();
-    if let Err(error) = written {
-        tracing::warn!(%error, "the wallpapers are not kept");
+fn save_at(at: &crate::kept::Kept, records: &Records) {
+    let kept = Kept {
+        schema: SCHEMA,
+        records: records.clone(),
+    };
+    match serde_json::to_vec(&kept) {
+        Ok(bytes) => {
+            at.replace(bytes);
+        }
+        Err(error) => tracing::warn!(%error, "the wallpapers are not kept"),
     }
 }
 
@@ -136,7 +132,7 @@ fn save_at(path: &Path, records: &Records) {
 /// workspace still shows it.
 pub(crate) struct Wallpapers {
     /// Where the records are kept, if this session keeps any.
-    root: Option<PathBuf>,
+    kept: Option<crate::kept::Kept>,
     /// Wakes the compositor when a picture decoded off its thread.
     wake: Arc<dyn Fn() + Send + Sync>,
     state: Arc<Mutex<State>>,
@@ -165,23 +161,22 @@ struct State {
 impl Wallpapers {
     /// The wallpapers this device kept under `state` , remembering no picture yet; without a state
     /// directory, nothing is read or kept.
-    pub(crate) fn new(root: Option<PathBuf>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub(crate) fn new(state: Option<&Path>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let kept = state.map(|state| crate::kept::Kept::open(state, crate::kept::WALLPAPERS));
         Self {
             state: Arc::new(Mutex::new(State {
-                records: root
-                    .as_deref()
-                    .map_or_else(Records::default, |root| load_at(&path(root))),
+                records: kept.as_ref().map_or_else(Records::default, load_at),
                 ..State::default()
             })),
-            root,
+            kept,
             wake,
         }
     }
 
     /// Write `records` as this device's, replacing the ones before.
     fn save(&self, records: &Records) {
-        if let Some(root) = &self.root {
-            save_at(&path(root), records);
+        if let Some(kept) = &self.kept {
+            save_at(kept, records);
         }
     }
 
@@ -439,9 +434,9 @@ mod tests {
                 default: Some("dunes".into()),
                 workspaces: BTreeMap::from([("1".to_owned(), "meadow".to_owned())]),
             };
-            let wallpapers = Wallpapers::new(Some(state.path().to_path_buf()), Arc::new(|| {}));
+            let wallpapers = Wallpapers::new(Some(state.path()), Arc::new(|| {}));
             wallpapers.save(&kept);
-            let again = Wallpapers::new(Some(state.path().to_path_buf()), Arc::new(|| {}));
+            let again = Wallpapers::new(Some(state.path()), Arc::new(|| {}));
             assert_eq!(again.state.lock_recover().records, kept);
         }
     }

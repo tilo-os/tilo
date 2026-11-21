@@ -135,13 +135,24 @@ mod tests {
         {
             let (_env, home) = home();
             let dir = identity_dir(home.path());
-            // The ceremony's journal, written ahead of the step it guards: any entry at its path is
-            // setup the person had not finished.
-            std::fs::write(
-                dir.join(".onboarding-progress.json"),
-                br#"{"version":1,"stage":"identity-ready"}"#,
-            )
-            .expect("journal");
+            // The ceremony's journal, written ahead of the step it guards: any it holds is setup the
+            // person had not finished.
+            {
+                use durable_store::DurableStore as _;
+                let store = app_state::shared_store(&dir);
+                let key =
+                    durable_store::StorageKey::app(tilo_onboarding_session::view::PROGRESS_KEY);
+                let _lease = store.lease(&key).expect("the journal is free");
+                store
+                    .write(
+                        &key,
+                        durable_store::WriteOp::Replace(
+                            br#"{"version":1,"stage":"identity-ready"}"#.to_vec(),
+                        ),
+                        None,
+                    )
+                    .expect("journal");
+            }
             assert!(
                 tilo_onboarding_session::view::has_pending_progress(&dir),
                 "the journal is the one the ceremony leaves"

@@ -1453,3 +1453,17 @@ pub fn publisher(session: &Session, action: &str) -> Option<String> {
     }
     find(&session.resources(), action)
 }
+
+/// The file the device's store keeps the session's document `name` in under `state`, once what the
+/// session handed the store is written.
+///
+/// # Panics
+/// The store could not write it.
+pub fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use durable_store::DurableStore as _;
+    let root = state.join("tilo").join("documents");
+    app_state::shared_store(&root)
+        .flush(None)
+        .expect("what the session keeps is written");
+    root.join(name).join(app_state::DOCUMENT_FILE)
+}

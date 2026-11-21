@@ -31,12 +31,11 @@ mod recovery_key;
 mod session;
 mod snapshot;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+use durable_store::{DurableStore, StorageKey, WriteOp};
 use recovery_key::{RecoveryKeyCopy, import_recovery_words, words_check};
 use session::SessionPaths;
 pub use snapshot::OnboardingVisualState;
 use std::collections::{HashMap, HashSet};
-use std::fs::OpenOptions;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -59,13 +58,15 @@ use tilo_onboarding::{t, t_args};
 /// How often setup looks for news from its background work (codec install,
 /// nearby pairing) while that work runs.
 const BACKGROUND_POLL: Duration = Duration::from_millis(250);
-const PROGRESS_FILE: &str = ".onboarding-progress.json";
+/// The journal's reserved name in the document store beside the identity.
+pub const PROGRESS_KEY: &str = "so.tilo.onboarding-progress";
 const PROGRESS_VERSION: u32 = 1;
 const PROGRESS_MAX_BYTES: u64 = 4096;
 
 /// Secret-free crash journal for the small interval between identity
-/// acquisition and explicit first-use completion. It lives beside the
-/// identity so it follows the same per-user lifecycle and trust boundary.
+/// acquisition and explicit first-use completion. It is a document of the
+/// store kept in the identity directory, so it follows the identity's
+/// per-user lifecycle and trust boundary.
 #[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum PersistedStage {
@@ -91,8 +92,76 @@ struct PersistedProgress {
     stage: PersistedStage,
 }
 
-fn progress_path(identity_dir: &std::path::Path) -> PathBuf {
-    identity_dir.join(PROGRESS_FILE)
+fn progress_key() -> StorageKey {
+    StorageKey::app(PROGRESS_KEY)
+}
+
+/// The document store the journal is kept in: the identity directory's own.
+fn journal_store(identity_dir: &std::path::Path) -> Rc<dyn DurableStore> {
+    Rc::new(app_state::shared_store(identity_dir))
+}
+
+fn store_error(error: &durable_store::StoreError) -> std::io::Error {
+    std::io::Error::other(error.to_string())
+}
+
+/// The journal's writer: the store it is kept in, leased from the first
+/// change written through it.
+struct Journal {
+    store: Rc<dyn DurableStore>,
+    /// The identity directory, made private before the first change is written.
+    identity_dir: Option<PathBuf>,
+    lease: Option<durable_store::Lease>,
+}
+
+impl Journal {
+    fn at(identity_dir: &std::path::Path) -> Self {
+        Self {
+            store: journal_store(identity_dir),
+            identity_dir: Some(identity_dir.to_path_buf()),
+            lease: None,
+        }
+    }
+
+    /// Accept `change` without waiting for the disk: the store commits it on
+    /// its own thread, after every change accepted before it.
+    fn write(&mut self, change: JournalChange) -> std::io::Result<durable_store::Revision> {
+        if self.lease.is_none() {
+            if let Some(identity_dir) = &self.identity_dir {
+                crate::firstboot::prepare_identity_directory(identity_dir)?;
+            }
+            self.lease = Some(self.store.lease(&progress_key()).map_err(|error| store_error(&error))?);
+        }
+        let bytes = match change {
+            JournalChange::Store(stage) => serde_json::to_vec_pretty(&PersistedProgress {
+                version: PROGRESS_VERSION,
+                stage,
+            })
+            .map_err(|error| std::io::Error::other(error.to_string()))?,
+            // An empty journal is no journal.
+            JournalChange::Clear => Vec::new(),
+        };
+        self.store
+            .write(&progress_key(), WriteOp::Replace(bytes), None)
+            .map_err(|error| store_error(&error))
+    }
+
+    /// What became of the change that returned `revision`: `None` while it
+    /// is still being written.
+    fn outcome(&self, revision: durable_store::Revision) -> Option<Result<(), String>> {
+        match self.store.durability(&progress_key(), revision) {
+            durable_store::Durability::Pending => None,
+            durable_store::Durability::Durable => Some(Ok(())),
+            durable_store::Durability::Failed(error) => Some(Err(error)),
+        }
+    }
+
+    /// Wait until every change accepted is on disk.
+    fn flush(&self) -> std::io::Result<()> {
+        self.store
+            .flush(Some(&progress_key()))
+            .map_err(|error| store_error(&error))
+    }
 }
 
 /// A change to the crash journal.
@@ -123,25 +192,24 @@ enum AfterJournal {
     Finish,
 }
 
-/// A journal change the state writer is making. The journal is written
-/// ahead of the step it guards, but never on the compositor's loop, where
-/// its fsyncs can take seconds under I/O pressure: the step waits here until
-/// the write reports, and `sync` takes it on the frame after.
+/// A journal change the store is committing. The journal is written ahead
+/// of the step it guards, but never waited for on the compositor's loop,
+/// where its fsyncs can take seconds under I/O pressure: the step waits here
+/// until the store reports the write, and `sync` takes it on the frame after.
 struct JournalWrite {
     change: JournalChange,
     then: AfterJournal,
-    /// The write's result, set on the writer's thread.
-    outcome: Arc<std::sync::OnceLock<Result<(), String>>>,
+    revision: durable_store::Revision,
 }
 
 /// Whether startup must retain trusted first-use chrome even though an
-/// identity already exists. Any object or unreadable entry at the journal
-/// path counts as pending: malformed recovery state must never become a
-/// shortcut around completion.
+/// identity already exists. A journal that cannot be read counts as
+/// pending: malformed recovery state must never become a shortcut around
+/// completion.
 pub fn has_pending_progress(identity_dir: &std::path::Path) -> bool {
-    match std::fs::symlink_metadata(progress_path(identity_dir)) {
-        Ok(_) => true,
-        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    match journal_store(identity_dir).read(&progress_key()) {
+        Ok(stored) => stored.is_some_and(|stored| !stored.bytes.is_empty()),
+        Err(_) => true,
     }
 }
 
@@ -169,39 +237,20 @@ pub fn clear_verified_pre_acquisition_progress(
 }
 
 fn load_progress(identity_dir: &std::path::Path) -> std::io::Result<Option<PersistedStage>> {
-    let path = progress_path(identity_dir);
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
-    }
-    let mut file = match options.open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+    load_progress_in(journal_store(identity_dir).as_ref())
+}
+
+fn load_progress_in(store: &dyn DurableStore) -> std::io::Result<Option<PersistedStage>> {
+    let bytes = match store.read(&progress_key()).map_err(|error| store_error(&error))? {
+        Some(stored) if !stored.bytes.is_empty() => stored.bytes,
+        _ => return Ok(None),
     };
-    let metadata = file.metadata()?;
-    if !metadata.file_type().is_file() || metadata.len() > PROGRESS_MAX_BYTES {
+    if bytes.len() as u64 > PROGRESS_MAX_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "onboarding progress must be a small regular file",
+            "onboarding progress must be small",
         ));
     }
-    #[cfg(unix)]
-    {
-        if !tilo_files::native::private::private_to_me(&metadata) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "onboarding progress must be private and owned by this user",
-            ));
-        }
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(PROGRESS_MAX_BYTES.saturating_add(1))
-        .read_to_end(&mut bytes)?;
     let stored: PersistedProgress = serde_json::from_slice(&bytes).map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -217,31 +266,20 @@ fn load_progress(identity_dir: &std::path::Path) -> std::io::Result<Option<Persi
     Ok(Some(stored.stage))
 }
 
+/// Write `change` and wait for it to reach the disk.
+fn write_progress(identity_dir: &std::path::Path, change: JournalChange) -> std::io::Result<()> {
+    let mut journal = Journal::at(identity_dir);
+    journal.write(change)?;
+    journal.flush()
+}
+
+#[cfg(test)]
 fn store_progress(identity_dir: &std::path::Path, stage: PersistedStage) -> std::io::Result<()> {
-    crate::firstboot::prepare_identity_directory(identity_dir)?;
-    let bytes = serde_json::to_vec_pretty(&PersistedProgress {
-        version: PROGRESS_VERSION,
-        stage,
-    })
-    .map_err(|error| std::io::Error::other(error.to_string()))?;
-    tilo_files::native::atomic::write_with_mode(&progress_path(identity_dir), &bytes, 0o600)
+    write_progress(identity_dir, JournalChange::Store(stage))
 }
 
 fn clear_progress(identity_dir: &std::path::Path) -> std::io::Result<()> {
-    let path = progress_path(identity_dir);
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        // Still sync the directory after NotFound. A previous Finish attempt
-        // may have removed the entry but failed while making that removal
-        // durable; letting the retry finish without fsync could resurrect it
-        // after a power loss.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    // Make journal removal durable too. Otherwise a power loss immediately
-    // after Finish could resurrect a completed tour on the next login.
-    std::fs::File::open(identity_dir)?.sync_all()?;
-    Ok(())
+    write_progress(identity_dir, JournalChange::Clear)
 }
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
@@ -605,8 +643,9 @@ pub struct OnboardingView {
     /// the step it was written ahead of. While any is outstanding, actions
     /// that write the journal wait, still pressed, for the next frame.
     journal: std::collections::VecDeque<JournalWrite>,
-    /// Writes the journal off the compositor's loop.
-    journal_writer: &'static tilo_durable_writer::DurableWriter,
+    /// Writes the journal, once a change is written: the store commits it
+    /// off the compositor's loop.
+    journal_store: Option<Journal>,
     tour_page: Option<TourPage>,
     /// A tour reopened from the desktop has no identity ceremony behind it.
     /// Back on its first page and Done both dismiss the modal directly.
@@ -937,7 +976,7 @@ impl OnboardingView {
             portable_backup_only: false,
             progress_error: None,
             journal: std::collections::VecDeque::new(),
-            journal_writer: tilo_durable_writer::global(),
+            journal_store: None,
             tour_page: None,
             tour_only: false,
             finished: Rc::default(),
@@ -1252,31 +1291,36 @@ impl OnboardingView {
     /// ahead of its journal. Without an identity directory there is no
     /// journal and `then` runs now.
     fn journal_then(&mut self, change: JournalChange, then: AfterJournal) {
-        let Some(identity_dir) = self.identity_dir.clone() else {
+        let Some(journal) = self.journal_writer() else {
             self.after_journal(then);
             return;
         };
-        let outcome = Arc::new(std::sync::OnceLock::new());
-        let written = Arc::clone(&outcome);
-        // Made on the loop's thread, so it wakes the loop the step waits on;
-        // a no-op where no loop installed a wake.
-        let wake = crate::services::loop_waker();
-        let write = move || {
-            let result = match change {
-                JournalChange::Store(stage) => store_progress(&identity_dir, stage),
-                JournalChange::Clear => clear_progress(&identity_dir),
-            };
-            let _ = written.set(result.map_err(|error| error.to_string()));
-            wake.wake();
-        };
-        match self.journal_writer.submit_ordered(write) {
-            Ok(()) => self.journal.push_back(JournalWrite {
-                change,
-                then,
-                outcome,
-            }),
+        match journal.write(change) {
+            Ok(revision) => {
+                // Made on the loop's thread, so it wakes the loop the step
+                // waits on; a no-op where no loop installed a wake.
+                let wake = crate::services::loop_waker();
+                let _ = journal.store.wake_when_settled(
+                    &progress_key(),
+                    Arc::new(move || wake.wake_by_ref()),
+                );
+                self.journal.push_back(JournalWrite {
+                    change,
+                    then,
+                    revision,
+                });
+            }
             Err(error) => self.journal_failed(change, &error.to_string()),
         }
+    }
+
+    /// The journal's writer, once this view has an identity directory.
+    fn journal_writer(&mut self) -> Option<&mut Journal> {
+        if self.journal_store.is_none() {
+            let identity_dir = self.identity_dir.as_deref()?;
+            self.journal_store = Some(Journal::at(identity_dir));
+        }
+        self.journal_store.as_mut()
     }
 
     fn journal_failed(&mut self, change: JournalChange, error: &str) {
@@ -1296,11 +1340,11 @@ impl OnboardingView {
 
     /// Take, oldest first, the steps whose journal changes have reported.
     fn settle_journal(&mut self) {
-        while let Some(outcome) = self
-            .journal
-            .front()
-            .and_then(|write| write.outcome.get().cloned())
-        {
+        while let Some(outcome) = self.journal.front().and_then(|write| {
+            self.journal_store
+                .as_ref()
+                .and_then(|journal| journal.outcome(write.revision))
+        }) {
             let Some(write) = self.journal.pop_front() else {
                 break;
             };
@@ -1981,10 +2025,13 @@ impl OnboardingView {
                 .is_none_or(|minted| !crate::identity::canonical_native_identity_ready(minted))
     }
     fn persist_progress(&mut self, stage: PersistedStage) -> bool {
-        let Some(identity_dir) = self.identity_dir.as_ref() else {
+        let Some(journal) = self.journal_writer() else {
             return true;
         };
-        match store_progress(identity_dir, stage) {
+        let written = journal
+            .write(JournalChange::Store(stage))
+            .and_then(|_| journal.flush());
+        match written {
             Ok(()) => {
                 self.progress_error = None;
                 true
@@ -2671,10 +2718,11 @@ impl Widget for OnboardingView {
         // The codecs worker or status watcher reported a change: one frame
         // lets `sync` pick it up. Nothing is redrawn while nothing changes.
         self.codec_changed.load(Ordering::Acquire)
-            || self
-                .journal
-                .front()
-                .is_some_and(|write| write.outcome.get().is_some())
+            || self.journal.front().is_some_and(|write| {
+                self.journal_store
+                    .as_ref()
+                    .is_some_and(|journal| journal.outcome(write.revision).is_some())
+            })
             || self
                 .identity_work
                 .as_ref()
@@ -3382,8 +3430,12 @@ mod tests {
             view.nearby_status_path = Some(status);
             // Hold the journal write that records the join, so the assertion
             // below sees the hand-off waiting for it rather than racing it.
-            let (release_journal, journal_check) = std::sync::mpsc::channel::<()>();
-            view.journal_writer = writer_held_until(journal_check);
+            let held = Rc::new(HeldOnDisk::over(journal_store(&identity_dir)));
+            view.journal_store = Some(Journal {
+                store: Rc::clone(&held) as Rc<dyn DurableStore>,
+                identity_dir: Some(identity_dir.clone()),
+                lease: None,
+            });
             let doc = AutoCommit::new();
             let deadline = tilo_test_env::hang_deadline();
             while view.nearby.is_some() {
@@ -3395,9 +3447,7 @@ mod tests {
                 !view.identity_ready_page,
                 "the hand-off waits for the journal that records it"
             );
-            release_journal
-                .send(())
-                .expect("the writer waits for its release");
+            held.release();
             sync_journaled(&mut view, &doc);
 
             assert_eq!(view.flow.screen(), Screen::Done);
@@ -3568,8 +3618,8 @@ mod tests {
         .expect("write fixture identity");
     }
 
-    /// `sync`, then let the state writer finish each journal change the frame
-    /// handed it and sync again, as the loop does when the write wakes it.
+    /// `sync`, then let the store commit each journal change the frame handed
+    /// it and sync again, as the loop does when the write wakes it.
     /// Identity work is waited for the same way: the worker reports and the
     /// loop syncs again.
     fn sync_journaled(view: &mut OnboardingView, document: &AutoCommit) {
@@ -3578,7 +3628,7 @@ mod tests {
             if view.journal_idle() && view.identity_idle() {
                 return;
             }
-            view.journal_writer.flush();
+            flush_journal(view);
             wait_for_identity_work(view);
             view.sync(document, &automerge::ROOT);
         }
@@ -3651,7 +3701,7 @@ mod tests {
                     view.sync(&document, &automerge::ROOT);
                 }
                 // The journal reaches the disk; the next frame starts the mint.
-                view.journal_writer.flush();
+                flush_journal(&view);
                 view.sync(&document, &automerge::ROOT);
                 assert!(!view.identity_idle(), "the mint is running");
                 let deadline = Instant::now()
@@ -3721,7 +3771,7 @@ mod tests {
                 sync_journaled(&mut view, &document);
                 press(&view, &mut document, KEY_IMPORT);
                 view.sync(&document, &automerge::ROOT);
-                view.journal_writer.flush();
+                flush_journal(&view);
                 view.sync(&document, &automerge::ROOT);
                 assert!(!view.identity_idle(), "the import is running");
                 for _ in 0..3 {
@@ -3840,14 +3890,7 @@ mod tests {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt as _;
-                assert_eq!(
-                    std::fs::metadata(progress_path(&identity_dir))
-                        .expect("progress metadata")
-                        .permissions()
-                        .mode()
-                        & 0o777,
-                    0o600
-                );
+                // The journal is kept in the identity directory, which is the person's alone.
                 assert_eq!(
                     std::fs::metadata(&identity_dir)
                         .expect("identity directory metadata")
@@ -3967,30 +4010,19 @@ mod tests {
             );
         }
 
-        phase unsupported_or_unsafe_journal_stays_pending_instead_of_bypassing_setup;
+        phase an_unsupported_journal_stays_pending_instead_of_bypassing_setup;
         {
             let directory = TempDir::new().expect("progress directory");
-            tilo_files::native::atomic::write_with_mode(
-                &progress_path(directory.path()),
+            write_journal_bytes(
+                directory.path(),
                 br#"{"version":99,"stage":"identity-ready"}"#,
-                0o600,
-            )
-            .expect("future-version journal");
+            );
             assert!(has_pending_progress(directory.path()));
             assert!(load_progress(directory.path()).is_err());
             write_fixture_identity(directory.path());
             let resumed = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(resumed.flow().screen(), Screen::Done);
             assert!(resumed.progress_error.is_some());
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::symlink;
-                std::fs::remove_file(progress_path(directory.path())).expect("remove journal");
-                symlink("primary.json", progress_path(directory.path())).expect("journal symlink");
-                assert!(has_pending_progress(directory.path()));
-                assert!(load_progress(directory.path()).is_err());
-            }
         }
 
         phase a_journal_write_failure_prevents_identity_creation;
@@ -4020,38 +4052,120 @@ mod tests {
         }
     }
 
-    /// A state writer whose thread is parked in a job from now on, for the
-    /// life of the process: the test's stand-in for a crash before the
-    /// journal changes queued behind it reach the disk.
-    /// A journal writer whose first job waits until `release` is signalled,
-    /// so a test can look at the view while a journal change is pending.
-    fn writer_held_until(
-        release: std::sync::mpsc::Receiver<()>,
-    ) -> &'static tilo_durable_writer::DurableWriter {
-        let writer = Box::leak(Box::new(tilo_durable_writer::DurableWriter::spawn(
-            "onboarding-journal-held",
-        )));
-        writer
-            .submit_ordered(move || {
-                let _ = release.recv();
-            })
-            .expect("the held writer takes its check");
-        writer
+    /// A journal kept in memory whose changes never commit: the test's
+    /// stand-in for a crash before the disk took them.
+    fn held_journal() -> (Journal, Rc<durable_store::MemoryStore>) {
+        let store = Rc::new(durable_store::MemoryStore::queued());
+        let journal = Journal {
+            store: Rc::clone(&store) as Rc<dyn DurableStore>,
+            identity_dir: None,
+            lease: None,
+        };
+        (journal, store)
     }
 
-    fn writer_that_never_finishes() -> &'static tilo_durable_writer::DurableWriter {
-        let writer = Box::leak(Box::new(tilo_durable_writer::DurableWriter::spawn(
-            "onboarding-journal-test",
-        )));
-        let (started, running) = std::sync::mpsc::channel::<()>();
-        writer.submit(PathBuf::from("parked"), move || {
-            started.send(()).expect("test alive");
-            loop {
-                std::thread::park();
+    /// The journal's own store, saying its changes are still being written
+    /// until the test [releases](Self::release) them: a disk that takes its
+    /// time.
+    struct HeldOnDisk {
+        inner: Rc<dyn DurableStore>,
+        released: std::cell::Cell<bool>,
+    }
+
+    impl HeldOnDisk {
+        fn over(inner: Rc<dyn DurableStore>) -> Self {
+            Self {
+                inner,
+                released: std::cell::Cell::new(false),
             }
-        });
-        running.recv().expect("the writer parked");
-        writer
+        }
+
+        fn release(&self) {
+            self.released.set(true);
+        }
+    }
+
+    impl DurableStore for HeldOnDisk {
+        fn namespace(&self) -> &str {
+            self.inner.namespace()
+        }
+
+        fn read(
+            &self,
+            key: &StorageKey,
+        ) -> Result<Option<durable_store::Stored>, durable_store::StoreError> {
+            self.inner.read(key)
+        }
+
+        fn write(
+            &self,
+            key: &StorageKey,
+            op: WriteOp,
+            writer: Option<&[u8]>,
+        ) -> Result<durable_store::Revision, durable_store::StoreError> {
+            self.inner.write(key, op, writer)
+        }
+
+        fn durability(
+            &self,
+            key: &StorageKey,
+            revision: durable_store::Revision,
+        ) -> durable_store::Durability {
+            if self.released.get() {
+                self.inner.durability(key, revision)
+            } else {
+                durable_store::Durability::Pending
+            }
+        }
+
+        fn flush(&self, key: Option<&StorageKey>) -> Result<(), durable_store::StoreError> {
+            if self.released.get() {
+                self.inner.flush(key)
+            } else {
+                Err(durable_store::StoreError::Pending("the held journal".into()))
+            }
+        }
+
+        fn wake_when_settled(
+            &self,
+            key: &StorageKey,
+            wake: durable_store::ReadyWake,
+        ) -> durable_store::SettleWatch {
+            self.inner.wake_when_settled(key, wake)
+        }
+
+        fn lease(&self, key: &StorageKey) -> Result<durable_store::Lease, durable_store::StoreError> {
+            self.inner.lease(key)
+        }
+
+        fn lease_shared(
+            &self,
+            key: &StorageKey,
+        ) -> Result<durable_store::SharedLease, durable_store::StoreError> {
+            self.inner.lease_shared(key)
+        }
+
+        fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, durable_store::StoreError> {
+            self.inner.claim(key, claimant)
+        }
+    }
+
+    /// Wait until the view's journal changes are on disk. A journal held in
+    /// memory stays pending until acknowledged.
+    fn flush_journal(view: &OnboardingView) {
+        if let Some(journal) = &view.journal_store {
+            let _ = journal.flush();
+        }
+    }
+
+    /// Keep `bytes` as the journal under `identity_dir`, whatever they hold.
+    fn write_journal_bytes(identity_dir: &std::path::Path, bytes: &[u8]) {
+        let store = journal_store(identity_dir);
+        let _lease = store.lease(&progress_key()).expect("the journal is free");
+        store
+            .write(&progress_key(), WriteOp::Replace(bytes.to_vec()), None)
+            .expect("the journal is written");
+        store.flush(Some(&progress_key())).expect("the journal is on disk");
     }
 
     fn counting_minter(calls: &Arc<AtomicUsize>, identity_dir: &std::path::Path) -> Minter {
@@ -4073,7 +4187,8 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut view = OnboardingView::with_minter(counting_minter(&calls, &identity_dir));
         view.identity_dir = Some(identity_dir.clone());
-        view.journal_writer = writer_that_never_finishes();
+        let (journal, _held) = held_journal();
+        view.journal_store = Some(journal);
         let mut document = AutoCommit::new();
         for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
             press(&view, &mut document, key);
@@ -4127,9 +4242,9 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let minter = counting_minter(&calls, &identity_dir);
         let journal_dir = identity_dir.clone();
-        // The journal's writer syncs on its own thread, started before the
+        // The journal's store syncs on its own thread, started before the
         // guard goes on.
-        let _ = tilo_durable_writer::global();
+        clear_progress(&identity_dir).expect("an empty journal");
         let stages = tilo_test_env::disk_sync::on_a_thread_that_cannot_sync(move || {
             let mut view = OnboardingView::with_minter(minter);
             view.identity_dir = Some(journal_dir.clone());

@@ -2635,8 +2635,11 @@ fn the_shell_starts_on_the_picture_the_person_chose() {
         .expect("the choice is written");
     let mut session = session_keeping(state.path());
     session.step(Duration::from_millis(1)).unwrap();
-    let kept = std::fs::read_to_string(state.path().join("tilo").join("wallpapers.json"))
-        .expect("the choice is kept beside the session");
+    let kept = std::fs::read_to_string(crate::common::kept_file(
+        state.path(),
+        "so.tilo.session-wallpapers",
+    ))
+    .expect("the choice is kept beside the session");
     let kept: serde_json::Value = serde_json::from_str(&kept).expect("a record");
     assert_eq!(
         kept["default"], "dunes",

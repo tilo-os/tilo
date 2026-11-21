@@ -1,23 +1,15 @@
 //! What this device shows: its workspaces in its own order, the one in front, which display each
 //! window group is on and whether one covers its display. It is the device's alone — a member has their own
-//! monitors and their own workspace in front — and is kept beside this device's other state, as one
-//! small file written away from the frame. Nothing else of the layout is here: the strips, window
+//! monitors and their own workspace in front — and is kept with this device's other state, as one
+//! small document of its store ([`crate::kept`]), written away from the frame. Nothing else of the layout is here: the strips, window
 //! groups and tabs are the workspace's layout record ([`tilo_desktop_model::shared_resource`]).
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::partition::OutputPartition;
 use tilo_desktop_model::{GroupId, Layout, Workspace, WorkspaceId};
-
-/// The file this device's state is kept in, under `state`.
-pub(crate) const FILE: &str = "shown.json";
-
-/// Where the file lives under `state`, this device's state directory.
-pub(crate) fn path(state: &Path) -> PathBuf {
-    state.join("tilo").join(FILE)
-}
 
 /// What this device shows of the session.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -112,7 +104,8 @@ impl Shown {
 /// memory alone.
 #[derive(Default)]
 pub(crate) struct DeviceState {
-    at: Option<PathBuf>,
+    #[cfg(target_os = "linux")]
+    at: Option<crate::kept::Kept>,
     /// What was last written, so a pass that changed nothing writes nothing.
     kept: RefCell<Shown>,
     /// The session revision the last look found, so a session that did not move is not read.
@@ -123,14 +116,24 @@ impl DeviceState {
     /// The state kept under `state`, and what this build made of it: bytes it does not read are
     /// left where they are, and the session starts on the shell it would show anyway.
     pub(crate) fn load(state: Option<&Path>) -> Self {
-        let Some(at) = state.map(path) else {
-            return Self::default();
-        };
-        let kept = read(&at);
-        Self {
-            at: Some(at),
-            kept: RefCell::new(kept),
-            seen: Cell::default(),
+        #[cfg(target_os = "linux")]
+        {
+            let Some(at) = state.map(|state| crate::kept::Kept::open(state, crate::kept::SHOWN))
+            else {
+                return Self::default();
+            };
+            let kept = read(&at);
+            Self {
+                at: Some(at),
+                kept: RefCell::new(kept),
+                seen: Cell::default(),
+            }
+        }
+        // A page keeps no state of its own on a disk.
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = state;
+            Self::default()
         }
     }
 
@@ -155,49 +158,42 @@ impl DeviceState {
             if *kept == shown {
                 return false;
             }
-            *kept = shown.clone();
+            #[cfg(target_os = "linux")]
+            if let Some(at) = &self.at {
+                write(at, &shown);
+            }
+            *kept = shown;
         }
-        let Some(at) = &self.at else {
-            return true;
-        };
-        write(at, &shown);
         true
     }
 }
 
-/// What the file at `at` holds, or nothing this build reads.
+/// What `at` holds, or nothing this build reads.
 #[cfg(target_os = "linux")]
-fn read(at: &Path) -> Shown {
-    match std::fs::read(at) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
-            tracing::warn!(path = %at.display(), %error, "what this device shows was not read");
+fn read(at: &crate::kept::Kept) -> Shown {
+    match at.read() {
+        Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            tracing::warn!(%error, "what this device shows was not read");
             Shown::default()
         }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Shown::default(),
+        Ok(None) => Shown::default(),
         Err(error) => {
-            tracing::warn!(path = %at.display(), %error, "what this device shows was not read");
+            tracing::warn!(%error, "what this device shows was not read");
             Shown::default()
         }
     }
 }
 
-/// A page keeps no state of its own on a disk.
-#[cfg(not(target_os = "linux"))]
-fn read(_at: &Path) -> Shown {
-    Shown::default()
-}
-
-/// Write `shown` where this device keeps it.
+/// Keep `shown` in `at`.
 #[cfg(target_os = "linux")]
-fn write(at: &Path, shown: &Shown) {
+fn write(at: &crate::kept::Kept, shown: &Shown) {
     match serde_json::to_vec(shown) {
-        Ok(bytes) => tilo_durable_writer::keep(at.to_path_buf(), bytes),
+        Ok(bytes) => {
+            at.replace(bytes);
+        }
         Err(error) => tracing::warn!(%error, "what this device shows was not written"),
     }
 }
-
-#[cfg(not(target_os = "linux"))]
-fn write(_at: &Path, _shown: &Shown) {}
 
 #[cfg(test)]
 mod tests {

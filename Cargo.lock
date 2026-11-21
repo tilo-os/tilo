@@ -19661,17 +19661,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-durable-writer"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "tilo-files",
- "tilo-test-env",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-egress"
 version = "0.1.0"
 dependencies = [
@@ -21249,11 +21238,11 @@ dependencies = [
  "tempfile",
  "threshold-identity",
  "tilo-actions",
+ "tilo-app-state",
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-desktop",
  "tilo-device-identity",
- "tilo-durable-writer",
  "tilo-files",
  "tilo-handoff",
  "tilo-identity",
@@ -22558,7 +22547,6 @@ dependencies = [
  "tilo-device-vpn",
  "tilo-dictation",
  "tilo-documents",
- "tilo-durable-writer",
  "tilo-endpoint-reachability",
  "tilo-enrollment",
  "tilo-failure",
@@ -29805,7 +29793,6 @@ dependencies = [
  "tilo-docs",
  "tilo-document",
  "tilo-documents",
- "tilo-durable-writer",
  "tilo-egress",
  "tilo-emoji-catalogue",
  "tilo-endpoint-reachability",

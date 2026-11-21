@@ -121,8 +121,8 @@ pub struct Feeds {
 }
 
 impl Automation {
-    /// The trigger host of a session whose shell is `handle` , keeping its schedule log under
-    /// `state` in the file the shell kept it in.
+    /// The trigger host of a session whose shell is `handle` , keeping its schedule log in the
+    /// device's store under `state`.
     #[must_use]
     pub fn new(
         state: Option<&Path>,

@@ -1,0 +1,141 @@
+//! What this device keeps of its sessions for the next one: the workspace in front, the person's
+//! workspace list, what could not be written to a workspace yet, the unlock record, the fire times
+//! of scheduled shortcuts, the wallpapers and the notification centre. Each is one document of the device's document store
+//! ([`app_state::FsStore`]) below the session's state directory, under a reserved key no app holds.
+//!
+//! The store commits on its own thread, so a session that keeps something never waits for the
+//! disk; [`flush`] is what a session that ends waits for. A session holds each of its documents as
+//! its only writer: another session on the same state directory reads them and writes none.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use durable_store::{Durability, DurableStore as _, Lease, ReadyWake, Revision, StorageKey, WriteOp};
+
+/// The workspace in front and the displays' partition ([`crate::device_state`]).
+pub(crate) const SHOWN: &str = "so.tilo.session-shown";
+/// The person's own workspaces as this device lists them ([`crate::workspaces`]).
+pub(crate) const WORKSPACES: &str = "so.tilo.session-workspaces";
+/// What this device could not write yet of its workspaces' layouts ([`crate::layout`]).
+pub(crate) const PENDING_LAYOUT: &str = "so.tilo.session-pending-layout";
+/// The person's record of what their devices answered to an unlock ([`crate::unlock_history`]).
+pub(crate) const UNLOCK: &str = "so.tilo.session-unlock";
+/// When each scheduled shortcut fires next ([`crate::automation::triggers`]).
+pub(crate) const SCHEDULES: &str = "so.tilo.session-schedules";
+/// The picture each workspace on this device shows ([`crate::wallpapers`]).
+pub(crate) const WALLPAPERS: &str = "so.tilo.session-wallpapers";
+/// What the notification centre held when the session ended ([`crate::notifications`]).
+pub(crate) const NOTIFICATIONS: &str = "so.tilo.session-notifications";
+
+/// The store of a session whose state directory is `state`: one per directory in this process.
+pub(crate) fn store(state: &Path) -> Arc<app_state::FsStore> {
+    let root = state.join("tilo").join("documents");
+    // What a session keeps is the person's alone: the store's directory is theirs, and so is
+    // everything the store writes beneath it.
+    if let Err(error) = tilo_files::native::atomic::create_private_directory(&root) {
+        tracing::warn!(%error, root = %root.display(), "the device's session state has no directory");
+    }
+    app_state::shared_store(root)
+}
+
+/// Wait until everything this session handed the store of `state` is on disk.
+pub(crate) fn flush(state: Option<&Path>) {
+    let Some(state) = state else {
+        return;
+    };
+    if let Err(error) = store(state).flush(None) {
+        tracing::warn!(%error, "what this session keeps was not all written");
+    }
+}
+
+/// One document a session keeps, under its reserved key.
+pub(crate) struct Kept {
+    store: Arc<app_state::FsStore>,
+    key: StorageKey,
+    /// Held while this session is the document's writer: `None` when another session holds it.
+    /// Never touched after it is taken; the lock lets the document be shared between threads.
+    lease: Option<std::sync::Mutex<Lease>>,
+}
+
+impl std::fmt::Debug for Kept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Kept")
+            .field("key", &self.key)
+            .field("writer", &self.lease.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Kept {
+    /// The document `name` of the session whose state directory is `state`, held as its writer
+    /// unless another session holds it.
+    pub(crate) fn open(state: &Path, name: &str) -> Self {
+        let store = store(state);
+        let key = StorageKey::app(name);
+        // A session before this one in this process may have let the document go with its last
+        // write still being committed, which holds the document until it lands: wait for it.
+        let leased = store.lease(&key).or_else(|error| match error {
+            durable_store::StoreError::Busy(_) => {
+                let _ = store.flush(Some(&key));
+                store.lease(&key)
+            }
+            error => Err(error),
+        });
+        let lease = match leased {
+            Ok(lease) => Some(std::sync::Mutex::new(lease)),
+            Err(error) => {
+                tracing::warn!(%error, %key, "another session keeps this; this one only reads it");
+                None
+            }
+        };
+        Self { store, key, lease }
+    }
+
+    /// What the document holds, `None` when nothing was kept yet.
+    ///
+    /// # Errors
+    /// The store could not read it.
+    pub(crate) fn read(&self) -> Result<Option<Vec<u8>>, durable_store::StoreError> {
+        Ok(self.store.read(&self.key)?.map(|stored| stored.bytes))
+    }
+
+    /// Keep `bytes` as the document, replacing what it held; the write that names it, `None` when
+    /// this session is not its writer or the store refused it.
+    pub(crate) fn replace(&self, bytes: Vec<u8>) -> Option<Revision> {
+        self.write(WriteOp::Replace(bytes))
+    }
+
+    /// Add `bytes` to the end of what the document holds.
+    pub(crate) fn append(&self, bytes: Vec<u8>) -> Option<Revision> {
+        self.write(WriteOp::Append(bytes))
+    }
+
+    fn write(&self, op: WriteOp) -> Option<Revision> {
+        self.lease.as_ref()?;
+        match self.store.write(&self.key, op, None) {
+            Ok(revision) => Some(revision),
+            Err(error) => {
+                tracing::warn!(%error, key = %self.key, "what this session keeps was not written");
+                None
+            }
+        }
+    }
+
+    /// What became of the write that returned `revision`.
+    pub(crate) fn durability(&self, revision: Revision) -> Durability {
+        self.store.durability(&self.key, revision)
+    }
+
+    /// Call `wake` once what was written so far has committed or failed.
+    pub(crate) fn wake_when_settled(&self, wake: ReadyWake) {
+        let _ = self.store.wake_when_settled(&self.key, wake);
+    }
+}
+
+/// The file the store of `state` keeps the document `name` in, for a test that looks at it.
+#[cfg(test)]
+pub(crate) fn local_path(state: &Path, name: &str) -> std::path::PathBuf {
+    store(state)
+        .local_path(&StorageKey::app(name))
+        .expect("a document of the device's store is a file")
+}

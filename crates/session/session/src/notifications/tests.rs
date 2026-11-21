@@ -71,7 +71,7 @@ fn rig() -> Rig {
 }
 
 /// A rig whose centre is kept at `history` , so a next session can open it.
-fn rig_at(history: Option<std::path::PathBuf>) -> Rig {
+fn rig_at(history: Option<crate::kept::Kept>) -> Rig {
     let daemon = Notifications::new();
     let heard = Arc::new(Heard::default());
     let tap = Arc::clone(&heard);
@@ -740,22 +740,24 @@ tilo_test_env::scenario! {
     // What the centre kept is written where this person's state lives, and the next session opens the
     // centre the last one left.
     {
-        let path = tilo_paths::memory_temp_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join(format!("tilo-notifications-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let rig = rig_at(Some(path.clone()));
+        let state = tempfile::tempdir().expect("a state directory");
+        let rig = rig_at(Some(crate::kept::Kept::open(
+            state.path(),
+            crate::kept::NOTIFICATIONS,
+        )));
         let id = rig.daemon.alloc_id();
         rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
         rig.step();
         rig.ask(Ask::Read(rig.banner().id));
         rig.step();
-        assert!(path.is_file(), "the centre was written");
+        crate::kept::flush(Some(state.path()));
+        assert!(
+            crate::kept::local_path(state.path(), crate::kept::NOTIFICATIONS).is_file(),
+            "the centre was written"
+        );
 
         let reopened = DesktopNotifications::default();
-        reopened
-            .restore_kept(&std::fs::read(&path).unwrap(), ui::time::SystemTime::now())
-            .unwrap();
+        let kept = restore_history(&reopened, Some(state.path()));
         let next = SessionNotifications::new(
             Notifications::new(),
             reopened,
@@ -763,11 +765,10 @@ tilo_test_env::scenario! {
             Arc::clone(&rig.policy),
             Rc::new(NoticeSignals::default()),
             None,
-            Some(path.clone()),
+            kept,
         );
         let centre = next.centre();
         assert_eq!(centre.count, 1, "the next session opens the centre it had");
-        let _ = std::fs::remove_file(&path);
     }
 
     phase the_centre_publishes_what_it_keeps_and_the_verbs_that_change_it;

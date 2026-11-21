@@ -496,7 +496,7 @@ fn the_layout_is_the_shells_own_and_no_record_beside_it() {
     // The workspace's layout record keeps the layout; what this device keeps is what it
     // shows, and no record of the layout's own is written beside either.
     assert!(
-        state.join("tilo").join("shown.json").exists(),
+        kept_file(&state, "so.tilo.session-shown").exists(),
         "the device keeps what it shows"
     );
     assert!(
@@ -1079,4 +1079,15 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
         Some(other_strip),
         "and closed no other place"
     );
+}
+
+/// The file the device's store keeps the session's document `name` in under `state`, once what the
+/// session handed the store is written.
+fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use durable_store::DurableStore as _;
+    let root = state.join("tilo").join("documents");
+    app_state::shared_store(&root)
+        .flush(None)
+        .expect("what the session keeps is written");
+    root.join(name).join(app_state::DOCUMENT_FILE)
 }

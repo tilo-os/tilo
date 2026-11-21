@@ -1246,7 +1246,6 @@ doc = false
 "tilo-docs" = { path = "../../../crates/doc/tilo-docs", default-features = false, features = [] }
 "tilo-document" = { path = "../../../crates/doc/tilo-document", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = ["mount"] }
-"tilo-durable-writer" = { path = "../../../crates/platform/tilo-durable-writer", default-features = false, features = [] }
 "tilo-egress" = { path = "../../../crates/runtime/egress", default-features = false, features = [] }
 "tilo-emoji-catalogue" = { path = "../../../crates/text/emoji-catalogue", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../../crates/system/endpoint-reachability", default-features = false, features = ["test-support"] }
@@ -3874,7 +3873,6 @@ doc = false
 "tilo-docs" = { path = "../../../crates/doc/tilo-docs", default-features = false, features = [] }
 "tilo-document" = { path = "../../../crates/doc/tilo-document", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = ["mount"] }
-"tilo-durable-writer" = { path = "../../../crates/platform/tilo-durable-writer", default-features = false, features = [] }
 "tilo-egress" = { path = "../../../crates/runtime/egress", default-features = false, features = [] }
 "tilo-emoji-catalogue" = { path = "../../../crates/text/emoji-catalogue", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../../crates/system/endpoint-reachability", default-features = false, features = ["test-support"] }

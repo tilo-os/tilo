@@ -251,6 +251,8 @@ mod item_lending;
 #[cfg(target_os = "linux")]
 pub mod keyboard;
 mod keyboard_shortcuts;
+#[cfg(target_os = "linux")]
+mod kept;
 mod keys;
 #[cfg_attr(
     not(target_os = "linux"),

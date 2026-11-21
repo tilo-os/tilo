@@ -53,7 +53,7 @@ impl Shared {
                     std::time::Duration::from_secs(5),
                 );
             }
-            tilo_durable_writer::global().flush();
+            crate::kept::flush(self.state.as_deref());
             return;
         }
         self.activity
@@ -72,7 +72,7 @@ impl Shared {
         self.restore
             .borrow_mut()
             .tell_placements(&self.desktop, self.launch.as_deref());
-        tilo_durable_writer::global().flush();
+        crate::kept::flush(self.state.as_deref());
     }
 
     /// Show each workspace's shared desktop as the workspace holds it, and write back what this

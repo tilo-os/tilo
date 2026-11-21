@@ -222,7 +222,6 @@ tilo-dictation = { path = "../dictation" }
 # into it from their workspace (`crate::style_packages`), which needs the store's writer.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
-tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
 # The conversations this session's agents answer in: what Chat keeps of a
 # workspace, read here the way the app reads it, so this session runs an agent
 # on a turn a person's message started.

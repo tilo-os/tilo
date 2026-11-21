@@ -316,7 +316,6 @@ pub enum SessionBind {
 pub const SESSION_SETTINGS_BINDS: &[(&str, SessionBind)] = &[
     ("accounts", SessionBind::Writable),
     ("state.json", SessionBind::ReadOnly),
-    ("continuity-provenance.json", SessionBind::ReadOnly),
 ];
 
 /// Bind the parts of the session's `~/.config/tilo` (`host_tilo_config`) Settings reaches
@@ -508,9 +507,6 @@ mod tests {
                         "--ro-bind-try",
                         "/home/ada/.config/tilo/state.json",
                         "/run/tilo/app/.config/tilo/state.json",
-                        "--ro-bind-try",
-                        "/home/ada/.config/tilo/continuity-provenance.json",
-                        "/run/tilo/app/.config/tilo/continuity-provenance.json",
                     ]
                 );
                 assert!(

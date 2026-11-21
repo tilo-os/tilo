@@ -10,7 +10,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use jiff::SignedDuration;
@@ -666,24 +665,19 @@ struct ScheduleLog {
 }
 
 /// Fires scheduled triggers when their time comes, at most once per fire time, across restarts.
-/// The log of next fire times is written on the state writer, because [`TriggerEvent::Tick`]
-/// arrives on the compositor's loop and the write's fsyncs can take seconds under I/O pressure.
-/// Each log value handed to the writer gets the next sequence number, and the firings of the
-/// tick that produced it wait under that number. The write marks its number settled (on disk, or
-/// failed and logged, which runs the firings as before) and wakes the loop; a later tick hands the
-/// firings over. A newer value that replaces a queued older one holds at least as much and settles
-/// a higher number, so it releases both. A crash before the write lands leaves the previous log
+/// The log of next fire times is a document of the device's store ([`crate::kept`]), which commits
+/// it on its own thread, because [`TriggerEvent::Tick`] arrives on the compositor's loop and the
+/// write's fsyncs can take seconds under I/O pressure. The firings of the tick that wrote a log wait
+/// under that write; once the store says it committed (or failed, which is logged and runs the
+/// firings as before) the store wakes the loop and a later tick hands them over. A newer log that
+/// replaces a queued older one commits both. A crash before the write lands leaves the previous log
 /// and loses no invocation: none has started.
 pub struct ScheduleTriggers {
     log: ScheduleLog,
-    path: Option<PathBuf>,
-    writer: &'static tilo_durable_writer::DurableWriter,
-    /// The newest log value handed to the writer.
-    submitted: u64,
-    /// Every log value up to this one is settled.
-    settled: Arc<AtomicU64>,
-    /// Firings waiting for the log value numbered with them.
-    held: Vec<(u64, Firing)>,
+    kept: Option<crate::kept::Kept>,
+    /// Firings waiting for the write of the log they moved past, `None` for one that waits for
+    /// nothing.
+    held: Vec<(Option<durable_store::Revision>, Firing)>,
     /// Wakes the session's loop once the log is written, so the firings it holds are handed over
     /// then rather than a tick later.
     wake: crate::automation::Wake,
@@ -693,38 +687,22 @@ impl std::fmt::Debug for ScheduleTriggers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScheduleTriggers")
             .field("log", &self.log)
-            .field("path", &self.path)
-            .field("submitted", &self.submitted)
+            .field("kept", &self.kept)
             .field("held", &self.held.len())
             .finish_non_exhaustive()
     }
 }
 
 impl ScheduleTriggers {
-    /// Schedules persisted at `path` , or kept in memory only for `None` .
+    /// Schedules kept in `kept`, or in memory only for `None`.
     #[must_use]
-    pub fn open(path: Option<PathBuf>, wake: crate::automation::Wake) -> Self {
-        Self::open_with_writer(path, tilo_durable_writer::global(), wake)
-    }
-
-    /// [`Self::open`], writing the log on `writer` .
-    #[must_use]
-    pub fn open_with_writer(
-        path: Option<PathBuf>,
-        writer: &'static tilo_durable_writer::DurableWriter,
-        wake: crate::automation::Wake,
-    ) -> Self {
-        let log = path
+    pub(crate) fn open(kept: Option<crate::kept::Kept>, wake: crate::automation::Wake) -> Self {
+        let log = kept
             .as_ref()
-            .and_then(|path| match std::fs::read(path) {
-                Ok(bytes) => Some(bytes),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            .and_then(|kept| match kept.read() {
+                Ok(bytes) => bytes,
                 Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        path = %path.display(),
-                        "the log of fired triggers could not be read"
-                    );
+                    tracing::warn!(%error, "the log of fired triggers could not be read");
                     None
                 }
             })
@@ -738,46 +716,33 @@ impl ScheduleTriggers {
             .unwrap_or_default();
         Self {
             log,
-            path,
-            writer,
-            submitted: 0,
-            settled: Arc::new(AtomicU64::new(0)),
+            kept,
             held: Vec::new(),
             wake,
         }
     }
 
-    /// Hand the log to the writer and hold `due` until it is written. Kept in memory only, or
-    /// when the log cannot be encoded, `due` runs at once, as it did when the write happened
-    /// here.
+    /// Write the log and hold `due` until it is written. Kept in memory only, or when the log
+    /// cannot be encoded or written, `due` runs at once.
     fn persist(&mut self, due: Vec<Firing>) {
-        let Some(path) = self.path.clone() else {
-            self.held.extend(due.into_iter().map(|firing| (0, firing)));
+        let Some(kept) = &self.kept else {
+            self.held.extend(due.into_iter().map(|firing| (None, firing)));
             return;
         };
-        let bytes = match serde_json::to_vec_pretty(&self.log) {
-            Ok(bytes) => bytes,
+        let revision = match serde_json::to_vec_pretty(&self.log) {
+            Ok(bytes) => kept.replace(bytes),
             Err(error) => {
-                tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
-                self.held.extend(due.into_iter().map(|firing| (0, firing)));
-                return;
+                tracing::warn!(%error, "shortcut schedules were not saved");
+                None
             }
         };
-        self.submitted = self.submitted.saturating_add(1);
-        let sequence = self.submitted;
         self.held
-            .extend(due.into_iter().map(|firing| (sequence, firing)));
-        let settled = Arc::clone(&self.settled);
-        // Made on the loop's thread, so it wakes the loop that holds the firings; a no-op where no
-        // loop installed a wake.
-        let wake = crate::automation::Wake::clone(&self.wake);
-        self.writer.submit(path.clone(), move || {
-            if let Err(error) = tilo_files::native::atomic::write_creating_parent(&path, &bytes) {
-                tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
-            }
-            settled.fetch_max(sequence, Ordering::AcqRel);
-            (wake)();
-        });
+            .extend(due.into_iter().map(|firing| (revision, firing)));
+        if revision.is_some() {
+            // Made on the loop's thread, so it wakes the loop that holds the firings; a no-op where
+            // no loop installed a wake.
+            kept.wake_when_settled(crate::automation::Wake::clone(&self.wake));
+        }
     }
 }
 
@@ -871,10 +836,20 @@ impl TriggerSource for ScheduleTriggers {
         if self.held.is_empty() {
             return Vec::new();
         }
-        let settled = self.settled.load(Ordering::Acquire);
+        let kept = self.kept.as_ref();
         let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
             .into_iter()
-            .partition(|(sequence, _)| *sequence <= settled);
+            .partition(|(revision, _)| match (revision, kept) {
+                (Some(revision), Some(kept)) => match kept.durability(*revision) {
+                    durable_store::Durability::Pending => false,
+                    durable_store::Durability::Durable => true,
+                    durable_store::Durability::Failed(error) => {
+                        tracing::warn!(%error, "shortcut schedules were not saved");
+                        true
+                    }
+                },
+                _ => true,
+            });
         self.held = waiting;
         ready.into_iter().map(|(_, firing)| firing).collect()
     }
@@ -1186,12 +1161,12 @@ pub struct TriggerHost {
 }
 
 impl TriggerHost {
-    /// Keyboard and schedule triggers on `clock` , with schedules persisted at `schedules` (in
-    /// memory only for `None` ).
+    /// Keyboard and schedule triggers on `clock` , with schedules kept in `schedules` (in memory
+    /// only for `None` ).
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         clock: Arc<dyn Clock>,
-        schedules: Option<PathBuf>,
+        schedules: Option<crate::kept::Kept>,
         wake: crate::automation::Wake,
     ) -> Self {
         Self {
@@ -1211,11 +1186,11 @@ impl TriggerHost {
         }
     }
 
-    /// The session's triggers: the system clock, schedules persisted under the state root the
-    /// session keeps its shell in, in the file the shell kept them in.
+    /// The session's triggers: the system clock, schedules kept in the device's store under the
+    /// state root the session keeps its shell in.
     #[must_use]
     pub fn for_session(state: Option<&Path>, wake: crate::automation::Wake) -> Self {
-        let schedules = state.map(|state| state.join("tilo/automation/schedules.json"));
+        let schedules = state.map(|state| crate::kept::Kept::open(state, crate::kept::SCHEDULES));
         Self::new(Arc::new(SystemClock), schedules, wake)
     }
 

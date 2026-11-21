@@ -36,7 +36,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
@@ -58,9 +58,6 @@ pub(crate) fn left_workspace(notices: &dyn Notices, name: &str) {
         &tilo_desktop_surface::names::workspace(name),
     );
 }
-
-/// The file beside the session that keeps the person's list of their own workspaces.
-const FILE: &str = "personal-workspaces.postcard";
 
 /// One of the person's workspaces, as their list holds it on every device of theirs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,7 +151,7 @@ pub(crate) struct Personal {
     /// for again on every pass. A newer hint the person's devices say is a new ask.
     asked: BTreeMap<WorkspaceId, tilo_peer_state::join::TransportHint>,
     /// Where the list and `agreed` survive a restart; `None` keeps them in memory only.
-    store: Option<PathBuf>,
+    store: Option<crate::kept::Kept>,
     /// What the session offered the last time [`Self::publish_local`] ran to the end with everything
     /// written. While the session offers the same and neither the list nor `agreed` moved since,
     /// running it again would write nothing, so it is skipped.
@@ -299,7 +296,7 @@ impl Personal {
     pub(crate) fn open(identity: tilo_network_actor::DeviceIdentity, state: Option<&Path>) -> Self {
         let user = identity.device_cert.user_public_key;
         let device = identity.device_cert.device_public_key;
-        let store = state.map(|state| state.join("tilo").join(FILE));
+        let store = state.map(|state| crate::kept::Kept::open(state, crate::kept::WORKSPACES));
         let mut personal = Self {
             identity,
             directory: WorkspaceDirectory::new(user, device),
@@ -322,16 +319,11 @@ impl Personal {
         };
         let read = personal
             .store
-            .as_deref()
-            .and_then(|path| match std::fs::read(path) {
-                Ok(bytes) => Some(bytes),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            .as_ref()
+            .and_then(|store| match store.read() {
+                Ok(bytes) => bytes,
                 Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        path = %path.display(),
-                        "the remembered workspaces could not be read"
-                    );
+                    tracing::warn!(%error, "the remembered workspaces could not be read");
                     personal.unreadable = true;
                     None
                 }
@@ -926,7 +918,7 @@ impl Personal {
     }
 
     fn persist(&mut self) {
-        let Some(path) = self.store.clone() else {
+        let Some(store) = &self.store else {
             return;
         };
         let stored = Stored {
@@ -942,7 +934,7 @@ impl Personal {
         let Ok(bytes) = postcard::to_allocvec(&stored) else {
             return;
         };
-        keep(&path, &bytes);
+        store.replace(bytes);
     }
 }
 
@@ -971,12 +963,6 @@ fn reorder(tree: &mut Layout, wanted: &[WorkspaceId]) -> bool {
         .collect();
     tree.workspaces = arranged;
     before != after
-}
-
-/// Keep the list where it is kept: the state writer takes the write, so a pass that changes it does
-/// not wait for the disk, and the latest list wins over one still being written.
-fn keep(path: &Path, bytes: &[u8]) {
-    tilo_durable_writer::keep(path.to_path_buf(), bytes.to_vec());
 }
 
 /// The person's own workspaces as this computer can keep them: nothing when this computer knows no
@@ -1815,16 +1801,14 @@ mod tests {
         to_list.sync_store(to_store)
     }
 
-    /// The list as a later session opens it: a session flushes its writes before it ends, and
-    /// opening here stands for that start.
+    /// The list as a later session opens it.
     fn open(identity: tilo_network_actor::DeviceIdentity, state: Option<&Path>) -> Personal {
-        written();
         Personal::open(identity, state)
     }
 
-    /// Wait for the state writer to write what it was handed.
-    fn written() {
-        tilo_durable_writer::global().flush();
+    /// The file the device's store keeps the list in, under `state`.
+    fn kept_file(state: &Path) -> std::path::PathBuf {
+        crate::kept::local_path(state, crate::kept::WORKSPACES)
     }
 
     /// A device of the person's, certified for their own root key.
@@ -1914,14 +1898,15 @@ mod tests {
 
             // Kept beside the session: the next session starts with the same list and has nothing to
             // write.
-            written();
-            let kept = state.path().join("tilo").join(FILE);
+            crate::kept::flush(Some(state.path()));
+            let kept = kept_file(state.path());
+            assert!(kept.is_file(), "the list is kept");
             let mode = std::os::unix::fs::PermissionsExt::mode(
-                &std::fs::metadata(&kept)
-                    .expect("the list is kept")
+                &std::fs::metadata(state.path().join("tilo").join("documents"))
+                    .expect("the device's store")
                     .permissions(),
             );
-            assert_eq!(mode & 0o777, 0o600, "the person's list is theirs alone");
+            assert_eq!(mode & 0o777, 0o700, "the person's list is theirs alone");
             let mut reopened = open(identity, Some(state.path()));
             assert!(
                 !reopened.take_unreadable(),
@@ -2011,8 +1996,8 @@ mod tests {
         // no word: they are told once, and what this computer kept is not written over.
         {
             let state = tempfile::tempdir().expect("a state directory");
-            let kept = state.path().join("tilo").join(FILE);
-            std::fs::create_dir_all(kept.parent().expect("the state's tilo directory"))
+            let kept = kept_file(state.path());
+            std::fs::create_dir_all(kept.parent().expect("the list's directory"))
                 .expect("the state directory");
             std::fs::write(&kept, b"not a workspace list").expect("a file this build cannot read");
 

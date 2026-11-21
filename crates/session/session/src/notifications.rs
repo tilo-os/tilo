@@ -111,16 +111,10 @@ pub(crate) fn mount_banners(
 /// The most unread notifications one app's icon counts to.
 const MAX_BADGE: u32 = 9_999;
 
-/// Where the centre's history is kept between sessions: this person's state directory, as the
-/// emoji's recents are.
-pub(crate) fn history_file() -> Option<std::path::PathBuf> {
-    tilo_paths::state_dir().map(|root| root.join("tilo/notifications.json"))
-}
-
 /// Keep what the centre holds, so the next session opens the centre this one had: its titles, its
 /// bodies, its senders and how old each is. What a row could act on does not survive: the sender,
 /// its actions and the session's routes are gone with it.
-pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Path) {
+pub(crate) fn save_history(notices: &DesktopNotifications, kept: &crate::kept::Kept) {
     let encoded = match notices.kept(ui::time::wall()) {
         Ok(encoded) => encoded,
         Err(error) => {
@@ -128,21 +122,27 @@ pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Pat
             return;
         }
     };
-    if let Err(error) = tilo_files::native::atomic::write_creating_parent(path, &encoded) {
-        tracing::warn!(%error, "the notification centre was not written");
-    }
+    kept.replace(encoded);
 }
 
 /// Open the centre the last session left, as old as it was, and hand back where it is kept so this
-/// session writes it back there.
-pub(crate) fn restore_history(notices: &DesktopNotifications) -> Option<std::path::PathBuf> {
-    let path = history_file()?;
-    if let Ok(bytes) = std::fs::read(&path)
-        && let Err(error) = notices.restore_kept(&bytes, ui::time::wall())
-    {
-        tracing::warn!(%error, "the notification centre kept was not read");
+/// session writes it back there: in the device's store under `state`, the session's state
+/// directory, as the rest of what the session keeps.
+pub(crate) fn restore_history(
+    notices: &DesktopNotifications,
+    state: Option<&std::path::Path>,
+) -> Option<crate::kept::Kept> {
+    let kept = crate::kept::Kept::open(state?, crate::kept::NOTIFICATIONS);
+    match kept.read() {
+        Ok(Some(bytes)) => {
+            if let Err(error) = notices.restore_kept(&bytes, ui::time::wall()) {
+                tracing::warn!(%error, "the notification centre kept was not read");
+            }
+        }
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "the notification centre kept was not read"),
     }
-    Some(path)
+    Some(kept)
 }
 
 /// The event sound an arrival asks for: a `suppress-sound` sender asks for
@@ -401,7 +401,7 @@ pub(crate) struct SessionNotifications {
     /// screen it says so.
     quiet_changed: Cell<Option<bool>>,
     /// Where the centre is written between sessions; `None` keeps it in memory.
-    history: Option<std::path::PathBuf>,
+    history: Option<crate::kept::Kept>,
     /// What continues on the person's other devices, and what they showed here.
     mirror: Rc<mirror::Mirroring>,
     noted: Noted,
@@ -424,7 +424,7 @@ impl SessionNotifications {
         policy: Arc<Mutex<NotificationPolicy>>,
         signals: Rc<NoticeSignals>,
         power: Option<PowerLink>,
-        history: Option<std::path::PathBuf>,
+        history: Option<crate::kept::Kept>,
     ) -> Self {
         let opened: Opened = Rc::default();
         let choosing = Rc::clone(&opened);
@@ -937,9 +937,9 @@ impl SessionNotifications {
         // What the centre kept since the last look is written to this person's state, so a restart
         // opens the centre it had.
         if self.desktop.take_history_dirty()
-            && let Some(path) = &self.history
+            && let Some(kept) = &self.history
         {
-            save_history(&self.desktop, path);
+            save_history(&self.desktop, kept);
         }
         self.publish_signals();
         appeared

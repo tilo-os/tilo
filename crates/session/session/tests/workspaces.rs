@@ -49,10 +49,21 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
     })
 }
 
-/// Where this computer keeps the person's list of their own workspaces.
+/// Where this computer keeps the person's list of their own workspaces, once it is written.
 fn list_path(state: &Path) -> std::path::PathBuf {
-    state.join("tilo").join("personal-workspaces.postcard")
+    kept_file(state, "so.tilo.session-workspaces")
 }
+/// The file the device's store keeps the session's document `name` in under `state`, once what the
+/// session handed the store is written.
+fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use durable_store::DurableStore as _;
+    let root = state.join("tilo").join("documents");
+    app_state::shared_store(&root)
+        .flush(None)
+        .expect("what the session keeps is written");
+    root.join(name).join(app_state::DOCUMENT_FILE)
+}
+
 
 /// This computer's person: a device of theirs, certified for their own root key, kept in an
 /// identity root of the test's own.

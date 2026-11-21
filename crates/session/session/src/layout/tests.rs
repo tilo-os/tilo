@@ -806,7 +806,7 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     });
     desktops.keep_pending();
     drop(desktops);
-    tilo_durable_writer::global().flush();
+    crate::kept::flush(Some(state.path()));
 
     // The session after reads what the one before could not write, and writes it once the keys
     // are here.
@@ -995,7 +995,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     before.capture(&engine, &shown);
     before.finish_writes(&engine, &shown, std::time::Duration::from_secs(30));
     drop(before);
-    tilo_durable_writer::global().flush();
+    crate::kept::flush(Some(state.path()));
 
     // The session after opens on the workspace and folds its layout and view in: the shell as it
     // was.
@@ -1260,7 +1260,7 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
         "the layout, the renamed strip with it, waits for the session after"
     );
     drop(desktops);
-    tilo_durable_writer::global().flush();
+    crate::kept::flush(Some(state.path()));
     // The write the session gave up on finishes now the hold is open: the next session starts from
     // the copy it left, not from a write still under way.
     hold.open();
@@ -1505,7 +1505,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
             "and so does the other workspace's layout"
         );
     }
-    tilo_durable_writer::global().flush();
+    crate::kept::flush(Some(state.path()));
     hold.open();
 
     // The session after opens on the workspaces and shows the window where the person put it.
@@ -1663,7 +1663,7 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
     );
     drop(before);
     drop(engine);
-    tilo_durable_writer::global().flush();
+    crate::kept::flush(Some(state.path()));
 
     // The login after: its engine holds the workspace, and the keys have not reached it yet.
     let engine = open();

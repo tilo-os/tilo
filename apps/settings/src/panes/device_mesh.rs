@@ -28,7 +28,6 @@ use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
     SettingsSection, StatusTone, note, page_of, rows, section, value_row,
 };
-use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
 mod devices;
 
@@ -666,10 +665,6 @@ pub struct DeviceMeshModel {
     session_devices: Option<ui::collaboration::SessionResource>,
     device_rows: DisclosureGroup,
     removing: Option<String>,
-    roaming_provenance_path: Option<PathBuf>,
-    roaming_provenance_stamp: Option<SystemTime>,
-    roaming_provenance: Option<RoamingProvenance>,
-    roaming_provenance_unreadable: bool,
     management_child: Option<bounded_command::AsyncCommand>,
     management_device: Option<String>,
     management_call: Option<(ui::InvocationCall, Option<String>)>,
@@ -725,22 +720,6 @@ fn continuity_key(capability: Capability) -> String {
     format!("device_mesh.continuity.{}", capability.key())
 }
 
-fn resolution_summary(winner: &Origin, alternatives: &[Origin]) -> String {
-    if alternatives.is_empty() {
-        return t_args(
-            "mesh-from",
-            &[("origin", winner.device_label.as_str().into())],
-        );
-    }
-    let names: Vec<&str> = alternatives
-        .iter()
-        .map(|origin| origin.device_label.as_str())
-        .collect();
-    let mut args = vec![("winner", winner.device_label.as_str().into())];
-    args.extend(name_args(&names));
-    t_args("mesh-resolved", &args)
-}
-
 /// The arguments a message that counts devices names them with.
 fn name_args(names: &[&str]) -> Vec<(&'static str, ui::i18n::ArgValue)> {
     let count = i64::try_from(names.len()).unwrap_or(i64::MAX);
@@ -750,60 +729,6 @@ fn name_args(names: &[&str]) -> Vec<(&'static str, ui::i18n::ArgValue)> {
         ("second", names.get(1).copied().unwrap_or_default().into()),
         ("more", count.saturating_sub(2).into()),
     ]
-}
-
-fn provenance_summaries(provenance: &RoamingProvenance) -> Vec<(String, String)> {
-    provenance
-        .settings
-        .iter()
-        .map(|setting| {
-            (
-                setting.key.clone(),
-                resolution_summary(&setting.winner, &setting.alternatives),
-            )
-        })
-        .chain(provenance.wifi.iter().map(|wifi| {
-            (
-                t_args("mesh-wifi-row", &[("ssid", wifi.ssid.as_str().into())]),
-                t_args(
-                    "mesh-wifi-sealed",
-                    &[
-                        ("security", wifi.security.as_str().into()),
-                        (
-                            "detail",
-                            resolution_summary(&wifi.winner, &wifi.alternatives).into(),
-                        ),
-                    ],
-                ),
-            )
-        }))
-        .collect()
-}
-
-type ProvenanceRead = (Option<RoamingProvenance>, bool, Option<SystemTime>);
-
-fn read_roaming_provenance(path: Option<&std::path::Path>) -> ProvenanceRead {
-    let Some(path) = path else {
-        return (None, false, None);
-    };
-    let stamp = std::fs::metadata(path)
-        .ok()
-        .and_then(|metadata| metadata.modified().ok());
-    if stamp.is_none() {
-        return (None, false, None);
-    }
-    match RoamingProvenance::load_at(path) {
-        Ok(provenance) => (Some(provenance), false, stamp),
-        Err(error) => {
-            tracing::warn!(
-                target: "tilo::settings",
-                %error,
-                path = %path.display(),
-                "the roaming settings could not be read"
-            );
-            (None, true, stamp)
-        }
-    }
 }
 
 fn home_peer_health_path() -> PathBuf {
@@ -899,8 +824,6 @@ pub(crate) struct MeshRead {
     runtime_status: ServerRuntimeStatus,
     home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
     home_peer_last_seen: HashMap<String, u64>,
-    roaming_provenance_path: Option<PathBuf>,
-    roaming_provenance: ProvenanceRead,
 }
 
 /// The session's reading of the person's devices: the one list Quick Settings shows too.
@@ -992,10 +915,6 @@ impl MeshRead {
         } else {
             Vec::new()
         };
-        let roaming_provenance_path = devices
-            .then(settings_store::roaming_provenance::path)
-            .flatten();
-        let roaming_provenance = read_roaming_provenance(roaming_provenance_path.as_deref());
         Self {
             config_path,
             config,
@@ -1007,8 +926,6 @@ impl MeshRead {
             } else {
                 HashMap::new()
             },
-            roaming_provenance_path,
-            roaming_provenance,
         }
     }
 }
@@ -1023,8 +940,6 @@ impl DeviceMeshModel {
     }
 
     fn from_read(devices: bool, read: MeshRead) -> Self {
-        let (roaming_provenance, roaming_provenance_unreadable, roaming_provenance_stamp) =
-            read.roaming_provenance;
         Self {
             config_path: read.config_path,
             config: read.config,
@@ -1040,10 +955,6 @@ impl DeviceMeshModel {
             session_devices: None,
             device_rows: DisclosureGroup::new(),
             removing: None,
-            roaming_provenance_path: read.roaming_provenance_path,
-            roaming_provenance_stamp,
-            roaming_provenance,
-            roaming_provenance_unreadable,
             management_child: None,
             management_device: None,
             management_call: None,
@@ -1066,9 +977,6 @@ impl DeviceMeshModel {
     #[cfg(test)]
     fn with_path(path: &std::path::Path) -> Self {
         let mut pane = Self::from_path(path.to_path_buf(), false);
-        pane.roaming_provenance_path =
-            Some(path.with_file_name(settings_store::roaming_provenance::FILE_NAME));
-        pane.refresh_roaming_provenance();
         pane.changed = false;
         pane.next_status_refresh = ui::time::now() + Duration::from_secs(24 * 60 * 60);
         pane
@@ -1291,25 +1199,7 @@ impl DeviceMeshModel {
             self.runtime_status = status;
             self.changed = true;
         }
-        self.refresh_roaming_provenance();
         self.next_status_refresh = ui::time::now() + STATUS_REFRESH_INTERVAL;
-    }
-
-    fn refresh_roaming_provenance(&mut self) {
-        let stamp = self
-            .roaming_provenance_path
-            .as_deref()
-            .and_then(|path| std::fs::metadata(path).ok())
-            .and_then(|metadata| metadata.modified().ok());
-        if stamp == self.roaming_provenance_stamp {
-            return;
-        }
-        let (projection, unreadable, stamp) =
-            read_roaming_provenance(self.roaming_provenance_path.as_deref());
-        self.roaming_provenance = projection;
-        self.roaming_provenance_unreadable = unreadable;
-        self.roaming_provenance_stamp = stamp;
-        self.changed = true;
     }
 
     fn apply_work(&mut self, work: WorkSetting) -> bool {
@@ -1413,17 +1303,7 @@ impl Page<'_> {
             groups.extend(self.continuity_group(move |cx, continuity| {
                 privacy_section(cx, continuity, &shared_with)
             }));
-            // Roaming settings and sharing history both come from other devices.
-            let summaries = self.roaming_provenance.as_ref().map(provenance_summaries);
-            let roaming_rows = if self.roaming_provenance_unreadable {
-                vec![note(&t("mesh-roaming-unreadable"))]
-            } else if let Some(summaries) = summaries.filter(|summaries| !summaries.is_empty()) {
-                let row = |(name, detail): (String, String)| value_row(&name, &detail);
-                summaries.into_iter().map(row).collect()
-            } else {
-                vec![note(&t("mesh-roaming-none"))]
-            };
-            groups.push(section(&t("mesh-roaming-title"), rows(roaming_rows)).into_element());
+            // Sharing history comes from other devices.
             groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
         }
         groups.extend(self.agents_group());
@@ -1949,12 +1829,7 @@ impl DeviceMeshModel {
         if let Some(follow) = self.following.upgrade() {
             return Some(follow);
         }
-        let files: Vec<PathBuf> = self
-            .roaming_provenance_path
-            .iter()
-            .cloned()
-            .chain([identity_root().join(PENDING_DECOMMISSIONS)])
-            .collect();
+        let files = [identity_root().join(PENDING_DECOMMISSIONS)];
         let follow = Rc::new(MeshFollow::start(&self.config, &files)?);
         self.following = Rc::downgrade(&follow);
         self.health_round = self.home_peers.len().max(1);
@@ -1996,9 +1871,6 @@ impl DeviceMeshModel {
         let now = ui::time::now();
         let due = now >= self.next_status_refresh;
         let changed = follow.files.take() || (due && !follow.files.is_complete());
-        if changed {
-            self.refresh_roaming_provenance();
-        }
         let idle = self.management_child.is_none() && self.management_call.is_none();
         if idle && (changed || due || self.health_round > 0) {
             self.health_round = self.health_round.saturating_sub(1);
@@ -2011,7 +1883,6 @@ impl DeviceMeshModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use settings_store::roaming_provenance::{SCHEMA_VERSION, SettingResolution, WifiResolution};
     use ui::prelude::TestApp;
     use ui::widget::{DisclosureRow, Widget};
 
@@ -2103,11 +1974,6 @@ mod tests {
             assert_eq!(pane.runtime_status, ServerRuntimeStatus::Online);
             assert!(!pane.poll(), "once");
 
-            let provenance = pane.roaming_provenance_path.clone().unwrap();
-            std::fs::write(&provenance, "{}").unwrap();
-            assert!(!pane.poll(), "nothing is read without the watch's word");
-            follow.files.touch();
-            assert!(pane.poll(), "the changed provenance is read");
 
             pane.removals_pending = true;
             assert!(
@@ -2488,39 +2354,8 @@ mod tests {
         });
     }
 
-    /// A device's roaming reading: one setting from one other device, one
-    /// Wi-Fi network from four.
-    fn roaming_projection() -> RoamingProvenance {
-        let origin = |id: &str, label: &str, counter| Origin {
-            device_id: id.into(),
-            device_label: label.into(),
-            counter,
-        };
-        RoamingProvenance {
-            schema_version: SCHEMA_VERSION,
-            generated_unix_ms: 1,
-            settings: vec![SettingResolution {
-                key: "tilo.appearance.mode".into(),
-                winner: origin("b", "Laptop", 8),
-                alternatives: vec![origin("a", "Desktop", 7)],
-            }],
-            wifi: vec![WifiResolution {
-                network_id: "ab".repeat(32),
-                ssid: "Home".into(),
-                security: "WPA2".into(),
-                winner: origin("b", "Laptop", 9),
-                alternatives: vec![
-                    origin("a", "Desktop", 7),
-                    origin("c", "Phone", 6),
-                    origin("d", "Tablet", 5),
-                    origin("e", "NAS", 4),
-                ],
-            }],
-        }
-    }
-
     #[test]
-    fn continuity_controls_are_typed_audited_and_refuse_future_provenance() {
+    fn continuity_controls_are_typed_and_audited() {
         {
             let dir = tempfile::tempdir().unwrap();
             let mut app = window_on(devices_and_a_home_server(dir.path()));
@@ -2536,37 +2371,6 @@ mod tests {
                 let key = continuity_key(capability);
                 assert!(ids.iter().any(|id| id == &key), "missing {key}");
             }
-        }
-
-        {
-            let summaries = provenance_summaries(&roaming_projection());
-            assert_eq!(
-                summaries,
-                vec![
-                    (
-                        "tilo.appearance.mode".into(),
-                        "Resolved to Laptop; differs from Desktop".into()
-                    ),
-                    (
-                        "Wi-Fi: Home".into(),
-                        "Sealed WPA2 profile. Resolved to Laptop; differs from Desktop, Phone and 2 more".into()
-                    )
-                ]
-            );
-            let encoded = format!("{summaries:?}");
-            assert!(!encoded.contains("password"));
-            assert!(!encoded.contains("sealed_secret"));
-        }
-
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir
-                .path()
-                .join(settings_store::roaming_provenance::FILE_NAME);
-            std::fs::write(&path, r#"{"schema_version":99}"#).unwrap();
-            let (projection, unreadable, _) = read_roaming_provenance(Some(&path));
-            assert!(projection.is_none());
-            assert!(unreadable, "the schema is not one this device knows");
         }
 
         {
@@ -2648,7 +2452,6 @@ mod tests {
         let mut model = devices_and_a_home_server(dir.path());
         model.status = MeshStatus::NotSaved;
         model.personal_devices_unavailable = true;
-        model.roaming_provenance_unreadable = true;
         let mut app = window_on(model);
         app.settle();
         let shown =
@@ -2656,7 +2459,6 @@ mod tests {
         for message in [
             t("mesh-status-not-saved"),
             t("mesh-status-device-list-unavailable"),
-            t("mesh-roaming-unreadable"),
         ] {
             assert!(shown.contains(&message), "{message} is shown: {shown}");
         }
@@ -3136,10 +2938,8 @@ mod tests {
             "{alone}"
         );
         assert!(!alone.contains("Clipboard"), "{alone}");
-        // Roaming settings and sharing history come from other devices too.
-        assert!(!alone.contains(&t("mesh-roaming-title")), "{alone}");
+        // Sharing history comes from other devices too.
         assert!(!alone.contains(&t("mesh-activity-title")), "{alone}");
-        assert!(!alone.contains(&t("mesh-roaming-none")), "{alone}");
         assert!(!alone.contains(&t("mesh-audit-empty")), "{alone}");
 
         let devices = devices_in(
@@ -3163,9 +2963,7 @@ mod tests {
         let described = descriptions(app.harness().root_widget());
         assert!(described.contains("On for Phone\n"), "{described}");
         assert!(!shown.contains("Add a device to choose"), "{shown}");
-        for present in [t("mesh-roaming-title"), t("mesh-activity-title")] {
-            assert!(shown.contains(&present), "{present}: {shown}");
-        }
+        assert!(shown.contains(&t("mesh-activity-title")), "{shown}");
         assert_eq!(devices_in("not a reading"), None);
     }
 

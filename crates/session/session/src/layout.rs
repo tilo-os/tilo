@@ -662,7 +662,7 @@ pub(crate) struct Layouts {
     unwritten: RefCell<HashMap<WorkspaceId, &'static str>>,
     /// Where what this device could not write yet of its workspaces is kept, so a session that
     /// ends first leaves it for the one after.
-    pending_at: Option<std::path::PathBuf>,
+    pending_at: Option<crate::kept::Kept>,
     /// What was last kept there: a look that keeps the same of it writes nothing.
     kept_pending: RefCell<Option<Vec<u8>>>,
 }
@@ -682,40 +682,6 @@ pub(crate) fn of_session(
     .hosting(crate::apps::runs_on_its_device)
 }
 
-/// Where this device keeps what it could not write yet of its workspaces.
-fn pending_path(state: &std::path::Path) -> std::path::PathBuf {
-    state.join("tilo").join("pending-steps.json")
-}
-
-/// What this device kept there.
-#[cfg(target_os = "linux")]
-fn read_pending(at: &std::path::Path) -> Option<Vec<u8>> {
-    match std::fs::read(at) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            tracing::warn!(path = %at.display(), %error, "what this device could not write was not read");
-            None
-        }
-    }
-}
-
-/// A page's session has no device state to keep it in: the session after it reads the layout its
-/// workspace holds.
-#[cfg(not(target_os = "linux"))]
-fn read_pending(_at: &std::path::Path) -> Option<Vec<u8>> {
-    None
-}
-
-/// Keep `bytes` there.
-#[cfg(target_os = "linux")]
-fn write_pending(at: &std::path::Path, bytes: Vec<u8>) {
-    tilo_durable_writer::keep(at.to_path_buf(), bytes);
-}
-
-#[cfg(not(target_os = "linux"))]
-fn write_pending(_at: &std::path::Path, _bytes: Vec<u8>) {}
-
 impl Layouts {
     /// This session's records, writing what its windows note of themselves (`notes`), on the loop
     /// `wake` wakes, and each workspace's view kept for `person`. `state` is this device's state
@@ -730,7 +696,8 @@ impl Layouts {
             notes,
             wake,
             person: RefCell::new(Some(person)),
-            pending_at: state.map(pending_path),
+            pending_at: state
+                .map(|state| crate::kept::Kept::open(state, crate::kept::PENDING_LAYOUT)),
             ..Self::default()
         };
         layouts.load_pending();
@@ -743,13 +710,18 @@ impl Layouts {
         let Some(at) = &self.pending_at else {
             return;
         };
-        let Some(bytes) = read_pending(at) else {
-            return;
+        let bytes = match at.read() {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(%error, "what this device could not write was not read");
+                return;
+            }
         };
         let kept: BTreeMap<String, Pending> = match serde_json::from_slice(&bytes) {
             Ok(kept) => kept,
             Err(error) => {
-                tracing::warn!(path = %at.display(), %error, "what this device could not write was not read");
+                tracing::warn!(%error, "what this device could not write was not read");
                 return;
             }
         };
@@ -801,7 +773,7 @@ impl Layouts {
             return;
         }
         *self.kept_pending.borrow_mut() = Some(bytes.clone());
-        write_pending(at, bytes);
+        at.replace(bytes);
     }
 
     /// These records, of a session that hosts the windows that run only on this device:

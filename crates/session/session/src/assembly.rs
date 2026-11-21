@@ -60,6 +60,10 @@ pub(crate) struct Shared {
     /// The ids they went by before this device had an identity, which their
     /// own workspaces may still name them by.
     pub(crate) earlier: Vec<String>,
+    /// Where this device keeps what outlives the session ([`crate::kept`]): what ends the session
+    /// waits for it to be written.
+    #[cfg(target_os = "linux")]
+    pub(crate) state: Option<std::path::PathBuf>,
     #[cfg(target_os = "linux")]
     pub(crate) search: Rc<crate::search::SessionSearch>,
     /// The apps the person opens, when this session starts them.

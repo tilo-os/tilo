@@ -569,15 +569,6 @@ mesh-runtime-offline = Offline
 mesh-runtime-online = Online
 mesh-runtime-syncing = Syncing
 mesh-runtime-ready = Ready
-mesh-from = From { $origin }
-mesh-resolved = { $count ->
-    [1] Resolved to { $winner }; differs from { $first }
-    [2] Resolved to { $winner }; differs from { $first } and { $second }
-   *[other] Resolved to { $winner }; differs from { $first }, { $second } and { $more } more
-}
-mesh-wifi-row = Wi-Fi: { $ssid }
-mesh-wifi-sealed = Sealed { $security } profile. { $detail }
-mesh-roaming-unreadable = Settings can't read the roaming settings this device keeps.
 mesh-last-seen-now = Offline, last seen just now
 mesh-last-seen-min = Offline, last seen { $n } min ago
 mesh-last-seen-h = Offline, last seen { $n } h ago
@@ -624,7 +615,6 @@ mesh-shared-with = { $count ->
    *[other] On for { $first }, { $second } and { $more } more
 }
 mesh-audit-empty = No sharing changes yet.
-mesh-roaming-none = No personal settings or saved Wi-Fi networks are roaming.
 mesh-privacy-title = Share with your devices
 mesh-agents-title = Agents
 mesh-agents-accept = Accept agents from my other devices
@@ -632,7 +622,6 @@ mesh-agents-accept-desc = An agent you run on another of your devices works on t
 mesh-agents-act = Let them act without asking
 mesh-agents-act-desc = A step such an agent would ask you about here is allowed without the question, and kept in its run like any step you allowed.
 mesh-agents-act-needs-accept = Turn on “Accept agents from my other devices” first.
-mesh-roaming-title = Roaming settings
 mesh-activity-title = Recent activity
 mesh-trusted-title = Your devices
 mesh-checking = Checking…

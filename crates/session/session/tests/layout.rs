@@ -504,7 +504,7 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
     drop(kept);
 
     assert!(
-        state.join("tilo").join("shown.json").exists(),
+        kept_file(&state, "so.tilo.session-shown").exists(),
         "the device keeps what it shows"
     );
 
@@ -1302,4 +1302,15 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
     });
     assert_eq!(handed(&arguments, "--workspace-id"), away_id);
     assert_eq!(workspace_of(&session, window_tab), Some(workspace_ids[1]));
+}
+
+/// The file the device's store keeps the session's document `name` in under `state`, once what the
+/// session handed the store is written.
+fn kept_file(state: &std::path::Path, name: &str) -> std::path::PathBuf {
+    use durable_store::DurableStore as _;
+    let root = state.join("tilo").join("documents");
+    app_state::shared_store(&root)
+        .flush(None)
+        .expect("what the session keeps is written");
+    root.join(name).join(app_state::DOCUMENT_FILE)
 }
