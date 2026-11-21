@@ -213,7 +213,7 @@ def steps(story: Story) -> None:
         stand_in(grace, wanted)
         until(f"Grace's top bar saying she is in {WORKSPACE}",
               lambda: in_front_named(grace, WORKSPACE), 30, 0.2)
-        story.timing("Grace's join, to standing in Garden club", (time.monotonic() - began) * 1000)
+        story.timing("Grace's join, to Garden club in front", (time.monotonic() - began) * 1000)
         # A computer new to Tilo knows no name for its person yet: Grace gives hers, once her
         # shell has settled in the workspace (switching closes what the top bar had open).
         name_self(grace, "Grace")
