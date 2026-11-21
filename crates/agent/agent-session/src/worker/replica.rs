@@ -813,10 +813,21 @@ impl ConfinedReplica {
     pub fn survey_page(
         &self,
         query: &tilo_actions::remote::CatalogueQuery,
-        (offset, take): (usize, usize),
+        window: (usize, usize),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
+        let (total, rows, _) = self.survey_page_arriving(query, window);
+        (total, rows)
+    }
+
+    /// [`Self::survey_page`], and whether the page reads parts of a chain still on their way
+    /// to the worker ([`crate::Replica::survey_page_arriving`]).
+    pub fn survey_page_arriving(
+        &self,
+        query: &tilo_actions::remote::CatalogueQuery,
+        (offset, take): (usize, usize),
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>, bool) {
         let Ok(query) = serde_json::to_string(query) else {
-            return (0, Vec::new());
+            return (0, Vec::new(), false);
         };
         let mut inner = self.lock();
         self.supply_before_rendering(&mut inner);
@@ -831,11 +842,16 @@ impl ConfinedReplica {
         );
         drop(inner);
         match reply {
-            Ok(Reply::Page { total, rows }) => (
+            Ok(Reply::Page {
+                total,
+                rows,
+                arriving,
+            }) => (
                 usize::try_from(total).unwrap_or(usize::MAX),
                 serde_json::from_str(&rows).unwrap_or_default(),
+                arriving,
             ),
-            _ => (0, Vec::new()),
+            _ => (0, Vec::new(), false),
         }
     }
 

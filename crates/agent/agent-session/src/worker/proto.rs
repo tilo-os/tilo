@@ -35,7 +35,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 15;
+pub(crate) const PROTOCOL_VERSION: u32 = 16;
 
 /// What a worker is started to do, and what each of its slots does. The
 /// process's mode decides what it prepares before it confines itself (a
@@ -336,8 +336,13 @@ pub(crate) enum Reply {
     Descriptors(String),
     /// One page of a survey: how many operations the query admits in all,
     /// and the JSON `Vec<CatalogueRow>` of those on the page, each in the
-    /// row of the resource holding it.
-    Page { total: u64, rows: String },
+    /// row of the resource holding it; `arriving` when the page reads parts of a chain still
+    /// on their way to the worker, and is not what it will be once they are in.
+    Page {
+        total: u64,
+        rows: String,
+        arriving: bool,
+    },
     /// JSON `ActionOutput`.
     Output(String),
     /// The resource's API refused or the action failed.

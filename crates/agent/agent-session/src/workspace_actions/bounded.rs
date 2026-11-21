@@ -1012,13 +1012,20 @@ impl Worker {
         };
         // Its worker reads the page: off this thread once it outlasts a call.
         let holder = self.holder_of(route);
-        let query = query.clone();
-        self.hand(workspace_id, &holder, move || {
-            app.survey_page(&query, window)
-        })
-        .ok_or_else(|| ActionCallError::Unavailable {
-            reason: "the app's worker is still answering".into(),
-        })
+        let asked = query.clone();
+        let worker = std::sync::Arc::clone(&app);
+        let (total, rows, arriving) = self
+            .hand(workspace_id, &holder, move || {
+                worker.survey_page_arriving(&asked, window)
+            })
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "the app's worker is still answering".into(),
+            })?;
+        // A page reading parts still being taken in waits for them.
+        if self.page_arriving(&app, arriving) {
+            return Err(ActionCallError::NotReady);
+        }
+        Ok((total, rows))
     }
 
     /// The action at `address` as `who` is offered it on the record at

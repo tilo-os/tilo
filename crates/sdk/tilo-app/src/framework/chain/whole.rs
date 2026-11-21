@@ -19,7 +19,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ui_core::resource::ResourceOpenError;
+use ui_core::resource::{ResourceOpenError, WorkspaceAnswer};
 use ui_core::wake::WakeHandle;
 
 use super::{ChainCore, PartArrival};
@@ -175,5 +175,38 @@ impl ChainCore {
     /// Whether part `index` is kept here and waits for its turn to open.
     pub(super) fn waits_its_turn(&self, index: u64) -> bool {
         self.queued.borrow().contains(&index)
+    }
+}
+
+impl super::ChainState {
+    /// Whether a page of the chain's listing reads a part still on its way here, `filled`
+    /// when the parts held filled the page. A listing shows the held parts newest first, so a
+    /// page is what it is once every part is in only when the parts held are the chain's
+    /// newest, with none missing between them: the head is here, no part between the oldest
+    /// held and the head is on its way, and the page filled before reaching the parts older
+    /// than those. A part the workspace said it holds none of is not waited for.
+    pub(crate) fn listing_arriving(&self, filled: bool) -> bool {
+        // A chain holding no part lists nothing yet: what it lists arrives with its newest
+        // part. Its host waits on this only while it hands the chain its parts, and the
+        // workspace's word that it holds none of the chain is no answer to that then.
+        if self.head().is_none() {
+            return true;
+        }
+        let core = &self.core;
+        let holds_none = |document: &ui_core::resource::DocumentId| {
+            core.workspace.store.workspace_answer(document) == Some(WorkspaceAnswer::HoldsNone)
+        };
+        let parts = core.parts.borrow();
+        let (Some(&oldest), Some(&head)) = (parts.keys().next(), parts.keys().next_back()) else {
+            return false;
+        };
+        let waiting = core.waiting.borrow();
+        let on_its_way = |index: u64| match waiting.get(&index) {
+            Some(PartArrival::Arriving) => true,
+            Some(PartArrival::Unavailable) => false,
+            None => core.part.held_whole && !holds_none(&core.chain.part(index)),
+        };
+        (oldest..head).any(|index| !parts.contains_key(&index) && on_its_way(index))
+            || (!filled && (0..oldest).any(on_its_way))
     }
 }

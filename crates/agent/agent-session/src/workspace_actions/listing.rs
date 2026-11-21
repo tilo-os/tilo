@@ -207,11 +207,18 @@ impl Worker {
         } else {
             let app = std::sync::Arc::clone(&self.mount(route, state)?.app);
             let holder = self.holder_of(route);
-            let query = query.clone();
-            self.hand(workspace_id, &holder, move || {
-                app.survey_page(&query, window)
-            })
-            .ok_or_else(|| "the app's worker is still answering".to_owned())
+            let asked = query.clone();
+            let worker = std::sync::Arc::clone(&app);
+            let (total, rows, arriving) = self
+                .hand(workspace_id, &holder, move || {
+                    worker.survey_page_arriving(&asked, window)
+                })
+                .ok_or_else(|| "the app's worker is still answering".to_owned())?;
+            // A page reading parts still being taken in waits for them.
+            if self.page_arriving(&app, arriving) {
+                return Err(super::part_wait::not_ready().to_string());
+            }
+            Ok((total, rows))
         }
     }
 

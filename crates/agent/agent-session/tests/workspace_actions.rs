@@ -245,6 +245,9 @@ mod share_link;
 #[path = "workspace_actions/throughput.rs"]
 mod throughput;
 #[cfg(test)]
+#[path = "workspace_actions/tracker_first_page.rs"]
+mod tracker_first_page;
+#[cfg(test)]
 #[path = "workspace_actions/tracker_listing.rs"]
 mod tracker_listing;
 #[cfg(test)]

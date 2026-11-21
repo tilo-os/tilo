@@ -464,7 +464,11 @@ impl Worker {
                 let held = replica.survey_rows();
                 let total = u64::try_from(held.len()).unwrap_or(u64::MAX);
                 match serde_json::to_string(&held) {
-                    Ok(rows) => Reply::Page { total, rows },
+                    Ok(rows) => Reply::Page {
+                        total,
+                        rows,
+                        arriving: false,
+                    },
                     Err(error) => Reply::Failed(error.to_string()),
                 }
             }
@@ -479,11 +483,13 @@ impl Worker {
                         usize::try_from(offset).unwrap_or(usize::MAX),
                         usize::try_from(take).unwrap_or(usize::MAX),
                     );
-                    let (total, page) = replica.survey_page(&query, (can_render, window));
+                    let (total, page, arriving) =
+                        replica.survey_page_arriving(&query, (can_render, window));
                     match serde_json::to_string(&page) {
                         Ok(rows) => Reply::Page {
                             total: u64::try_from(total).unwrap_or(u64::MAX),
                             rows,
+                            arriving,
                         },
                         Err(error) => Reply::Failed(error.to_string()),
                     }

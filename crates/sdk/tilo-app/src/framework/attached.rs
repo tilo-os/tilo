@@ -850,6 +850,18 @@ impl AttachedView {
             .map_or(0, |root| root.storage.chain_past_page_len(parent))
     }
 
+    /// Whether a page of the listing of the level `parent` reads what is still on its way here,
+    /// `filled` when what the view holds filled the page: a chain listed whose newest parts are
+    /// not all in, or, for a level no chain keeps, any chain with a part on its way. A page that
+    /// reads none is what it will be once every part is in, and is answered now.
+    #[must_use]
+    pub fn listing_arriving(&self, parent: &str, filled: bool) -> bool {
+        self.frame
+            .borrow_mut()
+            .widget_mut::<super::root::ResourceRoot>()
+            .is_some_and(|root| root.storage.listing_arriving(parent, filled))
+    }
+
     /// [`Self::past_page_range`] of the level `parent`: the app's own items,
     /// or a chain's items past the page each of its parts publishes, and only
     /// those the member may reach.

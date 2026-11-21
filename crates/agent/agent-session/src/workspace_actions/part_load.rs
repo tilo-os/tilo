@@ -11,6 +11,12 @@
 //! serving thread, as one waiting for a part to arrive does ([`super::part_wait`]); the
 //! thread answers everything else meanwhile, and a request for the same replica waits too.
 //! Once the parts are in, the request is applied again and finds them held.
+//!
+//! A listing does not wait for all of them. The parts are handed newest first, the order a
+//! chain's listing shows them in, and each one handed wakes the requests waiting on it. A
+//! listing asks the app's worker for its page meanwhile, and the page is answered as soon as it
+//! reads no part still on its way (`Replica::survey_page_arriving`): the first page of a
+//! tracker of any size waits for the part or two it shows, and the others are taken in after.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, mpsc};
@@ -19,9 +25,9 @@ use std::time::Instant;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 
-use super::catch_up::{HOLD_ROUNDS, chains_untold, hold, hold_parts, read_parts};
+use super::catch_up::{HOLD_ROUNDS, chains_untold, hold, hold_parts_told, read_parts};
 use super::part_wait::{ChainWait, PART_WAIT};
-use super::{DocumentRoute, Job, Mounted, Worker, WorkspaceState};
+use super::{DocumentRoute, Job, Mounted, Shared, Worker, WorkspaceState};
 use crate::worker::ConfinedReplica;
 
 /// How many parts a replica holds none of before they are taken in off the serving thread:
@@ -87,6 +93,13 @@ impl PartLoads {
         }
     }
 
+    /// Whether `app`'s parts are being taken in now: nothing else hands it a part meanwhile.
+    pub(super) fn running(&self, app: &Arc<ConfinedReplica>) -> bool {
+        self.loading
+            .iter()
+            .any(|loading| Arc::ptr_eq(&loading.app, app))
+    }
+
     /// Wait here for `app`'s parts.
     fn wait(&mut self, app: &Arc<ConfinedReplica>) -> Option<Loaded> {
         let at = self
@@ -122,10 +135,16 @@ fn unheld_parts(holder: &DocumentRoute, mounted: &Mounted, state: &WorkspaceStat
 }
 
 /// Take in what `mounted` (a copy holding the parts the replica holds) wants of `holder`'s
-/// chains, as [`super::Worker::hold_chains`] does where it waits.
-fn take_in(holder: &DocumentRoute, mut mounted: Mounted, state: &WorkspaceState) -> Loaded {
+/// chains, as [`super::Worker::hold_chains`] does where it waits, newest first, calling `told`
+/// after each part.
+fn take_in(
+    holder: &DocumentRoute,
+    mut mounted: Mounted,
+    state: &WorkspaceState,
+    told: &dyn Fn(),
+) -> Loaded {
     // A part not here yet is asked for where the request is applied again.
-    let _missing = hold_parts(holder, &mut mounted, state);
+    let _missing = hold_parts_told(holder, &mut mounted, state, told);
     for _ in 0..HOLD_ROUNDS {
         let (listed, _) = chains_untold(holder, &mounted, state);
         if listed.is_empty() {
@@ -133,6 +152,7 @@ fn take_in(holder: &DocumentRoute, mut mounted: Mounted, state: &WorkspaceState)
         }
         for (route, saved) in read_parts(listed, state) {
             hold(route, saved, &mut mounted);
+            told();
         }
     }
     Loaded {
@@ -153,6 +173,9 @@ impl Worker {
         let loaded = match self.part_loads.of(&app) {
             Load::Idle => return false,
             Load::Done(loaded) => Some(loaded),
+            // A listing asks for its page meanwhile, answered once it reads no part still on
+            // its way ([`Self::page_arriving`]).
+            Load::Running if self.part_waits.listing() => return false,
             Load::Running => {
                 if matches!(self.part_waits.chain_wait(PART_WAIT), ChainWait::Held) {
                     return self.hold_for_chains();
@@ -206,19 +229,17 @@ impl Worker {
         let (send, done) = mpsc::channel();
         let holder = holder.clone();
         let state = state.clone();
-        let shared = Arc::clone(&self.shared);
-        let workspace_id = WorkspaceId::parse(&key.0.cluster_id);
+        let told = Told {
+            shared: Arc::clone(&self.shared),
+            workspace_id: WorkspaceId::parse(&holder.cluster_id),
+        };
         let spawned = std::thread::Builder::new()
             .name("parts-in".into())
             .spawn(move || {
-                let _ = send.send(take_in(&holder, copy, &state));
-                // The request that waited for them goes on: parts taken in off this thread
-                // wake it, as a part arriving from the workspace does.
-                if let Some(workspace_id) = workspace_id
-                    && let Some(jobs) = shared.jobs.lock_recover().as_ref()
-                {
-                    let _ = jobs.send((Instant::now(), Job::Loaded(workspace_id)));
-                }
+                let loaded = take_in(&holder, copy, &state, &|| told.tell());
+                let _ = send.send(loaded);
+                // What waited for the last of them goes on.
+                told.tell();
             });
         if let Err(error) = spawned {
             tracing::warn!(%error, "workspace actions: no thread was started to take in a document's parts");
@@ -229,6 +250,38 @@ impl Worker {
             .retain(|taken| taken.strong_count() > 0);
         self.part_loads.taken.push(Arc::downgrade(&app));
         self.part_loads.loading.push(Loading { app, done });
-        matches!(self.part_waits.chain_wait(PART_WAIT), ChainWait::Held) && self.hold_for_chains()
+        // A listing asks for its page while they are taken in.
+        !self.part_waits.listing()
+            && matches!(self.part_waits.chain_wait(PART_WAIT), ChainWait::Held)
+            && self.hold_for_chains()
+    }
+
+    /// Whether the page `app`'s worker answered, `arriving` when it reads parts of a chain
+    /// still on their way, waits for them: held off this thread while they are taken in, and
+    /// applied again as each arrives. A page reading none is what it will be once every part
+    /// is in, and is answered now.
+    pub(super) fn page_arriving(&mut self, app: &Arc<ConfinedReplica>, arriving: bool) -> bool {
+        arriving
+            && self.part_loads.running(app)
+            && matches!(self.part_waits.chain_wait(PART_WAIT), ChainWait::Held)
+    }
+}
+
+/// How a thread taking in parts tells the workspace's thread that one more is in: the requests
+/// waiting on its parts go on ([`Worker::parts_loaded`]), as for a part arriving from the
+/// workspace.
+struct Told {
+    shared: Arc<Shared>,
+    workspace_id: Option<WorkspaceId>,
+}
+
+impl Told {
+    fn tell(&self) {
+        let Some(workspace_id) = self.workspace_id else {
+            return;
+        };
+        if let Some(jobs) = self.shared.jobs.lock_recover().as_ref() {
+            let _ = jobs.send((Instant::now(), Job::Loaded(workspace_id)));
+        }
     }
 }

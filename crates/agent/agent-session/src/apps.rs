@@ -848,23 +848,39 @@ impl Replica {
         query: &tilo_actions::remote::CatalogueQuery,
         window: (bool, (usize, usize)),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
-        let (total, rows) = self.survey_page_rows(query, window);
-        // A listing taken a resource at a time leaves the app's worker so: a
-        // resource's few dozen actions travel as one row, not a row each.
-        if query.by_resource {
-            return (total, tilo_actions::remote::compact(rows));
-        }
+        let (total, rows, _) = self.survey_page_arriving(query, window);
         (total, rows)
     }
 
-    /// [`Self::survey_page`], a row per action.
+    /// [`Self::survey_page`], and whether the page reads parts of a chain still on their way
+    /// here (`AttachedView::listing_arriving`): a page that reads none is
+    /// what it will be once every part is in, so it is answered while the rest arrive.
+    #[must_use]
+    pub fn survey_page_arriving(
+        &self,
+        query: &tilo_actions::remote::CatalogueQuery,
+        window: (bool, (usize, usize)),
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>, bool) {
+        let (total, rows, arriving) = self.survey_page_rows(query, window);
+        // A listing taken a resource at a time leaves the app's worker so: a
+        // resource's few dozen actions travel as one row, not a row each.
+        if query.by_resource {
+            return (total, tilo_actions::remote::compact(rows), arriving);
+        }
+        (total, rows, arriving)
+    }
+
+    /// [`Self::survey_page_arriving`], a row per action.
     fn survey_page_rows(
         &self,
         query: &tilo_actions::remote::CatalogueQuery,
         window: (bool, (usize, usize)),
-    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
-        if let Some(found) = self.looked_up(query, window) {
-            return found;
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>, bool) {
+        if let Some((total, rows)) = self.looked_up(query, window) {
+            // What a lookup found is there; one that found nothing may be in a part on its
+            // way.
+            let arriving = rows.is_empty() && self.view.listing_arriving("", false);
+            return (total, rows, arriving);
         }
         // A lookup (one action by its address, a resource by its name) is
         // answered from the view as it stands: an action just done leaves
@@ -876,7 +892,7 @@ impl Replica {
             let tree = self.view.published_without_layout();
             let listed = Listed::Tree(tree.as_slice(), None);
             let without_layout = self.survey_page_of(listed, true, query, window);
-            if without_layout.0 > 0 {
+            if without_layout.0 > 0 && !without_layout.2 {
                 return without_layout;
             }
         }
@@ -1013,7 +1029,7 @@ impl Replica {
         without_layout: bool,
         query: &tilo_actions::remote::CatalogueQuery,
         (can_render, (offset, take)): (bool, (usize, usize)),
-    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>, bool) {
         // The level the query lists, and only the items past its pages the
         // page reaches: every row a query admits stands under the resource it
         // names (the top for none), so the resources further down, a
@@ -1029,7 +1045,7 @@ impl Replica {
         let (level, level_in_chain) = match listed {
             Listed::Tree(..) => match level_of(resources, parent) {
                 Some((level, in_chain)) => (Level::Tree(level), in_chain),
-                None => return (0, Vec::new()),
+                None => return (0, Vec::new(), self.view.listing_arriving(parent, false)),
             },
             Listed::Chain(level) => (Level::Chain(level), true),
         };
@@ -1181,6 +1197,9 @@ impl Replica {
                 counted.resize(items, 0);
             }
         }
+        // Whether the level's own items filled the page: a page of a chain's listing that
+        // reached past them reads the parts older than those held, as they arrive.
+        let level_filled = !complete || walk.total >= walk.end;
         // The items past the published pages, built only as far as the page
         // reaches; `past_root` is the app's own resource, which holds them,
         // or the chain a level it keeps is listed under, whose parts each
@@ -1404,7 +1423,10 @@ impl Replica {
                 past_containers,
             });
         }
-        (walk.total, walk.rows)
+        let arriving = self
+            .view
+            .listing_arriving(parent, level_in_chain && level_filled);
+        (walk.total, walk.rows, arriving)
     }
 
     /// The resource at `at` of `level`, as the member may reach it: a chain's

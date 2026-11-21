@@ -563,6 +563,20 @@ impl ViewStorage {
         self.chain_api(id).map(|api| api.publish_shared())
     }
 
+    /// Whether a page listing the chain `parent` reads a part still on its way
+    /// ([`super::chain::ChainState::listing_arriving`]), `filled` when the parts held filled
+    /// it; for any other level, whether any chain the views opened has a part on its way.
+    pub(crate) fn listing_arriving(&self, parent: &str, filled: bool) -> bool {
+        match self.chain_api(parent) {
+            Some(api) => api.listing_arriving(filled),
+            None => self
+                .chains
+                .apis()
+                .iter()
+                .any(|api| api.listing_arriving(false)),
+        }
+    }
+
     /// The chain `id`, among the chains the views opened.
     fn chain_api(&self, id: &str) -> Option<Rc<dyn super::resources::ResourceApi>> {
         self.chains.apis().into_iter().find(|api| api.id() == id)

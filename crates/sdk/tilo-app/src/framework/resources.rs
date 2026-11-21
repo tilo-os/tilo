@@ -389,6 +389,12 @@ pub(crate) trait ResourceApi {
     fn past_page_window(&self, _offset: usize, _take: usize) -> Vec<tilo_actions::ResourceSpec> {
         Vec::new()
     }
+    /// Whether a page of the resource's listing reads what is still on its way here, `filled`
+    /// when what it holds filled the page: a chain's parts not all in yet. Nothing for a
+    /// resource held whole.
+    fn listing_arriving(&self, _filled: bool) -> bool {
+        false
+    }
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String>;
     /// [`Self::apply_encoded`], answering its invoker with what it made.
     fn apply_answering(

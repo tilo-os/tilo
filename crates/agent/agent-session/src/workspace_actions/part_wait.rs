@@ -83,9 +83,9 @@ pub(super) struct PartWaits {
     held: Option<Tried>,
     /// How the write about to be applied again waited so far.
     resumed: Option<Tried>,
-    /// Whether the request being served may wait off this thread for the parts of a chain
-    /// still on their way ([`Worker::hold_chains`]): a write and a listing may.
-    holdable: bool,
+    /// What the request being served is, and so whether it may wait off this thread for the
+    /// parts of a chain still on their way ([`Worker::hold_chains`]): a write and a listing may.
+    serving_kind: Serving,
     /// The request being served found parts of a chain on their way and did not wait for
     /// them here: it is held until they arrive ([`Worker::hold_for_chains`]).
     chains_owed: bool,
@@ -94,6 +94,19 @@ pub(super) struct PartWaits {
     /// Whether the request about to be served is applied again only to take the answer of the
     /// operation it handed off the thread ([`super::call_wait`]).
     resumed_answer: bool,
+}
+
+/// What a request being served is, as far as waiting for parts goes.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Serving {
+    /// Anything else: it waits for the parts it reads where it is served.
+    #[default]
+    Other,
+    /// A write, or a page's act: it waits off the thread for the parts of what it changes.
+    Write,
+    /// A listing: it waits off the thread, and only for the parts its page shows, while the
+    /// others are taken in ([`super::part_load`]).
+    Listing,
 }
 
 /// How a request is applied again after waiting off the thread that serves its workspace.
@@ -120,9 +133,9 @@ pub(super) enum ChainWait {
 impl PartWaits {
     /// Start serving the request asked at `queued`: a write applied again
     /// once its part arrived goes on with how it waited so far.
-    /// A write or listing (`holdable`) waits off the thread for the parts of a chain too.
-    pub(super) fn begin(&mut self, queued: Instant, holdable: bool) {
-        self.holdable = holdable;
+    /// A write or listing waits off the thread for the parts of a chain too.
+    pub(super) fn begin(&mut self, queued: Instant, serving: Serving) {
+        self.serving_kind = serving;
         self.chains_owed = false;
         let answering = std::mem::take(&mut self.resumed_answer);
         self.again = match self.resumed {
@@ -135,6 +148,16 @@ impl PartWaits {
             confirmed: None,
         }));
         self.held = None;
+    }
+
+    /// Whether the request being served may wait off this thread: a write or a listing.
+    fn holdable(&self) -> bool {
+        self.serving_kind != Serving::Other
+    }
+
+    /// Whether the request being served is a listing.
+    pub(super) const fn listing(&self) -> bool {
+        matches!(self.serving_kind, Serving::Listing)
     }
 
     /// Whether the request being served is applied again after waiting off this thread.
@@ -158,7 +181,7 @@ impl PartWaits {
     /// What the request being served does about parts of a chain still on their way, waited
     /// for `wait` from when it was asked: held off this thread within it, when it may be.
     pub(super) fn chain_wait(&mut self, wait: Duration) -> ChainWait {
-        let Some(tried) = self.serving.filter(|_| self.holdable) else {
+        let Some(tried) = self.serving.filter(|_| self.holdable()) else {
             return ChainWait::Here;
         };
         if tried.queued.elapsed() >= wait {
@@ -172,7 +195,7 @@ impl PartWaits {
     /// was asked: a write or a listing within it.
     pub(super) fn may_wait(&self, wait: Duration) -> bool {
         self.serving
-            .filter(|_| self.holdable)
+            .filter(|_| self.holdable())
             .is_some_and(|tried| tried.queued.elapsed() < wait)
     }
 
@@ -382,7 +405,8 @@ impl Worker {
     }
 
     /// How far `workspace_id` moved as this service holds it: the writes that landed in it,
-    /// and the documents the workspace answered for.
+    /// the documents the workspace answered for, and the parts taken in off this thread
+    /// ([`super::part_load`]).
     fn moved(&self, workspace_id: WorkspaceId) -> u64 {
         self.workspaces.get(&workspace_id).map_or(0, |workspace| {
             let landings = workspace

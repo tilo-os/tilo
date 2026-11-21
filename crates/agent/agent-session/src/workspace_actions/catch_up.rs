@@ -8,6 +8,7 @@ use crate::apps::Seed;
 use crate::worker::ConfinedReplica;
 use collab_types::DocumentMutation;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_actions::MemberId;
 
@@ -100,6 +101,17 @@ pub(super) fn hold_parts(
     mounted: &mut Mounted,
     state: &WorkspaceState,
 ) -> Vec<DocumentRoute> {
+    hold_parts_told(holder, mounted, state, &|| {})
+}
+
+/// [`hold_parts`], calling `told` after each part it hands.
+#[must_use = "the parts not here yet are asked for"]
+pub(super) fn hold_parts_told(
+    holder: &DocumentRoute,
+    mounted: &mut Mounted,
+    state: &WorkspaceState,
+    told: &dyn Fn(),
+) -> Vec<DocumentRoute> {
     let newest = newest_parts(holder, state);
     answer_unheld(holder, mounted, state, &newest);
     if newest.is_empty() {
@@ -119,7 +131,7 @@ pub(super) fn hold_parts(
     if asked.is_empty() && mounted.wanted_at == Some(holding(mounted)) {
         return Vec::new();
     }
-    let missing = hold_wanted(holder, mounted, state, &newest, asked);
+    let missing = hold_wanted(holder, mounted, state, (&newest, asked), told);
     // A part still on its way is handed once it arrives: the document is asked
     // again then, though it holds what it held now.
     mounted.wanted_at = missing.is_empty().then(|| holding(mounted));
@@ -215,19 +227,36 @@ fn holding(mounted: &Mounted) -> u64 {
     hasher.finish()
 }
 
-/// The rounds of [`hold_parts`] from `asked`, the parts first handed. The
-/// parts of its chains the document wants that the replica does not hold.
+/// The rounds of [`hold_parts`] from `asked`, the parts first handed, calling `told` after
+/// each. The parts of its chains the document wants that the replica does not hold.
+///
+/// Each round hands the newest parts first, a few read at a time: a chain's listing shows its
+/// parts newest first, so the parts a first page shows are in the app's worker before those
+/// it reaches only further on, rather than after every part of the chain was read.
 fn hold_wanted(
     holder: &DocumentRoute,
     mounted: &mut Mounted,
     state: &WorkspaceState,
-    newest: &std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)>,
-    mut asked: Vec<DocumentRoute>,
+    (newest, mut asked): (
+        &std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)>,
+        Vec<DocumentRoute>,
+    ),
+    told: &dyn Fn(),
 ) -> Vec<DocumentRoute> {
     let mut missing = Vec::new();
     for _ in 0..HOLD_ROUNDS {
-        for (route, saved) in read_parts(std::mem::take(&mut asked), state) {
-            hold(route, saved, mounted);
+        newest_first(&mut asked);
+        // One part read first, then twice as many each time, up to as many as are read at
+        // once: the newest is in the worker after one read, not after the slowest of a batch.
+        let mut rest = std::mem::take(&mut asked);
+        let mut some = 1;
+        while !rest.is_empty() {
+            let after = rest.split_off(some.min(rest.len()));
+            for (route, saved) in read_parts(std::mem::replace(&mut rest, after), state) {
+                hold(route, saved, mounted);
+                told();
+            }
+            some = some.saturating_mul(2).min(PART_READERS);
         }
         asked = mounted
             .app
@@ -311,6 +340,17 @@ pub(super) fn read_parts(
 
 /// How many parts [`read_parts`] reads at once at most.
 const PART_READERS: usize = 8;
+
+/// `routes` in the order a chain's listing shows them: the parts of each chain newest first.
+fn newest_first(routes: &mut [DocumentRoute]) {
+    routes.sort_by_cached_key(|route| {
+        let part = ui::resource::DocumentId::parse(&route.document).and_then(|id| id.chain_part());
+        let (chain, index) = part.map_or((String::new(), 0), |(chain, index)| {
+            (chain.as_str().to_owned(), index)
+        });
+        (chain, std::cmp::Reverse(index))
+    });
+}
 
 pub(super) fn hold(
     route: DocumentRoute,
@@ -665,6 +705,14 @@ impl Worker {
         holder: &DocumentRoute,
         state: &WorkspaceState,
     ) {
+        // Parts taken in off this thread are handed there ([`super::part_load`]), not again here.
+        if self
+            .held_mut(at)
+            .map(|held| Arc::clone(&held.app))
+            .is_some_and(|app| self.part_loads.running(&app))
+        {
+            return;
+        }
         let until = Instant::now().checked_add(CHAIN_WAIT);
         let mut look = CHAIN_LOOK;
         let mut fresh: Option<WorkspaceState> = None;

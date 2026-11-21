@@ -40,9 +40,9 @@ const PAGES: [usize; 2] = [40, 200];
 const LISTING_CEILING: Duration = Duration::from_secs(90);
 
 /// A key's calls of the API.
-struct V1<'a> {
-    api: &'a Arc<Server>,
-    token: String,
+pub(super) struct V1<'a> {
+    pub(super) api: &'a Arc<Server>,
+    pub(super) token: String,
 }
 
 impl V1<'_> {
@@ -54,7 +54,7 @@ impl V1<'_> {
         ])
     }
 
-    async fn send(&self, method: hyper::Method, path: &str, body: &[u8]) -> (u16, Value) {
+    pub(super) async fn send(&self, method: hyper::Method, path: &str, body: &[u8]) -> (u16, Value) {
         let (path, query) = path.split_once('?').unwrap_or((path, ""));
         let reply = Box::pin(
             self.api
@@ -64,11 +64,11 @@ impl V1<'_> {
         json_of(reply).await
     }
 
-    async fn get(&self, path: &str) -> (u16, Value) {
+    pub(super) async fn get(&self, path: &str) -> (u16, Value) {
         self.send(hyper::Method::GET, path, b"").await
     }
 
-    async fn act(&self, base: &str, resource: &str, action: &str, args: &Value) -> Value {
+    pub(super) async fn act(&self, base: &str, resource: &str, action: &str, args: &Value) -> Value {
         let (mut status, mut reply) = self
             .send(
                 hyper::Method::POST,
@@ -134,7 +134,7 @@ async fn fill(agent: &V1<'_>, base: &str, size: usize) {
     }
 }
 
-fn quantile(took: &[Duration], quantile: f64) -> Duration {
+pub(super) fn quantile(took: &[Duration], quantile: f64) -> Duration {
     let mut sorted = took.to_vec();
     sorted.sort();
     let at = ((sorted.len() as f64 - 1.0) * quantile).round() as usize;
@@ -143,7 +143,7 @@ fn quantile(took: &[Duration], quantile: f64) -> Duration {
 
 /// Every row the listing at `path` holds, a page at a time as the cursor each
 /// page answers leads on, and how long each page took.
-async fn every_page(agent: &V1<'_>, base: &str, limit: usize) -> (Vec<Value>, Vec<Duration>) {
+pub(super) async fn every_page(agent: &V1<'_>, base: &str, limit: usize) -> (Vec<Value>, Vec<Duration>) {
     let mut rows = Vec::new();
     let mut took = Vec::new();
     let mut cursor: Option<String> = None;

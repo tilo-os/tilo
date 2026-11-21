@@ -59,6 +59,10 @@ impl ResourceApi for ChainState {
         ChainState::past_page_window(self, offset, take)
     }
 
+    fn listing_arriving(&self, filled: bool) -> bool {
+        ChainState::listing_arriving(self, filled)
+    }
+
     fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
         ChainState::read(self, payload)
     }

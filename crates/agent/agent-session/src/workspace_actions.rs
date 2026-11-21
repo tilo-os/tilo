@@ -1784,7 +1784,14 @@ impl Worker {
             _ => (String::new(), String::new()),
         };
         let step = job.step_kind();
-        self.part_waits.begin(queued, job.holds_for_parts());
+        self.part_waits.begin(
+            queued,
+            match job {
+                Job::Catalogue { .. } => part_wait::Serving::Listing,
+                _ if job.holds_for_parts() => part_wait::Serving::Write,
+                _ => part_wait::Serving::Other,
+            },
+        );
         self.call_waits.begin();
         self.take(queued, job);
         // What it ended, it ended now, as a listing of runs says.
