@@ -20,7 +20,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_server::WorkspaceId;
-use tilo_server::servers::{self, admin_workspace_id, applied};
+use tilo_server::servers::{self, own_workspace_id, applied};
 use tilo_server::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION, ServerAnswer};
 use tilo_server::workspaces::Workspaces;
 use tilo_server_protocol::WorkSetting;
@@ -235,7 +235,7 @@ async fn person_with_a_server() -> Fixture {
     .await
     .unwrap();
     tilo_test_env::within("the server to hold the Servers workspace", async {
-        while !servers::holds_admin(server.host.workspaces()).await {
+        while !servers::holds_own(server.host.workspaces()).await {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -248,7 +248,7 @@ async fn person_with_a_server() -> Fixture {
     ));
     let helper = operations_helper(state.path());
     Fixture {
-        admin: admin_workspace_id(&alice.user_pk),
+        admin: own_workspace_id(&alice.user_pk),
         nas,
         laptop,
         desktop,

@@ -775,7 +775,7 @@ impl Server {
                 // server that came later asks an earlier one, as its
                 // enrollment named them, to take it in.
                 let earlier = earlier_servers(&cfg.identity_root, &identity.device_cert)?;
-                if crate::servers::holds_admin(governed).await {
+                if crate::servers::holds_own(governed).await {
                     crate::servers::enroll(governed, &endpoint.addr()).await
                 } else if earlier.is_empty() {
                     Ok(())
@@ -814,7 +814,7 @@ impl Server {
             // A machine whose plan this is finishes installing it here when it
             // comes up holding the workspace, whether it was handed it before
             // or just now: the entry says what still has to happen.
-            if crate::servers::holds_admin(governed).await
+            if crate::servers::holds_own(governed).await
                 && let Some(nonce) = crate::servers::first_install::recorded_nonce(&cfg.state_root)
             {
                 let workspaces = governed.clone();
@@ -846,7 +846,7 @@ impl Server {
                 )),
             );
             if !enrolled_server
-                && !crate::servers::holds_admin(governed).await
+                && !crate::servers::holds_own(governed).await
                 && let Some((server, addr)) =
                     earlier_servers(&cfg.identity_root, &identity.device_cert)?
                         .into_iter()
@@ -1221,7 +1221,7 @@ async fn follow_once_held(
     use tokio::sync::broadcast::error::RecvError;
     let mut listed = workspaces.listing_changes();
     let mut governed = workspaces.governance_changes();
-    while !crate::servers::holds_admin(&workspaces).await {
+    while !crate::servers::holds_own(&workspaces).await {
         // A slow receiver re-reads; a closed one means the service is gone.
         let changed = tokio::select! {
             change = listed.recv() => change.map(drop),
@@ -1296,7 +1296,7 @@ async fn admitted_first_boot(
     // The hand-over is the holders' to make: one of them names this device in
     // the workspace, which then reaches it, and it holds the workspace.
     let mut wait = Duration::from_millis(500);
-    while !crate::servers::holds_admin(&workspaces).await {
+    while !crate::servers::holds_own(&workspaces).await {
         tokio::time::sleep(wait).await;
         wait = wait.saturating_mul(2).min(Duration::from_secs(30));
     }
@@ -2588,7 +2588,7 @@ mod tests {
                 .unwrap(),
                 crate::rollout::Answer::Restart
             );
-            let admin = crate::servers::admin_workspace_id(&user.public_key);
+            let admin = crate::servers::own_workspace_id(&user.public_key);
             let lease = |state: tilo_peer_state::StatePeer| {
                 state
                     .workspace()

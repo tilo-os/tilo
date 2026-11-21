@@ -80,7 +80,7 @@ impl WorkspaceService {
         }
         // The person's Servers workspace has one founder: a device whose
         // person's list says another of theirs keeps it is handed it instead.
-        if workspace == tilo_server_protocol::servers::admin_workspace_id(&caller.user_public_key)
+        if workspace == tilo_server_protocol::servers::own_workspace_id(&caller.user_public_key)
         {
             crate::workspaces::servers::may_found(self.workspaces(), &caller.user_public_key)
                 .await?;

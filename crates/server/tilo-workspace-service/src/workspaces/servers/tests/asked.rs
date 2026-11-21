@@ -4,6 +4,7 @@
 use tilo_server_protocol::transport::{ServerAnswer, ServerOperation, ServerOperationResult};
 
 use super::*;
+use tilo_resource::Replica;
 
 fn request_id(index: usize) -> String {
     format!("{index:032x}")

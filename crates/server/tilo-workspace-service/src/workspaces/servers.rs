@@ -1,7 +1,8 @@
-//! The servers of a person, configured in their Servers workspace.
+//! The servers of a person, configured in their own workspace.
 //!
-//! The Servers workspace is an ordinary workspace whose only member is the
-//! person. Each server is one of their devices and takes part in it, and so
+//! The person's own workspace is an ordinary workspace whose only member is
+//! the person, and it holds what is theirs alone; their servers are one part
+//! of it, and it is still made with the name "Servers". Each server is one of their devices and takes part in it, and so
 //! does each of their other devices. Its [`SERVERS`] document says, per server,
 //! what that server should be: its name, how much it offers
 //! (storage, compute, machines), which updates it follows and when it may
@@ -23,7 +24,7 @@
 //! [`super::actions`]) waits for that answer and returns it.
 //!
 //! The workspace's id follows from the person's root
-//! ([`admin_workspace_id`]), so each of their devices finds the same one
+//! ([`own_workspace_id`]), so each of their devices finds the same one
 //! without being told. One device founds it, as any workspace is founded, when
 //! it is first needed ([`founded`]): the first machine planned, or the first
 //! server taken in. That device is its founder, and every other device joins
@@ -56,8 +57,8 @@
 
 pub use install_profile_model::plan::WaitingPlan;
 use serde::Deserialize;
-use tilo_resource::{Collection, Id, Invoke, Model, Refusal, Replica, resource};
-use tilo_server_protocol::servers::admin_workspace_id;
+use tilo_resource::{Collection, Id, Invoke, Model, Refusal, resource};
+use tilo_server_protocol::servers::own_workspace_id;
 use tilo_server_protocol::transport::{OperationEntry, ServerOperation};
 use tilo_user_identity::DeviceCert;
 
@@ -72,7 +73,7 @@ mod refound;
 /// The Servers workspace's document of the person's servers.
 pub const SERVERS: (&str, &str) = ("so.tilo.servers", "servers");
 /// The name the Servers workspace is made with.
-const ADMIN_WORKSPACE_NAME: &str = "Servers";
+const OWN_WORKSPACE_NAME: &str = "Servers";
 /// The ways a server unlocks after a boot: an owner's device approves it, its
 /// TPM unseals its keys, or someone types a passphrase at it.
 pub const UNLOCK_POLICIES: [&str; 3] = ["owner-device", "tpm", "passphrase"];
@@ -332,19 +333,7 @@ impl Server {
 /// # Errors
 /// The document's initializer fails, which is a bug in it.
 pub fn genesis(workspace: &str) -> Result<automerge::AutoCommit, String> {
-    use tilo_resource::Resource as _;
-    let mut doc = automerge::AutoCommit::new().with_actor(tilo_resource::genesis::actor(
-        "",
-        <Servers as tilo_resource::Resource>::KIND,
-        workspace,
-    ));
-    Servers::initialize(&mut doc).map_err(|error| error.to_string())?;
-    doc.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
-            .with_time(0),
-    );
-    Ok(doc)
+    super::own_workspace::genesis::<Servers>(workspace)
 }
 
 #[resource(kind = "tilo.servers", read_content = Servers::read_document)]
@@ -1116,10 +1105,10 @@ fn validate_label(label: &str) -> Result<String, Refusal> {
 /// Whether this device holds its person's Servers workspace: the workspace
 /// names it among its holders, so it writes the document as its own, whether
 /// it founded the workspace or was handed it.
-pub async fn holds_admin(workspaces: &Workspaces) -> bool {
+pub async fn holds_own(workspaces: &Workspaces) -> bool {
     let own = workspaces.serving_certificate();
     let Some(state) = workspaces
-        .state(&admin_workspace_id(&own.user_public_key))
+        .state(&own_workspace_id(&own.user_public_key))
         .await
     else {
         return false;
@@ -1141,13 +1130,13 @@ pub async fn holds_admin(workspaces: &Workspaces) -> bool {
 /// Another device of the person keeps the workspace, or it could not be made.
 pub async fn founded(workspaces: &Workspaces) -> Result<String, String> {
     let person = workspaces.serving_certificate().user_public_key;
-    let admin = admin_workspace_id(&person);
-    if holds_admin(workspaces).await {
+    let admin = own_workspace_id(&person);
+    if holds_own(workspaces).await {
         return Ok(admin);
     }
     may_found(workspaces, &person).await?;
     workspaces
-        .create_workspace(ADMIN_WORKSPACE_NAME, Some(&admin))
+        .create_workspace(OWN_WORKSPACE_NAME, Some(&admin))
         .await?;
     Ok(admin)
 }
@@ -1158,7 +1147,7 @@ pub async fn founded(workspaces: &Workspaces) -> Result<String, String> {
 /// # Errors
 /// Another device of the person keeps the workspace.
 pub async fn may_found(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(), String> {
-    let admin = admin_workspace_id(person);
+    let admin = own_workspace_id(person);
     if workspaces
         .kept_elsewhere(person)
         .await
@@ -1180,7 +1169,7 @@ pub async fn may_found(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(),
 /// # Errors
 /// The action was refused, or the document could not be written.
 pub async fn apply(workspaces: &Workspaces, action: Invoke<Servers>) -> Result<(), String> {
-    let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = own_workspace_id(&workspaces.serving_certificate().user_public_key);
     apply_on(workspaces, &admin, action).await
 }
 
@@ -1194,37 +1183,7 @@ pub async fn apply_on(
     workspace: &str,
     action: Invoke<Servers>,
 ) -> Result<(), String> {
-    let cert = workspaces.serving_certificate().clone();
-    // A device that writes the document before the workspace's copy of it
-    // reached it starts from the same genesis every other device does, so the
-    // two writes merge into one document rather than competing for its root.
-    let start = Box::new(genesis(workspace)?);
-    let applied = Box::pin(workspaces.author_workspace_document_from(
-        (workspace, &cert),
-        SERVERS,
-        Some(start),
-        |doc| {
-            let mut replica = Replica::<Servers>::from_doc(std::mem::take(doc));
-            // This device's own actor: the genesis is one actor's change
-            // already, and two devices continuing it under that actor
-            // would make one sequence with two different changes.
-            replica
-                .doc_mut()
-                .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
-            let applied = replica
-                .apply(action)
-                .map(drop)
-                .map_err(|error| error.to_string());
-            std::mem::swap(doc, replica.doc_mut());
-            applied
-        },
-    ))
-    .await
-    .map_err(|error| error.to_string());
-    if applied.is_ok() {
-        workspaces.note_document_write(workspace, SERVERS.0, SERVERS.1);
-    }
-    applied
+    super::own_workspace::apply_on(workspaces, workspace, SERVERS, action).await
 }
 
 /// The Servers workspace's [`SERVERS`] document as this device reads it.
@@ -1232,7 +1191,7 @@ pub async fn apply_on(
 /// # Errors
 /// The document could not be read.
 pub async fn read(workspaces: &Workspaces) -> Result<Servers, String> {
-    let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = own_workspace_id(&workspaces.serving_certificate().user_public_key);
     read_on(workspaces, &admin).await
 }
 
@@ -1241,16 +1200,7 @@ pub async fn read(workspaces: &Workspaces) -> Result<Servers, String> {
 /// # Errors
 /// As [`read`].
 pub async fn read_on(workspaces: &Workspaces, workspace: &str) -> Result<Servers, String> {
-    let Some(bytes) = workspaces
-        .resource_document(workspace, SERVERS.0, SERVERS.1)
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(Servers::default());
-    };
-    Replica::<Servers>::load(&bytes)
-        .and_then(|replica| replica.state())
-        .map_err(|error| error.to_string())
+    super::own_workspace::read_on::<Servers>(workspaces, workspace, SERVERS).await
 }
 
 /// The name the Servers workspace gives the server `device`: what the
@@ -1275,7 +1225,7 @@ pub async fn enroll(
     workspaces: &Workspaces,
     endpoint: &iroh_base::EndpointAddr,
 ) -> Result<(), String> {
-    if !holds_admin(workspaces).await {
+    if !holds_own(workspaces).await {
         return Err("this server holds no Servers workspace yet".into());
     }
     let cert = workspaces.serving_certificate().clone();
@@ -1301,7 +1251,7 @@ pub async fn admit(
     {
         return Err("only a server of this person is taken in among their servers".into());
     }
-    if !holds_admin(workspaces).await {
+    if !holds_own(workspaces).await {
         return Err("this server holds no Servers workspace yet".into());
     }
     enter(workspaces, server, endpoint).await
@@ -1327,10 +1277,10 @@ pub async fn take_in(
     {
         return Err("only a device of this person holds their Servers workspace".into());
     }
-    if !holds_admin(workspaces).await {
+    if !holds_own(workspaces).await {
         return Err("this device holds no Servers workspace yet".into());
     }
-    let admin = admin_workspace_id(&device.user_public_key);
+    let admin = own_workspace_id(&device.user_public_key);
     workspaces
         .attach_server(
             &admin,

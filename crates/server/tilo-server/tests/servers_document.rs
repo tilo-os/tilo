@@ -9,7 +9,7 @@
 )]
 
 use tilo_resource::Id;
-use tilo_server::servers::{self, Servers, admin_workspace_id, applied};
+use tilo_server::servers::{self, Servers, own_workspace_id, applied};
 use tilo_server::workspaces::Offer;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
@@ -172,7 +172,7 @@ async fn a_server_offers_what_its_entry_says() {
     let policy = tempfile::tempdir().unwrap();
     let policy_request = policy.path().join("update-policy.request");
     let workspaces = server.host.workspaces();
-    let admin = admin_workspace_id(&alice.user_pk);
+    let admin = own_workspace_id(&alice.user_pk);
     workspaces
         .create_workspace("Servers", Some(&admin))
         .await
@@ -217,7 +217,7 @@ async fn a_retired_server_lets_go_of_everything() {
     let policy_request = policy.path().join("update-policy.request");
     let workspaces = server.host.workspaces();
     let workspace = workspaces.create("Kept").await.unwrap();
-    let admin = admin_workspace_id(&alice.user_pk);
+    let admin = own_workspace_id(&alice.user_pk);
     workspaces
         .create_workspace("Servers", Some(&admin))
         .await
@@ -278,7 +278,7 @@ async fn a_servers_machine_configuration_is_written_and_its_report_read() {
     let requests = tempfile::tempdir().unwrap();
     let requests_at = || applied::Requests::at(requests.path().join("update-policy.request"));
     let workspaces = server.host.workspaces();
-    let admin = admin_workspace_id(&alice.user_pk);
+    let admin = own_workspace_id(&alice.user_pk);
     workspaces
         .create_workspace("Servers", Some(&admin))
         .await
@@ -407,7 +407,7 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
             )
         })
         .collect::<Vec<_>>();
-    let admin = admin_workspace_id(&alice.user_pk);
+    let admin = own_workspace_id(&alice.user_pk);
     let [first, second, third] = [&hosts[0], &hosts[1], &hosts[2]];
 
     // One of the person's own devices makes it when it is first needed, and
@@ -450,7 +450,7 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
                     let named = servers::read(asking.host.workspaces())
                         .await
                         .map_or(0, |servers| servers.servers.len());
-                    if servers::holds_admin(asking.host.workspaces()).await && named == enrolled {
+                    if servers::holds_own(asking.host.workspaces()).await && named == enrolled {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -560,7 +560,7 @@ async fn a_device_that_writes_before_the_document_arrives_keeps_every_entry() {
     .await
     .unwrap();
     tilo_test_env::within("the other device to hold the workspace", async {
-        while !servers::holds_admin(late.host.workspaces()).await {
+        while !servers::holds_own(late.host.workspaces()).await {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
@@ -637,7 +637,7 @@ async fn a_servers_workspace_founded_in_its_persons_name_is_founded_again_under_
     let desktop = alice.enrol("desktop", DeviceCapabilities::member());
     let one = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
     let other = serve_on(&alice, &desktop, WorkSetting::own_person()).await;
-    let admin = admin_workspace_id(&alice.user_pk);
+    let admin = own_workspace_id(&alice.user_pk);
     servers::founded(one.host.workspaces()).await.unwrap();
     for (device, hosted, label) in [(&laptop, &one, "laptop"), (&desktop, &other, "desktop")] {
         servers::apply(
@@ -690,7 +690,7 @@ async fn a_servers_workspace_founded_in_its_persons_name_is_founded_again_under_
                 for hosted in [&one, &other] {
                     founders.push(founder(hosted, &admin).await);
                     named.push(named_servers(hosted).await);
-                    holding.push(servers::holds_admin(hosted.host.workspaces()).await);
+                    holding.push(servers::holds_own(hosted.host.workspaces()).await);
                 }
                 if founders == [Some(first), Some(first)]
                     && named.iter().all(|named| named == &["desktop", "laptop"])
@@ -720,7 +720,7 @@ async fn a_fresh_device_that_founds_the_servers_workspace_again_replaces_no_serv
     let holder = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
     let fresh = serve_on(&alice, &restored, WorkSetting::own_person()).await;
     let second = serve_on(&alice, &tablet, WorkSetting::own_person()).await;
-    let admin = admin_workspace_id(&alice.user_pk);
+    let admin = own_workspace_id(&alice.user_pk);
 
     // The laptop founds the workspace and names the person's servers in it.
     servers::founded(holder.host.workspaces()).await.unwrap();

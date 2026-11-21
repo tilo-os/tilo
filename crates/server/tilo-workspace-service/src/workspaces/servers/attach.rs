@@ -25,7 +25,7 @@ use std::time::Duration;
 use iroh_base::EndpointAddr;
 use tilo_peer_state::CopyRole;
 
-use super::{Server, Servers, admin_workspace_id, read};
+use super::{Server, Servers, own_workspace_id, read};
 use crate::workspaces::Workspaces;
 
 /// How often a holder looks for a server the document names besides the
@@ -65,10 +65,10 @@ impl Attached {
 pub async fn attach_named(workspaces: &Workspaces) -> Result<Attached, String> {
     // A device that holds no Servers workspace yet names nobody in it, and
     // asks a holder to take it in rather than read it.
-    if !super::holds_admin(workspaces).await {
+    if !super::holds_own(workspaces).await {
         return Ok(Attached::default());
     }
-    let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
+    let admin = own_workspace_id(&workspaces.serving_certificate().user_public_key);
     // A copy founded in the person's name waits to be founded again
     // ([`super::refound`]): what this pass wrote there would not be carried.
     if workspaces
@@ -177,7 +177,7 @@ impl Workspaces {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let admin = admin_workspace_id(&self.serving_certificate().user_public_key);
+        let admin = own_workspace_id(&self.serving_certificate().user_public_key);
         runtime.spawn(async move {
             let mut again = tokio::time::interval(NAMED_TICK);
             again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
