@@ -621,6 +621,8 @@ actions that queued an outside consequence undo through their inverse action.
   older version, reading old shapes with the model helpers. It runs once, as a
   housekeeping action with an actor and seed derived from the resource and the
   versions, so two devices migrating concurrently produce the same change.
+  A resource can retain its current `version` after ending support for older
+  documents. Without a `migrate` function, those documents are refused intact.
   `tilo-app check` fails when the schema in `surface.toml` changed
   incompatibly without a version bump.
 - **An unreadable item is quarantined; only an unreadable resource fails.** One

@@ -128,10 +128,10 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ));
         }
     }
-    if options.version.is_some() != options.migrate.is_some() {
+    if options.version.is_none() && options.migrate.is_some() {
         return Err(syn::Error::new(
             Span::call_site(),
-            "`version = N` and `migrate = path` go together: a new version needs a migration",
+            "`migrate = path` requires `version = N`",
         ));
     }
     options.label = options
@@ -1938,22 +1938,21 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
-    let version = options.version.as_ref().map_or_else(
-        || quote!(),
-        |version| {
-            let migrate = &options.migrate;
-            quote! {
-                const VERSION: u32 = #version;
-
-                fn migrate(
-                    doc: &mut #krate::Doc,
-                    from: u32,
-                ) -> ::core::result::Result<(), #krate::ModelError> {
-                    #migrate(doc, from)
-                }
+    let version = options.version.as_ref().map(|version| {
+        quote! {
+            const VERSION: u32 = #version;
+        }
+    });
+    let migration = options.migrate.as_ref().map(|migrate| {
+        quote! {
+            fn migrate(
+                doc: &mut #krate::Doc,
+                from: u32,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                #migrate(doc, from)
             }
-        },
-    );
+        }
+    });
     let load = options.load.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -2539,6 +2538,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #seed_fn
             #by_app_resource_fns
             #version
+            #migration
             #load
             #locate
             #availability

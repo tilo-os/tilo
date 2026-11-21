@@ -27,7 +27,6 @@ impl Library {
     kind = "music.library",
     params = library,
     version = 2,
-    migrate = crate::library_migration::migrate,
     search = Library::search_entries,
     children = Library::places,
     child = Library::place,
@@ -412,6 +411,22 @@ mod tests {
 
     fn edit(edit: &tilo_resource::Edit<Library>) -> Invoke<Library> {
         Invoke::edit(edit).unwrap()
+    }
+
+    #[test]
+    fn old_library_documents_are_declined_without_rewriting_them() {
+        use tilo_resource::evolution::{migrate, stored_version};
+
+        let mut document = tilo_resource::Doc::new();
+        let before = document.save();
+        assert_eq!(stored_version(&document), 1);
+        let error = migrate::<Library>(&mut document).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no migration from storage version 1")
+        );
+        assert_eq!(document.save(), before);
     }
 
     #[test]
