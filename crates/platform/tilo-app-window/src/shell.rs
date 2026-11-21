@@ -293,8 +293,18 @@ fn first_state(nodes: &[UiNode]) -> Option<&UiNode> {
 /// the state's title, its icon and the line under them are the ones it declared. Its bar keeps the
 /// actions its columns offered, so the way to make the first thing is there at every width, and the
 /// columns come back with the first one.
+///
+/// A sidebar whose header carries the app's own controls (a notebook's File menu, the marks of the
+/// accounts a mailbox reads) is chrome, not a state: folding the window around its state would hide
+/// the only way to the commands that fill it. Such a window keeps its columns, each state where its
+/// column stands.
 #[must_use]
 pub fn nothing_listed(mut shell: UiNode) -> UiNode {
+    let sidebar_kept = !part_children(&shell, "sidebar").is_empty()
+        && !part_children(&shell, "sidebar_actions").is_empty();
+    if sidebar_kept {
+        return shell;
+    }
     // The places' state first, since it says what the list would hold; then the overview's, the
     // list's own; then the content's, which says what would stand there.
     let mut state = None;
@@ -947,6 +957,86 @@ mod tests {
         assert_eq!(actions, ["new"], "the bar keeps the way to make the first");
         // The window opens on that one state: no column keeps the front of one that is gone.
         assert!(!composed.props.contains_key("pane"));
+    }
+
+    #[test]
+    fn a_window_whose_sidebar_holds_the_app_s_commands_keeps_its_columns() {
+        // An empty notebook: its places say they list nothing, and the sidebar's header keeps the
+        // File menu that imports what would fill it. Folding the window around one state would
+        // take that menu, the sidebar's name and the way in away, so the columns stand.
+        let (places, unopened) = empty_places();
+        let menu = node("MenuButton", "file", &[("label", Value::text("File"))]);
+        let notebook = shell(
+            "notes",
+            vec![
+                ("actions", vec![button("new", "New note")]),
+                ("sidebar_actions", vec![menu]),
+                ("sidebar", vec![places]),
+                ("content", vec![unopened.clone()]),
+            ],
+            &[("sidebar_title", Value::text("Notes"))],
+        );
+        let composed = compose(&notebook, None);
+        assert!(
+            !composed.props.contains_key("nothing_listed"),
+            "the window keeps its columns"
+        );
+        assert_eq!(
+            part_children(&composed, "sidebar")
+                .iter()
+                .map(|node| node.key.as_str())
+                .collect::<Vec<_>>(),
+            ["none"],
+            "the places' state stands where the places do"
+        );
+        assert!(
+            find(&composed, "unopened").is_some(),
+            "and what stands where a note would stays there"
+        );
+        assert_eq!(
+            part_children(&composed, "sidebar_actions")
+                .iter()
+                .map(|node| node.key.as_str())
+                .collect::<Vec<_>>(),
+            ["file"],
+            "the File menu stays in the sidebar's header"
+        );
+        assert_eq!(
+            composed.props.get("sidebar_title"),
+            Some(&Value::text("Notes")),
+            "the sidebar keeps its name, which names the window"
+        );
+        assert_eq!(
+            shown_title(&composed),
+            Some("Notes"),
+            "and the window is named by it while no note is open"
+        );
+        assert_eq!(
+            part_children(&composed, "actions")
+                .iter()
+                .map(|node| node.key.as_str())
+                .collect::<Vec<_>>(),
+            ["new"],
+            "the bar still offers the way to start the first note"
+        );
+
+        // A header's controls have no row to stand in without the column: the window folds as it
+        // did, and its bar keeps what its content offered.
+        let headless = shell(
+            "notes",
+            vec![
+                ("actions", vec![button("new", "New note")]),
+                ("sidebar_actions", vec![node("MenuButton", "file", &[])]),
+                ("content", vec![unopened]),
+            ],
+            &[],
+        );
+        let folded = compose(&headless, None);
+        assert_eq!(
+            folded.props.get("nothing_listed"),
+            Some(&Value::Bool(true)),
+            "with no places column, one state stands for the window"
+        );
     }
 
     #[test]
