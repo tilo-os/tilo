@@ -9743,6 +9743,7 @@ dependencies = [
  "tilo-clock",
  "tilo-desktop-entry",
  "tilo-lock",
+ "tilo-paths",
  "tilo-test-env",
  "workspace-hack",
 ]

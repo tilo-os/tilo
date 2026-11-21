@@ -11,6 +11,8 @@
     reason = "errors are typed enums whose variants document themselves"
 )]
 
+#[cfg(target_os = "linux")]
+pub mod agent_socket;
 pub mod apps;
 pub mod launch;
 pub mod mounts;

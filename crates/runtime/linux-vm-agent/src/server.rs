@@ -35,6 +35,9 @@ pub struct Agent {
     #[cfg(target_os = "linux")]
     files: Mutex<crate::remote_fs::Mounts>,
     xwayland: Mutex<Option<Child>>,
+    /// Where the launches that serve agents are served.
+    #[cfg(target_os = "linux")]
+    agents: Arc<crate::agent_socket::AgentSocket>,
 }
 
 type Writer<S> = Arc<Mutex<S>>;
@@ -43,7 +46,6 @@ impl Agent {
     #[must_use]
     pub fn new(user: GuestUser, boot_id: String) -> Self {
         Self {
-            user,
             boot_id,
             running: Mutex::new(BTreeMap::new()),
             shares: Mutex::new(Vec::new()),
@@ -51,7 +53,21 @@ impl Agent {
             #[cfg(target_os = "linux")]
             files: Mutex::new(crate::remote_fs::Mounts::default()),
             xwayland: Mutex::new(None),
+            #[cfg(target_os = "linux")]
+            agents: Arc::new(crate::agent_socket::AgentSocket::new(
+                tilo_paths::login::GUEST_AGENT_SOCKET,
+                user.uid,
+            )),
+            user,
         }
+    }
+
+    /// Serve the agent socket at `path` instead of the guest's own place.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn with_agent_socket(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.agents = Arc::new(crate::agent_socket::AgentSocket::new(path, self.user.uid));
+        self
     }
 
     pub fn serve<S: Duplex>(&self, mut stream: S) -> Result<(), ProtocolError> {
@@ -96,12 +112,17 @@ impl Agent {
             HostMessage::InstalledApps => GuestMessage::InstalledApps(crate::apps::installed(
                 &crate::apps::export_dirs(&self.user.home),
             )),
-            HostMessage::Launch(request) => return self.launch(stream, &request),
+            HostMessage::Launch(request) => return self.launch(stream, &request, false),
+            HostMessage::LaunchServingAgents(request) => {
+                return self.launch(stream, &request, true);
+            }
             HostMessage::Hello { .. }
             | HostMessage::Stdin(_)
             | HostMessage::CloseStdin
             | HostMessage::Resize(_)
-            | HostMessage::Signal(_) => GuestMessage::Error {
+            | HostMessage::Signal(_)
+            | HostMessage::AgentBytes { .. }
+            | HostMessage::AgentClose { .. } => GuestMessage::Error {
                 message: "unexpected message".to_string(),
             },
         };
@@ -244,7 +265,15 @@ impl Agent {
         command
     }
 
-    fn launch<S: Duplex>(&self, stream: S, request: &Launch) -> Result<(), ProtocolError> {
+    /// Start `request`'s program and relay it until it exits; with
+    /// `serving_agents`, the agent socket answers what it starts, over this
+    /// connection ([`crate::agent_socket`]).
+    fn launch<S: Duplex>(
+        &self,
+        stream: S,
+        request: &Launch,
+        serving_agents: bool,
+    ) -> Result<(), ProtocolError> {
         let writer: Writer<S> = Arc::new(Mutex::new(stream.try_clone()?));
         let reply = |message: &GuestMessage| send(&mut *writer.lock_recover(), message);
         if let Err(error) = request.validate() {
@@ -252,6 +281,11 @@ impl Agent {
                 message: error.to_string(),
             });
         }
+        let mut request = request.clone();
+        if serving_agents && let Err(message) = self.names_agent_socket(&mut request) {
+            return reply(&GuestMessage::Error { message });
+        }
+        let request = &request;
         let (mut command, note) = self.prepare(request);
         if let Some(note) = note {
             reply(&GuestMessage::Stderr(note.into_bytes()))?;
@@ -269,14 +303,14 @@ impl Agent {
             }
             _ => None,
         };
-        let spawned = command.spawn();
+        let spawned = self.spawn(&mut command, serving_agents);
         // The app holds the terminal's slave now; the agent keeps only the
         // master (the command's copies of the slave go with it), so reading
         // it ends once the app and its children are gone.
         drop(command);
         let terminal = terminal.map(|pty| pty.master);
-        let mut child = match spawned {
-            Ok(child) => child,
+        let (mut child, serving) = match spawned {
+            Ok(spawned) => spawned,
             Err(error) => {
                 return reply(&GuestMessage::Error {
                     message: format!("{}: {error}", request.argv.join(" ")),
@@ -294,45 +328,27 @@ impl Agent {
             },
         );
         reply(&GuestMessage::Started { pid })?;
+        let carried = Carried::default();
+        #[cfg(target_os = "linux")]
+        let serving = serving.map(|(serving, connections)| {
+            carry(connections, &writer, &carried);
+            serving
+        });
 
-        let (drained, pumps_done) = mpsc::channel();
-        let mut pumps = 0_u8;
-        if let Some(stdout) = child.stdout.take() {
-            pump(
-                stdout,
-                Arc::clone(&writer),
-                GuestMessage::Stdout,
-                drained.clone(),
-            );
-            pumps = pumps.saturating_add(1);
-        }
-        if let Some(stderr) = child.stderr.take() {
-            pump(
-                stderr,
-                Arc::clone(&writer),
-                GuestMessage::Stderr,
-                drained.clone(),
-            );
-            pumps = pumps.saturating_add(1);
-        }
         let windowed = request.display == Display::Forwarded;
-        match terminal {
-            Some(master) => {
-                let output = master.try_clone()?;
-                pump(
-                    output,
-                    Arc::clone(&writer),
-                    GuestMessage::Stdout,
-                    drained.clone(),
-                );
-                pumps = pumps.saturating_add(1);
-                host_input(stream, Input::Terminal(master), pid, windowed);
-            }
-            None => host_input(stream, Input::Pipe(child.stdin.take()), pid, windowed),
-        }
-        drop(drained);
+        let (pumps, pumps_done) = relay(
+            &mut child,
+            terminal,
+            (stream, &writer),
+            (pid, windowed),
+            &carried,
+        )?;
 
         let status = child.wait();
+        // What the launch carried ends with it: no process of it is served
+        // any more, and the host's ends read theirs.
+        drop(serving);
+        carried.end();
         for _ in 0..pumps {
             if pumps_done.recv_timeout(DRAIN).is_err() {
                 break;
@@ -347,6 +363,68 @@ impl Agent {
             exit_status,
         );
         reply(&GuestMessage::Exited(status))
+    }
+
+    /// Start `command`; with `serving_agents`, the agent socket serves what
+    /// it starts from before it runs, so a connection it makes at once is its
+    /// own and not turned away.
+    #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the socket is held across the spawn, until the program is served"
+    )]
+    fn spawn(
+        &self,
+        command: &mut Command,
+        serving_agents: bool,
+    ) -> std::io::Result<(Child, Option<Served>)> {
+        let opening = if serving_agents {
+            Some(self.agents.opening().map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("the agent socket did not open: {error}"),
+                )
+            })?)
+        } else {
+            None
+        };
+        let child = command.spawn()?;
+        let served = opening.map(|opening| opening.serve(child.id()));
+        Ok((child, served))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[allow(clippy::unused_self, reason = "the Linux guest's serves its socket")]
+    fn spawn(
+        &self,
+        command: &mut Command,
+        _serving_agents: bool,
+    ) -> std::io::Result<(Child, Option<Served>)> {
+        Ok((command.spawn()?, None))
+    }
+
+    /// Name the agent socket to `request`'s program, in place of any the
+    /// host wrote.
+    #[cfg(target_os = "linux")]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "a guest of another system cannot serve it, and says so"
+    )]
+    fn names_agent_socket(&self, request: &mut Launch) -> Result<(), String> {
+        request
+            .env
+            .retain(|(name, _)| name != tilo_paths::login::AGENT_SOCKET_ENV);
+        request.env.push((
+            tilo_paths::login::AGENT_SOCKET_ENV.to_owned(),
+            self.agents.path().display().to_string(),
+        ));
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[allow(clippy::unused_self, reason = "the Linux guest's reads its socket")]
+    fn names_agent_socket(&self, _request: &mut Launch) -> Result<(), String> {
+        Err("an agent socket needs a Linux guest".to_owned())
     }
 
     fn prepare(&self, request: &Launch) -> (Command, Option<String>) {
@@ -371,6 +449,60 @@ impl Agent {
         command.stdin(stdio()).stdout(stdio()).stderr(stdio());
         (command, spec.note)
     }
+}
+
+/// Relay the launched `child`'s output, and its `terminal`'s when it has one,
+/// to the host on `writer`, and the host's frames on `stream` to it; how many
+/// pumps carry its output, and where each says it is done.
+fn relay<S: Duplex>(
+    child: &mut Child,
+    terminal: Option<std::fs::File>,
+    (stream, writer): (S, &Writer<S>),
+    (pid, windowed): (u32, bool),
+    carried: &Carried,
+) -> std::io::Result<(u8, mpsc::Receiver<()>)> {
+    let (drained, pumps_done) = mpsc::channel();
+    let mut pumps = 0_u8;
+    if let Some(stdout) = child.stdout.take() {
+        pump(
+            stdout,
+            Arc::clone(writer),
+            GuestMessage::Stdout,
+            drained.clone(),
+        );
+        pumps = pumps.saturating_add(1);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        pump(
+            stderr,
+            Arc::clone(writer),
+            GuestMessage::Stderr,
+            drained.clone(),
+        );
+        pumps = pumps.saturating_add(1);
+    }
+    match terminal {
+        Some(master) => {
+            let output = master.try_clone()?;
+            pump(
+                output,
+                Arc::clone(writer),
+                GuestMessage::Stdout,
+                drained.clone(),
+            );
+            pumps = pumps.saturating_add(1);
+            host_input(stream, Input::Terminal(master), pid, windowed, carried);
+        }
+        None => host_input(
+            stream,
+            Input::Pipe(child.stdin.take()),
+            pid,
+            windowed,
+            carried,
+        ),
+    }
+    drop(drained);
+    Ok((pumps, pumps_done))
 }
 
 fn exit_status(status: std::process::ExitStatus) -> ExitStatus {
@@ -414,12 +546,121 @@ fn pump<S: Duplex, R: Read + Send + 'static>(
     });
 }
 
+/// A launch the agent socket serves, and the connections its processes make.
+#[cfg(target_os = "linux")]
+type Served = (
+    crate::agent_socket::Serving,
+    mpsc::Receiver<std::os::unix::net::UnixStream>,
+);
+#[cfg(not(target_os = "linux"))]
+type Served = std::convert::Infallible;
+
+/// The connections a launch carries from the agent socket, by their number
+/// on the launch's connection.
+#[derive(Clone, Default)]
+struct Carried(Arc<Mutex<BTreeMap<u64, std::os::unix::net::UnixStream>>>);
+
+impl Carried {
+    /// Hand the host's bytes to connection `connection`.
+    fn write(&self, connection: u64, bytes: &[u8]) {
+        let stream = self
+            .0
+            .lock_recover()
+            .get(&connection)
+            .and_then(|stream| stream.try_clone().ok());
+        if let Some(mut stream) = stream {
+            let _ = stream.write_all(bytes);
+        }
+    }
+
+    /// The host ended connection `connection`.
+    fn close(&self, connection: u64) {
+        let closed = self.0.lock_recover().remove(&connection);
+        if let Some(stream) = closed {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// End every connection.
+    fn end(&self) {
+        let ended = std::mem::take(&mut *self.0.lock_recover());
+        for stream in ended.into_values() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+}
+
+/// Carry each connection `connections` hands over to the host on `writer`,
+/// numbered, until the launch is no longer served.
+#[cfg(target_os = "linux")]
+fn carry<S: Duplex>(
+    connections: mpsc::Receiver<std::os::unix::net::UnixStream>,
+    writer: &Writer<S>,
+    carried: &Carried,
+) {
+    let (writer, carried) = (Arc::clone(writer), carried.clone());
+    std::thread::spawn(move || {
+        for (connection, stream) in (1_u64..).zip(connections) {
+            let Ok(reading) = stream.try_clone() else {
+                continue;
+            };
+            carried.0.lock_recover().insert(connection, stream);
+            let opened = GuestMessage::AgentOpened { connection };
+            if send(&mut *writer.lock_recover(), &opened).is_err() {
+                carried.close(connection);
+                return;
+            }
+            let (writer, carried) = (Arc::clone(&writer), carried.clone());
+            std::thread::spawn(move || {
+                carry_from(reading, connection, &writer);
+                carried.0.lock_recover().remove(&connection);
+            });
+        }
+    });
+}
+
+/// Carry what the process writes on connection `connection` to the host, and
+/// its end.
+fn carry_from<S: Duplex>(
+    mut reading: std::os::unix::net::UnixStream,
+    connection: u64,
+    writer: &Writer<S>,
+) {
+    let mut buffer = vec![0_u8; MAX_CHUNK_BYTES];
+    loop {
+        let read = match reading.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        let bytes = buffer.get(..read).unwrap_or_default().to_vec();
+        if send(
+            &mut *writer.lock_recover(),
+            &GuestMessage::AgentBytes { connection, bytes },
+        )
+        .is_err()
+        {
+            return;
+        }
+    }
+    let _ = send(
+        &mut *writer.lock_recover(),
+        &GuestMessage::AgentClosed { connection },
+    );
+}
+
 enum Input {
     Pipe(Option<ChildStdin>),
     Terminal(std::fs::File),
 }
 
-fn host_input<S: Duplex>(mut stream: S, input: Input, pid: u32, windowed: bool) {
+fn host_input<S: Duplex>(
+    mut stream: S,
+    input: Input,
+    pid: u32,
+    windowed: bool,
+    carried: &Carried,
+) {
+    let carried = carried.clone();
     std::thread::spawn(move || {
         let mut input = input;
         let group = 0_i32.saturating_sub(i32::try_from(pid).unwrap_or(i32::MAX));
@@ -455,6 +696,10 @@ fn host_input<S: Duplex>(mut stream: S, input: Input, pid: u32, windowed: bool) 
                     // or the session a terminal launch leads).
                     unsafe { libc::kill(group, signal.number()) };
                 }
+                Ok(Some(HostMessage::AgentBytes { connection, bytes })) => {
+                    carried.write(connection, &bytes);
+                }
+                Ok(Some(HostMessage::AgentClose { connection })) => carried.close(connection),
                 Ok(Some(_)) => {}
                 Ok(None) | Err(_) => {
                     if !windowed {

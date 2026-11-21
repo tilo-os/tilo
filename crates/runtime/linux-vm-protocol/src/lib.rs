@@ -10,7 +10,19 @@
 //! host  → Launch(Launch)                  guest → Started { pid }
 //! host  → Stdin(..) | CloseStdin | Signal guest → Stdout(..) | Stderr(..)
 //!         | Resize                        guest → Exited(ExitStatus), close
+//! host  → LaunchServingAgents(Launch)     guest → as for Launch, and:
+//!                                         guest → AgentOpened { connection }
+//! host  ⇄ AgentBytes { connection, .. }   guest ⇄ AgentBytes { connection, .. }
+//! host  → AgentClose { connection }       guest → AgentClosed { connection }
 //! ```
+//!
+//! A launch that serves agents has the guest's agent socket answer what it
+//! starts: `/run/tilo/agent.sock`, named to the program in `TILO_AGENT_SOCK`,
+//! where an environment's programs find Tilo's MCP server on a device too.
+//! Each connection one of the launch's own processes makes there is carried
+//! to the host on the launch's own connection, as its numbered bytes, and
+//! ends with the launch. A process of no such launch is turned away by the
+//! guest before a byte reaches the host.
 //!
 //! Every message is one [`FRAMING`] frame carrying a postcard value. The
 //! agent reports and the host decides; windows never cross this channel but
@@ -120,6 +132,19 @@ pub enum HostMessage {
     SetClock {
         unix_millis: u64,
     },
+    /// [`Self::Launch`], with the guest's agent socket answering what it
+    /// starts: each connection one of its processes makes there is carried
+    /// on this launch's connection.
+    LaunchServingAgents(Launch),
+    /// Bytes for one connection the launch's program made to the agent socket.
+    AgentBytes {
+        connection: u64,
+        bytes: Vec<u8>,
+    },
+    /// The host ends that connection: the program reads its end.
+    AgentClose {
+        connection: u64,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -146,6 +171,20 @@ pub enum GuestMessage {
     /// The guest's wall clock now reads `unix_millis`.
     ClockSet {
         unix_millis: u64,
+    },
+    /// A process of a launch that serves agents connected to the agent
+    /// socket; its bytes and its end carry `connection`.
+    AgentOpened {
+        connection: u64,
+    },
+    /// What that process wrote on the connection.
+    AgentBytes {
+        connection: u64,
+        bytes: Vec<u8>,
+    },
+    /// The process closed the connection, or left.
+    AgentClosed {
+        connection: u64,
     },
 }
 
@@ -473,6 +512,12 @@ mod tests {
                         read_only: false,
                     }],
                 },
+                HostMessage::LaunchServingAgents(launch(&["claude"])),
+                HostMessage::AgentBytes {
+                    connection: 3,
+                    bytes: b"{}\n".to_vec(),
+                },
+                HostMessage::AgentClose { connection: 3 },
             ];
             let mut wire = Vec::new();
             for message in &messages {

@@ -49,6 +49,24 @@ impl Processes {
         after.split_whitespace().nth(1)?.parse().ok()
     }
 
+    /// `process` and the processes that started it, nearest first, up to the
+    /// machine's first: whose process it is.
+    #[must_use]
+    pub fn lineage(&self, process: u32) -> Vec<u32> {
+        /// Deeper than any process tree a program makes.
+        const DEEPEST: usize = 256;
+        let mut found = vec![process];
+        let mut at = process;
+        while let Some(parent) = self.parent(at) {
+            if parent == 0 || found.contains(&parent) || found.len() >= DEEPEST {
+                break;
+            }
+            found.push(parent);
+            at = parent;
+        }
+        found
+    }
+
     /// Every process descended from `ancestor`, itself not among them.
     #[must_use]
     pub fn descendants(&self, ancestor: u32) -> Vec<u32> {
@@ -190,6 +208,13 @@ mod tests {
             run.sort_unstable();
             assert_eq!(run, [101, 102], "a name with brackets and spaces is read to its end");
             assert!(processes.descendants(102).is_empty());
+        }
+
+        phase a_process_knows_whose_it_is;
+        {
+            let (_dir, processes) = machine();
+            assert_eq!(processes.lineage(102), [102, 101, 100, 1]);
+            assert_eq!(processes.lineage(9999), [9999], "a process that cannot be read is alone");
         }
 
         phase a_callers_socket_is_its_own_end_of_the_connection;

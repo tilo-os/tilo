@@ -1,6 +1,8 @@
 //! The host side of one agent connection.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
 use crate::{
@@ -82,21 +84,74 @@ impl<S: Duplex> LaunchSignals<S> {
     }
 }
 
+/// What serves one connection a launched program made to the guest's agent
+/// socket: the host's end of it, on a thread of its own, for as long as it
+/// lasts. The connection ends when the program closes it or the launch ends.
+pub type AgentServer = Arc<dyn Fn(UnixStream) + Send + Sync>;
+
 /// Start `launch` and relay its stdio until it exits. `on_signals` receives a
 /// handle before the first byte is relayed, so a caller can forward its own
 /// signals from the start.
 pub fn launch<S: Duplex>(
-    mut stream: S,
+    stream: S,
     launch: &Launch,
     io: LaunchIo<'_>,
     on_signals: impl FnOnce(LaunchSignals<S>),
 ) -> Result<ExitStatus, ProtocolError> {
+    relay(stream, launch, io, None, on_signals)
+}
+
+/// [`launch`], with the guest's agent socket answering what the program
+/// starts: each connection one of its processes makes there is handed to
+/// `agents` as a stream of the host's, carried on this launch's connection,
+/// and all of them end with the launch.
+pub fn launch_serving_agents<S: Duplex>(
+    stream: S,
+    launch: &Launch,
+    io: LaunchIo<'_>,
+    agents: &AgentServer,
+    on_signals: impl FnOnce(LaunchSignals<S>),
+) -> Result<ExitStatus, ProtocolError> {
+    relay(stream, launch, io, Some(agents), on_signals)
+}
+
+/// The host's ends of the connections a launch carries, by the guest's number.
+type Carried = HashMap<u64, UnixStream>;
+
+fn relay<S: Duplex>(
+    mut stream: S,
+    launch: &Launch,
+    io: LaunchIo<'_>,
+    agents: Option<&AgentServer>,
+    on_signals: impl FnOnce(LaunchSignals<S>),
+) -> Result<ExitStatus, ProtocolError> {
     launch.validate()?;
     handshake(&mut stream)?;
-    send(&mut stream, &HostMessage::Launch(launch.clone()))?;
+    let asked = match agents {
+        Some(_) => HostMessage::LaunchServingAgents(launch.clone()),
+        None => HostMessage::Launch(launch.clone()),
+    };
+    send(&mut stream, &asked)?;
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
+    let mut carried = Carried::new();
+    let ended = relay_frames(&mut stream, &writer, io, agents, &mut carried, on_signals);
+    // What the launch carried ends with it, whichever way it ended.
+    for (_, connection) in carried.drain() {
+        let _ = connection.shutdown(std::net::Shutdown::Both);
+    }
+    ended
+}
+
+fn relay_frames<S: Duplex>(
+    stream: &mut S,
+    writer: &Arc<Mutex<S>>,
+    io: LaunchIo<'_>,
+    agents: Option<&AgentServer>,
+    carried: &mut Carried,
+    on_signals: impl FnOnce(LaunchSignals<S>),
+) -> Result<ExitStatus, ProtocolError> {
     on_signals(LaunchSignals {
-        writer: Arc::clone(&writer),
+        writer: Arc::clone(writer),
     });
     let LaunchIo {
         stdin,
@@ -106,11 +161,35 @@ pub fn launch<S: Duplex>(
     } = io;
     let mut stdin = Some(stdin);
     loop {
-        match recv(&mut stream)?.ok_or(ProtocolError::Closed)? {
+        match recv(stream)?.ok_or(ProtocolError::Closed)? {
             GuestMessage::Started { pid } => {
                 started(pid);
                 if let Some(input) = stdin.take() {
-                    pump_stdin(input, Arc::clone(&writer));
+                    pump_stdin(input, Arc::clone(writer));
+                }
+            }
+            GuestMessage::AgentOpened { connection } => match agents {
+                Some(agents) => carry(connection, agents, writer, carried)?,
+                None => {
+                    let _ = send(
+                        &mut *writer.lock().map_err(|_| ProtocolError::Closed)?,
+                        &HostMessage::AgentClose { connection },
+                    );
+                }
+            },
+            GuestMessage::AgentBytes { connection, bytes } => {
+                // A connection whose server stopped reading is closed: its
+                // program reads the end.
+                let written = carried
+                    .get_mut(&connection)
+                    .is_some_and(|ours| ours.write_all(&bytes).is_ok());
+                if !written && let Some(ours) = carried.remove(&connection) {
+                    let _ = ours.shutdown(std::net::Shutdown::Both);
+                }
+            }
+            GuestMessage::AgentClosed { connection } => {
+                if let Some(ours) = carried.remove(&connection) {
+                    let _ = ours.shutdown(std::net::Shutdown::Write);
                 }
             }
             GuestMessage::Stdout(bytes) => {
@@ -129,6 +208,42 @@ pub fn launch<S: Duplex>(
             _ => return Err(ProtocolError::Unexpected),
         }
     }
+}
+
+/// Hand the guest's connection `connection` to `agents` as a stream of the
+/// host's, and carry what its server writes back to the guest.
+fn carry<S: Duplex>(
+    connection: u64,
+    agents: &AgentServer,
+    writer: &Arc<Mutex<S>>,
+    carried: &mut Carried,
+) -> Result<(), ProtocolError> {
+    let (ours, theirs) = UnixStream::pair()?;
+    let mut answers = ours.try_clone()?;
+    carried.insert(connection, ours);
+    let writer = Arc::clone(writer);
+    std::thread::spawn(move || {
+        let mut buffer = vec![0_u8; MAX_CHUNK_BYTES];
+        loop {
+            let read = match answers.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => read,
+            };
+            let bytes = buffer.get(..read).unwrap_or_default().to_vec();
+            let Ok(mut writer) = writer.lock() else {
+                return;
+            };
+            if send(&mut *writer, &HostMessage::AgentBytes { connection, bytes }).is_err() {
+                return;
+            }
+        }
+        if let Ok(mut writer) = writer.lock() {
+            let _ = send(&mut *writer, &HostMessage::AgentClose { connection });
+        }
+    });
+    let agents = Arc::clone(agents);
+    std::thread::spawn(move || agents(theirs));
+    Ok(())
 }
 
 fn pump_stdin<S: Duplex>(input: Option<Box<dyn Read + Send>>, writer: Arc<Mutex<S>>) {
@@ -241,6 +356,107 @@ mod tests {
                 (out.as_slice(), err.as_slice(), pid),
                 (&b"hello"[..], &b"warn"[..], 42)
             );
+        }
+
+        phase a_launch_serving_agents_carries_each_connection_to_the_hosts_server;
+        // phase: a connection the program makes reaches the host's server and
+        // its answers reach the program; the launch's end ends what it carried
+        {
+            let (host, mut guest) = UnixStream::pair().unwrap();
+            let agent = std::thread::spawn(move || {
+                let _ = recv::<_, HostMessage>(&mut guest).unwrap();
+                send(&mut guest, &hello()).unwrap();
+                let Some(HostMessage::LaunchServingAgents(launch)) = recv(&mut guest).unwrap()
+                else {
+                    panic!("expected a launch serving agents");
+                };
+                assert_eq!(launch.argv, ["claude"]);
+                send(&mut guest, &GuestMessage::Started { pid: 42 }).unwrap();
+                for connection in [1, 2] {
+                    send(&mut guest, &GuestMessage::AgentOpened { connection }).unwrap();
+                }
+                send(
+                    &mut guest,
+                    &GuestMessage::AgentBytes {
+                        connection: 1,
+                        bytes: b"ping\n".to_vec(),
+                    },
+                )
+                .unwrap();
+                let mut answered = Vec::new();
+                loop {
+                    match recv::<_, HostMessage>(&mut guest).unwrap().unwrap() {
+                        HostMessage::CloseStdin => {}
+                        HostMessage::AgentBytes { connection, bytes } => {
+                            assert_eq!(connection, 1, "only the connection that asked is answered");
+                            answered.extend(bytes);
+                            if answered.ends_with(b"\n") {
+                                break;
+                            }
+                        }
+                        other => panic!("unexpected {other:?}"),
+                    }
+                }
+                send(&mut guest, &GuestMessage::AgentClosed { connection: 1 }).unwrap();
+                // The server of the first one ends its side once the program
+                // closed its own.
+                loop {
+                    match recv::<_, HostMessage>(&mut guest).unwrap().unwrap() {
+                        HostMessage::AgentClose { connection: 1 } => break,
+                        HostMessage::CloseStdin => {}
+                        other => panic!("unexpected {other:?}"),
+                    }
+                }
+                send(
+                    &mut guest,
+                    &GuestMessage::Exited(ExitStatus {
+                        code: Some(0),
+                        signal: None,
+                    }),
+                )
+                .unwrap();
+                answered
+            });
+            let (ended, endings) = std::sync::mpsc::channel();
+            let server: AgentServer = Arc::new(move |mut theirs: UnixStream| {
+                let mut byte = [0_u8; 1];
+                while theirs.read(&mut byte).is_ok_and(|read| read == 1) {
+                    if byte[0] == b'\n' {
+                        let _ = theirs.write_all(b"pong\n");
+                    }
+                }
+                let _ = ended.send(());
+            });
+            let request = Launch {
+                argv: vec!["claude".into()],
+                cwd: None,
+                env: Vec::new(),
+                stdio: Stdio::Relay,
+                display: Display::None,
+            };
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let status = launch_serving_agents(
+                host,
+                &request,
+                LaunchIo {
+                    stdin: None,
+                    stdout: &mut out,
+                    stderr: &mut err,
+                    started: &mut |_| {},
+                },
+                &server,
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(status.code, Some(0));
+            assert_eq!(agent.join().unwrap(), b"pong\n");
+            // Both servers saw their connection end: the first when its
+            // program closed it, the second when the launch ended.
+            for _ in 0..2 {
+                endings
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("every carried connection ends with the launch");
+            }
         }
 
         phase an_agent_on_another_protocol_major_is_refused;
