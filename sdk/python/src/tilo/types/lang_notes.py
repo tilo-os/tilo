@@ -24,22 +24,47 @@ __all__ = [
     "Notebook",
     "Notes",
     "PinArgs",
+    "IndentArgs",
+    "OutdentArgs",
+    "MoveUpArgs",
+    "MoveDownArgs",
     "RetitleArgs",
     "AddTextArgs",
     "TagArgs",
     "UntagArgs",
+    "InsertImageArgs",
     "KeepImageArgs",
     "MoveToArgs",
     "MoveAfterArgs",
     "SortChildrenArgs",
     "DeleteArgs",
     "AppendToNoteArgs",
+    "ImportArchiveArgs",
+    "ImportDroppedArgs",
 ]
 
 PinArgs = TypedDict("PinArgs", {
     "pinned": NotRequired["bool | None"],
 })
 """The arguments of `pin`."""
+
+IndentArgs = TypedDict("IndentArgs", {
+    "above": NotRequired["Note | None"],
+})
+"""The arguments of `indent`."""
+
+OutdentArgs = TypedDict("OutdentArgs", {
+})
+"""The arguments of `outdent`."""
+
+MoveUpArgs = TypedDict("MoveUpArgs", {
+    "above": NotRequired["Note | None"],
+})
+"""The arguments of `move_up`."""
+
+MoveDownArgs = TypedDict("MoveDownArgs", {
+})
+"""The arguments of `move_down`."""
 
 RetitleArgs = TypedDict("RetitleArgs", {
     "title": "str",
@@ -60,6 +85,11 @@ UntagArgs = TypedDict("UntagArgs", {
     "t": "str",
 })
 """The arguments of `untag`."""
+
+InsertImageArgs = TypedDict("InsertImageArgs", {
+    "image": "Any",
+})
+"""The arguments of `insert_image`."""
 
 KeepImageArgs = TypedDict("KeepImageArgs", {
     "picture": "list[str]",
@@ -95,9 +125,19 @@ AppendToNoteArgs = TypedDict("AppendToNoteArgs", {
 })
 """The arguments of `append_to_note`."""
 
+ImportArchiveArgs = TypedDict("ImportArchiveArgs", {
+    "file": "Any",
+})
+"""The arguments of `import_archive`."""
+
+ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
+    "files": "list[Any]",
+})
+"""The arguments of `import_dropped`."""
+
 class Note(Resource):
     """Note — `tl.so.tilo.lang.notes.Note`."""
-    __surface__ = "so.tilo.lang.notes@f28cdaaae36373f8"
+    __surface__ = "so.tilo.lang.notes@1ceec32c41c46d8a"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -106,11 +146,11 @@ class Note(Resource):
     xcpasjg7: list[str]  # tags
     erijxfd3: str  # source
     uquoltho: str  # origin
-    ngwafrjq: str  # by
-    buuvovaf: str  # service
-    jznzkj47: str  # page
-    hchfoqqm: str  # created
-    _5wdceapz: str  # updated
+    eo4enwxh: str  # by
+    yzessjhr: str  # service
+    zex2vawx: str  # page
+    rnhwkv6z: str  # created
+    _2od7mwir: str  # updated
 
     def pin(self,
         *,
@@ -125,6 +165,50 @@ class Note(Resource):
     def pin_many(self, items: list[PinArgs]) -> list[dict[str, Any]]:
         """Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("pin", items)
+
+    def indent(self,
+        *,
+        above: Note | None = None,
+    ) -> None:
+        """Puts a note under the note it stands over, with the notes under it, as `Tab` does in the tree; with none named, it goes under the note above it."""
+        args: dict[str, Any] = {}
+        if above is not None:
+            args["above"] = above
+        return self.action("indent", **args)
+
+    def indent_many(self, items: list[IndentArgs]) -> list[dict[str, Any]]:
+        """Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("indent", items)
+
+    def outdent(self) -> None:
+        """Puts a note beside the note it stands in, just after it and the notes under it, as `Shift-Tab` does in the tree."""
+        return self.action("outdent")
+
+    def outdent_many(self, items: list[OutdentArgs]) -> list[dict[str, Any]]:
+        """Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("outdent", items)
+
+    def move_up(self,
+        *,
+        above: Note | None = None,
+    ) -> None:
+        """Puts a note just over the note above it, with the notes under it, as `Alt-Up` does in the tree; with none named, over the note just above it."""
+        args: dict[str, Any] = {}
+        if above is not None:
+            args["above"] = above
+        return self.action("move_up", **args)
+
+    def move_up_many(self, items: list[MoveUpArgs]) -> list[dict[str, Any]]:
+        """Runs `move_up` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_up", items)
+
+    def move_down(self) -> None:
+        """Puts a note just under the note below it and the notes under that one, with its own notes after it, as `Alt-Down` does in the tree."""
+        return self.action("move_down")
+
+    def move_down_many(self, items: list[MoveDownArgs]) -> list[dict[str, Any]]:
+        """Runs `move_down` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_down", items)
 
     def retitle(self, *, title: str) -> None:
         """Renames a note."""
@@ -158,6 +242,14 @@ class Note(Resource):
         """Runs `untag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("untag", items)
 
+    def insert_image(self, *, image: Any) -> None:
+        """Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as."""
+        return self.action("insert_image", image=image)
+
+    def insert_image_many(self, items: list[InsertImageArgs]) -> list[dict[str, Any]]:
+        """Runs `insert_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert_image", items)
+
     def keep_image(self, *, picture: list[str]) -> None:
         """Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note holds the address of its bytes, and the name it came in as, which an export writes beside it. `picture` is the editor's word of it: its name, then the address of its content."""
         return self.action("keep_image", picture=picture)
@@ -176,12 +268,12 @@ class Note(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"pin", "pin_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
+    __actions__ = frozenset({"pin", "pin_many", "indent", "indent_many", "outdent", "outdent_many", "move_up", "move_up_many", "move_down", "move_down_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "insert_image", "insert_image_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
 
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.lang.notes.Notebook`."""
-    __surface__ = "so.tilo.lang.notes@f28cdaaae36373f8"
+    __surface__ = "so.tilo.lang.notes@1ceec32c41c46d8a"
     tmqqtkeb: list[Entry[Note]]  # notes
 
     def new_note(self,
@@ -198,7 +290,7 @@ class Notebook(Resource):
         return self.action("new_note", **args)
 
     def new_child(self, *, n: Note) -> Note:
-        """Starts a note inside `n`'s own, after the notes it already holds."""
+        """Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row."""
         return self.action("new_child", n=n)
 
     def move_to(self,
@@ -276,12 +368,53 @@ class Notebook(Resource):
         """The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it. That is the shape the import reads, so the notebook comes back as the tree it is, titles, bodies and pictures alike."""
         return self.action("export_notebook")
 
+    def import_markdown(self, *, file: Any) -> Note:
+        """Imports a Markdown file as a note, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note. The note stands under the note of the folder its file's path names — `Q3 plan/Ideas.md` under `Q3 plan.md` — and at the top of the tree when its path names no folder. Its title is the document's first heading, or the file's name; the heading it says the title with is not said again in its body."""
+        return self.action("import_markdown", file=file)
+
+    def import_page(self,
+        *,
+        file: Any,
+        by: str,
+        service: str,
+        page: str,
+        created: str | None = None,
+        updated: str | None = None,
+    ) -> Note:
+        """Imports a page another service held as a note, keeping whose words it is and where it stood there: what `tilo migrate` calls for each page it brings over, and what a person's own import of a file does without a service's words. A page imported by its address there again opens the note it made, whatever the page says now; the note stands under the note of the folder its file's path names."""
+        args: dict[str, Any] = {}
+        args["file"] = file
+        args["by"] = by
+        args["service"] = service
+        args["page"] = page
+        if created is not None:
+            args["created"] = created
+        if updated is not None:
+            args["updated"] = updated
+        return self.action("import_page", **args)
+
+    def import_archive(self, *, file: Any) -> None:
+        """Imports a zip of pages as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back. That is this app's own notebook written out, a Notion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures beside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's title is its first heading, or its file's name; the pictures a page shows are the files it stands beside, a reference read from the page's own folder, and a link to a page of the archive is the reference to the note that page made. A migration says where each page came from in its own file beside the pages, and a page that is imported already keeps the note it made."""
+        return self.action("import_archive", file=file)
+
+    def import_archive_many(self, items: list[ImportArchiveArgs]) -> list[dict[str, Any]]:
+        """Runs `import_archive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import_archive", items)
+
+    def import_dropped(self, *, files: list[Any]) -> None:
+        """Files dropped on the notebook: a Markdown file comes in as a note, an archive as the pages it holds — the notebook's own written out, or another app's export — and each file of a drop in turn. One action, so undo takes the whole drop back at once."""
+        return self.action("import_dropped", files=files)
+
+    def import_dropped_many(self, items: list[ImportDroppedArgs]) -> list[dict[str, Any]]:
+        """Runs `import_dropped` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import_dropped", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_note", "new_child", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "export_notebook"})
+    __actions__ = frozenset({"new_note", "new_child", "move_to", "move_to_many", "move_after", "move_after_many", "duplicate", "sort_children", "sort_children_many", "delete", "delete_many", "append_to_note", "append_to_note_many", "file_note", "export_notebook", "import_markdown", "import_page", "import_archive", "import_archive_many", "import_dropped", "import_dropped_many"})
 
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.lang.notes`."""
-    __surface__ = "so.tilo.lang.notes@f28cdaaae36373f8"
+    __surface__ = "so.tilo.lang.notes@1ceec32c41c46d8a"
 

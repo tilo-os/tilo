@@ -76,7 +76,7 @@ SeekToArgs = TypedDict("SeekToArgs", {
 
 class Item(Resource):
     """Item — `tl.so.tilo.lang.gallery.Item`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     n5clkmib: str  # title
     znpp3agb: str  # notes
     xttl6aec: str  # stage
@@ -105,7 +105,7 @@ class Item(Resource):
 
 class Gallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery.Gallery`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     bmdkc22s: str  # name
     cbwtcaei: str  # basics_note
     kwuh65ek: str  # controls_title
@@ -181,7 +181,7 @@ class Gallery(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.lang.gallery.Row`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     od2pk6d3: str  # title
     jqhagvfx: str  # state
     pu34cefb: int  # size
@@ -189,7 +189,7 @@ class Row(Resource):
 
 class Node(Resource):
     """Node — `tl.so.tilo.lang.gallery.Node`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     sartpsxo: str  # title
     iqq34vjp: Node | None  # parent
     jd5rkocy: bool  # folder
@@ -198,7 +198,7 @@ class Node(Resource):
 
 class Message(Resource):
     """Message — `tl.so.tilo.lang.gallery.Message`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     lcfap66g: str  # title
     ssylkjtu: str  # from
     vyexrz4i: str  # body
@@ -208,21 +208,21 @@ class Message(Resource):
 
 class Card(Resource):
     """Card — `tl.so.tilo.lang.gallery.Card`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     y5gdkqew: str  # title
     ii4dp5pl: int  # count
 
 
 class Change(Resource):
     """Change — `tl.so.tilo.lang.gallery.Change`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     dmejdwow: str  # title
     kbnmru3y: str  # summary
 
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.lang.gallery.Photo`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     _6zq4etzb: str  # title
     s74gxrkc: str  # place
     _5d3oxbry: str  # picture
@@ -231,14 +231,14 @@ class Photo(Resource):
 
 class Pinned(Resource):
     """Pinned — `tl.so.tilo.lang.gallery.Pinned`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     ciwf3kva: str  # title
     _5tfi5mod: Kind  # kind
 
 
 class LangGallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery`."""
-    __surface__ = "so.tilo.lang.gallery@eb2fe24923268bcf"
+    __surface__ = "so.tilo.lang.gallery@d5912698f631c443"
     def note_item(self,
         *,
         last: str,
@@ -327,7 +327,7 @@ class LangGallery(Resource):
     def mark_files(self,
         *,
         last: str,
-        files: list[str],
+        files: list[Any],
     ) -> None:
         """Note the files dropped, in the window's last answer."""
         return self.action("mark_files", last=last, files=files)

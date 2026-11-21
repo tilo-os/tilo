@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.tasks@a9bc1c3e78e9ab43";
+export const SURFACE = "so.tilo.lang.tasks@f9e05c2089d3c07d";
 
 /** How much a task matters, most urgent last. One of "none", "low", "medium", "high", "urgent". */
 export type Priority = "none" | "low" | "medium" | "high" | "urgent";
@@ -243,7 +243,7 @@ export interface Task extends tilo.Resource {
   }): Promise<void>;
   /** Runs `assign` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   assignMany(items: AssignArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does. */
+  /** Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does; with none named, under the task above it in the list. */
   indent(args?: {
     above?: Task;
   }): Promise<void>;

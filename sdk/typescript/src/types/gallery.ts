@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.gallery@eb2fe24923268bcf";
+export const SURFACE = "so.tilo.lang.gallery@d5912698f631c443";
 
 /** What a pinned app is, and the picture it shows on a dock. One of "notes", "tasks", "mail". */
 export type Kind = "notes" | "tasks" | "mail";
@@ -328,7 +328,7 @@ export interface LangGallery extends tilo.Resource {
   /** Note the files dropped, in the window's last answer. */
   mark_files(args: {
     last: string;
-    files: string[];
+    files: unknown[];
   }): Promise<void>;
   /** Note the picture a card opened, in the page's answer. */
   note_photo(args: {
