@@ -2,7 +2,8 @@
 # Build everything dist/dev/nested-session.sh runs, into one directory: the
 # host programs (the session, launcher, installer, packager, runtime-bundle tool,
 # model gateway, the ush supervisor, tilo-control
-# fixture), the `tilolang` CLI (`tilolang dev --session` installs into the
+# fixture, and the stand-in mail server a user story starts beside its
+# shells), the `tilolang` CLI (`tilolang dev --session` installs into the
 # session), the thin apps, the tilolang runtime binary (apps/tilolang,
 # which nested-session.sh bakes into the tilolang runtime bundle), the shared
 # runtime library they link and
@@ -125,6 +126,11 @@ build_host() {
         -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilo-fs --bin fs \
         -p nested-session-bus --bin nested-session-bus || return 1
+    # The stand-in mail server a user story rehearses connecting a mail account against: the
+    # example a tilo.sh stack starts as mail-stand-in, so a story in a shell can start it beside
+    # the session without a stack (stories/shell/mail-password.py).
+    cargo build --locked --timings "${args[@]}" \
+        -p tilo-account-probe --example mail_stand_in || return 1
     # The gateway, on a build of its own: its binary needs `server`, which no
     # longer comes from building beside the session, and the session's gateway
     # runs with the features the workspace builds it with.
@@ -298,6 +304,9 @@ for name in tilo-window-menu tilo-lock-screen tilo-quick-settings tilo-audio; do
     cp -p "$target/$host_profile/$name" "$out/bin/"
 done
 cp -p "$target/$host_profile/osk" "$out/bin/tilo-osk"
+# The stand-in mail server a user story starts beside its shells, under the name that says what
+# it is (the stack stages the same example as `mail-stand-in`).
+cp -p "$target/$host_profile/examples/mail_stand_in" "$out/bin/mail-stand-in"
 # Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
 [[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"
 cp -p "$target/$thin_profile/libruntime_dylib.so" "$target/$thin_profile/runtime-engines" "$out/thin-app/"

@@ -214,13 +214,19 @@ for story in "${asked[@]}"; do
   { read -r TILO_SH_ADMISSION; read -r TILO_SH_MAIL_STAND_IN; read -r private_network; } < <(stacks_for_story "$story")
   export TILO_SH_ADMISSION TILO_SH_MAIL_STAND_IN private_network
   status=0
+  unset TILO_MAIL_STAND_IN
   if ! start_servers "$story" "$out" "$(servers_of "$story")"; then
     red+=("$story")
     continue
   fi
   if [[ $(walk_of "$story") == shell ]]; then
     # Each person a headless Tilo session of their own, on a scratch home of its own; the
-    # driver keeps what a person reads the story by and removes the sessions' state.
+    # driver keeps what a person reads the story by and removes the sessions' state. A story
+    # that rehearses a mail provider is given the tree's stand-in mail server, which the
+    # nested-session build staged beside the session.
+    if [[ $TILO_SH_MAIL_STAND_IN == 1 ]]; then
+      export TILO_MAIL_STAND_IN=${TILO_NESTED_SESSION_BUILD:?}/bin/mail-stand-in
+    fi
     PYTHONDONTWRITEBYTECODE=1 python3 "$stories/$driver" "$out" 2>&1 | tee "$out/driver.log" || status=$?
   elif ! on_stack "$story"; then
     # A story with no stack walks what it drives itself (its driver says what).

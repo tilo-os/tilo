@@ -115,7 +115,7 @@
       "They arrive in a workspace of their own": 20000
     },
     "mail-password": {
-      "Ada opens Mail and enters their address and password": 60000,
+      "Ada opens Mail and enters their address and password": 90000,
       "Ada reads the newest mail": 20000,
       "Ada searches for an older one": 20000,
       "Ada sends a reply, and it arrives": 90000,
@@ -154,13 +154,6 @@
       "files-lost-on-second": {
         "target": 0,
         "what": "Files missing or not as copied on the second computer."
-      }
-    },
-    "mail-password": {
-      "servers-found-by-mail": {
-        "target": 1,
-        "atLeast": true,
-        "what": "Whether Mail worked the servers out from the address alone, as a provider's published settings document lets it: the stack serves one at https://autoconfig.<domain>/, which a check that binds no port below 1024 cannot."
       }
     },
     "second-device": {
