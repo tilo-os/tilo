@@ -94,9 +94,10 @@ def answers(session: Session, out: Path) -> dict:
           60)
     shown(session, out, "reading")
     click_on(session, lambda name: name == "Reply", "Reply")
-    names = until(f"{who}'s reply composer to answer the sender",
-                  lambda: (now if any(REPLY_SUBJECT in name for name in (now := names_of(session)))
-                           else None), 60)
+    def replying():
+        now = names_of(session)
+        return now if any(REPLY_SUBJECT in name for name in now) else None
+    names = until(f"{who}'s reply composer to answer the sender", replying, 60)
     shown(session, out, "replying")
     return {"composer": [name for name in names if REPLY_SUBJECT in name or "grace" in name.lower()]}
 
