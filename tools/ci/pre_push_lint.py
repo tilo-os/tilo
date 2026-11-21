@@ -14,11 +14,9 @@ features the workspace's unified build gives each package (so code behind a
 feature that no default build enables is compiled). Those features are the same
 whichever packages are selected, so one push's build stays warm for the next.
 
-A push lints only what its commits change: the dependents that name what it
-changed (a rename, a removed item or a field added to a struct breaks the crates
-that use it, not the crate that declares it), the packages CI also checks as
-they ship, and Clippy for `wasm32-unknown-unknown` on the crates that build for
-the page are t's `clippy`, `clippy-{arch}`, `clippy-idle`, `clippy-shipped` and
+A push lints only what its commits change. The crates that use something it
+renamed or removed, the packages as they ship, and the crates that build for the
+page are t's `clippy`, `clippy-{arch}`, `clippy-idle`, `clippy-shipped` and
 `clippy-page` families' work, on every change: each is keyed by what it reads,
 dependents included, and a miss is named on the head it broke.
 
