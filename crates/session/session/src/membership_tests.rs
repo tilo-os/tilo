@@ -796,7 +796,9 @@ fn a_refused_role_change_says_why_and_keeps_the_role() {
         notice
             .detail
             .as_deref()
-            .is_some_and(|detail| detail.contains("ownership is set when the workspace is made")),
+            .is_some_and(|detail| {
+                detail.contains("ownership is handed over by the workspace's owner")
+            }),
         "the sheet says why: {:?}",
         notice.detail
     );
