@@ -4,7 +4,7 @@
 //! what it is sending.
 
 use std::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use tilo_actions::{ActionError, ActionInvoker};
@@ -18,6 +18,11 @@ use super::{ChainCore, ChainState, PART_ARRIVING, Write, answer};
 pub(crate) struct QueuedWrites {
     #[serde(default)]
     pub(super) workspaces: BTreeMap<String, BTreeMap<String, Vec<QueuedWrite>>>,
+    /// The entries of each workspace's and chain's record of waiting writes
+    /// on the person's devices that moved into [`Self::workspaces`], so none
+    /// moves twice.
+    #[serde(default)]
+    pub(super) taken: BTreeMap<String, BTreeMap<String, BTreeSet<String>>>,
 }
 
 impl ui_core::storage::SettingsSchema for QueuedWrites {

@@ -186,6 +186,85 @@ fn a_device_queue_keeps_waiting_writes_out_of_the_workspace_store() {
     assert!(reopened.unwritten().is_none());
 }
 
+/// What still waits in the record a person's devices once kept waiting
+/// writes in moves into the device queue once and is written once its part
+/// is here; the record, which only reads now, is never written.
+#[test]
+fn earlier_waiting_writes_move_into_the_device_queue_once() {
+    use ui_core::automerge::transaction::Transactable as _;
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let ours = Rc::new(durable_store::MemoryStore::new());
+    let reader = device_keeping(&ours, &workspace);
+    // A write that waited the way devices kept them before: its entry, as
+    // the record of them held it.
+    let earlier = super::unsent_checkout(&MemberId::person("bo"));
+    let action = LogPart::WRITE
+        .with(log_part::Write { text: "two".into() })
+        .build(tilo_resource::origin_now_ms())
+        .unwrap();
+    let entry =
+        serde_json::to_string(&(serde_json::to_value(&action).unwrap(), invoker())).unwrap();
+    let chain_key = LogPart::chain().as_str().to_owned();
+    chain_in(&reader, "bo")
+        .state
+        .core
+        .create(&earlier, |doc| {
+            let list = doc
+                .put_object(
+                    ui_core::automerge::ROOT,
+                    chain_key.as_str(),
+                    ui_core::automerge::ObjType::List,
+                )
+                .map_err(|error| error.to_string())?;
+            doc.insert(&list, 0, entry.as_str())
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    let heads = || {
+        reader
+            .read(&earlier.id, ui_core::automerge::AutoCommit::base_heads)
+            .unwrap()
+    };
+    let kept = heads();
+    let lines = |chain: &Chain<LogPart>| -> Vec<String> {
+        chain
+            .parts()
+            .iter()
+            .flat_map(|(_, part)| part.lines.values().map(|line| line.text.clone()))
+            .collect()
+    };
+
+    // The device asks the workspace which part is the newest: the write waits.
+    reader.ask_workspace_for_missing();
+    let profile = tempfile::tempdir().unwrap();
+    let chain = chain_with_device_queue(&reader, profile.path());
+    assert!(chain.head_arriving());
+    assert!(chain.unwritten().is_some(), "the earlier write still waits");
+    reader.note_workspace_answered(LogPart::chain().chain_head());
+    let deadline = tilo_test_env::hang_deadline();
+    while lines(&chain).is_empty() {
+        assert!(
+            crate::time::now() < deadline,
+            "the earlier write never landed"
+        );
+        reader.note_kept();
+        std::thread::yield_now();
+    }
+    assert_eq!(lines(&chain), ["two"]);
+    assert!(chain.unwritten().is_none());
+    drop(chain);
+
+    let reopened = chain_with_device_queue(&reader, profile.path());
+    assert!(reopened.unwritten().is_none(), "nothing moves twice");
+    reopened
+        .invoke(&LogPart::WRITE.with(log_part::Write {
+            text: "three".into(),
+        }))
+        .unwrap();
+    assert_eq!(lines(&reopened), ["two", "three"]);
+    assert_eq!(heads(), kept, "the earlier record is not written");
+}
+
 /// `write`'s line, as the API delivers it.
 fn encoded_write(text: &str) -> tilo_actions::EncodedAction {
     let action = LogPart::WRITE

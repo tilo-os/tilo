@@ -1577,21 +1577,69 @@ impl ChainCore {
     /// The actions waiting for a part of this chain, oldest first: each
     /// entry's id, its action's JSON and who invoked it.
     fn unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
-        let mut queued = self.legacy_unsent();
-        if let Some(settings) = &self.workspace.device_queue
-            && let Some(entries) = settings
-                .get()
-                .workspaces
-                .get_mut(&self.workspace_key)
-                .and_then(|chains| chains.remove(self.chain.as_str()))
-        {
-            queued.extend(
-                entries
-                    .into_iter()
-                    .map(|entry| (entry.id, entry.action, entry.invoker)),
-            );
+        // A chain with no device queue (an import's, a tool's, a test's)
+        // keeps them in the app's record of them.
+        let Some(settings) = &self.workspace.device_queue else {
+            return self.legacy_unsent();
+        };
+        self.take_legacy_unsent(settings);
+        settings
+            .get()
+            .workspaces
+            .get_mut(&self.workspace_key)
+            .and_then(|chains| chains.remove(self.chain.as_str()))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| (entry.id, entry.action, entry.invoker))
+            .collect()
+    }
+
+    /// Move what still waits in the person's record of waiting writes into
+    /// the device queue, after what the queue holds, each entry once. That
+    /// record is a per-member one, which every replica only reads now: the
+    /// queue remembers which of its entries it took, and nothing edits it.
+    fn take_legacy_unsent(&self, settings: &ui_core::storage::Settings<QueuedWrites>) {
+        let recorded = self.legacy_unsent();
+        if recorded.is_empty() {
+            return;
         }
-        queued
+        let chain = self.chain.as_str();
+        let queue = settings.get();
+        let taken = queue
+            .taken
+            .get(&self.workspace_key)
+            .and_then(|chains| chains.get(chain));
+        let new: Vec<_> = recorded
+            .into_iter()
+            .filter(|(id, ..)| taken.is_none_or(|taken| !taken.contains(id)))
+            .collect();
+        if new.is_empty() {
+            return;
+        }
+        if let Err(error) = settings.update(|queue| {
+            for (recorded, action, invoker) in new {
+                queue
+                    .taken
+                    .entry(self.workspace_key.clone())
+                    .or_default()
+                    .entry(chain.to_owned())
+                    .or_default()
+                    .insert(recorded);
+                queue
+                    .workspaces
+                    .entry(self.workspace_key.clone())
+                    .or_default()
+                    .entry(chain.to_owned())
+                    .or_default()
+                    .push(waiting::QueuedWrite {
+                        id: format!("local:{}", tilo_resource::action::fresh_uuid()),
+                        action,
+                        invoker,
+                    });
+            }
+        }) {
+            tracing::error!(kind = self.part.kind, %error, "the earlier waiting writes could not join the device queue");
+        }
     }
 
     fn legacy_unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
@@ -1627,12 +1675,7 @@ impl ChainCore {
 
     /// Take the entry `id` out of the record of waiting actions.
     fn forget_unsent(&self, id: &str) {
-        if let Some(settings) = self
-            .workspace
-            .device_queue
-            .as_ref()
-            .filter(|_| id.starts_with("local:"))
-        {
+        if let Some(settings) = &self.workspace.device_queue {
             if let Err(error) = settings.update(|queue| {
                 if let Some(chains) = queue.workspaces.get_mut(&self.workspace_key) {
                     if let Some(entries) = chains.get_mut(self.chain.as_str()) {
