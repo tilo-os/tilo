@@ -60,11 +60,15 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
 # built without tilo-ui compile belongs to it, so it is built alone to hold that.
 # tilo-peer-state is the peer core a page holds its workspaces through, as
 # native devices do: its admission and replica core keep building for the
-# browser.
+# browser. tilo-workspace-service is the service above it: what a page names of
+# it (the document vocabulary) and whatever core the page's holder grows must
+# keep building for the browser, while its link, files, processes and HTTP
+# surface are native dependencies of their own.
 WASM_ALSO = {
     "tilo-session-client": ("--no-default-features", "--features", "toolkit"),
     "key-group": (),
     "tilo-peer-state": (),
+    "tilo-workspace-service": (),
 }
 
 
