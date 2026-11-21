@@ -1,7 +1,6 @@
 //! Local approval for a fresh native image that has no running requester.
 
 use std::fs;
-use std::io;
 use std::path::Path;
 
 use anyhow::{Context, bail};
@@ -21,7 +20,6 @@ pub struct OfflineInstall<'a> {
     pub local_identity_dir: &'a Path,
     pub local_system: &'a IdentityPaths,
     pub local_home_peers: &'a Path,
-    pub local_workspaces: &'a Path,
 }
 
 /// Enroll a fresh image for the active person on this machine, without a
@@ -117,11 +115,6 @@ pub fn install_from_local_identity(
 
     paths.ensure_directories()?;
     persist::write_device_key(&paths.device_privkey, &device)?;
-    copy_personal_workspaces(
-        layout.local_workspaces,
-        &tilo_server_protocol::home_peer_registry_path(&identity_root)
-            .with_file_name("personal-workspaces.json"),
-    )?;
     let install = PersonalInstall {
         identity_root: &identity_root,
         identity_dir: &identity_dir,
@@ -163,38 +156,4 @@ fn safe_account_name(name: &str) -> bool {
             .iter()
             .skip(1)
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
-}
-
-fn valid_workspace_id(value: &str) -> bool {
-    let mut parts = value.split('-');
-    let expected = [8, 4, 4, 4, 12];
-    expected.into_iter().all(|len| {
-        parts.next().is_some_and(|part| {
-            part.len() == len && part.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
-    }) && parts.next().is_none()
-}
-
-fn copy_personal_workspaces(source: &Path, dest: &Path) -> anyhow::Result<()> {
-    let bytes = match fs::read(source) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    if bytes.len() > 64 * 1024 {
-        return Ok(());
-    }
-    let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
-        return Ok(());
-    };
-    if ids.len() > 256 || ids.iter().any(|id| !valid_workspace_id(id)) {
-        return Ok(());
-    }
-    let parent = dest
-        .parent()
-        .context("the workspace list has no directory")?;
-    fs::create_dir_all(parent).context("prepare the target's workspace list directory")?;
-    tilo_files::native::atomic::write(dest, &serde_json::to_vec_pretty(&ids)?)
-        .context("copy the setup device's workspace list")?;
-    Ok(())
 }
