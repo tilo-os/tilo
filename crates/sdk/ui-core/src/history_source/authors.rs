@@ -49,6 +49,9 @@ pub struct AuthorDirectory {
     /// The people's devices by their actor id: a hover names the device whose
     /// session vouched for a writer, never a key.
     devices: HashMap<String, String>,
+    /// The member each device actor writes for ([`Self::register_writers`]): a change one of
+    /// the reader's own devices signed is the reader's.
+    writers: HashMap<String, tilo_actions::MemberId>,
 }
 
 /// A delegated agent as history names it: its own actor, how it is
@@ -219,6 +222,7 @@ impl AuthorDirectory {
         let author = self.resolve(&actor);
         for writer in writers {
             self.register(writer, author.clone());
+            self.writers.insert(writer.to_lowercase(), member.clone());
         }
     }
 
@@ -430,10 +434,9 @@ impl AuthorDirectory {
         let reader = self.reader();
         let Some(invoker) = entry.and_then(|entry| entry.invoker.as_ref()) else {
             let author = self.resolve(actor_hex);
-            let reads = actor_handle(actor_hex).is_some_and(|handle| {
-                reader
-                    .as_ref()
-                    .is_some_and(|reader| reader.actor_bytes() == handle.as_bytes())
+            let reads = reader.as_ref().is_some_and(|reader| {
+                actor_handle(actor_hex).is_some_and(|handle| reader.actor_bytes() == handle.as_bytes())
+                    || self.writers.get(&actor_hex.to_lowercase()) == Some(reader)
             });
             return if reads {
                 author.with_relation(AuthorRelation::Reader)

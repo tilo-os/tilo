@@ -855,6 +855,28 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_change_the_readers_own_device_signed_reads_as_theirs;
+    // The workspace's own governance (a device registering itself) is signed by the device, with
+    // no invoker: it is the reader's own row, "You", like every other row of theirs.
+    {
+        use crate::widget::history::AuthorRelation;
+        let device = [7u8; 32];
+        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(device.to_vec()));
+        doc.put(ROOT, "device", "Laptop").unwrap();
+        doc.commit();
+        let kai = crate::permissions::MemberId::person("kai");
+        let mut authors = AuthorDirectory::new();
+        authors.register_roster([(&kai, "Kai")]);
+        authors.register_writers(&kai, [hex::encode(device).as_str()]);
+        authors.set_reader(kai.clone());
+        let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+        let author = &entries.last().unwrap().author;
+        assert_eq!(
+            (crate::author_line(author), author.relation),
+            ("You".to_owned(), AuthorRelation::Reader)
+        );
+    }
+
     phase an_agents_change_reads_as_the_agent_on_behalf_of_its_person;
     // An agent's change is the agent's, on behalf of its person: by the
     // invoker its entry records, and by its own key when it writes as itself.
