@@ -174,6 +174,12 @@ install_board_disk() {
 
 # How long each part took, for finding what a build spends its time on.
 phase_started=$SECONDS phase_name=start in_guest=0
+# Each line stamped with the seconds since its phase began: a build is one podman build of many
+# steps, and its own output names no times.
+stamped() {
+  local line
+  while IFS= read -r line; do printf '[+%ss] %s\n' "$((SECONDS - phase_started))" "$line"; done
+}
 phase() {
   printf 'TILO_IMAGE_TIMING phase=%s seconds=%s\n' "$phase_name" "$((SECONDS - phase_started))"
   [[ $in_guest == 0 ]] || guest_disk_report "$phase_name"
@@ -233,7 +239,7 @@ case ${1:-} in
       TILO_DEV_MODEL_CATALOG=$catalog \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
       TILO_BUILD_ARGS=$label \
-      bash os/dev/build-dev-image.sh
+      bash os/dev/build-dev-image.sh 2>&1 | stamped
     # Kept as the layers it added over the OS image's, composed with them: the OS image's
     # layers are the same blobs in both, stored and sent once.
     phase push
