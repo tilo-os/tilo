@@ -10,10 +10,7 @@ use std::{
     io,
     os::{
         fd::AsRawFd,
-        unix::{
-            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-            net::UnixListener,
-        },
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     },
     path::Path,
     sync::Arc,
@@ -179,7 +176,7 @@ pub fn run(home: bool) -> io::Result<()> {
     let (session, backend) = source_backend(source, home, &authority)?;
     directory.validate()?;
     let path = app.join("provider.sock");
-    let listener = UnixListener::bind(&path)?;
+    let listener = tilo_files::native::socket::bind(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     let published = std::fs::symlink_metadata(&path)?;
     let (stream, _) = listener.accept()?;

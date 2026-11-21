@@ -35,10 +35,7 @@ pub(super) use crate::capture::{APPLICATIONS_PROTOCOL, WORKER_PROTOCOL};
 /// private app directory; an existing provider name is never removed/reused.
 #[cfg(feature = "capture-worker")]
 pub fn run_provider() -> io::Result<()> {
-    use std::os::unix::{
-        fs::{MetadataExt, PermissionsExt},
-        net::UnixListener,
-    };
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::time::Duration;
     if rustix::process::getuid().as_raw() == 0
         || rustix::process::geteuid().as_raw() != rustix::process::getuid().as_raw()
@@ -51,7 +48,7 @@ pub fn run_provider() -> io::Result<()> {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let path = Path::new(launcher::appdir::SANDBOX_APP_DIR).join("provider.sock");
-    let listener = UnixListener::bind(&path)?;
+    let listener = tilo_files::native::socket::bind(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     let created = std::fs::symlink_metadata(&path)?;
     let (mut stream, _) = listener.accept()?;

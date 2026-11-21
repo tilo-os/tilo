@@ -6,7 +6,6 @@
 //! and environment to it.
 
 use std::os::fd::OwnedFd;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use tilo_system_stats::protocol::{Grant, Grants, Handoff, PROTOCOL, write_handoff};
@@ -83,7 +82,7 @@ fn resolve_bind_at(
     path: &Path,
     handoff: &Handoff,
 ) -> Result<Option<ResolvedService>, ServiceError> {
-    let mut stream = match UnixStream::connect(path) {
+    let mut stream = match tilo_files::native::socket::connect(path) {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "system information service not reachable");

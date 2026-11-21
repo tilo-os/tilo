@@ -739,7 +739,7 @@ impl ServiceEndpoint {
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        let stream = UnixStream::connect(&socket)?;
+        let stream = tilo_files::native::socket::connect(&socket)?;
         let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
         let mut length =
             u32::try_from(std::mem::size_of::<libc::ucred>()).map_err(io::Error::other)?;

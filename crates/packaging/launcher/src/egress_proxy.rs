@@ -264,7 +264,7 @@ impl EgressProxy {
             path: socket_path.to_path_buf(),
             source,
         };
-        let listener = std::os::unix::net::UnixListener::bind(socket_path).map_err(bind_error)?;
+        let listener = tilo_files::native::socket::bind(socket_path).map_err(bind_error)?;
         listener.set_nonblocking(true).map_err(bind_error)?;
         let runtime = egress_runtime().map_err(ProxyError::Runtime)?;
         let listener = {
@@ -1054,7 +1054,12 @@ fn serve_relay_limited(
             accept_bounded(listener, max_connections, stop, move |mut tcp| {
                 let proxy = Arc::clone(&proxy);
                 async move {
-                    let Ok(mut unix) = UnixStream::connect(&*proxy).await else {
+                    let Ok(mut unix) =
+                        tilo_files::native::socket::connect(&*proxy).and_then(|socket| {
+                            socket.set_nonblocking(true)?;
+                            tokio::net::UnixStream::from_std(socket)
+                        })
+                    else {
                         return;
                     };
                     let _ = tokio::io::copy_bidirectional(&mut tcp, &mut unix).await;

@@ -1109,7 +1109,7 @@ fn system_extension_request(request: &str) -> Result<Vec<u8>, String> {
     if request.contains(['\n', '\r']) {
         return Err("system extension request must be one line".into());
     }
-    let mut stream = UnixStream::connect(SYSTEM_EXTENSION_SOCKET)
+    let mut stream = tilo_files::native::socket::connect(Path::new(SYSTEM_EXTENSION_SOCKET))
         .map_err(|error| format!("accelerator setup service is unavailable: {error}"))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))

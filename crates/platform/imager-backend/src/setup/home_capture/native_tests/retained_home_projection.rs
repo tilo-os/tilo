@@ -25,7 +25,7 @@ use std::{
         unix::{
             ffi::OsStringExt,
             fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-            net::{UnixListener, UnixStream},
+            net::UnixStream,
             process::CommandExt,
         },
     },
@@ -1047,7 +1047,8 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
     let unreadable = source_dir.join("unreadable");
     std::fs::write(&unreadable, b"root private bytes").unwrap();
     std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let _source_socket = UnixListener::bind(source_dir.join("native-socket")).unwrap();
+    let _source_socket =
+        tilo_files::native::socket::bind(&source_dir.join("native-socket")).unwrap();
     let fifo_name = std::ffi::CString::new(
         source_dir
             .join("native-fifo")

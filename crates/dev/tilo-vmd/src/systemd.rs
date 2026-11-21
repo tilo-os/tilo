@@ -1585,7 +1585,7 @@ fn start_input_server(
     }
     run(&format!("systemd-run --unit {unit}"), &mut command)?;
     for _ in 0..100 {
-        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+        if tilo_files::native::socket::connect(socket).is_ok() {
             // New input devices reach the compositor through udev and libinput.
             let _ = Command::new("udevadm").arg("settle").output();
             std::thread::sleep(std::time::Duration::from_millis(500));

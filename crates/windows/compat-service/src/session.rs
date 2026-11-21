@@ -850,7 +850,7 @@ pub struct CompatSessionHandle {
 impl Drop for CompatSessionHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        let _ = UnixStream::connect(&self.path);
+        let _ = tilo_files::native::socket::connect(&self.path);
         if let Some(listener) = self.listener.take() {
             let _ = listener.join();
         }
@@ -881,7 +881,7 @@ where
         fs::create_dir_all(parent)?;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
-    if UnixStream::connect(&path).is_ok() {
+    if tilo_files::native::socket::connect(&path).is_ok() {
         return Err(SessionError::AlreadyRunning);
     }
     let listener = tilo_files::native::private::bind_socket(&path)?;

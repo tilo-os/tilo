@@ -6832,7 +6832,7 @@ impl Drop for DevRuntimeGuard {
 /// The pid the runtime daemon serving `profile` reports, if one answers.
 fn runtime_daemon_pid(profile: &Path) -> Option<i32> {
     use std::io::Read as _;
-    let mut stream = std::os::unix::net::UnixStream::connect(profile.join("native.sock")).ok()?;
+    let mut stream = tilo_files::native::socket::connect(&profile.join("native.sock")).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))

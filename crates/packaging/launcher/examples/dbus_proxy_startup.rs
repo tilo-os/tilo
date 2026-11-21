@@ -1,6 +1,5 @@
 //! Measure the production sandbox proxy against a private, real D-Bus daemon.
 use std::error::Error;
-use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
 use tilo_test_env::PrivateBus;
@@ -20,7 +19,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
         let ready_us = started.elapsed().as_micros();
         // Observe the real listener rather than accepting the helper's existence.
-        let connection = UnixStream::connect(guard.socket_path())?;
+        let connection = tilo_files::native::socket::connect(guard.socket_path())?;
         println!("{{\"sample\":{sample},\"ready_us\":{ready_us}}}");
         drop(connection);
         drop(guard);

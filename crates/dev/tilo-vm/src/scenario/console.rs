@@ -7,7 +7,6 @@ use std::io::{BufRead, BufReader};
 #[cfg(windows)]
 use std::net::TcpStream;
 #[cfg(unix)]
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::Instant;
@@ -128,7 +127,7 @@ impl Console for SocketConsole {
 
     #[cfg(unix)]
     fn request(&mut self, request: Value) -> Result<Value, ConsoleError> {
-        let stream = UnixStream::connect(&self.path)
+        let stream = tilo_files::native::socket::connect(&self.path)
             .map_err(|error| ConsoleError::Unreachable(error.to_string()))?;
         stream
             .set_read_timeout(Some(self.timeout))

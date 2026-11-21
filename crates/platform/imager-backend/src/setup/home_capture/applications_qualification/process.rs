@@ -7,7 +7,7 @@ use std::os::{
 use std::{
     os::{
         fd::{FromRawFd as _, OwnedFd},
-        unix::net::{UnixListener, UnixStream},
+        unix::net::UnixStream,
     },
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -197,7 +197,7 @@ fn collect(mut pipe: impl Read + std::os::fd::AsRawFd, stop: &AtomicBool) -> io:
     }
 }
 pub(super) fn run(helper: &File, cancel: &AtomicBool) -> io::Result<serde_json::Value> {
-    let listener = UnixListener::bind(Path::new(ROOT).join("control"))?;
+    let listener = tilo_files::native::socket::bind(&Path::new(ROOT).join("control"))?;
     fs::set_permissions(
         Path::new(ROOT).join("control"),
         fs::Permissions::from_mode(0o666),

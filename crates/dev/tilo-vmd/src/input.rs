@@ -729,7 +729,7 @@ pub struct Reply {
 
 /// Send `actions` to a running `input-serve`.
 pub fn send(socket: &Path, actions: &[InputAction]) -> std::io::Result<Reply> {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+    let mut stream = tilo_files::native::socket::connect(socket)?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
     let mut line = serde_json::to_vec(&Request {
         actions: actions.to_vec(),
@@ -850,7 +850,7 @@ pub fn serve(seat: &str, socket: &Path, geometry: Option<Geometry>) -> Result<()
         std::fs::create_dir_all(parent).map_err(DaemonError::io("create the input socket dir"))?;
     }
     let _ = std::fs::remove_file(socket);
-    let listener = std::os::unix::net::UnixListener::bind(socket)
+    let listener = tilo_files::native::socket::bind(socket)
         .map_err(DaemonError::io(format!("listen on {}", socket.display())))?;
     let mut encoder = Encoder::default();
     for stream in listener.incoming() {

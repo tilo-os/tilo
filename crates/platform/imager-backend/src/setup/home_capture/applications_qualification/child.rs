@@ -4,10 +4,7 @@ use crate::setup::flatpak_transfer::{
     portable::{ApplicationImport, NativeOfflineRunner, OfflineRunner},
 };
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-use std::{
-    os::unix::net::UnixStream,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 const APP: &str = "app/org.tilo.Fixture/x86_64/stable";
 const RUNTIME: &str = "runtime/org.tilo.FixtureRuntime/x86_64/stable";
 struct Observed {
@@ -70,7 +67,7 @@ fn authorize() -> io::Result<()> {
     }
     // No target write precedes the supervising root's verification of this
     // exact installed executable, PID1 namespace, UID and direct child route.
-    let mut channel = UnixStream::connect(Path::new(ROOT).join("control"))?;
+    let mut channel = tilo_files::native::socket::connect(&Path::new(ROOT).join("control"))?;
     let credentials = process::credentials(&channel)?;
     if credentials.uid != 0 {
         return Err(invalid());

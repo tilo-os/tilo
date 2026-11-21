@@ -114,7 +114,7 @@ fn broker() -> Option<&'static Mutex<OwnedFd>> {
                 return Some(Mutex::new(unsafe { OwnedFd::from_raw_fd(fd) }));
             }
             let path = std::env::var_os(tilo_render_protocol::broker::SOCKET_ENV)?;
-            let mut stream = std::os::unix::net::UnixStream::connect(path).ok()?;
+            let mut stream = tilo_files::native::socket::connect(Path::new(&path)).ok()?;
             let app_id = std::env::var("TILO_PACKAGE_ID").unwrap_or_else(|_| {
                 std::env::args()
                     .next()

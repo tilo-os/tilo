@@ -1277,7 +1277,7 @@ fn run_quietly(command: &mut Command, what: &str) -> Result<(), QemuError> {
 fn monitor(socket: &Path, command: &str) -> std::io::Result<String> {
     #[cfg(unix)]
     {
-        let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+        let mut stream = tilo_files::native::socket::connect(socket)?;
         stream.set_read_timeout(Some(Duration::from_millis(500)))?;
         stream.write_all(format!("{command}\n").as_bytes())?;
         let mut reply = Vec::new();
