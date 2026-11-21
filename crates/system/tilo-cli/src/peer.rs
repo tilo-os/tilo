@@ -3,9 +3,11 @@
 //!
 //! The device `tilo login` made holds one session with the workspaces' host
 //! ([`crate::mcp::held`]): the same session every `tilo mcp` of this computer
-//! is a connection to. Over it this device holds each workspace's file tree,
-//! the Files app's record ([`tree`]), with the bytes its files are made of
-//! ([`content`]), and shows it as a folder ([`mount`]): a FUSE mount of the
+//! is a connection to, and runs its own workspace service beside it, which
+//! holds each of the person's workspaces as a member copy
+//! ([`crate::own_device`]). In that copy this device holds each workspace's
+//! file tree, the Files app's record ([`tree`]), with the bytes its files are
+//! made of ([`shelf`]), and shows it as a folder ([`mount`]): a FUSE mount of the
 //! filesystem Tilo OS mounts at `/var/workspace`, where this user can mount
 //! one. Which workspaces get a folder, where, and whether it syncs is the
 //! person's ([`folders`], `tilo folders`).
@@ -15,9 +17,9 @@
 //! lands in the folder is on the person's other devices and page within a
 //! second or two.
 
-pub(crate) mod content;
 pub(crate) mod folders;
 pub(crate) mod mount;
+pub(crate) mod shelf;
 pub(crate) mod tree;
 
 use std::path::{Path, PathBuf};
@@ -32,6 +34,7 @@ use tilo_session_client::PersonalWorkspaces;
 use tilo_session_client::device::Device as Entered;
 
 use crate::mcp::held::UNMOUNTING;
+use crate::own_device::OwnDevice;
 
 /// One workspace, as this peer shows it.
 struct Held {
@@ -41,7 +44,6 @@ struct Held {
     admission: Arc<tilo_fs::admission::FileAdmission>,
     showing: mount::Showing,
     replica: tree::TreeReplica,
-    _content: Arc<content::SessionContent>,
 }
 
 /// What `tilo status` and `tilo folders` say of one workspace's folder.
@@ -83,6 +85,10 @@ pub(crate) struct Peer {
     state: PathBuf,
     /// Whether to mount with FUSE where this user can.
     mount: bool,
+    /// The content of the files, routed by this device's own workspace service over `store`:
+    /// made once that service is first at hand, and held for as long as this peer is, since the
+    /// service keeps what answers its members only weakly.
+    routed: std::sync::OnceLock<tilo_workspace_service::content::RouteContentService>,
     /// The person's workspaces as their host last sent them, and whether it
     /// answered the whole list: a list that did not answer holds only the
     /// workspace logged into, and nothing may be dropped because of it.
@@ -141,6 +147,7 @@ impl Peer {
             device_dir: device_dir.to_path_buf(),
             state: files,
             mount,
+            routed: std::sync::OnceLock::new(),
             listed: tokio::sync::Mutex::new(None),
             failed: std::sync::Mutex::new(Vec::new()),
             unentered: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -217,8 +224,9 @@ impl Peer {
 
     /// Show the folders [`folders`] names, and no other: offer a folder to
     /// each workspace that has none yet, then mount, move, pause and remove as
-    /// the person set them.
-    pub(crate) async fn reconcile(&self, device: &Entered) {
+    /// the person set them. Each folder's tree is held in `own`, this device's
+    /// own workspace service.
+    pub(crate) async fn reconcile(&self, device: &Entered, own: Option<&OwnDevice>) {
         let (listed, complete) = self.listed(device).await;
         let mut wanted = match folders::Folders::load(&self.device_dir) {
             Ok(wanted) => wanted,
@@ -313,7 +321,10 @@ impl Peer {
                 self.not_shown(entry.workspace, &why);
                 continue;
             }
-            match self.hold(device, entry, (&folder.name, &folder.path)).await {
+            match self
+                .hold(device, own, entry, (&folder.name, &folder.path))
+                .await
+            {
                 Ok(shown) => {
                     shown.replica.set_paused(folder.paused);
                     self.held.lock().await.push(shown);
@@ -389,10 +400,28 @@ impl Peer {
         Err(why)
     }
 
-    /// Hold `entry`'s files at `at`.
+    /// Hold `entry`'s files at `at`, their tree in `own`'s member copy of the workspace.
     async fn hold(
         &self,
         device: &Entered,
+        own: Option<&OwnDevice>,
+        entry: &Listed,
+        at: (&str, &Path),
+    ) -> anyhow::Result<Held> {
+        match own {
+            Some(own) => self.hold_in(device, own, entry, at).await,
+            None => Err(anyhow::anyhow!(
+                "this computer's workspace service is not open, so no workspace's files are held \
+                 here"
+            )),
+        }
+    }
+
+    /// [`Self::hold`], in `own`.
+    async fn hold_in(
+        &self,
+        device: &Entered,
+        own: &OwnDevice,
         entry: &Listed,
         (folder_name, at): (&str, &Path),
     ) -> anyhow::Result<Held> {
@@ -410,49 +439,54 @@ impl Peer {
         );
         let key = device.cert().device_public_key;
         let person = device.cert().user_public_key;
-        let content = content::SessionContent::new(workspace, key, &link, Arc::clone(&self.store));
+        let workspaces = own.workspaces();
+        let routed = self.routed.get_or_init(|| {
+            tilo_workspace_service::content::routes_content(
+                workspaces,
+                Arc::new(shelf::StoreShelf(Arc::clone(&self.store))),
+                key,
+            )
+        });
         let state = self.state.join(workspace.to_string());
-        let replica =
-            tree::start(link, workspace, &state, key, person, Arc::clone(&content)).await?;
+        let replica = tree::start(
+            workspaces,
+            workspace,
+            &state,
+            (key, person),
+            Arc::clone(&self.store),
+            Arc::clone(&routed.content),
+        )
+        .await?;
         let actor = fs_protocol::FileActor {
             person: collab_types::Ed25519PublicKey(device.cert().user_public_key),
             device: collab_types::Ed25519PublicKey(key),
         };
-        let engine = Arc::clone(device.session().engine());
-        let route = tilo_session_client::DocumentRoute {
+        // The keys the files' content is sealed with are the tree's group's, as this device's
+        // key service holds them, with the workspace's history beside them.
+        let route = tilo_peer_state::document_frame::DocumentRoute {
             cluster_id: workspace.to_string(),
             app_id: fs_protocol::tree::FILES_APP.to_owned(),
             document: fs_protocol::tree::document_id(),
         };
+        let (copies, runtime) = (workspaces.clone(), tokio::runtime::Handle::current());
         let keys = tilo_fs::hydration::FileKeys::from_session(workspace, move || {
-            use tilo_session_client::engine::SealKeys;
-            anyhow::ensure!(
-                engine.document_read_policy(workspace)(&route.app_id, &route.document),
-                "this device cannot read the workspace's files"
-            );
-            match engine
-                .document_seal_keys(&route)
-                .map_err(anyhow::Error::msg)?
-            {
-                SealKeys::Here(keys) => {
-                    let keys = if keys.workspace() != workspace
-                        && let Ok(SealKeys::Here(history)) = engine.seal_keys(workspace)
-                    {
-                        keys.with_workspace_history(history)
-                    } else {
-                        keys
-                    };
-                    Ok(keys)
+            match runtime.block_on(copies.own_route_keys(&route, false)) {
+                Some(Ok(keys)) => Ok(keys),
+                Some(Err(why)) => {
+                    anyhow::bail!("this device cannot read the workspace's files: {why}")
                 }
-                _ => anyhow::bail!("the Files content keys are not ready"),
+                None => anyhow::bail!("the Files content keys are not ready"),
             }
         });
+        let content: Arc<dyn tilo_fs::hydration::ContentSource> = Arc::new(
+            shelf::WorkspaceSource::new(Arc::clone(&routed.content), &workspace.to_string()),
+        );
         let parts = mount::Parts {
             keys,
             replica: &replica,
             store: Arc::clone(&self.store),
             endpoint: self.endpoint.clone(),
-            content: Arc::clone(&content),
+            content,
             actor,
             writers: Arc::clone(&self.writers),
             admission: Arc::clone(&admission),
@@ -470,7 +504,6 @@ impl Peer {
             admission,
             showing,
             replica,
-            _content: content,
         })
     }
 
@@ -810,6 +843,9 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
         size(number("bytes")),
     )
 }
+
+#[cfg(test)]
+mod folder_tests;
 
 #[cfg(test)]
 mod tests {

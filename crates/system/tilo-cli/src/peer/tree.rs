@@ -1,23 +1,35 @@
-//! A workspace's file tree on this computer: the Files app's records, held through the
-//! device's session as every device of the workspace holds them.
+//! A workspace's file tree on this computer: the Files app's records, held in this device's own
+//! workspace service as every device holding a member copy of the workspace holds them.
 //!
 //! The records of a workspace's tree ([`fs_protocol::tree`]) and this computer's
 //! [`tilo_fs::Namespace`] of it are kept converged by [`tilo_fs::tree_sync`], which knows the
-//! order a tree goes out in, its pacing and what it does when the host refuses a change. This
-//! module wires that sync to this device's session with the workspace's host — the one a
-//! browser tab keeps — by the calls this device reads and writes a record through: the
-//! session's events, its replica's reads and its outbox's writes.
+//! order a tree goes out in, its pacing and what it does when the workspace refuses a change.
+//! This module wires that sync to the member copy: its reads ([`ServiceDocuments`]), its writes
+//! as this device ([`ServiceWrites`]), the serving device's word that it holds them
+//! ([`DeviceWrites::served`]), and the writes the serving device sends the copy
+//! ([`Workspaces::document_writes`]).
+//!
+//! Two answers decide what a sync may found, and both come from the copy alone: a record is
+//! absent from the workspace only once the copy caught up with the device serving it
+//! ([`Workspaces::member_caught_up`]) and still reads absent; and a record the copy holds is
+//! held by the workspace only once the serving device said it holds every write of this
+//! device's to it.
 
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use collab_types::DocumentMutation;
 use fs_protocol::TreeChunk;
-use tilo_peer_state::workspace_documents::{DeviceDocuments, DocumentRead};
+use tilo_fs::tree_sync::{Reading, Wake};
+use tilo_lock::MutexRecover as _;
+use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DeviceWrites as _, DocumentRead};
 use tilo_server_protocol::{DocumentAnswer, WorkspaceId};
-use tilo_session_client::{Cmd, DocumentRoute, Event, Events, Link, Outbox as _};
-
-use super::content::SessionContent;
+use tilo_workspace_service::content::RouteContent;
+use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
+use tilo_workspace_service::workspaces::Workspaces;
+use tokio::sync::broadcast::error::RecvError;
 
 /// The app whose record a workspace's tree is.
 pub(crate) use fs_protocol::tree::FILES_APP;
@@ -27,274 +39,377 @@ pub(crate) use tilo_fs::tree_sync::Status as TreeStatus;
 /// One workspace's tree, held while this value lives.
 pub(crate) type TreeReplica = tilo_fs::tree_sync::TreeSync;
 
-/// The route of record `chunk` of `workspace`'s tree: the tree's own record for 0.
-fn route(workspace: WorkspaceId, chunk: TreeChunk) -> DocumentRoute {
-    DocumentRoute {
+/// How long the serving device's word that it holds a write is waited for. It answers only the
+/// writes it decides on: one it keeps while it waits for something it lacks gets no word, so a
+/// wait that ends unanswered sends the record's changes again (a change it holds already merges
+/// as nothing) rather than counting them held.
+const SERVED_WITHIN: Duration = Duration::from_secs(20);
+
+/// The route a record of the tree is kept under.
+fn route(
+    workspace: WorkspaceId,
+    chunk: TreeChunk,
+) -> tilo_peer_state::document_frame::DocumentRoute {
+    tilo_peer_state::document_frame::DocumentRoute {
         app_id: FILES_APP.to_owned(),
         cluster_id: workspace.to_string(),
         document: tilo_fs::tree_sync::document_for(chunk),
     }
 }
 
-/// Hold `workspace`'s tree over `link`, kept in `state` between runs, as the device whose key
-/// is `device`; its file bytes come and go through `content`.
+/// Hold `workspace`'s tree in `workspaces`, this device's own service, kept in `state` between
+/// runs, as the device whose key is `device`; its file bytes are kept in `store` and asked of
+/// the workspace through `content`.
 ///
 /// # Errors
 /// The kept namespace cannot be read.
 pub(crate) async fn start(
-    link: Link,
+    workspaces: &Workspaces,
     workspace: WorkspaceId,
     state: &Path,
-    device: [u8; 32],
-    person: [u8; 32],
-    content: Arc<SessionContent>,
+    (device, person): ([u8; 32], [u8; 32]),
+    store: Arc<tilo_fs::ContentStore>,
+    content: Arc<RouteContent>,
 ) -> std::io::Result<TreeReplica> {
-    let name = workspace.to_string();
-    let documents = Arc::new(SessionRecords(link.engine().documents()));
-    let peer = Arc::new(SessionPeer {
-        link: link.clone(),
+    let copy = Arc::new(Copy {
+        workspaces: workspaces.clone(),
+        documents: ServiceDocuments::of(workspaces.clone()),
+        writes: ServiceWrites::of(workspaces.clone()),
         workspace,
-        content: Arc::clone(&content),
+        name: workspace.to_string(),
+        answers: Mutex::new(BTreeMap::new()),
+        unserved: Arc::new(AtomicUsize::new(0)),
+        content,
+        asked: tokio::sync::Notify::new(),
     });
     let (wakes, wake_events) = tokio::sync::mpsc::unbounded_channel();
-    // Follow the session's news before the sync opens a record, so the host's answers and the
-    // records' landings that follow are kept for it.
-    let events = link.events_where(takes);
-    let replica = TreeReplica::start(tilo_fs::tree_sync::Config {
-        workspace: name,
+    // Follow the copy's news before the sync reads a record, so a write the serving device sends
+    // meanwhile is heard; what it tells waits in the channel until the sync takes it.
+    tokio::spawn(follow(
+        Arc::clone(&copy),
+        workspaces.document_writes(),
+        wakes.clone(),
+    ));
+    TreeReplica::start(tilo_fs::tree_sync::Config {
+        workspace: copy.name.clone(),
         device,
         person,
         kept_at: state.join("tree"),
-        documents,
-        writer: Box::new(SessionWriter {
-            link: link.clone(),
-            workspace,
+        documents: Arc::new(Records(Arc::clone(&copy))),
+        writer: Box::new(Writer {
+            copy: Arc::clone(&copy),
+            wakes,
         }),
-        peer,
-        content: content.store(),
+        peer: copy,
+        content: store,
         wakes: wake_events,
     })
-    .await?;
-    // The session's news reaches the sync as wakes: what landed, what the host answered, what
-    // it refused, and the content it sent this device.
-    let wake = replica.wake();
-    let notify = Arc::clone(&wake);
-    link.on_change(Arc::new(move || notify.notify_waiters()));
-    tokio::spawn(forward(
-        events,
-        wake,
-        wakes,
-        Arc::clone(&content),
-        workspace,
-    ));
-    Ok(replica)
+    .await
 }
 
-/// This device's session as the reader of a workspace's tree records: the engine's replica,
-/// which holds them as every device of a workspace that keeps no service of its own does.
-struct SessionRecords(Arc<dyn DeviceDocuments>);
+/// The member copy of one workspace, as its tree's sync reads and writes it.
+struct Copy {
+    workspaces: Workspaces,
+    documents: ServiceDocuments,
+    writes: ServiceWrites,
+    workspace: WorkspaceId,
+    name: String,
+    /// The records of the tree the sync opened, each with what the copy answered of it: `None`
+    /// until it can say.
+    answers: Mutex<BTreeMap<TreeChunk, Option<DocumentAnswer>>>,
+    /// This device's writes the serving device has not said it holds yet.
+    unserved: Arc<AtomicUsize>,
+    content: Arc<RouteContent>,
+    /// Poked when the sync opens a record, so its answer comes now rather than at the next look.
+    asked: tokio::sync::Notify,
+}
 
-impl tilo_fs::tree_sync::Records for SessionRecords {
+impl Copy {
+    /// What the copy answers of `chunk` now, when it can say: the workspace holds none of it only
+    /// once the copy caught up with the serving device and the record still reads absent; it
+    /// holds it once the copy does and the serving device holds every write of this device's to
+    /// it.
+    fn answer_now(&self, chunk: TreeChunk) -> Option<DocumentAnswer> {
+        let caught_up = self
+            .workspaces
+            .member_caught_up(self.workspace)
+            .is_some_and(|caught_up| *caught_up.borrow());
+        if !caught_up {
+            return None;
+        }
+        let document = tilo_fs::tree_sync::document_for(chunk);
+        if !self.documents.holds(&self.name, FILES_APP, &document) {
+            return match self.documents.read(&self.name, FILES_APP, &document, None) {
+                Ok(DocumentRead::Absent) => Some(DocumentAnswer::Sent { frames: 0 }),
+                Ok(DocumentRead::Pending) | Err(_) => None,
+                Ok(_) => Some(DocumentAnswer::Sent { frames: 1 }),
+            };
+        }
+        let held = match self.writes.served(&self.name, &[(FILES_APP, &document)]) {
+            None => true,
+            Some(served) => matches!(futures_util::FutureExt::now_or_never(served), Some(Ok(()))),
+        };
+        held.then_some(DocumentAnswer::Sent { frames: 1 })
+    }
+
+    /// Answer each record the sync opened that has no answer yet and can have one now.
+    fn answer_opened(&self) -> Vec<Wake> {
+        let asked: Vec<TreeChunk> = self
+            .answers
+            .lock_recover()
+            .iter()
+            .filter(|(_, answer)| answer.is_none())
+            .map(|(chunk, _)| *chunk)
+            .collect();
+        let mut told = Vec::new();
+        for chunk in asked {
+            if let Some(answer) = self.answer_now(chunk) {
+                self.answers.lock_recover().insert(chunk, Some(answer));
+                told.push(Wake::Opened { chunk, answer });
+            }
+        }
+        told
+    }
+}
+
+/// The copy as the reader of the tree's records.
+struct Records(Arc<Copy>);
+
+impl tilo_fs::tree_sync::Records for Records {
     fn read(
         &self,
         workspace: &str,
         app: &str,
         document: &str,
         since: Option<&[[u8; 32]]>,
-    ) -> Result<tilo_fs::tree_sync::Reading, String> {
+    ) -> Result<Reading, String> {
         self.0
+            .documents
             .read(workspace, app, document, since)
             .map(|read| match read {
-                DocumentRead::Whole { heads, bytes, .. } => {
-                    tilo_fs::tree_sync::Reading::Whole { heads, bytes }
-                }
-                DocumentRead::Changes { heads, bytes, .. } => {
-                    tilo_fs::tree_sync::Reading::Changes { heads, bytes }
-                }
-                DocumentRead::Unchanged(_) => tilo_fs::tree_sync::Reading::Unchanged,
-                DocumentRead::Absent => tilo_fs::tree_sync::Reading::Absent,
-                DocumentRead::Pending => tilo_fs::tree_sync::Reading::Pending,
+                DocumentRead::Whole { heads, bytes, .. } => Reading::Whole { heads, bytes },
+                DocumentRead::Changes { heads, bytes, .. } => Reading::Changes { heads, bytes },
+                DocumentRead::Unchanged(_) => Reading::Unchanged,
+                DocumentRead::Absent => Reading::Absent,
+                DocumentRead::Pending => Reading::Pending,
             })
     }
 }
 
-/// This device's session as the one a workspace's tree is read and written through: the
-/// replica reads its records ([`DeviceDocuments`]), and its outbox writes them, as this device.
-struct SessionPeer {
-    link: Link,
-    workspace: WorkspaceId,
-    content: Arc<SessionContent>,
-}
-
-impl tilo_fs::tree_sync::TreePeer for SessionPeer {
+impl tilo_fs::tree_sync::TreePeer for Copy {
+    /// The copy holds every record the serving device sends it; opening one asks only for the
+    /// copy's answer of it, which [`follow`] gives once it can.
     fn open(&self, chunk: TreeChunk) {
-        let route = route(self.workspace, chunk);
-        let _ = self
-            .link
-            .send(Cmd::OpenDocumentAt(self.workspace, route.clone()));
-        let _ = self.link.send(Cmd::OpenRoute(route.clone()));
-        // And on the workspace's live session, whose host answers what it holds.
-        let _ = self.link.engine().open_resource(
-            &self.workspace.to_string(),
-            &route.app_id,
-            &route.document,
-        );
+        self.answers.lock_recover().insert(chunk, None);
+        self.asked.notify_one();
     }
 
-    fn digest(&self, chunk: TreeChunk) -> Option<[u8; 32]> {
-        self.link.engine().admitted_digest(
-            &self.workspace.to_string(),
-            FILES_APP,
-            &tilo_fs::tree_sync::document_for(chunk),
-        )
+    /// None: the copy keeps no count of what it took in that a read could be skipped by, and
+    /// not every write it takes in is told to its followers, so every record is read again at
+    /// each look ([`tilo_fs::tree_sync::LOOK_AGAIN`]). The copy's read of a record that did not
+    /// change since the heads named is answered from what it opened of it last, without opening
+    /// its history again.
+    fn digest(&self, _chunk: TreeChunk) -> Option<[u8; 32]> {
+        None
     }
 
     fn answer(&self, chunk: TreeChunk) -> Option<DocumentAnswer> {
-        self.link.engine().resource_answer(
-            &self.workspace.to_string(),
-            FILES_APP,
-            &tilo_fs::tree_sync::document_for(chunk),
-        )
+        self.answers.lock_recover().get(&chunk).copied().flatten()
     }
 
     fn holds(&self, chunk: TreeChunk) -> bool {
-        self.link.engine().holds_resource(
-            &self.workspace.to_string(),
+        self.documents.holds(
+            &self.name,
             FILES_APP,
             &tilo_fs::tree_sync::document_for(chunk),
         )
     }
 
-    fn holding(&self, chunk: TreeChunk) -> bool {
-        self.link.holding(&route(self.workspace, chunk))
+    /// A write of this device's is in the copy, and read back, the moment it is made.
+    fn holding(&self, _chunk: TreeChunk) -> bool {
+        false
     }
 
     fn pending(&self) -> usize {
-        self.link.outgoing_pending()
+        self.unserved.load(Ordering::Relaxed)
     }
 
     fn reask_content(&self) {
-        self.content.reask(&self.link);
+        self.content.retry(tilo_clock::unix_now_ms());
     }
 }
 
-/// This device's session as the writer of a workspace's tree: a record goes out as this
-/// device's own write, and is durable once the workspace's host answered it.
-struct SessionWriter {
-    link: Link,
-    workspace: WorkspaceId,
+/// The copy as the writer of the tree: a record goes out as this device's own write, sealed
+/// with the keys of the tree's group where the workspace seals it.
+struct Writer {
+    copy: Arc<Copy>,
+    wakes: tokio::sync::mpsc::UnboundedSender<Wake>,
 }
 
-impl tilo_fs::tree_sync::TreeWriter for SessionWriter {
+impl tilo_fs::tree_sync::TreeWriter for Writer {
     fn write<'a>(
         &'a mut self,
         chunk: TreeChunk,
         changes: &'a [u8],
-        _founding: bool,
+        founding: bool,
         snapshot: bool,
     ) -> tilo_fs::tree_sync::WriteFuture<'a> {
-        let mutation = if snapshot {
-            DocumentMutation::Snapshot(changes.to_vec())
-        } else {
-            DocumentMutation::Incremental(changes.to_vec())
-        };
-        let written = self.link.write(route(self.workspace, chunk), &mutation);
-        Box::pin(std::future::ready(written))
+        Box::pin(async move {
+            let written = write_as_device(&self.copy, chunk, changes, (founding, snapshot)).await;
+            match &written {
+                Ok(()) => {
+                    count_until_served(&self.copy, &tilo_fs::tree_sync::document_for(chunk));
+                }
+                // A write the copy does not take waits as one the workspace refused would, rather
+                // than going again at every look.
+                Err(why) => {
+                    let _ = self.wakes.send(Wake::Refused {
+                        chunk,
+                        reason: why.clone(),
+                    });
+                }
+            }
+            written
+        })
     }
 
     fn served(&self, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Served> {
-        let routes: Vec<DocumentRoute> = chunks
+        let documents: Vec<String> = chunks
             .iter()
-            .map(|chunk| route(self.workspace, *chunk))
+            .map(|chunk| tilo_fs::tree_sync::document_for(*chunk))
             .collect();
-        let receipt = self.link.barrier_for(&routes).ok()?;
+        let named: Vec<(&str, &str)> = documents
+            .iter()
+            .map(|document| (FILES_APP, document.as_str()))
+            .collect();
+        let served = self.copy.writes.served(&self.copy.name, &named)?;
         Some(Box::pin(async move {
-            match receipt.await {
-                Ok(answer) => answer,
-                Err(_) => Err("the session closed before the workspace answered".to_owned()),
-            }
+            tokio::time::timeout(SERVED_WITHIN, served)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(format!(
+                        "the workspace's server did not say within {}s that it holds the change",
+                        SERVED_WITHIN.as_secs()
+                    ))
+                })
         }))
     }
 }
 
-/// What the sync waits on: the same events a session client follows.
-fn takes(event: &Event) -> bool {
-    matches!(
-        event,
-        Event::Landed { .. }
-            | Event::DocumentOpened { .. }
-            | Event::Refused { .. }
-            | Event::DocumentContent { .. }
-            | Event::HostReady { .. }
-    )
+/// Write `changes` to record `chunk` of the tree in `copy` as this device: its founding write
+/// and the whole record as `founding` and `snapshot` say, sealed with the keys of the tree's
+/// group where the workspace seals it.
+async fn write_as_device(
+    copy: &Copy,
+    chunk: TreeChunk,
+    changes: &[u8],
+    (founding, snapshot): (bool, bool),
+) -> Result<(), String> {
+    let route = route(copy.workspace, chunk);
+    let keys = match copy.workspaces.own_route_keys(&route, founding).await {
+        Some(Err(why)) => return Err(format!("the keys of the workspace's files: {why}")),
+        keys => keys.and_then(Result::ok),
+    };
+    copy.writes
+        .write(
+            &copy.name,
+            FILES_APP,
+            &route.document,
+            None,
+            changes,
+            founding,
+            snapshot,
+            keys.as_ref(),
+        )
+        .await
+        .map(drop)
+        .map_err(|refusal| refusal.to_string())
 }
 
-/// Carry the session's events to the sync as wakes, and the content it sent this device to the
-/// store the tree's files are read from.
-async fn forward(
-    events: Events,
-    wake: Arc<tokio::sync::Notify>,
-    wakes: tokio::sync::mpsc::UnboundedSender<tilo_fs::tree_sync::Wake>,
-    content: Arc<SessionContent>,
-    workspace: WorkspaceId,
+/// Count a write of this device's to `document` as unserved until the serving device answers
+/// for it, or the wait for its word ends: what `tilo status` says is still going out.
+fn count_until_served(copy: &Copy, document: &str) {
+    let Some(served) = copy.writes.served(&copy.name, &[(FILES_APP, document)]) else {
+        return;
+    };
+    let unserved = Arc::clone(&copy.unserved);
+    unserved.fetch_add(1, Ordering::Relaxed);
+    tokio::spawn(async move {
+        let _ = tokio::time::timeout(SERVED_WITHIN, served).await;
+        unserved.fetch_sub(1, Ordering::Relaxed);
+    });
+}
+
+/// Carry the copy's news to the sync as wakes: a write the serving device sent a record of the
+/// tree, the copy catching up with the serving device again, and the answers the opened records
+/// can have now. Ends once the sync is gone.
+async fn follow(
+    copy: Arc<Copy>,
+    mut writes: tokio::sync::broadcast::Receiver<tilo_workspace_service::workspaces::ResourceWrite>,
+    wakes: tokio::sync::mpsc::UnboundedSender<Wake>,
 ) {
     let mut look = tokio::time::interval(tilo_fs::tree_sync::LOOK_AGAIN);
+    let mut caught_up: Option<tokio::sync::watch::Receiver<bool>> = None;
+    let mut was_caught_up = false;
     loop {
+        let mut moved = false;
         tokio::select! {
-            () = wake.notified() => {}
+            written = writes.recv() => match written {
+                Ok(written) => {
+                    moved = written.workspace == copy.name
+                        && written.app == FILES_APP
+                        && fs_protocol::tree::chunk_of_record(&written.record).is_some();
+                }
+                // Writes went by unheard: any record may have changed.
+                Err(RecvError::Lagged(_)) => moved = true,
+                Err(RecvError::Closed) => return,
+            },
+            () = changed(&mut caught_up) => {}
+            () = copy.asked.notified() => {}
             _ = look.tick() => {}
         }
-        let mut told = Vec::new();
-        for event in events.drain() {
-            if let Some(wake) = wake_of(event, workspace, &content) {
-                told.push(wake);
-            }
+        if caught_up.is_none() {
+            // Held as a member copy only once the device took the workspace in.
+            caught_up = copy.workspaces.member_caught_up(copy.workspace);
         }
-        // A change of the session's own, with no event of the tree's: the sync looks again.
-        if told.is_empty() {
-            told.push(tilo_fs::tree_sync::Wake::Moved);
+        let now_caught_up = caught_up
+            .as_ref()
+            .is_some_and(|caught_up| *caught_up.borrow());
+        let mut told = Vec::new();
+        if now_caught_up && !was_caught_up {
+            // Caught up again after its link was made anew: what was answered before it may be
+            // older than what the copy holds now, so every record is opened and answered again.
+            told.push(Wake::HostReady);
+        }
+        was_caught_up = now_caught_up;
+        let answering = Arc::clone(&copy);
+        // An answer may read a record, which waits for the service: off the runtime's workers.
+        if let Ok(answers) = tokio::task::spawn_blocking(move || answering.answer_opened()).await {
+            told.extend(answers);
+        }
+        if moved {
+            told.push(Wake::Moved);
         }
         for wake in told {
             if wakes.send(wake).is_err() {
-                // The sync is gone; nothing waits for the session's news any more.
                 return;
             }
+        }
+        if wakes.is_closed() {
+            return;
         }
     }
 }
 
-/// What `event` means to the tree of `workspace`, when it means anything to it.
-fn wake_of(
-    event: Event,
-    workspace: WorkspaceId,
-    content: &SessionContent,
-) -> Option<tilo_fs::tree_sync::Wake> {
-    let name = workspace.to_string();
-    let here = |route: &DocumentRoute| route.cluster_id == name && route.app_id == FILES_APP;
-    match event {
-        Event::HostReady { ws, .. } if ws == workspace => Some(tilo_fs::tree_sync::Wake::HostReady),
-        Event::Refused { route, refusal, .. } if here(&route) => {
-            fs_protocol::tree::chunk_of_record(&route.document).map(|chunk| {
-                tilo_fs::tree_sync::Wake::Refused {
-                    chunk,
-                    reason: refusal.to_string(),
-                }
-            })
+/// Once `caught_up` changes; never while there is none to follow, or once it ended.
+async fn changed(caught_up: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    match caught_up {
+        Some(receiver) => {
+            if receiver.changed().await.is_err() {
+                *caught_up = None;
+                std::future::pending::<()>().await;
+            }
         }
-        Event::Landed { route, .. } if here(&route) => {
-            fs_protocol::tree::chunk_of_record(&route.document)
-                .map(tilo_fs::tree_sync::Wake::Landed)
-        }
-        Event::DocumentOpened {
-            route: Some(route),
-            answer,
-            ..
-        } if here(&route) => fs_protocol::tree::chunk_of_record(&route.document)
-            .map(|chunk| tilo_fs::tree_sync::Wake::Opened { chunk, answer }),
-        Event::DocumentContent { ws, frame, .. } if ws == workspace => {
-            content.piece(&frame);
-            Some(tilo_fs::tree_sync::Wake::Moved)
-        }
-        _ => None,
+        None => std::future::pending().await,
     }
 }

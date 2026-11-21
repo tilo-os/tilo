@@ -15,7 +15,6 @@ use tilo_fs::fs::QuickFS;
 use tilo_fs::hydration::{FileKeys, Hydrator};
 use tilo_fs::smart::Heuristics;
 
-use super::content::SessionContent;
 use super::tree::TreeReplica;
 
 /// How often a synced folder carries changes across, where nothing mounts it.
@@ -67,7 +66,8 @@ pub(crate) struct Parts<'a> {
     pub(crate) replica: &'a TreeReplica,
     pub(crate) store: Arc<tilo_fs::ContentStore>,
     pub(crate) endpoint: iroh::Endpoint,
-    pub(crate) content: Arc<SessionContent>,
+    /// Where the bytes this device lacks are asked for.
+    pub(crate) content: Arc<dyn tilo_fs::hydration::ContentSource>,
     pub(crate) actor: fs_protocol::FileActor,
     pub(crate) writers: Arc<tilo_fs::writer::WriterResolver>,
     /// What the workspace takes of the writes made through it.
@@ -83,7 +83,7 @@ pub(crate) struct Parts<'a> {
 pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
     let hydrator = Arc::new(
         Hydrator::new(parts.endpoint.clone(), Arc::clone(&parts.store))
-            .with_source(Arc::clone(&parts.content) as Arc<dyn tilo_fs::hydration::ContentSource>)
+            .with_source(Arc::clone(&parts.content))
             .with_file_keys(parts.keys.clone()),
     );
     let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));

@@ -1163,7 +1163,8 @@ async fn follow_session(
     if let Some(own) = &session.own {
         own.hold(&session.device).await;
     }
-    peer.reconcile(&session.device).await;
+    peer.reconcile(&session.device, session.own.as_deref())
+        .await;
     if let Some(own) = &session.own {
         own.hold(&session.device).await;
     }

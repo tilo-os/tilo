@@ -18857,7 +18857,6 @@ dependencies = [
  "key-group",
  "mail-parser",
  "migration-sources",
- "neighbour-wire",
  "percent-encoding",
  "postcard",
  "rand 0.10.3",

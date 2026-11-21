@@ -97,10 +97,21 @@ impl OwnDevice {
         own_device::hold_as_members(self.service.workspaces(), held).await;
     }
 
-    /// The workspaces the service holds.
-    #[cfg(test)]
+    /// The workspaces the service holds: the member copies the folders' trees are kept in.
     pub(crate) const fn workspaces(&self) -> &tilo_workspace_service::workspaces::Workspaces {
         self.service.workspaces()
+    }
+}
+
+impl OwnDevice {
+    /// Close the service and its endpoint, as the process ending would: what the service holds
+    /// is kept, and the next service opened under this device's directory takes it up.
+    #[cfg(test)]
+    pub(crate) async fn shutdown(self) {
+        self.service.shutdown().await;
+        if let Some(endpoint) = self.endpoint.get() {
+            endpoint.close().await;
+        }
     }
 }
 

@@ -56,8 +56,9 @@ iroh-base.workspace = true
 tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 tilo-server-client = { path = "../../server/tilo-server-client" }
 # The device's own workspace service and the key service beside it, which hold the login's
-# workspaces as member copies.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys"] }
+# workspaces as member copies, the folders' trees among their records, and route the content of
+# the files those trees name.
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "content"] }
 tilo-workspace-keys = { path = "../../collab/workspace-keys" }
 key-group = { path = "../../collab/key-group" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
@@ -104,9 +105,8 @@ install-plan = { path = "../../session/install-plan" }
 # Tilo OS mounts.
 tilo-fs = { package = "tilo-fs", path = "../fs", features = ["tree-sync"] }
 fs-protocol = { path = "../fs-protocol" }
-# A workspace's records as this device's session reads them for the tree sync.
+# A workspace's records as this device's own service reads and writes them for the tree sync.
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 automerge.workspace = true
 bytes.workspace = true
