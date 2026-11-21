@@ -1392,10 +1392,17 @@ select_install_source() {
 }
 
 # bootc runs on the host, in a mount namespace of its own as it would in a
-# container, so the mounts it makes for the install stay its own.
+# container, so the mounts it makes for the install stay its own. Each line it
+# prints carries the seconds since it started, so the install log shows which
+# of its steps the bootc-install phase spends its time in.
 bootc_install_to() {
+  local started="${EPOCHREALTIME//[.,]/}" line
   unshare --mount --propagation slave -- \
-    "${BOOTC[@]}" install to-filesystem "${BOOTC_SOURCE_ARGS[@]}" "$@"
+      "${BOOTC[@]}" install to-filesystem "${BOOTC_SOURCE_ARGS[@]}" "$@" 2>&1 \
+    | while IFS= read -r line; do
+        printf 'bootc [+%ss] %s\n' "$(seconds_since "$started")" "$line"
+      done
+  return "${PIPESTATUS[0]}"
 }
 
 # The installed image's root, read-only, out of the target's own composefs
