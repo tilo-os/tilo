@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use tilo_app_package::manifest::Manifest;
+use tilo_app_package::manifest::{Manifest, Platform};
 use tilolang_cli::package::{self, BuildOptions};
 
 use crate::support::{copy_package, packages, with_used};
@@ -58,6 +58,18 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
             "it runs on the tilolang runtime bundle"
         );
         assert_eq!(entrypoint.bin, Path::new(package::RUNTIME_BIN));
+        // It runs where the runtime bundle runs, which is a Linux binary: a device offering it
+        // elsewhere is told so rather than failing to start it.
+        assert_eq!(
+            manifest.package.platforms(),
+            [Platform::Linux],
+            "{} names the platforms its runtime runs on",
+            app.app
+        );
+        assert!(
+            manifest.package.platform_reason.is_some(),
+            "a narrowed list says why"
+        );
         assert_eq!(manifest.package.icon.as_deref(), Some("icon.svg"));
         assert!(app.payload.join("icon.svg").is_file());
         assert!(app.payload.join("app.wasm").is_file());
@@ -250,6 +262,28 @@ fn every_payload_carries_the_standard_library(
 /// A package that reads the platform's published resources (the shell's quick settings read the
 /// device's) builds: the platform's apps are described from their surfaces, not looked for among
 /// the packages.
+#[test]
+fn the_platforms_a_package_names_are_the_runtimes() {
+    // One runtime bundle runs every tilolang app, so where it runs is where they run: the
+    // manifest each package gets names the bundle's platforms, never the default.
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tilolang/tilo-runtime.toml"),
+    )
+    .unwrap();
+    let runtime = Manifest::from_toml_str(&text).unwrap();
+    let named: Vec<String> = runtime
+        .package
+        .platforms()
+        .iter()
+        .map(|platform| format!("\"{}\"", platform.as_str()))
+        .collect();
+    assert_eq!(format!("[{}]", named.join(", ")), package::PLATFORMS);
+    assert_eq!(
+        runtime.package.platform_reason.as_deref(),
+        Some(package::PLATFORM_REASON)
+    );
+}
+
 #[test]
 fn a_package_that_uses_the_platforms_apps_builds() {
     let scratch = tempfile::tempdir().unwrap();

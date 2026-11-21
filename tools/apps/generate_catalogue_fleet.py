@@ -208,6 +208,21 @@ def native_apps(root: pathlib.Path) -> list[dict]:
     return apps
 
 
+def tilolang_platforms(root: pathlib.Path) -> list[str]:
+    """Where a tilolang app runs: where its runtime bundle runs.
+
+    The bundle (`apps/tilolang/tilo-runtime.toml`) is a Linux binary, baked into the OS image
+    beside the Tilo runtime and executed by the session's launcher. A Tilo OS device is a Linux
+    one; neither macOS nor a browser tab has that runtime, so a tilolang app is never declared
+    for the default platforms.
+    """
+    manifest = tomllib.loads((root / "apps/tilolang/tilo-runtime.toml").read_text(encoding="utf-8"))
+    platforms = manifest.get("package", {}).get("platforms")
+    if not platforms:
+        raise SystemExit("apps/tilolang/tilo-runtime.toml names no platforms")
+    return list(platforms)
+
+
 def tilolang_apps(root: pathlib.Path, tilolang: pathlib.Path) -> list[dict]:
     """Every `apps/tl/` package that declares an app, as `tilolang describe --fleet` reads it."""
     if not tilolang.is_file():
@@ -215,6 +230,7 @@ def tilolang_apps(root: pathlib.Path, tilolang: pathlib.Path) -> list[dict]:
             f"{tilolang}: no tilolang binary; build it with "
             "`cargo build --locked -p tilolang-cli --bin tilolang` or pass --tilolang"
         )
+    platforms = tilolang_platforms(root)
     apps = []
     for app_dir in sorted(p for p in (root / "apps" / "tl").iterdir() if p.is_dir()):
         if not (app_dir / "app.tl").is_file():
@@ -232,7 +248,7 @@ def tilolang_apps(root: pathlib.Path, tilolang: pathlib.Path) -> list[dict]:
         if entry is None:
             # A package of views the app it belongs to compiles in: it declares no app.
             continue
-        entry["platforms"] = list(DEFAULT_PLATFORMS)
+        entry["platforms"] = list(platforms)
         entry["actions"] = entry.pop("offers")
         apps.append(entry)
     return apps

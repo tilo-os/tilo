@@ -123,6 +123,22 @@ mod tests {
             assert!(web.iter().all(|app| app.platforms.contains(&"web")));
         }
 
+        phase a_tilolang_app_runs_where_its_runtime_runs;
+        {
+            // A tilolang app executes on the tilolang runtime bundle, which is a Linux binary:
+            // a Mac or a browser tab has none, so neither offers to open one.
+            let notes = app("so.tilo.lang.notes");
+            assert_eq!(notes.platforms, ["linux"]);
+            assert!(runs_on(notes.id, &["linux"]));
+            assert!(runs_on(notes.id, &["tilo-os", "linux"]));
+            assert!(!runs_on(notes.id, &["macos"]));
+            assert!(!runs_on(notes.id, &["web"]));
+            assert_eq!(
+                runs_elsewhere(notes.id, "the browser"),
+                "Notes runs in Tilo on a computer, not in the browser"
+            );
+        }
+
         phase an_app_that_does_not_run_here_says_where_it_does;
         {
             assert_eq!(

@@ -254,5 +254,8 @@ mod tests {
         let surface = surface("so.tilo.lang.notes").expect("Notes ships its surface");
         assert!(surface.contains("tl.so.tilo.lang.notes.Notebook"));
         assert!(surface.contains("tl.so.tilo.lang.notes.Note"));
+        // It runs where its runtime bundle runs, which is a Linux binary: a person is never
+        // offered it on a Mac or in a browser tab, where starting it can only fail.
+        assert_eq!(notes.platforms, ["linux"]);
     }
 }

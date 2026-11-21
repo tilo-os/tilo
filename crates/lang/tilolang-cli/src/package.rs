@@ -19,6 +19,14 @@ pub const DEFAULT_TILOLANG_RUNTIME: &str =
     concat!("tilolang/", env!("CARGO_PKG_VERSION"), "+tilolang");
 pub const DEFAULT_TILO_RUNTIME: &str = "tilo-runtime/2026.07";
 
+/// Where a tilolang app runs: where its runtime bundle runs (`apps/tilolang/tilo-runtime.toml`).
+/// The bundle is a Linux binary, baked into the OS image beside the Tilo runtime and executed by
+/// the session's launcher; a Tilo OS device is a Linux one, so it is covered. Neither macOS nor a
+/// browser tab has the runtime, so a package names this rather than taking the manifest default.
+pub const PLATFORMS: &str = "[\"linux\"]";
+/// Why a tilolang app narrows `package.platforms`, as its manifest must say.
+pub const PLATFORM_REASON: &str = "Runs on the tilolang runtime, which is a Linux binary.";
+
 /// What a build makes of the package in a directory and the packages it uses.
 #[derive(Clone, Debug)]
 pub struct BuildOptions {
@@ -207,6 +215,8 @@ name = {name}
 category = {category}
 version = {version}
 kind = "app"
+platforms = {platforms}
+platform-reason = {platform_reason}
 runtime = {runtime}
 {extra}optional-runtimes = [{tilolang}]
 {names}
@@ -255,6 +265,10 @@ ext = [{providers_ext}]
         name = toml_string(&meta.title),
         category = toml_string(category),
         version = toml_string(&options.version),
+        // Where the app runs, and why it is not the manifest's default: one line each, both
+        // required of a package that narrows its platforms.
+        platforms = PLATFORMS,
+        platform_reason = toml_string(PLATFORM_REASON),
         runtime = toml_string(&options.tilo_runtime),
         tilolang = toml_string(&options.tilolang_runtime),
         // The app's workspace record, and the workspace's record of each person's own state of it,
