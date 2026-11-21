@@ -18,12 +18,13 @@ Most checks live in the hooks a checkout enables with
 `python3 tools/dev/install-git-hooks.py` (`.githooks/pre-commit` and
 `.githooks/commit-msg` for the rules, `.githooks/pre-merge-commit` so a merge is
 judged as a commit is, `.githooks/pre-push` for the lint of what
-a push changes, and of the crates whose own source names what it changed), in CI
-([`.forgejo/workflows/`](../.forgejo/workflows)), which covers the policy suite
-[`tools/policy/run.sh`](../tools/policy/run.sh), the diff-based checks, formatting,
-`cargo deny`, Clippy and the tests, and as `t`'s checks on a build server
+a push changes), as `t`'s checks on a build server
 ([`tools/policy/steps.toml`](../tools/policy/steps.toml) is the list, one job per
-step, so `t test policy` covers the suite and `t test policy/<step>` one step).
+step, so `t test policy` covers the suite and `t test policy/<step>` one step),
+which run the policy suite, the diff-based checks, formatting, `cargo deny`,
+Clippy and the tests. The workflows in
+([`.forgejo/workflows/`](../.forgejo/workflows)) build and publish release
+artifacts.
 [`run.sh`](../tools/policy/run.sh) works through the same steps side by side and
 refuses on a development machine, where they would take the machine they are on.
 
