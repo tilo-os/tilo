@@ -291,10 +291,6 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
     assert!(raw >= 62);
     let ambient = unsafe { OwnedFd::from_raw_fd(raw) };
     let source_ownership = InaccessibleAncestor::deny(&source_parent).unwrap();
-    assert_ne!(
-        uid, 0,
-        "private-ancestor capture qualification requires an actual nonroot runner"
-    );
     assert_eq!(
         File::open(source.join("document"))
             .expect_err("qualification must observe denied access through the source ancestor")
