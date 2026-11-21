@@ -61,3 +61,25 @@ fn a_whole_copy_delivered_again_after_it_was_taken_in_is_not_refused() {
         "nor does the window say the copy could not be read"
     );
 }
+
+/// A record no owner holds, which this window asked the workspace for (a record an app keeps
+/// beside its own): its committed read arrives, so the stores look again and what asked for it
+/// opens it. The read waits here for an owner the record itself would bring, so without the wake
+/// the record never opens — and what an app keeps beside its own is never published.
+#[test]
+fn a_record_no_owner_holds_that_arrives_is_looked_for_again() {
+    let mut fixture = RoutedOwners::new();
+    let workspace = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000077").unwrap();
+    let route = crate::collaboration::RouteSpec::document(
+        "so.tilo.test-probe",
+        workspace,
+        "uuid:587bfde5-3070-4a56-9b1b-bb5abd3a599b",
+    );
+    let read = crate::collaboration::CommittedDocument::for_test(vec![0xff; 8], None);
+    let before = fixture.records.kept_revision();
+    fixture.app.queue_committed_document(route, read);
+    assert!(
+        fixture.records.kept_revision() > before,
+        "the stores look again for the record that arrived"
+    );
+}

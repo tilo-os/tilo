@@ -1232,6 +1232,21 @@ impl<A: ResourceApp> HeadlessApp<A> {
         keeper: &'static str,
         write: impl FnOnce(&super::WorkspaceResource<P>) -> Result<(), String>,
     ) -> Result<(), String> {
+        let id = ui_core::resource::workspace::document_id(P::KIND);
+        self.workspace_delivers_record::<P>(keeper, &id, write)
+    }
+
+    /// [`Self::workspace_delivers`] of the record `id` that `keeper` keeps, for a record of the
+    /// app's that the workspace names otherwise than by its kind (Terminal's machine secrets).
+    ///
+    /// # Errors
+    /// As [`Self::workspace_delivers`]; and `id` names no record.
+    pub fn workspace_delivers_record<P: Resource>(
+        &mut self,
+        keeper: &'static str,
+        id: &str,
+        write: impl FnOnce(&super::WorkspaceResource<P>) -> Result<(), String>,
+    ) -> Result<(), String> {
         // The same directory the window's own store keeps the profile in, opened once more:
         // what lands there is what the window's stores read.
         let directory = match &self.profile {
@@ -1249,9 +1264,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
             self.profile.workspace().to_owned(),
             MemberId::person(self.author.as_str()),
         );
-        let document =
-            super::WorkspaceResource::<P>::open(&theirs, keeper, (keeper, keeper), None, None)
-                .ok_or_else(|| format!("{} does not open in the device's store", P::KIND))?;
+        let document = super::WorkspaceResource::<P>::open_at(
+            &theirs,
+            keeper,
+            id,
+            (keeper, keeper),
+            None,
+            None,
+        )
+        .ok_or_else(|| format!("{} does not open in the device's store", P::KIND))?;
         write(&document)?;
         // It has landed on the device before the window is told of it.
         theirs

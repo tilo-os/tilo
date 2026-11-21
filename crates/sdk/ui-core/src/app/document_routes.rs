@@ -554,24 +554,25 @@ impl App {
         self.needs_sync = true;
     }
 
-    /// The committed history of a record no window holds arrived (an
-    /// on-demand record a store asked for and could not open yet): every
+    /// The committed history of a record no window holds arrived, one a
+    /// store here asked the workspace for and could not open yet (an
+    /// on-demand record, or a record the app keeps beside its own): every
     /// store a live owner reads from looks again
     /// ([`crate::resource::ResourceStore::note_kept`]), and what asked for it
     /// opens it.
+    ///
+    /// A record the window holds needs nothing here: its owner takes the read
+    /// in ([`Self::queue_committed_document`]'s pump). One it only asked for
+    /// has no owner to take it, and would wait forever for the next reading of
+    /// it without this: it is not here, so nothing it holds is published, and
+    /// nothing that names it is offered.
     pub(super) fn unheld_resource_arrived(&mut self, route: &crate::collaboration::RouteSpec) {
         let held = self
             .document_routes
             .owners
             .iter()
             .any(|entry| entry.route == *route);
-        if held
-            || !route
-                .document
-                .as_deref()
-                .and_then(crate::resource::DocumentId::parse)
-                .is_some_and(|id| id.arrives_on_demand())
-        {
+        if held {
             return;
         }
         for store in &self.live_resource_stores() {

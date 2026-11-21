@@ -140,5 +140,7 @@ pub mod window_view;
 pub mod workspace_arrival;
 #[path = "workspace_kept_records.rs"]
 pub mod workspace_kept_records;
+#[path = "workspace_record_actions.rs"]
+pub mod workspace_record_actions;
 #[path = "workspace_resources.rs"]
 pub mod workspace_resources;

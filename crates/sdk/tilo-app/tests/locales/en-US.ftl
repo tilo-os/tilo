@@ -409,3 +409,9 @@ test-cards = Cards
 test-cards-rename = Rename the cards
 test-cards-effect-show = Show a card
 test-cards-effect-show-card = The card's name
+
+## crates/sdk/tilo-app/tests/workspace_record_actions.rs
+test-terminal-session = Terminal
+terminal-machine-secrets = Machine secrets
+terminal-machine-secrets-add-secret = Add secret
+terminal-machine-secrets-remove-secret = Remove secret
