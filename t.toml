@@ -6675,14 +6675,14 @@ requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge/binaries/**"]
 # The image's programs, built as the image ships them: a release build whose whole-program link
 # covers everything a host that serves pages carries. Only the image waits for this build; the
-# checks that run these programs themselves (e2e, page-tour, the tilo.sh stack) ask for
+# checks that run these programs themselves (e2e, the tilo.sh stack) ask for
 # `lounge-check-binaries` below. A release waits
 # for it, so it gets longer than a check of a change does: the whole-program link grows with the
 # graph and this is the only build of it left.
 timeout_secs = 5400
 default = false
 
-# The same two programs, for the checks that run them directly (e2e, page-tour, the tilo.sh
+# The same two programs, for the checks that run them directly (e2e, the tilo.sh
 # stack): the profile Cargo.toml's `lounge-check` describes, which is release optimisation
 # without the whole-program link. A check starts from an empty build directory, so a run takes
 # every unit it reuses from the compiler cache, recompiles the crates the change touched and the
@@ -6910,19 +6910,6 @@ evidence = ["/target/e2e-reloads/state/logs/**"]
 timeout_secs = 900
 default = false
 
-# A newcomer's tour of the page for a person to review: every screen a first-time visitor meets,
-# light, dark and at a phone's width, kept as pictures. It judges nothing on looks.
-[[check]]
-name = "page-tour"
-# No egress: as e2e, the tour meets its Lounge on loopback (direct-lounge.sh) and its programs and
-# fonts are its needs'.
-run = "mkdir -p /target/page-tour-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/page-tour-cli tilo\nTILO_TOUR_IN_LOG=1 bash os/containers/tilo-lounge/test-page-tour.sh /target/publish/web-entry/bundle /target/page-tour"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle", "cli-x86_64"]
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
-requires = ["arch=x86_64"]
-outputs = ["/target/page-tour/tour/**", "/target/page-tour/*.log"]
-timeout_secs = 1800
-default = false
 
 # A person on a workspace as a web page, walked in a headless browser against the Lounge's server
 # (integration/page-notes.mjs): the site's entry makes the browser a device, the page opens, a note
@@ -6932,7 +6919,7 @@ default = false
 # step saw are kept for a reviewer.
 [[check]]
 name = "page-notes"
-# No egress: as page-tour, the walk meets its Lounge on loopback (direct-lounge.sh) and its
+# No egress: as e2e, the walk meets its Lounge on loopback (direct-lounge.sh) and its
 # programs and fonts are its needs'.
 run = "TILO_PAGE_NOTES_IN_LOG=1 bash os/containers/tilo-lounge/test-page-notes.sh /target/publish/web-entry/bundle /target/page-notes"
 needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
