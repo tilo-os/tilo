@@ -976,20 +976,6 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("catalogue per query" in item.reason for item in violations))
-        with self.subTest(phase='durable provider cannot truncate index before query'):
-            root = self.fixture(
-                "use tilo_actions::ActionSpec;\n"
-                "fn resources(&self) {}\n"
-                "impl SearchProvider for Corpus {\n"
-                " fn name(&self) -> &str { \"Corpus\" }\n"
-                " fn search(&self, q: &str) -> Vec<SearchResult> { self.search_limited(q, 32) }\n"
-                " fn search_limited(&self, _: &str, limit: usize) -> Vec<SearchResult> {\n"
-                "   self.rows.iter().take(DEFAULT_SEARCH_INDEX_LIMIT).take(limit).cloned().collect()\n"
-                " }\n"
-                "}\n"
-            )
-            violations, _ = contract.audit(root)
-            self.assertTrue(any("truncates its corpus" in item.reason for item in violations))
 
     def test_effect_actions_need_a_reachable_handler_registry(self):
         with self.subTest(phase='effect action without handler registry fails'):

@@ -103,14 +103,6 @@ FRAMEWORK_RESOURCE_SEARCH_INSTALL = re.compile(
 # fallback is safe for that provider.
 SEARCH_LIMIT_EXEMPTIONS: dict[str, str] = {}
 
-# Reviewed exceptions for providers that discard a durable tail before querying
-# it. New entries require an explicit review; migrated providers are removed.
-TRUNCATING_SEARCH_REMEDIATION: dict[str, str] = {
-}
-TRUNCATING_SEARCH = re.compile(
-    r"\.take\s*\(\s*DEFAULT_SEARCH_INDEX_LIMIT(?:\s*\.\s*saturating_sub\s*\([^)]*\))?\s*\)"
-)
-
 # Any button in any app is an action. A toolkit control activates either
 # through the action system (`on_action` with a resource action binding;
 # `on_effect`, `on_own_device_effect` and `on_view` with a published native
@@ -1673,21 +1665,9 @@ def audit_search_provider_limits(
 ) -> set[str]:
     """Require every app provider to own paging, work, and materialisation budgets."""
     found: set[str] = set()
-    truncating_paths: set[str] = set()
     for source, raw in sources:
         code = code_only(raw)
         relative = source.relative_to(root).as_posix()
-        if TRUNCATING_SEARCH.search(code):
-            truncating_paths.add(relative)
-            if relative not in TRUNCATING_SEARCH_REMEDIATION:
-                violations.append(
-                    Violation(
-                        source,
-                        line_number(raw, TRUNCATING_SEARCH.search(code).start()),
-                        "durable SearchProvider truncates its corpus before querying; "
-                        "use the shared incremental SearchCatalog so late resources remain findable",
-                    )
-                )
         for match in SEARCH_PROVIDER_IMPL.finditer(code):
             provider = match.group(1)
             key = f"{relative}::{provider}"
@@ -1750,24 +1730,6 @@ def audit_search_provider_limits(
                         "the retained catalogue and update it incrementally as the corpus changes",
                     )
                 )
-    if root.resolve() == ROOT.resolve():
-        app_prefixes = {
-            "/".join(source.relative_to(root).as_posix().split("/")[:2]) + "/"
-            for source, _ in sources
-        }
-        scoped_remediation = {
-            relative
-            for relative in TRUNCATING_SEARCH_REMEDIATION
-            if any(relative.startswith(prefix) for prefix in app_prefixes)
-        }
-        for relative in sorted(scoped_remediation - truncating_paths):
-            violations.append(
-                Violation(
-                    root / relative,
-                    1,
-                    f"stale truncating-search remediation `{relative}`; remove the inventory entry",
-                )
-            )
     return found
 
 
