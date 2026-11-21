@@ -367,8 +367,7 @@ impl Member {
         server: Server,
         browsers: Option<PathBuf>,
     ) -> std::io::Result<Self> {
-        let identity =
-            tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key.clone());
+        let identity = tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key);
         let workspaces =
             super::open_member_service(profile, &cert, identity, endpoint.clone())?;
         let action_service = action_service(profile, &workspaces, server, None, browsers)?;
