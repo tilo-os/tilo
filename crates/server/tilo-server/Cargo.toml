@@ -243,6 +243,8 @@ tempfile = { workspace = true, optional = true }
 tilo-content = { path = "../../system/content", features = ["dir"] }
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
+# The launcher contract the app broker starts and attests a hosted workspace's apps through.
+tilo-broker-core = { path = "../../collab/broker-core" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }

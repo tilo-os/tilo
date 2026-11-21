@@ -138,3 +138,70 @@ tilo_test_env::scenario! {
         assert_eq!(tilo_launcher(&candidates).unwrap(), installed);
     }
 }
+
+/// The broker's socket in a fresh directory, listened on, and the server's launcher for it.
+fn serving() -> (tempfile::TempDir, std::os::unix::net::UnixListener, HostedApps) {
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("collab.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    (root, listener, HostedApps::new(socket))
+}
+
+tilo_test_env::scenario! {
+    fn the_server_attests_only_the_windows_it_serves;
+
+    phase a_launch_with_no_page_and_a_windowless_run_are_refused_legibly;
+    {
+        let (_root, _listener, apps) = serving();
+        let workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(7), "Hosted");
+        let refused = apps
+            .launch(APP, &workspace, None, &LaunchPlace::Focus)
+            .expect_err("no page is open for the launch");
+        assert!(refused.contains(NO_WINDOW), "{refused}");
+        let refused = apps
+            .windowless(APP, WORKSPACE)
+            .expect_err("no windowless instance runs here yet");
+        assert!(refused.contains(NO_WINDOWLESS), "{refused}");
+    }
+
+    phase a_windows_connection_is_attested_as_that_window_once;
+    {
+        let (_root, listener, apps) = serving();
+        let me = std::process::id();
+        let _connection = apps.connect_window(APP, WORKSPACE, 41).unwrap();
+        let (mut accepted, _) = listener.accept().unwrap();
+        // The broker reads the window's app, workspace and instance from the connection's
+        // handoff.
+        use std::io::Read as _;
+        let mut magic = [0; 4];
+        accepted.read_exact(&mut magic).unwrap();
+        assert_eq!(magic, launcher::services::COLLAB_LAUNCH_MAGIC);
+        assert!(apps.attest_process(me, APP, WORKSPACE));
+        assert!(!apps.attest_process(me, "so.tilo.lang.other", WORKSPACE));
+        assert!(
+            apps.authenticated_launch(me + 1, APP, WORKSPACE, Some(41))
+                .unwrap()
+                .is_none(),
+            "another process is no window of this server's"
+        );
+        assert!(
+            apps.authenticated_launch(me, APP, WORKSPACE, Some(42))
+                .unwrap()
+                .is_none(),
+            "a window it made no connection for"
+        );
+        let attested = apps
+            .authenticated_launch(me, APP, WORKSPACE, Some(41))
+            .unwrap()
+            .expect("the window's own connection");
+        assert_eq!(attested.continuation_instance, Some(41));
+        assert!(!attested.windowless);
+        assert!(
+            apps.authenticated_launch(me, APP, WORKSPACE, Some(41))
+                .unwrap()
+                .is_none(),
+            "a window's record is believed once"
+        );
+        assert!(!apps.attest_process(me, APP, WORKSPACE));
+    }
+}

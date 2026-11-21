@@ -22050,6 +22050,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-bot-directory",
+ "tilo-broker-core",
  "tilo-clock",
  "tilo-connector",
  "tilo-content",

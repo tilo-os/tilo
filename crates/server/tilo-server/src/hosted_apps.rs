@@ -10,8 +10,31 @@
 //! An instance runs in a tilolang process started through `tilo-launcher tilolang-process`
 //! (bubblewrap, Landlock, seccomp): a server without that launcher runs no app at all
 //! ([`tilo_launcher`]), never one unconfined.
+//!
+//! The only window a server serves is a page open on it. Each instance's collaboration
+//! connection is made by this process for a window it serves, and the broker attests the
+//! connection as that window only, once ([`HostedApps::connect_window`]); nothing else that
+//! reaches the broker's socket is believed to be one of its apps. What the window shows is the
+//! page's to say: the connection names a window, not how it is drawn.
 
+use std::collections::BTreeSet;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use tilo_broker_core::services::{
+    AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication, LauncherServices,
+    WindowlessStart,
+};
+use tilo_desktop_model::Workspace;
+
+/// Why a launch with no page to show it in starts nothing.
+pub const NO_WINDOW: &str =
+    "this server shows an app only in a page open on it, and no page is open for this launch";
+
+/// Why a server starts no windowless instance yet.
+pub const NO_WINDOWLESS: &str =
+    "this server runs no app without a page open on it yet, so the action has nowhere to run";
 
 /// The packages of the workspaces this server hosts, each installed into a store of its
 /// workspace's own under `root` and verified there as a launch verifies it.
@@ -129,6 +152,135 @@ pub fn tilo_launcher(candidates: &[PathBuf]) -> Result<PathBuf, String> {
                 searched.join(", ")
             )
         })
+}
+
+/// One window this server serves an app in: what the collaboration connection made for it is
+/// attested as.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Window {
+    app: String,
+    workspace: String,
+    instance: u64,
+}
+
+/// The app broker's launcher on a server: the windows it serves, whose connections it made.
+pub struct HostedApps {
+    /// The broker's socket, which a window's connection is made on.
+    collab_socket: PathBuf,
+    /// The windows whose connection was made and not yet attested: each is believed once.
+    windows: Mutex<BTreeSet<Window>>,
+}
+
+impl HostedApps {
+    /// The launcher of the broker listening on `collab_socket`.
+    #[must_use]
+    pub const fn new(collab_socket: PathBuf) -> Self {
+        Self {
+            collab_socket,
+            windows: Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    fn windows(&self) -> std::sync::MutexGuard<'_, BTreeSet<Window>> {
+        self.windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The collaboration connection of the window `instance` of `app` in `workspace`, which this
+    /// server serves: named for that window, and attested by the broker as that window only, once.
+    ///
+    /// # Errors
+    /// The broker's socket cannot be reached, or the connection could not be named.
+    pub fn connect_window(
+        &self,
+        app: &str,
+        workspace: &str,
+        instance: u64,
+    ) -> std::io::Result<OwnedFd> {
+        if instance == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a window's instance is never 0",
+            ));
+        }
+        let window = Window {
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            instance,
+        };
+        let mut stream = std::os::unix::net::UnixStream::connect(&self.collab_socket)?;
+        self.windows().insert(window.clone());
+        if let Err(error) =
+            launcher::services::write_collab_window_handoff(&mut stream, app, workspace, instance)
+        {
+            self.windows().remove(&window);
+            return Err(error);
+        }
+        Ok(OwnedFd::from(stream))
+    }
+
+    /// Take the record of the window this process made a connection for, once.
+    fn take_window(&self, pid: u32, app: &str, workspace: &str, instance: Option<u64>) -> bool {
+        if pid != std::process::id() {
+            return false;
+        }
+        let Some(instance) = instance.filter(|instance| *instance != 0) else {
+            return false;
+        };
+        self.windows().remove(&Window {
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            instance,
+        })
+    }
+}
+
+impl LauncherServices for HostedApps {
+    /// The apps a hosted workspace offers are its governance's, which the workspace publishes
+    /// itself; this launcher lists none of its own.
+    fn applications(&self) -> Vec<LaunchableApplication> {
+        Vec::new()
+    }
+
+    fn launch(
+        &self,
+        app: &str,
+        _: &Workspace,
+        _: Option<&str>,
+        _: &LaunchPlace,
+    ) -> Result<(), String> {
+        Err(format!("{app} did not open: {NO_WINDOW}"))
+    }
+
+    fn windowless(&self, app: &str, _: &str) -> Result<Option<WindowlessStart>, String> {
+        Err(format!("{app} did not run: {NO_WINDOWLESS}"))
+    }
+
+    /// Only a connection this process made for a window it serves is one of its apps.
+    fn attest_process(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        pid == std::process::id()
+            && self
+                .windows()
+                .iter()
+                .any(|window| window.app == app && window.workspace == workspace)
+    }
+
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        workspace: &str,
+        window_instance: Option<u64>,
+    ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
+        Ok(self
+            .take_window(pid, app, workspace, window_instance)
+            .then_some(AuthenticatedApplicationLaunch {
+                continuation_instance: window_instance,
+                launch_ticket: None,
+                windowless: false,
+            }))
+    }
 }
 
 #[cfg(test)]
