@@ -40,7 +40,7 @@ required = []
 optional = ["processes", "clipboard", "files.paths", "app-files", "threads", "settings", "open-uri"]
 
 [resources]
-kinds = ["terminal.history", "terminal.session", "environment", "terminal.recent-environments"]
+kinds = ["terminal.history", "terminal.session", "environment", "terminal.recent-environments", "terminal.machine-secrets"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
