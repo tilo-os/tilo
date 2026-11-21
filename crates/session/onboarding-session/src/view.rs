@@ -3435,43 +3435,42 @@ mod tests {
                 Some(PersistedStage::ReadyToEnter),
                 "a restart resumes at the ready screen"
             );
-            let composition = laid_out(&mut view);
-            let mut names = Vec::new();
-            accessible_names(composition, &mut names);
-            assert!(
-                names.contains(&tilo_onboarding::t("onboarding-done-title")),
-                "the joined device ends on the ready screen: {names:?}"
-            );
-            assert!(
-                accessibility_for_id(composition, "onboarding.backup.skip-acknowledged.box").is_none(),
-                "a joined device is not asked to back up an identity it does not hold"
-            );
-            let joined_guidance = |names: &[String]| {
-                assert!(
-                    names.contains(&tilo_onboarding::t("onboarding-done-joined-key-elsewhere"))
-                        && names.contains(&tilo_onboarding::t(
-                            "onboarding-done-joined-key-elsewhere-body"
-                        )),
-                    "the ready screen says the key stays on the approving device: {names:?}"
+            let joined_ready = |composition: &dyn Widget| {
+                let label = |id| accessibility_for_id(composition, id).and_then(|node| node.name);
+                assert_eq!(
+                    label("onboarding.done.heading"),
+                    Some(tilo_onboarding::t("onboarding-device-added")),
+                    "the ready screen confirms the paired device"
+                );
+                assert_eq!(
+                    label("onboarding.finish.button"),
+                    Some(tilo_onboarding::t("onboarding-finish")),
+                    "the ready screen offers the way into the desktop"
                 );
                 assert!(
-                    !names.contains(&tilo_onboarding::t("onboarding-done-backup-recommended")),
-                    "a joined device is not told a backup is still recommended: {names:?}"
+                    ui::widget::find_test_id(composition, "onboarding.done.body").is_none(),
+                    "the confirmation is one line"
+                );
+                assert!(
+                    accessibility_for_id(composition, "onboarding.backup.skip-acknowledged.box")
+                        .is_none(),
+                    "a joined device is not asked to back up an identity it does not hold"
                 );
             };
-            joined_guidance(&names);
+            joined_ready(laid_out(&mut view));
 
-            // A restart resumes on the same ready screen, knowing the device
-            // joined from its identity record alone.
+            // Close the first view and its writer lease before restarting.
+            drop(view);
+            drop(held);
             tilo_identity::store::set_active_identity(&identity_dir, "identity-joined")
                 .expect("select the joined identity");
-            let (mut resumed, _) = self::view();
-            resumed.identity_dir = Some(identity_dir);
-            resumed.restore_pending_progress_from_disk();
+            let mut resumed = OnboardingView::isolated(identity_dir.clone(), false);
             assert_eq!(resumed.flow.screen(), Screen::Done);
-            let mut names = Vec::new();
-            accessible_names(laid_out(&mut resumed), &mut names);
-            joined_guidance(&names);
+            joined_ready(laid_out(&mut resumed));
+            assert!(act(&mut resumed, &OnboardingEffect::Finish));
+            sync_journaled(&mut resumed, &doc);
+            assert!(resumed.finished(), "{:?}", resumed.progress_error);
+            assert!(!has_pending_progress(&identity_dir));
         }
     }
 
