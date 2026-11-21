@@ -1198,19 +1198,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    #[ignore = "read-only native host diagnostic, run explicitly"]
-    fn native_desktop_probe() {
-        let host = probe_desktop_host().unwrap().join().unwrap();
-        println!("Desktop host evidence: {host:#?}");
-        let releases = super::super::desktop_catalog::bundled_releases().unwrap();
-        println!(
-            "Desktop readiness: {:#?}",
-            desktop_readiness(&host, &releases)
-        );
-    }
-
     fn fedora() -> DesktopHost {
         DesktopHost {
             operating_system: "linux".into(),

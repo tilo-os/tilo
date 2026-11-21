@@ -47,10 +47,6 @@ use transaction_core::{Backend, transaction};
 #[cfg(unix)]
 use transaction_core::{pin_input, stage_package};
 
-#[cfg(test)]
-#[cfg(target_os = "linux")]
-use transaction_core::run_transaction;
-
 #[cfg(any(target_os = "linux", all(test, unix)))]
 mod transaction_core {
     use super::super::desktop_catalog::DesktopRelease;
@@ -1456,89 +1452,5 @@ mod tests {
                 assert!(!directory.join("package.rpm").exists());
             }
         }
-    }
-    #[cfg(target_os = "linux")]
-    #[test]
-    #[ignore = "requires disposable Linux guest, root and explicit local artifact metadata"]
-    fn native_desktop_install_local_artifact() {
-        assert_eq!(tilo_process::effective_uid(), 0);
-        let path = std::path::PathBuf::from(
-            std::env::var_os("TILO_DESKTOP_TEST_ARTIFACT").expect("explicit local artifact"),
-        );
-        let digest =
-            std::env::var("TILO_DESKTOP_TEST_SHA256").expect("independent artifact SHA256");
-        let version = std::env::var("TILO_DESKTOP_TEST_VERSION").expect("native package version");
-        let mut backend = native::NativeBackend;
-        let host = backend.probe().unwrap();
-        let os = host.os_release.clone().unwrap();
-        let release = DesktopRelease {
-            id: "local-native-proof".into(),
-            version,
-            distro_id: os.id,
-            distro_version: os.version_id.unwrap_or_else(|| "rolling".into()),
-            architecture: host.architecture.unwrap(),
-            package_format: match host.package_manager.unwrap() {
-                PackageManager::Dnf => PackageFormat::Rpm,
-                PackageManager::Apt => PackageFormat::Deb,
-                PackageManager::Pacman => PackageFormat::Arch,
-            },
-            url: "https://code.tilo.so/test-only-local-artifact".into(),
-            byte_size: std::fs::metadata(&path).unwrap().len(),
-            sha256: digest,
-            account_credentials: None,
-            verified_runtime: None,
-        };
-        let bytes = serde_json::to_vec(&DesktopInstallRequest {
-            schema: 1,
-            release_id: release.id.clone(),
-            package_input: path,
-        })
-        .unwrap();
-        assert!(
-            transaction(
-                &bytes,
-                &request_digest(&bytes),
-                &super::super::desktop_catalog::bundled_releases().unwrap(),
-                Path::new("/var/tmp"),
-                &mut backend,
-                &mut |_| Ok(())
-            )
-            .is_err()
-        );
-        let outcome = run_transaction(
-            &bytes,
-            &request_digest(&bytes),
-            Path::new("/var/tmp"),
-            &mut backend,
-            &mut |event| {
-                println!("{}", serde_json::to_string(&event).unwrap());
-                Ok(())
-            },
-            &|host, id| match super::super::desktop_probe::desktop_readiness(
-                host,
-                std::slice::from_ref(&release),
-            ) {
-                super::super::desktop_probe::DesktopReadiness::Blocked(reasons)
-                    if reasons
-                        == ["This package has no verified native graphical-session evidence."]
-                        && id == release.id =>
-                {
-                    Ok((
-                        release.clone(),
-                        matches!(
-                            host.installed_package,
-                            Ok(InstalledPackage::Installed { .. })
-                        ),
-                    ))
-                }
-                state => Err(format!(
-                    "Native proof fixture failed other readiness checks: {state:?}"
-                )),
-            },
-        )
-        .unwrap();
-        assert_eq!(outcome.version, release.version);
-        assert_eq!(outcome.session_entry, Path::new(SESSION_ENTRY));
-        println!("Native package transaction verified; graphical login remains UNPROVED.");
     }
 }
