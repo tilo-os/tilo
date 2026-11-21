@@ -314,7 +314,10 @@ impl AuthorDirectory {
         let Some(author) = local_identity_author() else {
             return false;
         };
-        self.register(actor_hex, author);
+        // The colour presence paints the person in (the roster's, else their slot), never the
+        // identity file's, which nobody chose until they pick one: first boot writes grey.
+        let rgb = self.resolve(actor_hex).rgb();
+        self.register(actor_hex, author.with_rgb(rgb));
         true
     }
 
