@@ -487,7 +487,23 @@ class Run:
         try:
             console.poll(c.console, lambda s: s.get("app") == "installer", 900, 5)
         except TimeoutError as error:
-            raise Failed("the live installer never answered on its console") from error
+            # What the medium shows instead, before any secret exists: the boot menu, an
+            # emergency shell or a stalled installer screen.
+            c.keep_screen(f"{self.variant}-installer-never-answered", *c.screen())
+            status = c.vm("status", check=False)
+            shot = c.vm("shot", "installer-never-answered", check=False)
+            # No install has run, so its serial holds no recovery key yet.
+            c.keep_serial(f"{self.variant}-installer-never-answered")
+            qemu = c.run / "qemu.log"
+            if qemu.is_file():
+                (self.out / f"{self.variant}-installer-qemu.log").write_text(
+                    SECRETS.redact(qemu.read_text(encoding="utf-8", errors="replace")),
+                    encoding="utf-8")
+                say("the live installer's QEMU log ends:\n" + SECRETS.redact(
+                    qemu.read_text(encoding="utf-8", errors="replace")[-3000:]))
+            raise Failed("the live installer never answered on its console (the VM: "
+                         f"{(status.stdout + status.stderr).strip()[-300:] or 'no status'}; "
+                         f"its screenshot: {shot.stderr.strip()[-300:] or 'taken'})") from error
         sh = self.live_shell()
         try:
             self.run_unattended(sh)
