@@ -298,11 +298,12 @@ How it works:
   `tilo-installer-setup.service` (which drops in the passwordless sudoers rule)
   only fires on the live medium. The **installed** system has no such arg, so it
   boots straight to the desktop.
-- The backend (`/usr/libexec/tilo-install`) does: `bootc image copy-to-storage`
-  → privileged `podman run … localhost/bootc bootc install to-disk --wipe
-  --filesystem btrfs --target-imgref "$TILO_TARGET_IMGREF" <disk>` → mounts the
-  fresh root and writes `name:hash` (password via the pure-Rust `tilo-crypto`) into the
-  deployment's writable `/etc/tilo/install-user.conf`.
+- The backend (`/usr/libexec/tilo-install`) does: `tilo-disk-encrypt prepare`
+  → `bootc install to-filesystem --source-booted --target-imgref
+  "$TILO_TARGET_IMGREF"`, which copies the booted image out of the medium's own
+  composefs repository into the target's as it is stored → writes `name:hash`
+  (password via the pure-Rust `tilo-crypto`) into the deployment's writable
+  `/etc/tilo/install-user.conf`.
 - On the installed system's first boot, `tilo-firstboot-user.service` creates the
   account from that file (`useradd -p <sha512-crypt-hash> -G wheel`) and shreds it. The
   installer then launches that account once into OOBE; after greetd consumes that

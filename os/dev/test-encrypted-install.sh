@@ -122,10 +122,6 @@ cat /etc/kernel/install.conf 2>&1 || echo "no /etc/kernel/install.conf (expected
 bash /usr/libexec/tilo/boot-chain-test.sh 2>&1 || true
 ' 20 || echo "(facts step reported a non-zero status; continuing)"
 
-say "copy the booted image into guest container storage"
-step copy "$OUT/01b-copy.txt" 'bootc image copy-to-storage' 3 \
-  || die "could not copy the image into guest container storage"
-
 say "prepare the encrypted volume"
 step prepare "$OUT/02-prepare.txt" \
   '/usr/libexec/tilo-disk-encrypt prepare /dev/vdb --filesystem btrfs' 20 \
@@ -138,13 +134,13 @@ KARGS=$(sed -n 's/^KARGS=//p' "$OUT/02-prepare.txt" | tr -d '\r')
 [ -n "$MNT" ] && [ -n "$RUUID" ] || die "prepare reported no volume"
 KARGARGS=""; for k in $KARGS; do KARGARGS="$KARGARGS --karg $k"; done
 
-say "bootc install to-filesystem"
+# As tilo-install does: the booted image, copied out of the guest's own composefs
+# repository, by bootc on the host in a mount namespace of its own.
+say "bootc install to-filesystem --source-booted"
 step install "$OUT/03-install.txt" "
-podman run --rm --privileged --pid=host --ipc=host \\
-  -v /var/lib/containers:/var/lib/containers -v /dev:/dev -v $MNT:/target \\
-  --security-opt label=type:unconfined_t localhost/bootc \\
-  bootc install to-filesystem --root-mount-spec UUID=$RUUID $KARGARGS \\
-  --skip-finalize --target-imgref localhost/tilo:latest /target
+unshare --mount --propagation slave -- \\
+  bootc install to-filesystem --source-booted --root-mount-spec UUID=$RUUID $KARGARGS \\
+  --skip-finalize --target-imgref localhost/tilo:latest $MNT
 " 25 || die "bootc install failed — see $OUT/03-install.txt"
 
 say "enrol factors"

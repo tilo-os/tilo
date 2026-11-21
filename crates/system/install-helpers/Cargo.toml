@@ -27,10 +27,6 @@ name = "tilo-install-dev-ssh"
 path = "src/bin/dev_ssh.rs"
 
 [[bin]]
-name = "tilo-vm-bootc-copy-cache"
-path = "src/bin/vm_bootc_copy_cache.rs"
-
-[[bin]]
 name = "tilo-installer-offline-target"
 path = "src/bin/offline_target.rs"
 

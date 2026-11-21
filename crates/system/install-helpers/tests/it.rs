@@ -15,8 +15,6 @@
 mod accounts_native;
 #[path = "backend_commands.rs"]
 mod backend_commands;
-#[path = "bootc_copy_cache.rs"]
-mod bootc_copy_cache;
 #[path = "code_refresh.rs"]
 mod code_refresh;
 #[path = "code_refresh_probe.rs"]

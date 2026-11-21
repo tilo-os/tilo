@@ -32,7 +32,7 @@ class InstallerTargetModeTests(unittest.TestCase):
                 uki.write_bytes(b'live installer')
                 old = uki.with_name('bootc_composefs-' + 'b' * 128 + '.efi')
                 old.write_bytes(b'old installed generation')
-                bundle = root / 'source/tilo-target'
+                bundle = root / 'image/boot/tilo-target'
                 (bundle / 'predictions').mkdir(parents=True)
                 (bundle / 'tilo-target.efi').write_bytes(b'signed target bytes')
                 (bundle / 'predictions/generation-42.json').write_text('prediction')
@@ -42,7 +42,6 @@ class InstallerTargetModeTests(unittest.TestCase):
                 body = body.replace('/usr/libexec/tilo-uki-cmdline', 'fixture_cmdline')
                 body = body.replace('/usr/libexec/tilo-verified-boot-install-preflight', 'fixture_preflight')
                 script = '''set -euo pipefail
-LOCAL_IMG=fixture
 OFFLINE_TARGET=1
 die() { echo "$*" >&2; exit 1; }
 phase() { :; }
@@ -54,13 +53,11 @@ fixture_cmdline() {
     *) return 64 ;;
   esac
 }
-podman() {
-  while [ "$1" != -v ]; do shift; done
-  destination="${2%:/target-esp}"
-  cp -R "$FIXTURE_SOURCE/tilo-target" "$destination/"
-}
+# The installed image's root, as the target's composefs repository mounts it.
+mount_installed_image() { INSTALLED_IMAGE_ROOT="$FIXTURE_IMAGE"; }
+unmount_installed_image() { INSTALLED_IMAGE_ROOT=""; }
 promote_target_uki() {\n''' + body + '\n}\npromote_target_uki "$FIXTURE_ESP"\n'
-                env = dict(os.environ, FIXTURE_SOURCE=str(root / 'source'), FIXTURE_ESP=str(esp), FIXTURE_DIGEST='a' * 128)
+                env = dict(os.environ, FIXTURE_IMAGE=str(root / 'image'), FIXTURE_ESP=str(esp), FIXTURE_DIGEST='a' * 128)
                 result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(uki.read_bytes(), b'signed target bytes')

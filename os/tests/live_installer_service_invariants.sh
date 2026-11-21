@@ -43,11 +43,11 @@ for dropin in \
 done
 
 # The negative conditions deliberately become true on the installed target.
-# Check both UKI specialization and bootc's kernel-argument path so neither
-# installation implementation can strand these services in live mode.
+# Every install promotes the target UKI, which must not carry the live marker,
+# so no installed image is stranded with these services in live mode.
 if grep -Fq 'target UKI still contains the live installer marker' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
-   && [ "$(grep -c -- '--karg-delete tilo.install' "$backend" || true)" -ge 2 ]; then
+   && grep -Fq '[ "$ENCRYPT" -eq 1 ] || die "the signed target UKI requires encrypted TILO_BOOT layout"' "$backend"; then
   ok 'every installed-image path removes the live marker and re-enables services'
 else
   bad 'an installed-image path can retain tilo.install and disable normal services'

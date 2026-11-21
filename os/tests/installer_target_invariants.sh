@@ -60,8 +60,7 @@ else
   bad "sealed UKIs lack target-independent root or hardware-token discovery"
 fi
 
-karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
-if [ "$karg_deletes" -eq 2 ] \
+if ! grep -Fq -- '--karg-delete tilo.install' "$backend" \
    && grep -Fq 'append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
@@ -70,7 +69,7 @@ if [ "$karg_deletes" -eq 2 ] \
    && ! grep -Fq 'tilo-uki-cmdline set "tilo.root=' "$backend"; then
   ok "encrypted installs atomically promote a target-independent UKI without per-machine measured bytes"
 else
-  bad "target-independent UKI handoff is incomplete (legacy deletions: $karg_deletes)"
+  bad "target-independent UKI handoff is incomplete"
 fi
 
 if grep -Fq 'mkfs.ext4 -q -L TILO_BOOT "$boot_part"' "$encryptor" \
@@ -545,7 +544,7 @@ fi
 
 if grep -Fq -- '--alongside' "$backend" \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$ROOT_PARTITION")"' "$backend" \
-   && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 4 ] \
+   && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 3 ] \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
    && grep -Fq 'root, boot, and EFI partitions are not on the same disk' "$encryptor" \
    && grep -Fq 'boot partition already contains a signature' "$encryptor" \
@@ -609,8 +608,8 @@ mutation = backend.index('GUIDED_RESULT="$(', guard)
 assert guard < mutation
 assert '&& [ "$(' in backend[guard:mutation]
 assert 'alongside install requires the pinned mounted-ESP bootc helper' in backend[guard:mutation]
-assert backend.count('"${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}"') == 2
-assert '--entrypoint /run/tilo-bootc-alongside' in backend
+assert 'BOOTC=("$ALONGSIDE_BOOTC")' in backend[guard:mutation]
+assert backend.count('"${BOOTC[@]}" install to-filesystem') == 1
 assert '0002-select-mounted-esp.patch' in builder
 assert 'rootfs/usr/libexec/tilo-bootc-alongside' in builder
 PY

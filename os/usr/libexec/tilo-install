@@ -108,10 +108,10 @@
 # provide `--pin`; otherwise installation fails closed. We:
 #
 #   1. authenticate and import a separately signed offline target when one is
-#      preloaded; otherwise copy the currently-booted image into local storage
-#      (`bootc image copy-to-storage` -> containers-storage:localhost/bootc),
-#   2. install from the selected image, in a privileged podman container, onto
-#      the target disk (wipes it, --filesystem layout). tilo-disk-encrypt builds
+#      preloaded; otherwise install the currently-booted image,
+#   2. install the selected image with bootc onto the target disk (wipes it,
+#      --filesystem layout); the booted image is copied out of this medium's
+#      own composefs repository as it is stored. tilo-disk-encrypt builds
 #      the GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
 #      mapping — see that script for why the volume is not created by
 #      `--block-setup tpm2-luks`. On a large enough disk the layout ends with
@@ -142,13 +142,10 @@ set -euo pipefail
 
 # Where the installed system will look for updates (the "origin" imgref
 # baked into the deployment). NOT where the bits come from now — those come
-# from the booted image we copy to storage. Resolve the immutable profile on
+# from the booted image or the preloaded target. Resolve the immutable profile on
 # every re-exec; an environment override may not change its reviewed origin.
 TILO_TARGET_IMGREF="$(/usr/libexec/tilo-board-successor \
   install-update-origin "${TILO_TARGET_IMGREF:-}")" || exit 1
-
-# The local-storage tag `bootc image copy-to-storage` writes to by default.
-LOCAL_IMG="localhost/bootc"
 
 # The block-level half of an encrypted install (partitioning, LUKS2, factor
 # enrolment). Overridable so it can be driven directly in a test VM.
@@ -257,7 +254,7 @@ fi
 # Even as root, this script is still in the greeter session's SELinux domain
 # (xdm_t) — the UI runs under cage in the greetd session, and a plain `sudo`
 # does not change the SELinux domain. xdm_t is denied the privileged
-# container/install operations: `bootc image copy-to-storage` returns EACCES
+# container/install operations: bootc's image copy returned EACCES
 # ("Permission denied (os error 13)") under SELinux enforcing. This is the one
 # thing that historically forced the live medium to boot `enforcing=0`.
 #
@@ -609,8 +606,9 @@ if printf '%s%s' "$EXPECT_DISK_WWN" "$EXPECT_DISK_SERIAL" | LC_ALL=C grep -q '[[
   die "expected disk identity contains control characters"
 fi
 
-ALONGSIDE_BOOTC_PODMAN_ARGS=()
-ALONGSIDE_BOOTC_COMMAND=(bootc)
+# The bootc that installs: the image's own, or for an alongside install the
+# pinned helper that uses the ESP mounted at the target's /boot/efi.
+BOOTC=(bootc)
 if [ "$ALONGSIDE" -eq 1 ]; then
   # Upstream bootc may choose the first ESP on the disk rather than the one
   # mounted at target /boot/efi. Check the corrected installer binary before
@@ -621,11 +619,7 @@ if [ "$ALONGSIDE" -eq 1 ]; then
     && [ "$(stat -c '%u:%g' "$ALONGSIDE_BOOTC")" = 0:0 ] \
     && [ "$("$ALONGSIDE_BOOTC" --version)" = 'bootc 1.16.13' ] \
     || die "alongside install requires the pinned mounted-ESP bootc helper"
-  # The pinned binary must be executable in the container; Podman may inherit
-  # a noexec source mount from the sealed installer when :exec is omitted.
-  ALONGSIDE_BOOTC_PODMAN_ARGS=(-v "$ALONGSIDE_BOOTC:/run/tilo-bootc-alongside:ro,exec" \
-    --entrypoint /run/tilo-bootc-alongside)
-  ALONGSIDE_BOOTC_COMMAND=()
+  BOOTC=("$ALONGSIDE_BOOTC")
   [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
   if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
     [ -z "$ROOT_PARTITION$BOOT_PARTITION$EFI_PARTITION$CONFIRM_ROOT" ] \
@@ -1291,42 +1285,35 @@ promote_target_uki() {
   local esp="$1" TARGET_UKI TARGET_VARIANT
   phase promote-uki
   local -a target_digests installed_digests
+  mount_installed_image
   # CI development targets may use a board UKI or a generic split kernel.
   # Project the installed target UKI
   # only inside the already guarded development scenario, without modifying
   # its OCI image or borrowing boot bytes from the generic live medium.
-  if [ "$OFFLINE_TARGET" -eq 2 ]; then
-    local dev_image_root dev_result
-    dev_image_root="$(podman image mount "$LOCAL_IMG")" \
-      || die "could not mount the selected immutable development target"
-    if [ ! -f "$dev_image_root/boot/tilo-target/tilo-target.efi" ]; then
-      if dev_result="$(REQUIRE_TPM_PREDICTION="${REQUIRE_TPM_PREDICTION:-0}" \
-          /usr/libexec/tilo-installer-offline-target dev-target-uki promote \
-          --image-root "$dev_image_root" --target-root "$ENC_MNT" --esp "$esp")"; then
-        podman image unmount "$LOCAL_IMG" || die "could not unmount development target"
-        [[ "$dev_result" =~ ^[0-9a-f]{128}$ ]] || die "development UKI returned an invalid digest"
-        TARGET_COMPOSEFS_DIGEST="$dev_result"
-        return
-      else
-        podman image unmount "$LOCAL_IMG" || true
-        die "development target UKI failed verification"
-      fi
-    fi
-    podman image unmount "$LOCAL_IMG" || die "could not unmount development target"
+  if [ "$OFFLINE_TARGET" -eq 2 ] \
+      && [ ! -f "$INSTALLED_IMAGE_ROOT/boot/tilo-target/tilo-target.efi" ]; then
+    local dev_result
+    dev_result="$(REQUIRE_TPM_PREDICTION="${REQUIRE_TPM_PREDICTION:-0}" \
+        /usr/libexec/tilo-installer-offline-target dev-target-uki promote \
+        --image-root "$INSTALLED_IMAGE_ROOT" --target-root "$ENC_MNT" --esp "$esp")" \
+      || die "development target UKI failed verification"
+    unmount_installed_image || die "could not unmount the installed image"
+    [[ "$dev_result" =~ ^[0-9a-f]{128}$ ]] || die "development UKI returned an invalid digest"
+    TARGET_COMPOSEFS_DIGEST="$dev_result"
+    return
   fi
   # Promote the deterministic installed-target UKI. It was built over this
   # exact composefs tree and uses boot-ESP/same-disk Tilo root discovery, so no
   # per-machine bytes enter PCR 11.
   # bootc 1.16.4 copies recognized live UKIs, not arbitrary /boot sidecars.
-  # Recover the authority-signed target bundle from the same offline image used
-  # above, never from a network update tag or a mutable live ESP. This changes
-  # only ESP files and therefore does not alter the sealed composefs digest.
+  # Recover the authority-signed target bundle from the image just installed,
+  # never from a network update tag or a mutable live ESP. This changes only
+  # ESP files and therefore does not alter the sealed composefs digest.
   [ ! -e "$esp/tilo-target" ] \
     || die "target ESP already contains a target boot bundle"
-  podman run --rm --pull=never --network=none --cap-drop=ALL \
-    --security-opt label=type:unconfined_t \
-    -v "$esp:/target-esp" \
-    --entrypoint /usr/bin/cp "$LOCAL_IMG" -R /boot/tilo-target /target-esp/
+  cp -R -- "$INSTALLED_IMAGE_ROOT/boot/tilo-target" "$esp/" \
+    || die "could not copy the installed image's target boot bundle"
+  unmount_installed_image || die "could not unmount the installed image"
   TARGET_VARIANT="$esp/tilo-target/tilo-target.efi"
   [ -f "$TARGET_VARIANT" ] || die "installed image has no deterministic target UKI"
   # The on-demand unsigned development medium has no PCR prediction. Permit
@@ -1383,53 +1370,13 @@ promote_target_uki() {
     -exec install -m 0644 {} "$esp/EFI/tilo/pcr-predictions/" \;
 }
 
-# Reuse an exact VM-local cached copy when present. For an encrypted install,
-# the newly formatted target also backs bootc's large temporary export.
-MIN_BOOTC_SCRATCH_FREE_BYTES=25769803776
-COPY_SCRATCH=""
-COPY_SCRATCH_MOUNTED=0
-release_copy_scratch() {
-  if [ "$COPY_SCRATCH_MOUNTED" -eq 1 ]; then
-    umount /var/tmp || return 1
-    COPY_SCRATCH_MOUNTED=0
-  fi
-  if [ -n "$COPY_SCRATCH" ]; then
-    [ "$COPY_SCRATCH" = "$ENC_MNT/.tilo-bootc-copy-tmp" ] || return 1
-    [ ! -L "$COPY_SCRATCH" ] || return 1
-    rm -rf --one-file-system -- "$COPY_SCRATCH" || return 1
-    COPY_SCRATCH=""
-  fi
-}
-use_encrypted_copy_scratch() {
-  local scratch_available
-  [ "$ENCRYPT" -eq 1 ] || return 0
-  [ -d /var/tmp ] && [ ! -L /var/tmp ] || die "/var/tmp is not a real directory"
-  ! mountpoint -q /var/tmp || die "/var/tmp is already a separate mount"
-  [ -n "$ENC_MNT" ] && mountpoint -q "$ENC_MNT" \
-    || die "encrypted target root is not mounted for bootc scratch"
-  scratch_available="$(df -B1 --output=avail "$ENC_MNT" | tail -n 1 | tr -d '[:space:]')"
-  case "$scratch_available" in ''|*[!0-9]*) die "cannot measure encrypted bootc scratch space" ;; esac
-  [ "$scratch_available" -ge "$MIN_BOOTC_SCRATCH_FREE_BYTES" ] \
-    || die "encrypted target has less than 24 GiB free for bootc export"
-  COPY_SCRATCH="$ENC_MNT/.tilo-bootc-copy-tmp"
-  [ ! -e "$COPY_SCRATCH" ] && [ ! -L "$COPY_SCRATCH" ] \
-    || die "encrypted target already contains bootc scratch"
-  install -d -m 1777 -- "$COPY_SCRATCH"
-  chcon --reference=/var/tmp -- "$COPY_SCRATCH" \
-    || die "could not give encrypted bootc scratch the /var/tmp SELinux label"
-  [ "$(stat -c '%u:%a' -- "$COPY_SCRATCH")" = 0:1777 ] \
-    || die "bootc scratch permissions are unsafe"
-  [ "$(stat -c '%C' -- "$COPY_SCRATCH")" = "$(stat -c '%C' -- /var/tmp)" ] \
-    || die "bootc scratch SELinux label is unsafe"
-  if ! mount --bind -- "$COPY_SCRATCH" /var/tmp; then
-    if mountpoint -q /var/tmp; then COPY_SCRATCH_MOUNTED=1; fi
-    die "could not bind encrypted bootc scratch to /var/tmp"
-  fi
-  COPY_SCRATCH_MOUNTED=1
-  [ "$(stat -c '%d:%i' -- /var/tmp)" = "$(stat -c '%d:%i' -- "$COPY_SCRATCH")" ] \
-    || die "/var/tmp is not the reviewed encrypted scratch directory"
-}
-copy_booted_image() {
+# What bootc installs from. A preloaded offline target is authenticated and
+# imported into local container storage, which bootc reads it from. Otherwise
+# bootc copies the image this medium booted out of its own composefs repository
+# into the target's as it is stored (--source-booted): the image is written to
+# the target once, and the deployment records the booted image's own manifest.
+BOOTC_SOURCE_ARGS=()
+select_install_source() {
   phase image-storage
   if [ "$OFFLINE_TARGET" -ne 0 ]; then
     step "Importing the selected offline Tilo target"
@@ -1437,33 +1384,44 @@ copy_booted_image() {
       || die "offline target import or embedded update origin failed"
     [[ "$LOCAL_IMG" =~ ^(sha256:)?[0-9a-f]{64}$ ]] \
       || die "offline target did not resolve to an immutable image ID"
-    validate_disk_identity
-    return
-  fi
-  step "Copying the running Tilo image into local container storage"
-  VM_COPY_CACHE=/usr/libexec/tilo-vm-bootc-copy-cache
-  VM_COPY_CACHE_MARKER=/run/tilo-installer/vm-bootc-copy-cache.enabled
-  VM_CACHED_COPY=0
-  if [ -e "$VM_COPY_CACHE_MARKER" ] \
-      && "$VM_COPY_CACHE" check; then
-    log "  -> reusing the exact booted image from VM-local container storage"
-    VM_CACHED_COPY=1
+    BOOTC_SOURCE_ARGS=(--source-imgref "containers-storage:$LOCAL_IMG")
   else
-    use_encrypted_copy_scratch
-    TMPDIR=/var/tmp bootc image copy-to-storage
-    release_copy_scratch || die "could not remove bootc scratch mount"
+    BOOTC_SOURCE_ARGS=(--source-booted)
   fi
-  LOCAL_IMG="$(podman image inspect --format '{{.Id}}' "$LOCAL_IMG")"
-  [[ "$LOCAL_IMG" =~ ^(sha256:)?[0-9a-f]{64}$ ]] || die "offline image did not resolve to an immutable ID"
-  log "  -> $LOCAL_IMG"
-  if [ "$VM_CACHED_COPY" -eq 0 ] && [ -e "$VM_COPY_CACHE_MARKER" ]; then
-    # Receipt creation only accelerates later VM retries; a failed write must
-    # never change the completed export or the physical install path.
-    "$VM_COPY_CACHE" record \
-      || log "  -> VM copy cache receipt unavailable; next run will copy again"
-  fi
-
   validate_disk_identity
+}
+
+# bootc runs on the host, in a mount namespace of its own as it would in a
+# container, so the mounts it makes for the install stay its own.
+bootc_install_to() {
+  unshare --mount --propagation slave -- \
+    "${BOOTC[@]}" install to-filesystem "${BOOTC_SOURCE_ARGS[@]}" "$@"
+}
+
+# The installed image's root, read-only, out of the target's own composefs
+# repository: steps that need more of the image than bootc installs (its
+# /boot/tilo-target bundle) read exactly the image the deployment records.
+INSTALLED_IMAGE_ROOT=""
+mount_installed_image() {
+  local deployments manifest root
+  mapfile -t deployments < <(find "$ENC_MNT/state/deploy" -mindepth 1 -maxdepth 1 -type d)
+  [ "${#deployments[@]}" -eq 1 ] || die "the target must hold exactly one deployment"
+  manifest="$(sed -n 's/^manifest_digest *= *//p' \
+    "${deployments[0]}/$(basename -- "${deployments[0]}").origin")"
+  [[ "$manifest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || die "the installed deployment records no manifest digest"
+  root="$(mktemp -d /run/tilo-installed-image.XXXXXX)"
+  if ! bootc internals cfs --repo "$ENC_MNT/composefs" oci mount "$manifest" "$root"; then
+    rmdir -- "$root"
+    die "could not mount the installed image $manifest"
+  fi
+  INSTALLED_IMAGE_ROOT="$root"
+}
+unmount_installed_image() {
+  [ -n "$INSTALLED_IMAGE_ROOT" ] || return 0
+  umount -- "$INSTALLED_IMAGE_ROOT" || return 1
+  rmdir -- "$INSTALLED_IMAGE_ROOT"
+  INSTALLED_IMAGE_ROOT=""
 }
 
 # A separately signed target is optional. Its metadata, OCI manifest, Cosign
@@ -1558,8 +1516,8 @@ if [ "$ENCRYPT" -eq 1 ]; then
       rm -rf -- "$ACCOUNT_STAGE"
       sync -f -- "$(dirname -- "$ACCOUNT_STAGE")" 2>/dev/null || true
     fi
-    if ! release_copy_scratch; then
-      log "error: could not remove bootc scratch mount; leaving LUKS open for safe recovery"
+    if ! unmount_installed_image; then
+      log "error: could not unmount the installed image; leaving LUKS open for safe recovery"
       [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
       return 1
     fi
@@ -1567,7 +1525,6 @@ if [ "$ENCRYPT" -eq 1 ]; then
     [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
   }
   trap cleanup_encrypted_install EXIT
-  # A failed export leaves its scratch mounted; never close LUKS beneath it.
   [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_KEYFILE" ] \
     && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_BOOT_PART" ] && [ -n "$ENC_KARGS" ] \
     || die "encryption: tilo-disk-encrypt prepare did not report the volume it made"
@@ -1576,9 +1533,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   expected_boot_uuid="$(blkid -s UUID -o value "$ENC_BOOT_PART" 2>/dev/null || true)"
   [ -n "$expected_boot_uuid" ] && [ "$ENC_BOOT_MOUNT_SPEC" = "UUID=${expected_boot_uuid,,}" ] \
     || die "encryption: prepared /boot UUID does not match the validated TILO_BOOT partition"
-  copy_booted_image
-  [ "$COPY_SCRATCH_MOUNTED" -eq 0 ] && [ -z "$COPY_SCRATCH" ] \
-    || die "bootc scratch still occupies /var/tmp"
+  select_install_source
   [ -n "$ENC_MNT" ] && mountpoint -q "$ENC_MNT" \
     || die "prepared encrypted root is no longer mounted"
   prepared_root_source="$(findmnt -nro SOURCE --mountpoint "$ENC_MNT")"
@@ -1605,83 +1560,15 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # nothing here.
   phase bootc-install
   step "Installing Tilo into the encrypted root"
-  podman run --rm --privileged --pid=host --ipc=host \
-    -v /var/lib/containers:/var/lib/containers \
-    -v /dev:/dev \
-    -v "$ENC_MNT:/target" \
-    --security-opt label=disable \
-    "${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}" \
-    "$LOCAL_IMG" \
-    "${ALONGSIDE_BOOTC_COMMAND[@]}" install to-filesystem \
+  bootc_install_to \
       --composefs-backend \
       --boot-mount-spec "$ENC_BOOT_MOUNT_SPEC" \
       --target-imgref "$TILO_TARGET_IMGREF" \
       --skip-finalize \
-      /target
+      "$ENC_MNT"
 
   promote_target_uki "$ENC_MNT/boot/efi"
   BOOT_ESP_ROOT="$ENC_MNT/boot/efi"
-elif [ "$ALONGSIDE" -eq 1 ]; then
-  copy_booted_image
-  validate_alongside
-  mark_alongside_tilo_root
-  phase bootc-install
-  step "Formatting only $ROOT_PARTITION for Tilo; preserving every other partition"
-  case "$FILESYSTEM" in
-    btrfs) mkfs.btrfs -f -L root "$ROOT_PARTITION" >/dev/null ;;
-    ext4) mkfs.ext4 -q -F -O verity -L root "$ROOT_PARTITION" ;;
-    xfs) mkfs.xfs -q -f -L root "$ROOT_PARTITION" >/dev/null ;;
-  esac
-  ROOT_FS_UUID="$(blkid -s UUID -o value "$ROOT_PARTITION")"
-  [ -n "$ROOT_FS_UUID" ] || die "could not read the new Tilo root UUID"
-  ALONGSIDE_MNT="$(mktemp -d)"
-  mount "$ROOT_PARTITION" "$ALONGSIDE_MNT"
-  install -d -m 0755 "$ALONGSIDE_MNT/boot/efi"
-  mount "$EFI_PARTITION" "$ALONGSIDE_MNT/boot/efi"
-  cleanup_alongside() {
-    umount "$ALONGSIDE_MNT/boot/efi" 2>/dev/null || true
-    umount "$ALONGSIDE_MNT" 2>/dev/null || true
-    rmdir "$ALONGSIDE_MNT" 2>/dev/null || true
-    restore_firmware_boot_state
-  }
-  trap cleanup_alongside EXIT
-  podman run --rm --privileged --pid=host --ipc=host \
-    -v /var/lib/containers:/var/lib/containers -v /dev:/dev \
-    -v "$ALONGSIDE_MNT:/target" --security-opt label=disable \
-    "${ALONGSIDE_BOOTC_PODMAN_ARGS[@]}" \
-    "$LOCAL_IMG" "${ALONGSIDE_BOOTC_COMMAND[@]}" install to-filesystem \
-      --root-mount-spec "UUID=$ROOT_FS_UUID" \
-      --karg-delete tilo.install --target-imgref "$TILO_TARGET_IMGREF" \
-      --skip-finalize /target
-  promote_target_uki "$ALONGSIDE_MNT/boot/efi"
-  BOOT_ESP_ROOT="$ALONGSIDE_MNT/boot/efi"
-else
-  copy_booted_image
-  phase bootc-install
-  step "Installing Tilo onto $DISK (this ERASES the disk; unencrypted)"
-  podman run --rm --privileged --pid=host --ipc=host \
-    -v /var/lib/containers:/var/lib/containers \
-    -v /dev:/dev \
-    --security-opt label=type:unconfined_t \
-    "$LOCAL_IMG" \
-    bootc install to-disk \
-      --wipe \
-      --karg-delete tilo.install \
-      --filesystem "$FILESYSTEM" \
-      --block-setup direct \
-      --target-imgref "$TILO_TARGET_IMGREF" \
-      "$DISK"
-  # Full-disk bootc chooses its partition layout. Select exactly one ESP on
-  # that disk, mount it temporarily, and promote the same signed target UKI.
-  (
-    mapfile -t target_esps < <(lsblk -lnpo NAME,PARTTYPE "$DISK" |
-      awk 'tolower($2)=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b" {print $1}')
-    [ "${#target_esps[@]}" -eq 1 ] || die "installed disk must have exactly one ESP"
-    target_esp_mount="$(mktemp -d)"
-    trap 'umount "$target_esp_mount" 2>/dev/null || true; rmdir "$target_esp_mount" 2>/dev/null || true' EXIT
-    mount -o nosuid,nodev,noexec "${target_esps[0]}" "$target_esp_mount"
-    promote_target_uki "$target_esp_mount"
-  )
 fi
 [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
 if [ "$INTERNAL_MODE" -eq 1 ]; then

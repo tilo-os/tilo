@@ -13,7 +13,6 @@ use std::process::ExitCode;
 
 pub mod account_handoff;
 pub use tilo_pycompat::argparse as args;
-pub mod bootc_copy_cache;
 pub mod code_refresh;
 pub mod code_refresh_probe;
 pub mod dev_ssh;

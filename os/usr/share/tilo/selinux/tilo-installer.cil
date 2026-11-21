@@ -12,8 +12,8 @@
 ;
 ; The privileged backend (tilo-install) sidesteps this by re-launching its real
 ; work as a TRANSIENT systemd unit (`systemd-run`), so the dangerous operations
-; (bootc image copy-to-storage, `podman run --privileged ... bootc install
-; to-disk`, partition/mount of the freshly written disk) execute in a
+; (partitioning, `bootc install to-filesystem`, mounting the freshly written
+; disk) execute in a
 ; system-service domain (init_t) — which the base targeted policy already
 ; permits — and stay FULLY ENFORCED. See os/usr/libexec/tilo-install.
 ;

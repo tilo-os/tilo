@@ -843,7 +843,6 @@ packages = ["tilo-install-helpers"]
 bins = [
   "tilo-install-handoff-copy",
   "tilo-install-dev-ssh",
-  "tilo-vm-bootc-copy-cache",
   "tilo-installer-offline-target",
   "tilo-staging-handoff",
   "tilo-vm-install-proof",
@@ -852,7 +851,6 @@ layer = "recovery-files"
 files = [
   { from = "tilo-install-handoff-copy", to = "/usr/libexec/tilo-install-handoff-copy", mode = "0755" },
   { from = "tilo-install-dev-ssh", to = "/usr/libexec/tilo-install-dev-ssh", mode = "0755" },
-  { from = "tilo-vm-bootc-copy-cache", to = "/usr/libexec/tilo-vm-bootc-copy-cache", mode = "0755" },
   { from = "tilo-installer-offline-target", to = "/usr/libexec/tilo-installer-offline-target", mode = "0755" },
   { from = "tilo-staging-handoff", to = "/usr/libexec/tilo-staging-handoff", mode = "0755" },
   { from = "tilo-vm-install-proof", to = "/usr/libexec/tilo-vm-install-proof", mode = "0755" },
