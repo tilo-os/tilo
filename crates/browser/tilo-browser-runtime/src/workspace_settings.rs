@@ -332,144 +332,219 @@ impl PageWorkspaceSettings {
             {
                 continue;
             }
-            match effect {
-                WorkspaceSettingsEffect::ShowTab { tab } => {
-                    if let Some(tab) = sheet::Tab::from_key(&tab) {
-                        self.tab.set(tab);
-                        if tab == sheet::Tab::Permissions {
-                            self.list_documents();
-                        }
-                    }
-                }
-                WorkspaceSettingsEffect::SetDocumentAccess {
-                    who,
-                    app,
-                    document,
-                    access,
-                } => {
-                    self.change(move |workspace, request_id| {
-                        WorkspacesRequest::SetDocumentAccess {
-                            workspace,
-                            request_id,
-                            app,
-                            document,
-                            recipient: who,
-                            access,
-                        }
-                    });
-                }
-                WorkspaceSettingsEffect::SetRole { member, role } => {
-                    let (Some(user_public_key), Some(role)) = (
-                        person(&member),
-                        Role::parse(&role).filter(|r| r.assignable()),
-                    ) else {
-                        continue;
-                    };
-                    self.change(move |workspace, request_id| WorkspacesRequest::SetRole {
-                        workspace,
-                        request_id,
-                        user_public_key,
-                        role,
-                    });
-                }
-                WorkspaceSettingsEffect::SaveCustomRole { role, name } => {
-                    let role = if role.is_empty() {
-                        uuid::Uuid::new_v4().simple().to_string()
-                    } else {
-                        role
-                    };
-                    self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
-                        workspace,
-                        request_id,
-                        change: tilo_action_policy::Change::DefineRole {
-                            id: if role.is_empty() {
-                                hex::encode(request_id)
-                            } else {
-                                role
-                            },
-                            name,
-                        },
-                    });
-                }
-                WorkspaceSettingsEffect::SetCustomRole {
-                    member,
-                    role,
-                    assigned,
-                } => {
-                    self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
-                        workspace,
-                        request_id,
-                        change: tilo_action_policy::Change::SetMemberCustomRole {
-                            person: member,
-                            role,
-                            assigned,
-                        },
-                    });
-                }
-                WorkspaceSettingsEffect::RemoveCustomRole { role } => {
-                    self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
-                        workspace,
-                        request_id,
-                        change: tilo_action_policy::Change::RemoveRole { id: role },
-                    });
-                }
-                WorkspaceSettingsEffect::RemoveMember { member } => {
-                    let Some(user_public_key) = person(&member) else {
-                        continue;
-                    };
-                    self.change(move |workspace, request_id| WorkspacesRequest::Remove {
-                        workspace,
-                        request_id,
-                        user_public_key,
-                    });
-                }
-                WorkspaceSettingsEffect::AddServer { origin } => {
-                    let origin = origin.trim().to_owned();
-                    if !origin.is_empty() {
-                        self.change_servers(move |workspace| WorkspacesRequest::AddServer {
-                            workspace,
-                            origin,
-                        });
-                    }
-                }
-                WorkspaceSettingsEffect::RemoveServer { server } => {
-                    self.change_servers(move |workspace| WorkspacesRequest::RemoveServer {
-                        workspace,
-                        server,
-                    });
-                }
-                // The workspace's server writes the name where every device and list of it reads
-                // it; its answer is the workspace as it is after.
-                WorkspaceSettingsEffect::Rename { name } => {
-                    let name = name.trim().to_owned();
-                    if name.is_empty() {
-                        continue;
-                    }
-                    let Some(uuid) = self.uuid() else {
-                        continue;
-                    };
-                    self.asks.ask(
-                        move |_| WorkspacesRequest::Rename {
-                            workspace: uuid,
-                            name,
-                        },
-                        self.taking(),
-                    );
-                }
-                // Taking the workspace off this person: they leave it, or it ends for everyone.
-                WorkspaceSettingsEffect::Delete => self.leave(),
-                WorkspaceSettingsEffect::DeleteWorkspace => self.delete(),
-                WorkspaceSettingsEffect::DismissNotice => self.state.dismiss_notice(),
-                // The sheet closes itself; a page draws no devices and no place among them to
-                // move the workspace to, so nothing else the sheet could ask is drawn on it.
-                _ => {}
-            }
+            self.follow(effect);
         }
         changed
     }
 
+    /// Carry out one effect the person pressed, once the agents' pane has passed on it.
+    fn follow(&self, effect: WorkspaceSettingsEffect) {
+        match effect {
+            WorkspaceSettingsEffect::ShowTab { tab } => {
+                if let Some(tab) = sheet::Tab::from_key(&tab) {
+                    self.tab.set(tab);
+                    if tab == sheet::Tab::Permissions {
+                        self.list_documents();
+                    }
+                }
+            }
+            WorkspaceSettingsEffect::SetDocumentAccess { .. }
+            | WorkspaceSettingsEffect::SetRole { .. }
+            | WorkspaceSettingsEffect::SaveCustomRole { .. }
+            | WorkspaceSettingsEffect::SetCustomRole { .. }
+            | WorkspaceSettingsEffect::RemoveCustomRole { .. }
+            | WorkspaceSettingsEffect::RemoveMember { .. } => self.follow_member(effect),
+            WorkspaceSettingsEffect::AddServer { .. }
+            | WorkspaceSettingsEffect::RemoveServer { .. } => self.follow_servers(effect),
+            // The workspace's server writes the name where every device and list of it reads
+            // it; its answer is the workspace as it is after.
+            WorkspaceSettingsEffect::Rename { name } => {
+                let name = name.trim().to_owned();
+                if name.is_empty() {
+                    return;
+                }
+                let Some(uuid) = self.uuid() else {
+                    return;
+                };
+                self.asks.ask(
+                    move |_| WorkspacesRequest::Rename {
+                        workspace: uuid,
+                        name,
+                    },
+                    self.taking(),
+                );
+            }
+            // Taking the workspace off this person: they leave it, or it ends for everyone.
+            WorkspaceSettingsEffect::Delete => self.leave(),
+            WorkspaceSettingsEffect::DeleteWorkspace => self.delete(),
+            WorkspaceSettingsEffect::DismissNotice => self.state.dismiss_notice(),
+            // The sheet closes itself; a page draws no devices and no place among them to
+            // move the workspace to, so nothing else the sheet could ask is drawn on it.
+            _ => {}
+        }
+    }
+
+    /// Carry out a change to who may do what, asked of the workspace's server.
+    fn follow_member(&self, effect: WorkspaceSettingsEffect) {
+        match effect {
+            WorkspaceSettingsEffect::SetDocumentAccess {
+                who,
+                app,
+                document,
+                access,
+            } => {
+                self.change(
+                    move |workspace, request_id| WorkspacesRequest::SetDocumentAccess {
+                        workspace,
+                        request_id,
+                        app,
+                        document,
+                        recipient: who,
+                        access,
+                    },
+                );
+            }
+            WorkspaceSettingsEffect::SetRole { member, role } => {
+                let (Some(user_public_key), Some(role)) = (
+                    person(&member),
+                    Role::parse(&role).filter(|r| r.assignable()),
+                ) else {
+                    return;
+                };
+                self.change(move |workspace, request_id| WorkspacesRequest::SetRole {
+                    workspace,
+                    request_id,
+                    user_public_key,
+                    role,
+                });
+            }
+            WorkspaceSettingsEffect::SaveCustomRole { role, name } => {
+                let role = if role.is_empty() {
+                    uuid::Uuid::new_v4().simple().to_string()
+                } else {
+                    role
+                };
+                self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
+                    workspace,
+                    request_id,
+                    change: tilo_action_policy::Change::DefineRole {
+                        id: if role.is_empty() {
+                            hex::encode(request_id)
+                        } else {
+                            role
+                        },
+                        name,
+                    },
+                });
+            }
+            WorkspaceSettingsEffect::SetCustomRole {
+                member,
+                role,
+                assigned,
+            } => {
+                self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
+                    workspace,
+                    request_id,
+                    change: tilo_action_policy::Change::SetMemberCustomRole {
+                        person: member,
+                        role,
+                        assigned,
+                    },
+                });
+            }
+            WorkspaceSettingsEffect::RemoveCustomRole { role } => {
+                self.change(move |workspace, request_id| WorkspacesRequest::EditRoles {
+                    workspace,
+                    request_id,
+                    change: tilo_action_policy::Change::RemoveRole { id: role },
+                });
+            }
+            WorkspaceSettingsEffect::RemoveMember { member } => {
+                let Some(user_public_key) = person(&member) else {
+                    return;
+                };
+                self.change(move |workspace, request_id| WorkspacesRequest::Remove {
+                    workspace,
+                    request_id,
+                    user_public_key,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// Carry out a change to the servers keeping the workspace, its server's answer being the
+    /// servers after it.
+    fn follow_servers(&self, effect: WorkspaceSettingsEffect) {
+        match effect {
+            WorkspaceSettingsEffect::AddServer { origin } => {
+                let origin = origin.trim().to_owned();
+                if !origin.is_empty() {
+                    self.change_servers(move |workspace| WorkspacesRequest::AddServer {
+                        workspace,
+                        origin,
+                    });
+                }
+            }
+            WorkspaceSettingsEffect::RemoveServer { server } => {
+                self.change_servers(move |workspace| WorkspacesRequest::RemoveServer {
+                    workspace,
+                    server,
+                });
+            }
+            _ => {}
+        }
+    }
+
     /// The sheet as the workspace stands for this page's person.
     fn settings(&self) -> sheet::Settings {
+        let workspace = self.workspace.borrow();
+        let (mut people, role) = self.people();
+        // What the workspace did is the session's to show; a page offers only the decision.
+        people.remove_decision.review.clear();
+        let general = self.general();
+        // General is always there and comes first: the workspace's name is every page's
+        // business, whatever else this workspace allows this person here.
+        let mut tabs = vec![sheet::Tab::General, sheet::Tab::People];
+        if self.agents.is_some() {
+            tabs.push(sheet::Tab::Agents);
+        }
+        if people.role_editor.manage {
+            tabs.push(sheet::Tab::Permissions);
+        }
+        let tab = Some(self.tab.get())
+            .filter(|tab| tabs.contains(tab))
+            .unwrap_or(sheet::Tab::General);
+        let permissions = if tab == sheet::Tab::Permissions {
+            self.permissions(&people)
+        } else {
+            sheet::Permissions::default()
+        };
+        sheet::Settings {
+            title: t("workspace-settings-title"),
+            name: tilo_desktop_surface::names::workspace(
+                workspace.as_ref().map_or("", |workspace| &workspace.name),
+            ),
+            role: workspace_people::role_line(role),
+            close: t("workspace-settings-close"),
+            tabs: tabs.into_iter().map(workspace_people::tab_label).collect(),
+            tab,
+            general,
+            people,
+            permissions,
+            agents: self
+                .agents
+                .as_ref()
+                .filter(|_| tab == sheet::Tab::Agents)
+                .map(PageAgents::pane)
+                .unwrap_or_default(),
+            notice: self.state.notice(),
+            ..sheet::Settings::default()
+        }
+    }
+
+    /// The People tab as the workspace's members make it, and this page's person's own role.
+    fn people(&self) -> (sheet::People, Option<Role>) {
         let workspace = self.workspace.borrow();
         let members: Vec<&Member> = workspace
             .iter()
@@ -533,83 +608,48 @@ impl PageWorkspaceSettings {
                 }
             }
         }
-        let mut people = workspace_people::tab(content);
-        // What the workspace did is the session's to show; a page offers only the decision.
-        people.remove_decision.review.clear();
-        let general = self.general();
-        // General is always there and comes first: the workspace's name is every page's
-        // business, whatever else this workspace allows this person here.
-        let mut tabs = vec![sheet::Tab::General, sheet::Tab::People];
-        if self.agents.is_some() {
-            tabs.push(sheet::Tab::Agents);
-        }
-        if people.role_editor.manage {
-            tabs.push(sheet::Tab::Permissions);
-        }
-        let tab = Some(self.tab.get())
-            .filter(|tab| tabs.contains(tab))
-            .unwrap_or(sheet::Tab::General);
-        let permissions = if tab == sheet::Tab::Permissions {
-            let recipients = people
-                .custom_roles
-                .iter()
-                .map(|role| sheet::Choice {
-                    key: format!("role:{}", role.key),
-                    label: role.label.clone(),
-                })
-                .chain(people.people.iter().map(|person| sheet::Choice {
-                    key: format!("member:{}", person.key),
-                    label: person.name.clone(),
-                }))
-                .collect();
-            let documents = self.documents.borrow();
-            let targets = documents
-                .documents
-                .iter()
-                .cloned()
-                .chain(
-                    tilo_desktop_search::availability::catalog()
-                        .iter()
-                        .filter(|app| app.platforms.contains(&"web"))
-                        .map(|app| (String::new(), app.id.to_owned())),
-                )
-                .chain(std::iter::once((String::new(), String::new())))
-                .collect();
-            sheet::Permissions {
-                composer: sheet::Composer {
-                    who: t("workspace-settings-who"),
-                    ..sheet::Composer::default()
-                },
-                documents: Some(document_access_pane(
-                    targets,
-                    documents.rules.clone(),
-                    recipients,
-                )),
-                ..sheet::Permissions::default()
-            }
-        } else {
-            sheet::Permissions::default()
-        };
-        sheet::Settings {
-            title: t("workspace-settings-title"),
-            name: tilo_desktop_surface::names::workspace(
-                workspace.as_ref().map_or("", |workspace| &workspace.name),
-            ),
-            role: workspace_people::role_line(role),
-            close: t("workspace-settings-close"),
-            tabs: tabs.into_iter().map(workspace_people::tab_label).collect(),
-            tab,
-            general,
-            people,
-            permissions,
-            agents: self
-                .agents
-                .as_ref()
-                .filter(|_| tab == sheet::Tab::Agents)
-                .map(PageAgents::pane)
-                .unwrap_or_default(),
-            notice: self.state.notice(),
-            ..sheet::Settings::default()
+        (workspace_people::tab(content), role)
+    }
+
+    /// The Permissions tab: who may reach which document, over the workspace's documents and
+    /// the apps a page offers.
+    fn permissions(&self, people: &sheet::People) -> sheet::Permissions {
+        let recipients = people
+            .custom_roles
+            .iter()
+            .map(|role| sheet::Choice {
+                key: format!("role:{}", role.key),
+                label: role.label.clone(),
+            })
+            .chain(people.people.iter().map(|person| sheet::Choice {
+                key: format!("member:{}", person.key),
+                label: person.name.clone(),
+            }))
+            .collect();
+        let documents = self.documents.borrow();
+        let targets = documents
+            .documents
+            .iter()
+            .cloned()
+            .chain(
+                tilo_desktop_search::availability::catalog()
+                    .iter()
+                    .filter(|app| app.platforms.contains(&"web"))
+                    .map(|app| (String::new(), app.id.to_owned())),
+            )
+            .chain(std::iter::once((String::new(), String::new())))
+            .collect();
+        sheet::Permissions {
+            composer: sheet::Composer {
+                who: t("workspace-settings-who"),
+                ..sheet::Composer::default()
+            },
+            documents: Some(document_access_pane(
+                targets,
+                documents.rules.clone(),
+                recipients,
+            )),
+            ..sheet::Permissions::default()
         }
     }
 

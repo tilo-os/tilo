@@ -42,6 +42,7 @@ pub(super) struct RepaintPlan {
     /// where that can be proven.
     pub(super) physical: vello::Scene,
     /// Whether `physical` was cut: the check compares against the frame whole.
+    #[cfg(debug_assertions)]
     pub(super) culled: bool,
     /// This target draws no backdrops.
     backdrop: ui::backdrop::BackdropFrame,
@@ -104,6 +105,7 @@ pub(super) fn repaint_plan<'a>(
             repaint,
             copies,
             physical,
+            #[cfg(debug_assertions)]
             culled: culled.is_some(),
             backdrop: ui::backdrop::BackdropFrame::default(),
         },

@@ -2814,6 +2814,7 @@ impl Mount {
             }
         };
         let key = plan.key;
+        #[cfg(debug_assertions)]
         let full_redraw = matches!(plan.repaint, ui::retained_raster::Repaint::Full(_));
         let mut repaint = plan.repaint.clone();
         // This frame's scene whole, for a frame that must be drawn again.
