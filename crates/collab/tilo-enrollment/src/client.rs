@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
-use tilo_server_protocol::ProcessLease;
+pub use tilo_server_protocol::ProcessLease;
 
 use crate::{WindowClosed, restore_owner_from_parent};
 

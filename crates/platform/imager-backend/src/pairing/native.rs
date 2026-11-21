@@ -12,6 +12,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use tilo_enrollment::client::{PairingState, PairingStatus, ProcessLease, pair_device_command};
+
 const PROCESS_BOUND: Duration = Duration::from_secs(840);
 const STATUS_LIMIT: u64 = 8192;
 
@@ -108,20 +110,15 @@ impl Pairing {
             root_pin,
             identity_pin,
         };
-        let mut command = Command::new(helper);
-        command
-            .arg("pair-device")
-            .arg("--identity-root")
-            .arg(&ownership.root)
-            .arg("--identity-dir")
-            .arg(&ownership.identities)
-            .args(["--label", label, "--timeout", "270"])
-            .arg("--status-file")
-            .arg(&ownership.status)
-            .arg("--requester-pid")
-            .arg(requester_pid.to_string())
-            .arg("--requester-start-time")
-            .arg(requester_start_time.to_string());
+        let command = pair_device_command(
+            &helper,
+            &ownership.root,
+            &ownership.identities,
+            label,
+            270,
+            &ownership.status,
+            ProcessLease::from_parts(requester_pid, requester_start_time),
+        );
         self.begin(command, ownership, PROCESS_BOUND)?;
         self.approved_label = Some(label.to_owned());
         Ok(())
@@ -245,7 +242,7 @@ fn trusted_helper_from(
     })
 }
 
-fn read_status(ownership: &Ownership) -> std::io::Result<serde_json::Value> {
+fn read_status(ownership: &Ownership) -> std::io::Result<PairingStatus> {
     ownership.pin.validate()?;
     ownership.root_pin.validate()?;
     ownership.identity_pin.validate()?;
@@ -271,8 +268,8 @@ fn read_status(ownership: &Ownership) -> std::io::Result<serde_json::Value> {
     }
     serde_json::from_slice(&bytes).map_err(std::io::Error::other)
 }
-fn public_code(status: &serde_json::Value) -> Option<String> {
-    let code = status.get("verification_code")?.as_str()?;
+fn public_code(status: &PairingStatus) -> Option<String> {
+    let code = status.verification_code.as_deref()?;
     (!code.is_empty()
         && code.len() <= 32
         && code
@@ -282,26 +279,17 @@ fn public_code(status: &serde_json::Value) -> Option<String> {
 }
 fn authenticate(
     ownership: &Ownership,
-    status: &serde_json::Value,
+    status: &PairingStatus,
     label: Option<&str>,
 ) -> Result<PreparedIdentity, ()> {
-    if status.get("state").and_then(serde_json::Value::as_str) != Some("complete") {
+    if !matches!(status.state, PairingState::Complete) {
         return Err(());
     }
-    let root = status
-        .get("identity")
-        .and_then(serde_json::Value::as_str)
-        .ok_or(())?;
-    let expected_root: [u8; 32] = hex::decode(root)
+    let expected_root: [u8; 32] = hex::decode(status.identity.as_deref().ok_or(())?)
         .map_err(|_| ())?
         .try_into()
         .map_err(|_| ())?;
-    let record = PathBuf::from(
-        status
-            .get("record_path")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(())?,
-    );
+    let record = status.record_path.as_ref().ok_or(())?;
     if record.parent() != Some(ownership.identities.as_path()) {
         return Err(());
     }
@@ -319,7 +307,7 @@ fn authenticate(
     .map_err(|_| ())?;
     let enrolled = tilo_identity::enrolled_transport::EnrolledDevice::review(
         &ownership.root,
-        &record,
+        record,
         expected_root,
         device.verifying_key().to_bytes(),
         now,
