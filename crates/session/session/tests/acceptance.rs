@@ -6,8 +6,7 @@
 //! layout and session it publishes, and the tree the shell lays out for assistive technology
 //! (never pixels, but where a step is about looks, the frame the compositor drew).
 //!
-//! A step whose behaviour is not built yet keeps its real test and is marked `#[ignore]` with the
-//! piece that is missing, so the acceptance path is the same list before and after the work.
+//! A step joins the list once its behaviour is built; an ignored step would be a red nobody owns.
 
 #![cfg(target_os = "linux")]
 #![allow(

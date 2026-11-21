@@ -130,7 +130,7 @@ fn is_the_child(name: &str) -> bool {
 fn run_child(name: &str, proof: &Path) -> std::process::ExitStatus {
     let binary = env::current_exe().expect("the test binary");
     let mut command = Command::new(binary);
-    // A test the caller asked for despite its `#[ignore]` (a check that
+    // A test the caller asked for despite its ignore attribute (a check that
     // builds what it reads) starts here the same way.
     command
         .args([

@@ -6,7 +6,7 @@
 //! untouched regions staying at the base colour.
 //!
 //! Skipped without a wgpu adapter, unless `TILO_REQUIRE_GPU=1` promises one (CI does, so a job
-//! without llvmpipe fails rather than passing on nothing) — not `#[ignore]`,
+//! without llvmpipe fails rather than passing on nothing) — not ignored,
 //! so local runs without GPU libraries stay green and say they skipped.
 //!
 //! Intentionally not a golden-image diff test — that requires a design pass

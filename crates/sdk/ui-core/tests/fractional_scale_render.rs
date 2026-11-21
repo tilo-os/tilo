@@ -9,7 +9,7 @@
 //! placement a 1× or 2× compositor would produce.
 //!
 //! Skipped without a wgpu adapter, unless `TILO_REQUIRE_GPU=1` promises one,
-//! matching the sibling `screenshot_test.rs`; we never `#[ignore]`.
+//! matching the sibling `screenshot_test.rs`; it is never ignored.
 
 use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
