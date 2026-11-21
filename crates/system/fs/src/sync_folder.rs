@@ -70,6 +70,9 @@ pub const PASS_BYTES: u64 = 256 * 1024 * 1024;
 pub const FIRST_RETRY: Duration = Duration::from_secs(2);
 /// The longest a path that keeps failing waits between tries.
 pub const LAST_RETRY: Duration = Duration::from_secs(60);
+/// What a folder waiting for its workspace's Files content keys is told
+/// ([`crate::hydration::file_keys`]): a wait for the workspace, not a path's failure.
+pub const KEYS_NOT_READY: &str = "the Files content keys are not ready";
 /// A pass whose attempts this many times in a row fail, none carried across,
 /// stops: whatever fails them fails the rest too.
 const FAILURES_IN_A_ROW: usize = 32;
@@ -449,9 +452,16 @@ impl SyncFolder {
                 None
             }
             Err(error) => {
+                let error = error.to_string();
+                // Keys that have not arrived yet hold the whole folder, not one path: every
+                // path fails together for as long as it takes the workspace to open them.
+                // Counting that as a path's failure made each pass wait twice as long as the
+                // one before, so the folder went on waiting long after the keys were there.
+                if error.contains(KEYS_NOT_READY) {
+                    return None;
+                }
                 budget.outcome(false);
                 pass.failed = pass.failed.saturating_add(1);
-                let error = error.to_string();
                 let before = self.failing.get(path);
                 let known = before.is_some_and(|before| before.error == error);
                 let failures = before.map_or(1, |before| before.failures.saturating_add(1));

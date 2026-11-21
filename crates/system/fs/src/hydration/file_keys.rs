@@ -54,7 +54,8 @@ impl FileKeys {
             drop(connected);
             ensure!(
                 reply.access == KeyAccess::Ready,
-                "the Files content keys are not ready"
+                "{}",
+                crate::sync_folder::KEYS_NOT_READY
             );
             ContentKeys::from_bytes(
                 reply

@@ -412,3 +412,39 @@ async fn a_path_that_keeps_failing_waits_and_holds_nothing_else_back() {
     assert_eq!(fx.remote("stuck.txt").unwrap(), b"the fourth one");
     assert_eq!(folder.unsynced().count(), 0);
 }
+
+/// A folder whose workspace has not opened its Files keys yet is waiting on the workspace, not
+/// failing at a path: nothing is recorded against the path, so the pass after the keys arrive
+/// carries it at once instead of after a wait that grew while they were missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_folder_waiting_for_its_keys_does_not_count_a_path_as_failing() {
+    use std::io;
+
+    let fx = Fixture::new().await;
+    let mut folder = fx.folder();
+    let mut budget = super::Budget::new();
+    let mut pass = Pass::default();
+    let deferred = io::Error::other(super::KEYS_NOT_READY);
+    assert!(
+        folder
+            .carried("photo.png", Err(deferred), (None, None), &mut budget, &mut pass, true)
+            .is_none()
+    );
+    assert_eq!(pass.failed, 0, "a wait for the workspace is not the path failing");
+    assert_eq!(
+        folder.unsynced().count(),
+        0,
+        "nothing is held back by a wait for the keys"
+    );
+
+    // Anything else is still the path's own failure, and still waits.
+    let mut pass = Pass::default();
+    let broken = io::Error::other("the disk is full");
+    assert!(
+        folder
+            .carried("photo.png", Err(broken), (None, None), &mut budget, &mut pass, true)
+            .is_none()
+    );
+    assert_eq!(pass.failed, 1);
+    assert_eq!(folder.unsynced().count(), 1);
+}
