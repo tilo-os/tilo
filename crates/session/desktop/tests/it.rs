@@ -9,11 +9,7 @@
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_precision_loss,
-    clippy::expect_used,
     clippy::float_cmp,
-    clippy::indexing_slicing,
-    clippy::panic,
-    clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
