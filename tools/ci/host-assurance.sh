@@ -68,7 +68,7 @@ die() {
 # An exit at once takes the guest's output port with it, so a step that dies
 # without a message of its own leaves none. Report the code on the console too.
 report_exit() {
-  local code=$?
+  local code=${1:-$?}
   [ "$code" = 0 ] || printf 'assurance check: exited %s\n' "$code" >/dev/console 2>/dev/null || true
 }
 trap report_exit EXIT
@@ -567,8 +567,16 @@ boot_vm() {
   ./os/dev/vm.sh boot --2d --tpm --disk "$disk" --attach "$work/update.qcow2"
 }
 finish() {
-  report_exit
+  local code=$?
+  report_exit "$code"
   ./os/dev/vm.sh serial > "$out/serial.log" 2>&1 || true
+  # A failed check keeps no outputs, and a boot that hangs says nothing of its own:
+  # what the machine last printed goes to the log.
+  if [ "$code" != 0 ]; then
+    { printf '\n--- the machine'"'"'s console, its last 100 lines\n'
+      tail -n 100 "$out/serial.log" | tr -d '\r' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g'
+    } 2>/dev/null | tee /dev/console >&2 2>/dev/null || true
+  fi
   ./os/dev/vm.sh stop >/dev/null 2>&1 || true
   podman rm -f host-assurance-registry >/dev/null 2>&1 || true
 }
