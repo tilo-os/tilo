@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@5c2ceb637ad914d9";
+export const SURFACE = "so.tilo.chat@30ee09d42a85747e";
 
 export interface Category {
   name: string;
@@ -267,7 +267,6 @@ export interface Answered2 {
   answer: string;
   device: string;
   at: number;
-  detail: string;
 }
 
 /** One of resource, text, image, video, file: an object whose case the app tags it with. */
@@ -790,7 +789,6 @@ export interface AnswerQuestionArgs {
   message: string;
   answer: string;
   device?: string;
-  detail?: unknown;
 }
 
 /** The arguments of `withdraw-question`. */
@@ -1220,7 +1218,6 @@ export interface Messages extends tilo.Resource {
     message: string;
     answer: string;
     device?: string;
-    detail?: unknown;
   }): Promise<void>;
   /** Runs `answer-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   answerQuestionMany(items: AnswerQuestionArgs[]): Promise<tilo.ActionAnswer[]>;

@@ -367,7 +367,6 @@ class Answered2(TypedDict):
     answer: str
     device: str
     at: int
-    detail: str
 
 Attached = dict[str, Any]
 """One of resource, text, image, video, file: an object whose case the app tags it with."""
@@ -857,7 +856,6 @@ AnswerQuestionArgs = TypedDict("AnswerQuestionArgs", {
     "message": "str",
     "answer": "str",
     "device": NotRequired["str | None"],
-    "detail": NotRequired["Any | None"],
 })
 """The arguments of `answer-question`."""
 
@@ -993,7 +991,7 @@ ForgetSkillArgs = TypedDict("ForgetSkillArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
+    __surface__ = "so.tilo.chat@30ee09d42a85747e"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1331,7 +1329,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
+    __surface__ = "so.tilo.chat@30ee09d42a85747e"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1637,7 +1635,6 @@ class Messages(Resource):
         message: str,
         answer: str,
         device: str | None = None,
-        detail: Any | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -1645,8 +1642,6 @@ class Messages(Resource):
         args["answer"] = answer
         if device is not None:
             args["device"] = device
-        if detail is not None:
-            args["detail"] = detail
         return self.action("answer-question", **args)
 
     def answer_question_many(self, items: list[AnswerQuestionArgs]) -> list[dict[str, Any]]:
@@ -1808,7 +1803,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
+    __surface__ = "so.tilo.chat@30ee09d42a85747e"
     drafts: dict[str, str]
     @property
     def imported(self) -> list[str]:
@@ -1843,7 +1838,7 @@ class Drafts(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
+    __surface__ = "so.tilo.chat@30ee09d42a85747e"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1881,7 +1876,7 @@ class WorkspaceEmoji(Resource):
 
 class Skills(Resource):
     """Workspace Skills — `chat.skills`."""
-    __surface__ = "so.tilo.chat@5c2ceb637ad914d9"
+    __surface__ = "so.tilo.chat@30ee09d42a85747e"
     @property
     def skills(self) -> list[Entry[Skill]]:
         """Read only."""

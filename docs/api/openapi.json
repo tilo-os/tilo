@@ -12174,8 +12174,7 @@
               "string",
               "null"
             ]
-          },
-          "detail": {}
+          }
         },
         "required": [
           "message",
@@ -42755,6 +42754,30 @@
       "resource": "files.tree",
       "action": "list-chunk",
       "arguments": "#/components/schemas/files.tree.list-chunk.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tilo.accounts",
+      "action": "publish-browser-identity",
+      "arguments": "#/components/schemas/tilo.accounts.publish-browser-identity.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tilo.accounts",
+      "action": "save-account",
+      "arguments": "#/components/schemas/tilo.accounts.save-account.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tilo.accounts",
+      "action": "remove-account",
+      "arguments": "#/components/schemas/tilo.accounts.remove-account.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "tilo.accounts",
+      "action": "set-active-account",
+      "arguments": "#/components/schemas/tilo.accounts.set-active-account.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",
