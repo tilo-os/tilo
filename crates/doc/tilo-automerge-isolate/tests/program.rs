@@ -9,6 +9,8 @@
 
 use std::process::Command;
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT};
 use tilo_automerge_isolate::{Applied, Dependencies, Isolate, Limits};
@@ -26,7 +28,7 @@ fn a_program_starts_its_workers_with_the_worker_argument_alone() {
     let status = Command::new(std::env::current_exe().unwrap())
         .args([TEST, "--exact", "--nocapture", "--test-threads=1"])
         .env(PROGRAM, "1")
-        .status()
+        .status_locked()
         .unwrap();
     assert!(status.success(), "the program's run failed: {status}");
 }
