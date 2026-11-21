@@ -267,6 +267,10 @@ struct TextField {
     body: bool,
 }
 
+/// Every resource of an app that has text, with its type's text fields; and the types whose
+/// resources could not be listed, with why.
+type AppTexts = (Vec<(ResourceRef, Rc<Vec<TextField>>)>, Vec<String>);
+
 /// What [`Core::text_of`] reads of a resource: its paragraphs, and the people its rich text
 /// mentions.
 struct TextOf {
@@ -373,8 +377,7 @@ impl Core {
 
     /// Every resource of `app` that has text, with its type's text fields; and the types whose
     /// resources could not be listed, with why.
-    #[allow(clippy::type_complexity, reason = "one pass's two results")]
-    fn texts_of_app(&self, app: &str) -> (Vec<(ResourceRef, Rc<Vec<TextField>>)>, Vec<String>) {
+    fn texts_of_app(&self, app: &str) -> AppTexts {
         let packages: Vec<Rc<crate::registry::Package>> = self
             .registry
             .borrow()
