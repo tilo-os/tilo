@@ -815,7 +815,14 @@ files_runtime=$runtime/tilo/files-workspace
 mkdir -p "$files_state/mount" "$files_state/cache" "$files_runtime" "$runtime/tilo/files-storage"
 chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
 # This build's daemon, mounting this session's workspace: no capability list yet (the session
-# publishes the person's own as its apps are granted), so the device acts as itself.
+# publishes the person's own as its apps are granted), so the device acts as itself. Its
+# authority and content sockets live in /run/tilo on a Tilo machine, which the image's tmpfiles
+# make; a desktop that is not Tilo has none, so they go in a private directory of this user's
+# whose path any socket fits (a socket path over 107 bytes is refused).
+if [[ ! -d /run/tilo ]] || [[ ! -w /run/tilo ]]; then
+    export TILO_AUTHORITY_SOCKET_DIR=/tmp/tilo-files-$(id -u)
+    mkdir -p -m 700 "$TILO_AUTHORITY_SOCKET_DIR"
+fi
 setsid "$bin/fs" serve --mount-point "$files_state/mount" --cache-dir "$files_state/cache" \
     --storage-sock "$runtime/tilo/files-storage/storage.sock" \
     --blob-sock "$files_runtime/fs-blobs.sock" \
@@ -834,7 +841,7 @@ else
     # Why, in the session's own output: a failure nobody can read is a failure
     # nobody can fix, and this one runs inside a machine that keeps its logs.
     say "the session's files workspace did not start: Files shows the computer's Home (see $logs/files-workspace.log)"
-    sed 's/^/    fs: /' "$logs/files-workspace.log" 2>/dev/null >&2 || true
+    sed 's/^/    fs: /' "$logs/files-workspace.log" >&2 2>/dev/null || true
 fi
 
 cat >&2 <<EOF
