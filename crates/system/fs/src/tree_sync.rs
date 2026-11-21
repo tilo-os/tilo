@@ -89,8 +89,8 @@ const PACE: u32 = 20;
 type FileBytes = (Option<iroh_blobs::Hash>, u64);
 
 /// What a record of the tree read as, for [`Records`]. The shape of a device's own
-/// [`DeviceDocuments`](https://docs.rs/tilo-peer-state) read, without what a folder sync does
-/// not use: its revision names a document, and the heads here already do.
+/// `DeviceDocuments` read, without what a folder sync does not use: its revision names a
+/// document, and the heads here already do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reading {
     /// The record whole, saved, at the heads it stands at.
@@ -118,7 +118,7 @@ pub enum Reading {
 
 /// What a tree sync reads of a workspace's records: the tree's own and its chunks, as the
 /// device's own service (or the engine of a device that holds no service) reads them for it.
-/// A device's [`DeviceDocuments`](https://docs.rs/tilo-peer-state) answers it as it is.
+/// A device's own `DeviceDocuments` answers it as it is.
 pub trait Records: collab_types::signer::MaybeSendSync {
     /// `app`'s `document` of `workspace` whole, or, for `since` heads the peer holds, only
     /// what changed after them.
@@ -189,10 +189,11 @@ pub trait TreeWriter {
     ) -> WriteFuture<'a>;
 
     /// Resolves once the serving side answered every earlier write of this device's to
-    /// `chunks`, or with the refusal that prevents it. A writer whose writes are kept where
-    /// they are made owes no wait, and answers at once.
-    fn served(&self, _chunks: &[TreeChunk]) -> Served {
-        Box::pin(std::future::ready(Ok(())))
+    /// `chunks`, or with the refusal that prevents it; `None` when the peer cannot answer (it
+    /// is gone), so nothing waits for a word that will not come. A writer whose writes are kept
+    /// where they are made owes no wait, and answers at once.
+    fn served(&self, _chunks: &[TreeChunk]) -> Option<Served> {
+        Some(Box::pin(std::future::ready(Ok(()))))
     }
 }
 
@@ -1378,8 +1379,9 @@ impl Sync {
             .map(|(chunk, _)| *chunk)
             .collect();
         for chunk in asks {
-            let served = self.writer.served(&[chunk]);
-            if let Some(held) = self.documents.get_mut(&chunk) {
+            if let Some(served) = self.writer.served(&[chunk])
+                && let Some(held) = self.documents.get_mut(&chunk)
+            {
                 held.confirming = Some(served);
             }
         }

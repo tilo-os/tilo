@@ -197,20 +197,18 @@ impl tilo_fs::tree_sync::TreeWriter for SessionWriter {
         Box::pin(std::future::ready(written))
     }
 
-    fn served(&self, chunks: &[TreeChunk]) -> tilo_fs::tree_sync::Served {
+    fn served(&self, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Served> {
         let routes: Vec<DocumentRoute> = chunks
             .iter()
             .map(|chunk| route(self.workspace, *chunk))
             .collect();
-        match self.link.barrier_for(&routes) {
-            Ok(receipt) => Box::pin(async move {
-                match receipt.await {
-                    Ok(answer) => answer,
-                    Err(_) => Err("the session closed before the workspace answered".to_owned()),
-                }
-            }),
-            Err(closed) => Box::pin(std::future::ready(Err(closed.to_string()))),
-        }
+        let receipt = self.link.barrier_for(&routes).ok()?;
+        Some(Box::pin(async move {
+            match receipt.await {
+                Ok(answer) => answer,
+                Err(_) => Err("the session closed before the workspace answered".to_owned()),
+            }
+        }))
     }
 }
 
