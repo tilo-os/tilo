@@ -1720,28 +1720,6 @@ impl Workspaces {
         Arc::new(device_actions::Answers(Arc::clone(&self.inner.jobs)))
     }
 
-    /// The current role of `device` only when workspace Write permission is allowed,
-    /// including live capability restrictions; `None` otherwise.
-    pub async fn legacy_writer_role(
-        &self,
-        workspace: &str,
-        device: [u8; 32],
-    ) -> Option<collab_types::role::Role> {
-        let governed = self.workspace(workspace).await.ok()?;
-        let governed = governed.lock().await;
-        let now = tilo_clock::wall();
-        let member = governed.peer().permissions(device, now).ok()?;
-        let role = governed.peer().role(&device, now).ok()?;
-        drop(governed);
-        member
-            .allows(
-                &member.policy.node(),
-                tilo_action_policy::ActionKind::Undoable,
-                now,
-            )
-            .then_some(role)
-    }
-
     /// Workspace UUIDs, each sent after a governance decision on that workspace was
     /// committed and published. A slow receiver may lag; it then re-reads.
     #[must_use]
