@@ -68,7 +68,6 @@ mod found;
 mod found_files;
 #[cfg(feature = "test-support")]
 pub mod held_back;
-mod host_actions;
 mod index;
 mod invocation_log;
 mod invocations;
@@ -108,7 +107,6 @@ mod tree_put;
 pub use crate::worker::PersonRegion;
 pub(super) use arguments::invoke_arguments;
 pub use content::MAX_PUT_BYTES;
-pub use host_actions::HostActions;
 pub use link::{
     AskedInTurn, AsksInConversation, FeedbackReviewer, HostDevice, PackagedCall, ViewDocument,
     ViewReadPolicy, WorkspaceDocumentsLink,
@@ -126,7 +124,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
-use crate::member::actions::{Outcome, api_outcome, resource_of, resource_provider};
+use crate::record_actions::{Outcome, api_outcome, resource_of, resource_provider};
 use crate::service::CatalogueFactory;
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_documents::{Reads, WorkspaceDocuments};
@@ -205,7 +203,7 @@ struct Shared {
     /// hold a query to the index instead of to what it is built from.
     search: SearchActivity,
     /// The agents' sessions here, which sign a change an action made for each.
-    agent_sessions: OnceLock<crate::control::AgentSessions>,
+    agent_sessions: OnceLock<crate::grants::AgentSessions>,
 }
 
 impl Shared {

@@ -166,7 +166,7 @@ async fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_els
         state.path(),
         Options {
             shell: Some(Arc::clone(&shells)),
-            ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
+            ..Options::offering(crate::common::catalogue)
         },
     )
     .await;
@@ -443,7 +443,7 @@ async fn a_member_names_a_vault_item_before_any_window_made_the_record() {
         &root,
         &server_device,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let mut page = Browser::open(&hosted, &browser_device, &server_device).await;

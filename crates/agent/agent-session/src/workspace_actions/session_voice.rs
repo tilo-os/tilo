@@ -290,7 +290,7 @@ impl Sessions {
 
 /// The record `provider` names in `cluster`, as an invocation's presence names it.
 fn live(provider: &str, cluster: &str) -> Option<LiveResource> {
-    crate::member::actions::resource_of(provider, cluster).map(|route| LiveResource {
+    crate::record_actions::resource_of(provider, cluster).map(|route| LiveResource {
         app: route.app_id,
         record: route.document,
     })

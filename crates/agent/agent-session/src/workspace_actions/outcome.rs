@@ -14,7 +14,7 @@ use tilo_actions::{
 use super::Performed;
 use super::publish::Unsaved;
 
-use crate::member::actions::Outcome;
+use crate::record_actions::Outcome;
 
 /// Whether `given`, from the host's own person on their own device, confirms
 /// an action asking `policy`: their own word, the phrase it names, or a

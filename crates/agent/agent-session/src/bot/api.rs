@@ -42,7 +42,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::host_steps::{self, Asked, AskedFor, HostStepError, HostSteps, Keeps, StepCause};
 use super::item_json::OutboxRow;
-use crate::member::actions::{api_status, resource_of, resource_provider};
+use crate::record_actions::{api_status, resource_of, resource_provider};
 use tilo_lock::MutexRecover as _;
 
 /// What the API needs of the bot's session and replicas.

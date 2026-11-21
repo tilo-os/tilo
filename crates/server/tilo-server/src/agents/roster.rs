@@ -8,7 +8,7 @@ use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, pending,
     refuse,
 };
-use tilo_agent_session::control::RosterAdmissionDone;
+use tilo_agent_session::grants::RosterAdmissionDone;
 use tilo_agent_session::{AgentIdentity, AgentSessions, AgentSupervisor, ApprovalDone};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::agents::{

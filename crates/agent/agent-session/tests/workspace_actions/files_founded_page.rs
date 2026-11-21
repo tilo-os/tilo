@@ -14,7 +14,6 @@ use super::hosted_documents::{content_in, put, tool};
 use super::*;
 use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, TreeChunks, chunk_document_id};
 use serde_json::json;
-use tilo_agent_session::ModelChoice;
 use tilo_fs::tree_document::document_id as tree_document;
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;
@@ -55,7 +54,7 @@ async fn a_page_that_founded_files_lists_a_file_the_workspace_founded_after_it()
         &root,
         &serving,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let agent = Browser::open(&hosted, &computer, &serving).await;

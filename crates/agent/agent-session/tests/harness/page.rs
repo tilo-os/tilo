@@ -32,9 +32,6 @@ use tilo_actions::remote::{
 
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::ServerAddress;
-use tilo_server_protocol::agents::{
-    AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
-};
 use tilo_session_actions::Heard;
 
 use super::hosted::Hosted;
@@ -457,22 +454,6 @@ impl Page {
         receipt
     }
 
-    /// Run one action on the host's agent supervisor.
-    pub async fn call(
-        &mut self,
-        resource: &str,
-        action: &str,
-        argument: InvokeArgument,
-    ) -> Result<serde_json::Value, String> {
-        self.invoke_on(
-            AGENTS_PROVIDER,
-            ActionAddress::new(resource, action),
-            argument,
-        )
-        .await
-        .map(|output| output.value.unwrap_or_default())
-    }
-
     /// Call one action on the record `provider` serves, followed to its end: a
     /// session answers a page accepted while what the action changes is still
     /// landing, as it does for a person's own click.
@@ -505,16 +486,6 @@ impl Page {
         }
     }
 
-    /// The host's status of its agents.
-    pub async fn status(&mut self) -> AgentsStatus {
-        serde_json::from_value(
-            self.call(SUPERVISOR_RESOURCE, STATUS_ACTION, InvokeArgument::None)
-                .await
-                .unwrap(),
-        )
-        .unwrap()
-    }
-
     /// Wait until everything this page published is durable on the host.
     pub async fn durable(&self) {
         let receipt = self.peer.barrier().unwrap();
@@ -529,23 +500,6 @@ impl Page {
                 Instant::now() < deadline,
                 "the page's edits never became durable"
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    /// Wait until `done` holds for the supervisor's status.
-    pub async fn until(
-        &mut self,
-        what: &str,
-        done: impl Fn(&AgentsStatus) -> bool,
-    ) -> AgentsStatus {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let status = self.status().await;
-            if done(&status) {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "{what}: {status:#?}");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }

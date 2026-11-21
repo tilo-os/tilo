@@ -5,7 +5,6 @@
 use super::agent_mcp::tool;
 use super::*;
 use serde_json::json;
-use tilo_agent_session::ModelChoice;
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;
 
@@ -120,7 +119,7 @@ async fn agent_viewing_files(
         &root,
         &home,
         state,
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let mut page = Browser::open(&hosted, &browser_device, &home).await;

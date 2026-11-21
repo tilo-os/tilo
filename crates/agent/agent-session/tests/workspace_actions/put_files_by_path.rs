@@ -18,7 +18,6 @@ use tilo_actions::remote::{
     ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
-use tilo_agent_session::ModelChoice;
 use tilo_server::workspace_agents::WorkspaceActionProvider;
 use tilo_server::workspaces::Workspaces;
 
@@ -91,7 +90,7 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
         &root,
         &host,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;

@@ -21,7 +21,6 @@
 
 use super::*;
 use serde_json::{Value, json};
-use tilo_agent_session::ModelChoice;
 use tilo_desktop_search::Source as _;
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;
@@ -375,7 +374,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
         state.path(),
         Options {
             shell: Some(tilo_server::agents::host_shells(shells.clone()).unwrap()),
-            ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
+            ..Options::offering(crate::common::catalogue)
         },
     )
     .await;

@@ -61,7 +61,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{Job, Needs, Shared, Worker, caller_context, invoke_arguments, take_all};
-use crate::member::actions::resource_of;
+use crate::record_actions::resource_of;
 use tilo_server_protocol::WorkspaceId;
 
 /// Terminal's app id: its session records are what the host runs.
@@ -402,13 +402,13 @@ impl Worker {
             Ok(state) => state,
             Err(outcome) => {
                 let reason = match outcome {
-                    crate::member::actions::Outcome::Rejected(error) => {
+                    crate::record_actions::Outcome::Rejected(error) => {
                         return Some(Err(InvocationReceipt {
                             invocation,
                             status: tilo_actions::remote::ReceiptStatus::Rejected { error },
                         }));
                     }
-                    crate::member::actions::Outcome::Failed(failure) => failure.message,
+                    crate::record_actions::Outcome::Failed(failure) => failure.message,
                 };
                 return Some(refused(reason));
             }
@@ -444,7 +444,7 @@ impl Worker {
         caller: &Caller,
         route: &DocumentRoute,
         state: super::WorkspaceState,
-    ) -> Result<super::WorkspaceState, crate::member::actions::Outcome> {
+    ) -> Result<super::WorkspaceState, crate::record_actions::Outcome> {
         let Ok(record) = super::reads::document_id(&route.document) else {
             return Ok(state);
         };

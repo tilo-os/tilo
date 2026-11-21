@@ -273,7 +273,7 @@ use tilo_actions::{
 };
 #[cfg(test)]
 use tilo_agent_session::resource_provider;
-use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed};
+use tilo_agent_session::{Replica, ReplicaActor, Seed};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_client::ServerAddress;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -747,7 +747,7 @@ async fn start_lending(
 ) -> Hosted {
     let options = Options {
         feedback_reviewer,
-        ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
+        ..Options::offering(crate::common::catalogue)
     };
     let options = match page {
         Some(origin) => options.serving(origin),

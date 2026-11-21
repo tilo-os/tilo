@@ -20,7 +20,6 @@ use collab_types::DocumentMutation;
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
 use serde_json::{Value, json};
-use tilo_agent_session::ModelChoice;
 use tilo_fs::tree_document::document_id as tree_document;
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;
@@ -243,7 +242,7 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
         &root,
         &host,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
@@ -370,7 +369,7 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
         &root,
         &device,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let agent = Browser::open(&hosted, &computer, &device).await;
@@ -504,7 +503,7 @@ async fn a_resumed_upload_of_a_large_file_lands_once_and_whole() {
         &root,
         &host,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
@@ -577,7 +576,7 @@ async fn a_put_file_makes_no_app_record_where_opening_it_in_an_app_does() {
         &root,
         &host,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let agent = Browser::open(&hosted, &computer, &host).await;
@@ -649,7 +648,7 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
         &root,
         &host,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let laptop = Browser::open(&hosted, &computer, &host).await;
@@ -745,7 +744,7 @@ async fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
         &owner,
         &serving,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let workspaces = hosted.server.workspaces().unwrap();
@@ -837,7 +836,7 @@ async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_writt
         &owner,
         &serving,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let workspaces = hosted.server.workspaces().unwrap();
@@ -1096,7 +1095,7 @@ async fn a_tree_a_computers_mount_founds_is_one_a_page_opens() {
         &owner,
         &serving,
         state.path(),
-        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+        Options::offering(crate::common::catalogue),
     )
     .await;
     let workspaces = hosted.server.workspaces().unwrap();

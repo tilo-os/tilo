@@ -1,23 +1,15 @@
-//! Agents on a host: each agent's member on its own thread, every grant
-//! and agent kept under a state directory, picked up again when the host
-//! restarts.
+//! The signing sessions of a host's roster agents, every grant kept under a state directory
+//! and picked up again when the host restarts.
 //!
-//! [`AgentService`] owns an [`AgentSupervisor`] whose spawner starts one thread
-//! per agent. The thread pumps the member, which works on each task with
-//! the host's model ([`MakeTurns`]), until the agent stops or the
-//! host shuts down, sleeping between pumps until its session or steering
-//! changes or its presence keep-alive is due. A keeper thread settles expired
-//! grants (the agent stops and the host refuses its device) and writes the
-//! supervisor's snapshot to `agents.json` whenever it changed, sleeping
-//! until a change or the next expiry. The file
+//! [`AgentService`] owns an [`AgentSupervisor`] whose roster spawner opens one signing
+//! session per approved grant, on a thread of its own, joined to the grant's one workspace
+//! ([`AgentSessions`](crate::grants::AgentSessions)). A keeper thread settles expired
+//! grants (the host refuses their device) and writes the supervisor's snapshot to
+//! `agents.json` whenever it changed, sleeping until a change or the next expiry. The file
 //! holds the agents' device keys and is written owner-only.
 //!
-//! On start the snapshot is restored ([`AgentSupervisor::restore`]):
-//! approved grants are registered with the host again, agents that were
-//! neither stopped nor failed start again with their queued tasks (a task
-//! that was running when the host went down is marked failed), and paused
-//! agents come back paused. A host shutting down leaves its agents'
-//! statuses as they were, so the next start resumes them.
+//! On start the snapshot is restored ([`AgentSupervisor::restore`]): each approved grant
+//! that has not expired opens its signing session again.
 //!
 //! Each workspace's content (the bytes its records name by hash) is kept under
 //! `content/<workspace>` in the state directory, in this process: the host's
@@ -25,7 +17,6 @@
 //! content in and reads it back by address ([`AgentService::put_content`],
 //! [`AgentService::content`]).
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -36,21 +27,18 @@ use tilo_content::ContentStore;
 use tilo_server_client::ServerAddress;
 
 use tilo_content::WorkspaceStores;
-use tilo_server_protocol::agents::AgentStatus;
+use tilo_server_protocol::WorkspaceId;
+use tilo_session_client::{Cmd, Outbox as _, PeerConfig};
 use tilo_user_identity::DeviceCert;
 
 use crate::apps::AppCatalogue;
-use crate::control::{
-    AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, RosterCreatedAt,
-    SupervisorSnapshot,
+use crate::grants::{
+    AgentHostLink, AgentIdentity, AgentSupervisor, RosterCreatedAt, SupervisorSnapshot,
 };
-use crate::member::{AgentMember, MemberConfig};
-use crate::model::MakeTurns;
 use tilo_lock::MutexRecover as _;
 
 const STATE_FILE: &str = "agents.json";
-/// The least time between two writes of the state: a burst of changes (an
-/// agent's steps) is written as one.
+/// The least time between two writes of the state: a burst of changes is written as one.
 const WRITE_SPACING: Duration = Duration::from_millis(500);
 /// The directory under the state directory each workspace's content is kept in.
 /// Where a test keeps the host's content, under its state directory.
@@ -78,21 +66,12 @@ impl ServerEndpoint {
             server_cert,
         }
     }
-
-    fn member_config(self, workspace: String) -> MemberConfig {
-        MemberConfig {
-            host: self.host,
-            server_cert: self.server_cert,
-            workspace,
-        }
-    }
 }
 
 type MemberThread = (JoinHandle<()>, Arc<dyn Fn() + Send + Sync>);
 
 struct Shared {
     state_dir: PathBuf,
-    model: MakeTurns,
     endpoint: OnceLock<ServerEndpoint>,
     /// The link the supervisor asks the host it runs on through, once it
     /// started.
@@ -105,16 +84,11 @@ struct Shared {
     /// Each workspace's content store: the host's one store, which its
     /// workspace actions use too.
     content: Arc<WorkspaceStores>,
-    /// Each agent's session state, by its agent id: kept while the host
-    /// runs, so an agent stopped and started again keeps its channel keys.
-    sessions: Mutex<BTreeMap<String, Arc<tilo_session_client::MemoryPeerStore>>>,
     /// The agents' sessions here, which sign a change an action made for each
     /// ([`crate::workspace_actions`]).
-    agent_sessions: crate::control::AgentSessions,
+    agent_sessions: crate::grants::AgentSessions,
     /// The wall clock the keeper judges grants by.
     clock: HostClock,
-    /// Standalone tasks and grants left dormant when only roster service is enabled.
-    dormant: OnceLock<SupervisorSnapshot>,
 }
 
 /// How the host reads the wall clock. The keeper runs on its own thread,
@@ -139,20 +113,16 @@ pub struct AgentService {
 }
 
 impl AgentService {
-    /// Agents of `user_public_key`, kept under `state_dir`, working with
-    /// `model`, the host's workspaces' content in `content`. Serve
-    /// [`Self::supervisor`] to browsers (it answers the agent vocabulary),
-    /// then [`Self::start`] once the host is up.
+    /// The roster agents of `user_public_key`, their grants kept under `state_dir`, the host's
+    /// workspaces' content in `content`. [`Self::start`] once the host is up.
     #[must_use]
     pub fn new(
         user_public_key: [u8; 32],
         (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
-        model: MakeTurns,
     ) -> Self {
         Self::with_clock(
             user_public_key,
             (state_dir, content),
-            model,
             Arc::new(tilo_clock::unix_now_ns),
         )
     }
@@ -162,28 +132,20 @@ impl AgentService {
     pub fn with_clock(
         user_public_key: [u8; 32],
         (state_dir, content): (PathBuf, Arc<WorkspaceStores>),
-        model: MakeTurns,
         clock: HostClock,
     ) -> Self {
         let shared = Arc::new(Shared {
             content,
             state_dir,
-            model,
             endpoint: OnceLock::new(),
             link: OnceLock::new(),
             runtime: OnceLock::new(),
             stopping: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
-            sessions: Mutex::new(BTreeMap::new()),
-            agent_sessions: crate::control::AgentSessions::default(),
+            agent_sessions: crate::grants::AgentSessions::default(),
             clock,
-            dormant: OnceLock::new(),
         });
-        let spawning = shared.clone();
-        let supervisor = AgentSupervisor::new(
-            user_public_key,
-            Arc::new(move |identity, control| spawn_agent(&spawning, identity, control)),
-        );
+        let supervisor = AgentSupervisor::new(user_public_key);
         let joining = Arc::clone(&shared);
         let supervised = Arc::downgrade(&supervisor);
         supervisor.set_roster_spawner(Arc::new(move |identity, created_at| {
@@ -198,7 +160,7 @@ impl AgentService {
         }
     }
 
-    /// The supervisor browsers steer agents through.
+    /// The supervisor holding the roster agents' grants.
     #[must_use]
     pub const fn supervisor(&self) -> &Arc<AgentSupervisor> {
         &self.supervisor
@@ -206,7 +168,7 @@ impl AgentService {
 
     /// The agents' sessions here, which sign a change an action made for each.
     #[must_use]
-    pub fn agent_sessions(&self) -> crate::control::AgentSessions {
+    pub fn agent_sessions(&self) -> crate::grants::AgentSessions {
         self.shared.agent_sessions.clone()
     }
 
@@ -216,35 +178,17 @@ impl AgentService {
         self.shared.state_dir.join(STATE_FILE)
     }
 
-    /// Start: connect the host, restore what the state directory holds,
-    /// start the agents that were running, and keep checking expiry and
-    /// writing the state. Agents' sessions run their I/O on the calling
-    /// Tokio runtime, or on one of the host's own outside a runtime.
+    /// Start: connect the host, restore the grants the state directory holds, open the
+    /// approved ones' signing sessions, and keep checking expiry and writing the state.
+    /// Sessions run their I/O on the calling Tokio runtime, or on one of the host's own
+    /// outside a runtime.
+    ///
+    /// # Errors
+    /// The state file could not be read or the host could not start.
     pub fn start(
         &mut self,
         endpoint: ServerEndpoint,
         link: Arc<dyn AgentHostLink>,
-    ) -> Result<(), String> {
-        self.start_serving(endpoint, link, false)
-    }
-
-    /// Start the roster signing peers, keeping standalone task agents dormant.
-    ///
-    /// # Errors
-    /// The state file could not be read or the host could not start.
-    pub fn start_roster(
-        &mut self,
-        endpoint: ServerEndpoint,
-        link: Arc<dyn AgentHostLink>,
-    ) -> Result<(), String> {
-        self.start_serving(endpoint, link, true)
-    }
-
-    fn start_serving(
-        &mut self,
-        endpoint: ServerEndpoint,
-        link: Arc<dyn AgentHostLink>,
-        roster_only: bool,
     ) -> Result<(), String> {
         std::fs::create_dir_all(&self.shared.state_dir)
             .map_err(|error| format!("create {}: {error}", self.shared.state_dir.display()))?;
@@ -265,25 +209,8 @@ impl AgentService {
         let _ = self.shared.runtime.set(runtime);
         let _ = self.shared.link.set(Arc::clone(&link));
         self.supervisor.set_link(link);
-        let mut snapshot = read_state(&self.state_file())?;
-        if roster_only {
-            let (roster, standalone) = snapshot
-                .grants
-                .into_iter()
-                .partition(|grant| grant.roster_created_at.is_some());
-            let _ = self.shared.dormant.set(SupervisorSnapshot {
-                grants: standalone,
-                agents: std::mem::take(&mut snapshot.agents),
-            });
-            snapshot.grants = roster;
-        }
-        let resume = self.supervisor.restore(snapshot, (self.shared.clock)());
-        for (identity, control) in resume {
-            tracing::info!(agent = %crate::control::agent_id(&identity.delegation), "agent resumes after a host restart");
-            if let Err(error) = spawn_agent(&self.shared, identity, control.clone()) {
-                control.fail(&error);
-            }
-        }
+        let snapshot = read_state(&self.state_file())?;
+        self.supervisor.restore(snapshot, (self.shared.clock)());
         persist(&self.supervisor, &self.shared, &self.written);
         self.keep()
     }
@@ -369,8 +296,7 @@ impl AgentService {
         persist(&self.supervisor, &self.shared, &self.written);
     }
 
-    /// Stop every agent thread, leaving each agent's status as it was so
-    /// the next start resumes it, and write the state a last time.
+    /// Close every signing session and write the state a last time.
     pub fn shutdown(mut self) {
         self.shared.stopping.store(true, Ordering::Release);
         self.supervisor.changes().raise();
@@ -389,52 +315,6 @@ impl AgentService {
             runtime.shutdown_background();
         }
     }
-}
-
-fn spawn_agent(
-    shared: &Arc<Shared>,
-    identity: AgentIdentity,
-    control: Arc<AgentControl>,
-) -> Result<(), String> {
-    let endpoint = shared
-        .endpoint
-        .get()
-        .cloned()
-        .ok_or("the agent supervisor has not started")?;
-    let workspace = control
-        .workspace()
-        .or_else(|| {
-            identity
-                .delegation
-                .scope
-                .workspaces
-                .first()
-                .map(ToString::to_string)
-        })
-        .ok_or("the agent has no workspace")?;
-    let thread_shared = shared.clone();
-    let name = format!("agent-{}", crate::control::agent_id(&identity.delegation));
-    let thread_control = control.clone();
-    let handle = std::thread::Builder::new()
-        .name(name)
-        .spawn(move || {
-            run_agent(
-                &thread_shared,
-                endpoint,
-                workspace,
-                identity,
-                &thread_control,
-            );
-        })
-        .map_err(|error| error.to_string())?;
-    keep_thread(shared, handle, Arc::new(move || control.wake()));
-    Ok(())
-}
-
-fn keep_thread(shared: &Shared, handle: JoinHandle<()>, wake: Arc<dyn Fn() + Send + Sync>) {
-    let mut threads = shared.threads.lock_recover();
-    threads.retain(|(thread, _)| !thread.is_finished());
-    threads.push((handle, wake));
 }
 
 fn spawn_roster_session(
@@ -461,12 +341,12 @@ fn spawn_roster_session(
     let thread = std::thread::Builder::new()
         .name(format!(
             "roster-{}",
-            crate::control::agent_id(&identity.delegation)
+            crate::grants::agent_id(&identity.delegation)
         ))
         .spawn(move || {
             let _runtime = runtime.enter();
-            if let Err(error) = join_roster_session(&joining, endpoint, &identity, created_at) {
-                tracing::warn!(agent = %crate::control::agent_id(&identity.delegation), %error,
+            if let Err(error) = join_roster_session(&joining, &endpoint, &identity, created_at) {
+                tracing::warn!(agent = %crate::grants::agent_id(&identity.delegation), %error,
                     "the roster agent's signing session ended");
                 if !joining.stopping.load(Ordering::Acquire)
                     && let Some(supervisor) = supervisor.upgrade()
@@ -485,7 +365,7 @@ fn spawn_roster_session(
 
 fn join_roster_session(
     shared: &Shared,
-    endpoint: ServerEndpoint,
+    endpoint: &ServerEndpoint,
     identity: &AgentIdentity,
     created_at: RosterCreatedAt,
 ) -> Result<(), String> {
@@ -512,16 +392,13 @@ fn join_roster_session(
     if shared.stopping.load(Ordering::Acquire) {
         return Ok(());
     }
-    let config = endpoint.member_config(workspace.to_string());
     let thread = std::thread::current();
-    let (peer, events) = crate::member::join(
-        &config,
+    let peer = join(
+        endpoint,
         identity,
         *workspace,
-        Arc::new(tilo_session_client::MemoryPeerStore::default()),
         Arc::new(move || thread.unpark()),
     )?;
-    drop(events);
     let device = identity.cert.device_public_key;
     shared.agent_sessions.joined(
         device,
@@ -546,87 +423,28 @@ fn join_roster_session(
     result
 }
 
-fn run_agent(
-    shared: &Shared,
-    endpoint: ServerEndpoint,
-    workspace: String,
-    identity: AgentIdentity,
-    control: &Arc<AgentControl>,
-) {
-    let agent_id = crate::control::agent_id(&identity.delegation).to_owned();
-    let Some(runtime) = shared.runtime.get() else {
-        control.fail("the agent supervisor has not started");
-        return;
-    };
-    let _runtime = runtime.enter();
-    // A workspace admits only the devices its roster names, and a session it
-    // refuses is not dialled again on its own: the agent waits for its place
-    // on its workspaces before it joins, rather than race the host that
-    // writes it.
-    wait_admitted(shared, &identity);
-    // The agent runs no app's code and reads nothing of this machine's files
-    // or secrets: it acts through the host's actions, with the host's model.
-    let session = Arc::clone(
-        shared
-            .sessions
-            .lock_recover()
-            .entry(agent_id.clone())
-            .or_default(),
-    );
-    let device = identity.cert.device_public_key;
-    let mut member = match AgentMember::start_with_store(
-        endpoint.member_config(workspace),
-        identity,
-        control.clone(),
-        Arc::clone(&shared.model),
-        session,
-    ) {
-        Ok(member) => member,
-        Err(error) => {
-            tracing::warn!(agent = %agent_id, %error, "agent could not join its workspace");
-            control.fail(&error);
-            return;
-        }
-    };
-    shared
-        .agent_sessions
-        .joined(device, member.peer().clone(), None);
-    tracing::info!(agent = %agent_id, "agent joined its workspace");
-    member.run_until(None, |_| {
-        shared.stopping.load(Ordering::Acquire) || control.status() == AgentStatus::Stopped
-    });
-    if control.status() == AgentStatus::Stopped {
-        // One more pump publishes the cleared presence.
-        member.pump();
-    }
-    member.close();
-    shared.agent_sessions.left(&device);
-    tracing::info!(agent = %agent_id, "agent left its workspace");
-}
-
-/// How long an agent waits for its workspaces to admit it before it joins
-/// anyway, so that a host which never answers still lets it try and report
-/// why it could not.
+/// How long a roster agent's signing session waits for the host to admit it.
 const ADMISSION_WAIT: Duration = Duration::from_secs(30);
 
-/// Wait until the host's workspaces hold `identity` as a member of their own,
-/// when the host says when they do.
-fn wait_admitted(shared: &Shared, identity: &AgentIdentity) {
-    let Some(link) = shared.link.get() else {
-        return;
-    };
-    let (admitted, wait) = std::sync::mpsc::channel();
-    link.when_admitted(
-        &identity.cert,
-        &identity.delegation,
-        Box::new(move || {
-            let _ = admitted.send(());
-        }),
+/// Connect as `identity` to the host at `endpoint` and join `workspace`'s sessions.
+fn join(
+    endpoint: &ServerEndpoint,
+    identity: &AgentIdentity,
+    workspace: WorkspaceId,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) -> Result<tilo_session_client::Link, String> {
+    let peer = tilo_session_client::start_session(
+        PeerConfig::member(
+            endpoint.host.clone(),
+            identity.cert.clone(),
+            endpoint.server_cert.clone(),
+        ),
+        Arc::new(identity.key.clone()),
+        Arc::new(tilo_session_client::MemoryPeerStore::default()),
     );
-    if wait.recv_timeout(ADMISSION_WAIT).is_err() {
-        tracing::warn!(agent = %crate::control::agent_id(&identity.delegation),
-            "the agent's workspaces did not admit it in time");
-    }
+    peer.on_change(wake);
+    peer.send(Cmd::Join(workspace))?;
+    Ok(peer)
 }
 
 fn read_state(file: &Path) -> Result<SupervisorSnapshot, String> {
@@ -644,11 +462,7 @@ fn read_state(file: &Path) -> Result<SupervisorSnapshot, String> {
 /// replaced whole, so a reader never sees half of it.
 fn persist(supervisor: &AgentSupervisor, shared: &Shared, written: &Mutex<String>) {
     let mut last = written.lock_recover();
-    let mut snapshot = supervisor.snapshot();
-    if let Some(dormant) = shared.dormant.get() {
-        snapshot.grants.extend_from_slice(&dormant.grants);
-        snapshot.agents.clone_from(&dormant.agents);
-    }
+    let snapshot = supervisor.snapshot();
     let Ok(text) = serde_json::to_string_pretty(&snapshot) else {
         return;
     };
@@ -667,6 +481,7 @@ mod tests {
 
     use super::*;
     use ed25519_dalek::SigningKey;
+    use std::collections::BTreeMap;
     use tilo_server_protocol::agents::GrantState;
     use tilo_test_env::wait_until;
 
@@ -692,7 +507,6 @@ mod tests {
         let mut host = AgentService::with_clock(
             root.verifying_key().to_bytes(),
             (state.path().to_owned(), test_content(state.path())),
-            crate::ModelChoice::Scripted.make_turns(),
             Arc::new(move || clock.load(Ordering::Relaxed)),
         );
         #[cfg(target_os = "linux")]
@@ -719,7 +533,7 @@ mod tests {
         let expires_at = start.saturating_add(1_500_000_000);
         let changed = Instant::now();
         host.supervisor()
-            .add_grant(crate::control::tests::identity_until(&root, expires_at));
+            .hold(crate::grants::tests::identity_until(&root, expires_at), 1);
         let file = host.state_file();
         wait_until("the new grant's write", || {
             grant_state(&file) == Some(GrantState::Approved)
@@ -753,11 +567,7 @@ mod tests {
     }
 
     fn agent_service(state: &Path) -> AgentService {
-        AgentService::new(
-            [7; 32],
-            (state.to_path_buf(), test_content(state)),
-            crate::ModelChoice::Scripted.make_turns(),
-        )
+        AgentService::new([7; 32], (state.to_path_buf(), test_content(state)))
     }
 
     #[test]
@@ -877,7 +687,7 @@ mod tests {
         let root = SigningKey::from_bytes(&[7; 32]);
         let expires_at = tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000);
         host.supervisor()
-            .add_grant(crate::control::tests::identity_until(&root, expires_at));
+            .hold(crate::grants::tests::identity_until(&root, expires_at), 1);
         host.flush();
 
         // The credential file, and the one content address the workspace
@@ -905,6 +715,6 @@ mod tests {
             .map(|object| object.keys().map(String::as_str).collect())
             .unwrap_or_default();
         fields.sort_unstable();
-        assert_eq!(fields, vec!["agents", "grants"]);
+        assert_eq!(fields, vec!["grants"]);
     }
 }

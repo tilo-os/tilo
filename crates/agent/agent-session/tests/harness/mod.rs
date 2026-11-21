@@ -3,4 +3,3 @@
 
 pub mod hosted;
 pub mod page;
-pub mod script;

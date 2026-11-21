@@ -277,8 +277,8 @@ impl Worker {
         // of it would be when the workspace holds none yet.
         self.open_new(workspace_id, &cluster_id, app.app_id(), Some(&who))
             .map_err(|outcome| match outcome {
-                crate::member::actions::Outcome::Rejected(error) => refused(error),
-                crate::member::actions::Outcome::Failed(failure) => unavailable(failure.message),
+                crate::record_actions::Outcome::Rejected(error) => refused(error),
+                crate::record_actions::Outcome::Failed(failure) => unavailable(failure.message),
             })?;
         let state = self
             .refresh(workspace_id, Needs::Workspace)
@@ -508,8 +508,8 @@ impl Worker {
             )
             .map(|()| wrote)
             .map_err(|outcome| match outcome {
-                crate::member::actions::Outcome::Rejected(error) => refused(error),
-                crate::member::actions::Outcome::Failed(failure) => unavailable(failure.message),
+                crate::record_actions::Outcome::Rejected(error) => refused(error),
+                crate::record_actions::Outcome::Failed(failure) => unavailable(failure.message),
             })
         });
         match saved {

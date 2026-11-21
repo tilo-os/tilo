@@ -12,8 +12,9 @@
 //! - `workspace` (feature `web`) — a short-lived shared workspace: like `dev`, but it
 //!   certifies only the browsers whose pairing codes its operator admits
 //!   (`admit <code>` on stdin) and announces each on stdout.
-//! - `--agents` on `run` and `dev` (feature `agents`) — agents on the host,
-//!   with `--agent-model settings|scripted|openai:<url>|anthropic:<url>|cloud:<url>`.
+//! - `--workspace-documents` on `run` and `dev` (feature `agents`) — the workspaces'
+//!   records and roster agents on the host, with
+//!   `--agent-model settings|scripted|openai:<url>|anthropic:<url>|cloud:<url>`.
 //! - `page-host <origin>` (feature `web`) — print what a site hands its page
 //!   about the host at `origin` (the web entry's `TILO_WEB_HOME_HOST_INFO`).
 //! - `status` — print a snapshot of the running daemon's counters

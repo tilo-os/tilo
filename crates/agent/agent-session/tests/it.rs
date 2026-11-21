@@ -52,8 +52,6 @@ mod chain_listing;
 mod chain_reads;
 #[path = "empty_state_actions.rs"]
 mod empty_state_actions;
-#[path = "host_agents.rs"]
-mod host_agents;
 #[path = "issue_listing.rs"]
 mod issue_listing;
 #[path = "issue_reads.rs"]

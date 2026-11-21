@@ -39,14 +39,8 @@ tilo-feedback-transport = { path = "../../collab/feedback-transport" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }
-# The Settings provider an agent's model is when the host names no other, and
-# the transforms a bot runs.
+# The transforms a program's steps ask its person's model for, as the agent app publishes them.
 agent = { path = "../../../apps/agent" }
-# One agent turn over the workspace's MCP tools: what an agent member works on
-# each task with.
-tilo-agent-turn = { path = "../agent-turn" }
-# The MCP tools a member's turn works through, held in its own process.
-tilo-mcp = { path = "../../runtime/tilo-mcp" }
 # The apps an agent can open in a browser session: those whose manifests declare
 # the web platform.
 activity = { path = "../../../apps/activity" }
@@ -97,7 +91,6 @@ tilo-session-client = { path = "../../session/client", features = ["toolkit"] }
 # The identity layer's device side: the host an agent's session dials, and the signer it holds.
 tilo-server-client = { path = "../../server/tilo-server-client" }
 # A device on the live session is named by its endpoint id.
-iroh.workspace = true
 iroh-base.workspace = true
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
@@ -230,6 +223,9 @@ rustls.workspace = true
 sha2.workspace = true
 bytes.workspace = true
 tilo-test-env = { path = "../../dev/test-env", features = ["tokio"] }
+# The tools a hosted agent's turn works through, asked as a turn asks them.
+tilo-agent-turn = { path = "../agent-turn" }
+tilo-mcp = { path = "../../runtime/tilo-mcp" }
 tokio = { workspace = true, features = ["full"] }
 # Reads the links the host mints back the way a page does.
 tilo-reference = { path = "../../collab/reference" }

@@ -48,7 +48,6 @@ impl Up {
             identity,
             AgentOptions {
                 state_dir: state.join("agents"),
-                model: Arc::new(|| None),
                 catalogue: Some(Arc::new(crate::common::catalogue)),
                 feedback_reviewer: None,
                 shell: None,

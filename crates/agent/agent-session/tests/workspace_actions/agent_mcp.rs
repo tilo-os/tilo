@@ -4,7 +4,6 @@
 //! session as one of the person's devices.
 use super::*;
 use serde_json::{Value, json};
-use tilo_agent_session::ModelChoice;
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;
 use tilo_session_client::Outbox;
@@ -577,7 +576,7 @@ fn terminal_commands(browser: &mut Browser) -> Vec<terminal::resource::Command> 
 fn shelled(shells: &std::path::Path) -> Options {
     Options {
         shell: Some(tilo_server::agents::host_shells(shells.to_path_buf()).unwrap()),
-        ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
+        ..Options::offering(crate::common::catalogue)
     }
 }
 

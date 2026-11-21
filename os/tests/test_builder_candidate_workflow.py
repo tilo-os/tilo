@@ -101,10 +101,10 @@ class BuilderCandidates(unittest.TestCase):
         self.assertNotIn('|| true', script)
         # A filter that selects nothing is a failure too: a regression that moved out of the
         # filter's reach may not leave the check green.
-        self.assertEqual(script.count('--no-tests=fail'), 2)
+        self.assertEqual(script.count('--no-tests=fail'), 1)
         calls = nextest_invocations(script)
-        self.assertEqual(len(calls), 2, 'the canary runs the session client and the agent session')
-        peer, agent = calls
+        self.assertEqual(len(calls), 1, 'the canary runs the session client')
+        [peer] = calls
         # The session client's browser regressions are modules of its one test binary (`it`,
         # whose `#[path]` keeps each in its own file), so the canary names the modules there.
         # Whole modules, never single tests: a regression added to one runs without the canary
@@ -118,21 +118,8 @@ class BuilderCandidates(unittest.TestCase):
                 self.assertIn(f'#[path = "{module}.rs"]\nmod {module};', binary)
                 tests = (ROOT / f'crates/session/client/tests/{module}.rs').read_text()
                 self.assertRegex(tests, r'#\[tokio::test|#\[test\]')
-        # The agent session's browser regressions are single tests of the `host_agents`
-        # module of its one test binary (`it`), so those are named.
-        self.assertEqual(agent[:2], ('tilo-agent-session', 'it'))
-        names = ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
-                 'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
-                 'the_creator_and_a_joined_page_both_see_every_task_live')
-        self.assertEqual(filterset_terms(agent[2]),
-                         {('test', f'=host_agents::{name}') for name in names})
-        binary = (ROOT / 'crates/agent/agent-session/tests/it.rs').read_text()
-        self.assertIn('#[path = "host_agents.rs"]\nmod host_agents;', binary)
-        source = (ROOT / 'crates/agent/agent-session/tests/host_agents.rs').read_text()
-        for name in names:
-            self.assertIn(f'async fn {name}()', source)
         # Execute the canary's own shell, intercepting only the browser itself, node and the
-        # expensive wrapper. Neither a peer failure nor an agent failure may pass.
+        # expensive wrapper. A peer failure may not pass.
         stubs = textwrap.dedent(f'''\
             set -euo pipefail
             die() {{ echo "$*" >&2; exit 1; }}
@@ -146,7 +133,7 @@ class BuilderCandidates(unittest.TestCase):
             (work / 'tools/ci/nextest.sh').write_text(
                 'printf "%s\\n" "$*" >> calls\n'
                 '[[ "$*" != *"$FAIL_PACKAGE"* ]]\n')
-            for failure in ('none', 'tilo-session-client', 'tilo-agent-session'):
+            for failure in ('none', 'tilo-session-client'):
                 with self.subTest(failure=failure):
                     (work / 'calls').unlink(missing_ok=True)
                     result = subprocess.run(['bash', '-c', stubs + script], cwd=work,
@@ -155,7 +142,7 @@ class BuilderCandidates(unittest.TestCase):
                                             text=True, capture_output=True)
                     self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
                     calls = (work / 'calls').read_text().splitlines()
-                    self.assertEqual(len(calls), 1 if failure == 'tilo-session-client' else 2)
+                    self.assertEqual(len(calls), 1)
                     for call in calls:
                         self.assertIn('cargo nextest run --locked --profile ci --no-tests=fail', call)
             with self.subTest(failure='another browser'):

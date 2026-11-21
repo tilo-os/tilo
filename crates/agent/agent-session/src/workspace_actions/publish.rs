@@ -432,7 +432,7 @@ pub(super) fn changes_of(mutation: &DocumentMutation) -> Vec<String> {
 impl super::WorkspaceActions {
     /// Write the changes actions make for this device's agents through the
     /// agents' own sessions, so each is signed as the agent it was made for.
-    pub fn attach_agent_sessions(&self, sessions: crate::control::AgentSessions) {
+    pub fn attach_agent_sessions(&self, sessions: crate::grants::AgentSessions) {
         let _ = self.shared.agent_sessions.set(sessions);
     }
 }

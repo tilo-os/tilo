@@ -93,7 +93,7 @@ impl Worker {
             .get(app)
             .map(|definition| definition.title().to_owned())
             .ok_or_else(unknown)?;
-        let layout = crate::member::desktop_route(named);
+        let layout = crate::workspace_documents::desktop_route(named);
         // Read, not acted on: a layout not here yet is asked for below.
         let state = self
             .refresh(

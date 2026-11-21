@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_agent_session::{AgentService, AppCatalogue, FeedbackReviewer, MakeTurns, ModelChoice};
+use tilo_agent_session::{AgentService, AppCatalogue, FeedbackReviewer};
 use tilo_server::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
@@ -30,21 +30,20 @@ use tilo_user_identity::{CertificationPolicy, RevocationList, issue_device_cert}
 
 use crate::support::Device;
 
-/// A host serving its workspaces, with the agent supervisor as its
-/// app action server.
+/// A host serving its workspaces' documents, its roster agents' grants and its people's events.
 pub struct Hosted {
     pub server: Server,
     pub web: WebHandle,
     pub agents: AgentService,
-    pub roster: Option<tilo_server::agents::RosterServices>,
+    pub roster: tilo_server::agents::RosterServices,
     /// The host's own device key, whose records the workspace holds too.
     pub device: [u8; 32],
 }
 
-/// What a host is set up with: the model its agents work with, the catalogue
-/// its workspace actions open records in, and the page it serves.
+/// What a host is set up with: the catalogue its workspace actions open records in, and the
+/// page it serves.
+#[derive(Default)]
 pub struct Options {
-    pub model: MakeTurns,
     pub catalogue: Option<Arc<dyn Fn() -> AppCatalogue + Send + Sync>>,
     /// The page's entry point, when the host serves one.
     pub web_entry: Option<String>,
@@ -59,37 +58,12 @@ pub struct Options {
     /// Serve the web routes as plain HTTP on loopback too, as a client that
     /// trusts no development certificate reaches them.
     pub plain: bool,
-    /// Start the services shared with the workspace roster runner.
-    pub roster: bool,
-    /// Serve roster grants with standalone task agents disabled.
-    pub roster_only: bool,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            model: ModelChoice::Scripted.make_turns(),
-            catalogue: None,
-            web_entry: None,
-            allowed_origins: Vec::new(),
-            feedback_reviewer: None,
-            shell: None,
-            browsers: None,
-            plain: false,
-            roster: false,
-            roster_only: false,
-        }
-    }
 }
 
 impl Options {
-    /// A host offering `catalogue`, its agents working with `model`.
-    pub fn offering(
-        catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static,
-        model: ModelChoice,
-    ) -> Self {
+    /// A host offering `catalogue`.
+    pub fn offering(catalogue: impl Fn() -> AppCatalogue + Send + Sync + 'static) -> Self {
         Self {
-            model: model.make_turns(),
             catalogue: Some(Arc::new(catalogue)),
             ..Self::default()
         }
@@ -121,28 +95,17 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
     };
     let agents = tilo_server::agents::AgentOptions {
         state_dir: state.join("agents"),
-        model: options.model,
         catalogue: options.catalogue,
         feedback_reviewer: options.feedback_reviewer,
         shell: options.shell,
         browsers: options.browsers,
     };
-    let (server, agents, roster) = if options.roster || options.roster_only {
-        let (server, agents, roster) = if options.roster_only {
-            tilo_server::agents::start_workspace_documents(cfg, identity, agents).await
-        } else {
-            tilo_server::agents::start_with_roster(cfg, identity, agents).await
-        }
-        .unwrap();
-        assert!(roster.events.is_some());
-        assert!(roster.initiative.is_some());
-        (server, agents, Some(roster))
-    } else {
-        let (server, agents) = tilo_server::agents::start(cfg, identity, agents)
+    let (server, agents, roster) =
+        tilo_server::agents::start_workspace_documents(cfg, identity, agents)
             .await
             .unwrap();
-        (server, agents, None)
-    };
+    assert!(roster.events.is_some());
+    assert!(roster.initiative.is_some());
     let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),

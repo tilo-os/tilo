@@ -179,13 +179,7 @@ pub struct WebArgs {
 #[cfg(feature = "agents")]
 #[derive(clap::Args, Clone, Debug)]
 pub struct AgentArgs {
-    /// Run agents on this host: pages request grants (approved with their
-    /// delegation on a root-holding device), spawn agents and steer them.
-    /// Grants and agents are kept under the state directory and resume
-    /// when the host restarts.
-    #[arg(long)]
-    pub agents: bool,
-    /// How agents plan natural-language tasks: `settings` (the provider
+    /// The model the workspaces' agents fall back on for a keeper who linked none: `settings` (the provider
     /// selected in Settings, through tilo-model-gateway), `scripted` (a
     /// deterministic keyword planner for tests and demos),
     /// `openai:<base url>` (an OpenAI-compatible chat-completions endpoint),
@@ -207,8 +201,7 @@ pub struct AgentArgs {
     /// Serve workspace resources to pages and host the workspace's roster agents:
     /// the host runs an action of a workspace record for whoever the workspace's
     /// policy lets ask, such as a member linking their own account on the
-    /// workspace's Discord from their profile card. Combine with `--agents`
-    /// to also serve the approval supervisor.
+    /// workspace's Discord from their profile card.
     #[arg(long)]
     pub workspace_documents: bool,
 }
@@ -216,7 +209,7 @@ pub struct AgentArgs {
 #[cfg(feature = "agents")]
 impl AgentArgs {
     /// The model the agents this server runs for its workspaces fall back on: `--agent-model`,
-    /// else `$TILO_AGENT_MODEL`, read as `--agents` reads it, else `settings` — the provider chosen
+    /// else `$TILO_AGENT_MODEL`, else `settings` — the provider chosen
     /// in this server's own Settings, read again for every turn. It answers only for an agent
     /// whose keeper linked no provider of their own: one the keeper adds in Settings, under Agent
     /// models, is kept with their key in their own store on this server and answers their
@@ -253,39 +246,11 @@ impl AgentArgs {
         &self,
         state_dir: PathBuf,
     ) -> anyhow::Result<Option<tilo_server::agents::AgentOptions>> {
-        if !self.agents && !self.workspace_documents {
+        if !self.workspace_documents {
             return Ok(None);
         }
-        let model: tilo_agent_session::MakeTurns = if self.agents {
-            let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-            let spec = self
-                .model
-                .clone()
-                .or_else(|| env("TILO_AGENT_MODEL"))
-                .unwrap_or_else(|| "settings".into());
-            let name = self
-                .model_name
-                .clone()
-                .or_else(|| env("TILO_AGENT_MODEL_NAME"));
-            let model = tilo_agent_session::ModelChoice::parse(
-                &spec,
-                name.as_deref(),
-                tilo_agent_session::ApiKey::from_env(
-                    env("TILO_AGENT_API_KEY"),
-                    env("TILO_AGENT_API_KEY_FILE"),
-                ),
-            )
-            .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?;
-            tracing::info!(model = %model.describe(), state = %state_dir.display(), "agents on this host");
-            model.make_turns()
-        } else {
-            // Only approved signing peers are restored under --workspace-documents.
-            // The roster runner selects its model separately, as it does with both flags.
-            std::sync::Arc::new(|| None)
-        };
         Ok(Some(tilo_server::agents::AgentOptions {
             state_dir,
-            model,
             catalogue: None,
             feedback_reviewer: None,
             shell: None,
@@ -296,7 +261,7 @@ impl AgentArgs {
     }
 }
 
-/// The server, with its agents when `--agents` asked for them.
+/// The server, with its roster agents when `--workspace-documents` asked for them.
 pub struct HostedServer {
     pub server: Server,
     #[cfg(feature = "agents")]
@@ -327,7 +292,7 @@ impl HostedServer {
         }
     }
 
-    /// Stop the agents (they resume on the next start), then the server.
+    /// Stop the roster agents (they resume on the next start), then the server.
     pub async fn shutdown(self) {
         self.finish_turns().await;
         #[cfg(feature = "agents")]
@@ -349,9 +314,8 @@ fn announce_web_entry(cfg: &mut tilo_server::ServerConfig, args: &WebArgs) {
     }
 }
 
-/// Start the server; with `--agents`, with its agent supervisor as the
-/// app action server and the agents kept under `state_root/agents`; with
-/// `--workspace-documents` alone, serving records, events and roster agents.
+/// Start the server; with `--workspace-documents`, serving records, events and roster agents,
+/// their grants kept under `state_root/agents`.
 ///
 /// # Errors
 /// The server did not start, or the agent state could not be read.
@@ -409,33 +373,17 @@ pub async fn start_server_lending(
         let shells = tilo_server::agents::host_shells(state_root.join("shells"))
             .map_err(anyhow::Error::msg)?;
         options.shell = Some(std::sync::Arc::clone(&shells));
-        if args.agents.workspace_documents {
-            let browsers = options.browsers.clone();
-            let start = if args.agents.agents {
-                tilo_server::agents::start_with_roster(cfg, identity, options).await
-            } else {
-                tilo_server::agents::start_workspace_documents(cfg, identity, options).await
-            };
-            let (server, agents, roster) =
-                start.context("start the server with workspace documents and roster agents")?;
-            let (draining, host_agents) =
-                start_roster(&server, &args.agents, roster, shells, browsers);
-            return Ok(HostedServer {
-                server,
-                agents: Some(agents),
-                host_agents,
-                draining,
-                _lock: lock,
-            });
-        }
-        let (server, agents) = tilo_server::agents::start(cfg, identity, options)
-            .await
-            .context("start the server with agents")?;
+        let browsers = options.browsers.clone();
+        let (server, agents, roster) =
+            tilo_server::agents::start_workspace_documents(cfg, identity, options)
+                .await
+                .context("start the server with workspace documents and roster agents")?;
+        let (draining, host_agents) = start_roster(&server, &args.agents, roster, shells, browsers);
         return Ok(HostedServer {
             server,
             agents: Some(agents),
-            host_agents: None,
-            draining: None,
+            host_agents,
+            draining,
             _lock: lock,
         });
     }
@@ -865,11 +813,7 @@ const APPROVER_SETTLED: Duration = Duration::from_secs(30);
 /// that fails (the network changed under it, a path closed, the host was
 /// slow to answer) is logged and reopened with `connect` after a backoff;
 /// it never ends the host.
-async fn approve_forever<C, F>(
-    mut connect: C,
-    root: &SigningKey,
-    approve_agents: bool,
-) -> std::convert::Infallible
+async fn approve_forever<C, F>(mut connect: C, root: &SigningKey) -> std::convert::Infallible
 where
     C: FnMut() -> F,
     F: std::future::Future<Output = anyhow::Result<tilo_server_client::Approver>>,
@@ -878,7 +822,7 @@ where
     loop {
         let opened = tokio::time::Instant::now();
         let error = match connect().await {
-            Ok(approver) => match approve_every_browser(approver, root, approve_agents).await {
+            Ok(approver) => match approve_every_browser(approver, root).await {
                 Err(error) => error,
                 Ok(never) => match never {},
             },
@@ -909,13 +853,11 @@ fn loopback_addr(server: &Server) -> iroh::EndpointAddr {
     addr
 }
 
-/// Certify every browser device that asks, as the dev user root, approve
-/// standalone agent grants when workspace documents are disabled, and allow
-/// once each action an agent asks its person about, until the session fails.
+/// Certify every browser device that asks, as the dev user root, and allow once each action an
+/// agent asks its person about, until the session fails.
 async fn approve_every_browser(
     mut approver: tilo_server_client::Approver,
     root: &SigningKey,
-    approve_agents: bool,
 ) -> anyhow::Result<std::convert::Infallible> {
     loop {
         for asked in approver
@@ -941,46 +883,11 @@ async fn approve_every_browser(
             .await
             .context("list agent proposals")?;
         for pending in pending {
-            if let Some(agent) = agents
+            // An agent's grant is its keeper's to approve, on their own device.
+            if agents
                 .iter()
-                .find(|agent| agent.request_digest == pending.request_digest)
+                .any(|agent| agent.request_digest == pending.request_digest)
             {
-                if !approve_agents {
-                    continue;
-                }
-                let now = tilo_clock::unix_now_ns();
-                let decision = issue_device_cert(
-                    &pending.request,
-                    root,
-                    &CertificationPolicy::agent(),
-                    &RevocationList::new(),
-                    now,
-                )
-                .ok()
-                .zip(
-                    agent
-                        .proposal
-                        .sign(root, pending.request.device_public_key, now)
-                        .ok(),
-                )
-                .map_or(
-                    tilo_server::certify::ApproverDecision::Deny,
-                    |(cert, delegation)| tilo_server::certify::ApproverDecision::IssueDelegate {
-                        cert,
-                        delegation,
-                    },
-                );
-                tracing::info!(
-                    agent = %agent.proposal.label,
-                    workspaces = ?agent.proposal.scope.workspaces,
-                    apps = ?agent.proposal.scope.apps,
-                    pairing_code = %pending.pairing_code,
-                    "approving an agent grant"
-                );
-                approver
-                    .decide(pending.request_digest, decision)
-                    .await
-                    .context("answer an agent grant")?;
                 continue;
             }
             let decision = issue_device_cert(
@@ -1144,12 +1051,8 @@ pub async fn dev(
             .await?)
         }
     };
-    #[cfg(feature = "agents")]
-    let approve_agents = !args.web.agents.workspace_documents;
-    #[cfg(not(feature = "agents"))]
-    let approve_agents = false;
     tokio::select! {
-        never = approve_forever(connect, &root, approve_agents) => match never {},
+        never = approve_forever(connect, &root) => match never {},
         result = shutdown => result?,
     }
     drop(web);
@@ -1740,7 +1643,7 @@ mod tests {
                     .await?)
                 }
             };
-            approve_forever(connect, &root, false).await
+            approve_forever(connect, &root).await
         });
 
         let first = sessions.recv().await.unwrap();

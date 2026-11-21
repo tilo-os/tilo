@@ -11,7 +11,6 @@
 use super::{Arc, Device, DeviceCapabilities, Hosted, Options, SigningKey, enrol};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use tilo_agent_session::ModelChoice;
 use tilo_api::{Config, Server, store::Store};
 use tilo_server_protocol::directory::Listing;
 use tilo_server_protocol::workspaces::Role;
@@ -147,7 +146,7 @@ async fn start(issuer: &str, shelled: bool) -> OnServer {
             plain: true,
             shell: held_shells.clone(),
             web_entry: Some(format!("http://127.0.0.1:{}/", site.port())),
-            ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
+            ..Options::offering(crate::common::catalogue)
         },
     )
     .await;
@@ -251,7 +250,7 @@ impl OnServer {
                 plain: true,
                 shell: shell.clone(),
                 web_entry: Some(web_entry.clone()),
-                ..Options::offering(crate::common::catalogue, ModelChoice::Scripted)
+                ..Options::offering(crate::common::catalogue)
             },
         )
         .await;
