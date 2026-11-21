@@ -238,6 +238,7 @@ if [ -z "${TILO_COMPILED_DEV:-}" ]; then
     -v "$TILO_OUTPUT/compiled-dev:/compiled-dev" \
     -e CARGO_HOME=/cargo-home -e CARGO_TARGET_DIR=/build-target -e SCCACHE_DIR=/sccache -e RUSTC_WRAPPER=sccache \
     -e TILO_DEV_RUST_LTO="${TILO_DEV_RUST_LTO:-thin}" \
+    -e TILO_CARGO_FRESHNESS="${TILO_CARGO_FRESHNESS:-content}" \
     -e CARGO_BUILD_JOBS="${TILO_DEV_CARGO_BUILD_JOBS:-$(cargo_build_jobs 4)}" \
     "$builder" bash os/image/compile.sh --dev /compiled-dev
   TILO_COMPILED_DEV="$TILO_OUTPUT/compiled-dev"
