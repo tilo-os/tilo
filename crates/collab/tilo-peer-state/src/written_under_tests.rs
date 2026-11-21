@@ -273,7 +273,7 @@ tilo_test_env::scenario! {
 
         take_in(&mut copy, &mut governor, false);
         assert_eq!(copy.owner(), guest.user_public_key);
-        sent(&mut copy, &owner, history.clone()).expect("its history from before the hand-over");
+        sent(&mut copy, &owner, history).expect("its history from before the hand-over");
         assert_eq!(value(&copy), "sent");
     }
 
