@@ -62,7 +62,10 @@ export const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.fra
 // from the keyboard (Meta on a Mac, as the desktop reads it).
 export const canvasTopLeft = tab => tab.evaluate(`(() => {
   const rect = globalThis.tiloMount?.canvas?.getBoundingClientRect();
-  return JSON.stringify(rect ? {x: rect.left, y: rect.top, width: rect.width, height: rect.height} : null);
+  // A page the server renders has no canvas: what its elements' boxes are is
+  // already the viewport's, so the origin is the window's own.
+  return JSON.stringify(rect ? {x: rect.left, y: rect.top, width: rect.width, height: rect.height}
+    : {x: 0, y: 0, width: window.innerWidth, height: window.innerHeight});
 })()`);
 export const click = async (tab, x, y) => {
   // One gesture's three events, sent together: a press acknowledged one frame
@@ -98,6 +101,17 @@ export const found = (name, nth = 0) => `(() => {
   const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
   const root = globalThis.tiloMount?.state()?.semantics?.root;
   if (root) walk(root);
+  // A page the server renders: a control is the element that carries the name
+  // a person reaches it by, and its box is what the browser laid out.
+  if (!root) {
+    const page = document.getElementById('tilo-page');
+    for (const el of page?.querySelectorAll('[aria-label], button, a, input, textarea, [contenteditable]') ?? []) {
+      const box = el.getBoundingClientRect();
+      if (!box.width || !box.height) continue;
+      found.push({name: el.getAttribute('aria-label') ?? (el.innerText || '').trim().split('\n')[0],
+        bounds: {x0: box.x, y0: box.y, x1: box.right, y1: box.bottom}});
+    }
+  }
   const matches = found.filter(n => n.name === ${JSON.stringify(name)} && n.bounds);
   const nth = ${nth};
   const match = matches[nth < 0 ? matches.length + nth : nth];
@@ -688,6 +702,16 @@ export const TREE_TEXT = `(() => {
   const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
   const root = globalThis.tiloMount?.state()?.semantics?.root;
   if (root) walk(root);
+  // A page the server renders has no semantic tree: what it shows are its own
+  // elements, their words and the names they answer to.
+  if (!root) {
+    const page = document.getElementById('tilo-page');
+    if (page) {
+      out.push(...(page.innerText || '').split(/\n+/).filter(Boolean));
+      for (const field of page.querySelectorAll('input,textarea')) if (field.value) out.push(field.value);
+      for (const named of page.querySelectorAll('[aria-label]')) out.push(named.getAttribute('aria-label'));
+    }
+  }
   return out.join('\\n');
 })()`;
 

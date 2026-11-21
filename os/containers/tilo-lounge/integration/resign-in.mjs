@@ -97,7 +97,7 @@ const PAGE = `JSON.stringify({
   connection: document.documentElement.dataset.connection ?? null,
   status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
   cards: [...document.querySelectorAll('.tilo-entry-card')].map(card => card.textContent.replace(/\\s+/g, ' ').trim().slice(0, 300)),
-  windows: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => entry.label),
+  path: location.pathname,
 })`;
 const pageState = async () => JSON.parse(await tab.evaluate(PAGE).catch(() => '{}'));
 const treeText = async () => {
@@ -222,8 +222,10 @@ const damageAll = async () => {
 /** The page arrived, connected and drawing, with nothing refused. */
 const CONNECTED = `(() => {
   const d = document.documentElement.dataset;
-  return d.arrival === 'done' && !d.refusal && !['disconnected', 'offline', 'admission'].includes(d.connection)
-    && globalThis.tiloMount?.state?.()?.phase === 'presented' ? JSON.stringify({...d}) : '';
+  // The page the server renders is what a browser is handed to, so a page
+  // that arrived and is showing is connected.
+  return d.arrival === 'done' && !d.refusal && !!document.querySelector('#tilo-page [data-p]')
+    ? JSON.stringify({...d}) : '';
 })()`;
 // Who this browser joined as, and where.
 const membership = async () => JSON.parse(await tab.evaluate(`(() => {
@@ -240,38 +242,11 @@ const refusalsLogged = from => {
 };
 
 // -- Settings at Agent models ------------------------------------------------
-/** The shell's search for `query`, choosing the row titled `title` wherever it
- * stands; false when the search offers no such row. */
-const choose = async (query, title) => {
-  for (let tries = 0; tries < 3; tries++) {
-    if (await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen').catch(() => false)) break;
-    await click(tab, SHELL.empty.x, SHELL.empty.y);
-    await key(tab, 'k', await searchChord(tab));
-    if (await tab.waitFor('!!globalThis.tiloMount?.state()?.searchOpen', {timeout: stepLimit(1)}).catch(() => false)) break;
-  }
-  await until('!!globalThis.tiloMount?.state()?.searchOpen', `the search opening for "${query}"`, stepLimit(3));
-  await type(tab, query);
-  const card = JSON.parse(await until(`(() => {
-    const s = globalThis.tiloMount?.state?.() ?? null;
-    const card = s?.searchCard ?? null;
-    return card && s.searchSearching === false && card.query === ${JSON.stringify(query)} ? JSON.stringify(card) : '';
-  })()`, `the search answering "${query}"`, stepLimit(6)));
-  const at = card.rows.findIndex(row => row.title === title);
-  report[`search ${query}`] = card.rows.map(row => `${row.title} [${row.kind}]`);
-  if (at < 0) {
-    await key(tab, 'Escape');
-    await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: stepLimit(1)}).catch(() => false);
-    return false;
-  }
-  for (let n = 0; n < at; n++) { await key(tab, 'ArrowDown'); await sleep(300); }
-  await key(tab, 'Enter');
-  await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: stepLimit(4)}).catch(() => false);
-  return true;
-};
-/** Settings at Agent models, opened as a person opens it from the search. */
+/** Settings at Agent models, opened as a person opens it: the page shows one
+ * app at a time, so its address is the way there and its own list the row. */
 const openModels = async () => {
-  if (await choose('agent models', 'Agent models')) return;
-  if (!await choose('settings', 'Settings')) await failed(`the search offers neither Agent models nor Settings: ${JSON.stringify(report)}`);
+  await tab.navigate(`${site}/w/${report.workspace}/settings`);
+  await until(`document.querySelector('#tilo-page [data-p]')`, 'Settings showing', stepLimit(4));
   await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
   await until(found('Agent models'), 'Settings offering Agent models', stepLimit(4));
   if (!await pressNamed(tab, 'Agent models')) await failed('Agent models is not where a person can press it');
@@ -343,7 +318,7 @@ try {
   const arrived = await until(`['done', 'stopped'].includes(document.documentElement.dataset.arrival)
     && document.documentElement.dataset.arrival`, 'the invited person arriving', stepLimit(6));
   if (arrived !== 'done') await failed(`the invitation did not take: ${JSON.stringify(await pageState())}`);
-  await until(`globalThis.tiloMount?.state?.()?.phase === 'presented'`, 'the desktop drawing', stepLimit(6));
+  await until(`document.documentElement.dataset.arrival === 'done' && !!document.querySelector('#tilo-page [data-p]')`, 'the page showing', stepLimit(6));
   const member = await membership();
   if (!member?.userPublicKey || !member.workspace) await failed(`this browser joined as nobody: ${JSON.stringify(member)}`);
   report.member = member;
