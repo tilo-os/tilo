@@ -443,12 +443,36 @@ pub struct Outgoing<'a> {
     pub retention: neighbour_wire::Retention,
 }
 
+/// What a connection sent of one of this device's writes, kept until its host answers it: the
+/// route it was written to and the changes it carries, which its host's refusal names wherever
+/// ownership has moved the write since.
+#[derive(Clone, Debug)]
+pub struct SentWrite {
+    pub route: DocumentRoute,
+    pub changes: Vec<[u8; 32]>,
+}
+
+impl SentWrite {
+    /// What `bytes`, one write of this device's ownership, was written to, and the changes it
+    /// carries; `None` for bytes that name no document.
+    #[must_use]
+    pub fn of(bytes: &[u8]) -> Option<Self> {
+        let message = neighbour_wire::NeighbourMsg::decode(bytes).ok()?;
+        Some(Self {
+            route: DocumentRoute::of_message(&message)?,
+            changes: tilo_peer_state::document_frame::claimed_changes(bytes),
+        })
+    }
+}
+
 /// What one connection to a workspace's host has sent of this device's ownership of it: each
 /// write leaves once per connection, oldest first, and stays held until the host's
 /// answer retires it. A new connection starts with a new one, and sends everything again.
 #[derive(Default)]
 pub struct Sending {
     sent: std::collections::BTreeSet<[u8; 32]>,
+    /// What each write sent was written to, for its host's answer to name.
+    sent_writes: BTreeMap<[u8; 32], SentWrite>,
     /// How many writes held the last pass held back: they may not leave now.
     held: usize,
     /// Writes the host was not ready for: each goes again once the host says the workspace is
@@ -522,16 +546,21 @@ impl Sending {
     ) -> bool {
         let queued: std::collections::BTreeSet<_> = queued.collect();
         self.sent.retain(|id| queued.contains(id));
+        self.sent_writes.retain(|id, _| queued.contains(id));
         self.awaiting_ready.retain(|id| queued.contains(id));
         for write in writes {
             let id = write.id;
             if self.sent.contains(&id) || self.awaiting_ready.contains(&id) {
                 continue;
             }
+            let named = SentWrite::of(write.bytes);
             if !send(write) {
                 return false;
             }
             self.sent.insert(id);
+            if let Some(named) = named {
+                self.sent_writes.insert(id, named);
+            }
         }
         true
     }
@@ -551,12 +580,12 @@ impl Sending {
         waited
     }
 
-    /// The write this connection sent whose id begins with `prefix`, taken out of what it sent:
-    /// the host answered it.
-    pub fn answered(&mut self, prefix: &[u8]) -> Option<[u8; 32]> {
+    /// The write this connection sent whose id begins with `prefix`, taken out of what it sent,
+    /// with what it was written to: the host answered it.
+    pub fn answered(&mut self, prefix: &[u8]) -> Option<([u8; 32], Option<SentWrite>)> {
         let id = *self.sent.iter().find(|id| id.starts_with(prefix))?;
         self.sent.remove(&id);
-        Some(id)
+        Some((id, self.sent_writes.remove(&id)))
     }
 }
 
@@ -627,8 +656,11 @@ mod tests {
                 &mut count,
             );
             assert_eq!(sent, 1);
-            assert_eq!(sending.answered(&[3; 16]), Some([3; 32]));
-            assert_eq!(sending.answered(&[3; 16]), None, "an answer is taken once");
+            assert_eq!(
+                sending.answered(&[3; 16]).map(|(id, _)| id),
+                Some([3; 32])
+            );
+            assert!(sending.answered(&[3; 16]).is_none(), "an answer is taken once");
         }
     }
 
@@ -674,7 +706,10 @@ mod tests {
         };
         let queued = || std::iter::once([4; 32]);
         sending.pass(queued(), std::iter::once(write(4)), count);
-        assert_eq!(sending.answered(&[4; 16]), Some([4; 32]));
+        assert_eq!(
+            sending.answered(&[4; 16]).map(|(id, _)| id),
+            Some([4; 32])
+        );
         // Not ready: it waits, still held, and is not sent meanwhile.
         sending.send_once_ready([4; 32]);
         sending.pass(queued(), std::iter::once(write(4)), count);

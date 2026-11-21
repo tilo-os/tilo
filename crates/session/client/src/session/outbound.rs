@@ -94,6 +94,21 @@ fn within(scope: Option<&BTreeSet<WorkspaceId>>, route: &DocumentRoute) -> bool 
     })
 }
 
+/// What became of a write this session handed to its device's ownership
+/// ([`Task::publish_request`]).
+enum Publishing {
+    /// Ownership carries it, and its host answers for it.
+    Owned,
+    /// Its record is not here yet, or this device has not signed it: it is kept, and goes when
+    /// what it waits for comes.
+    Waiting,
+    /// Its record's history is full: it is kept as a signed write, and goes once the record is
+    /// compacted.
+    History,
+    /// The workspace refused it for good: it is never saved.
+    Refused(WriteRefusal),
+}
+
 impl Task {
     /// `route` holds new writes of this device, held as the session was told of them: to commit
     /// to its replica sealed with the route's keys ([`Self::commit_held`]). Never in the clear:
@@ -228,7 +243,17 @@ impl Task {
                 readers: None,
             },
         };
-        self.publish_request(route, workspace, request);
+        match self.publish_request(route, workspace, request) {
+            Publishing::Refused(refusal) => {
+                let refused = BTreeMap::from([(route.clone(), refusal.to_string())]);
+                self.note_refused(route, &refusal);
+                self.release_barriers(&refused);
+            }
+            // Its record's history is full: it stays a signed write, tried again as the turn goes
+            // on.
+            Publishing::History => self.note_history(route),
+            Publishing::Owned | Publishing::Waiting => {}
+        }
     }
 
     /// Commit the signed writes still waiting for what they need, in the turn.
@@ -237,24 +262,47 @@ impl Task {
             return;
         }
         let waiting = std::mem::take(&mut self.pending_signed);
+        let mut refused = BTreeMap::new();
+        let mut changed = false;
         for (route, requests) in waiting {
             let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
                 continue;
             };
             for request in requests {
-                self.publish_request(&route, workspace, request);
+                match self.publish_request(&route, workspace, request) {
+                    // Refused for good: what was written after it goes with it.
+                    Publishing::Refused(refusal) => {
+                        self.note_refused(&route, &refusal);
+                        refused.insert(route.clone(), refusal.to_string());
+                        changed = true;
+                        break;
+                    }
+                    // Its record's history is full: kept as a signed write, and tried again as
+                    // the turn goes on.
+                    Publishing::History => self.note_history(&route),
+                    // What it waited for came: ownership carries it now.
+                    Publishing::Owned => changed = true,
+                    // Still waiting for its record or its signature.
+                    Publishing::Waiting => {}
+                }
             }
+        }
+        if changed {
+            // A barrier this route kept waiting goes on to what ownership now carries, or hears
+            // the refusal; one still waiting on it keeps waiting.
+            self.release_barriers(&refused);
         }
     }
 
     /// Take `request` into this device's ownership: the op as it was signed, once, answered for
-    /// by the host as any write of this device's is. Answers whether ownership took it now.
+    /// by the host as any write of this device's is. Answers what became of it: ownership carries
+    /// it now, it waits kept for what it needs, or the workspace refused it for good.
     fn publish_request(
         &mut self,
         route: &DocumentRoute,
         workspace: tilo_desktop_model::WorkspaceId,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> bool {
+    ) -> Publishing {
         let now = crate::clock::system_time(tilo_clock::unix_now_ns());
         match self
             .replicas
@@ -262,13 +310,14 @@ impl Task {
             .commit_admitted(workspace, vec![request.clone()], now)
         {
             Ok(committed) => {
-                if committed.is_empty() {
-                    return false;
+                if !committed.is_empty() {
+                    self.owes(route);
+                    self.landed(route, Some(self.config.cert.device_public_key));
+                    self.count_ownership();
                 }
-                self.owes(route);
-                self.landed(route, Some(self.config.cert.device_public_key));
-                self.count_ownership();
-                true
+                // What ownership already carried is carried still: either way it answers for the
+                // write, and waits for the host's answer to it.
+                Publishing::Owned
             }
             // What it waits for is still coming: its record here, or a signature.
             Err(refusals @ (WriteRefusal::Waiting(_) | WriteRefusal::Unsigned(_))) => {
@@ -278,21 +327,31 @@ impl Task {
                     .entry(route.clone())
                     .or_default()
                     .push(request);
-                false
+                Publishing::Waiting
+            }
+            // Its record's history is full: it waits, kept, for the record to be compacted.
+            Err(refusal @ WriteRefusal::HistoryFull { .. }) => {
+                tracing::debug!(app = %route.app_id, record = %route.document, %refusal,
+                    "a signed write waits for its record's history to be compacted");
+                self.pending_signed
+                    .entry(route.clone())
+                    .or_default()
+                    .push(request);
+                Publishing::History
             }
             Err(refusal) => {
                 tracing::warn!(app = %route.app_id, record = %route.document, %refusal,
                     "the workspace refused a write of this device for good");
-                self.fail("write-refused", refusal.to_string());
-                false
+                Publishing::Refused(refusal)
             }
         }
     }
 
     /// Draft, seal, sign and admit `mutation` of `route` through this device's holder, then
     /// publish the signed op it answered ([`Self::publish_request`]). Answers `None` while the
-    /// write waits for its record's keys or for the record it changes, so it stays held; a write
-    /// the workspace refuses for good is answered with why, and is never kept.
+    /// write waits for its record's keys, so it stays held; a write published waits in this
+    /// device's ownership, or as a signed write for its record or a signature; a write the
+    /// workspace refuses for good is answered with why, and is never kept.
     ///
     /// A change needs the record it changes. The keys of a record this device opened can come
     /// before the record does, and a change drafted then would be refused and let go, while the
@@ -349,24 +408,27 @@ impl Task {
                 let entry = tilo_peer_state::owner::outgoing_bytes(&request)
                     .ok()
                     .map(|bytes| tilo_server_protocol::compaction::entry_id(&bytes));
-                if self.publish_request(route, workspace, request)
-                    && let Some(entry) = entry
-                {
-                    // What this device publishes, its own replica holds.
-                    self.note_delivered(route, &[entry]);
+                match self.publish_request(route, workspace, request) {
+                    // Once published, what this device's replica holds goes with it.
+                    Publishing::Owned => {
+                        if let Some(entry) = entry {
+                            self.note_delivered(route, &[entry]);
+                        }
+                        Some(Ok(()))
+                    }
+                    // Kept until its record or this device's signature comes: the route stays
+                    // one this session waits on, so a barrier asked after it waits too.
+                    Publishing::Waiting => Some(Ok(())),
+                    // Kept as a signed write until its record is compacted: the route stays one
+                    // this session waits on, so a barrier asked after it waits too.
+                    Publishing::History => {
+                        self.note_history(route);
+                        Some(Ok(()))
+                    }
+                    Publishing::Refused(refusal) => Some(self.refused_write(route, &refusal)),
                 }
-                Some(Ok(()))
             }
-            Err(WriteRefusal::HistoryFull { .. }) => {
-                tracing::warn!(app = %route.app_id, record = %route.document,
-                    "writes wait for their record's history to be compacted");
-                self.keep_for(route, Waits::History);
-                self.fail(
-                    RECORD_FULL,
-                    "This record is too large to share your latest changes. They are kept on this device.",
-                );
-                None
-            }
+            Err(WriteRefusal::HistoryFull { .. }) => self.history_full(route),
             Err(WriteRefusal::Unsigned(error)) => {
                 tracing::warn!(%error, "writes wait for this device to sign them");
                 self.keep_for(route, Waits::Signature);
@@ -382,30 +444,61 @@ impl Task {
                     "writes wait for what the workspace has not admitted here yet");
                 None
             }
-            Err(WriteRefusal::Refused(error)) => {
-                tracing::warn!(app = %route.app_id, record = %route.document, %error,
-                    "the workspace refused a write of this device for good");
-                self.fail("write-refused", error.clone());
-                Some(Err(error))
-            }
-            // The workspace's rules refused the change here, before it went. Its author reads it
-            // where a server's refusal of a change is read: the same typed refusal of the same
-            // route and changes, and why.
-            Err(WriteRefusal::ChangeRefused(refused)) => {
-                tracing::debug!(app = %route.app_id, document = %route.document, %refused,
-                    "the workspace refused a write of this device before it went");
-                self.reports.emit(&crate::Event::Refused {
-                    route: route.clone(),
-                    changes: refused.changes.clone(),
-                    refusal: refused.refusal.clone(),
-                });
-                self.fail("write-refused", refused.reason.clone());
-                Some(Err(refused.to_string()))
+            Err(refusal @ (WriteRefusal::Refused(_) | WriteRefusal::ChangeRefused(_))) => {
+                Some(self.refused_write(route, &refusal))
             }
         }
     }
 
-    /// `workspace`'s writes in this device's ownership: id, bytes, channel and retention.
+    /// This device's write to `route` waits for its record's history to be compacted: it stays
+    /// held, and whoever waits on the route waits too.
+    fn history_full(&mut self, route: &DocumentRoute) -> Option<Result<(), String>> {
+        self.keep_for(route, Waits::History);
+        self.note_history(route);
+        None
+    }
+
+    /// Note that this device's write to `route` waits for its record's history to be compacted.
+    fn note_history(&self, route: &DocumentRoute) {
+        tracing::warn!(app = %route.app_id, record = %route.document,
+            "writes wait for their record's history to be compacted");
+        self.fail(
+            RECORD_FULL,
+            "This record is too large to share your latest changes. They are kept on this device.",
+        );
+    }
+
+    /// Say that the workspace refused this device's write to `route` for good: why, and the
+    /// change's own verdict where the workspace's rules refused it. Whoever waits on the route is
+    /// answered with the refusal rather than as saved.
+    fn refused_write(&self, route: &DocumentRoute, refusal: &WriteRefusal) -> Result<(), String> {
+        self.note_refused(route, refusal);
+        Err(refusal.to_string())
+    }
+
+    /// Note `refusal`, why the workspace refused this device's write to `route` for good: the
+    /// session says why, and a change the workspace's rules refused is filed as its author's
+    /// activity reads it.
+    fn note_refused(&self, route: &DocumentRoute, refusal: &WriteRefusal) {
+        if let WriteRefusal::ChangeRefused(refused) = refusal {
+            tracing::debug!(app = %route.app_id, document = %route.document, %refused,
+                "the workspace refused a write of this device before it went");
+            self.reports.emit(&crate::Event::Refused {
+                route: route.clone(),
+                changes: refused.changes.clone(),
+                refusal: refused.refusal.clone(),
+            });
+        } else {
+            tracing::warn!(app = %route.app_id, record = %route.document, %refusal,
+                "the workspace refused a write of this device for good");
+        }
+        self.fail("write-refused", refusal.to_string());
+    }
+
+    /// `workspace`'s writes in this device's ownership: id, bytes, channel and retention. Every
+    /// write still held, whether or not it may be sent now: a write the workspace's rules no
+    /// longer admit here is still ownership's to answer for, and its host's refusal still names
+    /// the route it was written to.
     pub(super) fn ownership(
         &self,
         workspace: tilo_desktop_model::WorkspaceId,
@@ -414,7 +507,7 @@ impl Task {
             .owner()
             .with_outgoing(workspace, tilo_clock::wall(), |_, outgoing| {
                 Ok(outgoing
-                    .entries()
+                    .held()
                     .map(|entry| {
                         (
                             entry.id(),
@@ -536,11 +629,9 @@ impl Task {
     /// that `heard` names alone, or of any it answers for when it names none.
     pub(super) fn barrier(&mut self, done: Completion, scope: Scope, heard: Hears) {
         let held: BTreeSet<DocumentRoute> = self
-            .held
-            .lock()
-            .keys()
+            .waiting_routes()
+            .into_iter()
             .filter(|route| scope.covers(route))
-            .cloned()
             .collect();
         // A write of its own the workspace refused before this barrier was called is one it asks
         // after: it was said before, and it will never be saved.
@@ -561,6 +652,16 @@ impl Task {
         } else {
             self.held_barriers.push((held, done, scope, heard));
         }
+    }
+
+    /// The routes this session still holds a write on, one it has not handed to its device's
+    /// ownership yet: those an app wrote and this device has not drafted ([`Self::held`]), and
+    /// those drafted and signed but waiting for their record, a signature or a compaction
+    /// ([`Self::pending_signed`]). A barrier asked after one waits for it.
+    fn waiting_routes(&self) -> BTreeSet<DocumentRoute> {
+        let mut routes: BTreeSet<DocumentRoute> = self.held.lock().keys().cloned().collect();
+        routes.extend(self.pending_signed.keys().cloned());
+        routes
     }
 
     /// Complete `done` once every write now in this device's ownership is answered by its host, or
@@ -795,10 +896,10 @@ impl Task {
                 let _ = barrier.1.send(Err(why));
             }
         }
-        let held = self.held.lock().clone();
+        let held = self.waiting_routes();
         let (waiting, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
             .into_iter()
-            .partition(|(routes, ..)| routes.iter().any(|route| held.contains_key(route)));
+            .partition(|(routes, ..)| routes.iter().any(|route| held.contains(route)));
         self.held_barriers = waiting;
         for (_, done, scope, heard) in released {
             self.await_ownership(done, None, scope, heard);
@@ -813,11 +914,10 @@ impl Task {
         op: [u8; 16],
         outcome: Result<u64, tilo_server_protocol::refusal::Refusal>,
     ) {
-        let Some((workspace, id)) = self
-            .sending
-            .iter_mut()
-            .find_map(|(workspace, sending)| Some((*workspace, sending.answered(&op)?)))
-        else {
+        let Some((workspace, id, sent)) = self.sending.iter_mut().find_map(|(workspace, sending)| {
+            let (id, sent) = sending.answered(&op)?;
+            Some((*workspace, id, sent))
+        }) else {
             return;
         };
         // A host that was not ready for the write takes it once it says the workspace is ready:
@@ -851,20 +951,14 @@ impl Task {
         {
             self.governance_answered.insert(workspace, id);
         }
-        // What the refused write would have brought, as its envelope claims it: read before the
-        // entry leaves ownership, so whoever holds the record withdraws exactly those changes.
+        // What the refused write would have brought, as its envelope claimed it when it was
+        // sent: whoever holds the record withdraws exactly those changes.
         let withdrawn = match &outcome {
-            Err(reason) => self
-                .ownership(workspace)
-                .into_iter()
-                .find(|entry| entry.0 == id)
-                .and_then(|entry| {
-                    Some(crate::Event::Refused {
-                        route: DocumentRoute::of_message(&postcard::from_bytes(&entry.1).ok()?)?,
-                        changes: tilo_peer_state::document_frame::claimed_changes(&entry.1),
-                        refusal: reason.clone(),
-                    })
-                }),
+            Err(reason) => sent.map(|sent| crate::Event::Refused {
+                route: sent.route,
+                changes: sent.changes,
+                refusal: reason.clone(),
+            }),
             Ok(_) => None,
         };
         self.answered.push(Answered {
@@ -925,8 +1019,7 @@ impl Task {
                 .map(|(mut owed, mut refused, complete, scope, hearing)| {
                     // A barrier owed a write of another caller's waits no more for it, and
                     // its refusal is not this barrier's to answer with.
-                    if owed.remove(&id)
-                        && route
+                    if owed.remove(&id)                        && route
                             .as_ref()
                             .is_none_or(|route| hears(hearing.as_ref(), route))
                     {

@@ -403,6 +403,15 @@ impl<'a> NativeOutgoing<'a> {
             .chain(self.state.entries.iter())
             .map(|entry| entry.id)
     }
+    /// Every entry still held, whether or not it may be sent now: what ownership answers for,
+    /// which a write the workspace's rules no longer admit here still is.
+    pub fn held(&self) -> impl Iterator<Item = NativeOutgoingEntry<'a>> + 'a {
+        self.state
+            .governance
+            .iter()
+            .chain(self.state.entries.iter())
+            .map(NativeOutgoingEntry)
+    }
     pub fn entries(&self) -> impl Iterator<Item = NativeOutgoingEntry<'a>> {
         let allowed = self.allowed;
         self.state
