@@ -506,7 +506,7 @@ impl Widget for Art {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         self.shared.follow_song(theme, now);
         if self.shared.art_lent.get() {
             return;
@@ -724,7 +724,7 @@ impl Widget for SongLines {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         self.shared.follow_song(theme, now);
         let ctx = &mut PaintCtx::new(scene, transform, text, theme);
         self.shared
