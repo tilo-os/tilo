@@ -2,9 +2,10 @@
 # A retry of the server install proof (os/dev/test-server-plan-install-cycle.sh) from a base,
 # rebuilding only the components this tree changed.
 #
-#   server-plan-retry.sh layers OUT          what to rebuild, and its layers (server-plan-retry-layers)
-#   server-plan-retry.sh proof LAYERS OUT    the base fetched and the proof run with LAYERS
-#                                            (server-plan-install-retry)
+#   server-plan-retry.sh layers OUT             what to rebuild, and its layers (server-plan-retry-layers)
+#   server-plan-retry.sh fetch OUT              the base, unpacked (server-plan-base-fetch)
+#   server-plan-retry.sh proof LAYERS BASE OUT  the proof run on BASE with LAYERS
+#                                               (server-plan-install-retry)
 #
 # The base is what publish-server-plan-base built from one commit of main and pushed as one
 # image: the installer medium's bundle with a development server image as its target, the test
@@ -27,10 +28,10 @@ forge=https://code.tilo.so/tilo/tilo.git
 die() { printf 'server plan retry: %s\n' "$*" >&2; exit 1; }
 note() { printf 'server plan retry: %s\n' "$*" >&2; }
 repo=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-mode=${1:?usage: server-plan-retry.sh layers OUT | proof LAYERS OUT}
+mode=${1:?usage: server-plan-retry.sh layers OUT | fetch OUT | proof LAYERS BASE OUT}
 case $mode in
-  layers) out=${2:?} ;;
-  proof) built=${2:?} out=${3:?} ;;
+  layers | fetch) out=${2:?} ;;
+  proof) built=${2:?} fetched=${3:?} out=${4:?} ;;
   *) die "unknown mode $mode" ;;
 esac
 
@@ -89,18 +90,26 @@ if [[ $mode == layers ]]; then
   exit 0
 fi
 
+if [[ $mode == fetch ]]; then
+  # Outside the proof's VM, whose user-mode network moves a few MB/s; kept by t under the base
+  # file's key, so retries on one base fetch it once.
+  step base
+  read_base
+  step fetch
+  python3 "$repo/tools/ci/publish/server-plan-base.py" fetch "$base_image" "$out/base" > "$out/base-config.json"
+  [[ $(jq -r .commit "$out/base-config.json") == "$base_commit" ]] \
+    || die "the base image was built from $(jq -r .commit "$out/base-config.json"), not $base_commit"
+  du -sh --apparent-size "$out/base"
+  exit 0
+fi
+
 step base
 read_base
 [[ $(jq -r .base "$built/selection.json") == "$base_commit" ]] \
   || die "the layers were selected against $(jq -r .base "$built/selection.json"), not the base $base_commit"
-step fetch
-base_dir=$out/base
-mkdir -p "$base_dir"
-skopeo copy --quiet "docker://$base_image" "oci:$out/base-oci:base" >/dev/null
-python3 "$repo/tools/ci/publish/server-plan-base.py" unpack "$out/base-oci" "$base_dir" > "$out/base-config.json"
-rm -rf "$out/base-oci"
-[[ $(jq -r .commit "$out/base-config.json") == "$base_commit" ]] \
-  || die "the base image was built from $(jq -r .commit "$out/base-config.json"), not $base_commit"
+[[ $(jq -r .commit "$fetched/base-config.json") == "$base_commit" ]] \
+  || die "the fetched base is of $(jq -r .commit "$fetched/base-config.json"), not $base_commit"
+base_dir=$fetched/base
 printf 'components swapped: %s\n' "$(jq -r '.components | join(" ")' "$built/selection.json")"
 
 step proof

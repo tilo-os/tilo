@@ -4989,7 +4989,20 @@ git = true
 timeout_secs = 3600
 default = false
 
-# The retry itself: main's base fetched by digest, and the proof run with this tree's layers in
+# The retry's base, unpacked from the registry by the digest tools/ci/server-plan-base.env names,
+# outside the proof's VM (tools/ci/server-plan-retry.sh fetch). Kept by that file, so the retries
+# on one base fetch it once.
+[[check]]
+name = "server-plan-base-fetch"
+# The registry redirects each blob to its object store, whose address it names per request.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/server-plan-retry.sh fetch /target/server-plan-base-fetch"
+requires = ["arch=x86_64", "disk-100g"]
+outputs = ["/target/server-plan-base-fetch/**"]
+timeout_secs = 1800
+default = false
+
+# The retry itself: the proof run on the fetched base with this tree's layers in
 # the installed server and the owner's device (tools/ci/server-plan-retry.sh proof), from a
 # working tree: `t test server-plan-install-retry`.
 [[check]]
@@ -4997,8 +5010,8 @@ name = "server-plan-install-retry"
 # The base comes from the registry by digest; dnf in the guests installs from Fedora's mirrors, and
 # the enrolment and unlock cross the public iroh relay; no fixed host list names them all.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && bash tools/ci/server-plan-retry.sh proof /target/server-plan-retry-layers /target/server-plan-install-retry"
-needs = ["server-plan-retry-layers", "tilo-vm-binary-x86_64"]
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && bash tools/ci/server-plan-retry.sh proof /target/server-plan-retry-layers /target/server-plan-base-fetch /target/server-plan-install-retry"
+needs = ["server-plan-retry-layers", "server-plan-base-fetch", "tilo-vm-binary-x86_64"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
