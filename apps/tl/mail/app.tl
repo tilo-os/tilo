@@ -787,8 +787,25 @@ view mail(m: Mail) {
                 ui.EmptyState("Add a mail account in Settings", icon: .mail)
             }
         } else {
-            std.page(m) {
-                recovered_mail(m)
+            // The conversations read from the last account stand in the window's overview, so
+            // one a person opens stands in the window's content beside it rather than over a
+            // page with nothing left to show. There is no account, so there is no sidebar.
+            ui.NavShell(
+                content_kind: .document,
+                sidebar_title: "Mail",
+                overview_title: "Recovered mail",
+                overview_count: m.recovered_mail.len(),
+            ) {
+                sidebar: {
+                    ui.NavList(selected: "recovered") {
+                        ui.NavItem("recovered", "Recovered mail", icon: .archive) {
+                            on select: set(account, "")
+                        }
+                    }
+                }
+                overview: {
+                    recovered_mail(m)
+                }
             }
         }
     } else if let a = m.accounts.find(x -> x.key == account) {
@@ -1051,9 +1068,11 @@ view conversation(t: Thread) {
     state draft: Text
     ui.NavShell(content_kind: .page, title: t.subject) {
         content: {
-            ui.Docked {
-                foot: {
-                    if can_answer(t) {
+            // A conversation no account of this workspace sent has nothing to reply from, so
+            // its window keeps no reply bar rather than an empty one.
+            if can_answer(t) {
+                ui.Docked {
+                    foot: {
                         row {
                             ui.TextInput(bind: draft, placeholder: "Reply to {t.subject}", fill) {
                                 on submit: answer(t, draft).then(set(draft, ""))
@@ -1063,14 +1082,21 @@ view conversation(t: Thread) {
                             }
                         }
                     }
+                    conversation_messages(t)
                 }
-                ui.VirtualList(page_column: true, at_measure: true) {
-                    for m in t.messages {
-                        ui.ListItem(item: m) {
-                            message(m)
-                        }
-                    }
-                }
+            } else {
+                conversation_messages(t)
+            }
+        }
+    }
+}
+
+/// A conversation's messages, in order: the list is the window body's scroller.
+view conversation_messages(t: Thread) {
+    ui.VirtualList(page_column: true, at_measure: true) {
+        for m in t.messages {
+            ui.ListItem(item: m) {
+                message(m)
             }
         }
     }
@@ -1491,6 +1517,39 @@ scenario "a reply being written" -> Draft {
 /// No account yet: what a first start shows.
 scenario "no account yet" {
     root Mail
+}
+
+/// Mail the workspace read from the last account before it went: no account stands now, and
+/// what was recovered is the window's own list.
+scenario "mail recovered from the last account" {
+    let m = root Mail
+    let t = m.recovered_mail.insert(
+        Thread(
+            key: "delivery@parcels.example",
+            account: "sam@rivera.example",
+            subject: "Your parcel was delivered",
+            latest: 2026-06-29T16:10,
+            snippet: "It was left with the neighbour at number twelve.",
+            senders: "Parcels",
+            count: 1,
+            unread: false,
+        ),
+    )
+    t.messages.insert(
+        Message(
+            key: "delivery@parcels.example",
+            account: "sam@rivera.example",
+            subject: "Your parcel was delivered",
+            from: "desk@parcels.example",
+            from_name: "Parcels",
+            to: "sam@rivera.example",
+            received: 2026-06-29T16:10,
+            snippet: "It was left with the neighbour at number twelve.",
+            body: "Your parcel was delivered this afternoon and left with the neighbour at number twelve.\n\nParcels",
+            message_id: "delivery@parcels.example",
+            mailbox: "inbox",
+        ),
+    )
 }
 
 /// An account whose server cannot be reached: the mail under it is what was last fetched, and
