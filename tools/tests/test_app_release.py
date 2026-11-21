@@ -152,16 +152,16 @@ class AppReleaseTests(unittest.TestCase):
 
     def test_app_manifest_changes_rebuild_the_shared_runtime_collection(self):
         catalog = app_release.app_catalog(ROOT)
-        # Mail's new Contacts dependency changed the collection runtime while
-        # ordinary reverse-dependency selection chose only four apps. Reusing
+        # An app's dependency change can alter the shared runtime's hashes while
+        # ordinary reverse-dependency selection chooses only that app. Reusing
         # the old tapps then failed the production runtime-root check.
         self.assertEqual(
-            app_release.apps_from_changes(["apps/mail/Cargo.toml"], catalog),
+            app_release.apps_from_changes(["apps/snippets/Cargo.toml"], catalog),
             sorted(catalog),
         )
         self.assertEqual(
-            app_release.apps_from_changes(["apps/mail/src/app.rs"], catalog),
-            ["mail"],
+            app_release.apps_from_changes(["apps/snippets/src/lib.rs"], catalog),
+            ["snippets"],
         )
 
     def test_direct_changes_select_exactly_their_packaging_closure(self):
@@ -255,13 +255,13 @@ class AppReleaseTests(unittest.TestCase):
                 old.write_text('unchanged source\n')
                 git('add', 'apps'); git('commit', '-qm', 'base')
                 base = git('rev-parse', 'HEAD')
-                new = root / 'apps/files/naïve.rs'
+                new = root / 'apps/settings/naïve.rs'
                 new.parent.mkdir(parents=True)
                 old.rename(new)
                 git('add', 'apps'); git('commit', '-qm', 'rename')
                 paths = app_release.changed_paths(base, root)
-                self.assertEqual({'apps/files/naïve.rs', 'apps/files/naïve.rs'}, set(paths))
-                self.assertEqual(['notes', 'settings'], app_release.apps_from_changes(paths, CATALOG))
+                self.assertEqual({'apps/files/naïve.rs', 'apps/settings/naïve.rs'}, set(paths))
+                self.assertEqual(['files', 'settings'], app_release.apps_from_changes(paths, CATALOG))
 
     def test_shared_and_global_inputs_fan_out_to_their_generic_app_dependants(self):
         with self.subTest(phase='build tool dependency and shared runtime changes select fleet'):
