@@ -15,14 +15,21 @@
 //! The host signs as itself; a page opening the frame checks the signature
 //! against the author the host stamped, as for any device.
 
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_clock::unix_now_ns;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::coedit::CoeditPayload;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::peer::WorkspaceRegistry;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::transport::Envelope;
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_lock::MutexRecover as _;
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_server_protocol::WorkspaceId;
 
+#[cfg(not(target_arch = "wasm32"))]
 /// One retained document body of a workspace, as its author signed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RetainedBody {
@@ -32,6 +39,7 @@ pub struct RetainedBody {
     pub body: Vec<u8>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// One signed document body to admit as this host's own change.
 #[derive(Clone, Debug)]
 pub struct HostCommit {
@@ -50,6 +58,7 @@ pub use tilo_peer_state::workspace_documents::{
     DeviceDocuments, DeviceWrites, DocumentRead, DocumentWrite, WriteAnswer,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 /// In-process access to the workspaces this server hosts.
 #[derive(Clone)]
 pub struct WorkspaceDocuments {
@@ -64,18 +73,21 @@ pub struct WorkspaceDocuments {
 /// The host commits each workspace has queued that are not durable yet.
 /// A caller may queue a commit and wait for it later, off its own lock;
 /// whoever reads the workspace's retention meanwhile must still see it.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct Inflight {
     open: std::sync::Mutex<std::collections::HashMap<WorkspaceId, Open>>,
     settled: tokio::sync::Notify,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct Open {
     next: u64,
     queued: std::collections::BTreeSet<u64>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Inflight {
     fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<WorkspaceId, Open>> {
         self.open.lock_recover()
@@ -121,12 +133,14 @@ impl Inflight {
 }
 
 /// One queued host commit, until it is durable or given up.
+#[cfg(not(target_arch = "wasm32"))]
 struct Ticket {
     inflight: std::sync::Arc<Inflight>,
     workspace_id: WorkspaceId,
     number: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for Ticket {
     fn drop(&mut self) {
         let mut open = self.inflight.lock();
@@ -141,6 +155,7 @@ impl Drop for Ticket {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// A host commit holding its place in the workspace's order, not yet
 /// waited on: [`WorkspaceDocuments::retained`] waits for it until it is durable.
 pub(crate) struct WorkspaceAdmission {
@@ -148,6 +163,7 @@ pub(crate) struct WorkspaceAdmission {
     _ticket: Ticket,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl WorkspaceAdmission {
     /// Wait until the commit is durable and published; returns its host
     /// order.
@@ -170,6 +186,7 @@ impl WorkspaceAdmission {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl WorkspaceDocuments {
     pub(crate) fn new(
         workspaces: WorkspaceRegistry,
@@ -530,4 +547,5 @@ impl WorkspaceDocuments {
 
 /// A host commit [`WorkspaceDocuments::retained`] already waits for, not yet in
 /// its workspace's order.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct Reservation(Ticket);

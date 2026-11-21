@@ -4,6 +4,11 @@
 //! store and persistence beneath it. [`service::WorkspaceService`] is its embeddable
 //! surface; the modules marked hidden are shared with the server daemon that
 //! embeds the same stack, and are not an interface of their own.
+//!
+//! A device's link, its files and its processes are a native target's: a page
+//! reaches its host and holds its workspaces over the page's own storage. Those
+//! modules are compiled for native targets alone, and a page build names only
+//! the document vocabulary ([`workspace_documents`]).
 #![deny(rust_2018_idioms)]
 #![cfg_attr(
     test,
@@ -14,74 +19,107 @@
     )
 )]
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
 /// The apps this device serves, on the devices that have any.
-#[cfg(feature = "apps")]
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 pub mod apps;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod attach;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod authority_epoch;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod compaction;
 // The services a person connected by their address: a server calls out
 // for them, which a page cannot.
 #[cfg(not(target_arch = "wasm32"))]
 mod connections;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod content_queue;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod content_work;
 /// A device's own documents, as its workspace service holds them.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod device_documents;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod environment;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod handshake;
+#[cfg(not(target_arch = "wasm32"))]
 mod i18n;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod membership_watch;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
+#[cfg(not(target_arch = "wasm32"))]
 mod own_workspaces;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
+#[cfg(not(target_arch = "wasm32"))]
 mod people_keys;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod persistence;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod presence_mailbox;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod service;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod service_authority;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod store;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod surfaces;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod timing;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod workspace;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod workspace_access;
 pub mod workspace_documents;
+#[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod workspace_io;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod workspaces;
 /// Whether the endpoint a server serves its workspaces on names where it is
 /// reached, which says whether opening it waits for that name.
+#[cfg(not(target_arch = "wasm32"))]
 pub use tilo_endpoint_reachability::Reaching;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 tilo_automerge_isolate::test_worker!();
-#[cfg(all(test, feature = "agents"))]
+#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
 tilo_agent_session::app_worker!();
 
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_server_client::frame;
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_server_protocol::{auth, policy};
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_server_session::{client, coedit, position};
 
+#[cfg(not(target_arch = "wasm32"))]
 mod transport {
     pub(crate) use crate::frame::{decode, encode};
     pub(crate) use tilo_server_protocol::transport::*;
 }
 
-#[cfg(all(test, feature = "agents"))]
+#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
 use client::ServerClient;
+#[cfg(not(target_arch = "wasm32"))]
 use coedit::AttributedPresence;
-#[cfg(all(test, feature = "agents"))]
+#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
 use coedit::CoeditPayload;
 
-#[cfg(all(test, feature = "agents"))]
+#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
 use transport::Envelope;
