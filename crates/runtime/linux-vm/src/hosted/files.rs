@@ -629,14 +629,13 @@ mod tests {
     struct Guest(UnixStream);
 
     impl Guest {
-        #[allow(clippy::needless_pass_by_value, reason = "requests are built in place")]
-        fn ask(&mut self, request: R) -> FsReply {
-            send(&mut self.0, &request).unwrap();
+        fn ask(&mut self, request: &R) -> FsReply {
+            send(&mut self.0, request).unwrap();
             recv(&mut self.0).unwrap().unwrap()
         }
 
         fn lookup(&mut self, parent: u64, name: &str) -> FsReply {
-            self.ask(R::Lookup {
+            self.ask(&R::Lookup {
                 parent,
                 name: name.as_bytes().to_vec(),
             })
@@ -650,7 +649,7 @@ mod tests {
         }
 
         fn open(&mut self, node: u64) -> u64 {
-            match self.ask(R::Open {
+            match self.ask(&R::Open {
                 node,
                 write: false,
                 truncate: false,
@@ -661,7 +660,7 @@ mod tests {
         }
 
         fn read_all(&mut self, handle: u64) -> Vec<u8> {
-            match self.ask(R::Read {
+            match self.ask(&R::Read {
                 handle,
                 offset: 0,
                 size: 4096,
@@ -676,7 +675,7 @@ mod tests {
         let (host, guest) = UnixStream::pair().unwrap();
         let server = std::thread::spawn(move || serve(host, &shares).unwrap());
         let mut guest = Guest(guest);
-        let reply = guest.ask(R::Hello {
+        let reply = guest.ask(&R::Hello {
             path: path.display().to_string(),
         });
         assert_eq!(reply, FsReply::Ok);
@@ -684,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "one scenario, phase by phase")]
+    #[allow(clippy::too_many_lines, reason = "one filesystem scenario walked phase by phase")]
     fn a_share_is_served_beneath_its_root_only() {
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("secret"), b"host only").unwrap();
@@ -704,7 +703,7 @@ mod tests {
             let server = std::thread::spawn(move || serve(host, &given).unwrap());
             let mut guest = Guest(guest);
             assert_eq!(
-                guest.ask(R::Hello {
+                guest.ask(&R::Hello {
                     path: outside.path().display().to_string()
                 }),
                 FsReply::Error(libc::EACCES)
@@ -715,7 +714,7 @@ mod tests {
         {
             let src = guest.node(ROOT_NODE, "src");
             let main = guest.node(src, "main.rs");
-            let FsReply::Opened { handle } = guest.ask(R::Open {
+            let FsReply::Opened { handle } = guest.ask(&R::Open {
                 node: main,
                 write: false,
                 truncate: false,
@@ -723,14 +722,14 @@ mod tests {
                 panic!("open");
             };
             assert_eq!(
-                guest.ask(R::Read {
+                guest.ask(&R::Read {
                     handle,
                     offset: 3,
                     size: 4
                 }),
                 FsReply::Data(b"main".to_vec())
             );
-            let FsReply::Entries { entries, done } = guest.ask(R::ReadDir {
+            let FsReply::Entries { entries, done } = guest.ask(&R::ReadDir {
                 node: ROOT_NODE,
                 offset: 0,
             }) else {
@@ -756,12 +755,12 @@ mod tests {
         }
         {
             let escape = guest.node(ROOT_NODE, "escape");
-            let FsReply::Attr(attr) = guest.ask(R::GetAttr { node: escape }) else {
+            let FsReply::Attr(attr) = guest.ask(&R::GetAttr { node: escape }) else {
                 panic!("getattr");
             };
             assert_eq!(attr.kind, FileKind::Symlink, "the link, not its target");
             assert_eq!(
-                guest.ask(R::Open {
+                guest.ask(&R::Open {
                     node: escape,
                     write: false,
                     truncate: false
@@ -769,7 +768,7 @@ mod tests {
                 FsReply::Error(libc::ELOOP)
             );
             assert_eq!(
-                guest.ask(R::SetAttr {
+                guest.ask(&R::SetAttr {
                     node: escape,
                     mode: Some(0o777),
                     size: None,
@@ -785,7 +784,7 @@ mod tests {
                 "a path through a link out is refused"
             );
             assert_eq!(
-                guest.ask(R::Create {
+                guest.ask(&R::Create {
                     parent: out,
                     name: b"planted".to_vec(),
                     mode: 0o644,
@@ -801,7 +800,7 @@ mod tests {
             );
         }
         {
-            let FsReply::Created { attr, handle } = guest.ask(R::Create {
+            let FsReply::Created { attr, handle } = guest.ask(&R::Create {
                 parent: ROOT_NODE,
                 name: b"out.txt".to_vec(),
                 mode: 0o640,
@@ -812,15 +811,15 @@ mod tests {
             };
             assert_eq!(attr.perm, 0o640);
             assert_eq!(
-                guest.ask(R::Write {
+                guest.ask(&R::Write {
                     handle,
                     offset: 0,
                     data: b"built".to_vec()
                 }),
                 FsReply::Written(5)
             );
-            assert_eq!(guest.ask(R::Release { handle }), FsReply::Ok);
-            let FsReply::Attr(dir) = guest.ask(R::MkDir {
+            assert_eq!(guest.ask(&R::Release { handle }), FsReply::Ok);
+            let FsReply::Attr(dir) = guest.ask(&R::MkDir {
                 parent: ROOT_NODE,
                 name: b"target".to_vec(),
                 mode: 0o755,
@@ -828,7 +827,7 @@ mod tests {
                 panic!("mkdir");
             };
             assert_eq!(
-                guest.ask(R::Rename {
+                guest.ask(&R::Rename {
                     parent: ROOT_NODE,
                     name: b"out.txt".to_vec(),
                     new_parent: dir.node,
@@ -842,7 +841,7 @@ mod tests {
                 b"built"
             );
             let done = guest.node(dir.node, "done.txt");
-            let reply = guest.ask(R::SetAttr {
+            let reply = guest.ask(&R::SetAttr {
                 node: done,
                 mode: Some(0o600),
                 size: Some(2),
@@ -860,14 +859,14 @@ mod tests {
                 (2, 0o600, 1_000_000)
             );
             assert_eq!(
-                guest.ask(R::Unlink {
+                guest.ask(&R::Unlink {
                     parent: dir.node,
                     name: b"done.txt".to_vec()
                 }),
                 FsReply::Ok
             );
             assert_eq!(
-                guest.ask(R::RmDir {
+                guest.ask(&R::RmDir {
                     parent: ROOT_NODE,
                     name: b"target".to_vec()
                 }),
@@ -884,7 +883,7 @@ mod tests {
             }];
             let (mut guest, server) = connect(read_only, &root);
             assert_eq!(
-                guest.ask(R::Create {
+                guest.ask(&R::Create {
                     parent: ROOT_NODE,
                     name: b"x".to_vec(),
                     mode: 0o644,
@@ -896,7 +895,7 @@ mod tests {
             let src = guest.node(ROOT_NODE, "src");
             let main = guest.node(src, "main.rs");
             assert_eq!(
-                guest.ask(R::Open {
+                guest.ask(&R::Open {
                     node: main,
                     write: true,
                     truncate: true
@@ -904,7 +903,7 @@ mod tests {
                 FsReply::Error(libc::EROFS)
             );
             assert!(matches!(
-                guest.ask(R::Open {
+                guest.ask(&R::Open {
                     node: main,
                     write: false,
                     truncate: false
@@ -946,7 +945,7 @@ mod tests {
         let FsReply::Created {
             attr: replacement,
             handle,
-        } = guest.ask(R::Create {
+        } = guest.ask(&R::Create {
             parent: git,
             name: b"config.lock".to_vec(),
             mode: 0o644,
@@ -957,16 +956,16 @@ mod tests {
             panic!("create the replacement");
         };
         assert_eq!(
-            guest.ask(R::Write {
+            guest.ask(&R::Write {
                 handle,
                 offset: 0,
                 data: b"new".to_vec(),
             }),
             FsReply::Written(3)
         );
-        assert_eq!(guest.ask(R::Release { handle }), FsReply::Ok);
+        assert_eq!(guest.ask(&R::Release { handle }), FsReply::Ok);
         assert_eq!(
-            guest.ask(R::Rename {
+            guest.ask(&R::Rename {
                 parent: git,
                 name: b"config.lock".to_vec(),
                 new_parent: git,
@@ -982,7 +981,7 @@ mod tests {
 
         // The kernel drops the replaced inode once nothing names it.
         assert_eq!(
-            guest.ask(R::Forget {
+            guest.ask(&R::Forget {
                 node: replaced,
                 count: 1,
             }),
@@ -992,7 +991,7 @@ mod tests {
         let looked_up = guest.node(git, "config");
         assert_eq!(looked_up, current, "the path still names the replacement");
         assert!(matches!(
-            guest.ask(R::GetAttr { node: looked_up }),
+            guest.ask(&R::GetAttr { node: looked_up }),
             FsReply::Attr(_)
         ));
         let replacement_reader = guest.open(looked_up);
@@ -1008,7 +1007,7 @@ mod tests {
         // The replacement's own lookups are what hold the path now: the one
         // the create handed out and the two lookups since.
         assert_eq!(
-            guest.ask(R::Forget {
+            guest.ask(&R::Forget {
                 node: current,
                 count: 3,
             }),
@@ -1017,7 +1016,7 @@ mod tests {
         let fresh = guest.node(git, "config");
         assert_ne!(fresh, current, "nothing holds the old node any more");
         assert!(matches!(
-            guest.ask(R::GetAttr { node: fresh }),
+            guest.ask(&R::GetAttr { node: fresh }),
             FsReply::Attr(_)
         ));
 
