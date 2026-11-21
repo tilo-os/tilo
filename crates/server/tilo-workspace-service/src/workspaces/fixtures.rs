@@ -292,10 +292,14 @@ impl GroupKeys for TestGroupKeys {
         create: bool,
     ) -> GroupKeysAnswerFuture<'a> {
         Box::pin(async move {
-            let group = collab_types::reader_group(
-                collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),
-                readers,
-            )?
+            // A record that needs its own group asks with that group's id; anything else with
+            // its workspace's, whose every-member group this fixture opens.
+            let asked = collab_types::WorkspaceId::parse(workspace).expect("a group id");
+            let group = if asked.is_document_key_group() {
+                asked
+            } else {
+                collab_types::reader_group(asked, readers)?
+            }
             .to_string();
             let workspace = group.as_str();
             let held = {

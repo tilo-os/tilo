@@ -262,13 +262,45 @@ impl SealingMember {
         workspace: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> R,
     ) -> R {
-        let (result, message) = self.seal(workspace, change);
+        let keys = self.route_keys(workspaces, workspace).await;
+        let (result, message) = self.seal_with(&keys, workspace, change);
         let body = postcard::to_stdvec(&message).unwrap();
         workspaces
             .absorb(workspace, self.key.verifying_key().to_bytes(), &body)
             .await
             .unwrap();
         result
+    }
+
+    /// The keys this member's page seals its next write with, as the page asks its key service
+    /// each time: a record that has come to need its own group since the member joined is
+    /// sealed under that group, and the workspace says so now.
+    async fn route_keys(&self, workspaces: &Workspaces, workspace: &str) -> ContentKeys {
+        let route = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: self.route.0.clone(),
+            cluster_id: workspace.into(),
+            document: self.route.1.clone(),
+        };
+        workspaces
+            .own_route_keys(&route, true)
+            .await
+            .expect("the workspace answers for the record's keys")
+            .expect("the member takes part in the record's group")
+    }
+
+    /// [`Self::seal`] with `keys`, the member's page's keys for the record now.
+    fn seal_with<R>(
+        &self,
+        keys: &ContentKeys,
+        workspace: &str,
+        change: impl FnOnce(&mut automerge::AutoCommit) -> R,
+    ) -> (R, NeighbourMsg) {
+        let mut document = self.document();
+        let heads = document.get_heads();
+        let result = change(&mut document);
+        let changes = document.save_after(&heads);
+        *self.document.lock().unwrap() = document;
+        (result, self.seal_changes_with(keys, workspace, changes))
     }
 
     /// The member folds the record's sealed history, as the workspace holds it
@@ -438,7 +470,8 @@ impl SealingMember {
     /// they are, sealed and signed as its page publishes it, and handed to the
     /// workspace the way the server hands it every member write.
     pub async fn sends_changes(&self, workspaces: &Workspaces, workspace: &str, changes: Vec<u8>) {
-        let message = self.seal_changes(workspace, changes);
+        let keys = self.route_keys(workspaces, workspace).await;
+        let message = self.seal_changes_with(&keys, workspace, changes);
         let body = postcard::to_stdvec(&message).unwrap();
         workspaces
             .absorb(workspace, self.key.verifying_key().to_bytes(), &body)
@@ -448,13 +481,22 @@ impl SealingMember {
 
     /// `changes` as the member's next write of the record, sealed and signed.
     fn seal_changes(&self, workspace: &str, changes: Vec<u8>) -> NeighbourMsg {
+        self.seal_changes_with(&self.keys, workspace, changes)
+    }
+
+    /// [`Self::seal_changes`] sealed with `keys`.
+    fn seal_changes_with(
+        &self,
+        keys: &ContentKeys,
+        workspace: &str,
+        changes: Vec<u8>,
+    ) -> NeighbourMsg {
         let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
         let plaintext = collab_types::DocumentMutation::Incremental(changes)
             .encode()
             .unwrap();
         let artifact = collab_types::document_artifact_id(app, workspace, record);
-        let (metadata, payload) = self
-            .keys
+        let (metadata, payload) = keys
             .seal_content(artifact, ContentRetention::Delta, &plaintext)
             .unwrap();
         let author =
