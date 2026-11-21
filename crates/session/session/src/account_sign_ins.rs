@@ -97,7 +97,7 @@ async fn connection(
     let mut read = BufReader::new(read);
     loop {
         let mut line = zeroize::Zeroizing::new(Vec::new());
-        let limit = u64::try_from(sign_ins::MAX_LINE).unwrap_or(u64::MAX) + 1;
+        let limit = u64::try_from(sign_ins::MAX_LINE).map_or(u64::MAX, |max| max.saturating_add(1));
         if (&mut read).take(limit).read_until(b'\n', &mut line).await? == 0 {
             return Ok(());
         }
@@ -121,7 +121,8 @@ async fn connection(
 pub(crate) async fn answer(workspaces: &Workspaces, by: &Caller, ask: Ask) -> Answer {
     match ask {
         Ask::Accounts { after } => {
-            let deadline = tokio::time::Instant::now() + sign_ins::LONGEST_WAIT;
+            let now = tokio::time::Instant::now();
+            let deadline = now.checked_add(sign_ins::LONGEST_WAIT).unwrap_or(now);
             loop {
                 let accounts: Vec<Held> = workspaces
                     .held_accounts(sign_ins::is_file_account)
