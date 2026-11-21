@@ -806,6 +806,34 @@ else
     host_client=(python3 -I "$repo_root/dist/dev/host-wayland.py" "$host_display")
     say "starting the nested session at ${TILO_WINIT_SIZE} logical pixels, at the desktop's scale (log: $logs/session.log)"
 fi
+# The person's own workspace, served as a Tilo device serves it (`fs.service` at
+# /var/workspace): the Files app's windowless endpoint on the record route, and the mounted
+# folder a file uploaded in Files lands in. A session started from a build under test serves
+# its own, because the mount underneath belongs to the image and its wire is an older one; and
+# a session with none shows the computer's own Home in Files instead of the workspace.
+files_state=$XDG_STATE_HOME/tilo/files
+files_runtime=$runtime/tilo/files-workspace
+mkdir -p "$files_state/mount" "$files_runtime" "$runtime/tilo/files-storage"
+chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
+# This build's daemon, mounting this session's workspace: no capability list yet (the session
+# publishes the person's own as its apps are granted), so the device acts as itself.
+setsid "$bin/fs" serve --mount-point "$files_state/mount" --cache-dir "$files_state" \
+    --storage-sock "$runtime/tilo/files-storage/storage.sock" \
+    --blob-sock "$files_runtime/fs-blobs.sock" \
+    --backend fuse > "$logs/files-workspace.log" 2>&1 &
+files_pid=$!
+children+=("$files_pid")
+# Files reads the workspace where the mount is (`TILO_WORKSPACE_ROOTS`, as a device's login
+# gives it), keeps document media at this session's socket, and records the daemon as its
+# endpoint, as it records the login's unit.
+if wait_for_socket "$files_runtime/fs-blobs.sock" "$files_pid"; then
+    export TILO_WORKSPACE_ROOTS=$files_state/mount
+    export TILO_FS_BLOB_SOCKET=$files_runtime/fs-blobs.sock
+    export TILO_FILES_ENDPOINT_PID=$files_pid
+else
+    say "the session's files workspace did not start: Files shows the computer's Home (see $logs/files-workspace.log)"
+fi
+
 cat >&2 <<EOF
     drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control $( ((headless)) && echo 'snapshot /tmp/shot.png' || echo windows)
 EOF
