@@ -274,7 +274,7 @@ pub(crate) fn role_refusal(
     // workspace's own. A content store's key material and presence frames are no
     // document change and pass.
     let (_, _, body) = crate::coedit::retention_view(delta)?;
-    let message = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body).ok()?;
+    let message = neighbour_wire::NeighbourMsg::decode(body).ok()?;
     if !matches!(
         message,
         neighbour_wire::NeighbourMsg::AppDocument { .. }

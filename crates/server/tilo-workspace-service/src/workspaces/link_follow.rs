@@ -43,7 +43,7 @@ pub(crate) async fn carry_admitted(
     // A body that does not decode is one the governor's follow reports.
     let Ok(message) = tilo_failure::ignored!(
         "the workspace's own follow reports the body that does not decode",
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+        neighbour_wire::NeighbourMsg::decode(body)
     ) else {
         return;
     };
@@ -196,7 +196,7 @@ impl Workspaces {
             super::session_carry::ServerHistory::of(retained.iter().filter_map(|retained| {
                 tilo_failure::ignored!(
                     "a retained body that does not decode is one recall reports, and holds no write",
-                    NeighbourMsg::from_kept(&retained.body).ok()
+                    NeighbourMsg::decode(&retained.body).ok()
                 )
             }));
         let mut cursors = Vec::new();
@@ -304,7 +304,7 @@ impl Workspaces {
                     continue;
                 }
                 for answer in workspaces.content_answer(&name, &frame.author, &body) {
-                    match postcard::from_bytes::<NeighbourMsg>(&answer) {
+                    match NeighbourMsg::decode(&answer) {
                         Ok(message) => {
                             let _ = link.send(message);
                         }
@@ -348,7 +348,7 @@ impl Workspaces {
         let (mut changed, mut again) = (false, false);
         for retained in retained {
             let own = retained.author == self.inner.host.cert.device_public_key;
-            let message = match neighbour_wire::NeighbourMsg::from_kept(&retained.body) {
+            let message = match neighbour_wire::NeighbourMsg::decode(&retained.body) {
                 Ok(message) => message,
                 // Not all the server's device retains under its key is a
                 // write to a document.
@@ -445,7 +445,7 @@ impl Workspaces {
                 document_id,
                 envelope,
                 ..
-            }) = neighbour_wire::NeighbourMsg::from_kept(&retained.body)
+            }) = neighbour_wire::NeighbourMsg::decode(&retained.body)
             else {
                 continue;
             };

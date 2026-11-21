@@ -552,7 +552,7 @@ pub async fn governor_published(
         .filter_map(|bytes| {
             tilo_failure::ignored!(
                 "test support: other publications are skipped",
-                postcard::from_bytes::<NeighbourMsg>(bytes).ok()
+                NeighbourMsg::decode(bytes).ok()
             )
         })
         .find_map(|message| match message {

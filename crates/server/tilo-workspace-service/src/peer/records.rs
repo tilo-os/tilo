@@ -87,7 +87,7 @@ fn key_scope(body: &[u8]) -> Option<neighbour_wire::KeyScope> {
     }
     | NeighbourMsg::MlsAccessRequest {
         workspace: scope, ..
-    }) = postcard::from_bytes(body).ok()?
+    }) = neighbour_wire::NeighbourMsg::decode(body).ok()?
     else {
         return None;
     };

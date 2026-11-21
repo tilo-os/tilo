@@ -317,7 +317,7 @@ impl<T> ContentWants<T> {
             hash,
             total,
             ..
-        }) = postcard::from_bytes(frame)
+        }) = crate::NeighbourMsg::decode(frame)
         else {
             return false;
         };
@@ -342,7 +342,7 @@ impl<T> ContentWants<T> {
             offset,
             bytes,
             ..
-        }) = postcard::from_bytes(frame)
+        }) = crate::NeighbourMsg::decode(frame)
         else {
             return None;
         };
@@ -421,7 +421,7 @@ pub fn answer(
         cluster_id,
         hash,
         have,
-    }) = postcard::from_bytes(request)
+    }) = crate::NeighbourMsg::decode(request)
     else {
         return Vec::new();
     };

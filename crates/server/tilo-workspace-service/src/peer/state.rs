@@ -592,7 +592,7 @@ fn refused_change(
         cluster_id,
         document_id,
         ..
-    }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body)
+    }) = neighbour_wire::NeighbourMsg::decode(&body)
     else {
         return None;
     };
@@ -618,7 +618,7 @@ fn changes_of(body: &[u8]) -> Vec<[u8; 32]> {
         return claimed;
     }
     let Ok(neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }) =
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+        neighbour_wire::NeighbourMsg::decode(body)
     else {
         return Vec::new();
     };

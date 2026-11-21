@@ -73,7 +73,7 @@ pub(crate) async fn read_message<R: AsyncRead + Unpin>(
     recv: &mut R,
 ) -> Result<Option<NeighbourMsg>, String> {
     match read_frame(recv, MAX_FRAME_BYTES).await? {
-        Some(bytes) => postcard::from_bytes(&bytes)
+        Some(bytes) => NeighbourMsg::decode(&bytes)
             .map(Some)
             .map_err(|error| error.to_string()),
         None => Ok(None),

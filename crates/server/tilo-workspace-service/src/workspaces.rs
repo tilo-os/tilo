@@ -2217,7 +2217,7 @@ impl Workspaces {
         // Every member's record write reaches the governor here, so this is
         // where one that does not decode is reported (the content classifier
         // that reads the same body before it leaves it to this).
-        let message = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+        let message = neighbour_wire::NeighbourMsg::decode(body)
             .map_err(|error| format!("a member's write does not decode: {error}"))?;
         // The server's own device writes records through the workspace too: the
         // actions it runs for members (a visitor linking their Discord
@@ -2707,7 +2707,7 @@ impl Workspaces {
         reason: &str,
     ) -> Result<(), String> {
         let message: neighbour_wire::NeighbourMsg =
-            postcard::from_bytes(body).map_err(|error| error.to_string())?;
+            neighbour_wire::NeighbourMsg::decode(body).map_err(|error| error.to_string())?;
         let neighbour_wire::NeighbourMsg::AppDocument { cluster_id, .. } = &message else {
             return Ok(());
         };
@@ -2906,7 +2906,7 @@ impl Workspaces {
             return;
         };
         for publication in publications {
-            match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&publication.commit.body) {
+            match neighbour_wire::NeighbourMsg::decode(&publication.commit.body) {
                 Ok(message) => {
                     if let Err(error) = link.send(message) {
                         tracing::debug!(%error, "governance did not reach the workspace's links");

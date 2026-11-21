@@ -275,6 +275,6 @@ fn server_frame_write(
         crate::coedit::CoeditPayload::decode(delta)?;
     tilo_failure::ignored!(
         "a retained body that does not decode holds no write the link could match",
-        postcard::from_bytes(&body).ok()
+        neighbour_wire::NeighbourMsg::decode(&body).ok()
     )
 }

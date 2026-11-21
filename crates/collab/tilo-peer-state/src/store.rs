@@ -609,7 +609,7 @@ impl Store {
                     for file in files(&author)? {
                         let bytes = fs::read(&file)?;
                         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                        let message = match frame_of_version(&bytes, kept) {
+                        let message = match NeighbourMsg::decode(&bytes) {
                             Ok(message) => message,
                             Err(error) => {
                                 tracing::warn!(path = %file.display(), %error, "a stored frame does not decode; it stays on disk and is not served");
@@ -642,23 +642,12 @@ impl Store {
     ) -> Result<NeighbourMsg, StoreError> {
         let path = frame_path(&self.root, workspace, lineage, entry.seq, entry.retention);
         let bytes = fs::read(&path)?;
-        Ok(postcard::from_bytes(&bytes)?)
-    }
-}
-
-/// The frame `bytes` hold, kept as version `kept` of a store's frames ([`FRAMES_VERSION`]).
-/// Version 1 kept a document write ending before the reader set version 2 ends it with
-/// ([`NeighbourMsg::from_kept`]).
-fn frame_of_version(bytes: &[u8], kept: u32) -> Result<NeighbourMsg, postcard::Error> {
-    if kept < 2 {
-        NeighbourMsg::from_kept(bytes)
-    } else {
-        postcard::from_bytes(bytes)
+        Ok(NeighbourMsg::decode(&bytes)?)
     }
 }
 
 /// The frame `message`, read from `bytes` at `file`, written again as this build writes it when
-/// it was kept in an earlier layout ([`frame_of_version`]). Answers the length kept, or `None`
+/// it was kept in an earlier layout ([`NeighbourMsg::decode`]). Answers the length kept, or `None`
 /// when the file was not written again (it is served as it reads either way).
 fn written_as_today(file: &Path, bytes: &[u8], message: &NeighbourMsg) -> Option<u64> {
     let today = postcard::to_allocvec(message).ok()?;

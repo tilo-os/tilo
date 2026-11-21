@@ -417,7 +417,7 @@ pub(crate) fn install_governance(
     let origin = TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key);
     let mut app_messages = 0usize;
     for bytes in &bootstrap.governance_messages {
-        let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+        let message: NeighbourMsg = neighbour_wire::NeighbourMsg::decode(bytes).map_err(|e| e.to_string())?;
         if matches!(message, NeighbourMsg::AppDocument { .. }) {
             app_messages = app_messages.saturating_add(1);
             continue;

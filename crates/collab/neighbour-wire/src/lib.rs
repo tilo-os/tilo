@@ -787,24 +787,26 @@ pub enum NeighbourMsg {
 }
 
 impl NeighbourMsg {
-    /// The message `bytes` hold, kept by a device or a server however long ago: a document write
-    /// kept before writes carried their reader set ends before it
-    /// ([`NeighbourMsg::AppDocument`]), and reads as naming none, the `None` a write of
-    /// today ends with there. Its envelope is the same bytes its author signed. Read live
-    /// messages with `postcard` itself: only kept bytes end early.
+    /// The message a frame `bytes` holds, whole: the one reader of a message that came from
+    /// a peer, a server or a store. A peer one version behind, and a store or a device's own
+    /// queue kept before writes carried their reader set, end a document write
+    /// ([`NeighbourMsg::AppDocument`]) before it; that write reads as naming none, the `None`
+    /// a write of today ends with there, and its envelope is the same bytes its author signed.
     ///
     /// # Errors
     ///
-    /// `bytes` are not a message, nor a document write that ends before its reader set.
-    pub fn from_kept(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        match postcard::from_bytes(bytes) {
+    /// `bytes` are not one message in either layout, or hold more after it.
+    pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
+        let (message, rest) = match postcard::take_from_bytes(bytes) {
             Err(postcard::Error::DeserializeUnexpectedEnd) if Self::is_app_document(bytes) => {
-                match Self::take_before_reader_sets(bytes)? {
-                    (message, []) => Ok(message),
-                    _ => Err(postcard::Error::DeserializeBadEncoding),
-                }
+                Self::take_before_reader_sets(bytes)?
             }
-            read => read,
+            read => read?,
+        };
+        if rest.is_empty() {
+            Ok(message)
+        } else {
+            Err(postcard::Error::DeserializeBadEncoding)
         }
     }
 
@@ -1454,15 +1456,21 @@ mod tests {
             .into_iter()
             .find(|(case, _)| *case == "signed app document")
             .unwrap();
-        let mut kept = postcard::to_allocvec(&message).unwrap();
+        let today = postcard::to_allocvec(&message).unwrap();
+        assert_eq!(NeighbourMsg::decode(&today).unwrap(), message);
+        // A frame holds one message: more after it is refused.
+        let mut longer = today.clone();
+        longer.push(0);
+        assert!(NeighbourMsg::decode(&longer).is_err());
+        let mut kept = today;
         // `None` is the last byte; that build wrote nothing there.
         assert_eq!(kept.pop(), Some(0));
         assert!(postcard::from_bytes::<NeighbourMsg>(&kept).is_err());
-        assert_eq!(NeighbourMsg::from_kept(&kept).unwrap(), message);
+        assert_eq!(NeighbourMsg::decode(&kept).unwrap(), message);
         // A message cut short anywhere else stays refused.
         let whole = kept.clone();
         kept.pop();
-        assert!(NeighbourMsg::from_kept(&kept).is_err());
+        assert!(NeighbourMsg::decode(&kept).is_err());
         // Kept among other values, the write ends where its fields do, and what follows is left.
         let mut among = whole;
         among.extend_from_slice(&[1, 0x2a]);

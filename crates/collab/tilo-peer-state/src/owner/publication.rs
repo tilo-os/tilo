@@ -601,7 +601,7 @@ fn allowed(
             break;
         }
         let message: NeighbourMsg =
-            postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+            NeighbourMsg::decode(&entry.bytes).map_err(|e| e.to_string())?;
         let NeighbourMsg::AppDocument {
             app_id,
             document_id,
@@ -961,7 +961,7 @@ pub(crate) fn add_member_changes(
 
 /// The changes a member's published workspace delta carries.
 fn member_changes(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
-    match postcard::from_bytes(bytes).map_err(|e| e.to_string())? {
+    match NeighbourMsg::decode(bytes).map_err(|e| e.to_string())? {
         NeighbourMsg::SyncResp { changes, .. } => Ok(changes),
         _ => Err("native membership publication is not a workspace delta".into()),
     }
@@ -1072,7 +1072,7 @@ fn append(view: &mut stored::StoredWorkspace, bytes: Vec<u8>) -> Result<(), Stri
         return Ok(());
     }
     let head = bounds(ownership)?;
-    let message: NeighbourMsg = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
+    let message = NeighbourMsg::decode(&bytes).map_err(|e| e.to_string())?;
     let (timestamp_ns, channel, incremental) = metadata(&message)?;
     let binding = request(&message)?.binding()?;
     let publication = view.publication.as_mut().ok_or("publication absent")?;
@@ -1348,7 +1348,7 @@ fn retired(peer: &StatePeer, message: &NeighbourMsg, device: [u8; 32]) -> Result
 pub(crate) fn decode_entries(entries: &[StoredOutgoing]) -> Result<Vec<NeighbourMsg>, String> {
     entries
         .iter()
-        .map(|entry| postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string()))
+        .map(|entry| NeighbourMsg::decode(&entry.bytes).map_err(|e| e.to_string()))
         .collect()
 }
 
@@ -1372,7 +1372,7 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
             return Err("native outgoing identity/order mismatch".into());
         }
         let message: NeighbourMsg =
-            postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+            NeighbourMsg::decode(&entry.bytes).map_err(|e| e.to_string())?;
         if publication
             .governance
             .iter()
@@ -1412,7 +1412,7 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
     if entry.incremental {
         return validate_member_changes(view, entry);
     }
-    let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+    let message = NeighbourMsg::decode(&entry.bytes).map_err(|e| e.to_string())?;
     if !matches!(&message, NeighbourMsg::SyncResp { workspace, .. } if workspace == &view.record.workspace.to_string())
         || encode(&view.peer.workspace_message(), MAX_BYTES)? != entry.bytes
         || entry.id != *blake3::hash(&entry.bytes).as_bytes()
@@ -1485,7 +1485,7 @@ fn validate_member_changes(
     view: &NativeCommittedView,
     entry: &StoredOutgoing,
 ) -> Result<(), String> {
-    let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+    let message = NeighbourMsg::decode(&entry.bytes).map_err(|e| e.to_string())?;
     let NeighbourMsg::SyncResp { changes, workspace } = &message else {
         return Err("native membership publication is not a workspace delta".into());
     };
@@ -1689,7 +1689,7 @@ pub(crate) fn retire(live: &StatePeer, view: &mut stored::StoredWorkspace) -> Re
     let mut remove = BTreeSet::new();
     for entry in &publication.entries {
         let message: NeighbourMsg =
-            postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+            NeighbourMsg::decode(&entry.bytes).map_err(|e| e.to_string())?;
         // A refused query cannot discard newly admitted revocations or prerequisites.
         if retired(live, &message, view.device.device_public_key).unwrap_or(false) {
             remove.insert(entry.id);
@@ -1713,7 +1713,7 @@ pub(crate) fn retry_covered(
     view: &stored::StoredWorkspace,
     bytes: &[u8],
 ) -> Result<bool, String> {
-    let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
+    let message = NeighbourMsg::decode(bytes).map_err(|e| e.to_string())?;
     retired(live, &message, view.device.device_public_key)
 }
 impl NativeWorkspaceOwner {
@@ -1857,7 +1857,7 @@ impl NativeWorkspaceOwner {
                     document_id,
                     envelope,
                     ..
-                }) = postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
+                }) = NeighbourMsg::decode(&entry.bytes)
                 else {
                     continue;
                 };
@@ -1948,7 +1948,7 @@ impl NativeWorkspaceOwner {
                     ..
                 }) = tilo_failure::ignored!(
                     "ownership holds governance entries too, which belong to no record",
-                    postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
+                    NeighbourMsg::decode(&entry.bytes)
                 ) {
                     let writes = writes.entry((app_id, document_id)).or_default();
                     writes.pending = writes.pending.saturating_add(1);
@@ -1993,7 +1993,7 @@ impl NativeWorkspaceOwner {
             let entries = &state_of(&view.record)?.entries;
             let originals = entries
                 .iter()
-                .map(|entry| postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string()))
+                .map(|entry| NeighbourMsg::decode(&entry.bytes).map_err(|e| e.to_string()))
                 .collect::<Result<Vec<NeighbourMsg>, String>>()?;
             let device = view.device().device_public_key;
             let drafts =
@@ -2108,7 +2108,7 @@ impl NativeWorkspaceOwner {
         self.with_current(workspace, |view| {
             let publication = state(view)?;
             let latest = publication.entries.iter().rev().find(|entry| {
-                postcard::from_bytes::<NeighbourMsg>(&entry.bytes).is_ok_and(|message| {
+                NeighbourMsg::decode(&entry.bytes).is_ok_and(|message| {
                     matches!(&message, NeighbourMsg::AppDocument { app_id, document_id, envelope, .. }
                         if app_id == app && document_id == record && envelope.kind == OpKind::Compaction
                             && !collab_types::is_compaction_segment(envelope))
@@ -2597,7 +2597,7 @@ fn next_drafted(
     else {
         return Ok(None);
     };
-    let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+    let message = NeighbourMsg::decode(&entry.bytes).map_err(|e| e.to_string())?;
     let NeighbourMsg::AppDocument {
         app_id,
         document_id,
@@ -2752,7 +2752,7 @@ fn in_place(
     id: [u8; 32],
     bytes: Vec<u8>,
 ) -> Result<(), String> {
-    let message: NeighbourMsg = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
+    let message = NeighbourMsg::decode(&bytes).map_err(|e| e.to_string())?;
     let (timestamp_ns, channel, incremental) = metadata(&message)?;
     let binding = request(&message)?.binding()?;
     let publication = view.publication.as_mut().ok_or("publication absent")?;
@@ -2779,7 +2779,7 @@ fn in_place(
 }
 /// Whether `entry` of ownership is a compaction.
 fn is_compaction(entry: &StoredOutgoing) -> bool {
-    matches!(postcard::from_bytes(&entry.bytes),
+    matches!(NeighbourMsg::decode(&entry.bytes),
         Ok(NeighbourMsg::AppDocument { envelope, .. })
             if envelope.kind == OpKind::Compaction && !collab_types::is_compaction_segment(&envelope))
 }
@@ -2802,7 +2802,7 @@ fn owed_to(
         .iter()
         .chain(&spilled)
         .chain(&publication.tail)
-        .filter_map(|entry| match postcard::from_bytes(&entry.bytes) {
+        .filter_map(|entry| match NeighbourMsg::decode(&entry.bytes) {
             Ok(NeighbourMsg::AppDocument {
                 app_id,
                 document_id,

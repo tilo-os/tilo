@@ -403,7 +403,7 @@ impl ActorState {
                     workspace,
                     |view| link.scope.authorize(view, identity),
                     |write| {
-                        postcard::from_bytes(write.bytes)
+                        NeighbourMsg::decode(write.bytes)
                             .map_err(|error| error.to_string())
                             .and_then(|message| link.link.send(message))
                             .inspect_err(|error| tracing::debug!(%error, "native publication remains in durable ownership"))
@@ -697,7 +697,7 @@ impl ActorState {
             )
             .collect();
         for (_, bytes) in backlog {
-            if let Ok(msg) = postcard::from_bytes(&bytes)
+            if let Ok(msg) = NeighbourMsg::decode(&bytes)
                 && let Err(error) = link.send(msg)
             {
                 tracing::warn!(ws = %ws, %error, "held state not sent to the workspace's link");

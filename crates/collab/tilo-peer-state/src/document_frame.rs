@@ -243,7 +243,7 @@ pub fn coalesce(mutations: Vec<DocumentMutation>) -> Vec<DocumentMutation> {
 /// host refuses it. A snapshot claims none.
 #[must_use]
 pub fn claimed_changes(body: &[u8]) -> Vec<[u8; 32]> {
-    match postcard::from_bytes::<NeighbourMsg>(body) {
+    match NeighbourMsg::decode(body) {
         Ok(NeighbourMsg::AppDocument { envelope, .. }) => {
             envelope.claims.iter().map(|claim| claim.change).collect()
         }
@@ -271,7 +271,7 @@ pub fn open_frame(
         document_id,
         envelope,
         ..
-    }) = postcard::from_bytes::<NeighbourMsg>(body)
+    }) = NeighbourMsg::decode(body)
     else {
         return Ok(None);
     };

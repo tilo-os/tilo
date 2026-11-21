@@ -243,7 +243,7 @@ fn replay_source(
             ..
         }) = tilo_failure::ignored!(
             "a retained write that does not decode is reported where the governor takes it in",
-            neighbour_wire::NeighbourMsg::from_kept(&retained.body)
+            neighbour_wire::NeighbourMsg::decode(&retained.body)
         )
         else {
             continue;

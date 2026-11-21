@@ -181,11 +181,54 @@ async fn read_link<R: tokio::io::AsyncRead + Unpin>(
     max: usize,
 ) -> Result<Option<LinkFrame>, String> {
     match crate::frames::read_frame(reader, max).await? {
-        Some(bytes) => postcard::from_bytes(&bytes)
+        Some(bytes) => LinkFrame::decode(&bytes)
             .map(Some)
             .map_err(|error| error.to_string()),
         None => Ok(None),
     }
+}
+
+impl LinkFrame {
+    /// Postcard variant index of [`LinkFrame::Frames`].
+    const FRAMES_TAG: u8 = 2;
+
+    /// The control frame `bytes` holds, whole. A device one peer version behind writes the
+    /// messages of [`LinkFrame::Frames`] as [`NeighbourMsg::decode`] reads them, a document
+    /// write ending before its reader set; nothing marks where one ends among the others, so
+    /// a frame that does not read as today's is read in that layout.
+    fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
+        let today = postcard::take_from_bytes(bytes);
+        if let Ok((frame, [])) = today {
+            return Ok(frame);
+        }
+        let Some(mut rest) = bytes.strip_prefix(&[Self::FRAMES_TAG]) else {
+            return today.and(Err(postcard::Error::DeserializeBadEncoding));
+        };
+        let count;
+        (count, rest) = postcard::take_from_bytes::<usize>(rest)?;
+        let mut frames = Vec::with_capacity(count.min(rest.len()));
+        for _ in 0..count {
+            let (from, after) = rest
+                .split_first_chunk::<32>()
+                .ok_or(postcard::Error::DeserializeUnexpectedEnd)?;
+            let (message, after) = NeighbourMsg::take_before_reader_sets(after)?;
+            frames.push((*from, message));
+            rest = after;
+        }
+        match postcard::take_from_bytes::<bool>(rest)? {
+            (more, []) => Ok(Self::Frames { frames, more }),
+            _ => Err(postcard::Error::DeserializeBadEncoding),
+        }
+    }
+}
+
+/// The message an authored frame `bytes` holds, with the device that wrote it, read as
+/// [`NeighbourMsg::decode`] reads a message.
+fn decode_authored(bytes: &[u8]) -> Result<([u8; 32], NeighbourMsg), postcard::Error> {
+    let (from, message) = bytes
+        .split_first_chunk::<32>()
+        .ok_or(postcard::Error::DeserializeUnexpectedEnd)?;
+    Ok((*from, NeighbourMsg::decode(message)?))
 }
 
 /// A device's replica, shared by the device's engine and its direct links.
@@ -2537,7 +2580,7 @@ async fn write_authored(send: &mut SendStream, authored: &Authored) -> Result<()
 /// other side finished its stream.
 async fn read_authored(recv: &mut RecvStream) -> Result<Option<Authored>, String> {
     match crate::frames::read_frame(recv, MAX_FRAME_BYTES).await? {
-        Some(bytes) => postcard::from_bytes::<([u8; 32], NeighbourMsg)>(&bytes)
+        Some(bytes) => decode_authored(&bytes)
             .map(|(from, message)| {
                 Some(Authored {
                     from,

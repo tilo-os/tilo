@@ -688,7 +688,7 @@ async fn index_retained_checkpoint(
         BTreeMap::from([("title".into(), Cell::One(Value::Text("First".into())))]),
     );
     let [body]: [Vec<u8>; 1] = bodies.try_into().unwrap();
-    let message = NeighbourMsg::from_kept(&body).unwrap();
+    let message = NeighbourMsg::decode(&body).unwrap();
     let NeighbourMsg::AppDocument { envelope, .. } = &message else {
         panic!("a store document checkpoint");
     };
@@ -966,7 +966,7 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
         .unwrap();
     assert!(retained.iter().any(|frame| {
         frame.author == cert.device_public_key
-            && matches!(NeighbourMsg::from_kept(&frame.body), Ok(NeighbourMsg::AppDocument {
+            && matches!(NeighbourMsg::decode(&frame.body), Ok(NeighbourMsg::AppDocument {
                 app_id, envelope, ..
             }) if app_id == APP && envelope.is_whole_resource())
     }));

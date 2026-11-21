@@ -145,7 +145,7 @@ impl GovernedWorkspace {
     ) -> (Vec<publisher::Publication>, Result<(), String>) {
         let mut publications = Vec::new();
         while let Some(entry) = self.record.outgoing.get(self.record.published) {
-            let channel = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&entry.bytes)
+            let channel = neighbour_wire::NeighbourMsg::decode(&entry.bytes)
                 .map_err(|error| error.to_string())
                 .and_then(|message| {
                     neighbour_wire::retention(&message, entry.checkpoint)
@@ -424,7 +424,7 @@ impl Workspaces {
         }
         // A body that is not a message is reported where the governor takes
         // it in; and one that is no record write is decided elsewhere.
-        let message: neighbour_wire::NeighbourMsg = postcard::from_bytes(body).ok()?;
+        let message = neighbour_wire::NeighbourMsg::decode(body).ok()?;
         if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
             return None;
         }

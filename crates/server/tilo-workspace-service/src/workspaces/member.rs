@@ -264,7 +264,7 @@ fn take_governance(
         tilo_peer_state::TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key);
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg =
-            postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
+            NeighbourMsg::decode(bytes).map_err(|error| error.to_string())?;
         if matches!(message, NeighbourMsg::AppDocument { .. }) {
             continue;
         }
@@ -798,7 +798,7 @@ impl Workspaces {
             .durable()
             .await?;
         let message: NeighbourMsg =
-            postcard::from_bytes(&body).map_err(|error| error.to_string())?;
+            NeighbourMsg::decode(&body).map_err(|error| error.to_string())?;
         // This device's own write is this copy's from the moment it is made, as the engine's was:
         // the device serving the workspace carries it to the workspace's other members, and what
         // it sends back may reach this copy later.
@@ -1399,7 +1399,7 @@ impl Workspaces {
             .retained(governed.workspace_id())
             .await?;
         for frame in retained {
-            let Ok(message) = NeighbourMsg::from_kept(&frame.body) else {
+            let Ok(message) = NeighbourMsg::decode(&frame.body) else {
                 continue;
             };
             if matches!(&message, NeighbourMsg::AppDocument { document_id, .. }
@@ -1474,7 +1474,7 @@ impl Workspaces {
                 for answer in workspaces.content_answer(&name, &frame.author, &body) {
                     let Ok(message) = tilo_failure::ignored!(
                         "a content answer this device made itself does not decode",
-                        postcard::from_bytes::<NeighbourMsg>(&answer)
+                        NeighbourMsg::decode(&answer)
                     ) else {
                         continue;
                     };

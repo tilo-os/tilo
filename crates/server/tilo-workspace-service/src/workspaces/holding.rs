@@ -159,7 +159,7 @@ fn take_governance(
     let origin = TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key);
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg =
-            postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
+            NeighbourMsg::decode(bytes).map_err(|error| error.to_string())?;
         if matches!(message, NeighbourMsg::AppDocument { .. }) {
             continue;
         }

@@ -22,7 +22,7 @@ pub(crate) use tilo_desktop_model::shared_resource::guard::is_desktop;
 /// it.
 pub(crate) fn writes_desktop(body: &[u8]) -> bool {
     matches!(
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
+        neighbour_wire::NeighbourMsg::decode(body),
         Ok(neighbour_wire::NeighbourMsg::AppDocument { app_id, document_id, .. })
             if is_desktop(&app_id, &document_id)
     )
@@ -179,7 +179,7 @@ impl Workspaces {
             ..
         }) = tilo_failure::ignored!(
             "a classifier: a write that does not decode is reported where the governor takes it in",
-            postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+            neighbour_wire::NeighbourMsg::decode(body)
         )
         else {
             return Ok(());

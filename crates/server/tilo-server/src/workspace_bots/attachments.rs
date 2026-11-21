@@ -529,7 +529,7 @@ impl ContentKeeper for WorkspaceAttachments {
         }
         // A file over the cap is not taken in piece by piece either.
         if let Ok(neighbour_wire::NeighbourMsg::DocumentContentPiece { total, .. }) =
-            postcard::from_bytes(frame)
+            neighbour_wire::NeighbourMsg::decode(frame)
             && total > self.limits.file_bytes
         {
             return;
@@ -543,7 +543,7 @@ impl ContentKeeper for WorkspaceAttachments {
     fn expects(&self, workspace: &str, frame: &[u8]) -> bool {
         workspace == self.workspace
             && !matches!(
-                postcard::from_bytes(frame),
+                neighbour_wire::NeighbourMsg::decode(frame),
                 Ok(neighbour_wire::NeighbourMsg::DocumentContentPiece { total, .. })
                     if total > self.limits.file_bytes
             )

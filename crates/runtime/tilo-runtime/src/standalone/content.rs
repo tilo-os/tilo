@@ -144,7 +144,7 @@ struct MemberContent(Arc<RouteContent>);
 
 impl ContentKeeper for MemberContent {
     fn piece(&self, _workspace: &str, _from: [u8; 32], frame: &[u8]) {
-        match postcard::from_bytes::<NeighbourMsg>(frame) {
+        match NeighbourMsg::decode(frame) {
             Ok(NeighbourMsg::DocumentContentPiece {
                 app_id,
                 cluster_id,
@@ -185,7 +185,7 @@ impl ContentKeeper for MemberContent {
     }
 
     fn expects(&self, _workspace: &str, frame: &[u8]) -> bool {
-        match postcard::from_bytes::<NeighbourMsg>(frame) {
+        match NeighbourMsg::decode(frame) {
             Ok(
                 NeighbourMsg::DocumentContentPiece {
                     app_id,

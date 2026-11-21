@@ -379,7 +379,7 @@ fn carries_channel_access(envelope: &Envelope) -> bool {
         return false;
     };
     matches!(
-        postcard::from_bytes::<NeighbourMsg>(&body),
+        NeighbourMsg::decode(&body),
         Ok(NeighbourMsg::MlsAccessRequest { .. })
     )
 }
@@ -394,7 +394,7 @@ fn device_checkpoint_steps(delta: &[u8]) -> (&'static str, &'static str) {
     else {
         return plain;
     };
-    match postcard::from_bytes::<NeighbourMsg>(&body) {
+    match NeighbourMsg::decode(&body) {
         Ok(NeighbourMsg::MlsAccessRequest { .. }) => (
             "state.checkpoint.request.persist",
             "state.checkpoint.request.publish",

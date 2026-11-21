@@ -345,7 +345,7 @@ impl WorkspaceDocuments {
             .into_iter()
             .filter_map(|retained| {
                 let message: neighbour_wire::NeighbourMsg =
-                    postcard::from_bytes(&retained.body).ok()?;
+                    neighbour_wire::NeighbourMsg::decode(&retained.body).ok()?;
                 message
                     .governance_workspace()
                     .is_some()

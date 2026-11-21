@@ -31,7 +31,7 @@ impl ShellPayloads for NeighbourPayloads {
             own,
             readers,
             ..
-        }) = postcard::from_bytes::<NeighbourMsg>(body)
+        }) = NeighbourMsg::decode(body)
         else {
             return None;
         };
@@ -81,9 +81,8 @@ impl ShellPayloads for NeighbourPayloads {
     }
 
     fn checkpoint(&self, channel: &[u8; 32], body: &[u8]) -> Option<Checkpoint> {
-        let (msg, trailing) = postcard::take_from_bytes::<NeighbourMsg>(body).ok()?;
-        if !trailing.is_empty() || retention(&msg, false) != Some((*channel, Retention::Checkpoint))
-        {
+        let msg = NeighbourMsg::decode(body).ok()?;
+        if retention(&msg, false) != Some((*channel, Retention::Checkpoint)) {
             return None;
         }
         let kind = match &msg {
@@ -102,7 +101,7 @@ impl ShellPayloads for NeighbourPayloads {
         if !NeighbourMsg::is_governance(body) {
             return None;
         }
-        let msg = postcard::from_bytes::<NeighbourMsg>(body).ok()?;
+        let msg = NeighbourMsg::decode(body).ok()?;
         let devices = audience(&msg)?;
         Some(devices.iter().map(|device| *device.as_bytes()).collect())
     }
@@ -118,7 +117,7 @@ impl ShellPayloads for NeighbourPayloads {
         tilo_user_identity::DeviceCert,
         Vec<tilo_user_identity::RevocationEntry>,
     )> {
-        match postcard::from_bytes::<NeighbourMsg>(body).ok()? {
+        match NeighbourMsg::decode(body).ok()? {
             NeighbourMsg::IdentityHello {
                 cert, revocations, ..
             } => Some((*cert, revocations)),
@@ -130,7 +129,7 @@ impl ShellPayloads for NeighbourPayloads {
         if !NeighbourMsg::is_app_document(body) {
             return None;
         }
-        let NeighbourMsg::AppDocument { envelope, .. } = postcard::from_bytes(body).ok()? else {
+        let NeighbourMsg::AppDocument { envelope, .. } = NeighbourMsg::decode(body).ok()? else {
             return None;
         };
         let compaction = collab_types::SealedCompaction::parse(&envelope).ok()?;

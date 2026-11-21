@@ -384,7 +384,7 @@ impl Task {
         body: &[u8],
         author: [u8; 32],
     ) {
-        match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) {
+        match neighbour_wire::NeighbourMsg::decode(body) {
             Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, workspace }) => {
                 self.gather_governance(workspace_id, author, workspace, changes);
             }

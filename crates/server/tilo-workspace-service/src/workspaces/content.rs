@@ -446,7 +446,7 @@ impl Workspaces {
             .await?;
         if let Ok(message) = tilo_failure::ignored!(
             "the body is the host's own request, which it just encoded",
-            postcard::from_bytes::<NeighbourMsg>(&body)
+            NeighbourMsg::decode(&body)
         ) && let Some(link) = self.inner.direct.link(workspace_id)
             && let Err(error) = link.send(message)
         {
@@ -463,7 +463,7 @@ impl Workspaces {
     /// surfaces is the workspace's content store, never a registry.
     pub fn content_answer(&self, workspace: &str, asker: &[u8; 32], body: &[u8]) -> Vec<Vec<u8>> {
         if !matches!(
-            postcard::from_bytes(body),
+            NeighbourMsg::decode(body),
             Ok(NeighbourMsg::DocumentContentWant { cluster_id, .. }) if cluster_id == workspace
         ) {
             return Vec::new();

@@ -100,6 +100,18 @@ struct SurfaceWireFrame {
     message: NeighbourMsg,
 }
 
+impl SurfaceWireFrame {
+    /// The frame `bytes` holds, its message read as [`NeighbourMsg::decode`] reads one, so a
+    /// device one peer version behind is heard too.
+    fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
+        let (workspace, message) = postcard::take_from_bytes(bytes)?;
+        Ok(Self {
+            workspace,
+            message: NeighbourMsg::decode(message)?,
+        })
+    }
+}
+
 /// Versioned private-device traffic. It travels directly between two of
 /// the person's devices, each frame on a bidirectional stream of the
 /// connection their session runs on ([`device_sessions`],
@@ -712,7 +724,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         continue;
                     }
                 };
-                let Ok(frame) = postcard::from_bytes::<SurfaceWireFrame>(&bytes) else {
+                let Ok(frame) = SurfaceWireFrame::decode(&bytes) else {
                     tracing::warn!(peer = %peer, "invalid dedicated surface frame");
                     continue;
                 };
@@ -3658,7 +3670,7 @@ fn host_event(
                 return None;
             };
             let fingerprint = message_fingerprint(&data);
-            let Ok(msg) = postcard::from_bytes(&data) else {
+            let Ok(msg) = NeighbourMsg::decode(&data) else {
                 return None;
             };
             HostEvent::Message {
@@ -3831,7 +3843,7 @@ fn spawn_direct_pump(
 /// direct route here.
 fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     let author = EndpointId::from_bytes(from).ok()?;
-    let msg = postcard::from_bytes(frame).ok()?;
+    let msg = NeighbourMsg::decode(frame).ok()?;
     let fingerprint = match msg {
         NeighbourMsg::DocumentContentPiece { .. }
         | NeighbourMsg::DocumentContentLacks { .. }

@@ -71,6 +71,20 @@ enum Frame {
     Msg(NeighbourMsg),
 }
 
+impl Frame {
+    /// Postcard variant index of [`Frame::Msg`].
+    const MSG_TAG: u8 = 1;
+
+    /// The frame `bytes` holds, its message read as [`NeighbourMsg::decode`] reads one, so a
+    /// device one peer version behind is heard too.
+    fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
+        match bytes.strip_prefix(&[Self::MSG_TAG]) {
+            Some(message) => NeighbourMsg::decode(message).map(Self::Msg),
+            None => postcard::from_bytes(bytes),
+        }
+    }
+}
+
 /// What the other device sent on the session's stream.
 #[derive(Debug)]
 pub(super) enum Heard {
@@ -576,7 +590,7 @@ async fn read_frame(recv: &mut RecvStream) -> Result<Frame, String> {
     recv.read_exact(&mut bytes)
         .await
         .map_err(|error| error.to_string())?;
-    postcard::from_bytes(&bytes).map_err(|error| error.to_string())
+    Frame::decode(&bytes).map_err(|error| error.to_string())
 }
 
 fn hello_fingerprint(hello: &Hello) -> [u8; 32] {
