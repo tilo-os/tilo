@@ -249,8 +249,8 @@ tilo_test_env::scenario! {
             tilo_device_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
             user
         );
-        let record =
-            tilo_identity::store::load_from_path(identity_record_path(identity_dir.path(), user)).unwrap();
+        let record = tilo_identity_client::resolve_active_identity(identity_dir.path()).unwrap();
+        let record = tilo_identity::store::load_from_path(record).unwrap();
         assert_eq!(record.group_public_key(), user);
         assert!(record.sign(b"root-only operation").is_err());
 
@@ -356,36 +356,6 @@ tilo_test_env::scenario! {
         );
         assert!(accepting(&other_identity, &hex::encode(user)).is_err());
         assert!(accepting(b"[]", &hex::encode(user)).is_err());
-    }
-}
-
-fn personal_payload(
-    root: &ed25519_dalek::SigningKey,
-    device: &ed25519_dalek::SigningKey,
-    nonce: [u8; 16],
-) -> ResponsePayload {
-    let user = root.verifying_key().to_bytes();
-    let mut cert = DeviceCert {
-        user_public_key: user,
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "New laptop".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    let fleet = fleet_document(&hex::encode(user), vec![cert.clone()], Vec::new());
-    ResponsePayload {
-        nonce,
-        recipient_device_public_key: cert.device_public_key,
-        server_node_id: [8; 32],
-        cert,
-        home_peer_toml: None,
-        public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
-        fleet_json: Some(fleet),
-        home_peers_json: Some(b"[]".to_vec()),
     }
 }
 
@@ -736,412 +706,38 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
-fn personal_projection_publishes_only_live_valid_identity_state() {
-    // Phase `personal_enrollment_staging_keeps_an_existing_device_unchanged`.
-    fn personal_enrollment_staging_keeps_an_existing_device_unchanged() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
-        let old_root = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
-        let old_device = ed25519_dalek::SigningKey::from_bytes(&[54; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(identity_root.path());
-        paths.ensure_directories().unwrap();
-        tilo_device_identity::persist::write_public_key(
-            &paths.user_pubkey,
-            &old_root.verifying_key().to_bytes(),
-        )
+fn pair_device_rejects_an_expired_requester_before_creating_identity_state() {
+    let mut requester = std::process::Command::new("/bin/cat")
+        .stdin(std::process::Stdio::piped())
+        .spawn_locked()
         .unwrap();
-        let mut old_cert = DeviceCert {
-            user_public_key: old_root.verifying_key().to_bytes(),
-            device_public_key: old_device.verifying_key().to_bytes(),
-            device_label: "Existing device".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut old_cert, &old_root).unwrap();
-        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &old_cert).unwrap();
-        let before_key = std::fs::read(&paths.user_pubkey).unwrap();
-        let before_cert = std::fs::read(&paths.device_cert).unwrap();
+    let lease = tilo_server::ProcessLease::capture(requester.id()).unwrap();
+    requester.kill().unwrap();
+    requester.wait().unwrap();
 
-        // Keep one live requester on its stdin pipe. Killing a shell loop
-        // leaves its timer child holding the test's output handles.
-        let mut requester = std::process::Command::new("/bin/cat")
-            .stdin(std::process::Stdio::piped())
-            .spawn_locked()
-            .unwrap();
-        let lease = tilo_server::ProcessLease::capture(requester.id()).unwrap();
-        let payload = personal_payload(&root, &member, [9; 16]);
-        let (marker_path, marker) = stage_personal_enrollment(
-            identity_root.path(),
-            identity_dir.path(),
-            &paths,
-            &payload,
-            Some(lease),
-        )
-        .unwrap();
-        // This models an approval timeout: the recipient has a durable,
-        // retryable staging marker but no active identity mutation.
-        assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
-        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-        assert!(marker_path.exists());
-        // A timeout/restart must not turn a merely prepared response into an
-        // active enrollment.
-        recover_personal_enrollments(
-            identity_root.path(),
-            identity_dir.path(),
-            &paths,
-            |_| Ok(()),
-        )
-        .unwrap();
-        assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
-        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-        let personal_peers = tilo_server_protocol::personal_device_peer_path(identity_root.path());
-        assert!(
-            !personal_peers.exists(),
-            "an unconfirmed enrollment records no personal device"
-        );
-
-        let marker = authorize_personal_commit(&marker_path, &marker, Some(lease)).unwrap();
-        assert!(
-            commit_staged_personal_enrollment(
-                identity_root.path(),
-                &paths,
-                &marker_path,
-                &marker,
-                |checkpoint| {
-                    lease.validate()?;
-                    if checkpoint == PersonalCommitCheckpoint::DefaultCert {
-                        bail!("simulated crash before default certificate")
-                    }
-                    Ok(())
-                },
-            )
-            .is_err()
-        );
-        assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
-        // First use reads a selected joined identity as a finished join;
-        // an interrupted commit has selected nothing yet.
-        assert_eq!(
-            tilo_identity_client::resolve_active_identity(identity_dir.path()),
+    let identity_root = tempfile::tempdir().unwrap();
+    let identity_dir = tempfile::tempdir().unwrap();
+    assert!(
+        pair(
+            JoinOptions {
+                identity_root: identity_root.path(),
+                label: "New laptop",
+                timeout: 1,
+                kind: EnrollmentKind::PersonalDevice,
+                home_peer_output: None,
+                identity_dir: Some(identity_dir.path()),
+                requester_lease: Some(lease),
+                port: 0,
+                recovery_key: None,
+            },
             None,
-            "an unfinished join selected its identity"
-        );
-        requester.kill().unwrap();
-        requester.wait().unwrap();
-        assert!(lease.validate().is_err());
-        // `commit_ready` is the durable boundary: Finalized and the original
-        // live lease were authenticated before it was written. A subsequent
-        // explicit retry may complete that exact transaction under its own
-        // live lease rather than leaving mixed durable state.
-        let retry_lease = tilo_server::ProcessLease::capture(std::process::id()).unwrap();
-        // A root-run commit may run under a strict umask (the pairing
-        // helper's, or a script's); the public files stay readable.
-        // SAFETY: umask has no preconditions; this test process is alone.
-        let umask = unsafe { libc::umask(0o077) };
-        let recovered =
-            recover_personal_enrollments(identity_root.path(), identity_dir.path(), &paths, |_| {
-                retry_lease.validate().map_err(Into::into)
-            });
-        // SAFETY: as above, restoring the previous mask.
-        unsafe { libc::umask(umask) };
-        recovered.unwrap();
-        for public in [
-            paths.user_pubkey.clone(),
-            paths.device_cert.clone(),
-            paths.device_cert_for_user(&root.verifying_key().to_bytes()),
-            personal_peers.clone(),
-        ] {
-            use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(
-                std::fs::metadata(&public).unwrap().permissions().mode() & 0o777,
-                tilo_device_identity::persist::PUBLIC_FILE_MODE,
-                "{} is not readable to the session",
-                public.display()
-            );
-        }
-        assert_eq!(
-            std::fs::read(&paths.user_pubkey).unwrap(),
-            root.verifying_key().to_bytes()
-        );
-        assert_eq!(
-            tilo_device_identity::persist::read_device_cert(&paths.device_cert)
-                .unwrap()
-                .device_public_key,
-            member.verifying_key().to_bytes()
-        );
-        let recorded: Vec<String> =
-            serde_json::from_slice(&std::fs::read(&personal_peers).unwrap()).unwrap();
-        assert_eq!(
-            recorded,
-            vec![hex::encode(member.verifying_key().to_bytes())]
-        );
-        assert!(
-            tilo_identity_client::resolve_active_identity(identity_dir.path()).is_some(),
-            "the finished join selects its identity"
-        );
-        // What the runtime starts the identity from is the registry this
-        // wrote, read by the code that reads it: a field it does not know
-        // keeps the member it holds from starting at all.
-        let registry = tilo_identity::registry::IdentityRegistryStore::at(identity_dir.path())
-            .load()
-            .expect("the registry this join wrote is one the runtime reads");
-        let (id, _) = registry
-            .identities
-            .iter()
-            .next()
-            .expect("the join registered the identity it selected");
-        assert_eq!(*id, hex::encode(root.verifying_key().to_bytes()));
-    }
-    // Phase `personal_projection_loads_without_root_signing_material`.
-    {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
-        let user = root.verifying_key().to_bytes();
-        let device = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: user,
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "New laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let payload = ResponsePayload {
-            nonce: [1; 16],
-            recipient_device_public_key: cert.device_public_key,
-            server_node_id: [8; 32],
-            cert: cert.clone(),
-            home_peer_toml: None,
-            public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
-            fleet_json: Some(fleet_document(&hex::encode(user), vec![cert], Vec::new())),
-            home_peers_json: Some(b"[]".to_vec()),
-        };
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let record =
-            install_personal_projection(identity_root.path(), identity_dir.path(), &payload)
-                .unwrap();
-        // The joined identity is what this device acts for from the next
-        // login on, not an absent default that asks to create one.
-        assert_eq!(
-            tilo_identity_client::resolve_active_identity(identity_dir.path()),
-            Some(record.clone())
-        );
-        let loaded = tilo_identity::store::load_from_path(record).unwrap();
-        assert_eq!(loaded.group_public_key(), user);
-        assert!(!loaded.is_single_device());
-        assert!(loaded.sign(b"root-only operation").is_err());
-        assert_eq!(
-            std::fs::read(tilo_server::home_peer_registry_path(identity_root.path())).unwrap(),
-            b"[]"
-        );
-        let registry: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(identity_dir.path().join("registry.json")).unwrap(),
         )
-        .unwrap();
-        assert_eq!(registry["default_identity"], hex::encode(user));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt as _;
-            let uid = rustix::process::geteuid().as_raw();
-            assert_eq!(
-                std::fs::metadata(identity_dir.path().join("registry.json"))
-                    .unwrap()
-                    .uid(),
-                uid
-            );
-            assert_eq!(
-                std::fs::metadata(
-                    fleet_store(identity_root.path(), identity_dir.path(), None)
-                        .fleet_file(&hex::encode(user))
-                )
-                .unwrap()
-                .uid(),
-                uid
-            );
-        }
-    }
-    // Phase `personal_projection_merges_and_preserves_unrelated_home_peers`.
-    {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
-        let other_root = ed25519_dalek::SigningKey::from_bytes(&[63; 32]);
-        let other_device = ed25519_dalek::SigningKey::from_bytes(&[64; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        let mut other_cert = DeviceCert {
-            user_public_key: other_root.verifying_key().to_bytes(),
-            device_public_key: other_device.verifying_key().to_bytes(),
-            device_label: "Other identity home".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut other_cert, &other_root).unwrap();
-        let other = HomePeerRegistration {
-            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: hex::encode(other_cert.device_public_key),
-            server_node_id: hex::encode([65; 32]),
-            server_endpoint: None,
-            label: other_cert.device_label.clone(),
-            user_public_key: hex::encode(other_cert.user_public_key),
-            device_cert: Some(other_cert),
-            server_workspace_ids: vec![WorkspaceId::from_u128(7)],
-        };
-        tilo_files::native::atomic::write_creating_parent(
-            &tilo_server::home_peer_registry_path(identity_root.path()),
-            &serde_json::to_vec_pretty(&vec![other.clone()]).unwrap(),
-        )
-        .unwrap();
-        install_personal_projection(
-            identity_root.path(),
-            identity_dir.path(),
-            &personal_payload(&root, &member, [10; 16]),
-        )
-        .unwrap();
-        let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
-            &std::fs::read(tilo_server::home_peer_registry_path(identity_root.path())).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(peers, vec![other]);
-    }
-    // Phase `home_peer_projection_rejects_future_schemas_and_forged_device_ids`.
-    {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Verified home peer".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let mut registration = HomePeerRegistration {
-            schema_version: HomePeerRegistration::CURRENT_SCHEMA,
-            device_node_id: hex::encode(cert.device_public_key),
-            server_node_id: hex::encode([83; 32]),
-            server_endpoint: None,
-            label: cert.device_label.clone(),
-            user_public_key: hex::encode(cert.user_public_key),
-            device_cert: Some(cert),
-            server_workspace_ids: vec![WorkspaceId::from_u128(7)],
-        };
-        let registry = |registration: &HomePeerRegistration| {
-            tilo_server::checked_home_peers(&serde_json::to_vec(&[registration]).unwrap())
-        };
-        assert!(registry(&registration).is_ok());
-
-        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA.saturating_add(1);
-        assert!(registry(&registration).is_err());
-
-        registration.schema_version = HomePeerRegistration::CURRENT_SCHEMA;
-        registration.device_node_id = hex::encode([84; 32]);
-        assert!(registry(&registration).is_err());
-    }
-    // Phase `personal_enrollment_staging_keeps_an_existing_device_unchanged` (defined above).
-    personal_enrollment_staging_keeps_an_existing_device_unchanged();
-    // Phase `expired_requester_lease_blocks_personal_identity_publication`.
-    {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
-        let member = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_parent = tempfile::tempdir().unwrap();
-        let identity_dir = identity_parent.path().join("identities");
-        let paths = IdentityPaths::under(identity_root.path());
-        paths.ensure_directories().unwrap();
-        let mut requester = std::process::Command::new("/bin/cat")
-            .stdin(std::process::Stdio::piped())
-            .spawn_locked()
-            .unwrap();
-        let lease = tilo_server::ProcessLease::capture(requester.id()).unwrap();
-        let payload = personal_payload(&root, &member, [12; 16]);
-        let (marker_path, marker) = stage_personal_enrollment(
-            identity_root.path(),
-            &identity_dir,
-            &paths,
-            &payload,
-            Some(lease),
-        )
-        .unwrap();
-        let unrelated = tilo_server::ProcessLease::capture(std::process::id()).unwrap();
-        assert!(
-            authorize_personal_commit(&marker_path, &marker, Some(unrelated)).is_err(),
-            "another live requester cannot adopt a prepared enrollment"
-        );
-        requester.kill().unwrap();
-        requester.wait().unwrap();
-
-        assert!(
-            authorize_personal_commit(&marker_path, &marker, Some(lease)).is_err(),
-            "a dead compositor cannot cross the durable commit point"
-        );
-        let mut simulated_ready = marker;
-        simulated_ready.commit_ready = true;
-        assert!(
-            commit_staged_personal_enrollment(
-                identity_root.path(),
-                &paths,
-                &marker_path,
-                &simulated_ready,
-                |_| lease.validate().map_err(Into::into),
-            )
-            .is_err()
-        );
-        assert!(!identity_dir.exists());
-        assert!(!paths.user_pubkey.exists());
-        assert!(!paths.device_cert.exists());
-        assert!(marker_path.exists(), "staging remains retryable");
-    }
-    // Phase `pair_device_rejects_an_expired_requester_before_creating_identity_state`.
-    {
-        let mut requester = std::process::Command::new("/bin/cat")
-            .stdin(std::process::Stdio::piped())
-            .spawn_locked()
-            .unwrap();
-        let lease = tilo_server::ProcessLease::capture(requester.id()).unwrap();
-        requester.kill().unwrap();
-        requester.wait().unwrap();
-
-        let identity_root = tempfile::tempdir().unwrap();
-        let identity_dir = tempfile::tempdir().unwrap();
-        assert!(
-            pair(
-                JoinOptions {
-                    identity_root: identity_root.path(),
-                    label: "New laptop",
-                    timeout: 1,
-                    kind: EnrollmentKind::PersonalDevice,
-                    home_peer_output: None,
-                    identity_dir: Some(identity_dir.path()),
-                    requester_lease: Some(lease),
-                    port: 0,
-                    recovery_key: None,
-                },
-                None,
-            )
-            .is_err()
-        );
-        let paths = IdentityPaths::under(identity_root.path());
-        assert!(!paths.device_privkey.exists());
-        assert!(!paths.user_pubkey.exists());
-        assert!(!paths.device_cert.exists());
-    }
+        .is_err()
+    );
+    let paths = IdentityPaths::under(identity_root.path());
+    assert!(!paths.device_privkey.exists());
+    assert!(!paths.user_pubkey.exists());
+    assert!(!paths.device_cert.exists());
 }
 
 #[test]
@@ -1293,7 +889,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     .unwrap();
     assert_eq!(peers.len(), 1);
     assert_eq!(peers[0].server_node_id, hex::encode([43; 32]));
-    let record = identity_record_path(new_identities.path(), root.verifying_key().to_bytes());
+    let record = tilo_identity_client::resolve_active_identity(new_identities.path()).unwrap();
     let identity = tilo_identity::store::load_from_path(record).unwrap();
     assert!(
         identity
@@ -1504,40 +1100,6 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
             .any(|listed| listed.device_public_key == cert.device_public_key),
         "the member lists the device it introduced"
     );
-}
-
-/// A name planted in the shared staging area, as a link to somewhere
-/// else, is never staged into: the join takes another, private name, and
-/// a commit refuses staging that is not its own private directory.
-#[cfg(unix)]
-#[test]
-fn staging_never_follows_a_planted_name() {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-    let identity_root = tempfile::tempdir().unwrap();
-    let elsewhere = tempfile::tempdir().unwrap();
-    let staging = enrollment_stage_dir(identity_root.path());
-    std::fs::create_dir_all(&staging).unwrap();
-    std::os::unix::fs::symlink(elsewhere.path(), staging.join("personal-planted")).unwrap();
-
-    let mut names = ["personal-planted", "personal-fresh"].into_iter();
-    let (name, stage_dir) =
-        create_stage_dir(identity_root.path(), || names.next().unwrap().to_owned()).unwrap();
-    assert_eq!(name, "personal-fresh");
-    let metadata = std::fs::symlink_metadata(&stage_dir).unwrap();
-    assert!(metadata.is_dir());
-    assert_eq!(metadata.mode() & 0o777, 0o700);
-    assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
-    private_stage_dir(identity_root.path(), &name).unwrap();
-
-    let taken = create_stage_dir(identity_root.path(), || "personal-planted".to_owned());
-    assert!(taken.is_err());
-    assert!(private_stage_dir(identity_root.path(), "personal-planted").is_err());
-    assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
-
-    std::fs::set_permissions(&stage_dir, std::fs::Permissions::from_mode(0o750)).unwrap();
-    assert!(private_stage_dir(identity_root.path(), &name).is_err());
-    assert!(private_stage_dir(identity_root.path(), "..").is_err());
 }
 
 tilo_test_env::scenario! {

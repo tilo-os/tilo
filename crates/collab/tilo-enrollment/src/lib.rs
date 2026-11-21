@@ -5,7 +5,8 @@
 //! This crate is the protocol both ends speak — the messages, their sealing,
 //! the answer that admits a machine and the certificate it gains — and the
 //! serving side: what a device of the person's does when a machine dials it
-//! over the internet, whoever is there to answer. The image's helper
+//! over the internet, whoever is there to answer. It also installs the
+//! verified answer on the joining native device. The image's helper
 //! (`tilo-enroll`) and the person's session both call it, so an enrollment is
 //! one implementation, not one per surface.
 //!
@@ -13,6 +14,8 @@
 //! ([`tilo_identity::enrollment`]); the enrollment itself is the same.
 
 pub mod approval;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod install;
 pub mod protocol;
 pub mod root;
 pub mod transport;
