@@ -1268,7 +1268,7 @@ doc = false
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = [] }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
 "tilo-frame-metrics" = { path = "../../../crates/session/frame-metrics", default-features = false, features = [] }
-"tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem"] }
+"tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem", "tree-sync"] }
 "tilo-fs-client" = { path = "../../../crates/runtime/tilo-fs-client", default-features = false, features = [] }
 "tilo-handoff" = { path = "../../../crates/platform/tilo-handoff", default-features = false, features = ["default", "peer", "test-support"] }
 "tilo-headless-schema" = { path = "../../../crates/dev/headless-schema", default-features = false, features = [] }
@@ -2506,7 +2506,7 @@ doc = false
 "tilo-failure" = { path = "../../../crates/platform/tilo-failure", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-formats" = { path = "../../../crates/sdk/tilo-formats", default-features = false, features = [] }
-"tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem"] }
+"tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = ["default", "document-media", "filesystem", "tree-sync"] }
 "tilo-fs-client" = { path = "../../../crates/runtime/tilo-fs-client", default-features = false, features = [] }
 "tilo-headless-schema" = { path = "../../../crates/dev/headless-schema", default-features = false, features = [] }
 "tilo-history" = { path = "../../../crates/sdk/tilo-history", default-features = false, features = [] }
