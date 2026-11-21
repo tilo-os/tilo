@@ -63,7 +63,6 @@ service = [
     "dep:tempfile",
     "dep:tilo-ask-password",
     "dep:tilo-clock",
-    "dep:tilo-files",
     "dep:tilo-identity",
     "dep:tilo-nm",
     "dep:tilo-rollback",
@@ -105,7 +104,8 @@ tempfile = { workspace = true, optional = true }
 tilo-ask-password = { path = "../ask-password", optional = true }
 # When this boot's volume opened, in the note the booted system reads.
 tilo-clock = { path = "../../platform/tilo-clock", optional = true }
-tilo-files = { path = "../../platform/tilo-files", optional = true }
+# The client binds the service socket through the safe path, with or without the service.
+tilo-files = { path = "../../platform/tilo-files" }
 # This device's fleet of the person's devices, and the device's own key:
 # whom to ask for an enrolment when this device holds no root.
 tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
