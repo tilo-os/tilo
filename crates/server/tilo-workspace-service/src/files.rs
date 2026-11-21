@@ -204,15 +204,6 @@ impl tilo_fs::tree_sync::TreePeer for Copy {
         self.asked.notify_one();
     }
 
-    /// None: the copy keeps no count of what it took in that a read could be skipped by, and
-    /// not every write it takes in is told to its followers, so every record is read again at
-    /// each look ([`tilo_fs::tree_sync::LOOK_AGAIN`]). The copy's read of a record that did not
-    /// change since the heads named is answered from what it opened of it last, without opening
-    /// its history again.
-    fn digest(&self, _chunk: TreeChunk) -> Option<[u8; 32]> {
-        None
-    }
-
     fn answer(&self, chunk: TreeChunk) -> Option<DocumentAnswer> {
         self.answers.lock_recover().get(&chunk).copied().flatten()
     }
@@ -342,33 +333,36 @@ fn count_until_served(copy: &Copy, document: &str) {
     });
 }
 
-/// Carry the copy's news to the sync as wakes: a write the serving device sent a record of the
-/// tree, the copy catching up with the serving device again, and the answers the opened records
-/// can have now. Ends once the sync is gone.
+/// Carry the copy's news to the sync as wakes: a write to a record of the tree, the copy catching
+/// up with the serving device again, a write of this device's answered, and the answers the opened
+/// records can have now. Ends once the sync is gone.
 async fn follow(
     copy: Arc<Copy>,
     mut writes: tokio::sync::broadcast::Receiver<crate::workspaces::ResourceWrite>,
     wakes: tokio::sync::mpsc::UnboundedSender<Wake>,
 ) {
-    let mut look = tokio::time::interval(tilo_fs::tree_sync::LOOK_AGAIN);
+    let mut answered = copy.workspaces.member_writes_answered();
     let mut caught_up: Option<tokio::sync::watch::Receiver<bool>> = None;
     let mut was_caught_up = false;
     loop {
-        let mut moved = false;
+        let mut told = Vec::new();
         tokio::select! {
             written = writes.recv() => match written {
                 Ok(written) => {
-                    moved = written.workspace == copy.name
+                    if written.workspace == copy.name
                         && written.app == FILES_APP
-                        && fs_protocol::tree::chunk_of_record(&written.record).is_some();
+                        && let Some(chunk) = fs_protocol::tree::chunk_of_record(&written.record)
+                    {
+                        told.push(Wake::Wrote(chunk));
+                    }
                 }
                 // Writes went by unheard: any record may have changed.
-                Err(RecvError::Lagged(_)) => moved = true,
+                Err(RecvError::Lagged(_)) => told.push(Wake::Moved),
                 Err(RecvError::Closed) => return,
             },
             () = changed(&mut caught_up) => {}
             () = copy.asked.notified() => {}
-            _ = look.tick() => {}
+            _ = answered.changed() => {}
         }
         if caught_up.is_none() {
             // Held as a member copy only once the device took the workspace in.
@@ -377,7 +371,6 @@ async fn follow(
         let now_caught_up = caught_up
             .as_ref()
             .is_some_and(|caught_up| *caught_up.borrow());
-        let mut told = Vec::new();
         if now_caught_up && !was_caught_up {
             // Caught up again after its link was made anew: what was answered before it may be
             // older than what the copy holds now, so every record is opened and answered again.
@@ -388,9 +381,6 @@ async fn follow(
         // An answer may read a record, which waits for the service: off the runtime's workers.
         if let Ok(answers) = tokio::task::spawn_blocking(move || answering.answer_opened()).await {
             told.extend(answers);
-        }
-        if moved {
-            told.push(Wake::Moved);
         }
         for wake in told {
             if wakes.send(wake).is_err() {

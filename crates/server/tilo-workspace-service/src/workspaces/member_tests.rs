@@ -866,6 +866,7 @@ async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
         .expect("the device's key service answers")
         .expect("the group opens");
 
+    let mut told = copies.document_writes();
     let mut layout = automerge::AutoCommit::new();
     layout
         .put(automerge::ROOT, "front", "Main")
@@ -882,6 +883,15 @@ async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
         )
         .await
         .expect("the layout is written");
+    let told = loop {
+        let write = told
+            .try_recv()
+            .expect("the copy tells its followers its own write");
+        if write.app == DESKTOP_APP && write.record == DESKTOP_DOCUMENT {
+            break write;
+        }
+    };
+    assert_eq!(told.workspace, workspace);
     waiting_front(&copies, &workspace, "Main").await;
     let heads = layout.get_heads();
     layout

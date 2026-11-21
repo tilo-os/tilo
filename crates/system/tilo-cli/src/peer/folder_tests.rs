@@ -128,9 +128,23 @@ async fn put_on_server(
         assert_eq!(store.put_public(piece).unwrap(), hex::encode(chunk.hash));
     }
     let address = store.put_public(&manifest.encode()).unwrap();
-    let hash: iroh_blobs::Hash = address.parse().unwrap();
+    put_in_tree(
+        server.workspaces().unwrap(),
+        workspace,
+        name,
+        (&address, bytes.len() as u64),
+    )
+    .await;
+}
 
-    let workspaces = server.workspaces().unwrap();
+/// Add a file `name` at content `(address, size)` to `workspace`'s tree through `workspaces`, as
+/// this device would: each of the tree's records changed, sealed with the keys of its group.
+async fn put_in_tree(
+    workspaces: &Workspaces,
+    workspace: &str,
+    name: &str,
+    (address, size): (&str, u64),
+) {
     let records = server_records(workspaces, workspace).await;
     let held: BTreeSet<TreeChunk> = records.keys().copied().collect();
     let mut tree = tilo_fs::Namespace::new("home-server").unwrap();
@@ -142,14 +156,9 @@ async fn put_on_server(
     } else {
         tree.document_heads()
     };
-    tree.create_file(
-        tilo_fs::namespace::ROOT_INO,
-        name,
-        Some(&hash),
-        bytes.len() as u64,
-        1,
-    )
-    .unwrap();
+    let hash: iroh_blobs::Hash = address.parse().unwrap();
+    tree.create_file(tilo_fs::namespace::ROOT_INO, name, Some(&hash), size, 1)
+        .unwrap();
     let writes = tree.document_writes(&known);
     let mut ordered: Vec<_> = writes
         .iter()
@@ -159,8 +168,7 @@ async fn put_on_server(
     ordered.sort_by_key(|write| write.chunk == 0);
     for write in ordered {
         let route = tree_route(workspace, write.chunk);
-        let founding = !held.contains(&write.chunk);
-        let keys = tilo_test_env::within("the server holds the tree's keys", async {
+        let keys = tilo_test_env::within("the device holds the tree's keys", async {
             loop {
                 if let Some(Ok(keys)) = workspaces.own_route_keys(&route, true).await {
                     return keys;
@@ -169,41 +177,28 @@ async fn put_on_server(
             }
         })
         .await;
+        let mut record = tilo_peer_state::workspace_documents::DocumentWriting {
+            app: FILES_APP,
+            document: &route.document,
+            readers: None,
+            founding: !held.contains(&write.chunk),
+            snapshot: !held.contains(&write.chunk),
+            sealed: Some(&keys),
+        };
         let writes = ServiceWrites::of(workspaces.clone());
-        if founding {
+        if record.founding {
+            // The whole record first: the workspace must not hold it yet.
             writes
-                .write(
-                    workspace,
-                    &automerge::AutoCommit::new().save(),
-                    tilo_peer_state::workspace_documents::DocumentWriting {
-                        app: FILES_APP,
-                        document: &route.document,
-                        readers: None,
-                        founding: true,
-                        snapshot: true,
-                        sealed: Some(&keys),
-                    },
-                )
+                .write(workspace, &automerge::AutoCommit::new().save(), record)
                 .await
-                .unwrap_or_else(|refusal| {
-                    panic!("the server founds a record of its tree: {refusal:?}")
-                });
+                .map_or_else(|refusal| panic!("a tree record is founded: {refusal:?}"), drop);
+            record.founding = false;
+            record.snapshot = false;
         }
         writes
-            .write(
-                workspace,
-                &write.changes,
-                tilo_peer_state::workspace_documents::DocumentWriting {
-                    app: FILES_APP,
-                    document: &route.document,
-                    readers: None,
-                    founding: false,
-                    snapshot: false,
-                    sealed: Some(&keys),
-                },
-            )
+            .write(workspace, &write.changes, record)
             .await
-            .unwrap_or_else(|refusal| panic!("the server changes its tree: {refusal:?}"));
+            .map_or_else(|refusal| panic!("the tree changes: {refusal:?}"), drop);
     }
 }
 
@@ -498,6 +493,24 @@ async fn a_synced_folder_follows_the_server_both_ways_across_a_restart() {
         ),
         "one tree, holding every file once"
     );
+    // Another writer on this computer changes a tree record directly: its write names the record,
+    // so the folder reads it without a sweep.
+    let (address, size) = server_file(&hosted, &workspace, "contract.txt")
+        .await
+        .expect("the server's tree names the file");
+    put_in_tree(
+        computer.own.workspaces(),
+        &workspace,
+        "copy.txt",
+        (&address, size),
+    )
+    .await;
+    holds(
+        &folder.join("copy.txt"),
+        b"Net 30, signed by both.\n",
+        "another local writer's change reaches the folder",
+    )
+    .await;
 
     computer.stop().await;
     server.shutdown().await;

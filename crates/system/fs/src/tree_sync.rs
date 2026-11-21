@@ -48,9 +48,6 @@ pub fn document_for(chunk: TreeChunk) -> String {
     fs_protocol::tree::chunk_document_id(chunk)
 }
 
-/// How often the replica looks again when nothing woke it: a wake at once, this only bounds a
-/// missed one.
-pub const LOOK_AGAIN: Duration = Duration::from_secs(1);
 /// How often the namespace is kept on disk while it changes, at most.
 const KEEP_EVERY: Duration = Duration::from_secs(2);
 /// How often the files and bytes the tree names are counted again while it changes, at most.
@@ -142,11 +139,6 @@ pub trait TreePeer: collab_types::signer::MaybeSendSync {
     /// Ask the peer for record `chunk` of the tree, and to take part in its channel.
     fn open(&self, chunk: TreeChunk);
 
-    /// A digest of what the peer admitted of `chunk`, sealed or in the clear, reading and
-    /// opening nothing: equal at two moments, nothing was admitted to it between them, so a
-    /// record read at the first need not be read again. `None` for one held nowhere.
-    fn digest(&self, chunk: TreeChunk) -> Option<[u8; 32]>;
-
     /// What the peer's host answered about `chunk`: `None` while it owes an answer; once it
     /// came, the frames it sent — none when the workspace has none of the record — or that it
     /// is another person's own.
@@ -155,9 +147,7 @@ pub trait TreePeer: collab_types::signer::MaybeSendSync {
     /// Whether the peer holds anything of `chunk`.
     fn holds(&self, chunk: TreeChunk) -> bool;
 
-    /// Whether this device's writes to `chunk` are in the peer, not read yet: a read then lays
-    /// them over the record, and all it can bring is another device's change, which waits a
-    /// moment.
+    /// Whether this device's writes to `chunk` are in the peer, not read yet.
     fn holding(&self, chunk: TreeChunk) -> bool;
 
     /// How many of this device's writes the peer still keeps of anything.
@@ -200,12 +190,12 @@ pub trait TreeWriter {
 /// What woke the sync: something the peer did, or said.
 #[derive(Debug)]
 pub enum Wake {
-    /// Something in the peer changed: look again.
+    /// The record `chunk` of the tree was written: read it.
+    Wrote(TreeChunk),
+    /// Something in the peer changed that names no record: read every record of the tree again.
     Moved,
     /// The workspace's host takes part again: every record of the tree is opened again.
     HostReady,
-    /// A write of this device's to `chunk` landed.
-    Landed(TreeChunk),
     /// The host refused a write of this device's to `chunk`, for `reason`.
     Refused { chunk: TreeChunk, reason: String },
     /// The host answered for `chunk` what it holds of it.
@@ -411,7 +401,6 @@ impl TreeSync {
             kept: Arc::clone(&kept),
             ordered: BTreeSet::new(),
             pacing: Paced::new(KEEP_EVERY),
-            pulling: Paced::new(LOOK_AGAIN),
             counting: Paced::new(COUNT_EVERY),
             counted_heads: None,
             status: Arc::clone(&status),
@@ -572,24 +561,23 @@ fn write_order<'a>(
 /// Read each document `due`: what the peer holds of it past the heads this namespace merged.
 fn read_due(documents: &dyn Records, workspace: &str, due: Vec<DueRead>) -> Vec<DueReading> {
     due.into_iter()
-        .map(|(chunk, merged, digest)| {
+        .map(|(chunk, merged)| {
             let reading = documents.read(
                 workspace,
                 FILES_APP,
                 &document_for(chunk),
                 merged.as_deref(),
             );
-            (chunk, digest, reading)
+            (chunk, reading)
         })
         .collect()
 }
 
-/// A document of the tree read: its chunk, what the peer had admitted of it, and the read.
-type DueReading = (TreeChunk, Option<[u8; 32]>, Result<Reading, String>);
+/// A document of the tree read: its chunk, and the read.
+type DueReading = (TreeChunk, Result<Reading, String>);
 
-/// A document of the tree due a read: its chunk, the heads this namespace merged of it last,
-/// and what the peer had admitted of it when the read was decided on.
-type DueRead = (TreeChunk, Option<Vec<[u8; 32]>>, Option<[u8; 32]>);
+/// A document of the tree due a read: its chunk and the heads this namespace merged of it last.
+type DueRead = (TreeChunk, Option<Vec<[u8; 32]>>);
 
 /// When a step whose cost grows with the tree may run again.
 #[derive(Debug)]
@@ -660,10 +648,6 @@ struct Held {
     /// The record exists at the workspace (merged from it, or founded here), so a write of it is
     /// a change.
     founded: bool,
-    /// What the peer had admitted of the document when this device last read it whole or its
-    /// changes: while that is still what it admitted, a read would bring nothing, and is not
-    /// made.
-    read_at: Option<[u8; 32]>,
     /// How many frames the host said it holds of the record when the session opened it; `None`
     /// until it answered. None at all: the workspace has no such record yet.
     answered: Option<DocumentAnswer>,
@@ -708,11 +692,6 @@ impl Refusals {
         };
         self.until = now.checked_add(self.wait);
         first
-    }
-
-    /// A write of the record landed: the run of refusals is over.
-    const fn landed(&mut self) {
-        self.wait = Duration::ZERO;
     }
 
     /// When a write may go out, while that is after `now`.
@@ -762,7 +741,6 @@ struct Sync {
     /// How often the tree may be kept, since it costs what the tree costs.
     pacing: Paced,
     counting: Paced,
-    pulling: Paced,
     /// The heads the files and bytes in `status` were counted at.
     counted_heads: Option<Vec<automerge::ChangeHash>>,
     status: Arc<Mutex<Status>>,
@@ -785,7 +763,6 @@ impl Sync {
         }
         // What the peer brought: on the first pass, and after it woke this task.
         let mut session_moved = true;
-        let mut sweep = Paced::new(LOOK_AGAIN);
         loop {
             while let Ok(wake) = self.wakes.try_recv() {
                 self.take(wake);
@@ -797,11 +774,6 @@ impl Sync {
                 break;
             }
             if !self.paused.load(Ordering::Relaxed) {
-                if sweep.due(Instant::now()) {
-                    // Now and then every record, for a landing whose word was missed.
-                    self.unread.extend(self.documents.keys().copied());
-                    sweep.ran(Instant::now(), Instant::now());
-                }
                 if session_moved || !self.unread.is_empty() {
                     self.pull_all().await;
                 }
@@ -812,13 +784,14 @@ impl Sync {
                 self.peer.reask_content();
             }
             self.say_where_it_stands().await;
-            // A change of this namespace's own goes out once its batch is due; the peer's news,
-            // and a look now and then, read what the records hold. A record the host refused
-            // waits its turn without the task looking every moment. Changes whose batch is due
-            // but that wait for the workspace (a chunk's word that it holds it, a refusal's
-            // wait) are looked at again now and then: every pass takes the namespace, which
-            // every request of the mount waits for.
-            let wait = self.dirty_since.map_or(LOOK_AGAIN, |since| {
+            // A change of this namespace's own goes out once its batch is due; the peer's news
+            // reads what the records hold. A record the host refused waits its turn without the
+            // task looking every moment. Changes whose batch is due but that wait for the
+            // workspace (a chunk's word that it holds it, a refusal's wait) are looked at again
+            // now and then: every pass takes the namespace, which every request of the mount
+            // waits for. Nothing here reads a record on a clock: a write that changed one wakes
+            // this task with the record it changed.
+            let wait = self.dirty_since.map(|since| {
                 let held = self.held_until.map_or(Duration::ZERO, |until| {
                     until.saturating_duration_since(Instant::now())
                 });
@@ -839,7 +812,7 @@ impl Sync {
                 moved = changes.changed() => if moved.is_err() { wipe = true },
                 _ = keep.tick() => keep_due = true,
                 () = wake.notified() => {}
-                () = tokio::time::sleep(wait) => session_moved = self.dirty_since.is_none(),
+                () = tokio::time::sleep(wait.unwrap_or(Duration::from_secs(86_400))) => {}
             }
             if keep_due && self.pacing.due(Instant::now()) {
                 let started = Instant::now();
@@ -959,7 +932,21 @@ impl Sync {
 
     fn take(&mut self, wake: Wake) {
         match wake {
-            Wake::Moved => {}
+            // A write that named its record: that record alone may have changed.
+            Wake::Wrote(chunk) => {
+                if self.documents.contains_key(&chunk) {
+                    self.unread.insert(chunk);
+                } else {
+                    // A record this device has not opened yet is one the tree now names: it is
+                    // asked for, as the tree's own record naming a new chunk is.
+                    self.open(chunk);
+                }
+            }
+            // A change whose record was not named (the follower fell behind its writes): any
+            // record may have changed, so each already opened is read.
+            Wake::Moved => {
+                self.unread.extend(self.documents.keys().copied());
+            }
             Wake::HostReady => {
                 let opened: Vec<TreeChunk> = self.documents.keys().copied().collect();
                 for chunk in opened {
@@ -970,10 +957,6 @@ impl Sync {
             // again, with all made since, once the record's wait is over. What the host holds
             // is what was last merged from it.
             Wake::Refused { chunk, reason } => self.refused(chunk, &reason),
-            Wake::Landed(chunk) => {
-                self.unread.insert(chunk);
-                self.documents.entry(chunk).or_default().refused.landed();
-            }
             // The host's answer to this session's open of a record of the tree: whether the
             // workspace holds any of it decides whether this device founds it.
             Wake::Opened { chunk, answer } => {
@@ -1013,35 +996,27 @@ impl Sync {
         let _doing = tilo_rt::stall::doing("a folder's tree coming in");
         let documents = Arc::clone(&self.read);
         let workspace = self.workspace.clone();
-        let now = Instant::now();
-        let paced = self.pulling.due(now);
-        let due = self.due_reads(paced);
+        let due = self.due_reads();
         if due.is_empty() {
-            if paced {
-                self.pulling.ran(now, Instant::now());
-            }
             return;
         }
         // The reads happen away from the runtime's workers: opening a sealed history takes as long
         // as it is, and a worker inside it leaves the tasks it would take up next (the session's) waiting.
         let read =
             tokio::task::spawn_blocking(move || read_due(&*documents, &workspace, due)).await;
-        if paced {
-            self.pulling.ran(now, Instant::now());
-        }
         let Ok(read) = read else {
             tracing::warn!(workspace = %self.workspace, "the workspace's tree could not be read");
             return;
         };
         let mut readings = Vec::new();
-        for (chunk, digest, reading) in read {
+        for (chunk, reading) in read {
             match reading {
                 Ok(Reading::Whole { heads, bytes } | Reading::Changes { heads, bytes }) => {
                     if self.unreadable.remove(&chunk) {
                         tracing::info!(chunk, workspace = %self.workspace, "a document of the workspace's tree reads here now");
                     }
                     self.again.remove(&chunk);
-                    readings.push((chunk, heads, bytes, digest));
+                    readings.push((chunk, heads, bytes));
                 }
                 Ok(Reading::Unchanged) => {
                     // The record stands at what this device holds of it, and the workspace holds
@@ -1049,7 +1024,6 @@ impl Sync {
                     // reads unchanged (the one this computer wrote before it stopped) is open,
                     // and its changes go out — nothing else would ever mark it.
                     let held = self.documents.entry(chunk).or_default();
-                    held.read_at = digest;
                     held.founded = true;
                     if chunk == 0 {
                         self.status.lock_recover().opened = true;
@@ -1065,7 +1039,7 @@ impl Sync {
         }
         let records: Vec<(TreeChunk, Vec<u8>)> = readings
             .iter()
-            .map(|(chunk, _, bytes, _)| (*chunk, bytes.clone()))
+            .map(|(chunk, _, bytes)| (*chunk, bytes.clone()))
             .collect();
         // The merge runs away from the runtime's workers: a tree's first merge walks every
         // node it brings, and a worker inside it stops answering agents, mounts and stops for
@@ -1090,7 +1064,7 @@ impl Sync {
                 return;
             }
         };
-        for (chunk, heads, _, digest) in readings {
+        for (chunk, heads, _) in readings {
             if chunk == 0 {
                 self.status.lock_recover().opened = true;
             }
@@ -1111,7 +1085,6 @@ impl Sync {
                 self.records_changed = true;
             }
             held.founded = true;
-            held.read_at = digest;
         }
         for chunk in listed {
             if !self.documents.contains_key(&chunk) {
@@ -1121,27 +1094,15 @@ impl Sync {
     }
 
     /// The documents of the tree to read now, each with the heads this namespace merged of it
-    /// last and what the peer admitted of it: those a write landed on since they were read, but
-    /// for this device's own writes still on their way, which wait for a paced pass.
-    fn due_reads(&mut self, paced: bool) -> Vec<DueRead> {
-        let mut due = Vec::new();
-        for chunk in std::mem::take(&mut self.unread) {
-            if self.peer.holding(chunk) && !paced {
-                // Read it with the next paced pass.
-                self.unread.insert(chunk);
-                continue;
-            }
-            let held = self.documents.get(&chunk);
-            // A document the peer admitted nothing to since it was read brings nothing: the
-            // look now and then at every document of the tree costs a digest each, where reading
-            // a sealed one opens what it kept of it, or its whole history.
-            let digest = self.peer.digest(chunk);
-            if digest.is_some() && held.and_then(|held| held.read_at) == digest {
-                continue;
-            }
-            due.push((chunk, held.and_then(|held| held.merged.clone()), digest));
-        }
-        due
+    /// last: those a write was told of since they were read.
+    fn due_reads(&mut self) -> Vec<DueRead> {
+        std::mem::take(&mut self.unread)
+            .into_iter()
+            .map(|chunk| {
+                let held = self.documents.get(&chunk);
+                (chunk, held.and_then(|held| held.merged.clone()))
+            })
+            .collect()
     }
 
     /// Document `chunk` of the tree did not read here, with `error` when its read failed.
@@ -1603,7 +1564,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_record_waits_longer_each_time_until_a_write_lands() {
+    fn a_refused_record_waits_longer_each_time() {
         let start = Instant::now();
         let mut refusals = Refusals::default();
         assert_eq!(
@@ -1633,9 +1594,6 @@ mod tests {
             None,
             "the wait ends"
         );
-        refusals.landed();
-        assert!(refusals.refused(start), "a write that landed ends the run");
-        assert_eq!(refusals.held_until(start), Some(start + FIRST_REFUSED_WAIT));
     }
 
     #[test]

@@ -173,6 +173,11 @@ impl Members {
         }
     }
 
+    /// A receiver told whenever a served write is noted, answered or refused.
+    pub(super) fn answers_changed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.served_changed.subscribe()
+    }
+
     /// Note the write `message`, named by the hash `write` of its frame, as one of this device's
     /// to `app`'s `document` of `workspace` that the device serving it has not answered yet.
     fn note_served(
@@ -969,6 +974,8 @@ impl Workspaces {
             ..
         } = &message
         {
+            // A member copy's own write tells whoever follows its records, as a served write does.
+            self.note_document_write(workspace, app_id, document_id);
             // The frame's hash is what the serving device names its answer by; the write is
             // noted before it goes out, so an answer that comes back at once finds it.
             self.inner.member.note_served(
@@ -1839,13 +1846,16 @@ impl Workspaces {
             else {
                 continue;
             };
+            // The keys may have made a kept record readable: whoever follows it is told.
+            self.note_document_write(workspace, app_id, document_id);
             // A resource's document is the store's, which takes it in as it does at the copy's
             // start ([`Self::recall_member_resources`]).
             if collab_types::is_store_document(document_id) {
                 self.follow_member_document(&mut governed, frame.author, &message);
-                took |= self
+                let admitted = self
                     .replay_resource_write(&mut governed, frame.author, &message)
                     .await;
+                took |= admitted;
                 continue;
             }
             let taken = governed.take_served(frame.author, &message)

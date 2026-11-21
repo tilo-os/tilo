@@ -1064,6 +1064,8 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
         }));
     // What the device's apps are handed of it, from the start.
     let mut shown = member.workspaces().admitted_writes();
+    // Whoever follows the copy's records hears of each write that changes one.
+    let mut woke = member.workspaces().document_writes();
     let invite = tilo_peer_state::join::encode_invitation_text(&invite.signed_invitation);
     member.workspaces().join_member(&invite).await.unwrap();
     tilo_test_env::within("the copy keeps the issue it cannot open yet", async {
@@ -1090,12 +1092,18 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
         "the copy reads no sealed issue before the device holds the group's keys"
     );
 
+    // The keys make the kept write readable: the copy tells its followers so again.
+    while woke.try_recv().is_ok() {}
     member_keys.hand_what_is_held_by(&owner_keys);
     let expected = Some(Value::Text("Written before".into()));
     tilo_test_env::within("the copy reads the issue once the keys are here", async {
         while title(member.workspaces(), &workspace, "i-1").await != expected {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+    })
+    .await;
+    tilo_test_env::within("the copy tells its followers the record it restored", async {
+        while woke.recv().await.is_ok_and(|write| write.app != APP) {}
     })
     .await;
     // Written long before the apps here could see it, the issue reaches them as history, which
