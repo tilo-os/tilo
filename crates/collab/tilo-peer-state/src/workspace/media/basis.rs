@@ -180,12 +180,18 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
     // device name is one of them. A name kept under a root names nobody's
     // device — it is the person's own, which no grant turns on — so it is none
     // of the roster and only has to name somebody the membership or the owner
-    // holds.
+    // holds. The owner is whoever the log hands the workspace to, as well as
+    // the root that founded it: a host founds a workspace and hands it to the
+    // person it is for, who is then no member beside it.
     let mut roster = BTreeSet::new();
     for key in named {
+        let person = hex::encode(key);
         if certificates.contains_key(&key) {
             roster.insert(key);
-        } else if key != owner_key && !members.contains_key(&hex::encode(key)) {
+        } else if key != owner_key
+            && !membership.is_owner(&person)
+            && !members.contains_key(&person)
+        {
             return Err(policy(MediaPolicyError::NamesNobody(key)));
         }
     }

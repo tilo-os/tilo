@@ -211,6 +211,38 @@ tilo_test_env::scenario! {
         assert!(!governor.governs_history(&host.user_public_key));
         assert!(!governor.signed_by_governor(&host.device_public_key));
     }
+    phase the_new_owner_keeps_the_name_the_workspace_gave_them;
+    {
+        // A host hands a person's workspace to them and names them, as it
+        // does for a workspace it made for them: the owner is no member beside
+        // it, and the name kept under their root still names somebody, so
+        // the security basis every device's write reads stays readable.
+        let (mut governor, host_key, _, _, now) = seeded();
+        let host = governor
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == host_key.verifying_key().to_bytes())
+            .unwrap();
+        let (_, person) = add_editor(&mut governor, &host_key, now);
+        governor
+            .governance_mut()
+            .transfer_ownership(person, &host_key, now)
+            .unwrap();
+        assert!(
+            governor
+                .governance_mut()
+                .name_person(person, "Ada", &host_key, now)
+                .unwrap()
+        );
+        governor
+            .security_basis()
+            .unwrap()
+            .expect("the basis reads with the owner's name in it");
+        let late = replica(&mut governor, &host_key, &host, now);
+        late.security_basis()
+            .unwrap()
+            .expect("a replica reads it alike");
+    }
 }
 
 /// The owner's device, among the certificates a seeded workspace holds.
