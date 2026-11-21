@@ -260,7 +260,6 @@ fn a_ca_installed_in_the_store_is_trusted_by_default() {
         .args([
             "--exact",
             "default_trust_inside_a_store_holding_the_ca",
-            "--ignored",
             "--nocapture",
         ])
         .env(RELAY_FILES, dir.path())
@@ -269,13 +268,16 @@ fn a_ca_installed_in_the_store_is_trusted_by_default() {
     assert!(status.success(), "the sandboxed run failed: {status}");
 }
 
-/// The sandboxed half of [`a_ca_installed_in_the_store_is_trusted_by_default`].
+/// The sandboxed half of [`a_ca_installed_in_the_store_is_trusted_by_default`]:
+/// that test re-execs this binary inside a sandbox whose store holds the CA.
+/// Anywhere else it returns at once.
 #[cfg(target_os = "linux")]
-#[ignore = "run by a_ca_installed_in_the_store_is_trusted_by_default, in a sandbox whose store holds the CA"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_trust_inside_a_store_holding_the_ca() {
-    let files =
-        std::path::PathBuf::from(std::env::var_os(RELAY_FILES).expect("run in the sandbox"));
+    let Some(files) = std::env::var_os(RELAY_FILES) else {
+        return;
+    };
+    let files = std::path::PathBuf::from(files);
     let read = |name: &str| std::fs::read_to_string(files.join(name)).expect("a relay file");
     assert_eq!(
         std::fs::read_to_string(STORE).expect("the sandbox's store"),

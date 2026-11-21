@@ -589,3 +589,57 @@ async fn a_client_that_looks_up_public_only_is_refused_a_name_that_answers_with_
     );
     assert!(page.drain_requests().is_empty(), "nothing was sent");
 }
+
+/// A body the server compressed arrives decoded: a deployment's CDN and a
+/// proxy compress as a matter of course, and a client that handed the gzip
+/// bytes on as the page would show a reader binary.
+#[tokio::test]
+async fn a_compressed_body_arrives_decoded() {
+    use std::io::Write as _;
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(b"{\"gzipped\": true}").unwrap();
+    let server = Responder::start(vec![
+        Reply::status(200)
+            .header("Content-Encoding", "gzip")
+            .body(encoder.finish().unwrap()),
+    ]);
+    let body = Client::new()
+        .get(server.url())
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(body, "{\"gzipped\": true}");
+}
+
+/// A server with no certificate a trust store knows is still reached, first
+/// use, and its certificate is what the caller pins: the exchange on it
+/// carries a real request and the reply comes back.
+#[tokio::test]
+async fn trust_on_first_use_reaches_a_self_signed_server_and_yields_its_certificate() {
+    use tilo_net::sockets::{TlsStream, Trust};
+
+    let key = rcgen::KeyPair::generate().unwrap();
+    let certificate = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let port = https_server(vec![certificate.der().clone()], &key);
+
+    let mut tls = TlsStream::connect("127.0.0.1", port, Trust::AnyCertificate)
+        .await
+        .unwrap();
+    assert_eq!(
+        tls.peer_certificate().as_deref(),
+        Some(certificate.der().as_ref()),
+        "the certificate first use was asked to accept, before any pin"
+    );
+    tls.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .await
+        .unwrap();
+    let page = tls.read_to_end(1 << 20).await.unwrap();
+    assert!(page.starts_with(b"HTTP/1.1 200 OK"), "{page:?}");
+}

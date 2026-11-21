@@ -121,10 +121,6 @@ name = "desktop"
 required-features = ["http", "json", "ws", "webtransport"]
 
 [[test]]
-name = "live"
-required-features = ["http", "ws", "sockets"]
-
-[[test]]
 name = "proxy_host"
 required-features = ["proxy-host"]
 
@@ -135,6 +131,8 @@ futures-util = { workspace = true, features = ["sink"] }
 # A loopback WebTransport server with a pinned self-signed certificate.
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
 rcgen.workspace = true
+# A gzipped reply a loopback server writes, as a CDN sends one.
+flate2.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "test-util", "time"] }
 serde = { workspace = true, features = ["derive"] }
