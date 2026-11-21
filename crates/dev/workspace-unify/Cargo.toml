@@ -1430,7 +1430,7 @@ doc = false
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
-"tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "apps", "test-support", "web"] }
+"tilo-workspace-service" = { path = "../../../crates/server/tilo-workspace-service", default-features = false, features = ["agents", "apps", "device-keys", "test-support", "web"] }
 "tilo-written-view" = { path = "../../../crates/platform/tilo-written-view", default-features = false, features = [] }
 "tilo-x11-transfer" = { path = "../../../crates/session/x11-transfer", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
@@ -1536,7 +1536,7 @@ doc = false
 "unwrap-infallible-1_0_0" = { package = "unwrap-infallible", version = "^1.0.0", default-features = false, features = ["default"] }
 "url-2_5_8" = { package = "url", version = "^2.5.8", default-features = false, features = ["default", "serde", "std"] }
 "urlencoding-2_1_3" = { package = "urlencoding", version = "^2.1.3", default-features = false, features = [] }
-"ush" = { path = "../../../crates/runtime/ush", default-features = false, features = [] }
+"ush" = { path = "../../../crates/runtime/ush", default-features = false, features = ["quic", "test-host"] }
 "ush-shell" = { path = "../../../crates/runtime/ush-shell", default-features = false, features = [] }
 "ush-tilo" = { path = "../../../crates/runtime/ush-tilo", default-features = false, features = [] }
 "ush-wasi" = { path = "../../../crates/runtime/ush-wasi", default-features = false, features = [] }
