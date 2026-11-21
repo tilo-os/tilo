@@ -220,3 +220,8 @@ action = "select-all"
 label = "Select all output"
 kind = "read"
 confirm = true
+[[offers]]
+resource = "terminal.machine-secrets"
+action = "remove-secret"
+label = "Remove secret"
+asks = "variable"
