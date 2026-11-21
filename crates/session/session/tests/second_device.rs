@@ -118,9 +118,18 @@ fn wait_for_issues(device: &Device, wanted: &[&str]) -> Duration {
 /// what it draws: the issues it loaded from the device's own copy of the workspace. Answers how
 /// long it took.
 fn wait_for_tasks_showing(device: &Device, title: &str) -> Duration {
-    // Starting the app is not the write travelling: only what follows its window is timed.
     device.open(APP);
     device.wait_for_window(APP);
+    // Starting the app is not the write travelling: a window stands before its app answers, so
+    // the app's first view is read before the clock starts. What is timed is the issue reaching a
+    // window already reading, never the app's own start on a busy machine.
+    let started = tasks_act(device, "outline", &json!({}));
+    assert!(
+        started.get("err").is_none(),
+        "{} reads Tasks' view: {started}\n{}",
+        device.label,
+        device.diagnostic()
+    );
     let began = Instant::now();
     let deadline = tilo_test_env::hang_deadline();
     loop {
