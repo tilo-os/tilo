@@ -350,6 +350,7 @@ type = "text"
 [[resources.verbs.params]]
 name = "view"
 required = true
+type = "text"
 
 [[resources.verbs.params]]
 name = "author"
