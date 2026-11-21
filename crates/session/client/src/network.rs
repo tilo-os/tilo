@@ -482,8 +482,7 @@ pub enum Cmd {
     OpenRoute(DocumentRoute),
     /// Write one mutation of `route` as this device's own ([`Outbox::write`]): the session drafts
     /// it through the device's holder, and publishes it as the signed op its replica admitted. A
-    /// [`crate::Link`] holds the mutation in its engine, readable at once, and says the route
-    /// alone.
+    /// [`crate::Link`] holds the mutation and counts it at once, and says the route alone.
     Write(DocumentRoute),
     /// Publish `op`, a write of this device its holder signed and its replica admitted already
     /// ([`Outbox::publish_signed`]): ownership carries it as it is, once, and sends it.
