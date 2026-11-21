@@ -7,9 +7,13 @@
 //! content store, reached through the scope a record's content lives under —
 //! and the retry that asks again for content no device handed over.
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use runtime_fs::blobs::{BlobClient, BlobError, ReadOutcome};
+use tilo_lock::MutexRecover as _;
 
 use neighbour_wire::content::PIECE_PATIENCE_MS;
 use tilo_workspace_service::content::{ContentScope, ContentShelf, RouteContent, routes_content};
@@ -18,28 +22,88 @@ use super::service::ServiceWorkspaces;
 
 /// The profile's content store, read and written as the desktop session
 /// reaches its own: through the scope a record's content lives under.
-struct ProfileShelf(std::path::PathBuf);
+///
+/// It holds one connection to the store and the scoped client of each record scope on it. A
+/// client is a connection with a thread of its own: made afresh for every read and keep, each
+/// cost a connect, a thread and three round trips, and a workspace whose files land asks this
+/// shelf thousands of times in a minute, a member's asks for what it holds among them.
+struct ProfileShelf {
+    socket: std::path::PathBuf,
+    connection: Mutex<Option<Connection>>,
+}
+
+/// One connection to the profile's content store, and the scopes opened on it.
+struct Connection {
+    session: BlobClient,
+    scopes: HashMap<ContentScope, BlobClient>,
+}
+
+/// Scopes one connection keeps open at once; past it, they are opened again as they are used.
+const OPEN_SCOPES: usize = 64;
+
+impl ProfileShelf {
+    fn new(socket: &Path) -> Self {
+        Self {
+            socket: socket.to_path_buf(),
+            connection: Mutex::new(None),
+        }
+    }
+
+    /// `call` on `scope`'s client. A connection the store closed is made again, once.
+    fn on<T>(
+        &self,
+        scope: &ContentScope,
+        call: impl Fn(&BlobClient) -> Result<T, BlobError>,
+    ) -> Result<T, BlobError> {
+        match call(&self.scoped(scope)?) {
+            Err(BlobError::Disconnected(_)) => {
+                self.connection.lock_recover().take();
+                call(&self.scoped(scope)?)
+            }
+            answered => answered,
+        }
+    }
+
+    fn scoped(&self, scope: &ContentScope) -> Result<BlobClient, BlobError> {
+        let mut connection = self.connection.lock_recover();
+        let connection = match &mut *connection {
+            Some(connection) => connection,
+            None => connection.insert(Connection {
+                session: BlobClient::connect_session(&self.socket)?,
+                scopes: HashMap::new(),
+            }),
+        };
+        if let Some(scoped) = connection.scopes.get(scope) {
+            return Ok(scoped.clone());
+        }
+        let scoped = connection.session.scope(&scope.workspace, &scope.app)?;
+        if connection.scopes.len() >= OPEN_SCOPES {
+            connection.scopes.clear();
+        }
+        connection.scopes.insert(scope.clone(), scoped.clone());
+        Ok(scoped)
+    }
+}
 
 impl ContentShelf for ProfileShelf {
     fn read(&self, scope: &ContentScope, hash: &str) -> Option<Vec<u8>> {
-        use runtime_fs::blobs::{BlobClient, ReadOutcome};
-
-        let scoped = BlobClient::connect_session(&self.0)
-            .and_then(|session| session.scope(&scope.workspace, &scope.app))
-            .ok()?;
-        if !scoped.has(hash).ok()? {
-            return None;
-        }
-        match scoped.read_all(hash).ok()? {
+        let outcome = self
+            .on(scope, |scoped| {
+                if !scoped.has(hash)? {
+                    return Ok(None);
+                }
+                scoped.read_all(hash).map(Some)
+            })
+            .ok()??;
+        match outcome {
             ReadOutcome::Ready { bytes, .. } => Some(bytes),
             ReadOutcome::Pending | ReadOutcome::Unavailable => None,
         }
     }
 
     fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String> {
-        let kept = runtime_fs::blobs::BlobClient::connect_session(&self.0)
-            .and_then(|session| session.scope(&scope.workspace, &scope.app))
-            .and_then(|scoped| scoped.put(bytes, "application/octet-stream"))
+        let kept = self
+            .on(scope, |scoped| scoped.put(bytes, "application/octet-stream"))
             .map_err(|error| error.to_string())?;
         if kept.hash == hash {
             Ok(())
@@ -55,7 +119,7 @@ pub(in crate::standalone) fn document_content(
     workspaces: &Arc<ServiceWorkspaces>,
     blob_socket: &Path,
 ) -> Arc<RouteContent> {
-    let shelf: Arc<dyn ContentShelf> = Arc::new(ProfileShelf(blob_socket.to_path_buf()));
+    let shelf: Arc<dyn ContentShelf> = Arc::new(ProfileShelf::new(blob_socket));
     record_content_on(workspaces, shelf)
 }
 
