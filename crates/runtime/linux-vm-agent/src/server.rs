@@ -28,6 +28,10 @@ pub struct Agent {
     boot_id: String,
     running: Mutex<BTreeMap<u32, RunningApp>>,
     shares: Mutex<Vec<GuestShare>>,
+    /// Moves the guest's wall clock. The agent runs as root in the guest, which
+    /// is what `CLOCK_REALTIME` takes; a program it launches for the tenant is
+    /// theirs, not root's.
+    set_clock: Box<dyn Fn(u64) -> Result<(), String> + Send + Sync>,
     #[cfg(target_os = "linux")]
     files: Mutex<crate::remote_fs::Mounts>,
     xwayland: Mutex<Option<Child>>,
@@ -43,6 +47,7 @@ impl Agent {
             boot_id,
             running: Mutex::new(BTreeMap::new()),
             shares: Mutex::new(Vec::new()),
+            set_clock: Box::new(system::set_realtime),
             #[cfg(target_os = "linux")]
             files: Mutex::new(crate::remote_fs::Mounts::default()),
             xwayland: Mutex::new(None),
@@ -84,6 +89,10 @@ impl Agent {
             }
             HostMessage::Mount { shares } => self.mount(&shares),
             HostMessage::MountFiles { shares } => self.mount_files(&shares),
+            HostMessage::SetClock { unix_millis } => match (self.set_clock)(unix_millis) {
+                Ok(()) => GuestMessage::ClockSet { unix_millis },
+                Err(message) => GuestMessage::Error { message },
+            },
             HostMessage::InstalledApps => GuestMessage::InstalledApps(crate::apps::installed(
                 &crate::apps::export_dirs(&self.user.home),
             )),
@@ -490,6 +499,52 @@ mod tests {
             home: std::env::temp_dir(),
             shell: "/bin/sh".into(),
         }
+    }
+
+    /// The agent with its wall-clock write replaced, so a test proves the request
+    /// reaches the guest's clock without moving this machine's.
+    fn agent_with_clock(
+        set: impl Fn(u64) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Arc<Agent> {
+        let mut agent = Agent::new(me(), "boot-1".into());
+        agent.set_clock = Box::new(set);
+        Arc::new(agent)
+    }
+
+    #[test]
+    fn a_set_clock_request_moves_the_guest_clock_and_reports_the_time() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
+        let agent = agent_with_clock(move |unix_millis| {
+            recorded.lock().unwrap().push(unix_millis);
+            Ok(())
+        });
+        let (mut host, guest) = UnixStream::pair().unwrap();
+        let serving = Arc::clone(&agent);
+        let server = std::thread::spawn(move || serving.serve(guest));
+        let at = 1_782_816_120_123;
+        let answer = client::request(&mut host, &HostMessage::SetClock { unix_millis: at }).unwrap();
+        server.join().unwrap().unwrap();
+        assert_eq!(answer, GuestMessage::ClockSet { unix_millis: at });
+        assert_eq!(*seen.lock().unwrap(), [at], "the guest's clock got the host's time");
+    }
+
+    #[test]
+    fn a_clock_the_guest_cannot_set_is_refused_in_plain_words() {
+        if rustix::process::getuid().is_root() {
+            // A root test would move this machine's clock; only an
+            // unprivileged agent's refusal is exercised here.
+            return;
+        }
+        let agent = Agent::new(me(), "boot-1".into());
+        let (mut host, guest) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || agent.serve(guest));
+        let refused = client::request(&mut host, &HostMessage::SetClock { unix_millis: 1 });
+        server.join().unwrap().unwrap();
+        let Err(ProtocolError::Refused(message)) = refused else {
+            panic!("an unprivileged clock write is refused");
+        };
+        assert!(message.contains("permitted"), "{message}");
     }
 
     #[test]

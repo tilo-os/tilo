@@ -159,9 +159,21 @@ fn a_command_wakes_the_vm_which_sleeps_when_idle_and_is_metered() {
     );
 
     std::fs::write(share.join("in.txt"), "changed while asleep\n").unwrap();
+    // A restored VM resumes with the clock its snapshot was taken at. Keep it
+    // asleep long enough that a clock the host never set would be plainly
+    // behind; a short sleep could hide the gap behind test timing.
+    std::thread::sleep(Duration::from_secs(10));
     let (link, restored) = service.ensure(&request, &shares).unwrap();
     let restored = restored.expect("a command restores the sleeping VM");
     eprintln!("restore to agent: {restored} ms");
+    let host_secs = system_clock()() / 1000;
+    let (code, guest_secs, err) = run(&link, "date +%s", &cwd);
+    assert_eq!(code, 0, "stderr: {err}");
+    let guest_secs: u64 = guest_secs.trim().parse().expect("a Unix time");
+    assert!(
+        guest_secs.abs_diff(host_secs) <= 2,
+        "a restored guest reads the host's clock: guest {guest_secs}, host {host_secs}"
+    );
     let (code, out, _) = run(&link, "cat in.txt out.txt", &cwd);
     assert_eq!(code, 0);
     assert_eq!(out, "changed while asleep\nbuilt\n");

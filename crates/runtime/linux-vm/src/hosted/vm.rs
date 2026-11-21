@@ -31,8 +31,8 @@ const MAX_SHARES: u32 = 64;
 
 /// How long a cold boot or restore may take before the agent answers.
 const AGENT_PATIENCE: Duration = Duration::from_secs(120);
-/// How long setting a restored guest's clock may take: one small program in a guest that answered
-/// its agent a moment ago.
+/// How long setting a guest's clock may take: one request to an agent that has
+/// just answered.
 const CLOCK_PATIENCE: Duration = Duration::from_secs(30);
 
 /// Wall-clock milliseconds since the epoch.
@@ -703,27 +703,25 @@ impl HostedVm {
                 millis: u64::try_from(wake.elapsed().as_millis()).unwrap_or(u64::MAX),
             });
         }
-        if self.restoring {
-            self.set_guest_clock();
-        }
+        self.set_guest_clock()?;
         Ok(())
     }
 
-    /// Set a restored guest's clock from the host's. A clone resumes with the clock its template was
-    /// snapshotted at, which is behind the host's by however long the template has been kept: a
-    /// certificate the server issued this moment is then "not yet valid" inside the VM, and the
-    /// session that scans it refuses its own identity. What reads a clock in the guest — the
-    /// session's identity, its history, a program's timestamps — reads the host's time instead.
-    fn set_guest_clock(&self) {
-        // The next whole second, not this one: `date` takes whole seconds, and a guest set to the
-        // second this host is in is still behind the nanoseconds a certificate issued a moment
-        // earlier carries.
-        let seconds = (self.clock)().saturating_add(1_000).saturating_div(1_000);
-        let set = format!("@{seconds}");
-        if let Err(error) = self.run_in_guest(&["/usr/bin/date", "-u", "-s", &set], CLOCK_PATIENCE)
-        {
-            eprintln!("tilo-linux-vm hosted: a restored VM's clock was not set: {error}");
-        }
+    /// Set the guest's wall clock from the host's, before the VM is handed out. A VM restored from
+    /// a snapshot resumes with the clock its snapshot was taken at, which is behind the host's by
+    /// however long that snapshot was kept: a certificate the server issued this moment is then
+    /// "not yet valid" inside the VM, and the session that scans it refuses its own identity. The
+    /// guest agent runs as root and moves `CLOCK_REALTIME` for the whole guest, which a program of
+    /// the tenant's could not. A cold boot reads the host's time already; setting it again costs
+    /// one round trip and keeps boot and restore one path.
+    fn set_guest_clock(&self) -> Result<(), VmError> {
+        // The host's time, plus a millisecond so a certificate issued just before this request is
+        // never ahead of the guest's clock when the guest reads it.
+        let unix_millis = (self.clock)().saturating_add(1);
+        let link = self.link.as_ref().ok_or(VmError::NotRunning)?;
+        let mut stream = link.connect(AGENT_PORT)?;
+        stream.set_read_timeout(Some(CLOCK_PATIENCE))?;
+        Ok(set_guest_clock_through(&mut stream, unix_millis)?)
     }
 
     fn sync_shares(&mut self) -> Result<(), VmError> {
@@ -960,6 +958,20 @@ impl Drop for HostedVm {
     }
 }
 
+/// Ask the agent on `stream` to make the guest's whole wall clock read `unix_millis`. The agent
+/// runs as root in the guest and moves `CLOCK_REALTIME`, which a program of the tenant's could not.
+/// The answer must name the time that was set: an agent that set another time, or refused, is an
+/// error the wake reports rather than a VM handed out with a clock behind the host's.
+fn set_guest_clock_through<S: std::io::Read + std::io::Write>(
+    stream: &mut S,
+    unix_millis: u64,
+) -> Result<(), linux_vm_protocol::ProtocolError> {
+    match client::request(stream, &HostMessage::SetClock { unix_millis })? {
+        GuestMessage::ClockSet { unix_millis: set } if set == unix_millis => Ok(()),
+        _ => Err(linux_vm_protocol::ProtocolError::Unexpected),
+    }
+}
+
 /// The descriptor a share server gets its bound listener on.
 pub const LISTEN_FD: i32 = 3;
 
@@ -1078,6 +1090,78 @@ fn kill_stray(files: &VmFiles, jail: Option<&Jail>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fake agent on `guest`: it shakes the host's hand, expects one clock
+    /// request, and answers it with `reply`. Assertions live here, not in a
+    /// function returning a result.
+    fn answer_clock_request(
+        mut guest: std::os::unix::net::UnixStream,
+        reply: impl FnOnce(u64) -> GuestMessage,
+    ) {
+        use linux_vm_protocol::{AgentHello, GuestOs, PROTOCOL_MAJOR, recv, send};
+
+        assert!(matches!(
+            recv::<_, HostMessage>(&mut guest).unwrap(),
+            Some(HostMessage::Hello { .. })
+        ));
+        send(
+            &mut guest,
+            &GuestMessage::Hello(AgentHello {
+                protocol_major: PROTOCOL_MAJOR,
+                os: GuestOs::Linux,
+                boot_id: "boot".into(),
+                agent_version: "test".into(),
+            }),
+        )
+        .unwrap();
+        let Some(HostMessage::SetClock { unix_millis }) = recv(&mut guest).unwrap() else {
+            panic!("expected a clock request");
+        };
+        send(&mut guest, &reply(unix_millis)).unwrap();
+    }
+
+    /// One clock request to a fake agent on a socket pair, which answers `reply`.
+    fn clock_exchange(
+        unix_millis: u64,
+        reply: impl FnOnce(u64) -> GuestMessage + Send + 'static,
+    ) -> Result<(), linux_vm_protocol::ProtocolError> {
+        let (mut host, guest) = std::os::unix::net::UnixStream::pair().unwrap();
+        let agent = std::thread::spawn(move || answer_clock_request(guest, reply));
+        let result = set_guest_clock_through(&mut host, unix_millis);
+        agent.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn a_clock_request_sends_the_hosts_time_and_needs_it_back() {
+        let at = 1_782_816_120_123;
+        assert!(
+            clock_exchange(at, move |sent| {
+                assert_eq!(sent, at, "the host sent its time");
+                GuestMessage::ClockSet { unix_millis: sent }
+            })
+            .is_ok(),
+            "the agent set the time the host asked for"
+        );
+        assert!(
+            matches!(
+                clock_exchange(at, move |_| GuestMessage::ClockSet {
+                    unix_millis: at.saturating_sub(1)
+                }),
+                Err(linux_vm_protocol::ProtocolError::Unexpected)
+            ),
+            "an agent that set another time is not believed"
+        );
+        assert!(
+            matches!(
+                clock_exchange(at, |_| GuestMessage::Error {
+                    message: "Operation not permitted".into()
+                }),
+                Err(linux_vm_protocol::ProtocolError::Refused(_))
+            ),
+            "a refusal fails the wake instead of handing the VM out"
+        );
+    }
 
     #[test]
     fn a_branch_forgets_every_session_of_its_source_as_root_and_keeps_the_tenants_files() {

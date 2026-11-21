@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! host  → Hello { protocol_major }        guest → Hello(AgentHello)
-//! host  → Health | ListRunning | Mount | InstalledApps
+//! host  → Health | ListRunning | Mount | InstalledApps | SetClock
 //!                                         guest → one answer, then close
 //! host  → Launch(Launch)                  guest → Started { pid }
 //! host  → Stdin(..) | CloseStdin | Signal guest → Stdout(..) | Stderr(..)
@@ -107,6 +107,11 @@ pub enum HostMessage {
     Signal(Signal),
     MountFiles { shares: Vec<files::FileShare> },
     Resize(TerminalSize),
+    /// Set the guest's wall clock, as Unix milliseconds, before the host hands
+    /// the VM out. A VM restored from a snapshot resumes with the clock the
+    /// snapshot was taken at; the agent runs as root, which is what moving
+    /// `CLOCK_REALTIME` takes.
+    SetClock { unix_millis: u64 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -122,6 +127,8 @@ pub enum GuestMessage {
     Exited(ExitStatus),
     Error { message: String },
     FilesMounted { paths: Vec<String> },
+    /// The guest's wall clock now reads `unix_millis`.
+    ClockSet { unix_millis: u64 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -434,6 +441,9 @@ mod tests {
                     cols: 120,
                     rows: 40,
                 }),
+                HostMessage::SetClock {
+                    unix_millis: 1_782_816_120_000,
+                },
                 HostMessage::Launch(Launch {
                     stdio: Stdio::Terminal(TerminalSize { cols: 80, rows: 24 }),
                     ..launch(&["vim"])
