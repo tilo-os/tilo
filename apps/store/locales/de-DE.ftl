@@ -101,7 +101,7 @@ store-runtime-already-installed = Genau diese Laufzeit ist bereits installiert.
 
 ## History: what each change to the reports did
 
-store-draft-report = Meldung zu { $app_id } begonnen
+store-draft-report = Meldung begonnen
 store-record-moderation-case = Die Quelle hat Fall { $case_id } eröffnet: { $status }
 store-report-note = Das Anliegen einer Meldung beschrieben
 store-reports-reports = Eine Meldung bearbeitet

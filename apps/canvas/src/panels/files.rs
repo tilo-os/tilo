@@ -302,7 +302,7 @@ impl FileChooser {
             &name,
         )
         .filter(
-            FileFilter::new(settings.format.label())
+            FileFilter::new(settings.format.name())
                 .glob(&format!("*.{extension}"))
                 .mimetype(match settings.format {
                     export::Format::Png => "image/png",

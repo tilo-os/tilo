@@ -265,8 +265,8 @@ pub fn day_heading_short(day: Date, words: &dyn Words) -> String {
     )
 }
 
-/// A span of days, its month named once when it is the same: `Jun 23 – 29`, `Jun 29 – Jul 5`,
-/// `Dec 29, 2025 – Jan 4, 2026`.
+/// A span of days, its month named once when it is the same: `Jun 23–29`, `Jun 29 to Jul 5`,
+/// `Dec 29, 2025 to Jan 4, 2026`.
 #[must_use]
 pub fn day_range(start: Date, end: Date, words: &dyn Words) -> String {
     if start.year() != end.year() {

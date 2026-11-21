@@ -138,7 +138,7 @@ impl InternalTransport {
         }
         let mut response = self
             .request(url, 0, cancel, None)
-            .map_err(|e| e.message())?;
+            .map_err(|e| e.detail())?;
         cancelled(cancel)?;
         self.response_identity(&response)?;
         if response.status() != reqwest::StatusCode::OK {
@@ -557,7 +557,7 @@ enum RequestError {
     Retry(String),
 }
 impl RequestError {
-    fn message(self) -> String {
+    fn detail(self) -> String {
         match self {
             Self::Fatal(s) | Self::Retry(s) => s,
             Self::Paused => "Internal transfer paused".into(),

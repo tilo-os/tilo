@@ -522,15 +522,6 @@ fn remove_file(path: &std::path::Path) -> Result<(), tilo_files::FsError> {
 impl AccountKind {
     pub const ALL: [Self; 4] = [Self::Mail, Self::CalDav, Self::WebDav, Self::Nextcloud];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            AccountKind::Mail => "Email",
-            AccountKind::CalDav => "Calendar",
-            AccountKind::WebDav => "Files",
-            AccountKind::Nextcloud => "Nextcloud",
-        }
-    }
-
     pub fn slug(self) -> &'static str {
         match self {
             AccountKind::Mail => "mail",

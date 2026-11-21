@@ -1803,7 +1803,7 @@ pub(crate) mod tests {
             });
             assert_eq!(
                 actor_label(&presence, &shortcut),
-                "Morning · Shortcut",
+                "Morning (Shortcut)",
                 "named by its run"
             );
             assert!(presence.apply_interaction_at(shortcut, at).unwrap());

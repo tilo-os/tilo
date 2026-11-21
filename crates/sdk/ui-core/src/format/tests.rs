@@ -183,15 +183,15 @@ tilo_test_env::scenario! {
         assert_eq!(H24.day_heading_short(day(2026, 6, 30)), "Tue, Jun 30");
         assert_eq!(
             H24.day_range(day(2026, 6, 23), day(2026, 6, 29)),
-            "Jun 23 – 29"
+            "Jun 23–29"
         );
         assert_eq!(
             H24.day_range(day(2026, 6, 29), day(2026, 7, 5)),
-            "Jun 29 – Jul 5"
+            "Jun 29 to Jul 5"
         );
         assert_eq!(
             H24.day_range(day(2025, 12, 29), day(2026, 1, 4)),
-            "Dec 29, 2025 – Jan 4, 2026"
+            "Dec 29, 2025 to Jan 4, 2026"
         );
         assert_eq!(H24.month_day_time(at(2026, 6, 30, 14, 5)), "Jun 30, 14:05");
         speak("de-DE");

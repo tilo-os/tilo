@@ -283,7 +283,7 @@ impl Formats {
         tilo_formats::day_heading_short(day, words())
     }
 
-    /// A span of days: `Jun 23 – 29`. See `tilo_formats::day_range`.
+    /// A span of days: `Jun 23–29`. See `tilo_formats::day_range`.
     #[must_use]
     pub fn day_range(&self, start: Date, end: Date) -> String {
         tilo_formats::day_range(start, end, words())
@@ -518,7 +518,7 @@ pub fn day_heading_short(day: Date) -> String {
     Formats::current().day_heading_short(day)
 }
 
-/// A span of days: `Jun 23 – 29`. See [`Formats::day_range`].
+/// A span of days: `Jun 23–29`. See [`Formats::day_range`].
 #[must_use]
 pub fn day_range(start: Date, end: Date) -> String {
     Formats::current().day_range(start, end)
@@ -552,8 +552,8 @@ pub fn lifetime_kind(key: &str) -> String {
     crate::i18n::widget_text(&format!("format-lifetime-{key}"))
 }
 
-/// Any span between two formatted values: `Mon, Jun 29 – Sun, Jul 5`,
-/// `9:00 – 10:30`.
+/// Any span between two formatted values: `Mon, Jun 29 to Sun, Jul 5`,
+/// `9:00 to 10:30`.
 #[must_use]
 pub fn range(start: &str, end: &str) -> String {
     widget_format(
@@ -593,7 +593,7 @@ pub enum Period {
 
 impl Period {
     /// How the period reads, widest first, each naming the same span:
-    /// `Mon, Jun 29 – Sun, Jul 5` then `Jun 29 – Jul 5`; `Mon, Jun 29`
+    /// `Mon, Jun 29 to Sun, Jul 5` then `Jun 29 to Jul 5`; `Mon, Jun 29`
     /// then `Jun 29`; `June 2026` then `Jun 2026`. Where the width is short a
     /// narrower form is used instead of a cut-off wider one.
     #[must_use]

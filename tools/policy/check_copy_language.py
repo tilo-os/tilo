@@ -44,11 +44,8 @@ A message or literal that has to say it anyway (the save status's own
 one-time "Saved" after a failure) is listed in `copy_save_exceptions.toml`
 with the reason it is not routine; an entry that no longer matches fails.
 
-Catalogues that still carry old copy list it, per message and rule, in
-`copy_language_baseline/<unit>.txt` (the unit is the crate path with `/`
-replaced by `-`). A shard only shrinks: a listed message that no longer breaks
-its rule fails the check until the line is deleted, and a new message that
-breaks a rule fails outright.
+Every message in every catalogue is held to these rules, with no list of old
+copy left to shrink.
 
 A crate that ships a translation paints what a person reads through its
 catalogue: an English literal handed to a copy builder there ships the source
@@ -165,10 +162,7 @@ window as it is written, in every language:
   not one of the crate's message ids ("Curves" where
   `video-editor-section-curves` belongs). What the table is *asked* with is not
   copy — `"Dark" => "themes-option-dark"` maps a stored value to its message —
-  so only the words a table answers with are judged. The rule holds for a
-  surface that has finished migrating its copy, one with no
-  `copy_language_baseline` shard: a crate still listing what it has not migrated
-  is held to it from the day its shard goes.
+  so only the words a table answers with are judged.
 
 A widget hands a reader many names at once, so it projects them as a tuple and
 names each node from one element of it (`let (target, name, role, state) =
@@ -206,7 +200,6 @@ HERE = Path(__file__).resolve().parent
 GLOSSARY = HERE / "copy_glossary.toml"
 SAVE_EXCEPTIONS = HERE / "copy_save_exceptions.toml"
 SOURCE_LITERALS = HERE / "copy_source_literals.toml"
-BASELINE = HERE / "copy_language_baseline"
 
 SOURCE_LOCALE = "en-US"
 
@@ -2113,7 +2106,7 @@ def named_tuple_words(root: Path,
     return {name: sorted(set(words)) for name, words in table.items()}
 
 
-def key_table_literals(root: Path, baseline_dir: Path) -> list[tuple[str, int, str]]:
+def key_table_literals(root: Path) -> list[tuple[str, int, str]]:
     """(file, line, text) of each word a crate answers a catalogue lookup with
     that is not one of its own messages.
 
@@ -2126,11 +2119,6 @@ def key_table_literals(root: Path, baseline_dir: Path) -> list[tuple[str, int, s
     """
     found = []
     for crate in surfaces(root):
-        # A crate that still lists copy in a baseline has not migrated it yet:
-        # the table rule is part of what finishing means, so it holds from the
-        # day the shard goes.
-        if (baseline_dir / f"{unit_of(root, root / crate / f'locales/{SOURCE_LOCALE}.ftl')}.txt").is_file():
-            continue
         keys = catalogue_keys(root, crate)
         if not keys:
             continue
@@ -2449,23 +2437,6 @@ def unit_of(root: Path, catalogue: Path) -> str:
     return catalogue.parents[1].relative_to(root).as_posix().replace("/", "-")
 
 
-def load_baseline(directory: Path) -> dict[str, set[tuple[str, str, str]]]:
-    """Per unit, the (locale, message, rule) entries still allowed."""
-    shards: dict[str, set[tuple[str, str, str]]] = {}
-    if not directory.is_dir():
-        return shards
-    for shard in sorted(directory.glob("*.txt")):
-        entries = set()
-        for line in shard.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            locale, key, rule = line.split()
-            entries.add((locale, key, rule))
-        shards[shard.stem] = entries
-    return shards
-
-
 def scan(root: Path, glossary: list[Term]) -> dict[str, list[tuple[str, Message, str, str, Path]]]:
     """Per unit, every (locale, message, rule, detail, catalogue) violation."""
     found: dict[str, list[tuple[str, Message, str, str, Path]]] = {}
@@ -2483,34 +2454,24 @@ def named(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name
 
 
-def check(root: Path, glossary_path: Path, baseline_dir: Path,
+def check(root: Path, glossary_path: Path,
           save_exceptions_path: Path | None = None,
           source_literals_path: Path | None = None) -> list[str]:
     glossary = load_glossary(glossary_path)
-    baseline = load_baseline(baseline_dir)
     exceptions = load_save_exceptions(save_exceptions_path) if save_exceptions_path else set()
     literals = (load_save_exceptions(source_literals_path)
                 if source_literals_path else set())
     used: set[SaveException] = set()
     errors = []
     found = scan(root, glossary)
-    for unit in sorted(set(found) | set(baseline)):
-        allowed = baseline.get(unit, set())
-        seen = set()
-        for locale, message, rule, detail, catalogue in found.get(unit, []):
-            entry = (locale, message.key.split(".")[0], rule)
-            if entry in allowed:
-                seen.add(entry)
-                continue
+    for unit in sorted(found):
+        for locale, message, rule, detail, catalogue in found[unit]:
             if rule == "save-status":
                 exception = SaveException(unit, message.key.split(".")[0], None, None)
                 if exception in exceptions:
                     used.add(exception)
                     continue
             errors.append(f"{named(root, catalogue)}:{message.line}: {message.key} {detail} [{rule}]")
-        for locale, key, rule in sorted(allowed - seen):
-            errors.append(f"{named(root, baseline_dir)}/{unit}.txt: {locale} {key} {rule} "
-                          "no longer applies; delete the line")
     for file, line, text in routine_save_literals(root):
         exception = SaveException(None, None, file, text)
         if exception in exceptions:
@@ -2528,7 +2489,7 @@ def check(root: Path, glossary_path: Path, baseline_dir: Path,
                       "translation resolves its copy through the crate's catalogue "
                       "[uncatalogued]")
     used_keys: set[SaveException] = set()
-    for file, line, text in key_table_literals(root, baseline_dir):
+    for file, line, text in key_table_literals(root):
         exception = SaveException(None, None, file, text)
         if exception in literals:
             used_keys.add(exception)
@@ -2590,14 +2551,8 @@ def written_labels(root: Path) -> list[tuple[str, int, str]]:
     return found
 
 
-def main(argv: list[str]) -> int:
-    if argv[1:] == ["--print-baseline"]:
-        glossary = load_glossary(GLOSSARY)
-        for unit, entries in sorted(scan(ROOT, glossary).items()):
-            for locale, message, rule, _, _ in entries:
-                print(unit, locale, message.key.split(".")[0], rule)
-        return 0
-    errors = check(ROOT, GLOSSARY, BASELINE, SAVE_EXCEPTIONS, SOURCE_LITERALS)
+def main() -> int:
+    errors = check(ROOT, GLOSSARY, SAVE_EXCEPTIONS, SOURCE_LITERALS)
     if errors:
         print("\n".join(errors))
         return 1
@@ -2606,4 +2561,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(main())

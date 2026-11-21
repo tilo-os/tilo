@@ -38,7 +38,7 @@ impl Format {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Png => "PNG",
             Self::Jpeg => "JPEG",
@@ -402,7 +402,7 @@ pub fn body(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
             .map(|format| {
                 (
                     *format,
-                    ui::widget::toggle_group::Segment::new(format.label()),
+                    ui::widget::toggle_group::Segment::new(format.name()),
                 )
             })
             .collect(),
@@ -625,7 +625,7 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
             &[
                 ("width", width.into()),
                 ("height", height.into()),
-                ("format", settings.format.label().into()),
+                ("format", settings.format.name().into()),
             ],
         )
     } else {

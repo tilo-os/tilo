@@ -335,8 +335,7 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   so it shows a raw key (`disks-select-whole-disk`) on any path that paints
   before something loaded the words; those lookups are the toolkit's own.
 - `tools/policy/check_copy_language.py` checks every `locales/*.ftl` for
-  these classes (old copy is listed per catalogue in
-  `copy_language_baseline/`, which only shrinks), and rejects an English
+  these classes, and rejects an English
   literal or `format!` sentence handed to a window's text constructors (a
   label, a section title, a property's name, an accessible name), directly or
   through a wrapper, a conversion, a default or a local, and a literal assigned

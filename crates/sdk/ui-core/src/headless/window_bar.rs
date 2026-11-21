@@ -1595,8 +1595,8 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// A compact window's bar cannot fit the week as `Mon, Jun 29 – Sun, Jul 5`: it names it `Jun
-    /// 29 – Jul 5`, whole, instead of cutting the wider form short.
+    /// A compact window's bar cannot fit the week as `Mon, Jun 29 to Sun, Jul 5`: it names it `Jun
+    /// 29 to Jul 5`, whole, instead of cutting the wider form short.
     #[test]
     fn a_compact_window_names_its_period_in_a_form_that_fits() {
         let (_hosted, mut harness, bar) = compact_calendar_bar();

@@ -7,7 +7,6 @@ use std::sync::Arc;
 use account_credentials::nextcloud::{self, NextcloudError};
 use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind};
 
-use crate::accounts::AccountKind;
 use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::{t, t_args};
 use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
@@ -97,7 +96,7 @@ impl SignInFlow {
     fn display_name(&self) -> String {
         let name = self.name.with(|name| name.trim().to_string());
         if name.is_empty() {
-            AccountKind::Nextcloud.label().to_string()
+            t("accounts-kind-nextcloud")
         } else {
             name
         }
@@ -288,7 +287,7 @@ impl SignInFlow {
         &self,
         bind: &dyn Fn(Button, super::AccountsEffect) -> Button,
     ) -> SettingsSection {
-        let service = AccountKind::Nextcloud.label();
+        let service = t("accounts-kind-nextcloud");
         let title = t_args(
             if self.existing_id.is_some() {
                 "accounts-sign-in-again-to"
@@ -335,7 +334,7 @@ impl SignInFlow {
                     .with_kind(TextInputKind::Name)
                     .with_id("accounts.signin.name")
                     .with_accessible_name(t("settings-a11y-display-name"))
-                    .with_placeholder(AccountKind::Nextcloud.label()),
+                    .with_placeholder(t("accounts-kind-nextcloud")),
             ),
         ));
         fields.push(field_row(

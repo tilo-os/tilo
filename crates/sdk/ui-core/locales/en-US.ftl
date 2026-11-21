@@ -498,10 +498,10 @@ format-day-heading = { $weekday }, { $month } { $day }
 format-day-heading-year = { $weekday }, { $month } { $day }, { $year }
 # A day column or compact header: "Tue, Jun 30".
 format-day-heading-short = { $weekday }, { $month } { $day }
-# A span of days within one month: "Jun 23 – 29".
-format-day-range-in-month = { $month } { $start } – { $end }
-# Any span between two dates or times: "Jun 29 – Jul 5".
-format-range = { $start } – { $end }
+# A span of days within one month: "Jun 23–29".
+format-day-range-in-month = { $month } { $start }–{ $end }
+# Any span between two dates or times: "Jun 29 to Jul 5".
+format-range = { $start } to { $end }
 # Two already-formatted values in a list: "encrypted, 134 GB free".
 format-list-join = { $head }, { $tail }
 # The top of a month grid: "June 2026".
@@ -540,7 +540,7 @@ relative-compact-years = { $count }y
 
 # A software member in history, presence and activity rows.
 history-invocation-step-separator = {", "}
-member-shortcut = { $name } · Shortcut
+member-shortcut = { $name } (Shortcut)
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
 interaction-agent = Agent

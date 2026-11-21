@@ -142,34 +142,6 @@ class CopyLanguageTests(unittest.TestCase):
         text = "a = Fine\n    .title = DESKTOP ESSENTIALS\n-brand = Tilo will keep it\n"
         self.assertEqual(rules("en-US", text), [("a.title", "all-caps"), ("-brand", "narration")])
 
-    def test_baseline_only_shrinks(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            locales = root / "apps/demo/locales"
-            locales.mkdir(parents=True)
-            (locales / "en-US.ftl").write_text("old = YOU LEFT OFF\nfine = Synced\n")
-            glossary = root / "glossary.toml"
-            glossary.write_text(GLOSSARY)
-            baseline = root / "baseline"
-            baseline.mkdir()
-            shard = baseline / "apps-demo.txt"
-
-            self.assertEqual(len(copy.check(root, glossary, baseline)), 1)
-
-            shard.write_text("# old copy\nen-US old all-caps\n")
-            self.assertEqual(copy.check(root, glossary, baseline), [])
-
-            (locales / "en-US.ftl").write_text("old = Where you left off\nfine = Synced\n")
-            errors = copy.check(root, glossary, baseline)
-            self.assertEqual(len(errors), 1)
-            self.assertIn("no longer applies", errors[0])
-
-            (locales / "en-US.ftl").write_text("old = YOU LEFT OFF\nfine = SAVED NOW\n")
-            shard.write_text("en-US old all-caps\n")
-            errors = copy.check(root, glossary, baseline)
-            self.assertEqual(len(errors), 1)
-            self.assertIn("fine", errors[0])
-
     def test_routine_saving_is_caught_and_outcomes_pass(self):
         text = "\n".join([
             "a = Saving…",
@@ -212,11 +184,9 @@ class CopyLanguageTests(unittest.TestCase):
                 '#[cfg(test)]\nmod tests { fn t() { let _ = "Saved"; } }\n')
             glossary = root / "glossary.toml"
             glossary.write_text(GLOSSARY)
-            baseline = root / "baseline"
-            baseline.mkdir()
             exceptions = root / "exceptions.toml"
             exceptions.write_text("")
-            errors = copy.check(root, glossary, baseline, exceptions)
+            errors = copy.check(root, glossary, exceptions)
             self.assertEqual(len(errors), 2, errors)
             self.assertIn("demo-saved", errors[0])
             self.assertIn("apps/demo/src/lib.rs:1", errors[1])
@@ -224,16 +194,16 @@ class CopyLanguageTests(unittest.TestCase):
             exceptions.write_text(
                 '[[allow]]\nunit = "apps-demo"\nkey = "demo-saved"\nreason = "A name."\n'
                 '[[allow]]\nfile = "apps/demo/src/lib.rs"\ntext = "Saving…"\nreason = "A name."\n')
-            self.assertEqual(copy.check(root, glossary, baseline, exceptions), [])
+            self.assertEqual(copy.check(root, glossary, exceptions), [])
 
             (locales / "en-US.ftl").write_text("demo-saved = Saved a copy\n")
-            errors = copy.check(root, glossary, baseline, exceptions)
+            errors = copy.check(root, glossary, exceptions)
             self.assertEqual(len(errors), 1)
             self.assertIn("no longer matches", errors[0])
 
             exceptions.write_text('[[allow]]\nunit = "apps-demo"\nkey = "demo-saved"\n')
             with self.assertRaises(ValueError):
-                copy.check(root, glossary, baseline, exceptions)
+                copy.check(root, glossary, exceptions)
 
     def test_glossary_terms_need_a_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -804,13 +774,11 @@ class CopyLanguageTests(unittest.TestCase):
             ]) + "\n")
             glossary = root / "glossary.toml"
             glossary.write_text(GLOSSARY)
-            baseline = root / "baseline"
-            baseline.mkdir()
             save = root / "save.toml"
             save.write_text("")
             exceptions = root / "literals.toml"
             exceptions.write_text("")
-            errors = copy.check(root, glossary, baseline, save, exceptions)
+            errors = copy.check(root, glossary, save, exceptions)
             self.assertEqual(len(errors), 1, errors)
             self.assertIn("apps/demo/src/lib.rs:2", errors[0])
             self.assertIn("[uncatalogued]", errors[0])
@@ -818,7 +786,7 @@ class CopyLanguageTests(unittest.TestCase):
             exceptions.write_text(
                 '[[allow]]\nfile = "apps/demo/src/lib.rs"\ntext = "Backspace"\n'
                 'reason = "A key'"'"'s name, as the keyboard prints it."\n')
-            self.assertEqual(copy.check(root, glossary, baseline, save, exceptions), [])
+            self.assertEqual(copy.check(root, glossary, save, exceptions), [])
 
             (source / "lib.rs").write_text("\n".join([
                 "fn cap() -> &'static str {",
@@ -828,7 +796,7 @@ class CopyLanguageTests(unittest.TestCase):
                 "    Box::new(Text::new(cap()))",
                 "}",
             ]) + "\n")
-            errors = copy.check(root, glossary, baseline, save, exceptions)
+            errors = copy.check(root, glossary, save, exceptions)
             self.assertEqual(len(errors), 3, errors)
             self.assertTrue(any("no longer matches" in error for error in errors), errors)
 
@@ -1210,13 +1178,13 @@ class CopyLanguageTests(unittest.TestCase):
             ]) + "\n",
         })
         self.assertEqual(
-            [text for _, _, text in copy.key_table_literals(root, root / "baselines")],
+            [text for _, _, text in copy.key_table_literals(root)],
             ["Mask"],
             "a table the catalogue lookup resolves answers with this crate's "
             "message ids; the word it was asked with is the stored value, not "
             "copy, so neither it nor the ids themselves are found")
 
-    def test_a_table_rule_holds_once_a_crate_has_no_baseline_left(self):
+    def test_a_table_of_messages_is_held_to_the_rule_with_no_list_to_shrink(self):
         root = self._root({
             "apps/demo/src/lib.rs": "\n".join([
                 "fn message(key: &str) -> &'static str {",
@@ -1230,20 +1198,11 @@ class CopyLanguageTests(unittest.TestCase):
                 "}",
             ]) + "\n",
         })
-        baselines = root / "baselines"
-        baselines.mkdir()
-        (baselines / "apps-demo.txt").write_text("en-US demo-name raw-id\n")
         self.assertEqual(
-            [text for _, _, text in copy.key_table_literals(root, baselines)],
-            [],
-            "a crate still listing copy it has not migrated is not held to the "
-            "table rule until its shard goes")
-        (baselines / "apps-demo.txt").unlink()
-        self.assertEqual(
-            [text for _, _, text in copy.key_table_literals(root, baselines)],
+            [text for _, _, text in copy.key_table_literals(root)],
             ["Demo"],
-            "the day the shard goes, the words a catalogue lookup resolves have "
-            "to be the crate's own messages")
+            "the words a catalogue lookup resolves have to be the crate's own "
+            "messages, with no list of old copy to shrink")
 
     def test_a_refusal_reported_to_the_caller_is_not_copy(self):
         root = self._root({

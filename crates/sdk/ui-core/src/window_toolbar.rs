@@ -216,7 +216,7 @@ pub struct ToolbarNavigation {
 pub struct ToolbarLocation {
     pub label: String,
     /// Narrower forms of the label, widest first, each saying the same (a period's
-    /// `Jun 29 – Jul 5` for `Mon, Jun 29 – Sun, Jul 5`): where the label does not fit,
+    /// `Jun 29 to Jul 5` for `Mon, Jun 29 to Sun, Jul 5`): where the label does not fit,
     /// the bar shows the widest of them that fits the width the location has once
     /// everything else it can fold is in the menu, and keeps that width for it, so a wider
     /// window never shows a narrower form.

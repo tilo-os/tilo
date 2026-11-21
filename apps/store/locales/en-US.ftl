@@ -101,7 +101,7 @@ store-runtime-already-installed = This exact runtime is already installed.
 
 ## History: what each change to the reports did
 
-store-draft-report = Started a report about { $app_id }
+store-draft-report = Started a report
 store-record-moderation-case = The registry opened case { $case_id }: { $status }
 store-report-note = Described the concern of a report
 store-reports-reports = Edited a report
