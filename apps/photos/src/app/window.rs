@@ -151,7 +151,22 @@ pub(crate) fn view(cx: &ViewCx<PhotoLibrary>, mut window: PhotosApp) -> Element 
     photos
         .borrow_mut()
         .attach_framework(cx.dispatcher(), cx.actions());
-    cx.on_open_item(photos.borrow().opener());
+    // A search hit, or an agent's `open`, shows the photograph or album it
+    // names: the window keeps each anchor until a sync shows it, and refuses
+    // one that is neither.
+    {
+        let opens = cx.open_queue();
+        photos.borrow_mut().opens = opens.clone();
+        cx.on_open(move |anchor: &str| {
+            if !anchor.starts_with("photos.photo:") && !anchor.starts_with("photos.album:") {
+                return ui::framework::OpenOutcome::Gone(
+                    "only a photograph or an album opens".to_owned(),
+                );
+            }
+            opens.ask(anchor);
+            ui::framework::OpenOutcome::NotYet
+        });
+    }
     {
         let photos = Rc::clone(&photos);
         cx.window_host_effects(move |_: &mut PhotosApp, effect: PhotosEffect, cx| {

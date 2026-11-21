@@ -1640,7 +1640,7 @@ pub struct FeedsApp {
     pending_scenario: Rc<RefCell<Option<String>>>,
     settled_layouts: u32,
     mount: Option<OverlayMount>,
-    opened: Rc<RefCell<Vec<Id>>>,
+    pub(crate) opened: ui::framework::Opens,
 }
 
 impl Default for FeedsApp {
@@ -1702,30 +1702,7 @@ impl FeedsApp {
             pending_scenario: Rc::default(),
             settled_layouts: 0,
             mount: None,
-            opened: Rc::default(),
-        }
-    }
-
-    /// What the framework calls with the item a search hit or an agent's
-    /// `open` names: refused when the library holds no such item, shown on
-    /// the next pass.
-    pub(crate) fn opener(
-        &self,
-    ) -> impl FnMut(&Id) -> Result<(), ui::tilo_resource::Refusal> + 'static {
-        let opened = Rc::clone(&self.opened);
-        let core = Rc::clone(&self.core);
-        move |id: &Id| {
-            let core = core.borrow();
-            let known = core.articles().article(id).is_some()
-                || core.store.feeds.contains(id)
-                || core.store.folders.contains(id);
-            if !known {
-                return Err(ui::tilo_resource::Refusal::new(
-                    "no such article, subscription or folder",
-                ));
-            }
-            opened.borrow_mut().push(id.clone());
-            Ok(())
+            opened: ui::framework::Opens::default(),
         }
     }
 
@@ -1994,9 +1971,31 @@ impl FeedsApp {
 
     fn settle_controls(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.take_window_toolbar_events();
-        let opened = std::mem::take(&mut *self.opened.borrow_mut());
-        for id in opened {
-            let _ = self.core.borrow_mut().open_item(&id);
+        {
+            use ui::framework::OpenOutcome;
+            let opened = self.opened.clone();
+            opened.show(|anchor| {
+                let Some((_, id)) =
+                    ui::tilo_resource::items::item_of_resource::<crate::model::Library>(anchor)
+                else {
+                    return OpenOutcome::Gone(format!("Feeds opens no `{anchor}`"));
+                };
+                let opened = self.core.borrow_mut().open_item(&id);
+                match opened {
+                    Ok(()) => OpenOutcome::Shown,
+                    // A part of the list on its way may hold it.
+                    Err(reason) => {
+                        let arriving = self.core.borrow().chain.as_ref().is_some_and(|chain| {
+                            !chain.waited().is_empty() || chain.head_arriving()
+                        });
+                        if arriving {
+                            OpenOutcome::NotYet
+                        } else {
+                            OpenOutcome::Gone(reason)
+                        }
+                    }
+                }
+            });
         }
         let requests = std::mem::take(&mut *self.requests.borrow_mut());
         for request in requests {
@@ -2753,7 +2752,7 @@ impl FeedsApp {
 }
 
 pub(crate) fn window(cx: &ViewCx<Library>) -> ui::widget::Element {
-    let app = FeedsApp::build(Library::new(), Some(&cx.actions()));
+    let mut app = FeedsApp::build(Library::new(), Some(&cx.actions()));
     {
         let mut core = app.core.borrow_mut();
         core.live = Some(cx.live().clone());
@@ -2770,8 +2769,36 @@ pub(crate) fn window(cx: &ViewCx<Library>) -> ui::widget::Element {
     {
         sample::fill(chain);
     }
-    // A picked search hit (or an agent's `open`) shows its item.
-    cx.on_open_item(app.opener());
+    // A picked search hit (or an agent's `open`) shows its item: the window
+    // keeps each anchor until a sync shows it, and refuses one that names no
+    // item it could hold.
+    {
+        use ui::framework::OpenOutcome;
+        let opens = cx.open_queue();
+        app.opened = opens.clone();
+        let core = Rc::clone(&app.core);
+        cx.on_open(move |anchor: &str| {
+            let Some((_, id)) =
+                ui::tilo_resource::items::item_of_resource::<crate::model::Library>(anchor)
+            else {
+                return OpenOutcome::Gone(format!("Feeds opens no `{anchor}`"));
+            };
+            let core = core.borrow();
+            let known = core.articles().article(&id).is_some()
+                || core.store.feeds.contains(&id)
+                || core.store.folders.contains(&id);
+            // A part of the list on its way may hold it.
+            let arriving = core
+                .chain
+                .as_ref()
+                .is_some_and(|chain| !chain.waited().is_empty() || chain.head_arriving());
+            if !known && !arriving {
+                return OpenOutcome::Gone("no such article, subscription or folder".to_owned());
+            }
+            opens.ask(anchor);
+            OpenOutcome::NotYet
+        });
+    }
     let statuses = Rc::clone(&app.core);
     cx.window_host_effects(|app: &mut FeedsApp, effect: FeedsEffect, cx| {
         app.core.borrow_mut().answer(effect, cx)

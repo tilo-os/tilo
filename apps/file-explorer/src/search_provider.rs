@@ -531,9 +531,11 @@ mod tests {
                     .expect("the place's row opens it");
                 assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);
                 assert_eq!(spec.contract, ui::tilo_actions::ActionContract::view());
-                app.state()
-                    .open_anchor(&hit.anchor())
-                    .expect("the window opens the hit's anchor");
+                assert_eq!(
+                    app.state().open_anchor(&hit.anchor()),
+                    ui::framework::OpenOutcome::Shown,
+                    "the window opens the hit's anchor"
+                );
                 assert_eq!(
                     app.state().current_path(),
                     home,

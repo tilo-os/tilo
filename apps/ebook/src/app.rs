@@ -1117,7 +1117,7 @@ pub struct BooksApp {
     record_stale: std::cell::Cell<bool>,
     /// What a search hit or an agent's `open` asked to show, shown on the
     /// next sync.
-    opens: Rc<std::cell::RefCell<Vec<String>>>,
+    pub(crate) opens: ui::framework::Opens,
     store: view::Shared,
     /// The library as the view's document holds it, shown as it changes;
     /// `None` for a reader outside the framework.
@@ -1339,7 +1339,7 @@ impl BooksApp {
             hits: Vec::new(),
             bar: window_bar::Bar::new(dispatch.clone()),
             dispatch,
-            opens: Rc::default(),
+            opens: ui::framework::Opens::default(),
             record: Rc::new(Ebook::default()),
             record_stale: std::cell::Cell::new(false),
             store: view::Shared::default(),
@@ -5318,22 +5318,19 @@ impl BooksApp {
         }
     }
 
-    /// Where a search hit or an agent's `open` queues what to show.
-    pub(crate) fn opens(&self) -> Rc<std::cell::RefCell<Vec<String>>> {
-        Rc::clone(&self.opens)
-    }
-
     /// Show what was asked to be opened: the book, chapter, annotation or
-    /// match a hit is anchored at, fetching a member's book first.
+    /// match a hit is anchored at, fetching a member's book first. An anchor
+    /// of nothing Books shows is gone.
     fn drain_opens(&self) {
-        let opens = std::mem::take(&mut *self.opens.borrow_mut());
-        for anchor in opens {
-            if let Some(effect) = self.book_search.opened(&anchor) {
+        use ui::framework::OpenOutcome;
+        let opens = self.opens.clone();
+        opens.show(|anchor| match self.book_search.opened(anchor) {
+            Some(effect) => {
                 self.dispatch.effect(&effect);
-            } else {
-                tracing::debug!(%anchor, "books: a search hit to open is gone");
+                OpenOutcome::Shown
             }
-        }
+            None => OpenOutcome::Gone(format!("Books opens no `{anchor}`")),
+        });
     }
 }
 

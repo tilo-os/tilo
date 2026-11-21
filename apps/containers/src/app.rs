@@ -315,8 +315,9 @@ pub(crate) struct ContainersState {
     /// The engine effects the window's controls asked for, for tests of a bare widget.
     #[cfg(test)]
     pub(crate) requested: Vec<(String, ContainersEffect)>,
-    /// What a search hit or an agent's `open` named, shown with the next frame.
-    opened: Rc<RefCell<Vec<String>>>,
+    /// What a search hit or an agent's `open` named, kept until a sync shows
+    /// it ([`ui::framework::Opens`]).
+    opened: ui::framework::Opens,
     pub(crate) toast: Notice,
     bg_rx: Option<Receiver<Bg>>,
     bg_tx: Option<Sender<Bg>>,
@@ -425,7 +426,7 @@ impl ContainersApp {
             pull_dirty: false,
             #[cfg(test)]
             requested: Vec::new(),
-            opened: Rc::default(),
+            opened: ui::framework::Opens::default(),
             toast: Notice::default(),
             bg_rx: None,
             bg_tx: None,
@@ -720,8 +721,25 @@ pub(crate) fn window(cx: &ViewCx<Containers>, mut window: ContainersApp) -> Elem
         }
         state.dispatcher = Some(dispatcher);
     }
-    // A search hit, or an agent's `open`, shows the row it names.
-    cx.on_open(state.borrow().opener());
+    // A search hit, or an agent's `open`, shows the row it names: the
+    // window keeps each anchor until a sync can show it, and refuses one
+    // that names no row it shows.
+    {
+        let opens = cx.open_queue();
+        state.borrow_mut().opened = opens.clone();
+        cx.on_open(move |anchor: &str| {
+            if !["container:", "image:", "volume:", "distrobox:"]
+                .iter()
+                .any(|prefix| anchor.starts_with(prefix))
+            {
+                return ui::framework::OpenOutcome::Gone(
+                    "not a container, image, volume or distrobox".to_owned(),
+                );
+            }
+            opens.ask(anchor);
+            ui::framework::OpenOutcome::NotYet
+        });
+    }
     {
         let (answer, status) = (Rc::clone(&state), Rc::clone(&state));
         cx.effects(move |effect: ContainersEffect, _| match effect {
@@ -859,24 +877,12 @@ impl ContainersState {
         self.requested.push((row, effect));
     }
 
-    /// What a search hit or an agent's `open` runs: show the row its anchor names.
-    pub(crate) fn opener(&self) -> impl FnMut(&str) -> Result<(), &'static str> + 'static {
-        let opened = Rc::clone(&self.opened);
-        move |anchor| {
-            if !["container:", "image:", "volume:", "distrobox:"]
-                .iter()
-                .any(|prefix| anchor.starts_with(prefix))
-            {
-                return Err("not a container, image, volume or distrobox");
-            }
-            opened.borrow_mut().push(anchor.to_owned());
-            Ok(())
-        }
-    }
-
+    /// Show what a search hit or an agent's `open` named: the row its anchor
+    /// names. An anchor of no row the window shows is gone.
     fn show_opened(&mut self) {
-        let opened = std::mem::take(&mut *self.opened.borrow_mut());
-        for anchor in opened {
+        use ui::framework::OpenOutcome;
+        let opened = self.opened.clone();
+        opened.show(|anchor| {
             if let Some(id) = anchor
                 .strip_prefix("container:")
                 .and_then(|rest| rest.strip_suffix(":logs"))
@@ -891,8 +897,11 @@ impl ContainersState {
                 self.show_section(Section::Volumes);
             } else if anchor.starts_with("distrobox:") {
                 self.show_section(Section::Distrobox);
+            } else {
+                return OpenOutcome::Gone(format!("Containers opens no `{anchor}`"));
             }
-        }
+            OpenOutcome::Shown
+        });
     }
 
     pub(crate) fn engine_rows(&self) -> Vec<LiveRow> {

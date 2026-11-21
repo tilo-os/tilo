@@ -673,7 +673,7 @@ pub(crate) struct Store {
     /// The queue every control reports to.
     requests: Requests,
     /// Search hits picked in the platform search, waiting to be shown.
-    opened: Rc<RefCell<Vec<String>>>,
+    pub(crate) opened: ui::framework::Opens,
     /// The scenario a capture staged, staged once the window has shown the
     staged: Option<Staged>,
     /// The surface changed since it was last painted.
@@ -919,7 +919,7 @@ impl Store {
             pending_confirmation: None,
             asking: false,
             requests: Requests::default(),
-            opened: Rc::default(),
+            opened: ui::framework::Opens::default(),
             staged: None,
             changed: false,
             dirty: true,
@@ -927,10 +927,6 @@ impl Store {
     }
 
     /// Where the platform search hands the hits a person picks: the view
-    pub(crate) fn open_requests(&self) -> Rc<RefCell<Vec<String>>> {
-        Rc::clone(&self.opened)
-    }
-
     /// Stage the view state of a named screenshot scenario. The connections
     pub(crate) fn stage(&mut self, scenario: Option<&str>) {
         match scenario.unwrap_or_default() {
@@ -1158,10 +1154,12 @@ impl Store {
         self.fullscreen = fullscreen;
     }
 
-    /// Show the connection a picked search hit points at.
+    /// Show the connection a picked search hit points at. One the
+    /// workspace has not listed yet is kept until it has.
     fn open_found(&mut self) {
-        let anchors = std::mem::take(&mut *self.opened.borrow_mut());
-        for anchor in anchors {
+        use ui::framework::OpenOutcome;
+        let opened = self.opened.clone();
+        opened.show(|anchor| {
             let Some(id) = self
                 .workspace
                 .connections()
@@ -1169,13 +1167,14 @@ impl Store {
                 .map(|connection| connection.id)
                 .find(|id| crate::resource::connection_resource_id(*id) == anchor)
             else {
-                continue;
+                return OpenOutcome::NotYet;
             };
             self.selected = Some(id);
             self.destination = Destination::Connections;
             self.screen = Screen::List;
             self.dirty = true;
-        }
+            OpenOutcome::Shown
+        });
     }
 
     fn delete_connection(&mut self, id: ConnectionId) {
@@ -1773,7 +1772,7 @@ impl Widget for RemoteApp {
     fn needs_idle_sync(&self) -> bool {
         let store = self.store.borrow();
         store.pending_resource_operation.is_some()
-            || !store.opened.borrow().is_empty()
+            || !store.opened.waiting().is_empty()
             || store.staged.is_some()
             || store.changed
     }

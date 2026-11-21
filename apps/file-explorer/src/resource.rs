@@ -1134,7 +1134,9 @@ fn carry_out_cloud(
 
 fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Element {
     let state = window.shared();
-    cx.on_open(state.borrow().opener());
+    // A search hit, or an agent's `open`, shows the folder or document it
+    // names: the window keeps it until a sync can show it.
+    state.borrow_mut().opened = cx.opens();
     attach_files(cx, &mut state.borrow_mut());
     window.follow(cx.live().clone());
     answer_effects(cx, &state);

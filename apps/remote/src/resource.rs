@@ -59,9 +59,9 @@ impl ResourceApp for RemoteShell {
 
     fn view(cx: &mut ViewCx<Remote>) -> Element {
         let app = RemoteApp::new();
-        // A picked search hit shows its connection in the list.
-        let opened = app.state().open_requests();
-        cx.on_open(move |anchor| opened.borrow_mut().push(anchor.to_owned()));
+        // A picked search hit shows its connection in the list: the window
+        // keeps each anchor until a sync can show it.
+        app.state().opened = cx.opens();
         crate::app::window(cx, app)
     }
 

@@ -370,7 +370,7 @@ impl ResourceApp for MusicShell {
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
         // Only a window someone uses plays audio, reads the profile and reaches the network.
-        let music = match cx.mode() {
+        let mut music = match cx.mode() {
             RunMode::Live => {
                 let mut music = Music::new();
                 music.enable_mpris();
@@ -378,8 +378,20 @@ impl ResourceApp for MusicShell {
             }
             RunMode::Capture | RunMode::Past => Music::offline(),
         };
-        // A search hit or an agent's `open` plays the song, or shows the page it names.
-        cx.on_open(music.opener());
+        // A search hit or an agent's `open` plays the song, or shows the page
+        // it names: the window keeps each anchor until a sync shows it, and
+        // refuses one Music has nothing to show for.
+        {
+            let opens = cx.open_queue();
+            music.opened = opens.clone();
+            cx.on_open(move |anchor: &str| {
+                if crate::actions::anchor_effect(anchor).is_none() {
+                    return ui::framework::OpenOutcome::Gone(format!("Music opens no `{anchor}`"));
+                }
+                opens.ask(anchor);
+                ui::framework::OpenOutcome::NotYet
+            });
+        }
         // The shell keeps the sidebar and the transport; what plays belongs to the window.
         let places = ui::widget::NavFeed::new();
         let transport = ui::widget::TransportFeed::new();

@@ -541,7 +541,7 @@ pub struct PdfApp {
     stored_annotations: Vec<Annotation>,
     adopted: Vec<crate::adopt::AdoptedEntry>,
     existing_request: Option<String>,
-    opens: std::rc::Rc<std::cell::RefCell<Vec<ui::tilo_resource::Id>>>,
+    pub(crate) opens: ui::framework::Opens,
     seed_pending: bool,
     reader_markup_hidden: bool,
 }
@@ -930,7 +930,7 @@ impl PdfApp {
             stored_annotations: Vec::new(),
             adopted: Vec::new(),
             existing_request: None,
-            opens: std::rc::Rc::default(),
+            opens: ui::framework::Opens::default(),
             seed_pending: true,
             reader_markup_hidden: false,
             markup_style: model::MarkupStyle::Highlight,
@@ -2582,21 +2582,19 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    pub(crate) fn opener(
-        &self,
-    ) -> impl FnMut(&ui::tilo_resource::Id) -> Result<(), ui::tilo_resource::Refusal> + 'static
-    {
-        let opens = std::rc::Rc::clone(&self.opens);
-        move |id| {
-            opens.borrow_mut().push(id.clone());
-            Ok(())
-        }
-    }
-
+    /// Show what a search hit or an agent's `open` named: the page, note,
+    /// comment or signature it is. One the paper does not hold yet is kept
+    /// until a sync has taken the part in.
     fn drain_opens(&mut self) {
-        let opens = std::mem::take(&mut *self.opens.borrow_mut());
-        for id in opens {
-            let id = id.as_str();
+        use ui::framework::OpenOutcome;
+        let opens = self.opens.clone();
+        opens.show(|anchor| {
+            let Some((_, item)) =
+                ui::tilo_resource::items::item_of_resource::<crate::markup::PdfMarkup>(anchor)
+            else {
+                return OpenOutcome::Gone(format!("PDF Viewer opens no `{anchor}`"));
+            };
+            let id = item.as_str();
             if let Some(index) = self.resource_page_ids.iter().position(|page| page == id) {
                 self.go_to_page(index + 1);
             } else if let Some(page) = self.annotations.iter().find(|a| a.id == id).map(|a| a.page)
@@ -2613,10 +2611,13 @@ impl PdfApp {
                 self.selected_anno = None;
                 self.focus_sidebar(SidebarTab::Signatures, id.to_owned());
             } else {
-                self.status_note.show(crate::t("pdf-note-item-gone"));
+                let gone = crate::t("pdf-note-item-gone");
+                self.status_note.show(gone.clone());
+                return OpenOutcome::Gone(gone);
             }
             self.dirty = true;
-        }
+            OpenOutcome::Shown
+        });
     }
 
     fn focus_sidebar(&mut self, tab: SidebarTab, id: String) {

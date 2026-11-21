@@ -258,7 +258,7 @@ struct PendingMediaHandoff {
 )]
 pub(crate) struct Music {
     lib: Library,
-    opened: Rc<std::cell::RefCell<Vec<String>>>,
+    pub(crate) opened: ui::framework::Opens,
     library_heads: Option<(Vec<ChangeHash>, usize)>,
     /// Downloads and cache for this device, overlaid on the shared library after each
     /// reload: never in the document, never an action.
@@ -617,7 +617,7 @@ impl Music {
         Self {
             lib: Library::default(),
             library_heads: None,
-            opened: Rc::default(),
+            opened: ui::framework::Opens::default(),
             device_cache,
             media_cache,
             media_cache_root,
@@ -5212,31 +5212,23 @@ impl Music {
 }
 
 impl Music {
-    pub(crate) fn opener(
-        &self,
-    ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
-        let opened = Rc::clone(&self.opened);
-        move |anchor| {
-            if crate::actions::anchor_effect(anchor).is_none() {
-                return Err(ui::tilo_resource::Refusal::new(format!(
-                    "Music opens no `{anchor}`"
-                )));
-            }
-            opened.borrow_mut().push(anchor.to_owned());
-            Ok(())
-        }
-    }
-
+    /// Show what a search hit or an agent's `open` named: play the song, or
+    /// show the page, it is. An anchor of nothing Music shows is gone.
     pub(crate) fn open_anchors(&mut self) {
-        let anchors = std::mem::take(&mut *self.opened.borrow_mut());
-        for anchor in anchors {
-            let Some(effect) = crate::actions::anchor_effect(&anchor) else {
-                continue;
+        use ui::framework::OpenOutcome;
+        let opened = self.opened.clone();
+        opened.show(|anchor| {
+            let Some(effect) = crate::actions::anchor_effect(anchor) else {
+                return OpenOutcome::Gone(format!("Music opens no `{anchor}`"));
             };
-            if let Err(error) = self.begin_effect(tilo_actions::InvocationId::new(), effect) {
-                self.notify(ToastKind::Error, error);
+            match self.begin_effect(tilo_actions::InvocationId::new(), effect) {
+                Ok(_) => OpenOutcome::Shown,
+                Err(error) => {
+                    self.notify(ToastKind::Error, error.clone());
+                    OpenOutcome::Gone(error)
+                }
             }
-        }
+        });
     }
 }
 

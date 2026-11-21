@@ -971,9 +971,8 @@ fn a_picked_search_hit_shows_its_connection() {
     let id = app.state().first_of_kind(ConnectionKind::Vnc).unwrap();
     app.apply(Action::NewConnection);
     app.state()
-        .open_requests()
-        .borrow_mut()
-        .push(crate::resource::connection_resource_id(id));
+        .opened
+        .ask(&crate::resource::connection_resource_id(id));
     app.state().open_found();
     assert_eq!(app.state().screen, Screen::List);
     assert_eq!(app.state().selected, Some(id));

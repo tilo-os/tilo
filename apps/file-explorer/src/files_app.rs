@@ -36,6 +36,9 @@ use ui::widget::{
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
+/// Why revealing a document waits: the window indexes it with a later sync.
+const NOT_INDEXED: &str = "collaborative resource is not indexed yet";
+
 mod applications;
 mod clipboard_client;
 mod cloud_browse;
@@ -497,7 +500,7 @@ pub struct FilesState {
     templates: templates::Catalog,
     composed_once: bool,
     cmds: CommandSink,
-    opened: Rc<RefCell<Vec<String>>>,
+    pub(crate) opened: ui::framework::Opens,
     structure_dirty: bool,
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::FileExplorer>>,
     preferences: Option<ui::framework::Setting<crate::resource::FilesPreferences>>,
@@ -840,7 +843,7 @@ impl FileExplorerWidget {
 
             composed_once: false,
             cmds,
-            opened: Rc::default(),
+            opened: ui::framework::Opens::default(),
             structure_dirty: false,
             dispatcher: None,
             preferences: None,
@@ -2439,7 +2442,7 @@ impl FilesState {
         let record = self
             .collaborative_search
             .record(document_id)
-            .ok_or_else(|| "collaborative resource is not indexed yet".to_string())?;
+            .ok_or_else(|| NOT_INDEXED.to_string())?;
         if crate::model::read_document_id(&record.path) != Some(*document_id.as_bytes()) {
             return Err("collaborative resource is no longer available".into());
         }
@@ -6484,37 +6487,49 @@ impl FilesState {
         Point::new(self.rect.x0 + 24.0, self.rect.y0 + 72.0)
     }
 
-    pub(crate) fn opener(&self) -> impl FnMut(&str) + 'static {
-        let opened = Rc::clone(&self.opened);
-        move |anchor| opened.borrow_mut().push(anchor.to_owned())
-    }
-
-    pub(crate) fn open_anchor(&mut self, anchor: &str) -> Result<(), String> {
+    /// Show what a search hit or an agent's `open` named: a folder the
+    /// window lists, a document it has indexed, an account's details. One the
+    /// window has not taken in yet is kept and shown once its listing or its
+    /// index arrives.
+    pub(crate) fn open_anchor(&mut self, anchor: &str) -> ui::framework::OpenOutcome {
         use crate::effects::FilesEffect;
-        let effect = if anchor.starts_with("files.place:") {
-            FilesEffect::Open {
-                item: anchor.to_owned(),
-            }
-        } else if let Some(record) = anchor.strip_prefix("files.record:") {
-            FilesEffect::Reveal {
-                record: record.to_owned(),
-            }
-        } else if let Some(account) = crate::remote_accounts::account_of_resource(anchor) {
-            FilesEffect::Details { account }
-        } else {
-            return Err(format!("Files opens no `{anchor}`"));
-        };
-        self.run_effect(effect).map(drop)
+        use ui::framework::OpenOutcome;
+        if anchor.starts_with("files.place:") {
+            return self
+                .visible_open_path(anchor)
+                .map_or(OpenOutcome::NotYet, |target| {
+                    self.open_path(target);
+                    OpenOutcome::Shown
+                });
+        }
+        if let Some(document) = anchor.strip_prefix("files.record:") {
+            return match self.reveal_resource(document) {
+                Ok(()) => OpenOutcome::Shown,
+                // The index arrives with a later sync: kept, and asked again.
+                Err(reason) if reason == NOT_INDEXED => OpenOutcome::NotYet,
+                Err(reason) => OpenOutcome::Gone(reason),
+            };
+        }
+        if let Some(account) = crate::remote_accounts::account_of_resource(anchor) {
+            return match self.run_effect(FilesEffect::Details { account }) {
+                Ok(_) => OpenOutcome::Shown,
+                Err(reason) => OpenOutcome::Gone(reason),
+            };
+        }
+        OpenOutcome::Gone(format!("Files opens no `{anchor}`"))
     }
 
     fn drain_opened(&mut self) -> bool {
-        let opened: Vec<String> = self.opened.borrow_mut().drain(..).collect();
-        for anchor in &opened {
-            if let Err(error) = self.open_anchor(anchor) {
-                self.set_external_status(error);
+        let opened = self.opened.clone();
+        let asked = !opened.waiting().is_empty();
+        opened.show(|anchor| {
+            let outcome = self.open_anchor(anchor);
+            if let ui::framework::OpenOutcome::Gone(reason) = &outcome {
+                self.set_external_status(reason.clone());
             }
-        }
-        !opened.is_empty()
+            outcome
+        });
+        asked
     }
 
     fn drain_commands(&mut self) -> bool {

@@ -4232,10 +4232,11 @@ mod command_path_tests {
                 .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
             "the anchored row reveals the resource"
         );
-        widget
-            .state()
-            .open_anchor(&hit.anchor())
-            .expect("opening the anchor reveals the resource");
+        assert_eq!(
+            widget.state().open_anchor(&hit.anchor()),
+            ui::framework::OpenOutcome::Shown,
+            "opening the anchor reveals the resource"
+        );
         assert_eq!(widget.state().current_path, nested);
         assert_eq!(widget.state().selection.primary(), Some(0));
         assert_eq!(widget.state().entries[0].path, file);

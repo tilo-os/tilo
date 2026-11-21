@@ -418,7 +418,7 @@ struct ViewerDetails {
 )]
 pub struct Photos {
     dispatch: Option<ui::framework::Dispatcher<crate::model::PhotoLibrary>>,
-    opens: Rc<RefCell<Vec<Id>>>,
+    pub(crate) opens: ui::framework::Opens,
     actions: Option<ui::framework::Actions<crate::model::PhotoLibrary>>,
     app_name: String,
     content: ContentStore,
@@ -685,7 +685,7 @@ impl Photos {
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
             dispatch: None,
-            opens: Rc::default(),
+            opens: ui::framework::Opens::default(),
             actions: None,
             app_name: tr("photos-app"),
             content,

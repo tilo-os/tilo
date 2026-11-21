@@ -1051,11 +1051,11 @@ impl ResourceApp for EbookShell {
     }
 
     fn view(cx: &mut ViewCx<Ebook>) -> Element {
-        let app = BooksApp::new(cx.dispatcher(), bundled_library());
+        let mut app = BooksApp::new(cx.dispatcher(), bundled_library());
         // A search hit, or an agent's `open`, shows the book, chapter,
-        // annotation or match it is anchored at.
-        let opens = app.opens();
-        cx.on_open(move |anchor: &str| opens.borrow_mut().push(anchor.to_owned()));
+        // annotation or match it is anchored at: the window keeps each
+        // anchor until a sync shows it.
+        app.opens = cx.opens();
         crate::app::window(cx, app)
     }
 

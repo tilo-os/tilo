@@ -4,11 +4,10 @@
 use crate::actions::PhotosEffect;
 use crate::model::{PhotoLibrary, Rect01};
 use crate::strings::tr;
-use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::effect::Answers;
-use ui::tilo_resource::{Effect as _, Id};
 
 use super::directory_import::build_directory_import_buttons;
 use super::editors::build_metadata_editor_buttons;
@@ -44,40 +43,32 @@ impl Photos {
         true
     }
 
-    pub(crate) fn opener(
-        &self,
-    ) -> impl FnMut(&Id) -> Result<(), ui::tilo_resource::Refusal> + 'static {
-        let opens = Rc::clone(&self.opens);
-        move |id| {
-            if !id.as_str().starts_with("photos.photo:")
-                && !id.as_str().starts_with("photos.album:")
-            {
-                return Err(ui::tilo_resource::Refusal::new(
-                    "only a photograph or an album opens",
-                ));
-            }
-            opens.borrow_mut().push(id.clone());
-            Ok(())
-        }
-    }
-
+    /// Show what a search hit or an agent's `open` named: a photograph or an
+    /// album. An anchor of neither is gone.
     pub(super) fn drain_opens(&mut self) {
-        let opens = std::mem::take(&mut *self.opens.borrow_mut());
-        for id in opens {
-            let library = self.presented();
-            let effect = if id.as_str().starts_with("photos.album:") {
+        use ui::framework::OpenOutcome;
+        let opens = self.opens.clone();
+        opens.show(|anchor| {
+            let effect = if anchor.starts_with("photos.album:") {
                 PhotosEffect::ViewAlbum {
-                    album_id: id.as_str().to_owned(),
+                    album_id: anchor.to_owned(),
+                }
+            } else if anchor.starts_with("photos.photo:") {
+                PhotosEffect::View {
+                    photo_id: anchor.to_owned(),
                 }
             } else {
-                PhotosEffect::View {
-                    photo_id: id.as_str().to_owned(),
-                }
+                return OpenOutcome::Gone(format!("Photos opens no `{anchor}`"));
             };
-            if let Err(error) = self.perform_effect(effect, &library) {
-                self.notice = Some(error);
+            let library = self.presented();
+            match self.perform_effect(effect, &library) {
+                Ok(_) => OpenOutcome::Shown,
+                Err(error) => {
+                    self.notice = Some(error.clone());
+                    OpenOutcome::Gone(error)
+                }
             }
-        }
+        });
     }
 
     #[expect(

@@ -799,7 +799,7 @@ impl ResourceApp for PdfViewerShell {
 
     fn view(cx: &mut ViewCx<PdfMarkup>) -> Element {
         let content = cx.content().unwrap_or_else(crate::app::default_content);
-        let app = if cx.mode() == RunMode::Past {
+        let mut app = if cx.mode() == RunMode::Past {
             // A past version shows its markup's resource, never a document:
             // History builds a view for every version it previews.
             PdfApp::past()
@@ -808,7 +808,24 @@ impl ResourceApp for PdfViewerShell {
         } else {
             PdfApp::empty_with_content(content)
         };
-        cx.on_open_item(app.opener());
+        // A search hit, or an agent's `open`, shows the item it names: the
+        // window keeps it until a sync has taken its part in, and refuses
+        // one that is no item of the paper.
+        {
+            let opens = cx.open_queue();
+            app.opens = opens.clone();
+            cx.on_open(move |anchor: &str| {
+                if ui::tilo_resource::items::item_of_resource::<crate::markup::PdfMarkup>(anchor)
+                    .is_none()
+                {
+                    return ui::framework::OpenOutcome::Gone(format!(
+                        "PDF Viewer opens no `{anchor}`"
+                    ));
+                }
+                opens.ask(anchor);
+                ui::framework::OpenOutcome::NotYet
+            });
+        }
         reader_view(cx, app)
     }
 
