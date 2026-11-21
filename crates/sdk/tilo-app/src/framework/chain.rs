@@ -116,6 +116,9 @@ pub use place::{PART_BYTES, PART_ITEMS, PartLimits, placed};
 /// the host applies the action to the part of the chain it names.
 pub(crate) const CHAIN_ACTION_TYPE: &str = "tilo.app.chain-action";
 
+/// A part's number beside the share of the action that part carries out.
+pub(super) type PartShares<A> = Vec<(u64, A)>;
+
 /// The operation type the read a chain publishes is answered under: what the
 /// chain holds, from the parts this device holds, rather than the record the
 /// parts are kept beside.
@@ -228,11 +231,10 @@ pub trait Chained: Resource {
     ///
     /// # Errors
     /// Refuses an action naming no item a part held here keeps.
-    #[allow(clippy::type_complexity, reason = "a part's number beside its share")]
     fn split(
         action: &Self::Action,
         parts: &[(u64, Rc<Self::State>)],
-    ) -> Result<Option<Vec<(u64, Self::Action)>>, String> {
+    ) -> Result<Option<PartShares<Self::Action>>, String> {
         let _ = (action, parts);
         Ok(None)
     }

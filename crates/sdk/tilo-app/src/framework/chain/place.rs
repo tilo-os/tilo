@@ -293,13 +293,12 @@ impl super::ChainState {
     /// several items: the app's ([`Chained::split`]), else one per part
     /// holding some of the items it lists ([`place::ItemIndex::shares`]).
     /// `None` for an action one part carries out.
-    #[allow(clippy::type_complexity, reason = "a part's number beside its share")]
     pub(super) fn shares(
         &self,
         action: &dyn Any,
         typed: &dyn Any,
         parts: &[(u64, Rc<dyn Any>)],
-    ) -> Result<Option<Vec<(u64, Box<dyn Any>)>>, String> {
+    ) -> Result<Option<super::PartShares<Box<dyn Any>>>, String> {
         let part = self.part();
         if let Some(shares) = (part.split)(action, typed)? {
             return Ok(Some(shares));
