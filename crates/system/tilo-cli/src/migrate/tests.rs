@@ -11,12 +11,11 @@ use super::state::{Journal, Place, RunState};
 use super::workspace::{Answer, Call, Invocation, Status, Workspace};
 use super::{Lander, Stopped, thunderbird};
 
-/// A workspace that keeps every action it is asked, and every upload, and a server that keeps
-/// the person's mail accounts as the real one answers them.
+/// A workspace that keeps every action it is asked, and a server that keeps the person's mail
+/// accounts as the real one answers them.
 #[derive(Default)]
 struct Recorded {
     actions: Vec<(String, String, Value)>,
-    puts: Vec<Vec<u8>>,
     /// Every account the person asked the server to add, as it was asked.
     added: Vec<Value>,
     /// The accounts the server keeps, as it lists them: never a password.
@@ -64,7 +63,6 @@ impl Workspace for Recorded {
     }
 
     fn put(&mut self, bytes: &[u8]) -> Result<String> {
-        self.puts.push(bytes.to_vec());
         Ok(format!("tilo.content:{}", blake3::hash(bytes).to_hex()))
     }
 }
@@ -138,48 +136,12 @@ fn migrate_saying(
     result.map(|()| journal)
 }
 
-/// A workspace whose Mail holds every message delivered already, as an earlier run's would.
-struct HoldsMail(Recorded);
-
-impl Workspace for HoldsMail {
-    fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer> {
-        if action == "mail/mail.messages#deliver-message" {
-            self.0
-                .actions
-                .push((run.id.clone(), action.to_owned(), args));
-            return Err(super::workspace::Refused::coded(
-                tilo_actions::codes::MESSAGE_ALREADY_HELD,
-                "this message is in the mailbox already",
-            )
-            .into());
-        }
-        self.0.act(run, action, args)
-    }
-
-    fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
-        self.0.ask(action, args)
-    }
-
-    fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
-        self.0.person(path, action, args)
-    }
-
-    fn put(&mut self, bytes: &[u8]) -> Result<String> {
-        self.0.put(bytes)
-    }
-}
-
-/// Every server the review asks about answers.
-fn answering(_: &str, _: u16) -> bool {
-    true
-}
-
-/// The sample profile, reviewed with every server answering.
+/// The sample profile, reviewed, and where a run keeps its state.
 fn sample(dir: &Path) -> (std::path::PathBuf, Place, super::state::Review) {
     let home = dir.join("home");
     migration_sources::thunderbird::fixture::write_sample_profile(&home);
     let place = Place::at(&dir.join("state"));
-    let review = thunderbird::review_with(&home, None, &answering).unwrap();
+    let review = thunderbird::review(&home, None).unwrap();
     (home, place, review)
 }
 
@@ -188,8 +150,7 @@ fn sample(dir: &Path) -> (std::path::PathBuf, Place, super::state::Review) {
 fn work_account_chosen(dir: &Path) -> (std::path::PathBuf, Place) {
     let (home, place, mut review) = sample(dir);
 
-    // The review lists both accounts to connect, and apart from them what Thunderbird keeps of
-    // each on this computer, nothing chosen.
+    // The review lists both accounts to connect, nothing chosen.
     let of_kind = |kind: &str| -> Vec<String> {
         review
             .items
@@ -203,26 +164,13 @@ fn work_account_chosen(dir: &Path) -> (std::path::PathBuf, Place) {
         ["ada@example.com", "ada.home@example.org"],
         "{review:#?}"
     );
-    assert_eq!(
-        of_kind(thunderbird::CACHE_KIND),
-        ["cache/ada@example.com", "cache/ada.home@example.org"]
-    );
     assert!(review.chosen().is_empty());
-    let cache = review
-        .items
-        .iter()
-        .find(|item| item.key == "cache/ada@example.com")
-        .unwrap();
-    assert_eq!(
-        cache.count, 4,
-        "the work account's cached Inbox and Sent hold four messages"
-    );
     assert!(
         review.items.iter().all(|item| item.note.is_none()),
-        "nothing is suggested while every server answers: {review:#?}"
+        "nothing is suggested: {review:#?}"
     );
 
-    // The agent chooses the work account only: connecting it copies nothing of its cache.
+    // The agent chooses the work account only.
     review
         .choose(&["ada@example.com".to_owned()], true, true)
         .unwrap();
@@ -273,7 +221,6 @@ fn a_live_account_is_connected_and_nothing_is_copied_from_its_cache() {
         "the work account sends as itself only"
     );
     assert!(workspace.actions.is_empty(), "{:?}", workspace.actions);
-    assert!(workspace.puts.is_empty(), "no message is copied");
     assert_eq!(journal.brought.get("accounts"), Some(&1));
     assert_eq!(journal.brought.get("messages"), None);
 
@@ -330,7 +277,7 @@ fn an_account_that_signs_in_with_google_is_left_to_google_s_sign_in() {
         },
     );
     let place = Place::at(&dir.path().join("state"));
-    let mut review = thunderbird::review_with(&home, None, &answering).unwrap();
+    let mut review = thunderbird::review(&home, None).unwrap();
     let account = review
         .items
         .iter_mut()
@@ -429,122 +376,6 @@ fn an_account_the_person_says_no_to_is_not_connected() {
 }
 
 #[test]
-fn copying_the_cache_is_a_choice_of_its_own() {
-    let dir = tempfile::tempdir().unwrap();
-    let (home, place, mut review) = sample(dir.path());
-    review
-        .choose(&["cache/ada@example.com".to_owned()], true, true)
-        .unwrap();
-    assert!(
-        review.chosen().iter().all(|item| item.kind != "account"),
-        "copying connects nothing"
-    );
-    place.keep_review(&review).unwrap();
-    let mut workspace = Recorded::default();
-    let journal = run_once(&home, &place, &mut workspace).unwrap();
-    assert!(workspace.added.is_empty(), "no account is connected");
-    assert_eq!(journal.brought.get("messages"), Some(&4), "{journal:?}");
-
-    // Its four messages, each delivered to Mail in its folder; none of the home account's.
-    let delivered = workspace.of("mail/mail.messages#deliver-message");
-    assert_eq!(delivered.len(), 4, "{delivered:#?}");
-    assert!(delivered.iter().any(|message| message["folder"] == "sent"));
-    assert_eq!(
-        delivered
-            .iter()
-            .filter(|message| message["folder"] == "inbox")
-            .count(),
-        3
-    );
-    assert!(
-        delivered
-            .iter()
-            .all(|message| !message.to_string().contains("ada.home@example.org")),
-        "nothing of the home account's mail is read into the workspace"
-    );
-    // Each message travels as it was sent, its bytes kept as content the delivery names.
-    assert_eq!(
-        workspace.puts.len(),
-        4,
-        "each message's bytes are kept whole"
-    );
-    assert!(
-        delivered.iter().all(|message| message["original"]
-            .as_str()
-            .is_some_and(|original| original.starts_with("tilo.content:"))),
-        "{delivered:#?}"
-    );
-    assert!(
-        delivered
-            .iter()
-            .all(|message| message["message_id"].as_str().is_some()),
-        "a message keeps its own Message-ID"
-    );
-    assert_eq!(workspace.of("mail#open").len(), 1, "Mail is started once");
-
-    // A second run asks the workspace for nothing.
-    let mut again = Recorded::default();
-    let journal = run_once(&home, &place, &mut again).unwrap();
-    assert!(again.actions.is_empty(), "{:?}", again.actions);
-    assert!(again.puts.is_empty());
-    assert!(journal.brought.is_empty());
-    assert_eq!(journal.already_there, 4, "its four messages");
-}
-
-#[test]
-fn copying_is_suggested_only_for_an_account_whose_server_does_not_answer() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("home");
-    migration_sources::thunderbird::fixture::write_sample_profile(&home);
-    // The work account's server answers; the home account's does not.
-    let review = thunderbird::review_with(&home, None, &|host: &str, _| {
-        host == migration_sources::thunderbird::fixture::WORK_SERVER
-    })
-    .unwrap();
-    let note = |key: &str| {
-        review
-            .items
-            .iter()
-            .find(|item| item.key == key)
-            .unwrap_or_else(|| panic!("{key} in {review:#?}"))
-            .note
-            .clone()
-    };
-    assert_eq!(note("ada@example.com"), None);
-    assert_eq!(note("cache/ada@example.com"), None);
-    let gone = note("ada.home@example.org").expect("the home account's server is named");
-    assert!(
-        gone.contains("imap.example.org:993 did not answer"),
-        "{gone}"
-    );
-    assert!(gone.contains("cache/ada.home@example.org"), "{gone}");
-    assert!(note("cache/ada.home@example.org").is_some());
-    // Suggested, not chosen: the person chooses.
-    assert!(review.chosen().is_empty());
-}
-
-#[test]
-fn a_message_mail_holds_already_counts_as_there() {
-    let dir = tempfile::tempdir().unwrap();
-    let (home, place, mut review) = sample(dir.path());
-    review
-        .choose(&["cache/ada@example.com".to_owned()], true, true)
-        .unwrap();
-    place.keep_review(&review).unwrap();
-    let mut workspace = HoldsMail(Recorded::default());
-    let journal = run_once(&home, &place, &mut workspace).unwrap();
-    assert_eq!(
-        journal.brought.get("messages"),
-        None,
-        "no message was brought: Mail holds each already"
-    );
-    assert_eq!(
-        journal.already_there, 4,
-        "its four messages are told by the app's code, not by its words"
-    );
-}
-
-#[test]
 fn an_address_book_and_calendar_chosen_later_come_over_alone() {
     let dir = tempfile::tempdir().unwrap();
     let (home, place) = work_account_chosen(dir.path());
@@ -562,7 +393,6 @@ fn an_address_book_and_calendar_chosen_later_come_over_alone() {
     place.keep_review(&review).unwrap();
     let mut more = Recorded::default();
     let journal = run_once(&home, &place, &mut more).unwrap();
-    assert!(more.of("mail/mail.messages#deliver-message").is_empty());
     let contacts = more
         .of("contacts/contacts.contacts#add-contacts")
         .into_iter()
@@ -579,10 +409,15 @@ fn a_stopped_run_resumes_where_it_stopped() {
     let home = dir.path().join("home");
     migration_sources::thunderbird::fixture::write_sample_profile(&home);
     let place = Place::at(&dir.path().join("state"));
-    let mut review = thunderbird::review_with(&home, None, &answering).unwrap();
-    review
-        .choose(&["cache/ada.home@example.org".to_owned()], true, true)
-        .unwrap();
+    let mut review = thunderbird::review(&home, None).unwrap();
+    let book = review
+        .items
+        .iter()
+        .find(|item| item.kind == "contacts")
+        .expect("the profile has an address book")
+        .key
+        .clone();
+    review.choose(&[book], true, true).unwrap();
     place.keep_review(&review).unwrap();
 
     // Asked to stop before it starts: nothing lands.
@@ -590,25 +425,21 @@ fn a_stopped_run_resumes_where_it_stopped() {
     let mut workspace = Recorded::default();
     let error = run_once(&home, &place, &mut workspace).unwrap_err();
     assert!(error.is::<Stopped>(), "{error:#}");
-    assert!(
-        workspace
-            .of("mail/mail.messages#deliver-message")
-            .is_empty()
-    );
+    assert!(workspace.actions.is_empty(), "{:?}", workspace.actions);
     assert_eq!(
         place.journal(thunderbird::SOURCE).unwrap().state,
         RunState::Stopped
     );
 
+    // Asked again, the run brings what it was stopped before bringing; a third run adds nothing.
     let mut workspace = Recorded::default();
     let journal = run_once(&home, &place, &mut workspace).unwrap();
-    assert_eq!(journal.brought.get("messages"), Some(&3), "{journal:?}");
-    assert!(
-        workspace
-            .of("mail/mail.messages#deliver-message")
-            .iter()
-            .all(|message| message.to_string().contains("ada.home@example.org"))
-    );
+    assert_eq!(journal.brought.get("contacts"), Some(&2), "{journal:?}");
+    let mut again = Recorded::default();
+    let journal = run_once(&home, &place, &mut again).unwrap();
+    assert!(again.actions.is_empty(), "{:?}", again.actions);
+    assert!(journal.brought.is_empty(), "{journal:?}");
+    assert_eq!(journal.already_there, 2, "its two contacts are there already");
 }
 
 #[test]
@@ -683,12 +514,12 @@ fn a_step_that_waits_for_its_person_answers_pending_not_failed() {
 
     let already = Call::of(&serde_json::json!({
         "status": "failed",
-        "error": {"code": tilo_actions::codes::MESSAGE_ALREADY_HELD, "message": "held"},
+        "error": {"code": tilo_actions::codes::NOTE_ALREADY_IMPORTED, "message": "kept"},
     }))
     .unwrap();
     assert_eq!(
         already.error.unwrap().code(),
-        tilo_actions::codes::MESSAGE_ALREADY_HELD,
+        tilo_actions::codes::NOTE_ALREADY_IMPORTED,
         "an app's refusal is read by its code, never its words"
     );
     assert!(
@@ -733,22 +564,18 @@ fn starting_without_a_review_reviews_the_source_and_takes_everything() {
         "the first start reviews the source and takes its accounts: {review:#?}"
     );
     assert!(
-        review
-            .chosen()
-            .iter()
-            .all(|item| item.kind != thunderbird::CACHE_KIND && item.kind != "folder"),
-        "nothing of the cache is copied unless the person chooses it: {review:#?}"
+        review.items.iter().all(|item| item.chosen),
+        "the first start reviews the source and takes everything it holds: {review:#?}"
     );
     // Kept: a second start works from the same review.
     assert_eq!(place.review(thunderbird::SOURCE).unwrap().unwrap(), review);
 }
 
-/// A profile copied in from another Thunderbird location reviews with its
-/// mail; a folder that cannot be read is named in the answer, and the folders
-/// beside it are still listed.
+/// A profile copied in from another Thunderbird location reviews; a folder
+/// that cannot be read is named in the answer.
 #[cfg(unix)]
 #[test]
-fn a_review_names_what_it_could_not_read_and_still_lists_the_rest() {
+fn a_review_names_what_it_could_not_read() {
     use std::os::unix::ffi::OsStrExt as _;
 
     let server = migration_sources::thunderbird::fixture::WORK_SERVER;
@@ -757,14 +584,8 @@ fn a_review_names_what_it_could_not_read_and_still_lists_the_rest() {
     migration_sources::thunderbird::fixture::write_sample_profile(&home);
     migration_sources::thunderbird::fixture::write_stale_mail_directories(&home);
 
-    let review = thunderbird::review_with(&home, None, &answering).unwrap();
+    let review = thunderbird::review(&home, None).unwrap();
     assert!(review.unreadable.is_empty(), "{:?}", review.unreadable);
-    assert!(
-        review
-            .items
-            .iter()
-            .any(|item| item.key == "cache/ada@example.com/INBOX")
-    );
 
     let subfolder = home.join(format!(
         ".thunderbird/fx8r2l9p.default-release/ImapMail/{server}/Projects.sbd"
@@ -776,21 +597,7 @@ fn a_review_names_what_it_could_not_read_and_still_lists_the_rest() {
     )
     .unwrap();
 
-    let review = thunderbird::review_with(&home, None, &answering).unwrap();
-    assert!(
-        review
-            .items
-            .iter()
-            .any(|item| item.key == "cache/ada@example.com/INBOX"),
-        "the folders beside the unreadable one are still listed"
-    );
-    assert!(
-        review
-            .items
-            .iter()
-            .any(|item| item.key == "cache/ada@example.com/Sent"),
-        "the folders beside it are still listed"
-    );
+    let review = thunderbird::review(&home, None).unwrap();
     let relative = format!("ImapMail/{server}/Projects.sbd");
     let problem = review
         .unreadable
@@ -808,104 +615,16 @@ fn a_review_names_what_it_could_not_read_and_still_lists_the_rest() {
 }
 
 #[test]
-fn a_message_larger_than_one_upload_comes_over_with_its_parts_apart() {
-    use migration_sources::thunderbird::fixture::{
-        LARGE_FILES, LARGE_MESSAGE_ID, append_large_message,
-    };
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("home");
-    migration_sources::thunderbird::fixture::write_sample_profile(&home);
-    let sent = append_large_message(&home);
-    assert!(sent.len() > 40 * 1024 * 1024, "{} bytes", sent.len());
-    let place = Place::at(&dir.path().join("state"));
-    let mut review = thunderbird::review_with(&home, None, &answering).unwrap();
-    let work = review
-        .items
-        .iter()
-        .find(|item| item.key == "cache/ada@example.com")
-        .unwrap();
-    assert_eq!(work.count, 5, "the review counts the large message too");
-    review
-        .choose(&["cache/ada@example.com".to_owned()], true, true)
-        .unwrap();
-    place.keep_review(&review).unwrap();
-
-    let mut workspace = Recorded::default();
-    let journal = run_once(&home, &place, &mut workspace).unwrap();
-    assert_eq!(journal.brought.get("messages"), Some(&5), "{journal:?}");
-    let largest = workspace.puts.iter().map(Vec::len).max().unwrap();
-    assert!(
-        largest <= tilo_mail_parts::PIECE_BYTES,
-        "no one upload carries the message: the largest is {largest} bytes"
-    );
-
-    // Delivered as the message kept and its parts apart, which put back together are the
-    // message as the mbox holds it, byte for byte, without the line that separates it there.
-    let delivery = workspace
-        .of("mail/mail.messages#deliver-message")
-        .into_iter()
-        .find(|delivery| delivery["message_id"] == format!("<{LARGE_MESSAGE_ID}>"))
-        .cloned()
-        .unwrap();
-    let uploaded = |reference: &Value| -> Vec<u8> {
-        let hash = reference
-            .as_str()
-            .unwrap()
-            .strip_prefix("tilo.content:")
-            .unwrap();
-        workspace
-            .puts
-            .iter()
-            .find(|bytes| blake3::hash(bytes).to_hex().as_str() == hash)
-            .cloned()
-            .unwrap()
-    };
-    let rest = uploaded(&delivery["original"]);
-    let parts = delivery["parts"].as_array().unwrap();
-    assert_eq!(parts.len(), LARGE_FILES.len(), "{delivery}");
-    let bodies: Vec<(u64, Vec<u8>)> = parts
-        .iter()
-        .map(|part| {
-            let body = part["pieces"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .flat_map(uploaded)
-                .collect();
-            (part["at"].as_u64().unwrap(), body)
-        })
-        .collect();
-    let sizes: Vec<u64> = parts
-        .iter()
-        .map(|part| part["size"].as_u64().unwrap())
-        .collect();
-    assert_eq!(sizes, LARGE_FILES.map(|(_, size)| size as u64));
-    let bodies: Vec<(u64, &[u8])> = bodies
-        .iter()
-        .map(|(at, body)| (*at, body.as_slice()))
-        .collect();
-    let separator = sent.iter().position(|byte| *byte == b'\n').unwrap() + 1;
-    assert!(sent.starts_with(b"From - "));
-    let rejoined = tilo_mail_parts::join(&rest, &bodies).unwrap();
-    assert!(
-        rejoined == sent[separator..],
-        "{} of {} bytes",
-        rejoined.len(),
-        sent.len() - separator
-    );
-}
-
-#[test]
 fn the_terminal_counts_one_thing_in_the_singular() {
     let one = super::sentences(&serde_json::json!({
-        "source": "thunderbird", "state": "complete", "brought": {"accounts": 1, "messages": 2},
+        "source": "thunderbird", "state": "complete", "brought": {"accounts": 1, "contacts": 2},
     }));
-    assert!(one.contains("brought 1 account, 2 messages"), "{one}");
+    assert!(one.contains("brought 1 account, 2 contacts"), "{one}");
     let review = super::sentences(&serde_json::json!({
-        "items": [{"key": "cache/ada@example.test", "count": 1, "counts": "messages"}],
+        "items": [{"key": "contacts/Personal", "count": 1, "counts": "contacts"}],
     }));
     assert!(
-        review.contains("  1 message") && !review.contains("1 messages"),
+        review.contains("  1 contact") && !review.contains("1 contacts"),
         "{review}"
     );
 }

@@ -406,7 +406,7 @@ impl Refused {
         error.downcast_ref()
     }
 
-    /// The app's stable code for why it did not run (`message_already_held`).
+    /// The app's stable code for why it did not run (`note_already_imported`).
     #[must_use]
     pub fn code(&self) -> &str {
         &self.code
@@ -856,19 +856,19 @@ mod tests {
             }, "isError": false}),
             json!({"content": [], "structuredContent": {
                 "status": "failed",
-                "error": {"code": tilo_actions::codes::MESSAGE_ALREADY_HELD, "message": "held"},
+                "error": {"code": tilo_actions::codes::NOTE_ALREADY_IMPORTED, "message": "kept"},
             }, "isError": true}),
         ]);
         let error = workspace
             .act(
                 &run(),
-                "mail/mail.messages#deliver-message",
-                json!({"from": "ada@example.com"}),
+                "notes/notes.pages#import-markdown",
+                json!({"url": "https://example.test/"}),
             )
             .expect_err("the workspace refused");
         assert_eq!(
             Refused::of(&error).expect("a refusal").code(),
-            tilo_actions::codes::MESSAGE_ALREADY_HELD
+            tilo_actions::codes::NOTE_ALREADY_IMPORTED
         );
         let calls = calls.lock().expect("the calls");
         assert_eq!(calls.len(), 2, "the pending step is asked about again");
@@ -1081,8 +1081,8 @@ mod tests {
         let answer = workspace
             .act(
                 &hosted_run(),
-                "mail/mail.messages#deliver-message",
-                json!({"from": "a"}),
+                "notes/notes.pages#import-markdown",
+                json!({"url": "https://example.test/"}),
             )
             .expect("the person allowed it");
         assert!(answer.said("allowed"), "the held answer is the action's");

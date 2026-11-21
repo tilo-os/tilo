@@ -1240,7 +1240,6 @@ impl TreeBrowser {
                     .map(|hash| ContentLinkFile {
                         path: name.clone(),
                         hash,
-                        encoded: None,
                     })
                     .into_iter()
                     .collect(),
@@ -1268,11 +1267,7 @@ impl TreeBrowser {
             if node.kind == FileNodeKind::Directory {
                 Self::files_under(tree, child, &at, files);
             } else if let Some(hash) = node.hash.clone() {
-                files.push(ContentLinkFile {
-                    path: at,
-                    hash,
-                    encoded: None,
-                });
+                files.push(ContentLinkFile { path: at, hash });
             }
         }
     }

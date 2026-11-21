@@ -173,9 +173,6 @@ mod hosted_import_open;
 #[path = "workspace_actions/hosted_mail_account_migrate.rs"]
 mod hosted_mail_account_migrate;
 #[cfg(test)]
-#[path = "workspace_actions/hosted_mail_delivery.rs"]
-mod hosted_mail_delivery;
-#[cfg(test)]
 #[path = "workspace_actions/hosted_mail_turn.rs"]
 mod hosted_mail_turn;
 #[cfg(test)]
@@ -199,9 +196,6 @@ mod joining;
 #[cfg(test)]
 #[path = "workspace_actions/machine_secrets.rs"]
 mod machine_secrets;
-#[cfg(test)]
-#[path = "workspace_actions/mail_delivery_rate.rs"]
-mod mail_delivery_rate;
 #[cfg(test)]
 #[path = "workspace_actions/mcp_issue_by_id.rs"]
 mod mcp_issue_by_id;

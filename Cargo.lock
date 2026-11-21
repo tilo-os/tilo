@@ -10163,7 +10163,6 @@ dependencies = [
  "tempfile",
  "test-http",
  "tilo-files",
- "tilo-mail-parts",
  "tilo-net",
  "tilo-paths",
  "tilo-process",
@@ -17686,7 +17685,6 @@ dependencies = [
  "tilo-fs",
  "tilo-live",
  "tilo-lock",
- "tilo-mail-parts",
  "tilo-mcp",
  "tilo-model-engine",
  "tilo-model-gateway",
@@ -18594,7 +18592,6 @@ dependencies = [
  "iroh-blobs",
  "jiff",
  "key-group",
- "mail-parser",
  "migration-sources",
  "percent-encoding",
  "postcard",
@@ -18624,7 +18621,6 @@ dependencies = [
  "tilo-identity",
  "tilo-identity-client",
  "tilo-lock",
- "tilo-mail-parts",
  "tilo-mcp",
  "tilo-net",
  "tilo-paths",
@@ -20287,14 +20283,6 @@ dependencies = [
  "tilo-sheets",
  "tilo-test-env",
  "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-mail-parts"
-version = "0.1.0"
-dependencies = [
- "mail-parser",
  "workspace-hack",
 ]
 
@@ -22071,7 +22059,6 @@ dependencies = [
  "tilo-identity-client",
  "tilo-live",
  "tilo-lock",
- "tilo-mail-parts",
  "tilo-mcp",
  "tilo-model-gateway",
  "tilo-moderation",
@@ -29563,7 +29550,6 @@ dependencies = [
  "tilo-locale",
  "tilo-location",
  "tilo-lock",
- "tilo-mail-parts",
  "tilo-mail-session",
  "tilo-mcp",
  "tilo-media",

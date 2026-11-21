@@ -1,9 +1,7 @@
 //! The laptop-facing reads over the sample profile.
 
-use std::ops::ControlFlow;
-
 use super::fixture::{
-    HOME_EMAIL, HOME_SERVER, WORK_EMAIL, WORK_SERVER, write_flatpak_profile, write_sample_profile,
+    HOME_EMAIL, WORK_EMAIL, WORK_SERVER, write_flatpak_profile, write_sample_profile,
     write_stale_mail_directories,
 };
 use super::*;
@@ -87,73 +85,6 @@ fn account_settings_carry_the_imap_and_smtp_endpoints_without_a_password() {
         "the pinned source paths stay out of a status record"
     );
     assert!(!serialized.contains("\"settings\""));
-}
-
-#[test]
-fn messages_come_one_bounded_file_at_a_time_with_their_flags() {
-    let (home, profile) = sample();
-    let work = profile
-        .accounts
-        .iter()
-        .find(|account| account.email.as_deref() == Some(WORK_EMAIL))
-        .unwrap();
-    let inbox = work
-        .folders
-        .iter()
-        .find(|folder| folder.hierarchy == ["INBOX"])
-        .unwrap();
-    let mut messages: Vec<StoredMessage> = Vec::new();
-    super::messages(
-        home.path(),
-        &profile.source_id,
-        &inbox.source_id,
-        &mut |message| {
-            messages.push(message);
-            ControlFlow::Continue(())
-        },
-    )
-    .unwrap();
-    assert_eq!(messages.len(), 3);
-    assert!(messages[0].read);
-    assert!(!messages[1].read);
-    assert!(messages[2].starred);
-    assert_eq!(
-        messages[0].message_id.as_deref(),
-        Some("<work-1@example.test>")
-    );
-    assert!(messages[2].bytes.starts_with(b"From "));
-    let stopped = super::messages(
-        home.path(),
-        &profile.source_id,
-        &inbox.source_id,
-        &mut |_| ControlFlow::Break(()),
-    );
-    assert!(stopped.is_ok(), "the caller can stop the read");
-
-    let home_account = profile
-        .accounts
-        .iter()
-        .find(|account| account.email.as_deref() == Some(HOME_EMAIL))
-        .unwrap();
-    let sent = home_account
-        .folders
-        .iter()
-        .find(|folder| folder.hierarchy == ["Sent"])
-        .unwrap();
-    let mut count = 0;
-    super::messages(home.path(), HOME_EMAIL, &sent.source_id, &mut |_| {
-        count += 1;
-        ControlFlow::Continue(())
-    })
-    .unwrap();
-    assert_eq!(count, 1);
-    assert!(
-        super::messages(home.path(), HOME_EMAIL, "Missing", &mut |_| {
-            ControlFlow::Continue(())
-        })
-        .is_err()
-    );
-    assert_ne!(HOME_SERVER, WORK_SERVER);
 }
 
 #[test]

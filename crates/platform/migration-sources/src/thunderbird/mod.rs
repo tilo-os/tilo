@@ -1,10 +1,10 @@
-//! Thunderbird profiles, accounts, local mail and personal data inside an already granted home.
+//! Thunderbird profiles, accounts and personal data inside an already granted home.
 //! `prefs.js` is parsed as data and never executed, folder counts and flags come from the actual
-//! mbox/maildir files, and a folder is read in fixed chunks with one bound per message.
+//! mbox/maildir files, and a folder is counted in fixed chunks with one bound per message.
 //!
-//! [`discover`], [`messages`], [`contacts`], [`events`] and [`account_settings`] are what a
-//! laptop command reads through; [`scan`] additionally keeps the pinned profile root the
-//! installer's importer reads in place, so both drive the same reader.
+//! [`discover`], [`contacts`], [`events`] and [`account_settings`] are what a laptop command
+//! reads through; [`scan`] additionally keeps the pinned profile root the installer's importer
+//! reads in place, so both drive the same reader.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,14 +27,12 @@ pub mod events;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 pub mod logins;
-pub mod mail;
 pub mod mbox;
 pub mod personal_data;
 
 pub use contacts::contacts;
 pub use events::events;
 pub use logins::{LoginsError, SavedLogin, password_for, saved_logins};
-pub use mail::{StoredMessage, messages};
 pub use mbox::{MboxMessages, MessageTooLarge};
 
 const MAX_PROFILE_INDEX: u64 = 64 * 1024;

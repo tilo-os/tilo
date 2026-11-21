@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [features]
 # The sample Thunderbird profile the end-to-end proofs import.
-fixture = ["dep:tilo-mail-parts"]
+fixture = []
 # Recognise the directories tests build their fixtures in, so destination
 # namespace checks do not refuse the machine's own temporary directories.
 test-support = []
@@ -29,8 +29,6 @@ cap-primitives = "3.4.6"
 cap-std = "3.4.6"
 hex.workspace = true
 mail-parser = "0.11.4"
-# A message with large attachments, for the sample profile's large message.
-tilo-mail-parts = { path = "../mail-parts", features = ["fixture"], optional = true }
 # RFC 5545/6350 content lines for the vCard and iCalendar Thunderbird keeps.
 pim-lines = { path = "../../text/pim-lines" }
 reqwest = { workspace = true, features = ["blocking"] }

@@ -134,10 +134,6 @@ url.workspace = true
 blake3.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
-# A Thunderbird message read for Mail's `deliver-message`: who, what, when and its words.
-mail-parser = "0.11.4"
-# A message's large parts travel apart from it, as Mail keeps them.
-tilo-mail-parts = { path = "../../platform/mail-parts" }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 # The person's root, kept in their identity store.

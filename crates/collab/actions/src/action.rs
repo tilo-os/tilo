@@ -159,9 +159,6 @@ pub const RECALL_SUMMARY_BYTES: usize = 4 * 1024;
 /// Codes an app answers a condition with, for a caller that decides on the
 /// condition rather than reads the words beside it.
 pub mod codes {
-    /// A message delivered to a mailbox is there already, under the id its
-    /// `Message-ID` names.
-    pub const MESSAGE_ALREADY_HELD: &str = "message_already_held";
     /// A note imported from a source page is in the notebook already.
     pub const NOTE_ALREADY_IMPORTED: &str = "note_already_imported";
 }

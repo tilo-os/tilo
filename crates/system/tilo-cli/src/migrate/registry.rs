@@ -81,8 +81,7 @@ pub const SOURCES: &[Source] = &[
         engine: Engine::Thunderbird,
         connect: None,
         resources: &[
-            "mail/mail.mailbox",
-            "mail/mail.messages",
+            "workspace/mail-accounts",
             "contacts/contacts.book",
             "contacts/contacts.contacts",
             "calendar/calendar.calendar",

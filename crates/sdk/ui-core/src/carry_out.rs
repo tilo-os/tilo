@@ -170,7 +170,6 @@ mod tests {
             files: vec![ContentLinkFile {
                 path: name.into(),
                 hash: "ab".repeat(32),
-                encoded: None,
             }],
             zip: false,
         }

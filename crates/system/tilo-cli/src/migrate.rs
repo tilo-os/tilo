@@ -333,14 +333,13 @@ fn reviewed_for_start(place: &Place, home: &Path, source: &str) -> Result<Review
     }
     let mut review = review(place, home, source, None)?;
     // A review that suggests some of what it lists (home's familiar folders) brings those;
-    // otherwise everything comes, except a copy of what a mail program keeps on this computer,
-    // which is the person's to choose: their accounts are connected instead.
+    // otherwise everything comes.
     let suggested = !review.chosen().is_empty();
     if !suggested {
         let every: Vec<String> = review
             .items
             .iter()
-            .filter(|item| item.within.is_none() && item.kind != thunderbird::CACHE_KIND)
+            .filter(|item| item.within.is_none())
             .map(|item| item.key.clone())
             .collect();
         review.choose(&every, true, false)?;

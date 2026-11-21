@@ -159,12 +159,6 @@ enum Layout {
     Whole,
     /// The chunks a manifest under the node's hash lists, in order.
     Chunks(Vec<String>),
-    /// A message's body in pieces, in order, in the transfer encoding
-    /// named: decoded as it is sent.
-    Encoded {
-        pieces: Vec<String>,
-        encoding: String,
-    },
 }
 
 /// A file ready to stream: how it is laid out in the store and its length.
@@ -198,24 +192,6 @@ impl Refusal {
 /// What reading `file` out of `store` takes, and its length.
 fn plan(store: &ContentStore, file: &ContentLinkFile) -> Result<Planned, Refusal> {
     let missing = || Refusal::Missing(file.path.clone());
-    if let Some(encoded) = &file.encoded {
-        if let Some(gone) = encoded.pieces.iter().find(|piece| !store.has(piece)) {
-            tracing::debug!(piece = %gone, path = %file.path, "a piece of a linked file is not kept");
-            return Err(missing());
-        }
-        // Its length is the one the file was named with: checked as it is
-        // decoded, and a body that decodes to any other length ends the
-        // response short rather than saving something else.
-        return Ok(Planned {
-            path: file.path.clone(),
-            hash: file.hash.clone(),
-            layout: Layout::Encoded {
-                pieces: encoded.pieces.clone(),
-                encoding: encoded.encoding.clone(),
-            },
-            size: encoded.size,
-        });
-    }
     // A manifest is small: read whole to tell it from a file whose bytes
     // happen to start the same way, which it would not decode as.
     let head = {
@@ -352,33 +328,11 @@ fn copy(
     sink: &mut dyn Sink,
     seen: &mut dyn FnMut(&[u8]),
 ) -> Result<bool, String> {
-    let (blobs, mut decoder): (Vec<&str>, _) = match &file.layout {
-        Layout::Whole => (vec![file.hash.as_str()], None),
-        Layout::Chunks(chunks) => (chunks.iter().map(String::as_str).collect(), None),
-        Layout::Encoded { pieces, encoding } => (
-            pieces.iter().map(String::as_str).collect(),
-            Some(
-                tilo_mail_parts::Decoder::named(encoding)
-                    .ok_or_else(|| format!("{}: {encoding} is no transfer encoding", file.path))?,
-            ),
-        ),
+    let blobs: Vec<&str> = match &file.layout {
+        Layout::Whole => vec![file.hash.as_str()],
+        Layout::Chunks(chunks) => chunks.iter().map(String::as_str).collect(),
     };
-    let not_encoded = || format!("{} is not in the encoding it was named with", file.path);
     let mut sent = 0_u64;
-    let mut pass_on = |buffer: Vec<u8>, sent: &mut u64| -> Result<bool, String> {
-        if buffer.is_empty() {
-            return Ok(true);
-        }
-        *sent = sent.saturating_add(buffer.len() as u64);
-        if *sent > file.size {
-            return Err(format!(
-                "{} holds more than the {} bytes it was named with",
-                file.path, file.size
-            ));
-        }
-        seen(&buffer);
-        Ok(sink.send(buffer))
-    };
     for blob in blobs {
         let mut reader = store
             .open(blob)
@@ -392,19 +346,17 @@ fn copy(
                 break;
             }
             buffer.truncate(read);
-            let plain = match &mut decoder {
-                Some(decoder) => decoder.push(&buffer).ok_or_else(not_encoded)?,
-                None => buffer,
-            };
-            if !pass_on(plain, &mut sent)? {
+            sent = sent.saturating_add(buffer.len() as u64);
+            if sent > file.size {
+                return Err(format!(
+                    "{} holds more than the {} bytes its node names",
+                    file.path, file.size
+                ));
+            }
+            seen(&buffer);
+            if !sink.send(buffer) {
                 return Ok(false);
             }
-        }
-    }
-    if let Some(decoder) = decoder {
-        let rest = decoder.finish().ok_or_else(not_encoded)?;
-        if !pass_on(rest, &mut sent)? {
-            return Ok(false);
         }
     }
     if sent != file.size {
