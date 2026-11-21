@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
             "the killed server's socket is what a later session finds"
         );
         let server = Server::start(dir.path());
-        let app = server.app("workspace-1", "so.tilo.lang.notes");
+        let app = server.app("workspace-1", "so.tilo.notes");
         let kept = app
             .put(b"kept after a restart", "image/png")
             .expect("a put");

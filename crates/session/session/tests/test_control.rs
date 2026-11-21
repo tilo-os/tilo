@@ -173,7 +173,7 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
     let mut kinds = std::collections::BTreeSet::new();
     walk(&resources, &mut kinds);
     for kind in [
-        "tl.so.tilo.lang.notes.Note",
+        "tl.so.tilo.notes.Note",
         "tl.so.tilo.lang.tasks.Task",
         "tl.so.tilo.lang.chat.TextChannel",
         "tl.so.tilo.lang.mail.Mailbox",

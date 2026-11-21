@@ -5539,7 +5539,7 @@ tilo_test_env::scenario! {
 
     phase thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace;
     {
-        let manifest = Path::new("/apps/notes/Cargo.toml");
+        let manifest = Path::new("/apps/settings/Cargo.toml");
         let args = |step: &ThinDevStep| {
             step.cargo
                 .args

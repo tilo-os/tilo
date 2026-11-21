@@ -1393,8 +1393,8 @@ view saved_notes(notes: Notes) {
     fn an_instance_opens_only_the_document_its_route_names() {
         let workspace = uuid::Uuid::from_u128(7);
         let own = collab_types::document::DocumentId::for_file_document(uuid::Uuid::from_u128(9));
-        let workspaces = collaboration::RouteSpec::app("so.tilo.lang.notes", workspace);
-        let owns = collaboration::RouteSpec::document("so.tilo.lang.notes", workspace, own.route());
+        let workspaces = collaboration::RouteSpec::app("so.tilo.notes", workspace);
+        let owns = collaboration::RouteSpec::document("so.tilo.notes", workspace, own.route());
         assert!(opens_document(&owns, own.as_str()));
         assert!(
             !opens_document(&workspaces, own.as_str()),

@@ -367,7 +367,7 @@ mod tests {
 
         phase the_signed_icon_and_entrypoint_runtime_reach_the_view;
         {
-            let package = "id = \"so.tilo.lang.notes\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
+            let package = "id = \"so.tilo.notes\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
                        icon = \"icon.svg\"\noptional-runtimes = [\"tilolang/0.1.0\"]";
             let view = ManifestView::from_toml_str(&source(
                 package,

@@ -265,11 +265,11 @@ mod tests {
                 Some("so.tilo.lang.tasks")
             );
             assert_eq!(ids.of("com.example.other"), ["com.example.old"]);
-            assert_eq!(ids.current("so.tilo.lang.notes"), "so.tilo.lang.notes");
+            assert_eq!(ids.current("so.tilo.notes"), "so.tilo.notes");
             assert_eq!(ids.documents_under("so.tilo.lang.tasks"), "so.tilo.lang.todo");
             assert_eq!(
-                ids.documents_under("so.tilo.lang.notes"),
-                "so.tilo.lang.notes"
+                ids.documents_under("so.tilo.notes"),
+                "so.tilo.notes"
             );
             assert!(ids.names("so.tilo.lang.todo", "so.tilo.lang.tasks"));
             assert_eq!(
@@ -280,7 +280,7 @@ mod tests {
                 ids.current_resource("tl:so.tilo.lang.todo"),
                 Some("tl:so.tilo.lang.tasks".to_owned())
             );
-            assert_eq!(ids.current_resource("tl:so.tilo.lang.notes:abc"), None);
+            assert_eq!(ids.current_resource("tl:so.tilo.notes:abc"), None);
             assert_eq!(ids.current_resource("notes.page"), None);
         }
     }

@@ -35,7 +35,7 @@ class PackageSetsTests(unittest.TestCase):
             packages = {
                 "counter": {"manifest_path": str(root / "examples/apps/counter/Cargo.toml")},
                 "gallery": {"manifest_path": str(root / "examples/gallery/Cargo.toml")},
-                "notes": {"manifest_path": str(root / "apps/notes/Cargo.toml")},
+                "notes": {"manifest_path": str(root / "apps/settings/Cargo.toml")},
             }
             self.assertEqual(package_sets.example_apps(packages, root), {"counter"})
 

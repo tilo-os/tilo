@@ -470,7 +470,6 @@ collaboration = { path = "../../collab/collaboration" }
 tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }
 # A notebook as a page's store holds it, read for what Notes tells search it holds: the page's
 # search finds a note by its title and its words.
-notes = { path = "../../../apps/notes" }
 # A development session's tilolang apps, built into signed `.tapp`s the tests install into
 # their own app store: the same packages `dist/dev/shell-run.sh` installs. `tilolang-cli` and
 # `package-store`'s writer are normal dependencies of the session (a person's own style is

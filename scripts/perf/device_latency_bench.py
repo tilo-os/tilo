@@ -6,10 +6,6 @@ docs/benchmarks/reference-hardware.md names the machines). It drives a
 device slot the way a person does, through the kernel input path
 (`tilo-vm input`, uinput into libinput), and writes one record per KPI:
 
-- `hw.key_to_present.notes.<hz>hz`: a key typed into a scratch Notes page,
-  from the original kernel/libinput event to the KMS presentation of the
-  frame that shows it (`device_notes_latency.py`, which owns the scratch page
-  and every refusal);
 - `hw.workspace_switch.{first_frame,settled,dropped_frames}.<hz>hz`:
   Super+Page Down / Page Up, from the compositor's own `WORKSPACE-SWITCH`
   lines, dated at the page flip's vblank.
@@ -50,7 +46,7 @@ sys.path.insert(0, str(REPO / "tools/perf"))
 
 import adapters  # noqa: E402
 import record  # noqa: E402
-from device_notes_latency import Device, capture  # noqa: E402
+from device import Device  # noqa: E402
 
 SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"
 SESSION_REPORT = "/usr/libexec/tilo-session-report"
@@ -72,16 +68,12 @@ def refresh_hz(switches: list[dict[str, int]]) -> int:
     return rates.pop()
 
 
-def device_records(switches: list[dict[str, int]], notes_ms: list[float],
+def device_records(switches: list[dict[str, int]],
                    env: dict[str, Any]) -> list[record.Record]:
     hz = refresh_hz(switches)
     meta = {**env.get("meta", {}), "panel_hz": str(hz), "input": "kernel (tilo-vm input, uinput)"}
     env = {**env, "meta": meta}
-    items = adapters.workspace_switch(switches, env, f"hw.workspace_switch.{{}}.{hz}hz")
-    if notes_ms:
-        base = {name: value for name, value in env.items() if name != "meta"}
-        items.insert(0, record.from_samples(f"hw.key_to_present.notes.{hz}hz", "ms", notes_ms, meta=meta, **base))
-    return items
+    return adapters.workspace_switch(switches, env, f"hw.workspace_switch.{{}}.{hz}hz")
 
 
 class Switcher:
@@ -188,8 +180,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", required=True, help="the tilo-vm device (TILO_VM)")
     parser.add_argument("--slot", default="device")
     parser.add_argument("--tool", default="tilo-vm")
-    parser.add_argument("--notes-samples", type=int, default=500,
-                        help="keys typed into the scratch Notes page; 0 skips typing")
     parser.add_argument("--switches", type=int, default=100)
     parser.add_argument("--commit", required=True, help="the deployed shell's source commit")
     parser.add_argument("--image-digest", required=True, help="the booted image (tilo-vm vm status)")
@@ -203,23 +193,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
         parser.error("--commit must be a full 40-character commit")
-    if args.switches < 1 or not 0 <= args.notes_samples <= 1000:
-        parser.error("--switches must be positive and --notes-samples within 0..1000")
+    if args.switches < 1:
+        parser.error("--switches must be positive")
     args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
     device = Device(argparse.Namespace(device=args.device, slot=args.slot, tool=args.tool))
     check_passed = True
     try:
         clocks_before = gpu_time_in_state(device.execute(["sh", "-c", GPU_TRANS_STAT])) if args.check else {}
-        notes_ms: list[float] = []
-        if args.notes_samples:
-            notes_out = args.out / "notes"
-            notes_out.mkdir(mode=0o700)
-            report = capture(device, argparse.Namespace(samples=args.notes_samples, out=notes_out,
-                                                        slot=args.slot, device=args.device))
-            (notes_out / "report.json").write_text(json.dumps(report, indent=2))
-            notes_ms = [sample["latency_ms"] for sample in report["samples"]]
-            if len(notes_ms) != args.notes_samples:
-                raise ValueError(f"{args.notes_samples} keys produced {len(notes_ms)} samples")
         switches = Switcher(device, args.slot).run(args.switches)
         (args.out / "switches.json").write_text(json.dumps(switches, indent=2))
         if args.check:
@@ -232,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
                                  args.hardware or hardware(device))
         env["commit"] = args.commit
         env["meta"] = {"image_digest": args.image_digest, "slot": args.slot}
-        items = device_records(switches, notes_ms, env)
+        items = device_records(switches, env)
     except (RuntimeError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
         print(f"device_latency_bench.py: {error}\nEvidence: {args.out}", file=sys.stderr)
         return 1

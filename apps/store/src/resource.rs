@@ -455,7 +455,7 @@ const SCENARIOS: &[&str] = &[
     "offline",
 ];
 
-use ui::apps::NOTES as SHOT_REPORTED_APP;
+const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 

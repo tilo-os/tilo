@@ -1,5 +1,5 @@
 //! What Tasks does with the workspace beyond editing the tracker: opening
-//! an issue, showing a place, writing a note.
+//! an issue and showing a place.
 //!
 //! The vocabulary travels with the resource so a typed reference to one of
 //! these effects names the tracker wherever it is read from. The Tasks app
@@ -8,7 +8,7 @@
 use tilo_resource::{Effect, Id};
 
 /// The app that keeps the workspace's notes.
-pub use tilo_app_id::apps::NOTES;
+pub const NOTES: &str = "so.tilo.notes";
 
 /// The kind of a note, an item of the pages Notes keeps its notes in.
 pub const NOTE_KIND: &str = "notes.pages.pages";
@@ -32,16 +32,6 @@ pub enum TasksEffect {
     #[effect(view, idempotent, item = issues)]
     #[effect(icon = "circle-dot")]
     OpenIssue {
-        #[param("The issue")]
-        issue: Id,
-    },
-
-    /// Write a note
-    ///
-    /// A note in Notes for the issue, titled after it and linked from it.
-    /// Answers the note's resource.
-    #[effect(job, kind = "undoable", item = issues)]
-    WriteNote {
         #[param("The issue")]
         issue: Id,
     },

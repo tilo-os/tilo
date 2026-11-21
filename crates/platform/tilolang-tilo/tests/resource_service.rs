@@ -30,13 +30,13 @@ const TASKS: (&str, &str) = (
     crate::fixtures::TASKS_SOURCE,
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
-const APP: &str = "so.tilo.lang.notes";
+const APP: &str = "so.tilo.notes";
 const TASKS_APP: &str = "so.tilo.lang.tasks";
 
 /// A view of another app's package that shows a note by the notes app's own row view.
 const CARD: &str = r#"app test.card "Card"
 
-use so.tilo.lang.notes as notes
+use so.tilo.notes as notes
 
 view note_card(n: notes.Note) {
   notes.note_row(n)

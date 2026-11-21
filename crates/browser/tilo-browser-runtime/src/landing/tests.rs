@@ -171,7 +171,7 @@ fn a_record_with_changes_is_kept_for_whoever_opens_it() {
 fn a_kept_document_names_the_heads_a_reader_holds_it_at() {
     let memory = Rc::new(MemoryStore::queued());
     let id = DocumentId::parse("tab:00000000000000a1").expect("a document id");
-    let key = key(ui::apps::NOTES, &id);
+    let key = key("so.tilo.notes", &id);
     let mut doc = AutoCommit::new();
     for page in 0..100 {
         doc.put(ROOT, format!("page-{page}"), text(page)).unwrap();

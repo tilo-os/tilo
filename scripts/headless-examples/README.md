@@ -61,17 +61,17 @@ Every step is snapshotted in the light theme, and the ones the step file marks
 `dark` again in the dark theme. `walk.json` in the output says, per version,
 what each step found: the snapshot, how long the app took to answer, how many
 notes it held afterwards, and — where a version offers no control for a step —
-that it has none; `walk.md` is the same as a page, the two versions' snapshots
-and findings step by step. A walk needs the session build and the `tilolang`
-tool that `dist/dev/nested-session-build.sh` makes.
+that it has none; `walk.md` is the same as a page, the versions' snapshots and
+findings step by step. A walk needs the session build and the `tilolang` tool
+that `dist/dev/nested-session-build.sh` makes.
 
 t runs one as the check `app-walk/APP` (dispatch only), on the session the
 nested-session check built: `t test app-walk/notes` walks Notes there, and
 `t outputs app-walk/notes --to DIR` brings back DIR/walk.md with its snapshots.
 
-| Walk | The app, both versions |
+| Walk | The app, in the versions its file names |
 |---|---|
-| `notes.json` | Notes: `apps/notes` (`so.tilo.notes`) and `apps/tl/notes` (`so.tilo.lang.notes`) |
+| `notes.json` | Notes: `apps/tl/notes` (`so.tilo.notes`), after the native app it replaced was deleted |
 
 For examples that connect to an existing compositor, start it once:
 

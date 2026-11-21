@@ -1465,8 +1465,8 @@ fn embed_blocks() -> Vec<Block> {
 }
 
 fn embed_editor(_: &Theme) -> Element {
-    const GROCERIES: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:g1";
-    const PLAN: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:p1";
+    const GROCERIES: &str = "tl:so.tilo.notes:tl.so.tilo.notes.d/f:g1";
+    const PLAN: &str = "tl:so.tilo.notes:tl.so.tilo.notes.d/f:p1";
     let run = |text: &str, reference: Option<&str>| tilo_ui::rich::Run {
         text: text.to_owned(),
         reference: reference.map(str::to_owned),

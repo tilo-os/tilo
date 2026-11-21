@@ -28,7 +28,7 @@ from real_apps import Agent  # noqa: E402
 
 SHELL = "so.tilo.session"
 CHROME = "desktop:chrome"
-APPS = "file-explorer tasks notes chat settings activity"
+APPS = "file-explorer tasks chat settings activity"
 ACTIVITY = "so.tilo.activity"
 # The session's history of a workspace, which Activity's History draws.
 ACTIVITY_PROVIDER = "tilo.activity"
@@ -194,11 +194,10 @@ def steps(story: Story) -> None:
     story.step("The agent adds a Tasks issue", task)
 
     def note():
-        work.do(["notes#new-note"], {"title": NOTE})
-        work.do(["notes#append-to-note"], {"title": NOTE, "markdown": "- file the budget\n- book the trip\n"})
-        opened("notes", NOTE, f"the note “{NOTE}” in Ada's Notes")
+        work.do(["tasks#create"], {"title": NOTE})
+        opened("tasks", NOTE, f"the issue “{NOTE}” in Ada's Tasks")
 
-    story.step("The agent writes a note", note)
+    story.step("The agent writes one more issue", note)
 
     def chat():
         work.do(["chat.workspace#begin-chat", "chat#begin-chat"], {})

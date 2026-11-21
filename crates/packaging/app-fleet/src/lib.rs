@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_tilolang_app_is_known_as_fully_as_a_native_one() {
-        let notes = metadata("so.tilo.lang.notes").expect("Notes is in the fleet");
+        let notes = metadata("so.tilo.notes").expect("Notes is in the fleet");
         assert_eq!(notes.name, "Notes");
         assert_eq!(notes.category, "Office");
         assert!(notes.tagline.contains("together"));
@@ -252,7 +252,7 @@ mod tests {
         assert!(
             notes
                 .resource_types
-                .contains(&("tl.so.tilo.lang.notes.Notebook", "Notebook"))
+                .contains(&("tl.so.tilo.notes.Notebook", "Notebook"))
         );
         assert_eq!(
             notes.actions().next().map(|action| action.action),
@@ -266,9 +266,9 @@ mod tests {
         );
         // The tilolang package's surface is generated from the same metadata, so a program a
         // server compiles for a workspace with no app installed reads Notes' records there.
-        let surface = surface("so.tilo.lang.notes").expect("Notes ships its surface");
-        assert!(surface.contains("tl.so.tilo.lang.notes.Notebook"));
-        assert!(surface.contains("tl.so.tilo.lang.notes.Note"));
+        let surface = surface("so.tilo.notes").expect("Notes ships its surface");
+        assert!(surface.contains("tl.so.tilo.notes.Notebook"));
+        assert!(surface.contains("tl.so.tilo.notes.Note"));
         // It runs where its runtime runs, on Linux and in a browser tab: a person is never
         // offered it on a Mac, where no build of the runtime exists.
         assert_eq!(notes.platforms, ["linux", "web"]);

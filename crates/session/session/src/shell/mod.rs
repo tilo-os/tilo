@@ -1872,7 +1872,7 @@ mod tests {
         {
             use tilolang_tilo::tilolang::ids::IdsLock;
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
-            // The packages the shell's scenarios reach (`use so.tilo.lang.notes as notes`), each
+            // The packages the shell's scenarios reach (`use so.tilo.notes as notes`), each
             // compiled before the shell as `tilolang check` compiles it.
             let published = tilolang_tilo::catalogue::published_packages(&[dir
                 .parent()

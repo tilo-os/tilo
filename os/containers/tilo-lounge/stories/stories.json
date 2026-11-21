@@ -6,7 +6,7 @@
       "title": "Make a workspace, invite someone, and work together live",
       "intent": "Ada makes a new workspace and invites Grace. Grace opens the invitation in Tilo on a computer that has never seen it, and joins. Each sees the other in their people list within about two seconds. Grace follows Ada, and what Ada types in a note shows on Grace's screen within about a second.",
       "walk": "shell",
-      "driver": "shell/invite-live.py",
+      "needs": "a driver that works in Chat or the tilolang Notes, which the native Notes app this story was written for no longer is",
       "steps": [
         "Ada opens Tilo",
         "Ada opens Tilo again",
@@ -27,7 +27,7 @@
       "title": "See what invited people are doing",
       "intent": "A person who invited others sees who is here and what each is working on, follows one of them live, and a mention they write reaches the person it names.",
       "walk": "shell",
-      "driver": "shell/invited-activity.py",
+      "needs": "a driver that works in Chat or the tilolang Notes, which the native Notes app this story was written for no longer is",
       "steps": [
         "Ada invites Grace and Lin into a workspace",
         "Grace and Lin join the workspace",

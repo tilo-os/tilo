@@ -738,7 +738,6 @@ doc = false
 "noq-1_1_0" = { package = "noq", version = "^1.1.0", default-features = false, features = ["fast-apple-datapath", "platform-verifier", "ring", "runtime-tokio", "rustls"] }
 "noq-proto-1_1_0" = { package = "noq-proto", version = "^1.1.0", default-features = false, features = ["platform-verifier", "ring", "rustls"] }
 "noq-udp-1_1_0" = { package = "noq-udp", path = "../../../vendor/noq-udp", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
-"notes" = { path = "../../../apps/notes", default-features = false, features = ["samples"] }
 "nu-ansi-term-0_50_3" = { package = "nu-ansi-term", version = "^0.50.3", default-features = false, features = ["default", "std"] }
 "num-bigint-0_4_6" = { package = "num-bigint", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-bigint-0_5_1" = { package = "num-bigint", version = "^0.5.1", default-features = false, features = ["default", "rand_0_10", "rand_core_0_10", "std"] }
@@ -3430,7 +3429,6 @@ doc = false
 "noq-1_1_0" = { package = "noq", version = "^1.1.0", default-features = false, features = ["fast-apple-datapath", "platform-verifier", "ring", "runtime-tokio", "rustls"] }
 "noq-proto-1_1_0" = { package = "noq-proto", version = "^1.1.0", default-features = false, features = ["platform-verifier", "ring", "rustls"] }
 "noq-udp-1_1_0" = { package = "noq-udp", path = "../../../vendor/noq-udp", default-features = false, features = ["default", "fast-apple-datapath", "tracing", "tracing-log"] }
-"notes" = { path = "../../../apps/notes", default-features = false, features = ["samples"] }
 "nu-ansi-term-0_50_3" = { package = "nu-ansi-term", version = "^0.50.3", default-features = false, features = ["default", "std"] }
 "num-bigint-0_4_6" = { package = "num-bigint", version = "^0.4.6", default-features = false, features = ["default", "std"] }
 "num-bigint-0_5_1" = { package = "num-bigint", version = "^0.5.1", default-features = false, features = ["default", "rand_0_10", "rand_core_0_10", "std"] }

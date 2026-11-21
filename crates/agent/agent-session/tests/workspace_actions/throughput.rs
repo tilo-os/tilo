@@ -183,10 +183,6 @@ fn issue(index: usize) -> Value {
     json!({"title": format!("Issue {index}"), "body": format!("What issue {index} is about, in a line or two.")})
 }
 
-fn note(index: usize) -> Value {
-    json!({"title": format!("note-{index}"), "markdown": format!("# Note {index}\n\nA paragraph of what note {index} keeps.\n")})
-}
-
 fn message(index: usize) -> Value {
     json!({"channel": CHANNEL.lock().unwrap().clone(), "text": format!("message {index}: a line of chat")})
 }
@@ -270,15 +266,6 @@ const KINDS: &[Kind] = &[
         action: "create",
         args: issue,
         list: Some(("create-many", "issues", 200)),
-    },
-    Kind {
-        name: "notes page",
-        app: "notes",
-        app_id: "so.tilo.notes",
-        listed_as: "notes",
-        action: "create-page",
-        args: note,
-        list: None,
     },
     Kind {
         name: "chat message",
@@ -477,7 +464,7 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
         let page = second_device(&on_server, &browser, &id).await;
 
         // The calls an agent makes over MCP, as a key reaches them: listing a
-        // notebook, reading it, and making a note. The target is the same as a
+        // tracker, reading it, and making an issue. The target is the same as a
         // person's: local work and at most one round trip, so under 300 ms.
         let mut mcp = Mcp {
             api: &api,
@@ -491,7 +478,7 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
         for _ in 0..calls {
             let began = Instant::now();
             let wrote = mcp
-                .tilo_do(json!({"path": "notes/Notes#new-note",
+                .tilo_do(json!({"path": "tasks/Issues#create",
                                  "args": {"title": format!("mcp-{size}")}}))
                 .await;
             took.push(began.elapsed());
@@ -506,7 +493,7 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
             bulk_per_s: 0.0,
             second_device_p50_ms: None,
         };
-        for path in ["notes/Notes", "notes"] {
+        for path in ["tasks/Issues", "tasks"] {
             let mut took = Vec::with_capacity(calls);
             for _ in 0..calls {
                 let began = Instant::now();
@@ -531,7 +518,7 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
         let mut took = Vec::with_capacity(calls);
         for _ in 0..calls {
             let began = Instant::now();
-            let read = mcp.tilo_read(json!({"path": "notes/Notes"})).await;
+            let read = mcp.tilo_read(json!({"path": "tasks/Issues"})).await;
             took.push(began.elapsed());
             assert_eq!(read["result"]["isError"], false, "{read}");
         }

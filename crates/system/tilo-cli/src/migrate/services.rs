@@ -34,10 +34,10 @@ pub const FORGEJO: &str = "forgejo";
 /// Mail then fetches its mail itself.
 pub const MAIL: &str = "mail";
 
-/// Notes' pages, where a page is imported and nested.
-const PAGES: &str = "notes/notes.pages";
-const IMPORT_MARKDOWN: &str = "import-markdown";
-const MOVE_NOTE: &str = "move-note";
+/// The tilolang Notes notebook: a page is imported as a Markdown file, its place in the tree
+/// said by the file's path.
+const NOTES: &str = "notes";
+const IMPORT_PAGE: &str = "import_page";
 /// Tasks' issues, where an issue is made, commented on, nested and linked.
 const ISSUES: &str = "tasks/tasks.issues";
 const CREATE_MANY: &str = "tasks/tasks.issues#create-many";
@@ -1027,18 +1027,25 @@ impl Landing<'_, '_> {
         Ok(())
     }
 
-    /// Land `pages` in Notes: each one's pictures, then the pages as grouped `import-markdown`,
-    /// each under the note its source decides, then those with a parent moved under it.
+    /// Land `pages` in Notes: each page as a Markdown file imported by the notebook's
+    /// `import_page`, named by the path its place in the tree gives it, so the note stands under
+    /// the note of the page above it. A page the notebook already holds opens the note it made,
+    /// whatever the page says now.
+    ///
+    /// A page whose pictures came with it is refused, not imported without them: the notebook's
+    /// import carries a page's words and no pictures beside them yet, and a page that lost its
+    /// pictures is worse than one left for a later import.
     fn land_pages(&mut self, pages: &[IncomingPage]) -> Result<Delivered> {
+        let ordered = pages_in_tree_order(pages);
         let mut members = Vec::with_capacity(pages.len());
+        let mut carried = Vec::with_capacity(pages.len());
         {
             let (workspace, _) = self.lander.workspace()?;
-            for page in pages {
-                let mut images = Vec::new();
-                for picture in &page.pictures {
-                    images.push(workspace.put(&picture.bytes)?);
+            for page in ordered.iter().copied() {
+                if !page.pictures.is_empty() {
+                    continue;
                 }
-                let markdown = page.markdown.clone();
+                let content = workspace.put(page.markdown.as_bytes())?;
                 let origin = origin_of(
                     page.author.as_ref(),
                     "Outline",
@@ -1047,42 +1054,47 @@ impl Landing<'_, '_> {
                     &page.created_at,
                     &page.updated_at,
                 );
+                let by = origin
+                    .as_ref()
+                    .and_then(|origin| origin.get("author"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
                 members.push(Member {
-                    verb: IMPORT_MARKDOWN,
-                    args: json!({"title": page.title, "markdown": markdown, "images": images,
-                                 "note": note_for(&page.source, &page.key), "origin": origin}),
+                    verb: IMPORT_PAGE,
+                    args: json!({
+                        "file": {
+                            "content": content,
+                            "name": format!("{}.md", page_path(pages, page)),
+                            "media": "text/markdown",
+                        },
+                        "by": by,
+                        "service": "Outline",
+                        "page": note_for(&page.source, &page.key),
+                        "created": page.created_at,
+                        "updated": page.updated_at,
+                    }),
                 });
+                carried.push(page);
             }
         }
         let (workspace, invocation) = self.lander.workspace()?;
-        let imported = grouped(workspace, invocation, PAGES, &members)?;
-        let mut refused = Vec::new();
+        let imported = grouped(workspace, invocation, NOTES, &members)?;
+        let mut refused: Vec<RefusedItem> = pages
+            .iter()
+            .filter(|page| !page.pictures.is_empty())
+            .map(|page| RefusedItem {
+                key: page.key.clone(),
+                name: page.title.clone(),
+                why: "its pictures cannot be carried into the notebook yet: its import takes the \
+                      page's words alone"
+                    .to_owned(),
+            })
+            .collect();
         let mut landed = Vec::new();
-        let mut nestings = Vec::new();
-        let mut nested = Vec::new();
-        for (page, outcome) in pages.iter().zip(imported) {
+        for (page, outcome) in carried.into_iter().zip(imported) {
             match outcome {
                 // A page an earlier import brought is the person's now, as they left it.
                 Some(error) if already_imported(&error) => landed.push(page.key.clone()),
-                Some(error) => refused.push(refusal(&page.key, &page.title, &error)),
-                None => match &page.parent {
-                    Some(parent) => {
-                        nestings.push(Member {
-                            verb: MOVE_NOTE,
-                            args: json!({"page": note_for(&page.source, &page.key),
-                                         "parent": note_for(&page.source, parent),
-                                         "before": null}),
-                        });
-                        nested.push(page);
-                    }
-                    None => landed.push(page.key.clone()),
-                },
-            }
-        }
-        let (workspace, invocation) = self.lander.workspace()?;
-        let outcomes = grouped(workspace, invocation, PAGES, &nestings)?;
-        for (page, outcome) in nested.into_iter().zip(outcomes) {
-            match outcome {
                 None => landed.push(page.key.clone()),
                 Some(error) => refused.push(refusal(&page.key, &page.title, &error)),
             }
@@ -1278,9 +1290,9 @@ fn created_id(answer: &super::workspace::Answer) -> Option<String> {
     }
 }
 
-/// The note a source's page is kept under: Notes' own rule for a migration's pages
-/// (`note_for` in `apps/notes/src/import_inbox.rs`), so the installer and this command bring the
-/// same page to the same note.
+/// Where a source's page is read, as the notebook keeps it: a page imported by the same address
+/// again opens the note it made, so the installer and this command bring the same page to the
+/// same note.
 #[must_use]
 pub fn note_for(source: &str, key: &str) -> String {
     let digest = blake3::hash(format!("{source}\u{0}{key}").as_bytes());
@@ -1289,6 +1301,60 @@ pub fn note_for(source: &str, key: &str) -> String {
     uuid::Builder::from_random_bytes(bytes)
         .into_uuid()
         .to_string()
+}
+
+/// `pages` with every page after the pages it stands under: the notebook's import finds the note
+/// of the page above a page only once that note is there.
+fn pages_in_tree_order(pages: &[IncomingPage]) -> Vec<&IncomingPage> {
+    let mut ordered: Vec<&IncomingPage> = Vec::with_capacity(pages.len());
+    let mut remaining: Vec<&IncomingPage> = pages.iter().collect();
+    let mut placed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    while !remaining.is_empty() {
+        let before = remaining.len();
+        remaining.retain(|page| {
+            let ready = page
+                .parent
+                .as_deref()
+                .is_none_or(|parent| placed.contains(parent) || !pages.iter().any(|p| p.key == parent));
+            if ready {
+                placed.insert(page.key.as_str());
+                ordered.push(page);
+            }
+            !ready
+        });
+        if remaining.len() == before {
+            // Pages whose parents form a circle: no order stands their parents first, so they are
+            // imported where the notebook can hold them, at the top of the tree.
+            ordered.append(&mut remaining);
+        }
+    }
+    ordered
+}
+
+/// The path `page` stands at in the notebook, built from the titles of the pages above it: the
+/// import names each note under the note of its file's folder. A circle of pages above it, or a
+/// title that cannot be a file's name, ends the path there rather than naming no page at all.
+fn page_path(pages: &[IncomingPage], page: &IncomingPage) -> String {
+    let name = |page: &IncomingPage| {
+        let title = page.title.trim();
+        let title = if title.is_empty() { "Untitled" } else { title };
+        title.replace(['/', '\\'], "-")
+    };
+    let mut path = vec![name(page)];
+    let mut parent = page.parent.as_deref();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::from([page.key.as_str()]);
+    while let Some(key) = parent {
+        let Some(above) = pages.iter().find(|above| above.key == key) else {
+            break;
+        };
+        if !seen.insert(above.key.as_str()) {
+            break;
+        }
+        path.push(name(above));
+        parent = above.parent.as_deref();
+    }
+    path.reverse();
+    path.join("/")
 }
 
 #[cfg(test)]

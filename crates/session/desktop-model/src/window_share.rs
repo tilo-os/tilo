@@ -452,7 +452,7 @@ mod tests {
 
     /// The device the two windows below run on, and the workspace's name for it.
     const ANA: u16 = 0x0A51;
-    const APP: &str = tilo_app_id::apps::NOTES;
+    const APP: &str = "so.tilo.notes";
     const NOTES: TabId = compose_id(ANA, 4);
     const TERMINAL: TabId = compose_id(ANA, 5);
     const GROUP: u64 = compose_id(ANA, 6);

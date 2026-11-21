@@ -608,9 +608,9 @@ mod tests {
         std::fs::create_dir_all(&user).unwrap();
         let notes = install(
             tmp.path(),
-            "so.tilo.lang.notes",
+            "so.tilo.notes",
             &manifest(
-                "id = \"so.tilo.lang.notes\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
+                "id = \"so.tilo.notes\"\nversion = \"0.1.0\"\nkind = \"app\"\n\
                  icon = \"icon.svg\"",
                 "[entrypoint]\nbin = \"bin/tilolang-app\"\ntype = \"gui\"\n",
             ),
@@ -636,7 +636,7 @@ mod tests {
         }
         std::fs::write(package_store::Layout::new(&user).registry(), rows).unwrap();
         let catalog = Catalog::at(&user, None);
-        let app = read_one(&catalog, "so.tilo.lang.notes").unwrap().unwrap();
+        let app = read_one(&catalog, "so.tilo.notes").unwrap().unwrap();
         assert_eq!(
             app.icon_path(),
             None,

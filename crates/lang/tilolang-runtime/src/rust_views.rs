@@ -130,7 +130,7 @@ pub const EVERY_APP: &str = "";
 /// the one registry that answers for every app — when it draws that type at all.
 ///
 /// A registry that answers for every app ([`EVERY_APP`]) is registered under a key every type
-/// reaches, a tilolang package's included (`so.tilo.lang.notes#Note`, or the bare id a `meta(T)`
+/// reaches, a tilolang package's included (`so.tilo.notes#Note`, or the bare id a `meta(T)`
 /// names a type by, `mavvhka7`). Asked without checking what it draws, it answered for every
 /// type there is: a placed Notes root drew its notebook as "All Mavvhka7" and every row as
 /// "Note", the type's id and name, where the notes app's own title and `(untitled:)` words
@@ -380,7 +380,7 @@ mod tests {
 
         phase a_registry_of_every_app_draws_only_its_own_kinds;
         // A registry that answers for every app draws only the kinds it declares: a tilolang
-        // package's type (`so.tilo.lang.notes#Note`) is no Rust app's, and neither is the bare id
+        // package's type (`so.tilo.notes#Note`) is no Rust app's, and neither is the bare id
         // the type's own package names it by (`mavvhka7`) — the two a placed Notes root's views ask
         // `meta` of.
         {
@@ -398,7 +398,7 @@ mod tests {
                 "another Rust app's type, from the one registry that answers for every app"
             );
             assert!(
-                app_of(&shared, "so.tilo.lang.notes#Note").is_none(),
+                app_of(&shared, "so.tilo.notes#Note").is_none(),
                 "a tilolang package's type is no Rust app's"
             );
             assert!(

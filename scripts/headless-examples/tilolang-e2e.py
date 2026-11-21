@@ -45,13 +45,11 @@ app gets on a real system:
   record-open a task no window shows opens from search: Enter on its row takes a window of
              Tasks to it, the task as its page, its tab named by it; Ctrl+Enter opens a window
              of its own beside, named by the task (record-open*.png)
-  native     native Notes (so.tilo.notes), installed beside them, launches and
-             presents a frame (native-notes.png)
-  activation "Show this window" answers for tilolang Notes as for native Notes
+  activation "Show this window" answers for tilolang Notes
   read       the API's `read` of tilolang Notes lists the workspace's records, and
              the notebook's read lists its notes by the ids a read takes
-  idle       each app untouched for 10 s, native Notes and the tilolang host that
-             runs the apps' instances included: every thread of them sleeps
+  idle       each app untouched for 10 s, the tilolang host that runs the apps'
+             instances included: every thread of them sleeps
   routes     the broker's route access, as the attested launch of an app: the
              collaboration probe (crates/dev/collab-probe) is installed as Today
              (which declares that it reads Notes' kinds) and as Tasks (which
@@ -94,20 +92,18 @@ from real_apps import (BUILD, TARGET, Failed, Session, prepare, run,  # noqa: E4
 
 def app_id(name: str) -> str:
     """The application id of the tilolang package `name` (its directory under apps/tl)."""
-    return f"so.tilo.lang.{name}"
+    return {"notes": "so.tilo.notes"}.get(name, f"so.tilo.lang.{name}")
 
 
 BIN = BUILD / "bin"
 SHELL_RESOURCE = "desktop:shell"
 APPS = ["notes", "chat", "tasks", "today"]
-# The native app installed beside them, to hold the tilolang apps to what it does.
-NATIVE = "so.tilo.notes"
 PROBE_RUNTIME = "0.1.0+probe"
 # The routes the probe tries as each app: Today declares that it reads Notes'
 # kinds; Tasks declares no read.
 PROBE_ROUTES = {
-    "today": ["so.tilo.lang.notes", "so.tilo.lang.today"],
-    "tasks": ["so.tilo.lang.notes"],
+    "today": ["so.tilo.notes", "so.tilo.lang.today"],
+    "tasks": ["so.tilo.notes"],
 }
 
 
@@ -927,7 +923,7 @@ def app_action(session: Session, app: str, declared: str, kind: str | None = Non
     publishes, of the kind its effect has when `kind` names one (`View`, `Document`). The action is
     found by the name the app publishes it under — as a native app's verb, which an agent at the
     api calls it by — never by the words its title reads in. Its application is `app` exactly:
-    so.tilo.notes never matches so.tilo.lang.notes."""
+    so.tilo.notes never matches so.tilo.notes."""
     for action in session.actions(""):
         if (action.get("application") == app and action.get("operation") == declared
                 and kind in (None, action.get("operation_kind"))):
@@ -953,30 +949,14 @@ def focus(session: Session, window: dict) -> None:
     session.invoke("so.tilo.session", f"{SHELL_RESOURCE}\u001ffocus", {"tab": str(window["tab"])})
 
 
-def check_native(session: Session, out: Path) -> dict:
-    """Native Notes launches beside the tilolang apps and presents a frame."""
-    session.invoke("applications", NATIVE)
-    windows = until(f"{NATIVE}'s window",
-                    lambda: {w.get("app_id"): w for w in session.windows() if w.get("app_id") == NATIVE})
-    session.answering(NATIVE, 30)
-    # Connected: its window publishes its actions.
-    until(f"{NATIVE}'s actions", lambda: app_operation(session, NATIVE, "activate-window"), 60)
-    w = windows[NATIVE]
-    focus(session, w)
-    time.sleep(0.5)
-    path = out / "native-notes.png"
-    session.control_cmd("snapshot", str(path))
-    return {"group": w["group"], "tab": w["tab"], "snapshot": str(path)}
-
-
 def check_activation(session: Session) -> dict:
-    """"Show this window" answers for a tilolang app as it does for the native app."""
+    """"Show this window" answers for a tilolang app: the window it is the app's own."""
     out = {}
-    for app in (NATIVE, app_id("notes")):
+    for app in (app_id("notes"), app_id("tasks")):
         action = until(f"{app}'s 'Show this window'", lambda: app_operation(session, app, "activate-window"))
         out[app] = value_of(invoke_found(session, action))
-    if out[app_id("notes")] != out[NATIVE]:
-        raise Failed(f"'Show this window' answers differently from native Notes: {out}")
+    if not all(value for value in out.values()):
+        raise Failed(f"'Show this window' answers no window: {out}")
     return out
 
 
@@ -1007,11 +987,9 @@ def check_read(session: Session) -> dict:
                   and any(i.get("type") == "Note" for i in f.get("items", []))), {})
     if read.get("kind") != kind or not notes.get("items"):
         raise Failed(f"Notes' root record's read holds no notes: {json.dumps(read)[:2000]}")
-    native = own_read(session, NATIVE)
     return {
         "records": len(answer["records"]),
         "notebook": {"label": read.get("label"), "notes": notes.get("count")},
-        "native": sorted(value_of(invoke_found(session, native))),
     }
 
 
@@ -1027,22 +1005,12 @@ def snapshots(session: Session, windows: dict, out: Path, prefix: str = "") -> d
     return shots
 
 
-def native_pid(session_pid: int) -> int | None:
-    """The process of native Notes, when it runs."""
-    return next((p for p in descendants(session_pid)
-                 if environ(p).get("TILO_PACKAGE_ID") == NATIVE and Path(exe(p)).name == "notes"), None)
-
-
 def check_idle(session: Session, processes: dict, session_pid: int, seconds: float = 10.0) -> dict:
-    """Every app, native Notes and the tilolang host that runs the apps' instances, left untouched
-    for 10 s: every thread of them sleeps. Nothing animates here and this session reports no
-    per-window frame count, so a thread that woke woke for work nobody asked for."""
+    """Every app and the tilolang host that runs the apps' instances, left untouched for 10 s:
+    every thread of them sleeps. Nothing animates here and this session reports no per-window
+    frame count, so a thread that woke woke for work nobody asked for."""
     time.sleep(3)
     pids = {app: info["pid"] for app, info in processes["apps"].items()}
-    native = native_pid(session_pid)
-    if native is None:
-        raise Failed("native Notes is not running to be held to the same idle")
-    pids[NATIVE] = native
     hosts = host_pids(session_pid)
     if not hosts:
         raise Failed("no tilolang host runs the apps' instances to be held to the same idle")
@@ -1173,7 +1141,7 @@ def run_checks(summary: dict, checks) -> bool:
 
 def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     """The apps in a session of their own, then the route checks in a second start of it."""
-    proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps", apps="notes")
+    proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps", apps="")
     running["proc"] = proc
     pid = proc.pid
     # Today's window before Tasks holds a task, which its card is held to after.
@@ -1188,7 +1156,6 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("hosted-here", lambda: check_hosted_here(session, summary["checks"]["launch"], out)),
         ("actions", lambda: check_actions(session)),
         ("snapshots", lambda: snapshots(session, summary["checks"]["launch"], out)),
-        ("native", lambda: check_native(session, out)),
         ("activation", lambda: check_activation(session)),
         ("read", lambda: check_read(session)),
         # Before the checks that type into the shell: every app's threads are held to sleeping
@@ -1212,7 +1179,7 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     if "kept" not in summary["failed"]:
         # The same session started again, with what Tasks held when it stopped, and Today opened.
         proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS],
-                                      "reopened", apps="notes")
+                                      "reopened", apps="")
         running["proc"] = proc
         run_checks(summary, [("reopened", lambda: check_reopened(session, out))])
         stop_session(proc)
@@ -1246,7 +1213,7 @@ def main() -> int:
     Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
 
     print("==> preparing the session", file=sys.stderr)
-    prepare(state, apps="notes", built=not args.no_build,
+    prepare(state, apps="", built=not args.no_build,
             remote=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"))
     if not args.no_build:
         print("==> building the probe", file=sys.stderr)

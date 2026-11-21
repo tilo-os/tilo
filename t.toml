@@ -228,7 +228,7 @@ unify = "workspace-unify"
 packages = [
     "accounts", "agent", "app-cli", "browser", "calculator", "key-group", "code-editor",
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
-    "notes", "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
+    "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
     "tilo-agent-session", "tilo-app", "tilo-bluez",
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
@@ -1611,7 +1611,7 @@ heavy = true
 name = "sdk-macos"
 # Installs packages (npm, PyPI, rustup) from hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in calculator notes; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/calculator --output \"$TMPDIR/Calculator-macos.zip\" --force\ntest -s \"$TMPDIR/Calculator-macos.zip\"\ntest -s \"$TMPDIR/Calculator-macos.zip.json\"\n"
+run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\ncargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package\nbin=${CARGO_TARGET_DIR:-$PWD/target}/debug\nrustup target add wasm32-unknown-unknown\n# The template takes the SDK from this tree as a git repository (`--sdk-git file://\u2026`, at HEAD):\n# commit the tree here, so HEAD is exactly the files checked, a working tree's changes included.\nif ! git rev-parse --git-dir >/dev/null 2>&1; then\n  git init -q\n  git add -A\n  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@localhost GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@localhost git commit -q -m 'the checked tree'\nfi\nTILO_SDK_SOURCE=git cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture\nfor app in calculator; do\n  bundle=$(\"$bin/tilo-app\" build --target macos \"apps/$app\" | tail -n 1)\n  plutil -lint \"$bundle/Contents/Info.plist\"\n  codesign --verify --deep --strict \"$bundle\"\n  \"$bundle/Contents/MacOS/$app\" --shots \"$TMPDIR/$app.png\"\n  test -s \"$TMPDIR/$app.png\"\ndone\n\"$bin/tilo-app\" package --target macos apps/calculator --output \"$TMPDIR/Calculator-macos.zip\" --force\ntest -s \"$TMPDIR/Calculator-macos.zip\"\ntest -s \"$TMPDIR/Calculator-macos.zip.json\"\n"
 requires = ["os=macos", "arch=arm64"]
 on = ["dispatch", "idle"]
 heavy = true
@@ -6467,12 +6467,13 @@ on = ["dispatch", "idle"]
 [check.matrix]
 proof = ["tilolang", "two-people", "agent-sessions", "session-lock"]
 
-# An app's first hour, walked twice: once in its Rust version (apps/) and once in its tilolang
-# version (apps/tl/), on the session the nested-session check built, one headless session each,
-# every step snapshotted in the light theme and the marked ones again in the dark
+# An app.s first hour, walked in each version its step file names: the Rust version (apps/) and
+# the tilolang one (apps/tl/) before the change that retires the Rust app, the tilolang one alone
+# after it, on the session the nested-session check built, one headless session each, every step
+# snapshotted in the light theme and the marked ones again in the dark
 # (scripts/headless-examples/app-walk.py; the steps are app-walks/APP.json). It is how a Rust app
 # is shown to be replaceable before it is deleted, and it judges nothing: the page the walk writes
-# (`t outputs app-walk/<app> --to DIR`, DIR/walk.md) sets the two runs' snapshots side by side for
+# (`t outputs app-walk/<app> --to DIR`, DIR/walk.md) sets the runs. snapshots side by side for
 # a person to read.
 [[check]]
 name = "app-walk/{app}"
@@ -6496,7 +6497,7 @@ app = ["notes"]
 [[check]]
 name = "run-headless"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh /target/debug/tilo-local headless --check --no-build --apps notes"
+run = "bash tools/test-env.sh /target/debug/tilo-local headless --check --no-build --apps calendar"
 needs = ["nested-session", "tilo-local-binaries"]
 # The session's apps read no NTFS image, whose set takes a minute to build.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
@@ -6508,7 +6509,7 @@ on = ["idle"]
 [[check]]
 name = "run-desktop"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/test-env.sh /target/debug/tilo-local desktop --check --no-build --apps notes"
+run = "bash tools/test-env.sh /target/debug/tilo-local desktop --check --no-build --apps calendar"
 needs = ["nested-session", "tilo-local-binaries"]
 # The window's apps read no NTFS image, whose set takes a minute to build.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_NTFS_FIXTURES = "0" }
@@ -6911,24 +6912,6 @@ timeout_secs = 900
 default = false
 
 
-# A person on a workspace as a web page, walked in a headless browser against the Lounge's server
-# (integration/page-notes.mjs): the site's entry makes the browser a device, the page opens, a note
-# is opened and typed in, Back and Forward are given, a reload lands on the note its address names,
-# a phone's width shows one column, a second browser profile opens the same page, and then the
-# workspace's own page and each app a person opens in their first hour. The pictures and what each
-# step saw are kept for a reviewer.
-[[check]]
-name = "page-notes"
-# No egress: as e2e, the walk meets its Lounge on loopback (direct-lounge.sh) and its
-# programs and fonts are its needs'.
-run = "TILO_PAGE_NOTES_IN_LOG=1 bash os/containers/tilo-lounge/test-page-notes.sh /target/publish/web-entry/bundle /target/page-notes"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
-requires = ["arch=x86_64"]
-outputs = ["/target/page-notes/**"]
-timeout_secs = 1800
-default = false
-
 # A stranger at the front of a workspace that takes people by invitation, in a real browser, against
 # the Lounge's server (test-wait-list.sh): the wait list is what they see rather than the setup
 # screen, the address they leave is confirmed through the mail the entry sends to a sink this run
@@ -6945,23 +6928,6 @@ requires = ["arch=x86_64"]
 outputs = ["/target/wait-list/**"]
 timeout_secs = 1800
 on = ["dispatch"]
-
-# A page whose app request is held past the time the server waits for it, walked in a headless
-# browser against the Lounge's server (integration/page-reopen.mjs): the site's entry makes the
-# browser a device, a note is typed in, the app workers are stopped for longer than the server
-# waits, more is typed while they are, and the page must show the note again with what was typed
-# and go on working. It takes a minute and a half longer than its walk, by the server's own wait.
-[[check]]
-name = "page-reopen"
-# No egress: as page-notes, the walk meets its Lounge on loopback (direct-lounge.sh) and its
-# programs and fonts are its needs'.
-run = "TILO_PAGE_REOPEN_IN_LOG=1 bash os/containers/tilo-lounge/test-page-reopen.sh /target/publish/web-entry/bundle /target/page-reopen"
-needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
-env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
-requires = ["arch=x86_64"]
-outputs = ["/target/page-reopen/**"]
-timeout_secs = 1800
-default = false
 
 # The user stories (os/containers/tilo-lounge/stories/stories.json): what people set out to do with
 # Tilo, each walked end to end by its people in fresh browser profiles on a fresh tilo.sh stack of
@@ -7038,7 +7004,7 @@ outputs = ["/target/user-stories-shell/{story}/index.html", "/target/user-storie
 evidence = ["/target/user-stories-shell/{story}/index.html", "/target/user-stories-shell/{story}/{story}/**"]
 timeout_secs = 3000
 [check.matrix]
-story = ["invite-live", "agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "invited-activity", "desktop-easy"]
+story = ["agent-mcp", "second-device", "files-in", "calendar-invite", "nextcloud-files", "mail-password", "desktop-easy"]
 
 # The big-folder user story: a person copies a photo library and a few long videos into their
 # workspace through its mounted folder, browses it, joins from a second computer and restarts the

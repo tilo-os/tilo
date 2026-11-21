@@ -492,9 +492,9 @@ tilo_test_env::scenario! {
     // agent's run there is listed — and taken back from the Activity — though no app's process holds
     // the record and no marker holds the run.
     {
-        const NOTES: &str = "so.tilo.lang.notes";
-        const NOTES_KIND: &str = "tl.so.tilo.lang.notes.Notebook";
-        const NOTES_ROOT: &str = "tl:so.tilo.lang.notes:notebook";
+        const NOTES: &str = "so.tilo.notes";
+        const NOTES_KIND: &str = "tl.so.tilo.notes.Notebook";
+        const NOTES_ROOT: &str = "tl:so.tilo.notes:notebook";
         const CHAT_KIND: &str = "tl.so.tilo.lang.chat.Channel";
         const CHAT_ROOT: &str = "tl:so.tilo.lang.chat:channel";
         // The run an agent admitted at this desktop's API works in: one run of a task.

@@ -343,7 +343,7 @@ mod tests {
     /// The tab of the Notes window, and the record it shows.
     const NOTES: u64 = 7;
     const RECORD: &str = "notes-1";
-    const NOTES_APP: &str = ui::apps::NOTES;
+    const NOTES_APP: &str = "so.tilo.notes";
 
     fn device(seed: u8) -> iroh::EndpointId {
         iroh::SecretKey::from_bytes(&[seed; 32]).public()

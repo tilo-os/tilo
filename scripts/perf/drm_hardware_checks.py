@@ -47,7 +47,7 @@ REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO / "tools/perf"))
 
 import record  # noqa: E402
-from device_notes_latency import Device  # noqa: E402
+from device import Device  # noqa: E402
 
 KPI = "drm.presentation-checks"
 SESSION_LOG = "$HOME/.local/state/tilo/session-logs/latest.log"

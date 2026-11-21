@@ -60,7 +60,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 BIN = REPO / "target/nested-session/bin"
-APP = "so.tilo.lang.notes"
+APP = "so.tilo.notes"
 # The string each package under test shows, so a save paints something new: Notes' body
 # placeholder in a session, Tasks' new-task placeholder on the desktop.
 PLACEHOLDER = {"notes": r'placeholder: "Write[^"]*"',

@@ -187,11 +187,11 @@ class PreCommitSdkTypesTests(unittest.TestCase):
         path = self.root / ".githooks/pre-commit"
         path.parent.mkdir()
         shutil.copy2(HOOK, path)
-        self.write("apps/notes/surface.toml", SURFACE)
-        self.write("apps/notes/tilo-app.toml", '[package]\nid = "so.tilo.notes"\nname = "Notes"\n')
+        self.write("apps/settings/surface.toml", SURFACE)
+        self.write("apps/settings/tilo-app.toml", '[package]\nid = "so.tilo.notes"\nname = "Notes"\n')
         self.write("docs/api/openapi.json", CURRENT_DESCRIPTION)
-        self.write("sdk/python/src/tilo/types/notes.python", "rename\n")
-        self.write("sdk/typescript/src/types/notes.ts", "rename\n")
+        self.write("sdk/python/src/tilo/types/settings.python", "rename\n")
+        self.write("sdk/typescript/src/types/settings.ts", "rename\n")
         self.write(".gitignore", "/target/\n")
         self.git("add", "--", ".")
         self.git("-c", "user.name=Test", "-c", "user.email=test@example.org",
@@ -221,18 +221,18 @@ class PreCommitSdkTypesTests(unittest.TestCase):
         return self.git("show", f":{name}").stdout
 
     def test_an_older_generator_adds_what_the_surface_changed_and_takes_nothing_out(self):
-        self.write("apps/notes/surface.toml", SURFACE + '\n[[resources.verbs]]\nid = "archive"\n')
+        self.write("apps/settings/surface.toml", SURFACE + '\n[[resources.verbs]]\nid = "archive"\n')
         # A file its person left untracked among the types, which no commit takes along.
         self.write("sdk/python/src/tilo/types/scratch.python", "mine\n")
-        self.git("add", "apps/notes/surface.toml")
+        self.git("add", "apps/settings/surface.toml")
         result = self.run_hook()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         described = self.staged("docs/api/openapi.json")
         self.assertIn('"archive"', described, "the surface's new action is described")
         self.assertIn('"listHolders"', described,
                       "a call the generator is too old to know stays in the description")
-        self.assertEqual(self.staged("sdk/python/src/tilo/types/notes.python"), "rename\narchive\n")
-        self.assertEqual(self.staged("sdk/typescript/src/types/notes.ts"), "rename\narchive\n")
+        self.assertEqual(self.staged("sdk/python/src/tilo/types/settings.python"), "rename\narchive\n")
+        self.assertEqual(self.staged("sdk/typescript/src/types/settings.ts"), "rename\narchive\n")
         self.assertNotIn("scratch", self.git("ls-files", "sdk").stdout)
 
     def test_a_new_app_is_described_beside_the_others_and_its_types_are_written(self):

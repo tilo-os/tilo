@@ -49,7 +49,7 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
     let mut session = crate::common::seeded_session(root.path());
 
     // Open the notebook in a window, as the layout's published `open` does for a person.
-    let notebook = found(&session, "tl.so.tilo.lang.notes.Notebook");
+    let notebook = found(&session, "tl.so.tilo.notes.Notebook");
     act(
         &mut session,
         "shell:layout",

@@ -647,7 +647,7 @@ fn step_keys(steps: &[Step], out: &mut Vec<ActionKey>) {
 mod tests {
     use super::*;
 
-    const NOTES: &str = tilo_app_id::apps::NOTES;
+    const NOTES: &str = "so.tilo.notes";
 
     fn answer(grant: &[Rule], resource: &str, kind: &str, action: &str) -> Answer {
         let node = step_node(

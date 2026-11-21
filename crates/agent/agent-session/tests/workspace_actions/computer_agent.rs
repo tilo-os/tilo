@@ -8,7 +8,7 @@ use tilo_session_actions::SessionActions;
 use ui::tilo_resource::Id;
 use ui::tilo_workspace_agent::{Agent, WorkspaceAgents};
 
-const NOTES: &str = "so.tilo.notes";
+const TASKS: &str = "so.tilo.tasks";
 const CHAT: &str = "so.tilo.chat";
 const NAME: &str = "Claude Code";
 
@@ -34,13 +34,13 @@ pub(super) async fn computer_agent(
     (agent, server)
 }
 
-/// What the agent's call to make a note titled `title` answered.
-async fn new_note(server: &McpServer<SessionActions>, title: &str) -> serde_json::Value {
+/// What the agent's call to make an issue titled `title` answered.
+async fn new_task(server: &McpServer<SessionActions>, title: &str) -> serde_json::Value {
     server
         .handle(
             serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "tilo_do", "arguments":
-                {"path": "notes#new-note", "args": {"title": title}}}}),
+                {"path": "tasks#create", "args": {"title": title}}}}),
         )
         .await
         .unwrap()
@@ -94,11 +94,11 @@ async fn a_computers_agent_is_listed_once_where_it_acts() {
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &server, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &server).await;
-    browser.create(NOTES);
+    browser.create(TASKS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
     let (_agent, server) = computer_agent(&hosted, &laptop, &server).await;
-    let answer = new_note(&server, "From the laptop").await;
+    let answer = new_task(&server, "From the laptop").await;
     assert_ne!(answer["result"]["isError"], true, "{answer}");
 
     // The workspace's agents now list it, as its person's, for the client it connects as.
@@ -110,7 +110,7 @@ async fn a_computers_agent_is_listed_once_where_it_acts() {
     assert!(agent.is_active(), "{agent:?}");
 
     // Its next call finds it listed, and lists it once.
-    let again = new_note(&server, "Again from the laptop").await;
+    let again = new_task(&server, "Again from the laptop").await;
     assert_ne!(again["result"]["isError"], true, "{again}");
     let all = agents(&hosted).await.unwrap();
     assert_eq!(all.agents.len(), 1, "listed once");
@@ -127,7 +127,7 @@ async fn a_computers_agent_is_listed_once_where_it_acts() {
         .as_author(&hex::encode(root.verifying_key().to_bytes()))
         .in_app(ui::tilo_workspace_agent::OWNER, "Assistant");
     let heads = agents_list.doc_mut().get_heads();
-    let notes = tilo_action_policy::agent_answers::AnswerScope::app(NOTES).node(WORKSPACE);
+    let notes = tilo_action_policy::agent_answers::AnswerScope::app(TASKS).node(WORKSPACE);
     agents_list
         .apply(WorkspaceAgents::SET_AGENT_BOUND.with(
             ui::tilo_workspace_agent::workspace_agents::SetAgentBound {
@@ -146,6 +146,6 @@ async fn a_computers_agent_is_listed_once_where_it_acts() {
         .write(route, &collab_types::DocumentMutation::Incremental(changes))
         .unwrap();
     listed(&hosted, &id, |agent| !agent.bound.is_empty()).await;
-    let bounded = new_note(&server, "Past the bound").await;
+    let bounded = new_task(&server, "Past the bound").await;
     assert_eq!(bounded["result"]["isError"], true, "{bounded}");
 }

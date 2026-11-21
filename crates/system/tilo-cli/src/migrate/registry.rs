@@ -150,7 +150,7 @@ pub const SOURCES: &[Source] = &[
         title: "Outline",
         engine: Engine::Service,
         connect: Some("--url https://your-team.getoutline.com"),
-        resources: &["notes/notes.pages"],
+        resources: &["notes"],
     },
     Source {
         key: "linear",

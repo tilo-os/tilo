@@ -21391,1007 +21391,6 @@
         ],
         "description": ""
       },
-      "notes.notebook.new-tag.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "notes.notebook.delete-tag.Arguments": {
-        "type": "object",
-        "properties": {
-          "tag": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "tag"
-        ],
-        "description": ""
-      },
-      "notes.notebook.export-markdown-content.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "title": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [],
-        "description": ""
-      },
-      "notes.pages.new-note.Arguments": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "note": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "rank": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.pages.new-note.Result": {
-        "type": "object"
-      },
-      "notes.pages.new-child.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "rank": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page",
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.pages.new-child.Result": {
-        "type": "object"
-      },
-      "notes.pages.rename.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page",
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.pages.delete.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.pages.move-note.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "parent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "before": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "place": {
-            "additionalProperties": false,
-            "properties": {
-              "parent": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "rank": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "rank"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.pages.move-up.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "place": {
-            "additionalProperties": false,
-            "properties": {
-              "parent": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "rank": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "rank"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.pages.move-down.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "place": {
-            "additionalProperties": false,
-            "properties": {
-              "parent": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "rank": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "rank"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.pages.indent.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "place": {
-            "additionalProperties": false,
-            "properties": {
-              "parent": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "rank": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "rank"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.pages.outdent.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "place": {
-            "additionalProperties": false,
-            "properties": {
-              "parent": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "rank": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "rank"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.pages.duplicate.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "copies": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "blocks": {
-                  "items": {
-                    "additionalProperties": false,
-                    "properties": {
-                      "align": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
-                      },
-                      "attrs": {
-                        "type": "object"
-                      },
-                      "kind": {
-                        "type": "string"
-                      },
-                      "level": {
-                        "type": [
-                          "integer",
-                          "null"
-                        ]
-                      },
-                      "marks": {
-                        "items": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "end": {
-                              "minimum": 0,
-                              "type": "integer"
-                            },
-                            "name": {
-                              "type": "string"
-                            },
-                            "start": {
-                              "minimum": 0,
-                              "type": "integer"
-                            },
-                            "value": {
-                              "oneOf": [
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "Bool": {
-                                      "type": "boolean"
-                                    }
-                                  },
-                                  "required": [
-                                    "Bool"
-                                  ],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "Int": {
-                                      "type": "integer"
-                                    }
-                                  },
-                                  "required": [
-                                    "Int"
-                                  ],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "Str": {
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": [
-                                    "Str"
-                                  ],
-                                  "type": "object"
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "start",
-                            "end",
-                            "name",
-                            "value"
-                          ],
-                          "type": "object"
-                        },
-                        "type": "array"
-                      },
-                      "ordered": {
-                        "type": [
-                          "boolean",
-                          "null"
-                        ]
-                      },
-                      "text": {
-                        "type": "string"
-                      }
-                    },
-                    "required": [
-                      "kind",
-                      "text",
-                      "marks"
-                    ],
-                    "type": "object"
-                  },
-                  "type": "array"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "parent": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "rank": {
-                  "type": "string"
-                },
-                "tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "title": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "title",
-                "rank",
-                "blocks"
-              ],
-              "type": "object"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page"
-        ],
-        "description": ""
-      },
-      "notes.pages.duplicate.Result": {
-        "type": "object"
-      },
-      "notes.pages.tag.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "tag": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page",
-          "name"
-        ],
-        "description": ""
-      },
-      "notes.pages.keep-image.Arguments": {
-        "type": "object",
-        "properties": {
-          "bytes": {
-            "oneOf": [
-              {
-                "items": {
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              {
-                "content": true,
-                "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
-                "type": "string"
-              },
-              {
-                "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
-                "type": "string"
-              },
-              {
-                "properties": {
-                  "inline": {
-                    "type": "array"
-                  }
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "bytes"
-        ],
-        "description": ""
-      },
-      "notes.pages.place-image.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "bytes": {
-            "oneOf": [
-              {
-                "items": {
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              {
-                "content": true,
-                "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
-                "type": "string"
-              },
-              {
-                "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
-                "type": "string"
-              },
-              {
-                "properties": {
-                  "inline": {
-                    "type": "array"
-                  }
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "alt": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page",
-          "bytes"
-        ],
-        "description": ""
-      },
-      "notes.pages.create-page.Arguments": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "markdown": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "origin": {
-            "additionalProperties": false,
-            "properties": {
-              "author": {
-                "type": "string"
-              },
-              "created_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "handle": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "reference": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "source": {
-                "type": "string"
-              },
-              "updated_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "url": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "author",
-              "source"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "rank": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "links": {
-            "additionalProperties": false,
-            "properties": {
-              "paths": {
-                "type": "object"
-              },
-              "titles": {
-                "type": "object"
-              }
-            },
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "title"
-        ],
-        "description": ""
-      },
-      "notes.pages.create-page.Result": {
-        "type": "object"
-      },
-      "notes.pages.import-markdown.Arguments": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string"
-          },
-          "markdown": {
-            "type": "string"
-          },
-          "images": {
-            "items": {
-              "oneOf": [
-                {
-                  "items": {
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "type": "array"
-                },
-                {
-                  "content": true,
-                  "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
-                  "type": "string"
-                },
-                {
-                  "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
-                  "type": "string"
-                },
-                {
-                  "properties": {
-                    "inline": {
-                      "type": "array"
-                    }
-                  },
-                  "type": "object"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "type": "array"
-          },
-          "note": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "path": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "origin": {
-            "additionalProperties": false,
-            "properties": {
-              "author": {
-                "type": "string"
-              },
-              "created_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "handle": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "reference": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "source": {
-                "type": "string"
-              },
-              "updated_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "url": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            },
-            "required": [
-              "author",
-              "source"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "reads": {
-            "additionalProperties": false,
-            "properties": {
-              "imported": {
-                "type": "boolean"
-              },
-              "links": {
-                "additionalProperties": false,
-                "properties": {
-                  "paths": {
-                    "type": "object"
-                  },
-                  "titles": {
-                    "type": "object"
-                  }
-                },
-                "type": "object"
-              },
-              "rank": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "rank"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "title",
-          "markdown",
-          "images"
-        ],
-        "description": ""
-      },
-      "notes.pages.import-markdown-files.Arguments": {
-        "type": "object",
-        "properties": {
-          "files": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "markdown": {
-                  "type": "string"
-                },
-                "origin": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "author": {
-                      "type": "string"
-                    },
-                    "created_ms": {
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    },
-                    "handle": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "reference": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "source": {
-                      "type": "string"
-                    },
-                    "updated_ms": {
-                      "type": [
-                        "integer",
-                        "null"
-                      ]
-                    },
-                    "url": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    }
-                  },
-                  "required": [
-                    "author",
-                    "source"
-                  ],
-                  "type": [
-                    "object",
-                    "null"
-                  ]
-                },
-                "path": {
-                  "type": "string"
-                },
-                "title": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "path",
-                "markdown"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "ranks": {
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "links": {
-            "additionalProperties": false,
-            "properties": {
-              "paths": {
-                "type": "object"
-              },
-              "titles": {
-                "type": "object"
-              }
-            },
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "files"
-        ],
-        "description": ""
-      },
-      "notes.pages.append-to-note.Arguments": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "markdown": {
-            "type": "string"
-          },
-          "note": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "links": {
-            "additionalProperties": false,
-            "properties": {
-              "paths": {
-                "type": "object"
-              },
-              "titles": {
-                "type": "object"
-              }
-            },
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "markdown"
-        ],
-        "description": ""
-      },
-      "notes.pages.append-to-note.Result": {
-        "type": "object"
-      },
-      "notes.pages.write-note.Arguments": {
-        "type": "object",
-        "properties": {
-          "page": {
-            "type": "string"
-          },
-          "markdown": {
-            "type": "string"
-          },
-          "links": {
-            "additionalProperties": false,
-            "properties": {
-              "paths": {
-                "type": "object"
-              },
-              "titles": {
-                "type": "object"
-              }
-            },
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "page",
-          "markdown"
-        ],
-        "description": ""
-      },
-      "notes.pages.write-note.Result": {
-        "type": "object"
-      },
       "osk.keyboard.set-layout.Arguments": {
         "type": "object",
         "properties": {
@@ -35994,13 +34993,13 @@
         ],
         "description": "Throws a message being written away."
       },
-      "tl.so.tilo.lang.notes.Note.$create.Arguments": {
+      "tl.so.tilo.notes.Note.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.notes.Note.edit-text.Arguments": {
+      "tl.so.tilo.notes.Note.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -36027,7 +35026,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.notes.Note.edit-flag.Arguments": {
+      "tl.so.tilo.notes.Note.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -36047,13 +35046,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.notes.Note.new_child.Arguments": {
+      "tl.so.tilo.notes.Note.new_child.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "Starts a note inside `n`'s own, after the notes it already holds: the note the window has\nopen too, so a person writing one starts the note it stands under without finding its row.\nIt is `n`'s action, so the window offers it for the note it shows and a person reaches it by\nthe shortcut or the note's row."
+        "description": "Starts a note inside `n`'s own, after the notes it already holds: the note the window has\nopen too, so a person writing one starts the note it stands under without finding its row.\nIt is `n`'s action, so the window offers it for the note it shows and its row offers it."
       },
-      "tl.so.tilo.lang.notes.Note.pin.Arguments": {
+      "tl.so.tilo.notes.Note.pin.Arguments": {
         "type": "object",
         "properties": {
           "pinned": {
@@ -36063,7 +35062,7 @@
         "required": [],
         "description": "Pins or unpins a note."
       },
-      "tl.so.tilo.lang.notes.Note.indent.Arguments": {
+      "tl.so.tilo.notes.Note.indent.Arguments": {
         "type": "object",
         "properties": {
           "above": {
@@ -36095,20 +35094,20 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           }
         },
         "required": [],
         "description": "Puts a note under the note it stands over, with the notes under it, as `Tab` does in the\ntree; with none named, it goes under the note above it."
       },
-      "tl.so.tilo.lang.notes.Note.outdent.Arguments": {
+      "tl.so.tilo.notes.Note.outdent.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Puts a note beside the note it stands in, just after it and the notes under it, as\n`Shift-Tab` does in the tree."
       },
-      "tl.so.tilo.lang.notes.Note.move_up.Arguments": {
+      "tl.so.tilo.notes.Note.move_up.Arguments": {
         "type": "object",
         "properties": {
           "above": {
@@ -36140,20 +35139,20 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           }
         },
         "required": [],
         "description": "Puts a note just over the note above it, with the notes under it, as `Alt-Up` does in the\ntree; with none named, over the note just above it."
       },
-      "tl.so.tilo.lang.notes.Note.move_down.Arguments": {
+      "tl.so.tilo.notes.Note.move_down.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Puts a note just under the note below it and the notes under that one, with its own notes\nafter it, as `Alt-Down` does in the tree."
       },
-      "tl.so.tilo.lang.notes.Note.retitle.Arguments": {
+      "tl.so.tilo.notes.Note.retitle.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -36165,7 +35164,7 @@
         ],
         "description": "Renames a note."
       },
-      "tl.so.tilo.lang.notes.Note.add_text.Arguments": {
+      "tl.so.tilo.notes.Note.add_text.Arguments": {
         "type": "object",
         "properties": {
           "text": {
@@ -36177,7 +35176,7 @@
         ],
         "description": "Writes `text` (Markdown) at the end of a note, under what it says already: a line, a list or\na paragraph added to it."
       },
-      "tl.so.tilo.lang.notes.Note.tag.Arguments": {
+      "tl.so.tilo.notes.Note.tag.Arguments": {
         "type": "object",
         "properties": {
           "t": {
@@ -36189,7 +35188,7 @@
         ],
         "description": "Gives a note a tag."
       },
-      "tl.so.tilo.lang.notes.Note.untag.Arguments": {
+      "tl.so.tilo.notes.Note.untag.Arguments": {
         "type": "object",
         "properties": {
           "t": {
@@ -36201,7 +35200,7 @@
         ],
         "description": "Untags a note."
       },
-      "tl.so.tilo.lang.notes.Note.insert_image.Arguments": {
+      "tl.so.tilo.notes.Note.insert_image.Arguments": {
         "type": "object",
         "properties": {
           "image": {}
@@ -36211,7 +35210,7 @@
         ],
         "description": "Puts a picture in a note, where its words end: the person picks the file, and the note\nkeeps the address of its content rather than the picture, and the name it came in as."
       },
-      "tl.so.tilo.lang.notes.Note.keep_image.Arguments": {
+      "tl.so.tilo.notes.Note.keep_image.Arguments": {
         "type": "object",
         "properties": {
           "picture": {
@@ -36226,25 +35225,25 @@
         ],
         "description": "Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note\nholds the address of its bytes, and the name it came in as, which an export writes beside it.\n`picture` is the editor's word of it: its name, then the address of its content."
       },
-      "tl.so.tilo.lang.notes.Note.export_markdown.Arguments": {
+      "tl.so.tilo.notes.Note.export_markdown.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "A note as Markdown: its title, then its body, each picture it shows written beside it as\n`<note>/images/<name>`, a path another reader of the file follows and this app reads again\nas the address of the picture's bytes."
       },
-      "tl.so.tilo.lang.notes.Note.export_note.Arguments": {
+      "tl.so.tilo.notes.Note.export_note.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a\npicture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a\npicture by a path and by nothing else; a note of words alone is that Markdown itself."
       },
-      "tl.so.tilo.lang.notes.Notebook.$create.Arguments": {
+      "tl.so.tilo.notes.Notebook.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.notes.Notebook.edit-text.Arguments": {
+      "tl.so.tilo.notes.Notebook.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -36261,7 +35260,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.notes.Notebook.edit-flag.Arguments": {
+      "tl.so.tilo.notes.Notebook.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -36279,7 +35278,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.notes.Notebook.new_note.Arguments": {
+      "tl.so.tilo.notes.Notebook.new_note.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -36292,7 +35291,7 @@
         "required": [],
         "description": "Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the\ncaller knows them already. Started from the notebook both are empty: what is typed first\nnames it."
       },
-      "tl.so.tilo.lang.notes.Notebook.move_to.Arguments": {
+      "tl.so.tilo.notes.Notebook.move_to.Arguments": {
         "type": "object",
         "properties": {
           "moved": {
@@ -36324,7 +35323,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           },
           "parent": {
@@ -36356,7 +35355,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           },
           "before": {
@@ -36388,7 +35387,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           }
         },
@@ -36397,7 +35396,7 @@
         ],
         "description": "Moves a note to a place in the tree: at the end of `parent`'s own, or where `before` stands."
       },
-      "tl.so.tilo.lang.notes.Notebook.move_after.Arguments": {
+      "tl.so.tilo.notes.Notebook.move_after.Arguments": {
         "type": "object",
         "properties": {
           "moved": {
@@ -36429,7 +35428,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           },
           "n": {
@@ -36461,7 +35460,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           }
         },
@@ -36471,7 +35470,7 @@
         ],
         "description": "Moves a note to just after `n` and every note under it: the place a drop after a row asks\nfor, which names the row it lands after rather than the row after that one."
       },
-      "tl.so.tilo.lang.notes.Notebook.duplicate.Arguments": {
+      "tl.so.tilo.notes.Notebook.duplicate.Arguments": {
         "type": "object",
         "properties": {
           "n": {
@@ -36503,7 +35502,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           }
         },
@@ -36512,7 +35511,7 @@
         ],
         "description": "Copies a note, with every note under it, just after the one it copies."
       },
-      "tl.so.tilo.lang.notes.Notebook.sort_children.Arguments": {
+      "tl.so.tilo.notes.Notebook.sort_children.Arguments": {
         "type": "object",
         "properties": {
           "n": {
@@ -36544,7 +35543,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           }
         },
@@ -36553,7 +35552,7 @@
         ],
         "description": "Puts a note's own in the order of their titles, once, for a branch that grew out of order."
       },
-      "tl.so.tilo.lang.notes.Notebook.delete.Arguments": {
+      "tl.so.tilo.notes.Notebook.delete.Arguments": {
         "type": "object",
         "properties": {
           "n": {
@@ -36585,7 +35584,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Note",
+            "resource_kind": "tl.so.tilo.notes.Note",
             "type": "object"
           }
         },
@@ -36594,7 +35593,7 @@
         ],
         "description": "Deletes a note and every note under it, as one change a person takes back at once."
       },
-      "tl.so.tilo.lang.notes.Notebook.append_to_note.Arguments": {
+      "tl.so.tilo.notes.Notebook.append_to_note.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -36610,7 +35609,7 @@
         ],
         "description": "Writes `text` (Markdown) at the end of the note titled `title`, the case of its letters aside:\nhow an agent or a script that knows a note by its name (\"add this to Meeting notes\") writes\ninto it without first looking up which note that is."
       },
-      "tl.so.tilo.lang.notes.Notebook.file_note.Arguments": {
+      "tl.so.tilo.notes.Notebook.file_note.Arguments": {
         "type": "object",
         "properties": {
           "title": {
@@ -36626,13 +35625,13 @@
         ],
         "description": "Files a note titled `title` and tagged `tag` in one step: what another app writes down of\nwhat it did (Today's morning) without waiting on the note it made to name it."
       },
-      "tl.so.tilo.lang.notes.Notebook.export_notebook.Arguments": {
+      "tl.so.tilo.notes.Notebook.export_notebook.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The notebook as a zip, one Markdown file for each note: a note's own under the folder of the\nnote it stands in, and the pictures it shows in its own `images` folder beside it. That is the\nshape the import reads, so the notebook comes back as the tree it is, titles, bodies and\npictures alike."
       },
-      "tl.so.tilo.lang.notes.Notebook.import_markdown.Arguments": {
+      "tl.so.tilo.notes.Notebook.import_markdown.Arguments": {
         "type": "object",
         "properties": {
           "file": {}
@@ -36642,7 +35641,7 @@
         ],
         "description": "Imports a Markdown file as a note, or opens the note that file already made: a note keeps the\naddress of the file it came from, so importing the same file twice makes one note. The note\nstands under the note of the folder its file's path names — `Q3 plan/Ideas.md` under\n`Q3 plan.md` — and at the top of the tree when its path names no folder. Its title is the\ndocument's first heading, or the file's name; the heading it says the title with is not said\nagain in its body."
       },
-      "tl.so.tilo.lang.notes.Notebook.import_page.Arguments": {
+      "tl.so.tilo.notes.Notebook.import_page.Arguments": {
         "type": "object",
         "properties": {
           "file": {},
@@ -36670,7 +35669,7 @@
         ],
         "description": "Imports a page another service held as a note, keeping whose words it is and where it stood\nthere: what `tilo migrate` calls for each page it brings over, and what a person's own import\nof a file does without a service's words. A page imported by its address there again opens the\nnote it made, whatever the page says now; the note stands under the note of the folder its\nfile's path names."
       },
-      "tl.so.tilo.lang.notes.Notebook.import_archive.Arguments": {
+      "tl.so.tilo.notes.Notebook.import_archive.Arguments": {
         "type": "object",
         "properties": {
           "file": {}
@@ -36680,7 +35679,7 @@
         ],
         "description": "Imports a zip of pages as notes under the notebook, a page under the page that held it, in one\nchange: undo takes the whole import back. That is this app's own notebook written out, a\nNotion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures\nbeside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's\ntitle is its first heading, or its file's name; the pictures a page shows are the files it\nstands beside, a reference read from the page's own folder, and a link to a page of the archive\nis the reference to the note that page made. A migration says where each page came from in its\nown file beside the pages, and a page that is imported already keeps the note it made."
       },
-      "tl.so.tilo.lang.notes.Notebook.import_dropped.Arguments": {
+      "tl.so.tilo.notes.Notebook.import_dropped.Arguments": {
         "type": "object",
         "properties": {
           "files": {
@@ -39632,7 +38631,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.notes.Notebook",
+            "resource_kind": "tl.so.tilo.notes.Notebook",
             "type": "object"
           }
         },
@@ -43530,132 +42529,6 @@
       "arguments": "#/components/schemas/music.library.search.Arguments"
     },
     {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "new-tag",
-      "arguments": "#/components/schemas/notes.notebook.new-tag.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "delete-tag",
-      "arguments": "#/components/schemas/notes.notebook.delete-tag.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.notebook",
-      "action": "export-markdown-content",
-      "arguments": "#/components/schemas/notes.notebook.export-markdown-content.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "new-note",
-      "arguments": "#/components/schemas/notes.pages.new-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "new-child",
-      "arguments": "#/components/schemas/notes.pages.new-child.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "rename",
-      "arguments": "#/components/schemas/notes.pages.rename.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "delete",
-      "arguments": "#/components/schemas/notes.pages.delete.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "move-note",
-      "arguments": "#/components/schemas/notes.pages.move-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "move-up",
-      "arguments": "#/components/schemas/notes.pages.move-up.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "move-down",
-      "arguments": "#/components/schemas/notes.pages.move-down.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "indent",
-      "arguments": "#/components/schemas/notes.pages.indent.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "outdent",
-      "arguments": "#/components/schemas/notes.pages.outdent.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "duplicate",
-      "arguments": "#/components/schemas/notes.pages.duplicate.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "tag",
-      "arguments": "#/components/schemas/notes.pages.tag.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "keep-image",
-      "arguments": "#/components/schemas/notes.pages.keep-image.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "place-image",
-      "arguments": "#/components/schemas/notes.pages.place-image.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "create-page",
-      "arguments": "#/components/schemas/notes.pages.create-page.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "import-markdown",
-      "arguments": "#/components/schemas/notes.pages.import-markdown.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "import-markdown-files",
-      "arguments": "#/components/schemas/notes.pages.import-markdown-files.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "append-to-note",
-      "arguments": "#/components/schemas/notes.pages.append-to-note.Arguments"
-    },
-    {
-      "app": "so.tilo.notes",
-      "resource": "notes.pages",
-      "action": "write-note",
-      "arguments": "#/components/schemas/notes.pages.write-note.Arguments"
-    },
-    {
       "app": "so.tilo.osk",
       "resource": "osk.keyboard",
       "action": "set-layout",
@@ -47376,232 +46249,232 @@
       "arguments": "#/components/schemas/tl.so.tilo.lang.mail.Mail.discard.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
+      "app": "so.tilo.notes",
       "resource": "tl.host",
       "action": "commit",
       "arguments": "#/components/schemas/tl.host.commit.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
+      "app": "so.tilo.notes",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
+      "app": "so.tilo.notes",
       "resource": "tilolang.personal",
       "action": "seen",
       "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
+      "app": "so.tilo.notes",
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
+      "app": "so.tilo.notes",
       "resource": "tilolang.personal",
       "action": "reminded",
       "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "new_child",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.new_child.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.new_child.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "pin",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.pin.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.pin.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "indent",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.indent.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.indent.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "outdent",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.outdent.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.outdent.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "move_up",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.move_up.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.move_up.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "move_down",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.move_down.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.move_down.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "retitle",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.retitle.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.retitle.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "add_text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.add_text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.add_text.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "tag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.tag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.tag.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "untag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.untag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.untag.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "insert_image",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.insert_image.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.insert_image.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "keep_image",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.keep_image.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.keep_image.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "export_markdown",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.export_markdown.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.export_markdown.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Note",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Note",
       "action": "export_note",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Note.export_note.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Note.export_note.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "new_note",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.new_note.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.new_note.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "move_to",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.move_to.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.move_to.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "move_after",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.move_after.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.move_after.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "duplicate",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.duplicate.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.duplicate.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "sort_children",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.sort_children.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.sort_children.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "delete",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.delete.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.delete.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "append_to_note",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.append_to_note.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.append_to_note.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "file_note",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.file_note.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.file_note.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "export_notebook",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.export_notebook.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.export_notebook.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "import_markdown",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.import_markdown.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.import_markdown.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "import_page",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.import_page.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.import_page.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "import_archive",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.import_archive.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.import_archive.Arguments"
     },
     {
-      "app": "so.tilo.lang.notes",
-      "resource": "tl.so.tilo.lang.notes.Notebook",
+      "app": "so.tilo.notes",
+      "resource": "tl.so.tilo.notes.Notebook",
       "action": "import_dropped",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.notes.Notebook.import_dropped.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.notes.Notebook.import_dropped.Arguments"
     },
     {
       "app": "so.tilo.shell",

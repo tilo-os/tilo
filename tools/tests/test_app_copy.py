@@ -102,7 +102,7 @@ class AppCopyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.crate(root, "crates/sdk/ui-core", {"en-US": "history-title = History\n"}, "")
-            self.crate(root, "apps/notes", {"en-US": "notes-x = X\n", "de": "notes-x = X\n"},
+            self.crate(root, "apps/settings", {"en-US": "notes-x = X\n", "de": "notes-x = X\n"},
                        'fn title() { t("history-title"); }\n')
             self.assertEqual(copy.missing_copy(root), [])
 

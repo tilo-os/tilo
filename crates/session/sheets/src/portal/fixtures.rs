@@ -81,7 +81,7 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
                 "store-review",
                 "Publish to the Store?",
                 "Store",
-                "Files\nso.tilo.notes 2.4.1\nhttps://store.tilo.so/apps/notes\nsigning key ed25519:4f2a…",
+                "Files\nso.tilo.tasks 2.4.1\nhttps://store.tilo.so/apps/tasks\nsigning key ed25519:4f2a…",
             )
         },
         Some("draft") => Dialog {

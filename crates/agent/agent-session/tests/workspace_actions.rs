@@ -61,9 +61,6 @@ mod api_links;
 #[cfg(test)]
 #[path = "workspace_actions/api_model_asks.rs"]
 mod api_model_asks;
-#[cfg(test)]
-#[path = "workspace_actions/api_notebook.rs"]
-mod api_notebook;
 #[path = "workspace_actions/api_on_server.rs"]
 pub mod api_on_server;
 #[cfg(test)]
@@ -88,8 +85,8 @@ mod api_v1;
 #[path = "workspace_actions/branch_files.rs"]
 mod branch_files;
 #[cfg(test)]
-#[path = "workspace_actions/branch_workspace.rs"]
-mod branch_workspace;
+#[path = "workspace_actions/key.rs"]
+mod key;
 #[cfg(test)]
 #[path = "workspace_actions/computer_agent.rs"]
 mod computer_agent;
@@ -149,9 +146,6 @@ mod governed_agent;
 #[path = "workspace_actions/governed_sealed.rs"]
 mod governed_sealed;
 #[cfg(test)]
-#[path = "workspace_actions/hosted_agent_issues.rs"]
-mod hosted_agent_issues;
-#[cfg(test)]
 #[path = "workspace_actions/hosted_agent_questions.rs"]
 mod hosted_agent_questions;
 #[cfg(test)]
@@ -200,14 +194,8 @@ mod hosted_web_call;
 #[path = "workspace_actions/import_rate.rs"]
 mod import_rate;
 #[cfg(test)]
-#[path = "workspace_actions/invocations_read.rs"]
-mod invocations_read;
-#[cfg(test)]
 #[path = "workspace_actions/joining.rs"]
 mod joining;
-#[cfg(test)]
-#[path = "workspace_actions/key_writes.rs"]
-mod key_writes;
 #[cfg(test)]
 #[path = "workspace_actions/machine_secrets.rs"]
 mod machine_secrets;
@@ -227,18 +215,11 @@ mod member_own;
 #[path = "workspace_actions/member_roles.rs"]
 mod member_roles;
 #[cfg(test)]
-#[cfg(test)]
 #[path = "workspace_actions/one_workspace_list.rs"]
 mod one_workspace_list;
 #[cfg(test)]
-#[path = "workspace_actions/own_agent.rs"]
-mod own_agent;
-#[cfg(test)]
 #[path = "workspace_actions/packaged_model.rs"]
 mod packaged_model;
-#[cfg(test)]
-#[path = "workspace_actions/public_documents.rs"]
-mod public_documents;
 #[cfg(test)]
 #[path = "workspace_actions/put_files.rs"]
 mod put_files;
@@ -247,9 +228,6 @@ mod put_files;
 mod refresh_reads;
 #[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
-#[cfg(test)]
-#[path = "workspace_actions/route_parity.rs"]
-mod route_parity;
 #[cfg(test)]
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
@@ -266,28 +244,16 @@ mod tracker_listing;
 #[path = "workspace_actions/update_reads_older_writes.rs"]
 mod update_reads_older_writes;
 #[cfg(test)]
-#[path = "workspace_actions/workspace_find.rs"]
-mod workspace_find;
 
 #[cfg(test)]
-#[path = "workspace_actions/search_beside_requests.rs"]
-mod search_beside_requests;
 
-#[cfg(test)]
-#[path = "workspace_actions/part_held_back.rs"]
-mod part_held_back;
 #[cfg(test)]
 #[path = "workspace_actions/person_before_agent.rs"]
 mod person_before_agent;
 #[cfg(test)]
-#[path = "workspace_actions/slow_call.rs"]
-mod slow_call;
-#[cfg(test)]
 #[path = "workspace_actions/slow_read.rs"]
 mod slow_read;
 #[cfg(test)]
-#[path = "workspace_actions/slow_view.rs"]
-mod slow_view;
 
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]

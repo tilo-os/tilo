@@ -205,7 +205,7 @@ mod tests {
     use std::path::Path;
     use tilo_action_policy::{ActionKind, Answer, Context, Role, WorkspacePolicy};
 
-    const APP: &str = ui::apps::NOTES;
+    const APP: &str = "so.tilo.notes";
     const OWNER: &str = "person-a";
     const MEMBER: &str = "person-b";
 

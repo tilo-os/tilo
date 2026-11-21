@@ -39,7 +39,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
         "the package last, after what it uses"
     );
     for used in [
-        "so.tilo.lang.notes",
+        "so.tilo.notes",
         "so.tilo.lang.tasks",
         "so.tilo.lang.chat",
         "so.tilo.lang.discussion",
@@ -91,7 +91,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     let today = apps.last().unwrap();
     let notes = apps
         .iter()
-        .find(|app| app.app == "so.tilo.lang.notes")
+        .find(|app| app.app == "so.tilo.notes")
         .unwrap();
     let today_manifest =
         Manifest::from_toml_str(&std::fs::read_to_string(&today.manifest).unwrap()).unwrap();
@@ -138,7 +138,7 @@ fn a_package_offers_the_files_its_actions_open() {
     let apps = package::build(&options, &identity).unwrap();
     let notes = apps
         .iter()
-        .find(|app| app.app == "so.tilo.lang.notes")
+        .find(|app| app.app == "so.tilo.notes")
         .unwrap();
     let manifest =
         Manifest::from_toml_str(&std::fs::read_to_string(&notes.manifest).unwrap()).unwrap();
@@ -181,7 +181,7 @@ fn today_reads_notes(
     assert!(
         today
             .payload
-            .join("imports/so.tilo.lang.notes.wasm")
+            .join("imports/so.tilo.notes.wasm")
             .is_file()
     );
     let installed = tilolang_tilo::bundle::Bundle::read(&today.payload).unwrap();
@@ -190,7 +190,7 @@ fn today_reads_notes(
         installed
             .imports
             .iter()
-            .any(|import| import.meta.app == "so.tilo.lang.notes")
+            .any(|import| import.meta.app == "so.tilo.notes")
     );
     installed
 }

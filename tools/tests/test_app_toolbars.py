@@ -59,13 +59,13 @@ class AppToolbarsTests(unittest.TestCase):
     def test_a_new_row_fails_and_a_removed_one_lowers_the_baseline(self):
         root = self.fixture({
             "apps/mail/src/app.rs": "fn f() { let b = Toolbar::new(Orientation::Horizontal); }\n",
-            "apps/notes/src/app.rs": "fn f() {}\n",
+            "apps/settings/src/app.rs": "fn f() {}\n",
         })
         baseline = root / "baseline.txt"
-        baseline.write_text("toolbar-row 1 apps/notes/src/app.rs\n", encoding="utf-8")
+        baseline.write_text("toolbar-row 1 apps/settings/src/app.rs\n", encoding="utf-8")
         errors = app_toolbars.check(root, baseline)
         self.assertTrue(any("apps/mail/src/app.rs: 1 toolbar-row (allowed 0)" in e for e in errors))
-        self.assertTrue(any("toolbar-row 1 apps/notes/src/app.rs is now 0" in e for e in errors))
+        self.assertTrue(any("toolbar-row 1 apps/settings/src/app.rs is now 0" in e for e in errors))
 
     def test_the_window_bar_declaration_is_clean(self):
         root = self.fixture({

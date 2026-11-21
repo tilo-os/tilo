@@ -86,29 +86,27 @@ class AppReleaseTests(unittest.TestCase):
             self.assertIsNone(app_release.app_from_tag("apps-v1.2.3", CATALOG))
         with self.subTest(phase='default collection is the complete publication boundary'):
             catalog = app_release.app_catalog(ROOT)
-            # The default collection publishes every native app. A tilolang package joins a
-            # collection by name, in the change that retires the native app it replaces: the
-            # catalog refuses two apps that claim one id, so a collection naming both cannot
-            # be planned.
+            # The default collection publishes every native app and the tilolang packages
+            # that replaced one: a package joins it by name, in the change that retires the
+            # native app it replaces, and the catalog refuses two apps that claim one id.
             self.assertEqual(
                 app_release.resolve_collection(
                     "default", catalog, app_release.config(ROOT / "dist/apps/app-collections.toml")
                 ),
                 sorted(
-                    name for name, app in catalog.items() if app["kind"] == "native"
+                    name for name, app in catalog.items()
+                    if app["kind"] == "native" or name == "tl-notes"
                 ),
             )
         with self.subTest(phase='an image ships the tilolang packages its collection names'):
-            # The image's collection is every native app plus the tilolang package
-            # that will take over one of them; a package joins `default` only in the
-            # change that retires the native app it replaces.
+            # The image's collection is the default one: every native app, and the tilolang
+            # packages in place of the native apps they replaced.
             catalog = app_release.app_catalog(ROOT)
             config = app_release.config(ROOT / "dist/apps/app-collections.toml")
             image = app_release.resolve_collection("image", catalog, config)
             self.assertEqual(
                 image,
-                sorted(set(app_release.resolve_collection("default", catalog, config))
-                       | {"tl-notes"}),
+                app_release.resolve_collection("default", catalog, config),
             )
             self.assertEqual(catalog["tl-notes"]["kind"], "tilolang")
         with self.subTest(phase='a promotion selects affected apps and publishes default collection'):
@@ -167,9 +165,9 @@ class AppReleaseTests(unittest.TestCase):
         with self.subTest(phase='direct app change does not select fleet'):
             self.assertEqual(
                 app_release.apps_from_changes(
-                    ["apps/notes/src/main.rs"], CATALOG
+                    ["apps/files/src/main.rs"], CATALOG
                 ),
-                ["notes"],
+                ["files"],
             )
         with self.subTest(phase='actual packaging closure inputs never silently select zero'):
             inputs = {
@@ -249,17 +247,17 @@ class AppReleaseTests(unittest.TestCase):
                 def git(*args):
                     return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
                 git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@invalid')
-                old = root / 'apps/notes/naïve.rs'
+                old = root / 'apps/files/naïve.rs'
                 old.parent.mkdir(parents=True)
                 old.write_text('unchanged source\n')
                 git('add', 'apps'); git('commit', '-qm', 'base')
                 base = git('rev-parse', 'HEAD')
-                new = root / 'apps/settings/naïve.rs'
+                new = root / 'apps/files/naïve.rs'
                 new.parent.mkdir(parents=True)
                 old.rename(new)
                 git('add', 'apps'); git('commit', '-qm', 'rename')
                 paths = app_release.changed_paths(base, root)
-                self.assertEqual({'apps/notes/naïve.rs', 'apps/settings/naïve.rs'}, set(paths))
+                self.assertEqual({'apps/files/naïve.rs', 'apps/files/naïve.rs'}, set(paths))
                 self.assertEqual(['notes', 'settings'], app_release.apps_from_changes(paths, CATALOG))
 
     def test_shared_and_global_inputs_fan_out_to_their_generic_app_dependants(self):
@@ -273,7 +271,7 @@ class AppReleaseTests(unittest.TestCase):
                     package('format', 'crates/format'),
                     package('tilo-app-package-cli', 'crates/packaging/tilo-app-package-cli', ['crates/format']),
                     package('runtime-dylib', 'crates/runtime/runtime-dylib'),
-                    package('notes-bin', 'apps/notes'), package('settings-bin', 'apps/settings'),
+                    package('notes-bin', 'apps/files'), package('settings-bin', 'apps/settings'),
                 ]}
                 catalog = {'notes': {'package': 'notes-bin'}, 'settings': {'package': 'settings-bin'}}
                 for path, kind in [('crates/format/src/lib.rs', 'packaging'),
@@ -317,12 +315,12 @@ class AppReleaseTests(unittest.TestCase):
                         },
                         {
                             "name": "notes-bin",
-                            "manifest_path": str(root / "apps/notes/Cargo.toml"),
+                            "manifest_path": str(root / "apps/files/Cargo.toml"),
                             "dependencies": [{"path": str(root / "crates/sdk/ui-core")}],
                         },
                         {
                             "name": "settings-bin",
-                            "manifest_path": str(root / "apps/settings/Cargo.toml"),
+                            "manifest_path": str(root / "apps/files/Cargo.toml"),
                             "dependencies": [],
                         },
                     ]
@@ -404,8 +402,8 @@ class AppReleaseTests(unittest.TestCase):
 
                 metadata = {
                     "packages": [
-                        package("notes-bin", "apps/notes", ["markdown-parser"]),
-                        package("settings-bin", "apps/settings", ["settings-format"]),
+                        package("notes-bin", "apps/files", ["markdown-parser"]),
+                        package("settings-bin", "apps/files", ["settings-format"]),
                     ]
                 }
                 catalog = {
@@ -434,8 +432,8 @@ class AppReleaseTests(unittest.TestCase):
             metadata = {
                 "packages": [
                     {
-                        "name": "notes",
-                        "manifest_path": str(ROOT / "apps/notes/Cargo.toml"),
+                        "name": "calculator",
+                        "manifest_path": str(ROOT / "apps/calculator/Cargo.toml"),
                         "dependencies": [],
                     }
                 ]
@@ -447,10 +445,10 @@ class AppReleaseTests(unittest.TestCase):
             ), mock.patch.object(
                 app_release,
                 "lockfile_affected_packages",
-                return_value={"notes"},
+                return_value={"calculator"},
             ):
                 result = app_release.plan(args)
-            self.assertEqual(result["apps"], ["notes"])
+            self.assertEqual(result["apps"], ["calculator"])
             self.assertEqual(result["input_classification"]["binary"], ["Cargo.lock"])
         with self.subTest(phase='lockfile dependency graph reaches workspace consumers'):
             old = b'''version = 4
@@ -491,8 +489,8 @@ dependencies = ["markdown-parser 1.1.0"]
 
                 metadata = {
                     "packages": [
-                        package("notes-bin", "apps/notes", ["document-engine"]),
-                        package("settings-bin", "apps/settings", ["settings-format"]),
+                        package("notes-bin", "apps/files", ["document-engine"]),
+                        package("settings-bin", "apps/files", ["settings-format"]),
                     ]
                 }
                 completed = subprocess.CompletedProcess(

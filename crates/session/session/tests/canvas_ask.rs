@@ -233,7 +233,7 @@ fn an_agents_place_without_a_point_stands_beside_what_it_names() {
     let mut session = session(root.path());
     let (inbox_root, notes_root) = (
         root_of(&session, "so.tilo.lang.mail"),
-        root_of(&session, "so.tilo.lang.notes"),
+        root_of(&session, "so.tilo.notes"),
     );
     let (inbox_id, notes_id) = (inbox_root.as_str(), notes_root.as_str());
     let inbox = placed_as_agent(
@@ -308,7 +308,7 @@ fn a_place_positioned_beside_another_stands_next_to_it() {
     let mut session = session(root.path());
     let (inbox_root, notes_root) = (
         root_of(&session, "so.tilo.lang.mail"),
-        root_of(&session, "so.tilo.lang.notes"),
+        root_of(&session, "so.tilo.notes"),
     );
     let (inbox_id, notes_id) = (inbox_root.as_str(), notes_root.as_str());
     let inbox = placed_as_agent(
@@ -508,7 +508,7 @@ fn a_place_moved_to_a_point_is_drawn_there() {
         );
         let key = match row {
             PlaceOrigin::PlacedRecord => {
-                let notes_root = root_of(&session, "so.tilo.lang.notes");
+                let notes_root = root_of(&session, "so.tilo.notes");
                 placed_as_agent(
                     &mut session,
                     &notes_root,
@@ -517,7 +517,7 @@ fn a_place_moved_to_a_point_is_drawn_there() {
                 .key
             }
             PlaceOrigin::AppWindow => {
-                for app in ["so.tilo.lang.tasks", "so.tilo.lang.notes"] {
+                for app in ["so.tilo.lang.tasks", "so.tilo.notes"] {
                     session
                         .invoke(
                             tilo_desktop::verbs::CHROME_RESOURCE,
@@ -534,7 +534,7 @@ fn a_place_moved_to_a_point_is_drawn_there() {
                     |session| {
                         crate::common::places(session)
                             .into_iter()
-                            .find(|place| place.shows == "so.tilo.lang.notes")
+                            .find(|place| place.shows == "so.tilo.notes")
                     },
                 )
                 .key

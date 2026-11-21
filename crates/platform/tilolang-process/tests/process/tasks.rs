@@ -585,7 +585,7 @@ impl Shell {
         );
         // Notes, Tasks and Chat are installed as apps of their own; Discussion is not, and stays
         // part of the apps that use it.
-        let installed = ["so.tilo.lang.notes", TASKS, "so.tilo.lang.chat"]
+        let installed = ["so.tilo.notes", TASKS, "so.tilo.lang.chat"]
             .into_iter()
             .map(|app| (app.to_owned(), app.to_owned()))
             .collect();
@@ -834,7 +834,7 @@ fn today_reads_tasks_from_its_document_and_clears_it_at_its_api() {
     let filed = shell.today_sent.borrow().iter().any(|request| {
         matches!(request, CollabRequest::RemoteAction {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
-        } if invoke.target.provider.ends_with(":so.tilo.lang.notes")
+        } if invoke.target.provider.ends_with(":so.tilo.notes")
             && format!("{:?}", invoke.argument).contains("Morning: 1 done"))
     });
     assert!(filed, "the morning's note is asked of Notes' api");

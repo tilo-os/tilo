@@ -24,7 +24,7 @@ def forest(*lines: str) -> str:
 # Two apps and the runtime, deduplicated as `cargo tree --prefix depth` prints
 # it: a package's dependencies appear once, under its first appearance.
 CLEAN = forest(
-    "0notes v0.1.0 (/repo/apps/notes)",
+    "0notes v0.1.0 (/repo/apps/settings)",
     "1runtime-dylib v0.1.0 (/repo/crates/runtime/runtime-dylib)",
     "2tilo-app v0.1.0 (/repo/crates/sdk/tilo-app)",
     "3tilo-ui v0.1.0 (/repo/crates/sdk/ui-core)",
@@ -237,7 +237,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("carries unused-engine", found[0])
 
     def test_a_graph_without_the_runtime_or_its_toolkit_fails(self) -> None:
-        without_runtime = forest("0notes v0.1.0 (/repo/apps/notes)", "1serde v1.0.228")
+        without_runtime = forest("0notes v0.1.0 (/repo/apps/settings)", "1serde v1.0.228")
         self.assertIn(
             "did not describe runtime-dylib",
             checker.violations(without_runtime, ["notes"], TARGET)[0],

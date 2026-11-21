@@ -1968,7 +1968,7 @@ mod tests {
             assert_eq!(
                 reads(tilo_workspace_service::service::ServiceSlot::default()).resource_read(
                     &elsewhere,
-                    ui::apps::NOTES,
+                    "so.tilo.notes",
                     "note-1"
                 ),
                 tilo_workspace_service::apps::services::ResourceRead::Own,

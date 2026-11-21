@@ -21,7 +21,7 @@ const TODO: (&str, &str) = (
     crate::fixtures::TASKS_SOURCE,
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
-const NOTES_APP: &str = "so.tilo.lang.notes";
+const NOTES_APP: &str = "so.tilo.notes";
 const TODO_APP: &str = "so.tilo.lang.tasks";
 
 struct Task {
@@ -183,7 +183,7 @@ fn changes_in_two_apps_are_invocations_of_each() {
         invoked[0]["resource"]
             .as_str()
             .unwrap()
-            .starts_with("tl:so.tilo.lang.notes:"),
+            .starts_with("tl:so.tilo.notes:"),
         "the action is invoked on its target: {invoked:#?}"
     );
     assert_eq!(

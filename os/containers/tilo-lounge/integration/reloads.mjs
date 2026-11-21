@@ -274,7 +274,7 @@ if (tabs.secondIn) {
   await until(second, `(${FRAMES}) > 0`, stepLimit(3));
   await front(tab);
   await until(tab, `(${FRAMES}) > 0`, stepLimit(3));
-  await tab.evaluate(opens('so.tilo.notes')).catch(() => {});
+  await tab.evaluate(opens('so.tilo.tasks')).catch(() => {});
   await until(tab, shows('Notes'), stepLimit(3));
   await front(second);
   tabs.secondSeesFirst = Boolean(await until(second, shows('Notes'), stepLimit(4)));

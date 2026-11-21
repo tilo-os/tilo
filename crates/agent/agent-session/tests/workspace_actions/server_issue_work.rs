@@ -1,9 +1,10 @@
 //! An issue given to an agent on a workspace's server is worked on over many agent sessions: its
-//! place is made before the first (its note, and its folder in the workspace's files, which an
-//! agent refused Files does not get), a later one is told what its note reads, a wait costs nothing
-//! and ends at its moment or when the issue is told to go on, its budget stops it, and a session
-//! that was lost is not started for ever. Nothing of it reads as done. No device of the person is
-//! on for any of it, and a server that starts again reads the same from the workspace's documents.
+//! place is made before the first (its folder in the workspace's files, which an agent refused
+//! Files does not get, and no note, since a server runs no tilolang app to keep one), a wait costs
+//! nothing and ends at its moment or when the issue is told to go on, its budget stops it, and a
+//! session that was lost is not started for ever. Nothing of it reads as done. No device of the
+//! person is on for any of it, and a server that starts again reads the same from the workspace's
+//! documents.
 use super::*;
 use crate::harness::hosted::serving_documents_with_actions as serving_with_actions;
 use serde_json::{Value, json};
@@ -19,7 +20,6 @@ use tilo_server::{
     workspaces::Workspaces,
 };
 
-const NOTES: &str = "so.tilo.notes";
 /// A day, in milliseconds.
 const DAY_MS: i64 = 86_400_000;
 
@@ -287,7 +287,7 @@ fn slow(asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_from_its_note() {
+async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on() {
     let given = given().await;
     let asked = Arc::new(Mutex::new(Vec::new()));
 
@@ -299,13 +299,13 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_fr
     assert_eq!(work.folder, "Tasks/1 Plan the launch");
     let first = format!("{:?}", asked.lock().unwrap()[0].messages);
     assert!(
-        work.note.contains("notes.pages"),
-        "its note is one of Notes': {:?}; the turn was told: {first}",
+        work.note.is_empty(),
+        "a server runs no tilolang app, so Notes makes no note: {:?}",
         work.note
     );
     assert!(
-        issue.links.values().any(|link| link.resource == work.note),
-        "the note is linked from the issue, as Write a note links one"
+        issue.links.is_empty(),
+        "with no note to link, the issue links nothing"
     );
     assert_eq!(
         (work.sessions, work.spent_micros, work.session_since_ms),
@@ -313,12 +313,8 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_fr
         "the session is counted and ended"
     );
     assert!(
-        first.contains(&work.note) && first.contains("Tasks/1 Plan the launch"),
-        "it is told where its material is: {first}"
-    );
-    assert!(
-        first.contains("Still open"),
-        "it is told what the note reads: {first}"
+        first.contains("It has no note") && first.contains("Notes could not make one"),
+        "it is told plainly there is no note, and why: {first}"
     );
     assert_eq!(
         given.in_tasks_folder(1).await,
@@ -327,26 +323,7 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_fr
     );
     assert!(first.contains("put files there"), "{first}");
 
-    // What the work found is written into the note, and the task waits two days for a reply.
-    let pages = DocumentRoute {
-        app_id: NOTES.into(),
-        cluster_id: given.workspace.clone(),
-        document: String::new(),
-    };
-    invoke_named(
-        &given.service(),
-        &given.person(),
-        &pages,
-        &notes::note_list::chain_resource(),
-        "append-to-note",
-        json!({"title": "#1 Plan the launch",
-               "markdown": "The venue holds 300 people (source: the venue's own page)."})
-        .as_object()
-        .unwrap()
-        .clone(),
-    )
-    .await
-    .expect("the note takes what was found");
+    // The task waits two days for a reply.
     let until = now_ms() + 2 * DAY_MS;
     given.waits_for_a_reply(until).await;
     assert_eq!(
@@ -371,13 +348,13 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_fr
         "waiting costs no model call"
     );
 
-    // The two days are over: the restarted server works on it again, from its note.
+    // The two days are over: the restarted server works on it again.
     let turn = given.answered(&restarted, until).await;
     assert_eq!(turn.cause, format!("waited-{until}"));
     let again = told(&asked);
     assert!(
-        again.contains("The venue holds 300 people"),
-        "the later session is told what the note reads: {again}"
+        again.contains("It has no note"),
+        "the later session is told there is no note, and why: {again}"
     );
     assert!(again.contains("The wait is over"), "{again}");
     let work = given.held().await.work.unwrap();
@@ -399,7 +376,7 @@ async fn a_task_keeps_its_place_waits_two_days_and_a_restarted_server_goes_on_fr
 
 /// An agent whose rules refuse it Files is given a task. The folder the task names is not made
 /// for it: the server asks for it as the agent on its turn, with that turn's bound. The agent
-/// starts its work all the same, with its note, and is told plainly that it has no folder.
+/// starts its work all the same, and is told plainly that it has no folder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_refused_files_starts_its_task_and_is_told_its_folder_was_not_made() {
     let given = given().await;
@@ -420,9 +397,8 @@ async fn an_agent_refused_files_starts_its_task_and_is_told_its_folder_was_not_m
     );
     let first = format!("{:?}", asked.lock().unwrap()[0].messages);
     assert!(
-        work.note.contains("notes.pages") && first.contains(&work.note),
-        "its note is made as for any agent: {:?}; the turn was told: {first}",
-        work.note
+        work.note.is_empty() && first.contains("It has no note"),
+        "it is told plainly there is no note, and why: {first}"
     );
     assert!(
         first.contains("It has no folder: `Tasks/1 Plan the launch` could not be made")

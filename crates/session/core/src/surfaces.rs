@@ -129,7 +129,7 @@ pub trait Published {
         Err(format!("no control named {name}"))
     }
 
-    /// Act on the control that does `identity` (`so.tilo.lang.notes.Notebook`
+    /// Act on the control that does `identity` (`so.tilo.notes.Notebook`
     /// and `new_note`): the one `controls` lists, wherever the window's
     /// composition draws it and whatever the person's language calls it.
     ///

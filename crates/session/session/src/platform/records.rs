@@ -861,7 +861,7 @@ mod loaded {
             use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners, ResourceType};
 
             let workspace = "6d1c1f36-0000-4000-8000-000000000001";
-            let app = ui::apps::NOTES;
+            let app = "so.tilo.notes";
             let id = DocumentId::parse("tab:00000000000000a1").expect("a document id");
             let kind = ResourceType::new("notes.notebook");
 

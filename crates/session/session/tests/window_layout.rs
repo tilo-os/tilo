@@ -123,7 +123,7 @@ fn a_shell_this_device_cannot_seal_is_not_said_to_have_been_refused() {
         .invoke(
             CHROME_RESOURCE,
             OPEN_APP,
-            serde_json::json!({"app": "so.tilo.lang.notes"})
+            serde_json::json!({"app": "so.tilo.notes"})
                 .as_object()
                 .expect("an object"),
         )

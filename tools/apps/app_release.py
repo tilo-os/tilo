@@ -244,9 +244,9 @@ def resolve_collection(name: str, catalog: dict[str, dict], cfg: dict) -> list[s
             selected.update(visit(parent))
         includes = spec.get("include", [])
         if "*" in includes:
-            # `*` is every native app. A tilolang package is named in a collection itself
-            # (`tl/notes`), so switching one app from its native build to its package is one
-            # line to read, and the collection never grows a package nothing asked for.
+            # `*` is every native app. A tilolang package is named beside it (`tl-notes`), in
+            # the change that retires the native app it replaces, so the collection never grows
+            # a package nothing asked for.
             selected.update(
                 name for name, app in catalog.items() if kind_of(app) == "native"
             )

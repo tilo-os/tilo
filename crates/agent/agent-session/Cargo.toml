@@ -70,7 +70,6 @@ maps = { path = "../../../apps/maps" }
 messages = { path = "../../../apps/messages" }
 model-providers = { path = "../../../apps/model-providers" }
 music = { path = "../../../apps/music", default-features = false, features = [] }
-notes = { path = "../../../apps/notes" }
 passwords = { path = "../../../apps/passwords" }
 pdf-viewer = { path = "../../../apps/pdf-viewer" }
 photos = { path = "../../../apps/photos" }

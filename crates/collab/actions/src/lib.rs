@@ -324,14 +324,14 @@ mod tests {
             Some("chat.workspace.channels:c1")
         );
         assert_eq!(stable_item_address("chat.workspace.channels:c1"), None);
-        assert_eq!(stable_item_address("tl:so.tilo.lang.notes:root-x"), None);
+        assert_eq!(stable_item_address("tl:so.tilo.notes:root-x"), None);
         assert_eq!(stable_item_address("notes/pages/p1/blocks/b2"), None);
         assert_eq!(
             item_form_of("chat.workspace.messages:m1").as_deref(),
             Some("chat.workspace/messages/m1"),
             "a stable address names the item an app publishes in the item form"
         );
-        assert_eq!(item_form_of("tl:so.tilo.lang.notes:root-x"), None);
+        assert_eq!(item_form_of("tl:so.tilo.notes:root-x"), None);
     }
     use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
     use serde::{Deserialize, Serialize};

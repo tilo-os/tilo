@@ -412,10 +412,6 @@ def run_render(ctx: RunContext) -> list[record.Record]:
                 + adapters.framework_open([opening.read_text(encoding="utf-8", errors="replace")], ctx.env)
                 + adapters.framework_scroll([scrolling.read_text(encoding="utf-8", errors="replace")], ctx.env)
                 + adapters.framework_focus([focusing.read_text(encoding="utf-8", errors="replace")], ctx.env))
-    if "notes-latency" in ctx.bins:
-        notes = ctx.dir / "notes-latency.log"
-        call([ctx.bins["notes-latency"]], notes, ctx.repo)
-        measured += adapters.notes_latency([notes.read_text(encoding="utf-8", errors="replace")], ctx.env)
     return measured
 
 
@@ -452,11 +448,7 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
             "--example", "framework-scaling")),
           {"ui-perf": "target/release/examples/ui-perf",
            "framework-scaling": "target/release/examples/framework-scaling"},
-          {}, {}, run_render,
-          {"notes-latency": ("apps/notes/examples/notes-latency.rs",
-                             ("cargo", "build", "--locked", "--release", "-p", "notes", "--example",
-                              "notes-latency"),
-                             "target/release/examples/notes-latency")}),
+          {}, {}, run_render),
     Group("fs", "dev", "none", (),
           {}, {"performance_timing": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test",
                                        "performance_timing", "--no-run"), "performance_timing")},

@@ -2,6 +2,7 @@
 //! one it refuses is answered failed, with why, never as saved. Asked of the
 //! server by a person's logged-in computer over its session, and written by a
 //! device itself.
+use super::api_on_server::OnServer;
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::*;
 use serde_json::{Value, json};
@@ -10,7 +11,7 @@ use tilo_peer_state::join::Role;
 use tilo_session_actions::SessionActions;
 
 const TASKS: &str = "so.tilo.tasks";
-const NOTES: &str = "so.tilo.notes";
+const CALENDAR: &str = "so.tilo.calendar";
 
 /// What a tool call answers, and whether it failed.
 async fn tool(server: &McpServer<SessionActions>, name: &str, arguments: Value) -> (String, bool) {
@@ -120,7 +121,7 @@ async fn a_write_the_workspace_refuses_is_never_answered_saved() {
     // Asked once the workspace refused it: the write left the device before
     // the wait for it began, and the wait still hears it was refused.
     page.pump();
-    let route = page.create(NOTES);
+    let route = page.create(CALENDAR);
     let deadline = tilo_test_env::hang_deadline();
     'refused: loop {
         for event in page.events.drain() {
@@ -391,7 +392,7 @@ async fn a_members_key_takes_what_its_role_lets_it() {
     );
     let deadline = Instant::now() + Duration::from_secs(30);
     let issue = loop {
-        if let Some(issue) = super::key_writes::issues_kept(&on_server, &workspace)
+        if let Some(issue) = issues_kept(&on_server, &workspace)
             .await
             .pop()
         {
@@ -455,4 +456,27 @@ async fn a_members_key_takes_what_its_role_lets_it() {
             assert!(refused(&said), "{name} comments on nothing: {said}");
         }
     }
+}
+
+/// The ids of the issues of `workspace` its server keeps.
+async fn issues_kept(on_server: &OnServer, workspace: &str) -> Vec<String> {
+    let workspaces = on_server.hosted.server.workspaces().unwrap();
+    let mut issues = Vec::new();
+    for index in 0.. {
+        let part_id = tasks::issue_list::chain().part(index);
+        let Some(list) = workspaces
+            .resource_document(workspace, "so.tilo.tasks", part_id.as_str())
+            .await
+            .ok()
+            .flatten()
+            .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
+            .and_then(|doc| {
+                <tasks::issue_list::IssueList as ui::tilo_resource::Resource>::read(&doc).ok()
+            })
+        else {
+            break;
+        };
+        issues.extend(list.issues.iter().map(|(id, _)| id.to_string()));
+    }
+    issues
 }

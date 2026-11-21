@@ -51,7 +51,7 @@ class RecordReadsTests(unittest.TestCase):
         return root
 
     def test_a_record_that_reads_is_fine(self):
-        root = self.fixture({"apps/notes/src/notebook.rs": READS})
+        root = self.fixture({"apps/settings/src/notebook.rs": READS})
         self.assertEqual(record_reads.check(root), [])
 
     def test_a_read_that_looks_at_the_document_counts(self):

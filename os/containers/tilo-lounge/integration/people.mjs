@@ -56,7 +56,7 @@ const addOwner = user => execFileSync(
 mkdirSync(out, {recursive: true});
 // One case of what two people do, each with two people of its own who join
 // and see each other first: `call` (a call, its card and hanging up), `shell`
-// (the window menu, a few apps from the search, the strip panned over Notes
+// (the window menu, a few apps from the search, the strip panned over Tasks
 // and Sheets swiped), `menus` (a pinch, the text menu, the profile card's
 // Report a problem, the search chord, and nothing of it reaching the browser)
 // or `invite` (a person made an owner while their page is open invites a
@@ -72,7 +72,7 @@ const runs = name => !only || only === name;
 // part of opening an app (its code fetched as its window fills in, its frame
 // drawn by the page's GPU), on a few apps; `all` opens every app the page
 // offers from the search.
-const APPS = (process.env.TILO_PEOPLE_APPS ?? 'Notes,Sheets,Calculator').split(',').map(label => label.trim()).filter(Boolean);
+const APPS = (process.env.TILO_PEOPLE_APPS ?? 'Tasks,Sheets,Calculator').split(',').map(label => label.trim()).filter(Boolean);
 
 const report = {site, server, origin, at: new Date().toISOString()};
 // Every page this run opened, so a failure leaves what each one said behind.
@@ -394,10 +394,10 @@ const centreOfNode = async (tab, node) => {
   const corner = JSON.parse(await canvasTopLeft(tab));
   return {x: Math.round(corner.x + (x0 + x1) / 2), y: Math.round(corner.y + (y0 + y1) / 2)};
 };
-// Where Notes' New note button is drawn: in Notes' window, wherever on the
+// Where Tasks' New issue button is drawn: in Tasks' window, wherever on the
 // strip the search brought it.
-const notesPoint = async tab => {
-  const node = await maybePublished(tab, 'New note');
+const tasksPoint = async tab => {
+  const node = await maybePublished(tab, 'New issue');
   return node ? centreOfNode(tab, node) : null;
 };
 // Where Sheets' cell B2 is drawn, once the desktop publishes it.
@@ -738,10 +738,10 @@ try {
   const beforeB = await dump(b.tab, '4-b-before-open');
   const crossingBegan = Date.now();
   const crossingDrawn = await drawing(b.tab, a.tab);
-  await search(a.tab, a.command, 'notes', 'Notes');
-  await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
+  await search(a.tab, a.command, 'tasks', 'Tasks');
+  await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Tasks')`,
     "A's own Notes window", stepLimit(3));
-  await until(b.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
+  await until(b.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Tasks')`,
     "A's Notes window in B", stepLimit(6));
   report.shared = {bBefore: beforeB.windows, bAfter: (await snapshot(b.tab)).windows, seconds: (Date.now() - crossingBegan) / 1000,
     drawn: await crossingDrawn()};
@@ -1262,13 +1262,13 @@ try {
     centre = await centreOf(a.tab);
     const afterOpenDrawn = await drawing(a.tab);
     const afterOpenBegan = Date.now();
-    await search(a.tab, a.command, 'notes', 'Notes');
+    await search(a.tab, a.command, 'tasks', 'Tasks');
     console.log(`TIMING search-after-opens=${((Date.now() - afterOpenBegan) / 1000).toFixed(1)}s; drew ${JSON.stringify(await afterOpenDrawn())}`);
     // Where Notes' own window is once the strip is at rest: with a few windows
     // open the middle of the shell can be another window's, one whose content
     // scrolls sideways itself.
     const keptNotes = await restingPan(a.tab);
-    const notesButton = await notesPoint(a.tab);
+    const notesButton = await tasksPoint(a.tab);
     if (!notesButton) failed('Notes shows no New note button to find its window by');
     // In Notes' column, at the shell's middle height: its body, not the window's
     // bar, whose row of tabs scrolls sideways itself.

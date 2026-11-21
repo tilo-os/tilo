@@ -16,11 +16,11 @@ use crate::change_marks::{
     action_id, chroma_in, marks, named, published_with, rows, run, settle, shots_dir, text_field,
 };
 
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 
 /// The Notes window with one note of Ada's and two the agent's run made, and the notebook.
 fn notes_after_a_run() -> (Session, String) {
-    let mut app = Session::new("so.tilo.lang.notes", "ada");
+    let mut app = Session::new("so.tilo.notes", "ada");
     settle(&mut app);
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     let notebook = format!("tl:{NOTES}:{root}");

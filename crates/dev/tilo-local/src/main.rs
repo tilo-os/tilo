@@ -30,7 +30,7 @@ Nothing here touches the session you are logged in to: the desktop and the
 headless runtime get their own runtime directory, state directory and session
 bus, and reach neither your session bus, the system bus, systemd nor logind.
 
-A single app in its own window needs none of this: cargo run --locked -p notes
+A single app in its own window needs none of this: cargo run --locked -p calculator
 (the package name from apps/<app>/Cargo.toml).
 ";
 

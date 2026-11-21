@@ -14,7 +14,7 @@ use crate::fixtures::Replica;
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
-const APP: &str = "so.tilo.lang.notes";
+const APP: &str = "so.tilo.notes";
 /// The Notes package, its note's body kept as rich text: the build the fixture's documents are
 /// opened by, and the one the upgrade brings them to.
 const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");

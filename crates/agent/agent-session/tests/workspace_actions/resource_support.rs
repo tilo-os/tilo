@@ -1,9 +1,8 @@
 //! Certified admission for resource fixtures; no owner-only workspace entry.
 use super::{Browser, Device, Hosted, RevocationList, ServerAddress, ready, start_peer};
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
-use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DocumentRead};
 use tilo_server::workspaces::IssueInvitationRequest;
-use tilo_session_client::{Cmd, Link, Outbox};
+use tilo_session_client::{Cmd, Outbox};
 
 pub(super) async fn open_admitted_peer(
     hosted: &Hosted,
@@ -172,45 +171,3 @@ pub(super) fn part_route(
     }
 }
 
-/// Each part of the notes the page `peer` holds of `workspace`, oldest first, as
-/// its document.
-pub(super) fn notes_part_docs(peer: &Link, workspace: &str) -> Vec<(u64, automerge::AutoCommit)> {
-    let chain = notes::note_list::chain();
-    let Some(documents) = crate::support::holder(peer, workspace) else {
-        return Vec::new();
-    };
-    let mut parts: Vec<(u64, automerge::AutoCommit)> = documents
-        .listing(workspace)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(app, _)| app == ui::apps::NOTES)
-        .filter_map(|(_, record)| {
-            let (of, index) = ui::resource::DocumentId::parse(&record)?.chain_part()?;
-            if of != chain {
-                return None;
-            }
-            let Ok(DocumentRead::Whole { bytes, .. }) =
-                documents.read(workspace, ui::apps::NOTES, &record, None)
-            else {
-                return None;
-            };
-            Some((index, automerge::AutoCommit::load(&bytes).ok()?))
-        })
-        .collect();
-    parts.sort_by_key(|(index, _)| *index);
-    parts
-}
-
-/// Each part of the notes the page `peer` holds of `workspace`, oldest first, read.
-pub(super) fn notes_parts(
-    peer: &Link,
-    workspace: &str,
-) -> Vec<(u64, std::rc::Rc<notes::NoteList>)> {
-    notes_part_docs(peer, workspace)
-        .into_iter()
-        .filter_map(|(index, doc)| {
-            let part = <notes::NoteList as ui::tilo_resource::Resource>::read(&doc).ok()?;
-            Some((index, std::rc::Rc::new(part)))
-        })
-        .collect()
-}

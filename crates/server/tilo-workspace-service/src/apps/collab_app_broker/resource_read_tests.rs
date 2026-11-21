@@ -20,7 +20,7 @@ use crate::apps::test_support::{
     Grantee, Grants as _, KindSet, TreePath, WorkspaceId, WorkspaceTree,
 };
 
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 const MAIL: &str = "so.tilo.lang.mail";
 /// The kind of the record Mail keeps each member's own.
 const OWN_KIND: &str = "tl.so.tilo.lang.mail";

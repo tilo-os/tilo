@@ -5,7 +5,6 @@
 # (crates/sdk/ui-core/tests/support/allowances.rs).
 4 apps/chat/src/local_voice.rs
 1 apps/music/src/app/spotify.rs
-2 apps/notes/examples/notes-latency.rs
 2 apps/settings/examples/settings-latency.rs
 1 apps/settings/src/keyboard_preview.rs
 1 apps/slides/src/app/tests_editing.rs

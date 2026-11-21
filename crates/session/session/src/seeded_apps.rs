@@ -37,7 +37,7 @@ pub const SEEDED_BY_THIS_BUILD: bool = cfg!(any(debug_assertions, feature = "dev
 /// and Notes are made with it, so the comments on a task or a note are kept in that app's own
 /// record, as a package an app uses that is not installed keeps its records in it.
 pub const APPS: [&str; 5] = [
-    "so.tilo.lang.notes",
+    "so.tilo.notes",
     "so.tilo.lang.tasks",
     "so.tilo.lang.chat",
     "so.tilo.lang.mail",

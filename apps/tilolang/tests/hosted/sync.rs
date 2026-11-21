@@ -12,7 +12,7 @@ use tilo_automerge::ApplyIncoming as _;
 use tilolang_tilo::action::resource_ids;
 use ui::automerge::{ActorId, AutoCommit, ChangeHash, ReadDoc as _};
 
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 
 /// Counts the error events logged while it is the thread's subscriber.
 struct Errors(Arc<AtomicUsize>);
@@ -35,7 +35,7 @@ impl tracing::Subscriber for Errors {
 
 #[test]
 fn a_new_note_reaches_another_replica_in_order_and_whole() {
-    let mut app = super::Session::new("so.tilo.lang.notes", "ada");
+    let mut app = super::Session::new("so.tilo.notes", "ada");
     settle(&mut app);
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     let notebook = format!("tl:{NOTES}:{root}");

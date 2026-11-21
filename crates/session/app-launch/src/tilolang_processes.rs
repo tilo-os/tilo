@@ -972,7 +972,7 @@ fn seen_end(status: &std::io::Result<std::process::ExitStatus>, last: &VecDeque<
 mod tests {
     use super::*;
 
-    const NOTES: &str = "so.tilo.lang.notes";
+    const NOTES: &str = "so.tilo.notes";
 
     /// Processes running in each workspace of `running`, behind its socket, each with two windows of
     /// Notes.
@@ -1198,7 +1198,7 @@ mod tests {
         use automerge::ReadDoc as _;
         use automerge::transaction::Transactable as _;
         use std::rc::Rc;
-        const APP: &str = "so.tilo.lang.notes";
+        const APP: &str = "so.tilo.notes";
         const WORKSPACE: &str = "7a110d00-0000-4000-8000-0000000000a1";
         let home = tempfile::tempdir().unwrap();
         let data_home = home.path();

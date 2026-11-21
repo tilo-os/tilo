@@ -294,7 +294,7 @@ fn own_session() -> Session {
     // A note and the inbox on the canvas, at two places of their own, so the shell's own views and
     // two apps' views all stand on what is compared.
     let resources = session.resources();
-    let note = find(&resources, "tl.so.tilo.lang.notes.Note", "Groceries").expect("a seeded note");
+    let note = find(&resources, "tl.so.tilo.notes.Note", "Groceries").expect("a seeded note");
     let inbox =
         find(&resources, "tl.so.tilo.lang.mail.Mailbox", "Inbox").expect("the seeded inbox");
     place(&mut session, &note, 80, 60, 480, 360);

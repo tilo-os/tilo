@@ -14,7 +14,7 @@ use ui::time::testing::with_wall;
 use crate::change_marks::{Driven as _, action_id, named, published_with, run, settle};
 use crate::history_window::{after, shoot, sleeps_for, times};
 
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 #[test]
 fn a_notes_history_shows_who_changed_it_and_when_and_reads_anew_as_time_passes() {
     let _settled = ui::motion::testing::settled();

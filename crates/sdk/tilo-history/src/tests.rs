@@ -372,11 +372,11 @@ fn an_element_a_set_gained_or_lost_is_named() {
 fn a_resource_the_platform_made_reads_as_its_creation() {
     let made = |label: &str| {
         ActionContext::default()
-            .with_app("so.tilo.lang.notes", "Notes")
+            .with_app("so.tilo.notes", "Notes")
             .with_described(
                 Described::new(Did::verb(
                     ActionKey::new(
-                        "so.tilo.lang.notes",
+                        "so.tilo.notes",
                         "tl.notes.Note",
                         tilo_actions::CREATE_ACTION,
                     ),

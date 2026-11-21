@@ -18,7 +18,7 @@ use tilolang_tilo::runtime::ids::MemberId;
 use super::tests_support::{part_with, reading_with_windows};
 use super::*;
 
-const NOTES_APP: &str = "so.tilo.lang.notes";
+const NOTES_APP: &str = "so.tilo.notes";
 
 /// Click the shell's control `name`, as the person does: what stands there takes the press,
 /// and the frames after it settle what the press made.

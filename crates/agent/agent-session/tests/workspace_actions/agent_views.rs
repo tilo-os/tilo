@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;
 
-/// Notes, the app whose window the person's page holds.
-const NOTES: &str = "so.tilo.notes";
+/// Sheets, the app whose window the person's page holds.
+const SHEETS: &str = "so.tilo.sheets";
 /// What the note in it says, which the agent must read off the window.
 const TITLE: &str = "Launch plan for Friday";
 /// The longest a read of a window may take, the first one included. Debug builds on a shared
@@ -26,10 +26,10 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     let state = crate::support::scratch_dir();
     let served = start(&root, &home, state.path()).await;
 
-    // The person's page opens Notes.
+    // The person's page opens Sheets.
     let mut page = Browser::open(&served, &page_device, &home).await;
     page.put_layout();
-    let notes = page.create(NOTES);
+    let notes = page.create(SHEETS);
     page.peer.barrier().unwrap().recv().unwrap().unwrap();
 
     // Their agent, on a computer of theirs, served over that computer's own session.
@@ -39,11 +39,11 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     let actions = SessionActions::new(&agent.peer, agent.workspace, home.cert.device_public_key);
     let mcp = McpServer::new(actions, WORKSPACE.into(), person).with_agent_session("views");
 
-    // A note is written in the person's Notes, the one their page shows.
+    // A sheet is made in the person's Sheets, the one their page shows.
     let (made, failed) = tool(
         &mcp,
         "tilo_do",
-        json!({"path": "notes#new-note", "args": {"title": TITLE}}),
+        json!({"path": "sheets#new-sheet", "args": {"name": TITLE}}),
     )
     .await;
     assert!(!failed, "{made}");
@@ -57,7 +57,7 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
         [1, 2, 3],
         None,
         Some(&tilo_server_protocol::live::LiveResource {
-            app: NOTES.into(),
+            app: SHEETS.into(),
             record: notes.document.clone(),
         }),
         None,
@@ -86,34 +86,26 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     };
     assert!(
         apps.lines()
-            .any(|line| line.starts_with("notes ") && line.ends_with("running, Ada works in it")),
-        "the person's Notes is listed as running, with them working in it: {apps}"
+            .any(|line| line.starts_with("sheets ") && line.ends_with("running, Ada works in it")),
+        "the person's Sheets is listed as running, with them working in it: {apps}"
     );
 
-    // Its lines say what it shows: the note the person wrote, as a control the agent can name,
-    // its title and not the word for a note that says nothing yet.
+    // Its lines say what it shows: the sheet the person made, named as they named it.
     let first = std::time::Instant::now();
-    let (lines, failed) = tool(&mcp, "tilo_view", json!({"path": "notes"})).await;
+    let (lines, failed) = tool(&mcp, "tilo_view", json!({"path": "sheets"})).await;
     let first = first.elapsed();
     assert!(!failed, "{lines}");
     assert!(
         lines.contains(TITLE),
-        "the view shows the person's note: {lines}"
-    );
-    assert!(
-        lines.lines().any(
-            |line| line.trim_start().starts_with("text_input \"Page title\"")
-                && line.contains(TITLE)
-        ),
-        "the note's heading is named by its title, never the word for a new note: {lines}"
+        "the view shows the person's sheet: {lines}"
     );
     // A read of a window answers about as fast as the person sees it: the first one included,
     // and every one after it.
     let again = std::time::Instant::now();
-    let (_, failed) = tool(&mcp, "tilo_view", json!({"path": "notes"})).await;
+    let (_, failed) = tool(&mcp, "tilo_view", json!({"path": "sheets"})).await;
     let again = again.elapsed();
     assert!(!failed);
-    eprintln!("tilo_view notes: first {first:?}, again {again:?}");
+    eprintln!("tilo_view sheets: first {first:?}, again {again:?}");
     assert!(
         first < READ_BOUND && again < READ_BOUND,
         "a view read answers within {READ_BOUND:?}: first {first:?}, again {again:?}"
@@ -123,7 +115,7 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     let answer = mcp
         .handle(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                        "params": {"name": "tilo_view",
-                                  "arguments": {"path": "notes", "picture": true}}}))
+                                  "arguments": {"path": "sheets", "picture": true}}}))
         .await
         .expect("the view is answered");
     let blocks: Vec<&Value> = answer["result"]["content"]

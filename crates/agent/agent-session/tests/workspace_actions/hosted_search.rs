@@ -32,8 +32,6 @@ struct Served {
     ada: SigningKey,
 }
 
-/// The app that keeps the notes whose bodies the folder mirrors as `.md` files.
-const NOTES: &str = "so.tilo.notes";
 /// The app that keeps the tracker the issues are in.
 const TASKS: &str = "so.tilo.tasks";
 /// A search with many hits in one conversation.
@@ -1206,102 +1204,6 @@ async fn a_turn_finds_what_was_said_in_its_conversation_by_words_and_by_time() {
     page.peer.close();
 }
 
-/// A find over a workspace of many notes answers from the index each document's app
-/// publishes, kept as the documents land: the service reads every one once, between requests,
-/// and a person's or an agent's search opens none of them while it waits.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_find_answers_from_the_index_kept_as_documents_land() {
-    let mut served = Served::start(1).await;
-    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
-    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
-    let her_agent = on_a_turn(
-        &ada,
-        SCOUT,
-        (&conversation_with(&served.ada, SCOUT), &said),
-        Vec::new(),
-    );
-    // A notebook of notes whose bodies say the same word: what a search has to read every
-    // document to find without an index.
-    let notes = 60;
-    for file in 0..notes {
-        let (answered, failed) = served
-            .tool(
-                &workspace,
-                &her_agent,
-                "tilo_do",
-                serde_json::json!({
-                    "path": "notes#import-markdown",
-                    "args": {
-                        "title": format!("notes/note-{file}.md"),
-                        "markdown": format!(
-                            "# Note {file}\n\nThe word grebe appears in this body.\n"
-                        ),
-                        "images": [],
-                    },
-                }),
-            )
-            .await;
-        assert!(!failed, "{file}: {answered}");
-    }
-    // The index is kept as the documents land: no find is asked, and the service reads them
-    // between the requests that wrote them, on a thread of its own. The last documents are
-    // queued as the last write is answered, so they are read only as requests come: a listing
-    // that asks for nothing drives the pass on, until nothing waits to be read and nothing is
-    // still being read.
-    let deadline = tilo_test_env::hang_deadline();
-    let probe = CatalogueQuery {
-        max_results: 0,
-        ..CatalogueQuery::default()
-    };
-    let mut settled = 0;
-    let mut warmed = served.actions.search_documents_warmed();
-    loop {
-        let _ = service!(served, &workspace)
-            .query(&ada, probe.clone())
-            .await;
-        let now = served.actions.search_documents_warmed();
-        if now == warmed && served.actions.search_documents_reading() == 0 {
-            settled += 1;
-            if settled >= 3 && now >= notes as u64 {
-                break;
-            }
-        } else {
-            settled = 0;
-        }
-        warmed = now;
-        assert!(
-            Instant::now() < deadline,
-            "the documents are read for the index: {warmed} of {notes} read"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    // The first find answers from the index too, opening at most the document whose write was
-    // still landing as the pass read; the one after it opens nothing at all.
-    for ask in 0..2 {
-        let opened = served.actions.search_documents_opened();
-        let began = Instant::now();
-        let found = served
-            .found(&workspace, &ada, ("grebe", &Within::default()))
-            .await;
-        let elapsed = began.elapsed();
-        let read = served.actions.search_documents_opened() - opened;
-        eprintln!(
-            "find {ask} over {notes} notes: {elapsed:?}, {} found, {read} documents opened",
-            found.len()
-        );
-        assert!(!found.is_empty(), "the word in the notes' bodies is found");
-        assert!(
-            read <= 1,
-            "a find answers from the index, opening at most the document a write was still \
-             landing in"
-        );
-        if ask == 1 {
-            assert_eq!(read, 0, "a settled find opens no document at all");
-        }
-    }
-    page.peer.close();
-}
-
 /// How the service decides an agent the workspace's own list does not hold.
 #[path = "hosted_across.rs"]
 mod across;
@@ -1428,10 +1330,10 @@ async fn a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed(
     page.peer.close();
 }
 
-/// What the page's search asks the workspace answers with a word in a note's body: the page
+/// What the page's search asks the workspace answers with a word in an issue's body: the page
 /// itself no longer reads bodies, its documents being named there from names alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_search_finds_a_word_in_a_notes_body() {
+async fn a_page_search_finds_a_word_in_an_issues_body() {
     let mut served = Served::start(1).await;
     let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
     let ada = Served::person(&served.ada, &served.devices.1, &workspace);
@@ -1441,25 +1343,22 @@ async fn a_page_search_finds_a_word_in_a_notes_body() {
         (&conversation_with(&served.ada, SCOUT), &said),
         Vec::new(),
     );
-    for note in 0..8 {
+    for issue in 0..8 {
         let (answered, failed) = served
             .tool(
                 &workspace,
                 &her_agent,
                 "tilo_do",
                 serde_json::json!({
-                    "path": "notes#import-markdown",
+                    "path": "tasks#create",
                     "args": {
-                        "title": format!("Maritime Talk {note}"),
-                        "markdown": format!(
-                            "# Maritime Talk {note}\n\nThe hospitals are in this body.\n"
-                        ),
-                        "images": [],
+                        "title": format!("Maritime Talk {issue}"),
+                        "body": "The hospitals are in this body.",
                     },
                 }),
             )
             .await;
-        assert!(!failed, "{note}: {answered}");
+        assert!(!failed, "{issue}: {answered}");
     }
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -1468,23 +1367,23 @@ async fn a_page_search_finds_a_word_in_a_notes_body() {
             .await;
         if found
             .iter()
-            .any(|found| found.app.as_deref() == Some(NOTES))
+            .any(|found| found.app.as_deref() == Some(TASKS))
         {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the page's search never finds a word in a note's body: {found:?}"
+            "the page's search never finds a word in an issue's body: {found:?}"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     page.peer.close();
 }
 
-/// What the page's search asks the workspace answers a title prefix with the note and the issue
-/// that carry it, each named as its own app lists it: what a person types in the search box.
+/// What the page's search asks the workspace answers a title prefix with the issue that carries
+/// it, named as its own app lists it: what a person types in the search box.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_search_finds_a_title_prefix_in_a_note_and_an_issue() {
+async fn a_page_search_finds_a_title_prefix_in_an_issue() {
     let mut served = Served::start(1).await;
     let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
     let ada = Served::person(&served.ada, &served.devices.1, &workspace);
@@ -1494,39 +1393,34 @@ async fn a_page_search_finds_a_title_prefix_in_a_note_and_an_issue() {
         (&conversation_with(&served.ada, SCOUT), &said),
         Vec::new(),
     );
-    let title = "Write a launch checklist note in Notes with five short items";
-    for (path, arguments) in [
-        ("notes#new-note", serde_json::json!({"title": title})),
-        (
-            "tasks#create",
+    let title = "Write a launch checklist note with five short items";
+    let (answered, failed) = served
+        .tool(
+            &workspace,
+            &her_agent,
+            "tilo_do",
             serde_json::json!({
-                "title": title,
-                "body": "Link it here and move this to In review.",
+                "path": "tasks#create",
+                "args": {
+                    "title": title,
+                    "body": "Link it here and move this to In review.",
+                },
             }),
-        ),
-    ] {
-        let (answered, failed) = served
-            .tool(
-                &workspace,
-                &her_agent,
-                "tilo_do",
-                serde_json::json!({"path": path, "args": arguments}),
-            )
-            .await;
-        assert!(!failed, "{path}: {answered}");
-    }
+        )
+        .await;
+    assert!(!failed, "tasks#create: {answered}");
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let found = served
             .found(&workspace, &ada, ("Write a launch", &Within::default()))
             .await;
         let kept_by = |app: &str| found.iter().any(|found| found.app.as_deref() == Some(app));
-        if kept_by(NOTES) && kept_by(TASKS) {
+        if kept_by(TASKS) {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "a title prefix finds the note and the issue: {found:?}"
+            "a title prefix finds the issue: {found:?}"
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
@@ -1563,11 +1457,10 @@ async fn a_find_asks_what_its_caller_may_read_only_for_the_answers_it_returns() 
                 &her_agent,
                 "tilo_do",
                 serde_json::json!({
-                    "path": "notes#import-markdown",
+                    "path": "tasks#create",
                     "args": {
-                        "title": format!("notes/note-{file}.md"),
-                        "markdown": format!("# Note {file}\n\nThe word grebe appears in this body.\n"),
-                        "images": [],
+                        "title": format!("Issue {file}"),
+                        "body": "The word grebe appears in this body.",
                     },
                 }),
             )

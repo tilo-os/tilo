@@ -566,7 +566,7 @@ class TilolangPackages(unittest.TestCase):
          'id': 'so.tilo.lang.discussion', 'version': '0.1.0',
          'runtime': 'tilolang/0.1.0+tilolang'},
         {'app': 'tl-notes', 'dir': 'apps/tl/notes',
-         'id': 'so.tilo.lang.notes', 'version': '0.1.0',
+         'id': 'so.tilo.notes', 'version': '0.1.0',
          'runtime': 'tilolang/0.1.0+tilolang'},
     ]}
 
@@ -575,17 +575,17 @@ class TilolangPackages(unittest.TestCase):
         apps = {app['app']: app for app in ASSEMBLER.tilolang_apps(plan)}
         self.assertIn('tl-notes', apps)
         self.assertEqual(apps['tl-notes']['dir'], 'apps/tl/notes')
-        self.assertEqual(apps['tl-notes']['id'], 'so.tilo.lang.notes')
+        self.assertEqual(apps['tl-notes']['id'], 'so.tilo.notes')
 
     def test_a_package_outside_apps_tl_or_naming_no_runtime_is_refused(self):
         for entry in (
-            {'app': 'tl-notes', 'dir': '../notes', 'id': 'so.tilo.lang.notes',
+            {'app': 'tl-notes', 'dir': '../notes', 'id': 'so.tilo.notes',
              'runtime': 'tilolang/0.1.0+tilolang'},
             {'app': 'tl-notes', 'dir': 'apps/tl/notes', 'id': '',
              'runtime': 'tilolang/0.1.0+tilolang'},
-            {'app': 'tl-notes', 'dir': 'apps/tl/notes', 'id': 'so.tilo.lang.notes',
+            {'app': 'tl-notes', 'dir': 'apps/tl/notes', 'id': 'so.tilo.notes',
              'runtime': 'tilo-runtime/2026.07'},
-            {'app': 'notes', 'dir': 'apps/tl/notes', 'id': 'so.tilo.lang.notes',
+            {'app': 'notes', 'dir': 'apps/tl/notes', 'id': 'so.tilo.notes',
              'runtime': 'tilolang/0.1.0+tilolang'},
         ):
             with self.subTest(entry=entry):

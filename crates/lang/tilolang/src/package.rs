@@ -924,7 +924,7 @@ fn agent_env(app: &str, host: &PackageMeta, visible: &[PackageMeta]) -> Env {
 /// What an agent's program is compiled into: `app agent.program.<hash>`.
 pub const PROGRAM_APP_PREFIX: &str = "agent.program.";
 
-/// A name a session bound, and its type as metadata writes it (`List<so.tilo.lang.notes.Note>`).
+/// A name a session bound, and its type as metadata writes it (`List<so.tilo.notes.Note>`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub name: String,

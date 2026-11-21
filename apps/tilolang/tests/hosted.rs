@@ -105,7 +105,7 @@ mod window;
 mod workspaces;
 use replay::replayed;
 
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 /// The test's own notebook, whose notes' bodies are rich text.
 const RICHBODY: &str = "so.tilo.lang.richbody";
 /// The task list the person keeps.

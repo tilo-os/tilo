@@ -353,9 +353,9 @@ pub struct Document {
 /// per package it runs), so `kind` says which of them this entry is: the activity keeps the steps
 /// whose resource is of that kind, and none of the others.
 pub struct HistoryDocument {
-    /// The app whose document it is, as its package names it (`so.tilo.lang.notes`).
+    /// The app whose document it is, as its package names it (`so.tilo.notes`).
     pub app: String,
-    /// The document's kind, as its app publishes it (`tl.so.tilo.lang.notes.Notebook`): what tells
+    /// The document's kind, as its app publishes it (`tl.so.tilo.notes.Notebook`): what tells
     /// this app's steps in a document from another's.
     pub kind: String,
     /// The document, as it stands: what the activity's history reads.

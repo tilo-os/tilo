@@ -71,7 +71,7 @@ fn world() -> World {
         todo.host.set_clock(tilolang_tilo::host::system_time);
     }
     for app in [
-        "so.tilo.lang.notes",
+        "so.tilo.notes",
         "so.tilo.lang.chat",
         "so.tilo.lang.board",
     ] {
@@ -440,7 +440,7 @@ fn a_task_reads_each_document_anew_for_every_program_and_after_changing_it() {
     let apps = Rc::new(Apps::new(&[&[app!("discussion"), app!("notes")]]));
     let (task, _api) = apps.document_task();
     task.set_clock(tilolang_tilo::host::system_time);
-    let notes = "so.tilo.lang.notes";
+    let notes = "so.tilo.notes";
     let fetches = || {
         apps.fetched
             .borrow()
@@ -521,10 +521,10 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
     let apps = Rc::new(Apps::new(&[&[app!("discussion"), app!("notes")]]));
     let clock = Rc::new(std::cell::RefCell::new("2026-10-01T09:00:00Z".to_owned()));
     {
-        let mut notes = apps.replica("so.tilo.lang.notes");
+        let mut notes = apps.replica("so.tilo.notes");
         let now = Rc::clone(&clock);
         notes.host.set_clock(move || now.borrow().clone());
-        let package = notes.host.package("so.tilo.lang.notes").unwrap();
+        let package = notes.host.package("so.tilo.notes").unwrap();
         let scenario = package.meta.scenarios.first().unwrap().action.clone();
         notes
             .host

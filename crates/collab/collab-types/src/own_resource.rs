@@ -205,7 +205,7 @@ pub fn own_kinds(app: &str) -> Vec<String> {
             | "dev.tilo.feeds"
             | tilo_app_id::apps::MAIL
             | "dev.tilo.mail"
-            | tilo_app_id::apps::NOTES
+            | "so.tilo.notes"
             | "dev.tilo.notes"
             | tilo_app_id::apps::TASKS
             | "dev.tilo.tasks"

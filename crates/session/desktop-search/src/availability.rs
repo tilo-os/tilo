@@ -127,7 +127,7 @@ mod tests {
         {
             // A tilolang app executes on the tilolang runtime, built for Linux and, as its web
             // bundle, for a browser tab: a Mac has none, so it does not offer to open one.
-            let notes = app("so.tilo.lang.notes");
+            let notes = app("so.tilo.notes");
             assert_eq!(notes.platforms, ["linux", "web"]);
             assert!(runs_on(notes.id, &["linux"]));
             assert!(runs_on(notes.id, &["tilo-os", "linux"]));

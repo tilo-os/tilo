@@ -80,7 +80,7 @@ pub fn as_person(id: &str) -> ui::tilo_actions::Actor {
     ui::tilo_actions::MemberId::person(id).into()
 }
 /// The notes app, as a package names it.
-pub const NOTES: &str = "so.tilo.lang.notes";
+pub const NOTES: &str = "so.tilo.notes";
 /// The mail app, as a package names it.
 pub const MAIL: &str = "so.tilo.lang.mail";
 /// A seeded conversation in the inbox, as its subject reads.

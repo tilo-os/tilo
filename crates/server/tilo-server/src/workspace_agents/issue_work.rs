@@ -7,10 +7,10 @@
 //! agent whose session it is, for the person the agent works for.
 //!
 //! - Before a session it makes the issue's place when it has none (a note in Notes, linked from
-//!   the issue as Tasks' own "Write a note" links one, and a folder named for the issue), says
-//!   the session began, and tells it what the note reads now. The folder is made in the
-//!   workspace's files by Files' own `new-folder`, as the agent on its turn: an agent whose
-//!   rules refuse it Files has none, and its session is told so.
+//!   the issue, and a folder named for the issue), says the session began, and tells it what the
+//!   note reads now. The folder is made in the workspace's files by Files' own `new-folder`, as
+//!   the agent on its turn: an agent whose rules refuse it Files has none, and its session is
+//!   told so.
 //! - After a session it counts what the session cost and how long it worked.
 //! - A session that could not finish (the issue's budget, the day's limit, a failure) is written
 //!   on the issue as stopped, with its plain line. Nothing here writes `done`.
@@ -32,15 +32,6 @@ use crate::workspaces::Workspaces;
 const NOTES: &str = "so.tilo.notes";
 /// The app that keeps the workspace's files: its one folder, the tree its members mount.
 const FILES: &str = "so.tilo.file-explorer";
-/// Where Notes publishes the pages it keeps its notes in: the resource that makes a note.
-fn notes_pages() -> String {
-    collab_types::document::chain_resource_id(&collab_types::document::DocumentId::derived(
-        "pages",
-        &collab_types::document::DocumentId::workspace_default(),
-    ))
-}
-/// The most of an issue's note a session is told, in bytes: the rest it reads itself.
-const MOST_NOTE_BYTES: usize = 12 * 1024;
 /// The longest name the folder of an issue takes from its title, in characters.
 const MOST_FOLDER_TITLE_CHARS: usize = 80;
 
@@ -327,37 +318,14 @@ impl IssueWork {
             .map(drop)
     }
 
-    /// The document Notes keeps of the workspace.
-    fn notebook(&self) -> DocumentRoute {
-        let catalogue = tilo_agent_session::AppCatalogue::native();
-        self.route(
-            NOTES,
-            &crate::workspace_bots::workspace_resource(&catalogue, NOTES),
-        )
-    }
-
     /// Make the issue's note in Notes, titled after it, and link it from the issue: the note's
     /// resource.
-    async fn make_note(&self, workspaces: &Workspaces, issue: &Kept) -> Result<String, String> {
-        let notebook = self.notebook();
-        let held = workspaces
-            .resource_document(&self.workspace, NOTES, &notebook.document)
-            .await
-            .map_err(|error| error.to_string())?;
-        if held.is_none() {
-            // A workspace nobody opened Notes in yet has no notebook: the server founds it,
-            // as it founds any app's document a member's first window opens.
-            workspaces
-                .prepare_application(
-                    &self.workspace,
-                    workspaces.governor(),
-                    &tilo_agent_session::AppCatalogue::native(),
-                    NOTES,
-                    &notebook.document,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-        }
+    ///
+    /// Notes is a tilolang package: its notebook is one record of its own, made by its `new_note`
+    /// when the workspace first asks for one, and a note is a `tl:so.tilo.notes:<id>` resource in
+    /// it. A workspace's server runs the package where its host does; where it does not, the call
+    /// is refused and the session is told why instead of working on in silence.
+    async fn make_note(&self, _workspaces: &Workspaces, issue: &Kept) -> Result<String, String> {
         // The agent opens Notes in the workspace, as it does with its own tools: an app's
         // actions are offered to a session once it opened the app.
         let opened = super::invoke_at(
@@ -373,30 +341,24 @@ impl IssueWork {
         let title = format!("#{} {}", issue.number, issue.title);
         let mut arguments = Map::new();
         arguments.insert("title".into(), json!(title));
-        arguments.insert("markdown".into(), json!(NOTE_STARTS));
+        arguments.insert("body".into(), json!(NOTE_STARTS));
         let made = invoke_named(
             &self.service,
             &self.caller,
-            // A note is an item of the pages Notes keeps in parts: the call names that
-            // resource and no document, as Tasks' own Write a note does.
             &self.route(NOTES, ""),
-            &notes_pages(),
-            "create-page",
+            &format!("tl:{NOTES}"),
+            "new_note",
             arguments,
         )
         .await?;
         let note = made
-            .pointer("/value/resource")
-            .or_else(|| made.pointer("/resources/0"))
+            .pointer("/resources/0")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("Notes made no note: {made}"))?
             .to_owned();
         let mut link = Map::new();
         link.insert("app".into(), json!(NOTES));
-        link.insert(
-            "kind".into(),
-            json!(tilo_resource::items::item_kind(&note).unwrap_or_default()),
-        );
+        link.insert("kind".into(), json!(format!("tl.{NOTES}.Note")));
         link.insert("resource".into(), json!(note));
         link.insert("label".into(), json!(title));
         if let Err(error) = self.verb("link", link).await {
@@ -406,31 +368,19 @@ impl IssueWork {
     }
 
     /// What the note reads now, as Markdown, cut to what a session is told.
-    async fn read_note(&self, note: &str) -> Option<String> {
-        let read = invoke_named(
-            &self.service,
-            &self.caller,
-            &self.route(NOTES, ""),
-            note,
-            "read",
-            Map::new(),
-        )
-        .await
-        .ok()?;
-        let markdown = read
-            .pointer("/value/markdown")
-            .or_else(|| read.pointer("/markdown"))
-            .and_then(Value::as_str)?;
-        let mut text = markdown.trim().to_owned();
-        if text.len() > MOST_NOTE_BYTES {
-            let mut end = MOST_NOTE_BYTES;
-            while !text.is_char_boundary(end) {
-                end = end.saturating_sub(1);
-            }
-            text.truncate(end);
-            text.push_str("\n…(cut: read the note for the rest)");
-        }
-        Some(text)
+    ///
+    /// Not read yet: the workspace's action answer says the resources an action made and never
+    /// the value a tilolang action answered, so a note's text (`export_markdown`) has no way
+    /// back to the server. A session writes the note and works from what it wrote; a later one
+    /// is told there is nothing more to read rather than being told wrongly.
+    async fn read_note(&self, _note: &str) -> Option<String> {
+        tracing::warn!(
+            workspace = %self.workspace,
+            issue = %self.issue,
+            "an issue's note is not read: a tilolang action's answered value does not travel in \
+             the workspace's action answer"
+        );
+        None
     }
 }
 

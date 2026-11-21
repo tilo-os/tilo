@@ -49,8 +49,8 @@ class HostDataAppsTests(unittest.TestCase):
         root = self.fixture({
             "apps/logs/tilo-app.toml": JOURNAL,
             "apps/logs/src/resource.rs": "impl ResourceApp for Logs {}\n",
-            "apps/notes/tilo-app.toml": NOTES,
-            "apps/notes/src/resource.rs": "impl ResourceApp for Notes {}\n",
+            "apps/settings/tilo-app.toml": NOTES,
+            "apps/settings/src/resource.rs": "impl ResourceApp for Notes {}\n",
         })
         findings = host_data.check(root)
         self.assertEqual(len(findings), 1, findings)

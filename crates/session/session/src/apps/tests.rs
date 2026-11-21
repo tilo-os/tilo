@@ -724,7 +724,7 @@ fn a_stop_the_person_asked_for_before_the_window_came_closes_its_tab() {
 #[test]
 fn a_hosted_window_opens_a_file_by_its_content_and_name() {
     let hash = "ab".repeat(32);
-    let launch = Launch::parse(&format!("content:so.tilo.lang.notes:{hash}:plan.md"))
+    let launch = Launch::parse(&format!("content:so.tilo.notes:{hash}:plan.md"))
         .expect("a content launch");
     let opens = window_opens(&launch, None, true).expect("a hosted window opens a file");
     assert_eq!(
@@ -747,7 +747,7 @@ fn a_hosted_window_opens_a_file_by_its_content_and_name() {
     );
     // A path is no file for a hosted window: nothing in its process could read it.
     let path = Launch::Package {
-        app: "so.tilo.lang.notes".into(),
+        app: "so.tilo.notes".into(),
         open: Some(tilo_app_launch::Open::File("plan.md".into())),
     };
     assert!(

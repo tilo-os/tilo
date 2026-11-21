@@ -731,7 +731,7 @@ impl Checker<'_> {
         if self.st.written != Written::Program {
             return None;
         }
-        // An app named by its id (`so.tilo.lang.notes`) that the program neither holds nor reads: its resource
+        // An app named by its id (`so.tilo.notes`) that the program neither holds nor reads: its resource
         // is still a value, which the program passes to an action (the session's `place`) as a listing or an
         // answer showed it.
         let app = self

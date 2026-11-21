@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Notebook` is a `Resource` of the app's `notes.notebook`, made by its factory with the
+ * `Note` is a `Resource` of the app's `tl.so.tilo.notes.Note`, made by its factory with the
  * resource's path (`notes/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,333 +22,294 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@b3e8fc158bf04291";
+export const SURFACE = "so.tilo.notes@854f753a0c76da10";
 
-export interface Tag {
-  name: string;
-}
-
-/** One of Bool, Int, Str: an object whose case the app tags it with. */
-export type ClipAttr = Record<string, unknown>;
-
-export interface ClipBlock {
-  kind: string;
-  text: string;
-  marks: MarkSpan[];
-  level: number | null;
-  ordered: boolean | null;
-  align: string | null;
-  attrs: Record<string, ClipAttr>;
-}
-
-export interface ImportReads {
-  rank: string;
-  links: Links;
-  imported: boolean;
-}
-
-export interface Links {
-  titles: Record<string, string>;
-  paths: Record<string, string>;
-}
-
-export interface MarkSpan {
-  start: number;
-  end: number;
-  name: string;
-  value: MarkValue;
-}
-
-/** One of Bool, Int, Str: an object whose case the app tags it with. */
-export type MarkValue = Record<string, unknown>;
-
-export interface MarkdownFile {
-  path: string;
-  title: string | null;
-  markdown: string;
-  origin: Origin | null;
-}
-
-export interface Origin {
-  author: string;
-  handle: string | null;
-  source: string;
-  url: string | null;
-  reference: string | null;
-  created_ms: number | null;
-  updated_ms: number | null;
-}
-
-export interface Page {
-  title: string;
-  parent: string | null;
-  rank: string;
-  body: string;
-  tags: string[];
-  creator: string | null;
-  creator_name: string;
-  origin: Origin | null;
-  path: string | null;
-  reactions: unknown;
-}
-
-export interface PageCopy {
-  id: string;
-  title: string;
-  parent: string | null;
-  rank: string;
-  blocks: ClipBlock[];
-  tags: string[];
-}
-
-export interface Placement {
-  parent: string | null;
-  rank: string;
-}
-
-/** The arguments of `new-tag`. */
-export interface NewTagArgs {
-  name: string;
-}
-
-/** The arguments of `delete-tag`. */
-export interface DeleteTagArgs {
-  tag: string;
-}
-
-/** The arguments of `rename`. */
-export interface RenameArgs {
-  page: string;
-  title: string;
-}
-
-/** The arguments of `delete`. */
-export interface DeleteArgs {
-  page: string;
-}
-
-/** The arguments of `move-note`. */
-export interface MoveNoteArgs {
-  page: string;
-  parent?: string;
-  before?: string;
-  place?: Placement;
-}
-
-/** The arguments of `move-up`. */
-export interface MoveUpArgs {
-  page: string;
-  place?: Placement;
-}
-
-/** The arguments of `move-down`. */
-export interface MoveDownArgs {
-  page: string;
-  place?: Placement;
+/** The arguments of `pin`. */
+export interface PinArgs {
+  pinned?: boolean;
 }
 
 /** The arguments of `indent`. */
 export interface IndentArgs {
-  page: string;
-  place?: Placement;
+  above?: Note;
 }
 
 /** The arguments of `outdent`. */
 export interface OutdentArgs {
-  page: string;
-  place?: Placement;
+}
+
+/** The arguments of `move_up`. */
+export interface MoveUpArgs {
+  above?: Note;
+}
+
+/** The arguments of `move_down`. */
+export interface MoveDownArgs {
+}
+
+/** The arguments of `retitle`. */
+export interface RetitleArgs {
+  title: string;
+}
+
+/** The arguments of `add_text`. */
+export interface AddTextArgs {
+  text: string;
 }
 
 /** The arguments of `tag`. */
 export interface TagArgs {
-  page: string;
-  name: string;
-  tag?: string;
+  t: string;
 }
 
-/** The arguments of `keep-image`. */
+/** The arguments of `untag`. */
+export interface UntagArgs {
+  t: string;
+}
+
+/** The arguments of `insert_image`. */
+export interface InsertImageArgs {
+  image: unknown;
+}
+
+/** The arguments of `keep_image`. */
 export interface KeepImageArgs {
-  bytes: unknown;
+  picture: string[];
 }
 
-/** The arguments of `place-image`. */
-export interface PlaceImageArgs {
-  page: string;
-  bytes: unknown;
-  alt?: string;
+/** The arguments of `move_to`. */
+export interface MoveToArgs {
+  moved: Note;
+  parent?: Note;
+  before?: Note;
 }
 
-/** The arguments of `import-markdown`. */
-export interface ImportMarkdownArgs {
+/** The arguments of `move_after`. */
+export interface MoveAfterArgs {
+  moved: Note;
+  n: Note;
+}
+
+/** The arguments of `sort_children`. */
+export interface SortChildrenArgs {
+  n: Note;
+}
+
+/** The arguments of `delete`. */
+export interface DeleteArgs {
+  n: Note;
+}
+
+/** The arguments of `append_to_note`. */
+export interface AppendToNoteArgs {
   title: string;
-  markdown: string;
-  images: unknown[];
-  note?: string;
-  path?: string;
-  origin?: Origin;
-  reads?: ImportReads;
+  text: string;
 }
 
-/** The arguments of `import-markdown-files`. */
-export interface ImportMarkdownFilesArgs {
-  files: MarkdownFile[];
-  ranks?: string[];
-  links?: Links;
+/** The arguments of `import_archive`. */
+export interface ImportArchiveArgs {
+  file: unknown;
 }
 
-/** Notebook — `notes.notebook`. */
+/** The arguments of `import_dropped`. */
+export interface ImportDroppedArgs {
+  files: unknown[];
+}
+
+/** Note — `tl.so.tilo.notes.Note`. */
+export interface Note extends tilo.Resource {
+  dpj7scfe: string;  // title
+  olsyp3aw: string;  // body
+  pmjerv63: Record<string, string>;  // images
+  ssu2tbnf: Note | null;  // parent
+  gfk6rqxp: boolean;  // pinned
+  xcpasjg7: string[];  // tags
+  erijxfd3: string;  // source
+  uquoltho: string;  // origin
+  eo4enwxh: string;  // by
+  yzessjhr: string;  // service
+  zex2vawx: string;  // page
+  rnhwkv6z: string;  // created
+  "2od7mwir": string;  // updated
+  /** Starts a note inside `n`'s own, after the notes it already holds: the note the window has open too, so a person writing one starts the note it stands under without finding its row. It is `n`'s action, so the window offers it for the note it shows and its row offers it. */
+  new_child(): Promise<Note>;
+  /** Pins or unpins a note. */
+  pin(args?: {
+    pinned?: boolean;
+  }): Promise<void>;
+  /** Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pinMany(items: PinArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts a note under the note it stands over, with the notes under it, as `Tab` does in the tree; with none named, it goes under the note above it. */
+  indent(args?: {
+    above?: Note;
+  }): Promise<void>;
+  /** Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  indentMany(items: IndentArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts a note beside the note it stands in, just after it and the notes under it, as `Shift-Tab` does in the tree. */
+  outdent(): Promise<void>;
+  /** Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  outdentMany(items: OutdentArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts a note just over the note above it, with the notes under it, as `Alt-Up` does in the tree; with none named, over the note just above it. */
+  move_up(args?: {
+    above?: Note;
+  }): Promise<void>;
+  /** Runs `move_up` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_upMany(items: MoveUpArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts a note just under the note below it and the notes under that one, with its own notes after it, as `Alt-Down` does in the tree. */
+  move_down(): Promise<void>;
+  /** Runs `move_down` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_downMany(items: MoveDownArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Renames a note. */
+  retitle(args: {
+    title: string;
+  }): Promise<void>;
+  /** Runs `retitle` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  retitleMany(items: RetitleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Writes `text` (Markdown) at the end of a note, under what it says already: a line, a list or a paragraph added to it. */
+  add_text(args: {
+    text: string;
+  }): Promise<void>;
+  /** Runs `add_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  add_textMany(items: AddTextArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Gives a note a tag. */
+  tag(args: {
+    t: string;
+  }): Promise<void>;
+  /** Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  tagMany(items: TagArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Untags a note. */
+  untag(args: {
+    t: string;
+  }): Promise<void>;
+  /** Runs `untag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  untagMany(items: UntagArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts a picture in a note, where its words end: the person picks the file, and the note keeps the address of its content rather than the picture, and the name it came in as. */
+  insert_image(args: {
+    image: unknown;
+  }): Promise<void>;
+  /** Runs `insert_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insert_imageMany(items: InsertImageArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note holds the address of its bytes, and the name it came in as, which an export writes beside it. `picture` is the editor's word of it: its name, then the address of its content. */
+  keep_image(args: {
+    picture: string[];
+  }): Promise<void>;
+  /** Runs `keep_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keep_imageMany(items: KeepImageArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** A note as Markdown: its title, then its body, each picture it shows written beside it as `<note>/images/<name>`, a path another reader of the file follows and this app reads again as the address of the picture's bytes. */
+  export_markdown(): Promise<string>;
+  /** A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a picture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a picture by a path and by nothing else; a note of words alone is that Markdown itself. */
+  export_note(): Promise<unknown>;
+}
+
+/** The actions `Note` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTE_ACTIONS = ["new_child", "pin", "pinMany", "indent", "indentMany", "outdent", "outdentMany", "move_up", "move_upMany", "move_down", "move_downMany", "retitle", "retitleMany", "add_text", "add_textMany", "tag", "tagMany", "untag", "untagMany", "insert_image", "insert_imageMany", "keep_image", "keep_imageMany", "export_markdown", "export_note"] as const;
+
+/** The `tl.so.tilo.notes.Note` kind at `path`. */
+export function note(ws: tilo.Workspace, path: string): Note {
+  return resourceProxy(ws, path, SURFACE, NOTE_ACTIONS) as unknown as Note;
+}
+
+/** Notebook — `tl.so.tilo.notes.Notebook`. */
 export interface Notebook extends tilo.Resource {
-  tags: Array<tilo.Entry<Tag>>;
-  newTag(args: {
-    name: string;
-  }): Promise<void>;
-  /** Runs `new-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  newTagMany(items: NewTagArgs[]): Promise<tilo.ActionAnswer[]>;
-  deleteTag(args: {
-    tag: string;
-  }): Promise<void>;
-  /** Runs `delete-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteTagMany(items: DeleteTagArgs[]): Promise<tilo.ActionAnswer[]>;
-  exportMarkdownContent(args?: {
-    page?: string;
+  tmqqtkeb: Array<tilo.Entry<Note>>;  // notes
+  qgq6mcy7: Array<tilo.Entry<Note>>;  // set_aside
+  /** Starts a note at the top of the tree, titled `title` and saying `body` (Markdown) when the caller knows them already. Started from the notebook both are empty: what is typed first names it. */
+  new_note(args?: {
     title?: string;
+    body?: string;
+  }): Promise<Note>;
+  /** Moves a note to a place in the tree: at the end of `parent`'s own, or where `before` stands. */
+  move_to(args: {
+    moved: Note;
+    parent?: Note;
+    before?: Note;
   }): Promise<void>;
+  /** Runs `move_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_toMany(items: MoveToArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves a note to just after `n` and every note under it: the place a drop after a row asks for, which names the row it lands after rather than the row after that one. */
+  move_after(args: {
+    moved: Note;
+    n: Note;
+  }): Promise<void>;
+  /** Runs `move_after` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_afterMany(items: MoveAfterArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Copies a note, with every note under it, just after the one it copies. */
+  duplicate(args: {
+    n: Note;
+  }): Promise<Note>;
+  /** Puts a note's own in the order of their titles, once, for a branch that grew out of order. */
+  sort_children(args: {
+    n: Note;
+  }): Promise<void>;
+  /** Runs `sort_children` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  sort_childrenMany(items: SortChildrenArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes a note and every note under it, as one change a person takes back at once. */
+  delete(args: {
+    n: Note;
+  }): Promise<void>;
+  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Writes `text` (Markdown) at the end of the note titled `title`, the case of its letters aside: how an agent or a script that knows a note by its name ('add this to Meeting notes') writes into it without first looking up which note that is. */
+  append_to_note(args: {
+    title: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `append_to_note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  append_to_noteMany(items: AppendToNoteArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it. */
+  file_note(args: {
+    title: string;
+    tag: string;
+  }): Promise<Note>;
+  /** The notebook as a zip, one Markdown file for each note: a note's own under the folder of the note it stands in, and the pictures it shows in its own `images` folder beside it. That is the shape the import reads, so the notebook comes back as the tree it is, titles, bodies and pictures alike. */
+  export_notebook(): Promise<unknown>;
+  /** Imports a Markdown file as a note, or opens the note that file already made: a note keeps the address of the file it came from, so importing the same file twice makes one note. The note stands under the note of the folder its file's path names — `Q3 plan/Ideas.md` under `Q3 plan.md` — and at the top of the tree when its path names no folder. Its title is the document's first heading, or the file's name; the heading it says the title with is not said again in its body. */
+  import_markdown(args: {
+    file: unknown;
+  }): Promise<Note>;
+  /** Imports a page another service held as a note, keeping whose words it is and where it stood there: what `tilo migrate` calls for each page it brings over, and what a person's own import of a file does without a service's words. A page imported by its address there again opens the note it made, whatever the page says now; the note stands under the note of the folder its file's path names. */
+  import_page(args: {
+    file: unknown;
+    by: string;
+    service: string;
+    page: string;
+    created?: string;
+    updated?: string;
+  }): Promise<Note>;
+  /** Imports a zip of pages as notes under the notebook, a page under the page that held it, in one change: undo takes the whole import back. That is this app's own notebook written out, a Notion export, and what `tilo migrate` brings from a wiki: a page per `.md` file, its pictures beside it, and a database beside it as a `.csv` that becomes a table at its page. Each page's title is its first heading, or its file's name; the pictures a page shows are the files it stands beside, a reference read from the page's own folder, and a link to a page of the archive is the reference to the note that page made. A migration says where each page came from in its own file beside the pages, and a page that is imported already keeps the note it made. */
+  import_archive(args: {
+    file: unknown;
+  }): Promise<void>;
+  /** Runs `import_archive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  import_archiveMany(items: ImportArchiveArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Files dropped on the notebook: a Markdown file comes in as a note, an archive as the pages it holds — the notebook's own written out, or another app's export — and each file of a drop in turn. One action, so undo takes the whole drop back at once. */
+  import_dropped(args: {
+    files: unknown[];
+  }): Promise<void>;
+  /** Runs `import_dropped` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  import_droppedMany(items: ImportDroppedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Notebook` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTEBOOK_ACTIONS = ["newTag", "newTagMany", "deleteTag", "deleteTagMany", "exportMarkdownContent"] as const;
+export const NOTEBOOK_ACTIONS = ["new_note", "move_to", "move_toMany", "move_after", "move_afterMany", "duplicate", "sort_children", "sort_childrenMany", "delete", "deleteMany", "append_to_note", "append_to_noteMany", "file_note", "export_notebook", "import_markdown", "import_page", "import_archive", "import_archiveMany", "import_dropped", "import_droppedMany"] as const;
 
-/** The `notes.notebook` kind at `path`. */
+/** The `tl.so.tilo.notes.Notebook` kind at `path`. */
 export function notebook(ws: tilo.Workspace, path: string): Notebook {
   return resourceProxy(ws, path, SURFACE, NOTEBOOK_ACTIONS) as unknown as Notebook;
 }
 
-/** Notes — `notes.pages`. */
-export interface Pages extends tilo.Resource {
-  pages: Array<tilo.Entry<Page>>;
-  readonly images: Record<string, unknown>;
-  newNote(args: {
-    title: string;
-    parent?: string;
-    note?: string;
-    rank?: string;
-  }): Promise<unknown>;
-  newChild(args: {
-    page: string;
-    title: string;
-    rank?: string;
-  }): Promise<unknown>;
-  rename(args: {
-    page: string;
-    title: string;
-  }): Promise<void>;
-  /** Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  renameMany(items: RenameArgs[]): Promise<tilo.ActionAnswer[]>;
-  delete(args: {
-    page: string;
-  }): Promise<void>;
-  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
-  moveNote(args: {
-    page: string;
-    parent?: string;
-    before?: string;
-    place?: Placement;
-  }): Promise<void>;
-  /** Runs `move-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  moveNoteMany(items: MoveNoteArgs[]): Promise<tilo.ActionAnswer[]>;
-  moveUp(args: {
-    page: string;
-    place?: Placement;
-  }): Promise<void>;
-  /** Runs `move-up` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  moveUpMany(items: MoveUpArgs[]): Promise<tilo.ActionAnswer[]>;
-  moveDown(args: {
-    page: string;
-    place?: Placement;
-  }): Promise<void>;
-  /** Runs `move-down` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  moveDownMany(items: MoveDownArgs[]): Promise<tilo.ActionAnswer[]>;
-  indent(args: {
-    page: string;
-    place?: Placement;
-  }): Promise<void>;
-  /** Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  indentMany(items: IndentArgs[]): Promise<tilo.ActionAnswer[]>;
-  outdent(args: {
-    page: string;
-    place?: Placement;
-  }): Promise<void>;
-  /** Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  outdentMany(items: OutdentArgs[]): Promise<tilo.ActionAnswer[]>;
-  duplicate(args: {
-    page: string;
-    copies?: PageCopy[];
-  }): Promise<unknown>;
-  tag(args: {
-    page: string;
-    name: string;
-    tag?: string;
-  }): Promise<void>;
-  /** Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  tagMany(items: TagArgs[]): Promise<tilo.ActionAnswer[]>;
-  keepImage(args: {
-    bytes: unknown;
-  }): Promise<void>;
-  /** Runs `keep-image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  keepImageMany(items: KeepImageArgs[]): Promise<tilo.ActionAnswer[]>;
-  placeImage(args: {
-    page: string;
-    bytes: unknown;
-    alt?: string;
-  }): Promise<void>;
-  /** Runs `place-image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  placeImageMany(items: PlaceImageArgs[]): Promise<tilo.ActionAnswer[]>;
-  createPage(args: {
-    title: string;
-    markdown?: string;
-    origin?: Origin;
-    rank?: string;
-    links?: Links;
-  }): Promise<unknown>;
-  importMarkdown(args: {
-    title: string;
-    markdown: string;
-    images: unknown[];
-    note?: string;
-    path?: string;
-    origin?: Origin;
-    reads?: ImportReads;
-  }): Promise<void>;
-  /** Runs `import-markdown` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  importMarkdownMany(items: ImportMarkdownArgs[]): Promise<tilo.ActionAnswer[]>;
-  importMarkdownFiles(args: {
-    files: MarkdownFile[];
-    ranks?: string[];
-    links?: Links;
-  }): Promise<void>;
-  /** Runs `import-markdown-files` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  importMarkdownFilesMany(items: ImportMarkdownFilesArgs[]): Promise<tilo.ActionAnswer[]>;
-  appendToNote(args: {
-    markdown: string;
-    title?: string;
-    note?: string;
-    links?: Links;
-  }): Promise<unknown>;
-  writeNote(args: {
-    page: string;
-    markdown: string;
-    links?: Links;
-  }): Promise<unknown>;
+/** Notes — `tl.so.tilo.notes`. */
+export interface Notes extends tilo.Resource {
 }
 
-/** The actions `Pages` reaches before it is read: `ws` calls them without a
+/** The actions `Notes` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PAGES_ACTIONS = ["newNote", "newChild", "rename", "renameMany", "delete", "deleteMany", "moveNote", "moveNoteMany", "moveUp", "moveUpMany", "moveDown", "moveDownMany", "indent", "indentMany", "outdent", "outdentMany", "duplicate", "tag", "tagMany", "keepImage", "keepImageMany", "placeImage", "placeImageMany", "createPage", "importMarkdown", "importMarkdownMany", "importMarkdownFiles", "importMarkdownFilesMany", "appendToNote", "writeNote"] as const;
+export const NOTES_ACTIONS = [] as const;
 
-/** The `notes.pages` kind at `path`. */
-export function pages(ws: tilo.Workspace, path: string): Pages {
-  return resourceProxy(ws, path, SURFACE, PAGES_ACTIONS) as unknown as Pages;
+/** The `tl.so.tilo.notes` kind at `path`. */
+export function notes(ws: tilo.Workspace, path: string): Notes {
+  return resourceProxy(ws, path, SURFACE, NOTES_ACTIONS) as unknown as Notes;
 }
 

@@ -562,7 +562,7 @@ struct ApiInvoker {
 impl ApiInvoker {
     /// The id the session publishes the resource `r` under, as a published action takes it: a
     /// resource of one of the platform's apps (a window) by its own id, a tilolang app's by its
-    /// app and its id in its document (`tl:so.tilo.lang.notes:<id>`). `r`'s type names the app:
+    /// app and its id in its document (`tl:so.tilo.notes:<id>`). `r`'s type names the app:
     /// a type of a package this task holds by its id, any other as `<app>#<Type>`.
     fn published_id(&self, r: &ResourceRef) -> String {
         let id = r.id_string();

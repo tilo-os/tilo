@@ -200,7 +200,7 @@ mod tests {
                 "a scenario's sample agent",
             ),
             (app("so.tilo.lang.today"), "Today", "an app by its own name"),
-            (app("so.tilo.lang.notes"), "Notes", "an app by its own name"),
+            (app("so.tilo.notes"), "Notes", "an app by its own name"),
             (
                 app("org.example.Editor"),
                 "Editor",

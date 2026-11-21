@@ -73,7 +73,6 @@ tasks-area-delete = Delete area
 tasks-field-project-name = Name
 tasks-field-person = Who
 tasks-field-role = What they do
-tasks-write-note = Write a note
 tasks-link-note = Link a note
 tasks-link-note-scope = This issue
 tasks-notebook = Notebook

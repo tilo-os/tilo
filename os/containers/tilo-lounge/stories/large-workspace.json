@@ -5,8 +5,8 @@
     "what": "A shell command run in this checkout with the stack's environment (stack.sh env: TILO_API_URL, TILO_API_KEY of the stack's owner) and STORY_SIZE (the size's label) and STORY_SIZE_PARAMS (its params as JSON). It makes a workspace of that size and prints the workspace's id as its last line."
   },
   "sizes": [
-    {"label": "small", "total": 1000, "params": {"files": 1000, "notes": 200, "tasks": 200}},
-    {"label": "large", "total": 100000, "params": {"files": 100000, "notes": 20000, "tasks": 20000}}
+    {"label": "small", "total": 1000, "params": {"files": 1000, "tasks": 200}},
+    {"label": "large", "total": 100000, "params": {"files": 100000, "tasks": 20000}}
   ],
   "steps": [],
   "stepShape": {

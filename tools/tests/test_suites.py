@@ -443,9 +443,9 @@ class CargoReaderTests(unittest.TestCase):
 
     APPS = {
         "apps/calc/tilo-app.toml": "",
-        "apps/notes/Cargo.toml": '[package]\nname = "notes"\n',
-        "apps/notes/src/main.rs": "fn main() {}\n",
-        "apps/notes/tilo-app.toml": "",
+        "apps/settings/Cargo.toml": '[package]\nname = "notes"\n',
+        "apps/settings/src/main.rs": "fn main() {}\n",
+        "apps/settings/tilo-app.toml": "",
     }
 
     def test_inputs_cover_what_paths_built_from_the_manifest_dir_read(self):
@@ -461,7 +461,7 @@ class CargoReaderTests(unittest.TestCase):
         with self.subTest(phase='an input for some entries of a listed directory is not enough'):
             problems = self.audit({**self.APPS, "crates/ui/tests/audit.rs": lists_apps}, enumerated)
             self.assertEqual(len(problems), 1, problems)
-            self.assertIn("crates/ui/tests/audit.rs:3: lists apps and reads apps/notes/tilo-app.toml", problems[0])
+            self.assertIn("crates/ui/tests/audit.rs:3: lists apps and reads apps/settings/tilo-app.toml", problems[0])
         with self.subTest(phase='a glob over the entries covers every one, and those to come'):
             manifest = READER_MANIFEST.replace('"apps/*/src/main.rs"', '"apps/*/tilo-app.toml"')
             self.assertEqual(self.audit({**self.APPS, "crates/ui/tests/audit.rs": lists_apps}, manifest), [])
@@ -481,12 +481,12 @@ class CargoReaderTests(unittest.TestCase):
                 with self.subTest(text=text):
                     problems = self.audit({**self.APPS, "crates/ui/tests/audit.rs": text}, enumerated)
                     self.assertEqual(len(problems), 1, problems)
-                    self.assertIn("lists apps and reads apps/notes/tilo-app.toml", problems[0])
+                    self.assertIn("lists apps and reads apps/settings/tilo-app.toml", problems[0])
         with self.subTest(phase='a joined path must match an input'):
             text = ('fn notes() {\n    let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap();\n'
-                    '    read(root.join("apps/notes"));\n    read(root.join("os/share/data.json"));\n}\n')
+                    '    read(root.join("apps/settings"));\n    read(root.join("os/share/data.json"));\n}\n')
             problems = self.audit({**self.APPS, "crates/ui/tests/audit.rs": text}, enumerated)
-            self.assertEqual(problems, ["crates/ui/tests/audit.rs:3: reads apps/notes, "
+            self.assertEqual(problems, ["crates/ui/tests/audit.rs:3: reads apps/settings, "
                                         "which no input of cargo ui matches"])
             self.assertEqual(self.audit({**self.APPS, "crates/ui/tests/audit.rs": text},
                                         READER_MANIFEST.replace('"apps/*/src/main.rs"', '"apps/"')), [])

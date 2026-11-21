@@ -1,11 +1,11 @@
-//! What a keystroke costs a shell with six apps open: the CPU time it takes the
+//! What a keystroke costs a shell with five apps open: the CPU time it takes the
 //! thread that runs it, and how many of the open apps worked on it.
 //!
-//! The shell is the browser's launch demo — Notes, Sheets, Writer, Calendar,
-//! Calculator and Slides, one window each — with the keyboard in the note, so
-//! the frame a key asks for is the one a person typing beside five other open
-//! windows waits on. Everything runs through the production frame path
-//! ([`ui::headless::FrameHarness`]) with no GPU, so the number is the CPU a
+//! The shell is a strip of the browser's launch demo — Writer, Sheets, Calendar,
+//! Calculator and Slides, one window each — with the keyboard in Writer's
+//! document, so the frame a key asks for is the one a person typing beside four
+//! other open windows waits on. Everything runs through the production frame
+//! path ([`ui::headless::FrameHarness`]) with no GPU, so the number is the CPU a
 //! key owes, not what a display took to show it.
 //!
 //! Run: `cargo run --release -p tilo-desktop --example typing-perf [-- --keys N]`
@@ -30,7 +30,7 @@ fn main() {
         .and_then(|count| count.parse().ok())
         .unwrap_or(40);
     let mut shell = Demo::open();
-    shell.focus_the_note();
+    shell.focus_the_editor();
     // Unmeasured: the first keys find the caches a typist's do.
     for _ in 0..8 {
         shell.type_key("l");

@@ -623,7 +623,7 @@ mod tests {
                 )]
             );
             let other = Meta {
-                app: "so.tilo.lang.notes".to_owned(),
+                app: "so.tilo.notes".to_owned(),
                 ..Meta::default()
             };
             authority.load(&ModuleHash("notes-v1".to_owned()), &other);
@@ -735,7 +735,7 @@ mod tests {
         );
         // Another app of the workspace is not Todo's.
         let notes = ActionInfo {
-            app: AppId::from("so.tilo.lang.notes"),
+            app: AppId::from("so.tilo.notes"),
             ..action(EffectClass::Undoable)
         };
         assert_eq!(

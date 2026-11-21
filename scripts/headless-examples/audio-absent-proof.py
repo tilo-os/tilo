@@ -8,7 +8,7 @@ it: a check or an agent in a build container has no PipeWire, and gets the
 same desktop with its sound controls saying so.
 
 The session starts with a `pipewire` on PATH that fails at once, so it runs
-exactly as it does in a container. A person opens Notes, and opens Quick
+exactly as it does in a container. A person opens Tasks, and opens Quick
 Settings from the bar: the panel stands over the shell and the sound's own
 volume action answers that there is no output to set. Then a real PipeWire,
 WirePlumber and its session output start in the session's own runtime
@@ -34,7 +34,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import real_apps  # noqa: E402
 from real_apps import Failed, until  # noqa: E402
 
-APPS = "notes"
+APPS = "tasks"
 STATE = pathlib.Path(os.environ.get("TILO_AUDIO_ABSENT_PROOF_STATE") or tempfile.mkdtemp(
     prefix="tilo-audio-absent-"))
 SHOTS = pathlib.Path(os.environ.get("TILO_AUDIO_ABSENT_PROOF_SHOTS")
@@ -144,11 +144,11 @@ def main() -> int:
                       env={"PATH": f"{shim}:{os.environ['PATH']}"})
         check("the session starts with no audio server", session.running())
 
-        # The shell works: a person opens Notes through the desktop's launcher.
-        session.launch("notes")
-        session.answering("notes", deadline=180)
+        # The shell works: a person opens Tasks through the desktop's launcher.
+        session.launch("tasks")
+        session.answering("tasks", deadline=180)
         check("the shell opens an application",
-              any(window.get("app_id") == "so.tilo.notes" for window in session.windows()))
+              any(window.get("app_id") == "so.tilo.tasks" for window in session.windows()))
 
         # Quick Settings stands over the shell, its volume row in the absent
         # state: the panel is drawn and the sound's own volume action answers

@@ -24,7 +24,7 @@ use tilo_session::{AppActions, Options, Session};
 use crate::common::PERSON;
 
 /// The notebook, as a package names it.
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 
 /// A launcher that records each start it was handed, and holds, so a process a launch started
 /// says it did.

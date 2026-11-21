@@ -19,7 +19,7 @@ const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.tl"),
     include_str!("../../../../apps/tl/notes/app.ids"),
 );
-const APP: &str = "so.tilo.lang.notes";
+const APP: &str = "so.tilo.notes";
 
 fn packages() -> [(&'static str, &'static str); 2] {
     [DISCUSSION, NOTES]

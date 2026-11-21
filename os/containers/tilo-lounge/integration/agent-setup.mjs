@@ -468,15 +468,15 @@ const call = async (name, args) => {
 await ask('initialize', {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'check-second', version: '1'}});
 otherAgent.stdin.write(`${JSON.stringify({jsonrpc: '2.0', method: 'notifications/initialized'})}\n`);
 const noteTitle = 'Hello from the second agent';
-await call('tilo_do', {path: 'notes#open'});
-await call('tilo_do', {path: 'notes#new-note', args: {title: noteTitle}});
+await call('tilo_do', {path: 'tasks#open'});
+await call('tilo_do', {path: 'tasks#create', args: {title: noteTitle}});
 // The first agent still acts after the second did: it lists the notes, the
 // second agent's among them.
 const firstAnswer = new Promise(resolve => {
   let seen = '';
   mcp.stdout.on('data', chunk => { seen += chunk; if (seen.includes('"id":3')) resolve(seen); });
 });
-mcp.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'notes/notes.pages'}}})}\n`);
+mcp.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 3, method: 'tools/call', params: {name: 'tilo_ls', arguments: {path: 'tasks/tasks.issues'}}})}\n`);
 const firstSaid = await Promise.race([firstAnswer, sleep(stepLimit(4)).then(() => 'no answer')]);
 report.firstAfterSecond = firstSaid.slice(-600);
 if (!firstSaid.includes(noteTitle)) await fail(`the first agent no longer reads the workspace after the second acted: ${firstSaid.slice(-600)}`);
@@ -504,7 +504,7 @@ const windowsHeld = `JSON.stringify({
   windows: globalThis.tiloMount?.state?.()?.windows ?? null,
   entries: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).map(entry => ({app: entry.app, tab: entry.route?.tab})),
 })`;
-const opened = await first.waitFor(openedWindow('so.tilo.notes'), {timeout: stepLimit(3)}).catch(() => '')
+const opened = await first.waitFor(openedWindow('so.tilo.tasks'), {timeout: stepLimit(3)}).catch(() => '')
   || await fail(`the person's tab showing the Notes window the second agent opened never happened: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the second agent was answered: ${JSON.stringify(report.secondAgent ?? []).slice(0, 1500)}`);
 if (opened.startsWith('could not open')) await fail(`the Notes window the second agent opened ${opened}`);
 const windowText = `(() => {
@@ -550,7 +550,7 @@ if (/lounge/i.test(after.title) || after.title !== signedUp.title) {
 }
 // The reloaded tab opens its layout from the copy its profile kept of the workspace's, and shows
 // that workspace with the Notes window still on it.
-const reopened = await first.waitFor(openedWindow('so.tilo.notes'), {timeout: stepLimit(3)}).catch(() => '')
+const reopened = await first.waitFor(openedWindow('so.tilo.tasks'), {timeout: stepLimit(3)}).catch(() => '')
   || await fail(`after a reload the Notes window is gone: ${await briefly(first, windowsHeld, '(the page did not answer)')}; the tab says: ${(await pageText(first)).slice(0, 600)}`);
 if (reopened.startsWith('could not open')) await fail(`after a reload the Notes window ${reopened}`);
 mark('the reloaded tab still shows the Notes window');

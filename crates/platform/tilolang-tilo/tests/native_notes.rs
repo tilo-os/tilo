@@ -5,8 +5,9 @@
 //! documents are read, never written.
 //!
 //! `legacy/rust_notes.hex` is what the native app's own actions wrote: its notebook record and the
-//! part of the chain its pages are kept in, saved as that app stores them
-//! (`apps/notes/tests/rust_notebook_fixture.rs` writes it, and says how to write it again).
+//! part of the chain its pages are kept in, saved as that app stores them. The test that wrote it
+//! was deleted with the app; the bytes stay, so the conversion keeps proving itself against what
+//! the app really wrote.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,7 +20,7 @@ use tilolang_runtime::{ResourceRef, Value};
 
 use crate::fixtures::{Replica, target};
 
-const NOTES_APP: &str = "so.tilo.lang.notes";
+const NOTES_APP: &str = "so.tilo.notes";
 const DISCUSSION: (&str, &str) = (
     include_str!("../../../../apps/tl/discussion/app.tl"),
     include_str!("../../../../apps/tl/discussion/app.ids"),

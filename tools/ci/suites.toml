@@ -977,7 +977,7 @@ readers = [
 package = "tilo-server"
 # A workspace's bot runner is tested with the Discord bridge's program as it
 # ships, the import it plans resuming after the workspace refused part of a run.
-inputs = ["apps/discord/bridge/program.json", "apps/notes/surface.toml"]
+inputs = ["apps/discord/bridge/program.json"]
 readers = [
   "crates/server/tilo-server/src/workspace_bots/tests.rs",
 ]
@@ -1469,7 +1469,6 @@ package = "tilo-agent-session"
 # committed file. One flow starts the calendar server the holder's own tests
 # start, from its source.
 inputs = [
-  "apps/notes/surface.toml",
   "apps/pdf-viewer/surface.toml",
   "apps/tasks/surface.toml",
   "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
@@ -1528,12 +1527,6 @@ package = "tilo-projector"
 inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/", "vendor/fcast-sender-sdk/src/chromecast_auth.rs", "vendor/fcast-sender-sdk/src/chromecast_auth/"]
 readers = ["crates/system/projector/tests/cast_tls.rs", "crates/system/projector/tests/cast_auth.rs"]
 scope = { inputs = ["vendor/fcast-sender-sdk/src/chromecast_tls.rs", "vendor/fcast-sender-sdk/src/chromecast_tls/"], test = "cast_tls", filter = "binary(cast_tls)" }
-
-[[cargo]]
-package = "notes"
-inputs = ["tools/test-assets.py", "tools/test-assets-build.rs", "apps/settings/shots/artifacts.json"]
-readers = ["apps/notes/build.rs"]
-
 
 [[cargo]]
 package = "tilo-session"
@@ -1606,7 +1599,7 @@ package = "tilo-session-client"
 # script the CI setup uses, so that script and the build it runs are read too.
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "apps/tasks/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/tasks/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
 readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
@@ -1724,16 +1717,6 @@ check = "wait-list"
 suite = "os/containers/tilo-lounge/test-onboarding.sh"
 reason = "one flow of the e2e check's, on a whole tilo.sh of its own (the stack, whose entry takes people by invitation and whose mail goes to a sink it reads): it needs the built web desktop bundle, the stack's programs, context, site and Caddy, headless Chromium, the tilo command, and minutes of a machine's walls; the onboarding check brings a stack up for it (and e2e runs it beside the other flows)"
 check = "onboarding"
-
-[[unrequired]]
-suite = "os/containers/tilo-lounge/test-page-notes.sh"
-reason = "walks a workspace's page, its Notes and every app it opens in a headless browser against the Lounge, keeping what each step saw and a picture of it for a reviewer; needs the built web desktop bundle, the built server, crypto and font programs; the page-notes check runs it on request"
-check = "page-notes"
-
-[[unrequired]]
-suite = "os/containers/tilo-lounge/test-page-reopen.sh"
-reason = "walks a page whose app request is held past the server's wait, keeping what each step saw; needs the built web desktop bundle, the built server, crypto and font programs; the page-reopen check runs it on request"
-check = "page-reopen"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-image.sh"

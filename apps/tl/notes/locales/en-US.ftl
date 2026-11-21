@@ -1,7 +1,7 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-so-tilo-lang-notes = Notes
+d-so-tilo-notes = Notes
 
 d-mavvhka7 = Note
     .doc = A note: a title, a body, the note it stands under and the tags people gave it.

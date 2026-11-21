@@ -127,7 +127,7 @@ fn no_container_is_named_by_a_message_it_holds() {
     }
 }
 
-const NOTES_APP: &str = "so.tilo.lang.notes";
+const NOTES_APP: &str = "so.tilo.notes";
 
 /// Ada's notebook, with a note she has not named yet: a new note's title starts empty.
 fn a_new_note() -> (Replica, String, ResourceRef) {

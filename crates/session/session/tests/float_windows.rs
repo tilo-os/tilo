@@ -39,7 +39,7 @@ const REFRESH: Duration = Duration::from_millis(16);
 /// The conversation the captures float, and the two windows it floats over.
 const CHAT: &str = "so.tilo.lang.chat";
 const MAIL: &str = "so.tilo.lang.mail";
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 /// The person's appearance section: the theme is chosen through its own published `field-edit` , as
 /// Settings does.
 const APPEARANCE: &str = "settings:settings.appearance";

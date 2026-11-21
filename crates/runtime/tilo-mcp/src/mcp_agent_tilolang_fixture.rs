@@ -5,11 +5,11 @@ use super::*;
 pub(super) fn tilolang_notes_catalogue() -> Value {
     json!({
         "notes": {
-            "app": "so.tilo.lang.notes",
+            "app": "so.tilo.notes",
             "signatures": [
-                {"name": "Note", "id": "tl.so.tilo.lang.notes.Note", "kind": "type",
+                {"name": "Note", "id": "tl.so.tilo.notes.Note", "kind": "type",
                  "signature": "type notes.Note", "call": "notes.Note"},
-                {"name": "Notebook", "id": "tl.so.tilo.lang.notes.Notebook", "kind": "type",
+                {"name": "Notebook", "id": "tl.so.tilo.notes.Notebook", "kind": "type",
                  "signature": "type notes.Notebook", "call": "notes.Notebook"},
                 {"name": "rename", "id": "rename_note", "kind": "action",
                  "signature": "action notes.rename(n: Note, title: Text)",
@@ -20,10 +20,10 @@ pub(super) fn tilolang_notes_catalogue() -> Value {
 }
 
 /// The directory of a live Notes (`host`) with the `Todo` page published under a kind of a
-/// tilolang app's (`tl.so.tilo.lang.notes.Note`): what a listing of it names by the program
+/// tilolang app's (`tl.so.tilo.notes.Note`): what a listing of it names by the program
 /// form, and the one resource of that kind there, so the name means one.
 pub(super) fn tilolang_kind(host: &Notes) -> Notes {
-    const NOTE: &str = "tl.so.tilo.lang.notes.Note";
+    const NOTE: &str = "tl.so.tilo.notes.Note";
     let live = host.clone().live();
     // The live shape names a page by the key its notebook gives it, bound per publication.
     let todo = live.id(&Notes::live_key(TODO));

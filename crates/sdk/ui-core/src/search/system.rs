@@ -697,7 +697,7 @@ pub fn starting_point_rank(package_id: &str) -> i32 {
     match canonical.as_deref().unwrap_or(package_id) {
         apps::BROWSER => 90,
         apps::FILE_EXPLORER => 89,
-        apps::NOTES => 88,
+        "so.tilo.notes" => 88,
         apps::TERMINAL => 87,
         apps::SETTINGS => 86,
         apps::STORE => 85,

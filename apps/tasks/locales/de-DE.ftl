@@ -73,7 +73,6 @@ tasks-area-delete = Bereich löschen
 tasks-field-project-name = Name
 tasks-field-person = Wer
 tasks-field-role = Was sie tun
-tasks-write-note = Notiz schreiben
 tasks-link-note = Notiz verknüpfen
 tasks-link-note-scope = Diese Aufgabe
 tasks-notebook = Notizbuch

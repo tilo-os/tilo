@@ -324,7 +324,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     }
 }
 
-/// An agent on the person's computer opens Notes and makes a note: the Notes window reaches the
+/// An agent on the person's computer opens Sheets and makes a sheet: the Sheets window reaches the
 /// person's layout as a member's open puts it there, named as the agent's run's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_app_an_agent_opens_reaches_the_persons_layout() {
@@ -347,52 +347,52 @@ async fn an_app_an_agent_opens_reaches_the_persons_layout() {
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person).with_agent_session("session-1");
 
-    agent_opens_notes(&server, &mut browser).await;
+    agent_opens_sheets(&server, &mut browser).await;
 }
 
 /// The same on a host someone else runs (a Lounge's), which is no member of the person's
-/// workspace, with Notes running already: the agent's Notes window reaches the person's layout
+/// workspace, with Sheets running already: the agent's Sheets window reaches the person's layout
 /// all the same.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_app_an_agent_opens_on_another_persons_host_reaches_the_persons_layout() {
     let mut guest = Box::pin(Guest::new(true, true)).await;
-    agent_opens_notes(&guest.server, &mut guest.browser).await;
+    agent_opens_sheets(&guest.server, &mut guest.browser).await;
 }
 
-/// An agent opens Notes, which it started without a window: its open alone, before the agent
-/// changes anything, puts Notes' window in front of the person.
+/// An agent opens Sheets, which it started without a window: its open alone, before the agent
+/// changes anything, puts Sheets' window in front of the person.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_open_of_a_running_app_shows_its_window_on_the_persons_layout() {
     let mut guest = Box::pin(Guest::new(false, true)).await;
-    let (started, failed) = tool(&guest.server, "tilo_do", json!({"path": "notes#start"})).await;
+    let (started, failed) = tool(&guest.server, "tilo_do", json!({"path": "sheets#start"})).await;
     assert!(!failed, "{started}");
     assert_eq!(
         layout_windows(&mut guest.browser, ""),
         0,
         "a started app has no window"
     );
-    let (opened, failed) = tool(&guest.server, "tilo_do", json!({"path": "notes#open"})).await;
+    let (opened, failed) = tool(&guest.server, "tilo_do", json!({"path": "sheets#open"})).await;
     assert!(!failed, "{opened}");
     assert!(
-        opened.starts_with("ok: notes is running"),
-        "Notes ran already: {opened}"
+        opened.starts_with("ok: sheets is running"),
+        "Sheets ran already: {opened}"
     );
     let deadline = tilo_test_env::hang_deadline();
     while layout_windows(&mut guest.browser, "") == 0 {
         assert!(
             Instant::now() < deadline,
-            "the open answered ({opened}) but no Notes window reached the person's layout"
+            "the open answered ({opened}) but no Sheets window reached the person's layout"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(
         layout_windows(&mut guest.browser, ""),
         1,
-        "one Notes window"
+        "one Sheets window"
     );
 }
 
-/// An agent opens Notes in a workspace whose layout the serving device does not hold: the open
+/// An agent opens Sheets in a workspace whose layout the serving device does not hold: the open
 /// answers at once, nothing waits for a window, and the view is asked for in the layout's document,
 /// where the person's page finds it and puts it on their layout when it holds one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -402,12 +402,12 @@ async fn an_agents_open_with_no_layout_asks_the_persons_page() {
     let answer = ask(
         &guest.server,
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "tilo_do", "arguments": {"path": "notes#open"},
+            "params": {"name": "tilo_do", "arguments": {"path": "sheets#open"},
                 "_meta": {"so.tilo.mcp": {"structured": true}}}}),
     )
     .await;
     let result = &answer["result"];
-    assert_eq!(result["isError"], false, "Notes is open: {answer}");
+    assert_eq!(result["isError"], false, "Sheets is open: {answer}");
     assert!(
         result["structuredContent"].get("not_shown").is_none(),
         "the view is asked for, which is no failure: {answer}"
@@ -420,7 +420,7 @@ async fn an_agents_open_with_no_layout_asks_the_persons_page() {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let views = guest.browser.asked_views();
-        if let Some(view) = views.iter().find(|view| view.app_id == "so.tilo.notes") {
+        if let Some(view) = views.iter().find(|view| view.app_id == SHEETS) {
             assert_eq!(
                 view.opened_by
                     .as_ref()
@@ -439,7 +439,7 @@ async fn an_agents_open_with_no_layout_asks_the_persons_page() {
 }
 
 /// A person on a host someone else runs (a Lounge's), which is no member of their workspace:
-/// their page holds Notes' document when `notes` and has written the workspace's layout when
+/// their page holds Sheets' document when `sheets` and has written the workspace's layout when
 /// `layout` (with no window on it), and an agent on their computer is served over the computer's
 /// own session.
 struct Guest {
@@ -451,7 +451,7 @@ struct Guest {
 }
 
 impl Guest {
-    async fn new(notes: bool, layout: bool) -> Self {
+    async fn new(sheets: bool, layout: bool) -> Self {
         let (operator, _) = tilo_user_identity::UserIdentity::generate("Operator", 1);
         let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
         let lounge = enrol(&operator, "lounge", DeviceCapabilities::member());
@@ -484,8 +484,8 @@ impl Guest {
         let mut browser =
             super::resource_support::open_admitted_peer(&hosted, &page_device, &lounge, &cluster)
                 .await;
-        if notes {
-            browser.create("so.tilo.notes");
+        if sheets {
+            browser.create(SHEETS);
         }
         if layout {
             browser.put_layout();
@@ -509,35 +509,35 @@ impl Guest {
     }
 }
 
-/// The agent behind `server` opens Notes and makes a note; `browser`'s layout gets one Notes
+/// The agent behind `server` opens Sheets and makes a sheet; `browser`'s layout gets one Sheets
 /// window, named as the agent's run's.
-pub(super) async fn agent_opens_notes(server: &McpServer<SessionActions>, browser: &mut Browser) {
-    let (opened, failed) = tool(server, "tilo_do", json!({"path": "notes#open"})).await;
+pub(super) async fn agent_opens_sheets(server: &McpServer<SessionActions>, browser: &mut Browser) {
+    let (opened, failed) = tool(server, "tilo_do", json!({"path": "sheets#open"})).await;
     assert!(!failed, "{opened}");
     let (wrote, failed) = tool(
         server,
         "tilo_do",
-        json!({"path": "notes#new-note", "args": {"title": "Hello from the agent"}}),
+        json!({"path": "sheets#new-sheet"}),
     )
     .await;
     assert!(!failed, "{wrote}");
     let notes = server
         .acted()
         .expect("the call names the record it wrote in");
-    assert_eq!(notes.app, "so.tilo.notes");
+    assert_eq!(notes.app, SHEETS);
 
     let deadline = tilo_test_env::hang_deadline();
     while layout_windows(browser, &notes.record) == 0 {
         assert!(
             Instant::now() < deadline,
-            "the Notes window the agent opened never reached the person's layout ({opened}; {wrote})"
+            "the Sheets window the agent opened never reached the person's layout ({opened}; {wrote})"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(
         layout_windows(browser, &notes.record),
         1,
-        "one Notes window"
+        "one Sheets window"
     );
 }
 
@@ -1391,11 +1391,8 @@ async fn an_agents_writes_answer_without_waiting_out_a_timeout() {
         ("tasks#create", json!({"title": "Second"})),
         ("tasks#create-area", json!({"name": "Launch"})),
         ("tasks#open", json!({})),
-        ("notes#new-note", json!({"title": "Plan"})),
-        (
-            "notes#append-to-note",
-            json!({"title": "Plan", "markdown": "Ship."}),
-        ),
+        ("sheets#new-sheet", json!({})),
+        ("sheets#open", json!({})),
     ] {
         let asked = Instant::now();
         let (answer, failed) = tool(&server, "tilo_do", json!({"path": path, "args": args})).await;

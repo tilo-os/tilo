@@ -1,4 +1,4 @@
-app so.tilo.lang.notes "Notes" (
+app so.tilo.notes "Notes" (
     icon: .file_text,
     category: .office,
     tagline: "Notes you write alone or together",

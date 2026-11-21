@@ -843,7 +843,7 @@ async fn a_hosted_roster_turn() {
 
     let roster = hosted.roster.as_ref().unwrap();
     let workbook = page.create(SHEETS);
-    let notebook = page.create("so.tilo.notes");
+    let tracker = page.create("so.tilo.tasks");
     file_issue(
         &roster.actions,
         &workspaces,
@@ -863,9 +863,9 @@ async fn a_hosted_roster_turn() {
         }
     };
     let deadline = tilo_test_env::hang_deadline();
-    let (workbook_before, notebook_before) = loop {
-        if let (Some(sheets), Some(notes)) = (read(&workbook).await, read(&notebook).await) {
-            break (sheets, notes);
+    let (workbook_before, tracker_before) = loop {
+        if let (Some(sheets), Some(tasks)) = (read(&workbook).await, read(&tracker).await) {
+            break (sheets, tasks);
         }
         assert!(
             Instant::now() < deadline,
@@ -894,7 +894,7 @@ async fn a_hosted_roster_turn() {
     let model = does_then_answers(
         vec![
             serde_json::json!({"path": "sheets#new-sheet", "args": {"name": "Roster signed"}}),
-            serde_json::json!({"path": "notes#create-page", "args": {"title": "Outside the grant"}}),
+            serde_json::json!({"path": "tasks#create", "args": {"title": "Outside the grant"}}),
             edit(&denied, "protected", "Denied"),
             edit(&accepted, "title", "Updated"),
         ],
@@ -930,10 +930,10 @@ async fn a_hosted_roster_turn() {
     }
     ended.unwrap();
     assert_ne!(read(&workbook).await.unwrap(), workbook_before);
-    assert_eq!(read(&notebook).await.unwrap(), notebook_before);
+    assert_eq!(read(&tracker).await.unwrap(), tracker_before);
     let signed = roster_write(&hosted, workspace.workspace_id, &workbook, device).await;
     assert_eq!(signed.len(), 1, "{signed:?}");
-    let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &notebook, device).await;
+    let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &tracker, device).await;
     assert_eq!(count, 0);
     let mut store_events = 0;
     while let Ok(write) = store_writes.try_recv() {
@@ -1117,11 +1117,11 @@ async fn a_hosted_roster_turn() {
             .server
             .workspaces()
             .unwrap()
-            .resource_document(&workspace.workspace, &notebook.app_id, &notebook.document)
+            .resource_document(&workspace.workspace, &tracker.app_id, &tracker.document)
             .await
             .unwrap()
             .unwrap(),
-        notebook_before,
+        tracker_before,
         "the denied action left no persisted document change",
     );
     let book = reopened

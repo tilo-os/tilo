@@ -157,12 +157,12 @@ tilo_test_env::scenario! {
     // entrypoint, and one that says nothing has windows that are views of records. A kind of window
     // no build knows is refused, never taken for a view.
     {
-            let notes = repo_root().join("apps/notes");
+            let tasks = repo_root().join("apps/tasks");
             assert!(
-                !load(&notes).window_runs_on_its_device(),
-                "a Notes window is a view of a record"
+                !load(&tasks).window_runs_on_its_device(),
+                "a Tasks window is a view of a record"
             );
-            let src = std::fs::read_to_string(manifest_path(&notes)).expect("Notes' manifest");
+            let src = std::fs::read_to_string(manifest_path(&tasks)).expect("Tasks' manifest");
             let said = src.replacen("[entrypoint]", "[entrypoint]\nwindow = \"device\"", 1);
             assert_ne!(said, src, "the manifest has an entrypoint to say it in");
             let manifest = Manifest::from_toml_str(&said).expect("the manifest decodes");

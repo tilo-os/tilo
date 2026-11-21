@@ -102,12 +102,12 @@ mod tests {
 
         phase a_control_says_what_it_does_in_its_own_node;
         {
-            let identified = Identified::new(button(), "so.tilo.lang.notes.Notebook\u{1f}new_note");
+            let identified = Identified::new(button(), "so.tilo.notes.Notebook\u{1f}new_note");
             let node = super::Widget::accessibility(&identified).expect("the control describes itself");
             assert_eq!(node.role, Role::Button);
             assert_eq!(
                 node.action.as_deref(),
-                Some("so.tilo.lang.notes.Notebook\u{1f}new_note")
+                Some("so.tilo.notes.Notebook\u{1f}new_note")
             );
             assert_eq!(node.name.as_deref(), Some("New note"));
         }

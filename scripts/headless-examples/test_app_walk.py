@@ -110,7 +110,7 @@ class ThePageItWrites(unittest.TestCase):
                     id="open", said="Open Notes on an empty notebook",
                     ops=[{"launch": True, "found": {"count": 0}}],
                     shot=str(out / "shots/rust/01-open.png"))]},
-                "tl": {"app": "so.tilo.lang.notes", "session_start_ms": 900, "steps": [dict(
+                "tl": {"app": "so.tilo.notes", "session_start_ms": 900, "steps": [dict(
                     id="open", said="Open Notes on an empty notebook",
                     ops=[{"launch": True, "found": {"notes": None}}],
                     shot=str(out / "shots/tl/01-open.png"),
@@ -160,8 +160,8 @@ class NamingAControl(unittest.TestCase):
 class CountingNotes(unittest.TestCase):
     def test_a_tilolang_read_counts_with_the_count_it_gives(self):
         read = {"fields": {"notes": {"count": 2, "items": [
-            {"type": "tl.so.tilo.lang.notes.Note", "title": "a"},
-            {"type": "tl.so.tilo.lang.notes.Note", "title": "b"}]}}}
+            {"type": "tl.so.tilo.notes.Note", "title": "a"},
+            {"type": "tl.so.tilo.notes.Note", "title": "b"}]}}}
         self.assertEqual(walk.notes_held(read), 2)
 
     def test_a_native_read_counts_the_pages_it_lists(self):

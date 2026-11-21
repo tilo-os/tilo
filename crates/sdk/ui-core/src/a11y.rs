@@ -390,7 +390,7 @@ pub struct AccessNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
     /// What this control does, as a stable identity: the record kind it acts on and the operation
-    /// (`so.tilo.lang.notes.Notebook` and `new_note`, a field's `title` for a control that edits one),
+    /// (`so.tilo.notes.Notebook` and `new_note`, a field's `title` for a control that edits one),
     /// written as [`tilo_actions::ActionAddress`] writes an address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,

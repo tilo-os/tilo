@@ -1,5 +1,5 @@
 use so.tilo.lang.chat as chat
-use so.tilo.lang.notes as notes
+use so.tilo.notes as notes
 use so.tilo.lang.tasks as tasks
 
 /// Scenarios: the shell as people meet it, in the states its views are for. Each fills
@@ -1420,7 +1420,7 @@ action a_note_place(a: Layout, strip: Text, index: Int) -> Text {
             LayoutPlace(
                 key: "p-{index}",
                 strip: strip,
-                shows: "so.tilo.lang.notes",
+                shows: "so.tilo.notes",
                 resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",
@@ -1465,7 +1465,7 @@ action a_query_place(a: Layout, strip: Text, text: Text) -> Text {
         LayoutQuery(
             key: p.key,
             text: text,
-            in_app: "so.tilo.lang.notes",
+            in_app: "so.tilo.notes",
             kind: "notes.note",
             state: "several",
         ),
@@ -1488,7 +1488,7 @@ action a_query_place(a: Layout, strip: Text, text: Text) -> Text {
 /// shots and its layouts show.
 fn installed_apps() -> List<device.App> {
     return [
-        device.App(key: "so.tilo.lang.notes", name: "Notes", icon: "file-text", category: "work"),
+        device.App(key: "so.tilo.notes", name: "Notes", icon: "file-text", category: "work"),
         device.App(
             key: "so.tilo.lang.chat",
             name: "Chat",
@@ -1585,7 +1585,7 @@ scenario "a layout of places" -> Layout {
             LayoutPlace(
                 key: "d-{i}",
                 strip: held,
-                shows: "so.tilo.lang.notes",
+                shows: "so.tilo.notes",
                 resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",
@@ -1733,7 +1733,7 @@ scenario "a canvas of clusters" -> Layout {
             LayoutPlace(
                 key: "c-{i}",
                 strip: s,
-                shows: "so.tilo.lang.notes",
+                shows: "so.tilo.notes",
                 shown_as: "note_editor",
                 resource: n.id(),
                 title: n.title,
@@ -1780,7 +1780,7 @@ scenario "resources shown as content" -> Layout {
             LayoutPlace(
                 key: "x-{i}",
                 strip: s,
-                shows: "so.tilo.lang.notes",
+                shows: "so.tilo.notes",
                 shown_as: "note_editor",
                 resource: n.id(),
                 title: n.title,
@@ -1906,7 +1906,7 @@ scenario "the traditional desktop" {
             LayoutPlace(
                 key: "p1",
                 strip: main,
-                shows: "so.tilo.lang.notes",
+                shows: "so.tilo.notes",
                 resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",
@@ -1919,7 +1919,7 @@ scenario "the traditional desktop" {
             LayoutPlace(
                 key: "p2",
                 strip: behind,
-                shows: "so.tilo.lang.notes",
+                shows: "so.tilo.notes",
                 resource: n.id(),
                 title: n.title,
                 name: "{n.title} — Notes",

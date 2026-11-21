@@ -35,7 +35,7 @@ use tilolang_process::testing::Broker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::document::InstanceDocument;
 
-const APP: &str = "so.tilo.lang.notes";
+const APP: &str = "so.tilo.notes";
 
 fn notes() -> Arc<Bundle> {
     let lock =

@@ -39,8 +39,6 @@ glyph-join 1 apps/music/src/commands.rs
 glyph-join 1 apps/music/src/lyrics.rs
 glyph-join 1 apps/music/src/recommendations/resources.rs
 glyph-join 1 apps/music/src/search_type.rs
-glyph-join 2 apps/notes/src/scenario.rs
-glyph-join 8 apps/notes/src/shortcuts_overlay.rs
 glyph-join 1 apps/passwords/src/actions.rs
 glyph-join 2 apps/pdf-viewer/src/scenarios.rs
 glyph-join 1 apps/photos/src/app/accessibility.rs

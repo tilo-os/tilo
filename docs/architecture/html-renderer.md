@@ -146,7 +146,6 @@ every few seconds what others changed, so their edits reach it.
 ## Tests
 
 The composition is tested where the widgets and apps are:
-`crates/sdk/ui-core/src/composition/page.rs`'s own tests, app tests such as
-`apps/notes/tests/html_composition.rs`, and the server page's flow in
+`crates/sdk/ui-core/src/composition/page.rs`'s own tests, and the server page's flow in
 `crates/server/tilo-server/src/web/page/tests.rs` and
 `crates/server/tilo-server/src/web/page/page.test.mjs`.

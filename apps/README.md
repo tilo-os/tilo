@@ -243,7 +243,7 @@ All apps are workspace members; build from the repo root. See
 
 ```bash
 cargo build -p terminal -p file-explorer -p browser
-cargo run -p notes -- --shots out.png        # headless offscreen frame
+cargo run -p calculator -- --shots out.png        # headless offscreen frame
 ```
 
 Each app depends on the public SDK under the concise source name

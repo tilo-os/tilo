@@ -132,50 +132,50 @@ async fn workspace(agent: &Agent<'_>, name: &str) -> (String, String) {
     (format!("/v1/workspaces/{id}"), id)
 }
 
-/// The path of the resource of the notebook's pages: the row whose actions
-/// make a page.
-async fn notes(agent: &Agent<'_>, base: &str) -> String {
+/// The path of the resource of the tracker's issues: the row whose actions
+/// make an issue.
+async fn issues(agent: &Agent<'_>, base: &str) -> String {
     let listed = agent
-        .get(&format!("{base}/resources?path=notes&limit=200"))
+        .get(&format!("{base}/resources?path=tasks&limit=200"))
         .await;
     let rows = listed["rows"].as_array().cloned().unwrap_or_default();
     rows.iter()
         .find(|row| {
             row["actions"]
                 .as_array()
-                .is_some_and(|actions| actions.iter().any(|named| named == "create-page"))
+                .is_some_and(|actions| actions.iter().any(|named| named == "create"))
         })
         .and_then(|row| row["path"].as_str())
         .map_or_else(
-            || panic!("the notebook lists the pages it makes: {listed}"),
+            || panic!("the tracker lists the issues it makes: {listed}"),
             str::to_owned,
         )
 }
 
-/// A note's Markdown, one paragraph.
-fn note(index: usize) -> Value {
+/// An issue to make, one paragraph.
+fn new_issue(index: usize) -> Value {
     json!({
-        "title": format!("note-{index}"),
-        "markdown": format!("# Note {index}\n\nA paragraph of what note {index} keeps.\n"),
+        "title": format!("issue-{index}"),
+        "body": format!("A paragraph of what issue {index} is about."),
     })
 }
 
-/// The reads one action takes, in that agent's workspace of `size` notes: the
+/// The reads one action takes, in that agent's workspace of `size` issues: the
 /// least of a few, so what a settling workspace sends beside the action does
 /// not decide it.
 async fn reads_per_action(agent: &Agent<'_>, base: &str, size: usize) -> u64 {
-    agent.act(base, "notes", "open", &json!({})).await;
-    let notes = notes(agent, base).await;
-    let seed: Vec<Value> = (0..size).map(note).collect();
-    agent.many(base, &notes, "create-page", &seed).await;
+    agent.act(base, "tasks", "open", &json!({})).await;
+    let issues = issues(agent, base).await;
+    let seed: Vec<Value> = (0..size).map(new_issue).collect();
+    agent.many(base, &issues, "create", &seed).await;
     // The first action catches up what seeding changed; only the ones after
     // it show what a refresh costs once the workspace is where it is.
-    agent.act(base, &notes, "create-page", &note(size)).await;
+    agent.act(base, &issues, "create", &new_issue(size)).await;
     let mut took = Vec::new();
     for index in 0..3 {
         let before = replica_reads();
         agent
-            .act(base, &notes, "create-page", &note(size + 1 + index))
+            .act(base, &issues, "create", &new_issue(size + 1 + index))
             .await;
         took.push(replica_reads().saturating_sub(before));
     }

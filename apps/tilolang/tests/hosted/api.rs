@@ -7,7 +7,7 @@ use serde_json::{Map, Value as Json, json};
 use tilolang_tilo::action::resource_ids;
 use ui::history_source::steps::Scope;
 
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 const HOST: &str = "tl:host";
 
 fn arguments(value: &Json) -> Map<String, Json> {

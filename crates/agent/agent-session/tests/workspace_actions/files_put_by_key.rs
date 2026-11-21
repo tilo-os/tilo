@@ -5,7 +5,7 @@
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key, json_of};
-use super::branch_workspace::Key;
+use super::key::Key;
 use super::*;
 use base64::Engine as _;
 use serde_json::{Value, json};

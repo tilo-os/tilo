@@ -36,7 +36,7 @@ use tilolang_tilo::host::Host;
 mod window;
 
 /// The notes app, whose notebook's export the check holds.
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 
 /// Counted, so the documents hold the allocations each scenario made.
 #[global_allocator]

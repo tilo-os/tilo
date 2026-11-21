@@ -72,7 +72,7 @@ fn workspace() -> Replica {
     let mut imports: Vec<_> = [
         "so.tilo.lang.discussion",
         "so.tilo.lang.chat",
-        "so.tilo.lang.notes",
+        "so.tilo.notes",
         "so.tilo.lang.tasks",
     ]
     .iter()
@@ -570,9 +570,9 @@ fn resource_menus(
 fn the_macos_bar_carries_the_focused_windows_own_commands() {
     let mut r = workspace();
     r.commit();
-    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.host.root_of("so.tilo.notes").unwrap();
     r.commit();
-    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    scenario(&r, "so.tilo.notes", "a week of notes");
     r.commit();
     use_preset(&mut r, "macos");
     let meta = r.host.package(APP).unwrap().meta;
@@ -665,9 +665,9 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
 #[test]
 fn a_window_is_named_by_its_window_and_app_never_an_id() {
     let mut r = workspace();
-    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.host.root_of("so.tilo.notes").unwrap();
     r.commit();
-    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    scenario(&r, "so.tilo.notes", "a week of notes");
     r.commit();
     let layout = scenario(&r, APP, "a reference lands beside its place");
     let meta = r.host.package(APP).unwrap().meta;
@@ -921,9 +921,9 @@ fn scenario(r: &Replica, app: &str, name: &str) -> Value {
 #[test]
 fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_keeps_its_well() {
     let mut r = workspace();
-    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.host.root_of("so.tilo.notes").unwrap();
     r.commit();
-    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    scenario(&r, "so.tilo.notes", "a week of notes");
     r.commit();
     let meta = r.host.package(APP).unwrap().meta;
     // The layout is the session's (`origin: session.layout`): the scenario writes it
@@ -968,9 +968,9 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
 #[test]
 fn resources_shown_as_content_stand_on_the_frameless_canvas() {
     let mut r = workspace();
-    r.host.root_of("so.tilo.lang.notes").unwrap();
+    r.host.root_of("so.tilo.notes").unwrap();
     r.commit();
-    scenario(&r, "so.tilo.lang.notes", "a week of notes");
+    scenario(&r, "so.tilo.notes", "a week of notes");
     r.commit();
     let meta = r.host.package(APP).unwrap().meta;
     let layout = scenario(&r, APP, "resources shown as content");

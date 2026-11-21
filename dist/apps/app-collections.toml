@@ -1,7 +1,8 @@
-# Release sets resolve `*` from tracked app manifests.
-
+# Release sets resolve `*` from tracked app manifests. A tilolang package is named
+# beside it: `*` is every native app, and a package joins the collection in the
+# change that retires the native app it replaces.
 [collections.default]
-include = ["*"]
+include = ["*", "tl-notes"]
 
 [collections.desktop]
 extends = ["default"]
@@ -11,12 +12,9 @@ extends = ["default"]
 
 # The apps an OS image bakes into its read-only store (os/scripts/pack-apps.sh,
 # from the plan its compile writes): every native app, and the tilolang packages
-# the image ships beside the native app they replace. A package moves to
-# `default` only in the change that retires that app, so a release never ships
-# two apps for one thing under one id.
+# in place of the native apps they replaced.
 [collections.image]
 extends = ["default"]
-include = ["tl-notes"]
 
 [collections.recovery]
 include = ["file-explorer", "settings", "terminal"]
@@ -73,4 +71,3 @@ store = ["runtime-engine"]
 # beside the runtime.
 chat = ["runtime-engine"]
 osk = ["runtime-engine"]
-notes = ["runtime-engine"]

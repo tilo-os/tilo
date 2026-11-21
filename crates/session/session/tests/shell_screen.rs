@@ -927,7 +927,7 @@ fn an_app_the_shell_opens_stands_on_the_framed_canvas() {
         .invoke(
             CHROME,
             "open-app",
-            json!({"app": "so.tilo.lang.notes"})
+            json!({"app": "so.tilo.notes"})
                 .as_object()
                 .expect("an object"),
         )

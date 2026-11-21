@@ -15,7 +15,7 @@ const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
-const APP: &str = "so.tilo.lang.notes";
+const APP: &str = "so.tilo.notes";
 
 struct Workspace {
     ada: Replica,
@@ -245,7 +245,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             links.iter().all(
-                |(reference, title)| reference.contains("so.tilo.lang.notes") && reference != title
+                |(reference, title)| reference.contains("so.tilo.notes") && reference != title
             ),
             "each is the catalogue's reference to the note, never its title: {links:?}"
         );

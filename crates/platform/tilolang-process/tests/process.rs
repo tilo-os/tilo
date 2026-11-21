@@ -1575,7 +1575,7 @@ tilo_test_env::scenario! {
     }
 }
 
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 
 /// Where the shipped tilolang packages are.
 fn shipped_dir() -> std::path::PathBuf {
@@ -2471,7 +2471,7 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
         "scoped to Mail: the hit is there"
     );
     assert_eq!(
-        in_app("widths", "so.tilo.lang.notes"),
+        in_app("widths", "so.tilo.notes"),
         0,
         "scoped to another app: it is not"
     );

@@ -998,7 +998,7 @@ mod tests {
         // An app changing another app's record is named by its own name, and no fragment of its
         // actor id stands beside it: a person reads "Notes changed one note", not "app:so.t".
         {
-            let app = tilo_actions::Actor::App("so.tilo.lang.notes".into());
+            let app = tilo_actions::Actor::App("so.tilo.notes".into());
             assert_eq!(actor_label(&app), "Notes");
 
             let actor = automerge::ActorId::from(app.actor_bytes());

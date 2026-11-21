@@ -23,7 +23,7 @@ executable stand-alone; the higher-level flow is described below.
   (key -> client commit -> compositor submit -> the vblank that shows it).
   It types into the synthetic client that answers each key with one commit
   (`crates/session/session/examples/latency_client.rs`), or into an installed
-  app with `--app so.tilo.notes` / a tilolang app's id, opens the session
+  app with `--app so.tilo.tasks` / a tilolang app's id, opens the session
   through `scripts/headless-examples/real_apps.py`, and reports p50/p90/p99
   per leg. It leaves out the kernel input stack and the panel, so it measures
   the compositor, the client and the GPU.
@@ -91,63 +91,6 @@ executable stand-alone; the higher-level flow is described below.
    `-C profile-use`. Output lands at `target/pgo-release/`.
 4. (optional) `bolt-optimize.sh` — post-link `llvm-bolt` on the PGO'd
    binaries using the same profile signal. Output at `target/bolted/`.
-
-## Physical device Notes latency
-
-Use the ordinary `tilo-vm` device and slot after applying a qualified release
-component with `tilo device swap tilo-session --slot device --builder remote`. Update Notes
-through its signed release channel:
-
-```sh
-TILO_VM=yoga tilo device slot exec --slot device --timeout 180 -- app update so.tilo.notes
-python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
-  --samples 100 --out target/yoga-notes-after-update
-```
-
-The device session must be unlocked. Enable the greeter's
-normal `configure-session-diagnostics@greeter` presentation flag before sign-in
-for physical input and presentation evidence. For GPU diagnosis also enable
-`gpu_stages`, `gpu_timestamps` and `gpu_dispatch_timestamps`; stage logging alone
-does not enable GPU timestamp queries.
-
-The capture never touches the person's notebook. Every Notes window in a
-workspace opens that workspace's one notebook, so the capture first creates a
-workspace of its own (`so.tilo.session` `desktop:chrome␟new-workspace`, which
-mints a new id), opens Notes there (`applications so.tilo.notes`) and
-addresses every Notes action by that id and its record (`scratch_notes.py`). A
-workspace that existed before the run is refused, and so is any Notes row
-outside the scratch workspace. In that notebook it creates and opens a fresh
-scratch note. Before every kernel key it checks the
-actual selected/bound page, adopted canonical and rendered hashes, caret,
-editor focus and that the keyboard goes to the scratch workspace's one Notes
-surface. The workspace, named `Notes latency scratch <time>`, and its note
-remain for inspection afterward; delete the workspace when done.
-
-The output contains private raw logs, the exact input/frame/presentation timeline,
-editor observations, scratch identity and `report.json`. Missing, discarded or
-coalesced exact frames fail the capture; a partial run never produces a passing
-latency summary. A small sample count is useful for diagnosis, but does not
-establish a stable p99. Record the deployed component receipt, Notes release and
-device/image identity with comparative runs. The clock starts at the original
-kernel/libinput event and ends at hardware presentation; it excludes peripheral
-scan time and panel pixel response.
-
-To attribute a Linux capture to client CPU stages, use a runtime that emits
-the native render timing rows, then analyze that same capture:
-
-```sh
-python3 scripts/perf/physical_notes_stages.py \
-  --capture target/yoga-notes-after-update \
-  --out target/yoga-notes-after-update/client-stages.json
-```
-
-The analyzer requires the verified changed Notes body and KMS presentation,
-then joins render stages using the process, worker lifetime, CPU frame and
-render worker identities. Missing render stages fail analysis. Older clients
-without the optional post-draw main-thread stages report that absence explicitly.
-The output is private and refuses to overwrite an existing report. These CPU
-durations include scheduling and logging; they do not measure GPU execution or
-certify performance.
 
 ## What's blocked
 

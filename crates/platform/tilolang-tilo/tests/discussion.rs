@@ -19,7 +19,7 @@ const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const DISCUSSION_APP: &str = "so.tilo.lang.discussion";
-const NOTES_APP: &str = "so.tilo.lang.notes";
+const NOTES_APP: &str = "so.tilo.notes";
 const TASKS_APP: &str = "so.tilo.lang.tasks";
 
 fn action(r: &Replica, app: &str, name: &str) -> String {

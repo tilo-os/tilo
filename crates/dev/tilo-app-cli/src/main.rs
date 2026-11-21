@@ -473,7 +473,7 @@ Lints:
 
 Examples:
   tilo-app check                     Everything, for the app in the current directory
-  tilo-app check --lint apps/notes   Only the lints, without building
+  tilo-app check --lint apps/settings   Only the lints, without building
   tilo-app check --lint --all        The lints for every Tilo app in the workspace (CI)";
 
 #[derive(clap::Args)]

@@ -1,11 +1,11 @@
-//! A shell of six app windows, driven in process through the frame path both
+//! A shell of five app windows, driven in process through the frame path both
 //! hosts run: what one keystroke into one of them costs, and what each
 //! window's app did about it.
 //!
-//! The six are the windows the browser's launch demo opens — Notes, Sheets,
-//! Writer, Calendar, Calculator and Slides — one window each on one strip, as
-//! they stand after a person opened them one by one and went back to typing
-//! in their note.
+//! The five are windows the browser's launch demo opens — Sheets, Writer,
+//! Calendar, Calculator and Slides — one window each on one strip, as they
+//! stand after a person opened them one by one and went back to typing in
+//! their document.
 
 #![allow(
     clippy::unwrap_used,
@@ -42,17 +42,16 @@ pub type DemoApp = (
 );
 
 /// The apps the demo opens, in the order it opens them.
-pub const DEMO: [DemoApp; 6] = [
-    ("notes", "Notes", notes::definition),
-    ("sheets", "Sheets", sheets::definition),
+pub const DEMO: [DemoApp; 5] = [
     ("word_processor", "Writer", word_processor::definition),
+    ("sheets", "Sheets", sheets::definition),
     ("calendar", "Calendar", calendar::definition),
     ("calculator", "Calculator", calculator::definition),
     ("slides", "Slides", slides::definition),
 ];
 
-/// The app a person types into: the first window, the note.
-pub const TYPED_INTO: &str = "notes";
+/// The app a person types into: the first window, the document.
+pub const TYPED_INTO: &str = "word_processor";
 
 /// What a component mounted in a window is given besides its own record.
 struct Host {
@@ -119,7 +118,7 @@ pub struct Demo {
     /// Each window's record, as the store the app reads it through holds it.
     records: Vec<(&'static str, DocumentCheckout, ResourceStore)>,
     /// The note's tab: the window a person types into.
-    note_tab: TabId,
+    typed_tab: TabId,
     /// A window woke since the host last ran the frame a wake asks for.
     woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -173,7 +172,7 @@ impl Demo {
                 pinned: false,
             });
         }
-        let note_tab = tabs.first().expect("the note is the first window").id;
+        let typed_tab = tabs.first().expect("the note is the first window").id;
         let tree = seed_tree(&mut minter, "Work", tabs);
         // What wakes a window (a worker's reply, another replica's change
         // arriving) asks the host for a frame, as the live shell's event loop
@@ -212,7 +211,7 @@ impl Demo {
             harness,
             handle,
             records,
-            note_tab,
+            typed_tab,
             woken,
         }
     }
@@ -237,14 +236,14 @@ impl Demo {
             .and_then(|node| node.name)
     }
 
-    /// The note's records as their committed heads stand: the notebook and
-    /// the parts its notes are kept in. What typing into the note changes.
-    pub fn note_heads(&self) -> Vec<ui::automerge::ChangeHash> {
+    /// The typed-into app's records as their committed heads stand: the
+    /// document the keys went into. What typing changes.
+    pub fn typed_heads(&self) -> Vec<ui::automerge::ChangeHash> {
         let (_, _, store) = self
             .records
             .iter()
             .find(|(owner, _, _)| *owner == TYPED_INTO)
-            .expect("the note is open");
+            .expect("the document is open");
         let mut heads = Vec::new();
         for id in store.held_resources() {
             if let Some(held) = store.with(&id, ui::automerge::AutoCommit::get_heads) {
@@ -284,17 +283,16 @@ impl Demo {
         );
     }
 
-    /// Put the keyboard in the note's editor, where a person typing has it:
-    /// a note is made if the app shows none, and a press lands in the page's
-    /// body, where a note is written.
-    pub fn focus_the_note(&mut self) {
+    /// Put the keyboard in the document's page, where a person typing has it: a press lands in
+    /// the body the app writes into.
+    pub fn focus_the_editor(&mut self) {
         use ui::accesskit::Role;
         let tile = self
             .handle
             .shown_tiles()
             .into_iter()
-            .find(|(tab, _)| *tab == self.note_tab)
-            .expect("the note's window is on the shell")
+            .find(|(tab, _)| *tab == self.typed_tab)
+            .expect("the document's window is on the shell")
             .1;
         let in_tile = |node: &ui::accesskit::Node| {
             node.bounds().is_some_and(|bounds| {
@@ -304,14 +302,17 @@ impl Demo {
                     && bounds.y1 <= tile.y1
             })
         };
-        for _ in 0..4 {
+        // The page may still be laid out on the frame after the window opens: look again while
+        // it is not there yet.
+        for _ in 0..8 {
             let body = self
                 .harness
                 .a11y_nodes()
                 .into_iter()
                 .find(|(_, node)| in_tile(node) && node.role() == Role::Document);
-            if let Some((_, node)) = body {
-                let bounds = node.bounds().expect("the page's bounds");
+            if let Some((_, node)) = body
+                && let Some(bounds) = node.bounds()
+            {
                 // A press in the middle of the page, below what it shows.
                 self.harness
                     .click_at(f64::midpoint(bounds.x0, bounds.x1), bounds.y0 + 200.0);
@@ -320,25 +321,11 @@ impl Demo {
                 }
                 return;
             }
-            // An empty notebook shows the way to its first note.
-            let Some((new_note, _)) = self
-                .harness
-                .a11y_nodes()
-                .into_iter()
-                .find(|(_, node)| in_tile(node) && node.label() == Some("New note"))
-            else {
-                panic!(
-                    "the note's window publishes neither a note to type into nor a way to make one"
-                );
-            };
-            self.harness
-                .perform_a11y_action(new_note, &ui::a11y::Action::Activate)
-                .expect("the new note opens");
             for _ in 0..3 {
                 self.harness.relayout();
             }
         }
-        panic!("the note never opened an editor to type into");
+        panic!("the document's window publishes no page to type into");
     }
 
     /// Type one key and run the frames the host runs after it.

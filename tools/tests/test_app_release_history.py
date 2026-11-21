@@ -312,23 +312,23 @@ class AppReleaseHistory(unittest.TestCase):
         with self.subTest(phase='real planner resolves changes from a depth one checkout'):
             self.doCleanups()
             self.setUp()
-            (self.source / "apps/notes/src").mkdir(parents=True)
+            (self.source / "apps/settings/src").mkdir(parents=True)
             (self.source / "dist/apps").mkdir(parents=True)
             (self.source / "Cargo.toml").write_text(
-                '[workspace]\nmembers = ["apps/notes"]\nresolver = "2"\n',
+                '[workspace]\nmembers = ["apps/settings"]\nresolver = "2"\n',
                 encoding="utf-8",
             )
             (self.source / "Cargo.lock").write_text(
                 'version = 4\n\n[[package]]\nname = "tilo-app-notes"\nversion = "1.0.0"\n',
                 encoding="utf-8",
             )
-            (self.source / "apps/notes/Cargo.toml").write_text(
+            (self.source / "apps/settings/Cargo.toml").write_text(
                 '[package]\nname = "tilo-app-notes"\nversion = "1.0.0"\n'
                 'edition = "2024"\n\n[[bin]]\nname = "tilo-notes"\n'
                 'path = "src/main.rs"\n',
                 encoding="utf-8",
             )
-            (self.source / "apps/notes/tilo-app.toml").write_text(
+            (self.source / "apps/settings/tilo-app.toml").write_text(
                 '[package]\nid = "org.tilo.notes"\nversion = "1.0.0"\n'
                 'runtime = "1"\n\n[entrypoint]\nbin = "tilo-notes"\n',
                 encoding="utf-8",
@@ -336,16 +336,16 @@ class AppReleaseHistory(unittest.TestCase):
             (self.source / "dist/apps/app-collections.toml").write_text(
                 '[collections.default]\ninclude = ["notes"]\n', encoding="utf-8"
             )
-            (self.source / "apps/notes/src/main.rs").write_text(
+            (self.source / "apps/settings/src/main.rs").write_text(
                 'fn main() {}\n', encoding="utf-8"
             )
             self.git(self.source, "add", ".")
             self.git(self.source, "commit", "-qm", "base")
             base = self.git(self.source, "rev-parse", "HEAD")
-            (self.source / "apps/notes/src/main.rs").write_text(
+            (self.source / "apps/settings/src/main.rs").write_text(
                 'fn main() { println!("changed"); }\n', encoding="utf-8"
             )
-            self.git(self.source, "add", "apps/notes/src/main.rs")
+            self.git(self.source, "add", "apps/settings/src/main.rs")
             self.git(self.source, "commit", "-qm", "head")
             self.publish()
             clone = self.shallow_clone("main")

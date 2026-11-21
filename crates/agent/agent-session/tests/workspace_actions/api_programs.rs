@@ -69,9 +69,9 @@ async fn a_program_runs_on_a_workspace_the_server_hosts() {
                "params": {"name": "tilo", "arguments": {"program": program}}})
     };
 
-    // A program reads the workspace's app: the notebook the app keeps, named through its
+    // A program reads the workspace's app: the tracker the app keeps, named through its
     // declarations, which the workspace's host publishes.
-    let (status, read) = session.post(tilo("notes.notebook")).await;
+    let (status, read) = session.post(tilo("tasks.tracker")).await;
     assert_eq!(status, 200, "{read}");
     assert_eq!(read["result"]["isError"], false, "{read}");
 
@@ -81,7 +81,7 @@ async fn a_program_runs_on_a_workspace_the_server_hosts() {
         &on_server,
         &key,
         &workspace,
-        "notes.new_note(notes.pages, title: \"From the hosted task\")",
+        "tasks.create(tasks.issues, title: \"From the hosted task\")",
     )
     .await;
     assert_eq!(status, 200, "{made}");
@@ -89,22 +89,22 @@ async fn a_program_runs_on_a_workspace_the_server_hosts() {
     assert_eq!(made["changed"], 1, "{made}");
     assert_eq!(made["steps"].as_array().map(Vec::len), Some(1), "{made}");
 
-    // The note is in the workspace's record, read as a person's call reads it.
+    // The issue is in the workspace's record, read as a person's call reads it.
     let (status, read) = session
         .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                     "params": {"name": "tilo_read", "arguments": {"path": "notes/Notes"}}}))
+                     "params": {"name": "tilo_read", "arguments": {"path": "tasks/Issues"}}}))
         .await;
     assert_eq!(status, 200, "{read}");
     assert!(
         read.to_string().contains("From the hosted task"),
-        "the note the program made is in the workspace: {read}"
+        "the issue the program made is in the workspace: {read}"
     );
 
     // Another note through the session's own tool: its step is the task's history, so `undo`
     // takes it back.
     let (status, made) = session
         .post(tilo(
-            "notes.new_note(notes.pages, title: \"Also from the task\")",
+            "tasks.create(tasks.issues, title: \"Also from the task\")",
         ))
         .await;
     assert_eq!(status, 200, "{made}");
@@ -168,7 +168,7 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
         .await
         .unwrap();
     assert!(
-        repl.apps().iter().any(|app| app == "notes"),
+        repl.apps().iter().any(|app| app == "tasks"),
         "the REPL completes the workspace's apps: {:?}",
         repl.apps()
     );
@@ -176,14 +176,14 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
     // A `let` holds for the entries after it.
     said(repl.entry("let title = \"Groceries\"").await);
     let made = said(
-        repl.entry("notes.new_note(notes.pages, title: title)")
+        repl.entry("tasks.create(tasks.issues, title: title)")
             .await,
     );
     assert!(!made.contains("error"), "{made}");
 
     // A change to many waits for `confirm`, and is then one step.
     let bulk = "for t in [\"Bins\", \"Oat milk\", \"Plants\", \"Library\", \"Haircut\"] { \
-                notes.new_note(notes.pages, title: t) }";
+                tasks.create(tasks.issues, title: t) }";
     let previewed = said(repl.entry(bulk).await);
     assert!(previewed.contains("preview:"), "{previewed}");
     let applied = said(repl.entry("confirm").await);
@@ -202,22 +202,23 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
     let history = said(repl.entry("history task").await);
     assert!(history.contains("(undone)"), "{history}");
 
-    // A program reads another app's records: the notebook's pages, each shown with a
+    // A program reads another app's records: the tracker's issues, each shown with a
     // reference a following entry names it by.
-    let pages = said(repl.entry("notes.pages.pages").await);
+    let pages = said(repl.entry("tasks.issues.issues").await);
+    // The five the bulk made are undone, so the one issue left is the first the REPL made.
     let groceries = pages
         .lines()
-        .find(|line| line.contains("Groceries"))
+        .next()
         .and_then(|line| line.split_whitespace().next())
-        .unwrap_or_else(|| panic!("the notebook's pages are read: {pages}"))
+        .unwrap_or_else(|| panic!("the tracker's issues are read: {pages}"))
         .to_owned();
     assert!(
-        groceries.starts_with('p') && groceries != "Groceries",
-        "a page is shown by a short reference: {pages}"
+        !groceries.is_empty() && groceries.len() < 8 && groceries != "Groceries",
+        "an issue is shown by a short reference: {pages}"
     );
     assert!(
-        !pages.contains("Bins"),
-        "the undone notes are gone: {pages}"
+        !pages.contains("Bins") && pages.lines().count() == 1,
+        "the undone issues are gone: {pages}"
     );
     let title = said(repl.entry(&format!("{groceries}.title")).await);
     assert_eq!(
@@ -232,7 +233,7 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
         .unwrap();
     let unknown = said(
         other
-            .entry("notes.new_note(notes.pages, title: title)")
+            .entry("tasks.create(tasks.issues, title: title)")
             .await,
     );
     assert!(unknown.contains("error"), "{unknown}");

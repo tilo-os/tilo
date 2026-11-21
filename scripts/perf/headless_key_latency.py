@@ -17,11 +17,11 @@ client and the GPU.
 
 Two windows to type into:
 
-- **an installed app** (`--app so.tilo.notes`, or a tilolang app's id): opened
+- **an installed app** (`--app so.tilo.tasks`, or a tilolang app's id): opened
   through the desktop's own launcher, as a person opens it. Its own editor
   answers each key with a commit, which is what a person feels. The run opens
-  something to type into first (`--open`, an action of the app such as Notes'
-  "New note": a fresh Notes shows no editor), clicks into the window
+  something to type into first (`--open`, an action of the app such as Tasks'
+  "New issue"), clicks into the window
   (`--click-at`) so the editor has the caret, and refuses to type when a key
   changes nothing the app draws.
 - **the synthetic client** (the default): `crates/session/session/examples/
@@ -42,9 +42,9 @@ a private runtime directory. Nothing here touches the desktop this runs from.
     scripts/perf/headless_key_latency.py --label client --client-bin target/release/examples/latency_client
 
     # a native app and a tilolang app, through the desktop
-    scripts/perf/headless_key_latency.py --label native-notes --app so.tilo.notes \
+    scripts/perf/headless_key_latency.py --label native-tasks --app so.tilo.tasks \
         --open "New note" --open-args '{"title": "Latency"}' --click-at 0.5,0.17
-    scripts/perf/headless_key_latency.py --label tilolang-notes --app so.tilo.lang.notes \
+    scripts/perf/headless_key_latency.py --label tilolang-notes --app so.tilo.notes \
         --tapp notes.tapp --open "New note" --click-at 0.5,0.17
 
     scripts/perf/headless_key_latency.py --compare target/key-latency/*.json
@@ -350,7 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--app", help="type into this installed app instead of the synthetic client")
-    parser.add_argument("--apps", default="notes", help="apps the session installs (default: notes)")
+    parser.add_argument("--apps", default="tasks", help="apps the session installs (default: tasks)")
     parser.add_argument("--tapp", type=Path, action="append", metavar="PATH",
                         help="a signed app package the session installs besides them, as a tilolang "
                              "app is (repeatable)")
@@ -382,7 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--app-timeout", type=float, default=120.0)
     parser.add_argument("--open", metavar="TITLE",
                         help="an action of --app invoked before typing, so the window shows "
-                             "something to type into (Notes: \"New note\")")
+                             "something to type into (Tasks: \"New issue\")")
     parser.add_argument("--open-args", default="{}", metavar="JSON",
                         help="the arguments --open's action takes, as a JSON object")
     parser.add_argument("--click-at", default="0.5,0.5", metavar="ACROSS,DOWN",

@@ -21,7 +21,7 @@ SCRIPT = REPO / 'os/scripts/pack-apps.sh'
 HELPER = REPO / 'tools/apps/tilolang_packages.sh'
 RUNTIME_ID = 'tilo-runtime/2026.07+native.' + '0' * 32
 TILOLANG_RUNTIME = 'tilolang/0.1.0+tilolang'
-NOTES = 'so.tilo.lang.notes'
+NOTES = 'so.tilo.notes'
 DISCUSSION = 'so.tilo.lang.discussion'
 
 

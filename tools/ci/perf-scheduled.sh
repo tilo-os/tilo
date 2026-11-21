@@ -120,11 +120,10 @@ case $group in
     # shell. Its budgets are [devices.x86.session.*] in
     # tools/perf/kpi-budgets.toml, so a phase over budget fails this check.
     # Around it: the toolkit's own 4K redraw (ui-perf), the framework's
-    # scaling with item counts, and a document's keystroke-to-frame latency.
+    # scaling with item counts.
     cargo build --locked --release -p tilo-desktop --example session_perf
     cargo build --locked --release -p ui-examples --example ui-perf
     cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
-    cargo build --locked --release -p notes --example notes-latency
     test -r "$VK_DRIVER_FILES"
     examples=$target/release/examples
     env_json release lavapipe kvm > "$out/env.json"
@@ -141,8 +140,6 @@ case $group in
       "$examples/framework-scaling" "$sizes" "$action" | tee "$out/$adapter.log" || status=$?
       python3 tools/perf/adapters.py "$adapter" --env-json "$out/env.json" "$out/$adapter.log" >> "$out/render.jsonl" || status=$?
     done
-    "$examples/notes-latency" | tee "$out/notes-latency.log" || status=$?
-    python3 tools/perf/adapters.py notes-latency --env-json "$out/env.json" "$out/notes-latency.log" >> "$out/render.jsonl" || status=$?
     python3 scripts/perf/render_bench.py counters "$examples/ui-perf" --out "$out/counters" || status=$?
     # A benchmark that fails is reported by its own exit status, and its group
     # still compares the records the others left: a pipeline's last command is

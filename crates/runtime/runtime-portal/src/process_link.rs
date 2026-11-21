@@ -601,7 +601,7 @@ mod tests {
 
     fn instance_request() -> InstanceRequest {
         InstanceRequest {
-            app: "so.tilo.lang.notes".into(),
+            app: "so.tilo.notes".into(),
             workspace: "7a110d00-0000-4000-8000-000000000001".into(),
             instance: 7,
             person: "ada".into(),
@@ -614,7 +614,7 @@ mod tests {
             },
             language: "de-DE".into(),
             document: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
-            reveal: Some("tl.so.tilo.lang.notes.Note:7".into()),
+            reveal: Some("tl.so.tilo.notes.Note:7".into()),
             open: Some(OpenedFile {
                 hash: "ab".repeat(32),
                 name: Some("plan.md".into()),
@@ -724,7 +724,7 @@ mod tests {
                     .insert(format!("member-{member}"), tilo_action_policy::Role::Viewer);
             }
             let access = AppAccess {
-                app: "so.tilo.lang.notes".into(),
+                app: "so.tilo.notes".into(),
                 access: Some(MemberAccess::person(policy, "member-7")),
             };
             ToProcess::Access(access.clone()).send(&session).unwrap();

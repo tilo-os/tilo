@@ -19,7 +19,7 @@ fn told(state: WorkspaceSyncState) -> WorkspaceSync {
 
 /// The window of the installed Notes package over a workspace with nothing in it yet.
 fn empty_notebook() -> super::Session {
-    let mut app = super::Session::new("so.tilo.lang.notes", "ada");
+    let mut app = super::Session::new("so.tilo.notes", "ada");
     settle(&mut app);
     app
 }

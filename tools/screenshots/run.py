@@ -29,7 +29,7 @@ there is one.
 
 Usage:
   tools/screenshots/run.py --bin-dir DIR --out DIR [--lib-dir DIR ...]
-                           [--apps "notes chat ..."] [--jobs N]
+                           [--apps "tasks chat ..."] [--jobs N]
 
 `--bin-dir` holds the app executables (and a `fonts/` catalog beside them);
 `--lib-dir` adds directories the dynamic loader searches (a thin build's

@@ -13,7 +13,7 @@ use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, publish_package, publish_resource,
 };
 
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 
 /// What the toolkit reads: a package's catalogues join the person's, so what it declares reads
 /// in their language.

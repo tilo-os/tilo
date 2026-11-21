@@ -6,7 +6,7 @@ use tilolang_runtime::{Actor, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
-const NOTES: &str = "so.tilo.lang.notes";
+const NOTES: &str = "so.tilo.notes";
 
 /// The notes app and the package it uses, as they ship.
 fn packages() -> Vec<(&'static str, &'static str)> {

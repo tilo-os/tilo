@@ -76,12 +76,7 @@ const WINDOWS: &[Window] = &[
     Window {
         name: "Tasks",
         source: catalogue!("/../../../apps/tasks/locales/en-US.ftl"),
-        german: None,
-    },
-    Window {
-        name: "Notes",
-        source: catalogue!("/../../../apps/notes/locales/en-US.ftl"),
-        german: Some(("de", catalogue!("/../../../apps/notes/locales/de.ftl"))),
+        german: Some(("de-DE", catalogue!("/../../../apps/tasks/locales/de-DE.ftl"))),
     },
     Window {
         name: "Settings",
@@ -193,15 +188,15 @@ tilo_test_env::scenario! {
 
     phase a_seeded_packages_words_do_not_make_the_session_speak_its_language;
     // A package the session reads for someone else says nothing about the language the session draws
-    // in: seeding a demo app that ships German (Notes does) leaves the session's own words — the
+    // in: seeding a demo app that ships German (Tasks does) leaves the session's own words — the
     // toolkit's — English on a German device. The same words are the package's own when the process is
     // that package's window, and then they are German.
     {
-        let notes = WINDOWS
+        let tasks = WINDOWS
             .iter()
-            .find(|window| window.name == "Notes")
-            .expect("Notes is one of the windows");
-        let (locale, german) = notes.german.expect("Notes ships German");
+            .find(|window| window.name == "Tasks")
+            .expect("Tasks is one of the windows");
+        let (locale, german) = tasks.german.expect("Tasks ships German");
         let seed = [(locale.to_owned(), german.to_owned())];
         let session = WINDOWS
             .iter()
@@ -218,7 +213,7 @@ tilo_test_env::scenario! {
         );
 
         // The same package in a process that is its own window: its language is the window's.
-        I18nManager::install("en-US", "de-DE", &shipped_source(notes)).expect("Notes installs");
+        I18nManager::install("en-US", "de-DE", &shipped_source(tasks)).expect("Tasks installs");
         I18nManager::add_resource(&seed[0].0, seed[0].1.clone());
         assert_eq!(show_all(), "Alle 13 zeigen");
     }

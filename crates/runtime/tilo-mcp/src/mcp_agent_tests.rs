@@ -92,7 +92,7 @@ pub(super) struct Notes {
     /// app alone then names neither of them, and says so.
     archive_twice: Arc<Mutex<bool>>,
     /// The rows the app's directory answers instead of the ones it would list, when a test
-    /// publishes them under kinds of its own (`tl.so.tilo.lang.notes.Note`).
+    /// publishes them under kinds of its own (`tl.so.tilo.notes.Note`).
     published_kinds: Arc<Mutex<Option<Vec<CatalogueRow>>>>,
     /// The steps each note's `history` verb answers, newest last.
     history: Arc<Mutex<Vec<Value>>>,

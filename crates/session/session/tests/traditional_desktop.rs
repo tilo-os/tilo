@@ -203,7 +203,7 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     });
     assert_eq!(
         focused_app(&session).as_deref(),
-        Some("so.tilo.lang.notes"),
+        Some("so.tilo.notes"),
         "the shell was left on the note's window"
     );
 

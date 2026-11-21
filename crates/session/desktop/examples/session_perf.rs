@@ -196,7 +196,7 @@ fn fixture(
     let definitions = [
         word_processor::definition(),
         chat::definition(),
-        notes::definition(),
+        sheets::definition(),
     ];
     // The host's catalogue holds each app once, as a session's does; a tab names it again without
     // adding it.
@@ -231,7 +231,8 @@ fn fixture(
                             store.with(&checkout.id, |doc| match which {
                                 0 => word_processor::initialize_empty_document(doc).unwrap(),
                                 1 => chat::demo::start(doc, "author").unwrap(),
-                                _ => notes::read::initialize(doc),
+                                // Sheets opens an empty workbook of its own on a blank record.
+                                _ => {}
                             });
                         }
                         retained.push(store);

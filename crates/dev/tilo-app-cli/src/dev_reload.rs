@@ -854,7 +854,7 @@ mod tests {
                 program: PathBuf::from("rustc"),
                 args: [
                     "--crate-name",
-                    "notes",
+                    "settings",
                     "--crate-type",
                     "cdylib",
                     "--out-dir",
@@ -866,16 +866,16 @@ mod tests {
                 .map(str::to_owned)
                 .to_vec(),
                 env: BTreeMap::new(),
-                cwd: PathBuf::from("/apps/notes"),
+                cwd: PathBuf::from("/apps/settings"),
             };
             assert_eq!(
                 command.dep_info().unwrap(),
-                Path::new("/t/debug/deps/notes-0123.d")
+                Path::new("/t/debug/deps/settings-0123.d")
             );
             assert_eq!(
                 command.library().unwrap(),
                 Path::new(&format!(
-                    "/t/debug/deps/{}notes-0123{}",
+                    "/t/debug/deps/{}settings-0123{}",
                     std::env::consts::DLL_PREFIX,
                     std::env::consts::DLL_SUFFIX
                 ))
@@ -883,7 +883,7 @@ mod tests {
             assert_eq!(command.codegen_option("incremental"), Some("/t/inc"));
             assert!(is_reload_library(
                 &command.args.iter().map(OsString::from).collect::<Vec<_>>(),
-                "notes"
+                "settings"
             ));
             assert!(!is_reload_library(
                 &command.args.iter().map(OsString::from).collect::<Vec<_>>(),

@@ -1,12 +1,8 @@
 {
   "app": "notes",
   "said": "Notes",
-  "native": "notes",
-  "rust": {
-    "id": "so.tilo.notes"
-  },
   "tl": {
-    "id": "so.tilo.lang.notes",
+    "id": "so.tilo.notes",
     "package": "notes"
   },
   "steps": [
@@ -39,12 +35,10 @@
           "early_press": {
             "controls": [
               {
-                "rust": "New note",
                 "tl": "New note"
               },
               {
-                "rust": "new-note",
-                "tl": "tl:so.tilo.lang.notes:root-v7cub7aw\u001fnew_note"
+                "tl": "tl:so.tilo.notes:root-v7cub7aw\u001fnew_note"
               }
             ],
             "deadline": 60
@@ -59,51 +53,6 @@
       "id": "write",
       "said": "Give the note a title, then a body with a heading, a bullet list and a checklist",
       "ops": {
-        "rust": [
-          {
-            "press_any": [
-              "New note",
-              "new-note"
-            ]
-          },
-          {
-            "click_any": [
-              {
-                "prefix": "Note title"
-              },
-              {
-                "prefix": "Page title"
-              }
-            ]
-          },
-          {
-            "type": "Trip to Lisbon"
-          },
-          {
-            "key": "Enter"
-          },
-          {
-            "type": "## Packing"
-          },
-          {
-            "key": "Enter"
-          },
-          {
-            "type": "- passport"
-          },
-          {
-            "key": "Enter"
-          },
-          {
-            "type": "[ ] charger"
-          },
-          {
-            "key": "Enter"
-          },
-          {
-            "type": "adapters"
-          }
-        ],
         "tl": [
           {
             "press_any": [
@@ -154,15 +103,6 @@
       "id": "sub-note",
       "said": "Make a sub-note under it",
       "ops": {
-        "rust": [
-          {
-            "chord": [
-              "Control",
-              "Shift",
-              "n"
-            ]
-          }
-        ],
         "tl": [
           {
             "press_any": [
@@ -209,21 +149,6 @@
       "id": "tag",
       "said": "Tag the note",
       "ops": {
-        "rust": [
-          {
-            "press_any": [
-              {
-                "prefix": "More actions for"
-              }
-            ]
-          },
-          {
-            "actions": "tag"
-          },
-          {
-            "key": "Escape"
-          }
-        ],
         "tl": [
           {
             "select_row": "Trip to Lisbon"
@@ -269,11 +194,9 @@
         {
           "offered": [
             {
-              "rust": "notes-outline",
               "tl": "Outline"
             },
             {
-              "rust": "Outline",
               "tl": "notes-outline"
             },
             "Packing"
@@ -286,42 +209,6 @@
       "id": "import",
       "said": "Import a Markdown file",
       "ops": {
-        "rust": [
-          {
-            "file": {
-              "name": "Lisbon.md",
-              "text": "# Lisbon in May\n\nA week of trams and tiles.\n\n- tram 28\n- pastel de nata\n"
-            }
-          },
-          {
-            "right_click_at": [
-              180,
-              650
-            ]
-          },
-          {
-            "wait_for": "Import Markdown"
-          },
-          {
-            "press_any": [
-              "Import Markdown",
-              "Import Markdown…"
-            ]
-          },
-          {
-            "choose": {
-              "name": "Lisbon.md"
-            }
-          },
-          {
-            "wait_for": {
-              "prefix": "Lisbon in May"
-            }
-          },
-          {
-            "questions": true
-          }
-        ],
         "tl": [
           {
             "file": {
@@ -383,7 +270,6 @@
       "ops": [
         {
           "search": {
-            "rust": "Trip to Lisbon",
             "tl": "Trip to Lisbon"
           }
         }

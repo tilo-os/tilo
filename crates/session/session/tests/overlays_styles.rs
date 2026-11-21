@@ -345,7 +345,7 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
         session.read("session:apps").is_some_and(|apps| {
             apps["installed"]
                 .as_array()
-                .is_some_and(|apps| apps.iter().any(|app| app["key"] == "so.tilo.lang.notes"))
+                .is_some_and(|apps| apps.iter().any(|app| app["key"] == "so.tilo.notes"))
         })
     });
     for (key, style) in styles() {
@@ -376,7 +376,7 @@ fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
         until(&mut session, |session| {
             crate::common::places(session)
                 .iter()
-                .any(|place| place.shows == "so.tilo.lang.notes")
+                .any(|place| place.shows == "so.tilo.notes")
         });
         assert!(
             session.shell_refusals().is_empty(),

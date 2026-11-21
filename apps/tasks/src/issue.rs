@@ -53,7 +53,6 @@ pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav, window: &Window) -> 
     let page = Page {
         window: window.clone(),
         labels,
-        tracker: cx.actions(),
     };
     let nav = nav.clone();
     cx.switch(&held, move |cx, held| {
@@ -90,9 +89,6 @@ pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav, window: &Window) -> 
 struct Page {
     window: Window,
     labels: LocalState<Labels>,
-    /// The tracker's actions: the app's effects on an issue (writing its
-    /// note) are the window's, answered where the tracker is shown.
-    tracker: ui::framework::Actions<Tracker>,
 }
 
 fn content(cx: &ViewCx<IssueList>, id: &Id, nav: &Nav, page: &Page) -> Element {
@@ -162,7 +158,7 @@ fn content(cx: &ViewCx<IssueList>, id: &Id, nav: &Nav, page: &Page) -> Element {
                             .push(plan(cx, id))
                             .push(body)
                             .push(sub_issues(cx, id, nav, window))
-                            .push(links(cx, id, &page.tracker))
+                            .push(links(cx, id))
                             .push(thread(cx, id)),
                     )),
             )),
@@ -574,10 +570,9 @@ fn sub_issues(cx: &ViewCx<IssueList>, id: &Id, nav: &Nav, window: &Window) -> El
 }
 
 /// What the issue links to, each a reference chip that opens it in the app
-/// that keeps it; the way to write a note for it in Notes, which links the
-/// note here; and the way to link a note already written, picked by its
+/// that keeps it; and the way to link a note already written, picked by its
 /// title in the system palette.
-fn links(cx: &ViewCx<IssueList>, id: &Id, tracker: &ui::framework::Actions<Tracker>) -> Element {
+fn links(cx: &ViewCx<IssueList>, id: &Id) -> Element {
     let links = cx.value({
         let id = id.clone();
         move |part: &IssueList| {
@@ -587,12 +582,6 @@ fn links(cx: &ViewCx<IssueList>, id: &Id, tracker: &ui::framework::Actions<Track
                 .unwrap_or_default()
         }
     });
-    let write_note = tracker
-        .bind_effect_invocation(
-            Button::new("tasks-write-note", "tasks-write-note"),
-            &crate::TasksEffect::WriteNote { issue: id.clone() },
-        )
-        .with_icon(ui::icons::Icon::Plus);
     let link_note = link_note_button(id);
     let chips = cx.switch(&links, |cx, links| {
         let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
@@ -627,8 +616,7 @@ fn links(cx: &ViewCx<IssueList>, id: &Id, tracker: &ui::framework::Actions<Track
                                 Text::new("tasks-links").with_role(TextRole::Heading),
                             )),
                     ))
-                    .push(Box::new(link_note))
-                    .push(Box::new(write_note)),
+                    .push(Box::new(link_note)),
             ))
             .push(chips),
     )

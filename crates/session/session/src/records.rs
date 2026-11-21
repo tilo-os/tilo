@@ -552,7 +552,7 @@ mod tests {
     use super::testing::Device;
     use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
-    const NOTES: &str = ui::apps::NOTES;
+    const NOTES: &str = "so.tilo.notes";
     const KITCHEN: &str = "6d1c1f36-0000-4000-8000-000000000001";
     const STUDIO: &str = "6d1c1f36-0000-4000-8000-000000000002";
     const NOTE: &str = "tab:00000000000000a1";

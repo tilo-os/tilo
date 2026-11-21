@@ -1,9 +1,9 @@
-//! An agent filling a notebook over MCP, one `notes#create-page` after
-//! another: what each create asks of the workspace's host stays the same
-//! however many notes the notebook already holds. The action is found on the
-//! notebook the app lists at its top, and the link to the new note is asked
-//! for by its address; neither reads the notebook's notes, which would cost
-//! more pages of its directory the more notes it holds.
+//! An agent filling a tracker over MCP, one `tasks#create` after another:
+//! what each create asks of the workspace's host stays the same however many
+//! issues the tracker already holds. The action is found on the tracker the
+//! app lists at its top, and the link to the new issue is asked for by its
+//! address; neither reads the tracker's issues, which would cost more pages of
+//! its directory the more issues it holds.
 
 use super::api::{ISSUER, Mcp};
 use super::api_on_server::{api_on_server, approved_key};
@@ -94,12 +94,12 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CatalogueJobs {
     }
 }
 
-/// One more note, as an agent makes it, which answers a link to show it.
+/// One more issue, as an agent makes it, which answers a link to show it.
 async fn create(agent: &mut Mcp<'_>, made: &mut usize) {
     let answer = agent
-        .tilo_do(json!({"path": "notes#create-page",
-                        "args": {"title": format!("Note {made}"),
-                                 "markdown": "A paragraph of this note."}}))
+        .tilo_do(json!({"path": "tasks#create",
+                        "args": {"title": format!("Issue {made}"),
+                                 "body": "A paragraph of this issue."}}))
         .await;
     let answer = &answer["result"]["structuredContent"];
     assert_eq!(answer["status"], "ok", "{answer}");
@@ -111,7 +111,7 @@ async fn create(agent: &mut Mcp<'_>, made: &mut usize) {
 }
 
 /// The most catalogue requests the host answered for any one of `creates`
-/// more notes in `workspace`.
+/// more issues in `workspace`.
 async fn per_create(
     agent: &mut Mcp<'_>,
     made: &mut usize,
@@ -128,13 +128,13 @@ async fn per_create(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_note_create_asks_the_host_the_same_however_full_the_notebook() {
+async fn an_issue_create_asks_the_host_the_same_however_full_the_tracker() {
     count_jobs();
     let on_server = api_on_server(ISSUER).await;
     let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_server, &ada, &page, "Notes mover").await;
+    let key = approved_key(&on_server, &ada, &page, "Issues mover").await;
     let mut backend = Mcp {
         api: &api,
         path: "/mcp".into(),
@@ -143,7 +143,7 @@ async fn a_note_create_asks_the_host_the_same_however_full_the_notebook() {
     };
     assert_eq!(backend.initialize().await.0, 200);
     let made = backend
-        .did("account/workspaces#create", json!({"name": "Notes"}))
+        .did("account/workspaces#create", json!({"name": "Tracker"}))
         .await;
     let workspace = made["workspace"]["id"].as_str().unwrap().to_owned();
     let minted = backend
@@ -156,9 +156,9 @@ async fn a_note_create_asks_the_host_the_same_however_full_the_notebook() {
         session: None,
     };
     assert_eq!(agent.initialize().await.0, 200);
-    agent.did("notes#open", json!({})).await;
+    agent.did("tasks#open", json!({})).await;
 
-    // A notebook of ten notes, then one of more than a directory read takes
+    // A tracker of ten issues, then one of more than a directory read takes
     // in its four pages.
     let mut made = 0;
     while made < 10 {
@@ -171,7 +171,7 @@ async fn a_note_create_asks_the_host_the_same_however_full_the_notebook() {
     let many = per_create(&mut agent, &mut made, 3, &workspace).await;
     assert!(
         many <= few,
-        "a create in a notebook of 100 notes asked the host for {many} catalogue pages, \
-         in one of 10 for {few}: it read the notebook"
+        "a create in a tracker of 100 issues asked the host for {many} catalogue pages, \
+         in one of 10 for {few}: it read the tracker"
     );
 }

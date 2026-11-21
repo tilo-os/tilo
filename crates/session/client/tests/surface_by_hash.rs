@@ -28,14 +28,14 @@ use tilo_server::workspaces::WorkspaceContent;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::native::NativeDevice;
-use crate::support::{WORKSPACE, enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use crate::support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
 
-/// The surface the laptop's write names: the notes app's own `surface.toml`
+/// The surface the laptop's write names: the tasks app's own `surface.toml`
 /// in the form it is kept by, a version of it this page does not run.
 fn older_surface() -> Vec<u8> {
     let file = std::fs::read(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../apps/notes/surface.toml"
+        "/../../../apps/tasks/surface.toml"
     ))
     .unwrap();
     collab_types::surface::SurfaceFile::kept(&file)
@@ -69,14 +69,22 @@ impl WorkspaceContent for Keeps {
         while !*open {
             open = answered.wait(open).unwrap();
         }
-        (app == "so.tilo.notes" && hash == blake3::hash(&self.bytes).to_hex().as_str())
+        (app == "so.tilo.tasks" && hash == blake3::hash(&self.bytes).to_hex().as_str())
             .then(|| self.bytes.clone())
+    }
+}
+
+/// The tracker's issues record this test's history is written to.
+fn issues_route() -> tilo_peer_state::document_frame::DocumentRoute {
+    tilo_peer_state::document_frame::DocumentRoute {
+        app_id: "so.tilo.tasks".into(),
+        ..crate::support::route()
     }
 }
 
 /// Whether the page says it holds something for the note, and why.
 fn held(peer: &Link) -> Option<String> {
-    let note = crate::support::route();
+    let note = issues_route();
     let held = format!("held {}/{}:", note.app_id, note.document);
     peer.status()
         .key_state
@@ -85,18 +93,18 @@ fn held(peer: &Link) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Commit the pending change as the notes app's executor commits an edit of
-/// `page`, one item of the pages collection.
-fn commit_page_edit(document: &mut automerge::AutoCommit, page: &str) {
+/// Commit the pending change as the tasks app's executor commits an edit of
+/// `issue`, one item of the issues collection.
+fn commit_issue_edit(document: &mut automerge::AutoCommit, issue: &str) {
     use tilo_actions::{ActionContext, Did, EditOp, FieldEdit, PathStep};
-    let kind = "notes.pages";
+    let kind = "tasks.issues";
     let context = ActionContext {
         what: Some(Did::Edit(FieldEdit {
             ty: kind.to_owned(),
-            field: "pages".to_owned(),
+            field: "issues".to_owned(),
             path: vec![
-                PathStep::Field("pages".to_owned()),
-                PathStep::Item(page.to_owned()),
+                PathStep::Field("issues".to_owned()),
+                PathStep::Item(issue.to_owned()),
             ],
             op: EditOp::Set,
             old: None,
@@ -112,8 +120,8 @@ fn commit_page_edit(document: &mut automerge::AutoCommit, page: &str) {
     document.commit_with(options).unwrap();
 }
 
-/// Write `note`'s history from the laptop as the notes app starts one: its pages a unit each,
-/// then three page edits naming `surface`, each with the claim its executor makes, so every
+/// Write `note`'s history from the laptop as the tasks app starts one: its issues a unit each,
+/// then three issue edits naming `surface`, each with the claim its executor makes, so every
 /// edit is decided against that surface. Every write is sealed with the note's content key.
 /// The document the history makes.
 fn write_history(
@@ -131,9 +139,9 @@ fn write_history(
             automerge::ObjType::List,
         )
         .unwrap();
-    document.insert(&units, 0, "pages/*").unwrap();
-    let pages = document
-        .put_object(automerge::ROOT, "pages", automerge::ObjType::Map)
+    document.insert(&units, 0, "issues/*").unwrap();
+    let issues = document
+        .put_object(automerge::ROOT, "issues", automerge::ObjType::Map)
         .unwrap();
     document.commit();
     let mut writes = vec![(
@@ -141,13 +149,13 @@ fn write_history(
         None,
         Vec::new(),
     )];
-    for page_number in 1..=3 {
+    for issue_number in 1..=3 {
         let before = document.clone();
-        let page = format!("page-{page_number}");
+        let issue = format!("issue-{issue_number}");
         document
-            .put(&pages, page.clone(), format!("page {page_number}"))
+            .put(&issues, issue.clone(), format!("issue {issue_number}"))
             .unwrap();
-        commit_page_edit(&mut document, &page);
+        commit_issue_edit(&mut document, &issue);
         let mutation = DocumentMutation::Incremental(document.save_incremental());
         let claims = collab_types::parse_changes(mutation.data())
             .unwrap()
@@ -258,10 +266,10 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     // The laptop joins the group the host founded, announces itself and
     // writes the record's history, sealed and naming the other version's
     // surface.
-    let note = route();
+    let note = issues_route();
     let laptop = joined(&started, laptop).await;
     let document = write_history(&laptop, &note, surface);
-    let pages = document.get(automerge::ROOT, "pages").unwrap().unwrap().1;
+    let issues = document.get(automerge::ROOT, "issues").unwrap().unwrap().1;
 
     // The page joins: it asks for the workspace's keys though it holds the
     // note's first write, undecided, and the host admits it.
@@ -287,9 +295,9 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     .await;
     let opened = crate::support::resource_of(&page, &note).expect("the record's start is opened");
     assert_eq!(
-        opened.length(&pages),
+        opened.length(&issues),
         0,
-        "no page edit is opened before its surface arrives"
+        "no issue edit is opened before its surface arrives"
     );
 
     // The page asked its workspace for that surface. The host answers, and
@@ -302,7 +310,7 @@ async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_de
     })
     .await;
     assert_eq!(
-        tilo_session_client::surfaces::read("so.tilo.notes", &blake3::hash(surface).to_hex()),
+        tilo_session_client::surfaces::read("so.tilo.tasks", &blake3::hash(surface).to_hex()),
         Some(surface.clone()),
         "the page keeps the surface it fetched, by its hash"
     );
@@ -320,7 +328,7 @@ async fn the_server_s_own_device_decides_what_an_older_version_wrote_from_its_se
         .into_iter()
         .map(|document| tilo_peer_state::document_frame::DocumentRoute {
             document: document.into(),
-            ..route()
+            ..issues_route()
         })
         .collect();
     let written: Vec<_> = notes

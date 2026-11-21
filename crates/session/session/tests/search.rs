@@ -1697,7 +1697,7 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
     let mut session = crate::common::headless(Options {
         lists: Lists::fixed(AppLists {
             applications: vec![AppEntry {
-                id: "so.tilo.lang.notes".into(),
+                id: "so.tilo.notes".into(),
                 title: "Notebook".into(),
                 category: None,
             }],

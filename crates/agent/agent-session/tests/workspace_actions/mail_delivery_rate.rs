@@ -8,7 +8,7 @@
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key};
-use super::branch_workspace::Key;
+use super::key::Key;
 use super::*;
 use serde_json::{Value, json};
 

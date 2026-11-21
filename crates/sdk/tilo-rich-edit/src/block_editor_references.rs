@@ -685,8 +685,8 @@ mod tests {
         }
     }
 
-    const GROCERIES: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:g1";
-    const PLAN: &str = "tl:so.tilo.lang.notes:tl.so.tilo.lang.notes.d/f:p1";
+    const GROCERIES: &str = "tl:so.tilo.notes:tl.so.tilo.notes.d/f:g1";
+    const PLAN: &str = "tl:so.tilo.notes:tl.so.tilo.notes.d/f:p1";
 
     tilo_test_env::scenario! {
         /// Embeds of records.

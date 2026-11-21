@@ -159,8 +159,8 @@ async fn listed_by(agent: &mut Mcp<'_>, path: &str) -> Value {
     }
 }
 
-/// `token`'s agent, over MCP at its workspace's URL, writes a page titled
-/// `title` there and puts a file in: the page's path and the file's reference.
+/// `token`'s agent, over MCP at its workspace's URL, writes an issue titled
+/// `title` there and puts a file in: the issue's path and the file's reference.
 async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (String, String) {
     let path = mcp_url.strip_prefix(ISSUER).unwrap();
     let mut agent = mcp(api, path, token);
@@ -171,11 +171,11 @@ async fn work(api: &Arc<Server>, mcp_url: &str, token: &str, title: &str) -> (St
     assert_eq!(apps["result"]["isError"], false, "{apps}");
     done(
         &mut agent,
-        "notes#create-page",
-        json!({"title": title, "markdown": "- passport\n"}),
+        "tasks#create",
+        json!({"title": title, "body": "- passport\n"}),
     )
     .await;
-    let notes = listed_by(&mut agent, "notes/Notes").await;
+    let notes = listed_by(&mut agent, "tasks/Issues").await;
     let page = notes
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row.to_string().contains(title)))
@@ -457,7 +457,7 @@ fn around(text: &str, word: &str) -> String {
 /// its page, its file, a path in it.
 fn arguments_against(tool: &str, other: &str, page: &str, content: &str) -> Value {
     let mut arguments = match tool {
-        "tilo_ls" => json!({"path": "notes"}),
+        "tilo_ls" => json!({"path": "tasks"}),
         "tilo_read" | "tilo_link" | "tilo_watch" => json!({"path": page}),
         "tilo_do" => json!({"path": format!("{page}#rename"), "args": {"title": PLANTED}}),
         "tilo_find" => json!({"query": "Checklist"}),
@@ -646,14 +646,14 @@ async fn a_workspace_key_reaches_no_other_workspace_through_any_tool_or_route() 
     // B is as its agent left it: its page, its file, its key.
     let mut b_agent = mcp(&api, &format!("/w/{b}/mcp"), &b_token);
     assert_eq!(b_agent.initialize().await.0, 200);
-    let (_, notes) = call(&mut b_agent, "tilo_ls", json!({"path": "notes"})).await;
+    let (_, notes) = call(&mut b_agent, "tilo_ls", json!({"path": "tasks"})).await;
     let notes = notes.to_string();
     assert!(notes.contains(secret), "{notes}");
     assert!(!notes.contains(PLANTED), "{}", around(&notes, PLANTED));
-    // Note by note: its own page under the title its agent gave it, and
-    // the planted title on none.
-    let pages = listed_by(&mut b_agent, "notes/Notes").await;
-    let pages = pages.as_array().expect("its notes are listed in rows");
+    // Issue by issue: its own under the title its agent gave it, and the
+    // planted title on none.
+    let pages = listed_by(&mut b_agent, "tasks/Issues").await;
+    let pages = pages.as_array().expect("its issues are listed in rows");
     assert!(
         pages
             .iter()

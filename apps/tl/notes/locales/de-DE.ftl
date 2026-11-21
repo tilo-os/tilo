@@ -1,6 +1,6 @@
 # Notes in German. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
 
-d-so-tilo-lang-notes = Notizen
+d-so-tilo-notes = Notizen
 
 d-mavvhka7 = Notiz
     .doc = Eine Notiz: ein Titel, ein Text, die Notiz, unter der sie steht, und ihre Schlagwörter.

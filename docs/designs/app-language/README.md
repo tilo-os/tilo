@@ -226,7 +226,7 @@ declaration in it takes. Packages `use` each other by app id, and the alias is w
 them by:
 
 ```
-use so.tilo.lang.notes as notes
+use so.tilo.notes as notes
 
 view todayboard(t: todo.Tasks, nb: notes.Notes) {
     ...

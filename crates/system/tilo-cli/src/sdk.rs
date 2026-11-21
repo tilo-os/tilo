@@ -639,7 +639,7 @@ fn module_name(id: &str) -> String {
 
 /// Each app's module in the SDK, by its id: its last id segment (`notes`), and for an app whose
 /// last segment another app's id also ends with, the segments before it that tell them apart
-/// (`so.tilo.lang.notes` is `lang_notes` while `so.tilo.notes` is `notes`). Two modules of one
+/// (`so.tilo.notes` is `lang_notes` while `so.tilo.notes` is `notes`). Two modules of one
 /// name would be one file, so the app that has been there longest — the shorter id — keeps the
 /// plain name; when the tilolang Notes takes that id, it takes the name too.
 fn module_names(apps: &[App]) -> BTreeMap<String, String> {
@@ -2053,7 +2053,7 @@ mod tests {
         // records and runs its actions by the words its author declared, not by the ids its
         // changes keep.
         {
-            let notes = app("so.tilo.lang.notes");
+            let notes = app("so.tilo.notes");
             let python = python_of(&notes);
             assert!(python.contains("class Note(Resource):"), "{python}");
             assert!(python.contains("class Notebook(Resource):"), "{python}");
@@ -2074,7 +2074,7 @@ mod tests {
         // start with a digit: neither language can name one that way. Python reaches it through a
         // property that reads the wire's key, TypeScript quotes it, and both say the app's word.
         {
-            let notes = app("so.tilo.lang.notes");
+            let notes = app("so.tilo.notes");
             let ts = typescript_of(&notes);
             assert!(!ts.contains("  # "), "no Python comment in a .ts file:\n{ts}");
             assert!(
@@ -2111,7 +2111,7 @@ mod tests {
         // tilolang Notes takes that id.
         {
             let native = app("so.tilo.notes");
-            let tilolang = app("so.tilo.lang.notes");
+            let tilolang = app("so.tilo.notes");
             let names = module_names(&[native.clone(), tilolang.clone()]);
             assert_eq!(names[&native.id], "notes");
             assert_eq!(names[&tilolang.id], "lang_notes");

@@ -1,6 +1,6 @@
 app so.tilo.lang.today "Today" (icon: .sun, category: .office)
 
-use so.tilo.lang.notes as notes
+use so.tilo.notes as notes
 use so.tilo.lang.tasks as todo
 use so.tilo.lang.chat as chat
 

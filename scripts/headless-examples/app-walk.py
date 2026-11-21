@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""An app's first hour, walked in its Rust version and in its tilolang version.
+"""An app's first hour, walked in the versions its step file names.
 
 A Rust app under `apps/` is deleted only once the tilolang app under `apps/tl/`
 does what a person did with it at least as well. What a person did is a walk of
 their own: open the app, make something, find it again, look at it in the dark.
-This walks that same first hour twice — once in each version — in headless
-sessions of their own, and snapshots every step of both, so the two runs can be
-put side by side and judged.
+This walks that same first hour in each version the step file names — the Rust
+one and the tilolang one before the change that retires the Rust app, the
+tilolang one alone after it — in headless sessions of their own, and snapshots
+every step, so the runs can be put side by side and judged.
 
 One step file per app (`app-walks/<app>.json`) holds the steps, and both
 versions are driven by it: the presses, typing, searches and theme changes are
@@ -88,7 +89,7 @@ def until_value(what: str, check, deadline: float = 30.0, step: float = 0.1):
 def app_action(session: Session, app: str, operation: str, resource: str | None = None):
     """The action `operation` the window of `app` publishes: found by the name
     the app gives it, never by the words its title reads in. Its application is
-    `app` exactly (`so.tilo.notes` never matches `so.tilo.lang.notes`)."""
+    `app` exactly (`so.tilo.notes` never matches `so.tilo.notes`)."""
     for action in session.actions(""):
         if (action.get("application") == app and action.get("operation") == operation
                 and resource in (None, action.get("resource"))):
@@ -1028,7 +1029,7 @@ def walks() -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Walk an app's first hour in its Rust and its tilolang version.")
+        description="Walk an app's first hour in each version its step file names.")
     parser.add_argument("app", nargs="?", help="the walk's name under app-walks/ (notes)")
     parser.add_argument("--list", action="store_true", help="print the walks there are")
     parser.add_argument("--only", choices=VARIANTS, help="walk one version alone")
@@ -1053,9 +1054,16 @@ def main() -> int:
         app = options.app or path.stem
         out = (options.out or HERE.parents[1] / "target" / "app-walk" / app).resolve()
         out.mkdir(parents=True, exist_ok=True)
-        if options.build:
-            real_apps.build(apps=spec.get("native", ""))
-        variants = [options.only] if options.only else list(VARIANTS)
+        if options.build and spec.get("native"):
+            real_apps.build(apps=spec["native"])
+        # The versions this walk's step file names: a native app that was deleted in the change
+        # its tilolang version took over leaves only its `tl` entry, and is walked alone.
+        named = [variant for variant in VARIANTS if variant in spec]
+        if not named:
+            raise Failed(f"the walk names no version: {path}")
+        if options.only is not None and options.only not in named:
+            raise Failed(f"the walk names no {options.only} version: {path}")
+        variants = [options.only] if options.only else named
         report = {"walk": app, "file": str(path), "variants": {},
                   "steps": [{"id": s["id"], "said": s["said"]} for s in spec["steps"]]}
         for variant in variants:

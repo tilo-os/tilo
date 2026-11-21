@@ -223,7 +223,7 @@ tilo_test_env::scenario! {
 
     phase the_app_header_names_its_icon_and_category_and_they_reach_the_metadata;
     {
-        let src = "app so.tilo.lang.notes \"Notes\" (icon: .file_text, category: .office)\n\ntype N {\n    a: Int\n}\n";
+        let src = "app so.tilo.notes \"Notes\" (icon: .file_text, category: .office)\n\ntype N {\n    a: Int\n}\n";
         let module = parse(src).expect("parses");
         assert_eq!(module.app.icon.as_deref(), Some("file_text"));
         assert_eq!(module.app.category.as_deref(), Some("office"));
@@ -250,7 +250,7 @@ tilo_test_env::scenario! {
 
     phase the_app_header_names_its_tag_line_and_keywords_and_they_reach_the_metadata;
     {
-        let src = "app so.tilo.lang.notes \"Notes\" (tagline: \"Notes you write together\", keywords: [\"note\", \"memo\"])\n\ntype N {\n    a: Int\n}\n";
+        let src = "app so.tilo.notes \"Notes\" (tagline: \"Notes you write together\", keywords: [\"note\", \"memo\"])\n\ntype N {\n    a: Int\n}\n";
         let module = parse(src).expect("parses");
         assert_eq!(module.app.tagline.as_deref(), Some("Notes you write together"));
         assert_eq!(module.app.keywords, vec!["note".to_owned(), "memo".to_owned()]);

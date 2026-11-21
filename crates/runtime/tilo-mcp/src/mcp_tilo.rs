@@ -2290,12 +2290,12 @@ mod tests {
                 "state": "done",
                 "output": ["@notes.Note:root-a/n1 \"Q3 plan\""],
                 "changed": 2,
-                "apps": ["so.tilo.lang.notes", "so.tilo.lang.todo"],
+                "apps": ["so.tilo.notes", "so.tilo.lang.todo"],
                 "history": [
-                    {"app": "so.tilo.lang.notes", "resource": "tl:so.tilo.lang.notes"},
+                    {"app": "so.tilo.notes", "resource": "tl:so.tilo.notes"},
                     {"app": "so.tilo.lang.todo", "resource": "tl:so.tilo.lang.todo"},
                 ],
-                "lets": [{"name": "plan", "type": "so.tilo.lang.notes.Note"}],
+                "lets": [{"name": "plan", "type": "so.tilo.notes.Note"}],
             });
             let (text, failed) =
                 answer_text(&mut programs, "notes.pin(n1)\ntodo.add(t1, \"x\")", &answer);
@@ -2310,8 +2310,8 @@ mod tests {
                 programs.steps.first().map(|step| step.history.clone()),
                 Some(vec![
                     History {
-                        app: "so.tilo.lang.notes".into(),
-                        resource: "tl:so.tilo.lang.notes".into(),
+                        app: "so.tilo.notes".into(),
+                        resource: "tl:so.tilo.notes".into(),
                         published: false,
                         invocation: None,
                     },

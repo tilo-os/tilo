@@ -134,10 +134,10 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
     );
 
     // The notes the person keeps, opened beside the inbox.
-    let notes = root_of(&session, "so.tilo.lang.notes");
+    let notes = root_of(&session, "so.tilo.notes");
     open_beside(&mut session, &notes, &inbox.0);
     let conversation = wait_for(&mut session, "the notes on the canvas", |session| {
-        place_showing(session, "so.tilo.lang.notes")
+        place_showing(session, "so.tilo.notes")
     });
     assert_eq!(
         (conversation.3, conversation.4),
@@ -166,7 +166,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
         "the inbox keeps where it stood and how big it was: {after:?} against {inbox:?}"
     );
     let conversation_after =
-        place_showing(&session, "so.tilo.lang.notes").expect("the notes still stand");
+        place_showing(&session, "so.tilo.notes").expect("the notes still stand");
     assert_eq!(
         (
             conversation_after.1,
@@ -233,10 +233,10 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
     let inbox_width = wait_for(&mut session, "the inbox drawn", &mut drawn_width);
 
     // The notes, then an agent opening Tasks beside them: two more places arrive.
-    let notes = root_of(&session, "so.tilo.lang.notes");
+    let notes = root_of(&session, "so.tilo.notes");
     open_beside(&mut session, &notes, &inbox.0);
     let conversation = wait_for(&mut session, "the notes on the canvas", |session| {
-        place_showing(session, "so.tilo.lang.notes")
+        place_showing(session, "so.tilo.notes")
     });
     let resource = root_of(&session, "so.tilo.lang.tasks");
     open_beside(&mut session, &resource, &conversation.0);

@@ -34,7 +34,7 @@ use reach::{
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Finding {
     pub kind: Kind,
-    /// The app's short name (`notes` for `so.tilo.lang.notes`).
+    /// The app's short name (`notes` for `so.tilo.notes`).
     pub app: String,
     /// The view whose node it is, or `(window)` for the window's own parts.
     pub view: String,

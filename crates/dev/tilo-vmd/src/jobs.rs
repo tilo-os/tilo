@@ -765,8 +765,8 @@ mod tests {
                 "build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
             );
             assert_eq!(
-                app_package_args("notes", Path::new("/s/notes.tapp")).join(" "),
-                "package apps/notes --output /s/notes.tapp --force"
+                app_package_args("settings", Path::new("/s/settings.tapp")).join(" "),
+                "package apps/settings --output /s/settings.tapp --force"
             );
         }
     }

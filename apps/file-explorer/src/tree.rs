@@ -1673,7 +1673,7 @@ mod tests {
         use runtime_portal::tools::AppKind;
         let tilo = Some(AppKind::Tilo);
         let catalogue = [
-            ("so.tilo.lang.notes", "md,markdown,txt", tilo),
+            ("so.tilo.notes", "md,markdown,txt", tilo),
             ("so.tilo.pdf-viewer", "pdf", tilo),
             ("so.tilo.lang.photos", "png", tilo),
         ];
@@ -1684,11 +1684,11 @@ mod tests {
         );
         assert_eq!(
             opening_app(b"# Plan\n\n- one\n", "plan.md", &apps).as_deref(),
-            Some("so.tilo.lang.notes")
+            Some("so.tilo.notes")
         );
         assert_eq!(
             opening_app(b"plain words\n", "notes.txt", &apps).as_deref(),
-            Some("so.tilo.lang.notes")
+            Some("so.tilo.notes")
         );
         assert_eq!(
             opening_app(b"\x89PNG\r\n\x1a\n....", "shot.txt", &apps).as_deref(),
@@ -1717,7 +1717,7 @@ mod tests {
     #[test]
     fn the_handoff_opens_the_app_the_bytes_name_with_the_files_content_and_name() {
         let handoff =
-            TreeBrowser::handoff("so.tilo.lang.notes", "Open").expect("the handoff binds");
+            TreeBrowser::handoff("so.tilo.notes", "Open").expect("the handoff binds");
         let hash = "ab".repeat(32);
         let invocation = handoff
             .binding()
@@ -1725,7 +1725,7 @@ mod tests {
             .expect("the row's click is one invocation");
         assert_eq!(
             invocation.address.resource.as_str(),
-            "so.tilo.lang.notes.app"
+            "so.tilo.notes.app"
         );
         assert_eq!(invocation.address.action.as_str(), "open");
         let arguments = serde_json::Value::Object(invocation.arguments);
@@ -2075,7 +2075,7 @@ mod window_tests {
         app.with_widget::<TreeBrowser, _>(|browser| {
             browser.opens = Rc::new(|_: &str| {
                 Ok(vec![runtime_portal::tools::DocumentApp {
-                    id: "so.tilo.lang.notes".into(),
+                    id: "so.tilo.notes".into(),
                     name: "Notes".into(),
                     is_default: true,
                     icon: None,
@@ -2141,7 +2141,7 @@ mod window_tests {
         // A computer asks which app claims text; a page lands it where the platform says text
         // goes.
         #[cfg(feature = "desktop")]
-        let opening = "so.tilo.lang.notes";
+        let opening = "so.tilo.notes";
         #[cfg(not(feature = "desktop"))]
         let opening = "so.tilo.notes";
         assert_eq!(

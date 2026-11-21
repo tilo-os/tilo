@@ -6,7 +6,7 @@
 
 use super::api::ISSUER;
 use super::api_on_server::{OnServer, api_on_server, json_of};
-use super::branch_workspace::{Key, person};
+use super::key::{Key, person};
 use super::*;
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeEntry};

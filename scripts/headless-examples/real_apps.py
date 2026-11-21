@@ -16,15 +16,15 @@ of the worktree and brings `target/nested-session` back), so a machine without
 the toolchain or the RAM for it still gets a session.
 
 As a library, `Session` is the session and the tools that act in it:
-`Session.start()`, `session.invoke("applications", "so.tilo.notes")` to launch
+`Session.start()`, `session.invoke("applications", "so.tilo.tasks")` to launch
 an app through the desktop, `session.windows()`, `session.snapshot(path)`,
 `session.click_named(...)`, `session.type(...)`. `tilolang-e2e.py` and
 `canvas-e2e.py` build on it.
 
 As a command:
 
-  # start a session, open Notes through the desktop, write the window bar's note title to a PNG
-  python3 scripts/headless-examples/real_apps.py --start --open notes --shot /tmp/notes.png
+  # start a session, open Tasks through the desktop, write its window to a PNG
+  python3 scripts/headless-examples/real_apps.py --start --open tasks --shot /tmp/tasks.png
 
   # leave it running and drive it with tilo-control from anywhere
   python3 scripts/headless-examples/real_apps.py --start --keep --state /tmp/my-session
@@ -55,7 +55,7 @@ REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 # The apps every session installs unless it names its own: what a check of a
 # desktop needs to see a person's work in it.
-APPS = "notes file-explorer chat settings terminal"
+APPS = "file-explorer chat settings terminal"
 # Where cargo builds, as cargo reads it.
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or REPO / "target")
 # Where the nested-session build lands (dist/dev/nested-session-build.sh).

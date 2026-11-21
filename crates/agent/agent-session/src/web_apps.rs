@@ -28,7 +28,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         messages::definition(),
         model_providers::definition(),
         music::definition(),
-        notes::definition(),
         passwords::definition(),
         pdf_viewer::definition(),
         photos::definition(),

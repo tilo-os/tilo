@@ -184,7 +184,6 @@ members = [
     "apps/monitor-model",
     "apps/monitor-model-wasm",
     "apps/music",
-    "apps/notes",
     "apps/osk",
     "apps/passwords",
     "apps/passwords-model",

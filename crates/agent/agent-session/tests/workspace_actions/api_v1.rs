@@ -601,8 +601,8 @@ async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
     let base = format!("/v1/workspaces/{}", made["id"].as_str().unwrap());
     let (listing, reading, writing) = (
         format!("{base}/resources"),
-        format!("{base}/resources/notes/Notes"),
-        format!("{base}/resources/notes/Notes/actions/new-note"),
+        format!("{base}/resources/tasks/tasks.issues"),
+        format!("{base}/resources/tasks/tasks.issues/actions/create"),
     );
     let (status, wrote) = working
         .post(&writing, &json!({"title": "First issue"}), &[])
@@ -781,7 +781,7 @@ async fn a_key_its_program_holds_reaches_the_host_directly() {
         direct
             .request(
                 "POST",
-                &format!("/v1/workspaces/{workspace}/resources/notes/actions/open"),
+                &format!("/v1/workspaces/{workspace}/resources/tasks/actions/open"),
                 &json,
                 b"{}",
             )
@@ -842,7 +842,7 @@ async fn a_workspaces_listing_reads_the_same_through_mcp_and_the_api() {
     };
 
     // The apps, and what one of them holds: the two paths a `tilo ls` takes.
-    for path in [None, Some("notes")] {
+    for path in [None, Some("tasks")] {
         let arguments = match path {
             Some(path) => json!({"workspace": workspace, "path": path}),
             None => json!({"workspace": workspace}),
@@ -1001,7 +1001,7 @@ async fn a_logged_in_computers_commands_go_over_its_one_held_session() {
         let (computer, nothing) = (command(), json!({}));
         let listing = format!("/v1/workspaces/{workspace}/resources");
         let (opened, scripted) = tokio::join!(
-            computer.act(&workspace, "notes", "open", &nothing, "Open Notes"),
+            computer.act(&workspace, "tasks", "open", &nothing, "Open Tasks"),
             script.get(&listing),
         );
         let opened = opened.expect("the action answers");

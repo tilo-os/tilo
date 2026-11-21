@@ -980,7 +980,7 @@ mod tests {
         // holds that, so neither loses their place.
         {
             use crate::apps::test_support::{Grantee, Grants as _, KindSet};
-            const NOTES: &str = tilo_app_id::apps::NOTES;
+            const NOTES: &str = "so.tilo.notes";
             let mut workspace = workspace();
             workspace.allow_agent("scribe", KindSet::READ);
             for app in [APP, NOTES] {

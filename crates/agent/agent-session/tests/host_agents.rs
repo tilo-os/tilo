@@ -6,7 +6,7 @@
 //! for a grant; a root-holding laptop approves the agent and signs its
 //! delegation in the same step; the browser gives the agent a task. The agent
 //! works on it through the workspace's agent tools, asked of the server's
-//! actions through its own session, and the browser receives the notes and
+//! actions through its own session, and the browser receives the issues and
 //! sheets it makes. The server then restarts: the agent resumes and takes new
 //! work; a stopped agent stays stopped; a revoked grant ends its agent. An
 //! action that asks first is put to the person's approving device for that
@@ -51,7 +51,7 @@ use crate::harness::script::{call, doing, doing_args, task};
 use crate::support::{Device, WORKSPACE, enrol, workspace};
 use tilo_actions::MemberId;
 
-const NOTES: &str = "so.tilo.notes";
+const TASKS: &str = "so.tilo.tasks";
 const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
 const CHAT: &str = "so.tilo.chat";
@@ -72,9 +72,9 @@ const CONVERSATION_ARGUMENT: &str = "channel";
 /// by: a book's subject, as catalogues say.
 const TOPIC_ARGUMENT: &str = "subject";
 
-/// A task making a note titled `title` through the agent tools.
-fn new_note(title: &str) -> String {
-    task(&[doing("notes#new-note", serde_json::json!({"title": title}))])
+/// A task making an issue titled `title` through the agent tools.
+fn new_issue(title: &str) -> String {
+    task(&[doing("tasks#create", serde_json::json!({"title": title}))])
 }
 
 /// A task adding a sheet named `name` to the person's workbook.
@@ -165,7 +165,7 @@ impl Browser {
                     changes.iter().all(|(from, _)| *from == author),
                     "only the server edits {app} here, for the agent"
                 );
-                // A part of a chain (the parts Notes keeps its notes in) is
+                // A part of a chain (the parts Tasks keeps its issues in) is
                 // no document the app opens on its own: its changes are read
                 // as they merge.
                 if route_document(&route.document).chain_part().is_some() {
@@ -238,7 +238,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
 
     // 1. One consent step: the page asks, the laptop approves the agent
     // together with the delegation of what was asked.
-    let (grant, requested) = request_grant(&mut browser, "Writer", &[NOTES]).await;
+    let (grant, requested) = request_grant(&mut browser, "Writer", &[TASKS]).await;
     assert_eq!(requested["pairingCode"].as_str().unwrap().len(), 6);
     let approved = browser
         .until("the grant to be approved", |status| {
@@ -249,10 +249,10 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         })
         .await;
     let offered = approved.grants.iter().find(|g| g.id == grant).unwrap();
-    assert_eq!(offered.apps, [NOTES]);
+    assert_eq!(offered.apps, [TASKS]);
     assert!(offered.pairing_code.is_none());
 
-    // 2. The page spawns the agent with a task; its model makes a note
+    // 2. The page spawns the agent with a task; its model makes an issue
     // through the agent tools, asked of the server through the agent's session.
     let spawned = browser
         .call(
@@ -261,7 +261,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
             InvokeArgument::Json(
                 serde_json::json!({
                     "grant": grant,
-                    "task": new_note("Groceries"),
+                    "task": new_issue("Groceries"),
                     "workspace": WORKSPACE,
                 })
                 .as_object()
@@ -306,22 +306,22 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .collect();
     assert_eq!(
         steps,
-        [("notes", "new-note", TaskState::Completed)],
+        [("tasks", "create", TaskState::Completed)],
         "{:?}",
         info.tasks[0]
     );
-    browser.until_edited(NOTES, maker, "Groceries").await;
+    browser.until_edited(TASKS, maker, "Groceries").await;
 
     // 3. A message is the agent's next task.
     browser
         .call(
             &agent_resource(&grant),
             MESSAGE_ACTION,
-            InvokeArgument::Text(new_note("Budget")),
+            InvokeArgument::Text(new_issue("Budget")),
         )
         .await
         .unwrap();
-    browser.until_edited(NOTES, maker, "Budget").await;
+    browser.until_edited(TASKS, maker, "Budget").await;
 
     // 4. The server restarts. The agent resumes from the state directory and
     // takes new work.
@@ -354,11 +354,11 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .call(
             &agent_resource(&grant),
             MESSAGE_ACTION,
-            InvokeArgument::Text(new_note("Forecast")),
+            InvokeArgument::Text(new_issue("Forecast")),
         )
         .await
         .unwrap();
-    browser.until_edited(NOTES, maker, "Forecast").await;
+    browser.until_edited(TASKS, maker, "Forecast").await;
 
     // 5. Stopped stays stopped across a restart.
     browser
@@ -403,7 +403,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
             SUPERVISOR_RESOURCE,
             SPAWN_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({"grant": grant, "task": new_note("Later")})
+                serde_json::json!({"grant": grant, "task": new_issue("Later")})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -411,7 +411,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         )
         .await
         .unwrap();
-    browser.until_edited(NOTES, maker, "Later").await;
+    browser.until_edited(TASKS, maker, "Later").await;
     browser
         .call(&agent_resource(&grant), REVOKE_ACTION, InvokeArgument::None)
         .await
@@ -457,7 +457,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     stop(hosted).await;
 }
 
-/// The document a route names. A workspace-record app (Notes, Chat)
+/// The document a route names. A workspace-record app (Tasks, Chat)
 /// publishes its package-primary document under the empty id.
 fn route_document(id: &str) -> ui::resource::DocumentId {
     if id.is_empty() {

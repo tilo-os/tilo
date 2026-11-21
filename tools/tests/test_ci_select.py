@@ -414,7 +414,7 @@ class SelectorTests(unittest.TestCase):
         self.assertIn("read the changed files", declared["reason"])
         # A suite alone does not attribute a path: it runs a script, not the
         # checks that compiling the file would run.
-        suite_only = ci_select.make_plan(self.metadata, self.root, ["apps/notes/app.tl"], 2,
+        suite_only = ci_select.make_plan(self.metadata, self.root, ["apps/sampler/app.tl"], 2,
                                          suite_manifest=manifest)
         self.assertTrue(suite_only["full"])
         # A workspace path no suite and no reader declares keeps the complete

@@ -2,7 +2,6 @@
 
 tasks-effect-new-project = Projekt beginnen
 tasks-effect-open-issue = Aufgabe öffnen
-tasks-effect-write-note = Notiz schreiben
 tasks-effect-show-list = Liste anzeigen
 tasks-effect-show-board = Board anzeigen
 tasks-effect-show-thread = Verlauf anzeigen

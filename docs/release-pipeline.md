@@ -144,17 +144,18 @@ enforce the complete `x86_64 aarch64` matrix.
 
 Collections live in `dist/apps/app-collections.toml`. `default`, `desktop`, and
 `os` intentionally resolve `*` from checked-in `apps/*/tilo-app.toml` files, so a
-new app joins the normal fleet automatically. Small scenario-specific sets can
-extend another collection and exclude entries, or list apps directly.
+new app joins the normal fleet automatically. A tilolang package under `apps/tl`
+is named beside it, and joins in the change that retires the native app it
+replaces (`tl-notes`), so a release never ships two apps for one thing. Small
+scenario-specific sets can extend another collection and exclude entries, or list
+apps directly.
 
-`image` is the set an OS image bakes into its read-only store: every native app,
-plus the tilolang packages under `apps/tl` that ship beside the native app they
-replace (`tl-notes`). A tilolang package joins `default` only in the change that
-retires that app, so a release never ships two apps for one thing. Each named
-package is compiled and signed by `tilolang build` and installed through the same
-`tilo-install` a native tapp goes through; it runs on the tilolang runtime bundle
-(one signed `tilolang/<version>` bundle directory), which the image bakes into
-`/usr/lib/tilo-runtime` beside the Tilo runtime.
+`image` is the set an OS image bakes into its read-only store: the `default`
+collection, so every native app and the tilolang packages in place of those they
+replaced. Each named package is compiled and signed by `tilolang build` and
+installed through the same `tilo-install` a native tapp goes through; it runs on
+the tilolang runtime bundle (one signed `tilolang/<version>` bundle directory),
+which the image bakes into `/usr/lib/tilo-runtime` beside the Tilo runtime.
 
 The Browser is an ordinary member of the fleet. Its engine is not: the
 Chromium engine runtime is a signed runtime bundle the OS image builds from the

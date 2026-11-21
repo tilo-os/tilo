@@ -8,7 +8,7 @@ use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 use crate::fixtures::{Replica, target};
 use crate::legibility::call;
 
-const NOTES_APP: &str = "so.tilo.lang.notes";
+const NOTES_APP: &str = "so.tilo.notes";
 const DISCUSSION: (&str, &str) = (
     include_str!("../../../../apps/tl/discussion/app.tl"),
     include_str!("../../../../apps/tl/discussion/app.ids"),

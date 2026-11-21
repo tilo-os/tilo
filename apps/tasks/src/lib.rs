@@ -35,7 +35,6 @@ mod issue;
 pub mod issue_list;
 mod list;
 pub mod locales;
-mod note;
 mod program_step;
 mod project;
 #[cfg(feature = "samples")]
@@ -609,8 +608,7 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) {
     }
     let asking = nav.asking.clone();
     let open = nav.clone();
-    let noting = window.clone();
-    cx.effects(move |effect: TasksEffect, cx: &mut EffectCx<Tracker>| {
+    cx.effects(move |effect: TasksEffect, _cx: &mut EffectCx<Tracker>| {
         // The "New project" effect is the sidebar's own button and the
         // palette's entry: the form it asks for is what this window shows,
         // and the tracker is not touched. Only the person at this screen opens
@@ -635,7 +633,6 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) {
                 open.open.set(None);
                 Ok(Effected::done())
             }
-            effect @ TasksEffect::WriteNote { .. } => note::handle(effect, cx, &noting),
         }
     });
 }
