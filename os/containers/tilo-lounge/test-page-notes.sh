@@ -46,6 +46,8 @@ keep_page_lines() {
   grep -i 'page was acted on\|page-act\|page-show' "$log" | grep -vi 'acted=false' | head -60
   echo '--- what the server refused:'
   grep -i 'the page.s action was refused\|no addressable widget\|not support\|read-only' "$log" | tail -40
+  echo '--- page acts, opens and refusals:'
+  grep -i "page's act\|found no page held\|found its record not ready\|a page was refused\|no page is open\|page was closed" "$log" | grep -vi 'acted=false' | tail -60
 }
 trap 'keep_pictures; keep_page_lines; stop_lounge' EXIT
 node "$here/integration/page-notes.mjs" "$site_origin" "$server_origin" "$workspace" "$work/page" \
