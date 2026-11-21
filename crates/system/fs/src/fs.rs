@@ -481,7 +481,7 @@ mod read;
 mod recovery;
 mod unavailable;
 mod write_stage;
-use listing::{ReaddirCache, note_request};
+use listing::{OpTimer, ReaddirCache, note_request};
 use read::ReadPlan;
 use tilo_lock::MutexRecover as _;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
@@ -3097,13 +3097,30 @@ impl QuickFS {
                 path,
                 manifest,
                 adopt,
-            } => self
-                .hydrator
-                .block_on(
-                    self.hydrator
-                        .publish_file_content(path, manifest, previous, workspace, adopt),
-                )
-                .map_err(wrap),
+            } => {
+                // A mount's close hands a stage's file over: the bytes are read, chunked and
+                // linked on this thread, so a photo costs its one write and nothing beside it.
+                // A version that replaces another (whose chunk tier matters), a workspace that
+                // seals its content under its own keys, or bytes the store already holds take
+                // the path that waits on the store's own threads.
+                if adopt
+                    && manifest.is_none()
+                    && previous.is_none()
+                    && self.hydrator.stores_plainly(workspace)
+                {
+                    match self.hydrator.adopt_staged_inline(path) {
+                        Ok(Some(stored)) => return Ok(stored),
+                        Ok(None) => {}
+                        Err(error) => return Err(wrap(error)),
+                    }
+                }
+                self.hydrator
+                    .block_on(
+                        self.hydrator
+                            .publish_file_content(path, manifest, previous, workspace, adopt),
+                    )
+                    .map_err(wrap)
+            }
         }
     }
 
@@ -4248,6 +4265,7 @@ impl Filesystem for QuickFS {
     ) {
         let _answering = self.activity.begin();
         note_request("read");
+        let _timing = OpTimer::new("read");
         match self.plan_read(ino.0, fh.0, offset, size) {
             ReadPlan::Error(e) => reply.error(to_errno(e)),
             ReadPlan::Buffered(buffered) => self.reply_buffered(ino.0, buffered, reply),
@@ -4279,6 +4297,7 @@ impl Filesystem for QuickFS {
     ) {
         let _answering = self.activity.begin();
         note_request("create");
+        let _timing = OpTimer::new("create");
         let writer =
             match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FILE) {
                 Ok(writer) => writer,
@@ -4342,6 +4361,7 @@ impl Filesystem for QuickFS {
     ) {
         let _answering = self.activity.begin();
         note_request("write");
+        let _timing = OpTimer::new("write");
         if let Err(e) = self.check_open_handle_access(ino.0, fh, Access::Write) {
             reply.error(to_errno(e));
             return;
@@ -4362,6 +4382,7 @@ impl Filesystem for QuickFS {
     ) {
         let _answering = self.activity.begin();
         note_request("flush");
+        let _timing = OpTimer::new("flush");
         let _writer = self.note_writer(req.pid());
         match self.flush_inode(ino.0) {
             Ok(()) => reply.ok(),
@@ -4419,6 +4440,7 @@ impl Filesystem for QuickFS {
     ) {
         let _answering = self.activity.begin();
         note_request("release");
+        let _timing = OpTimer::new("release");
         if let Some(passthrough) = &self.passthrough {
             passthrough.release(fh.0);
         }
@@ -4516,6 +4538,7 @@ impl Filesystem for QuickFS {
     ) {
         let _answering = self.activity.begin();
         note_request("mkdir");
+        let _timing = OpTimer::new("mkdir");
         let _writer =
             match self.admit_writer(req.pid(), None, fs_protocol::file_action::verbs::NEW_FOLDER) {
                 Ok(writer) => writer,
