@@ -1294,6 +1294,7 @@ impl App {
     /// A frame drew the tree as it stands: what came after the last one is
     /// painted, and a rebuild or a theme made again after this frame repaints
     /// whole on its own account.
+    #[cfg(feature = "native")]
     pub(crate) fn note_frame_drawn(&mut self) {
         self.frame_theme_epoch = self.theme_epoch;
         self.layout.drawn = (self.layout.rebuilds, self.layout.remounts);
