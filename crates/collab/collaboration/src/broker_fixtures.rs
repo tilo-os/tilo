@@ -299,12 +299,12 @@ impl CollaborationManager {
                             item: "vault.item:0123456789abcdef0123456789abcdef".into(),
                         },
                     ),
-                    runtime_collab::BrowserServiceSessionCommand::ReleaseAccountSecret {
-                        account,
-                    } => Ok(runtime_collab::BrowserServiceSessionReply::AccountSecret {
-                        account: account.clone(),
-                        password: zeroize::Zeroizing::new("released-secret".into()),
-                    }),
+                    runtime_collab::BrowserServiceSessionCommand::ReleaseAccountSecret { item } => {
+                        Ok(runtime_collab::BrowserServiceSessionReply::AccountSecret {
+                            item: item.clone(),
+                            secret: zeroize::Zeroizing::new("released-secret".into()),
+                        })
+                    }
                     _ => Err("the session serves no such request".into()),
                 })),
                 ..Captures::default()

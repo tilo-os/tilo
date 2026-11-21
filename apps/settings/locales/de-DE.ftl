@@ -845,7 +845,6 @@ accounts-browser-identity-hide = Aus Browser-Kontoauswahl ausblenden
 accounts-browser-identity-show = In Browser-Kontoauswahl anzeigen
 accounts-browser-identity-remove = Aus Browser-Kontoauswahl entfernen
 
-accounts-vault-local = Es ist kein Schlüsselbund verfügbar, deshalb liegen gespeicherte Zugangsdaten in einer privaten Datei auf diesem Gerät. Entsperre oder installiere einen Schlüsselbund für besseren Schutz.
 accounts-empty-sample = Du hast noch keine Konten. Die Einträge unten sind Beispiele. Wähle unter „Konto hinzufügen“ einen Anbieter für dein eigenes Konto.
 accounts-empty = Du hast noch keine Konten. Wähle unter „Konto hinzufügen“ einen Anbieter für dein erstes Konto.
 accounts-cancel = Abbrechen

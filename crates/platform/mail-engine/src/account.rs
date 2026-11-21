@@ -25,8 +25,6 @@ use crate::model::{AccountConfig, Folder};
 
 pub const TYPE_ID: &str = accounts::email::TYPE_ID;
 
-pub const KEEPER: &str = accounts::email::KEEPER;
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     pub id: String,

@@ -9,9 +9,13 @@
 //!   password in the workspace's vault
 //!   ([`BrowserServiceSessionCommand::StoreAccountSecret`]), which is never
 //!   readable back by Settings, and is told the entry the account names;
-//! - the app that keeps an account's type (Mail for email) is released that
-//!   one account's secret
-//!   ([`BrowserServiceSessionCommand::ReleaseAccountSecret`]);
+//! - any app's engine is released the secret of one of the workspace's accounts, asked for by
+//!   the vault entry the account names as its sign-in (its `passwordItem`, `vault.item:<id>`)
+//!   ([`BrowserServiceSessionCommand::ReleaseAccountSecret`]): Mail's to read and send mail,
+//!   Files' to reach a `WebDAV` or Nextcloud server. The session decides on the person's grants
+//!   on Passwords, releases it only for the servers that account names, and writes the use
+//!   into the entry first. An app asks through
+//!   `collaboration::browser_service_sessions::AccountSecrets`;
 //! - Browser, in a session that holds a workspace's Browser, is handed the text of a vault
 //!   item for one page action that fills a field from it by reference
 //!   ([`BrowserServiceSessionCommand::UseItem`]). Its session asks the workspace's server,
@@ -63,10 +67,10 @@ pub enum BrowserServiceSessionCommand {
         username: String,
         servers: Vec<String>,
     },
-    /// The secret of the person's account `account`, for the app that keeps
-    /// that account's type and nobody else.
+    /// The secret of the workspace's account that names the vault entry `item`
+    /// (`vault.item:<entry id>`) as its sign-in, for the asking app's engine to sign in with.
     ReleaseAccountSecret {
-        account: String,
+        item: String,
     },
     /// The text an item of the person's vault keeps for the site Browser's page is at, for
     /// the one page action that fills a field from it by reference. It names nobody and no
@@ -93,9 +97,9 @@ impl std::fmt::Debug for BrowserServiceSessionCommand {
                 .debug_struct("StoreAccountSecret")
                 .field("account", account)
                 .finish_non_exhaustive(),
-            Self::ReleaseAccountSecret { account } => f
+            Self::ReleaseAccountSecret { item } => f
                 .debug_struct("ReleaseAccountSecret")
-                .field("account", account)
+                .field("item", item)
                 .finish(),
             Self::UseItem {
                 invocation,
@@ -169,10 +173,10 @@ pub enum BrowserServiceSessionReply {
         account: String,
         item: String,
     },
-    /// The account's secret, released to the app that keeps its type.
+    /// The secret of the account that names the entry `item`, released to the asking app.
     AccountSecret {
-        account: String,
-        password: Zeroizing<String>,
+        item: String,
+        secret: Zeroizing<String>,
     },
     /// The item's text for that page action and that site, and the kind of field it is for.
     ItemText {
@@ -295,7 +299,7 @@ impl BrowserServiceSessionCommand {
                     && servers.len() <= 8
                     && servers.iter().all(|server| item_server(server))
             }
-            Self::ReleaseAccountSecret { account: value } => account(value),
+            Self::ReleaseAccountSecret { item } => item_reference(item),
             Self::UseItem { item, origin, .. } => item_reference(item) && item_origin(origin),
         }
     }
@@ -372,10 +376,7 @@ impl BrowserServiceSessionReply {
                 account: value,
                 item,
             } => account(value) && item_reference(item),
-            Self::AccountSecret {
-                account: value,
-                password,
-            } => account(value) && secret(password),
+            Self::AccountSecret { item, secret: kept } => item_reference(item) && secret(kept),
             Self::ItemText { text, .. } => item_text(text),
             Self::ItemAsked { words, .. } => item_words(words),
             Self::ItemRefused { reason, .. } => item_words(reason),
@@ -420,13 +421,11 @@ impl BrowserServiceSessionReply {
                     account: stored, ..
                 },
                 BrowserServiceSessionCommand::StoreAccountSecret { account, .. },
-            )
-            | (
-                Self::AccountSecret {
-                    account: stored, ..
-                },
-                BrowserServiceSessionCommand::ReleaseAccountSecret { account },
             ) => self.valid() && stored == account,
+            (
+                Self::AccountSecret { item: released, .. },
+                BrowserServiceSessionCommand::ReleaseAccountSecret { item },
+            ) => self.valid() && released == item,
             // An item's answer is for the page action that asked, whichever of the three
             // it is.
             (

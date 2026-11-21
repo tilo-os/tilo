@@ -160,3 +160,100 @@ impl Drop for Pending {
         }
     }
 }
+
+/// An app engine's asks for the secrets of the workspace's accounts it signs in to, on its
+/// window's own route: how any app (Mail reading and sending mail, Files reaching a `WebDAV` or
+/// Nextcloud server) gets an account's password or grant without its sandbox reaching a vault,
+/// a key store or a file.
+///
+/// Each ask names the vault entry the account names as its sign-in: the account's
+/// `passwordItem` in the published accounts record (`accounts::email::password_item`), a
+/// `vault.item:<id>` reference. The session answers it from this device's copy of the
+/// workspace's vault (`BrowserServiceSessionCommand::ReleaseAccountSecret`): only where the
+/// person may use Passwords in that workspace, only for an enabled account that names that
+/// entry, only for the servers that account names, and with the use written into the entry
+/// first. A released secret stays in the app's memory.
+///
+/// One ask is in flight at a time on the window's route; the rest wait their turn. Ask while
+/// the window is up, and take what was answered on each pass ([`Self::poll`]).
+pub struct AccountSecrets {
+    client: Client,
+    waiting: std::collections::VecDeque<String>,
+    asking: Option<(String, Pending)>,
+}
+
+/// What the session answered for one entry.
+pub enum AccountSecret {
+    /// The secret of the account that names the entry `item`.
+    Released {
+        item: String,
+        secret: zeroize::Zeroizing<String>,
+    },
+    /// Not released, with the session's words for why: shown to the person as they are.
+    Refused { item: String, error: String },
+}
+
+impl AccountSecrets {
+    /// The asks of the window whose route `client` is ([`Client::capture_kept`], or the
+    /// `session()` of an app's view context).
+    #[must_use]
+    pub fn through(client: Client) -> Self {
+        Self {
+            client,
+            waiting: std::collections::VecDeque::new(),
+            asking: None,
+        }
+    }
+
+    /// Ask for the secret of the account that names the vault entry `item`, unless it is asked
+    /// for already.
+    pub fn ask(&mut self, item: &str) {
+        if !self.awaits(item) {
+            self.waiting.push_back(item.to_owned());
+        }
+    }
+
+    /// Whether the secret of `item` is asked for and not answered yet.
+    #[must_use]
+    pub fn awaits(&self, item: &str) -> bool {
+        self.asking.as_ref().is_some_and(|(asked, _)| asked == item)
+            || self.waiting.iter().any(|waiting| waiting == item)
+    }
+
+    /// What the session answered since the last pass, sending the next ask as each is
+    /// answered. `wake` wakes the window when an answer arrives.
+    pub fn poll(&mut self, wake: Option<&crate::WakeHandle>) -> Vec<AccountSecret> {
+        let mut answered = Vec::new();
+        loop {
+            if let Some((item, pending)) = &mut self.asking {
+                let Some(reply) = pending.poll() else {
+                    break;
+                };
+                let item = std::mem::take(item);
+                self.asking = None;
+                answered.push(match reply {
+                    Ok(BrowserServiceSessionReply::AccountSecret {
+                        item: released,
+                        secret,
+                    }) if released == item => AccountSecret::Released { item, secret },
+                    Ok(_) => AccountSecret::Refused {
+                        item,
+                        error: "The session answered something else".into(),
+                    },
+                    Err(error) => AccountSecret::Refused { item, error },
+                });
+            }
+            let Some(item) = self.waiting.pop_front() else {
+                break;
+            };
+            match self.client.request(
+                BrowserServiceSessionCommand::ReleaseAccountSecret { item: item.clone() },
+                wake.cloned(),
+            ) {
+                Ok(pending) => self.asking = Some((item, pending)),
+                Err(error) => answered.push(AccountSecret::Refused { item, error }),
+            }
+        }
+        answered
+    }
+}

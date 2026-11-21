@@ -1794,13 +1794,6 @@ impl AccountsPane {
         let mut panel: Vec<SettingsSection> = Vec::new();
 
         let mut intro: Vec<Item> = vec![note(&t("accounts-intro"))];
-        if self
-            .vault
-            .as_ref()
-            .is_some_and(|vault| vault.backend() == accounts::VaultBackend::LocalFile)
-        {
-            intro.push(note(&t("accounts-vault-local")));
-        }
         if self.is_sample {
             intro.push(note(&t("accounts-empty-sample")));
         } else if self.dir.is_empty() {

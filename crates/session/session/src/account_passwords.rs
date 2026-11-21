@@ -1,22 +1,22 @@
 //! The passwords of the workspace's accounts, kept in the workspace's vault and read from this
 //! device's own copy of it.
 //!
-//! An account of the workspace's accounts record names the vault entry its password is in
+//! An account of the workspace's accounts record names the vault entry its sign-in is in
 //! ([`accounts::email::password_item`]). Settings, the keeper of the accounts, hands this
 //! session a password typed for an account; it is kept in that entry (a new one for an account
 //! that names none), bound to the account's servers, and Settings is told the entry to name.
-//! The app that keeps the account's type (Mail for email) is released the password of an
-//! enabled account, only at the servers the account names now, and the use is written down in
-//! the entry first. Both are decided for the person on the app's connection: their role must
-//! let them use Passwords in that workspace ([`Workspaces::may_use_vault`]). Any member's
-//! device signs in with the same entry; none keeps a copy of its own.
+//! Any app's engine asks for an account's sign-in by that entry
+//! (`collaboration::browser_service_sessions::AccountSecrets`): it is released for an enabled
+//! account that names the entry, only at the servers that account names now, and the use is
+//! written into the entry first, saying which app signed in. Both are decided for the person
+//! on the app's connection: their role must let them use Passwords in that workspace
+//! ([`Workspaces::may_use_vault`]). Any member's device signs in with the same entry; none
+//! keeps a copy of its own.
 //!
 //! A password this device kept before an account's was the workspace's is carried into the
-//! vault ([`Workspaces::carry_device_passwords`]): as the session starts, and when an account
-//! that names no entry yet is asked for.
+//! vault as the session starts ([`Workspaces::carry_device_passwords`]).
 
-use accounts::email::{AccountConfig, password_item, password_places};
-use accounts::person::secret_keeper;
+use accounts::email::password_item;
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
 };
@@ -24,14 +24,14 @@ use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_resource::Id;
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::account_logins::{AccountLogin, NO_ENTRY};
+use tilo_workspace_service::workspaces::account_logins::AccountLogin;
 
 /// Where what happens to the workspace's account passwords is logged: with the session's own
 /// account of what it did, which a session's log keeps.
 const LOG: &str = tilo_startup_metrics::ACCOUNT_PASSWORDS_TARGET;
 
 /// What an app is told when its ask is not one it may make.
-pub(crate) const REFUSED: &str = accounts::secret_release::REFUSED;
+pub(crate) const REFUSED: &str = "This account's secret is not available to this app";
 
 /// What is said while this device's workspace service is not up yet.
 pub(crate) const NO_VAULT_YET: &str = "This device is still opening its workspaces, so no account's password is available yet. \
@@ -107,38 +107,13 @@ async fn answering(
                 item: item.to_string(),
             })
         }
-        Command::ReleaseAccountSecret { account } => {
-            let mut held = workspaces.workspace_accounts(workspace).await?;
-            let mut stored = held
-                .store()
-                .get(&accounts::AccountId::from(account.clone()))
-                .cloned()
-                .ok_or(REFUSED)?;
-            if !stored.enabled || secret_keeper(stored.type_id.as_str()) != Some(app) {
-                return Err(REFUSED.into());
-            }
-            if password_item(&stored.config).is_none() {
-                // A password this device kept before is carried into the vault now.
-                carry(workspaces, by).await;
-                held = workspaces.workspace_accounts(workspace).await?;
-                stored = held
-                    .store()
-                    .get(&accounts::AccountId::from(account.clone()))
-                    .cloned()
-                    .ok_or(REFUSED)?;
-            }
-            let item = password_item(&stored.config)
-                .and_then(ItemRef::parse)
-                .ok_or(NO_ENTRY)?;
-            let config = AccountConfig::from_value(stored.config.clone()).map_err(|_| REFUSED)?;
-            let places = password_places(&config).map_err(|error| error.to_string())?;
-            let released = workspaces
-                .account_password(workspace, by, &item, &places, &account)
-                .await?;
-            tracing::info!(target: LOG, %account, app, "released an account's password from the workspace's vault to the app that keeps its type");
+        Command::ReleaseAccountSecret { item } => {
+            let item = ItemRef::parse(&item).ok_or(REFUSED)?;
+            let released = workspaces.account_secret(workspace, by, app, &item).await?;
+            tracing::info!(target: LOG, %item, app, "released an account's sign-in from the workspace's vault");
             Ok(Reply::AccountSecret {
-                account,
-                password: released.secret,
+                item: item.to_string(),
+                secret: released.secret,
             })
         }
         _ => Err(REFUSED.into()),

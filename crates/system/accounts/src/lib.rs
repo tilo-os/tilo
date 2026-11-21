@@ -69,7 +69,6 @@ pub mod handoff;
 /// Ownership is decided against the accounts' keeper, which is the person's
 /// own record: without that record there is nothing to decide.
 #[cfg(feature = "person")]
-pub mod secret_release;
 pub mod thunderbird;
 pub use handoff::{
     CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,

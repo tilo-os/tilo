@@ -6,10 +6,6 @@ use serde::{Deserialize, Serialize};
 
 pub const TYPE_ID: &str = "email";
 
-/// The app that keeps email accounts: the one the session's ownership
-/// releases an email account's secret to.
-pub use tilo_app_id::apps::MAIL as KEEPER;
-
 /// How an account authenticates to its IMAP/SMTP servers. Password is the
 /// classic user+secret; OAuth is the modern token flow the big providers now
 /// **require** (Gmail and Outlook block plain-password IMAP), so those

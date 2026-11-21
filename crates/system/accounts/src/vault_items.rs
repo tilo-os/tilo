@@ -955,6 +955,19 @@ impl VaultItems {
         self.release(id, Some(kind), places, by, purpose)
     }
 
+    /// [`Self::use_for`] for whatever kind of sign-in the item is: what an account names as
+    /// its sign-in is a password or the grant its provider's page left, and it signs in with
+    /// either.
+    pub fn use_as_kept(
+        &mut self,
+        id: &ItemId,
+        places: &[Place],
+        by: &str,
+        purpose: UsedFor<'_>,
+    ) -> Result<Released, ItemError> {
+        self.release(id, None, places, by, purpose)
+    }
+
     fn release(
         &mut self,
         id: &ItemId,

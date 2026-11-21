@@ -8,10 +8,9 @@
 //!   forgotten by someone who administers the workspace;
 //! - Settings, the keeper of the workspace's accounts: keeping an account's password in the
 //!   workspace's vault, which it is never released back, and naming the entry it is kept in;
-//! - the app that keeps an account's type ([`accounts::person::secret_keeper`],
-//!   Mail for email): that one account's password, read from this device's own copy of the
-//!   workspace's vault ([`crate::account_passwords`]), for a person whose role lets them use
-//!   Passwords;
+//! - any app's engine: the sign-in of the workspace's account that names the vault entry it
+//!   asks for, read from this device's own copy of the workspace's vault
+//!   ([`crate::account_passwords`]), for a person whose role lets them use Passwords;
 //! - Browser, where this session holds a workspace's Browser: the text of a vault item for
 //!   one page action that fills a field from it by reference, which the workspace's server
 //!   keeps and decides about ([`crate::item_lending`]). The session keeps no vault for it.
@@ -158,7 +157,9 @@ impl BrowserServiceSessionServices for ServiceSessions {
         }
         if !command.browser_only() {
             // Its answer is waited for, and never here ([`Self::account_secret`]).
-            return Err("An account's password is not answered on the connection's dispatch".into());
+            return Err(
+                "An account's password is not answered on the connection's dispatch".into(),
+            );
         }
         let root = accounts::config_root().ok_or(UNAVAILABLE)?;
         let reply = resolve(&root, context.identity_public_key(), command.clone())?;

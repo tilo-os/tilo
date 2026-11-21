@@ -19,14 +19,6 @@ pub use tilo_app_id::apps::SETTINGS as ACCOUNTS_OWNER;
 /// accounts its provider sign-in sets up.
 pub const ACCOUNTS_EDITORS: &[&str] = &["so.tilo.mail"];
 
-/// The app that keeps accounts of type `type_id` and is released their
-/// secrets by the session's ownership: Mail for email. Settings, the keeper of
-/// every account, seals secrets and is released none.
-#[must_use]
-pub fn secret_keeper(type_id: &str) -> Option<&'static str> {
-    (type_id == crate::email::TYPE_ID).then_some(crate::email::KEEPER)
-}
-
 /// A Tilo identity's public connection metadata, edited in shared accounts.
 pub const TILO_IDENTITY_TYPE: &str = "tilo.identity";
 

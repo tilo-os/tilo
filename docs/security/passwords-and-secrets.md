@@ -121,20 +121,28 @@ carries Browser's website sessions). The session's broker service
 app that sends it: the certified person's own route, Read on that app, no
 agent or host connection.
 
-- **Sealing** (`StoreAccountSecret`): only Settings, the keeper of the
-  person's accounts. Settings' `add-email-account` effect seals the password
-  first, then adds the account to the person's accounts record, so an
-  account never shows without its secret. The secret is a `secret` parameter:
-  kept out of logs, history and confirmations, and never readable back by
-  Settings.
-- **Release** (`ReleaseAccountSecret`): one account's secret, only to the app
-  that keeps that account's type (`accounts::person::secret_keeper`: Mail for
-  email), only for an enabled account in the person's accounts. The app
-  keeps it in memory for signing in and never writes it anywhere.
+- **Keeping** (`StoreAccountSecret`): only Settings, the keeper of the
+  workspace's accounts. The password goes into an entry of the workspace's
+  vault, bound to the servers the account names, and Settings is told the
+  entry's reference (`vault.item:<id>`), which the account names as its
+  `passwordItem`. The secret is a `secret` parameter: kept out of logs,
+  history and confirmations, and never readable back by Settings.
+- **Release** (`ReleaseAccountSecret { item }`): any app's engine asks for an
+  account's sign-in by the entry the account names, through
+  `collaboration::browser_service_sessions::AccountSecrets` (Mail for its
+  mail accounts). The session answers from
+  this device's copy of the workspace's vault, decided on the person's grants
+  on Passwords, only for an enabled account that names that entry, only for
+  the servers that account names now, and writes the use (which app signed in
+  to which account) into the entry first. The app keeps the secret in memory
+  for signing in and never writes it anywhere. No per-app list decides: an
+  app acting for its person may read what that person may, so the person's
+  role on Passwords is the boundary.
 
 Ownership does not sign in for the app: Mail's IMAP and SMTP sessions run in
-Mail, so a password account's secret is released to it. Each seal and release
-is logged by the session with the account and app, never the value.
+Mail, so an account's secret is released to it. The session logs each keep,
+release and refusal with the entry and app, never the value
+(`tilo::account_passwords`).
 
 Outside a session (a test, a `--data-dir` profile) an explicit config root
 keeps its own vault under a local key, and Settings and Mail open that

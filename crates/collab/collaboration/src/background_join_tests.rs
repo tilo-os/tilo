@@ -303,12 +303,12 @@ fn account_credentials_taken_while_the_route_joins_answers_once_it_is_admitted()
         "the secret is sealed on the app's own route"
     );
 
-    // The other half: the app that keeps Mail's account type is released
-    // its secret on the same client, which never had to be taken again.
+    // The other half: an app's engine is released the secret of the account that names the
+    // entry, on the same client, which never had to be taken again.
     let mut released = client
         .request(
             runtime_collab::BrowserServiceSessionCommand::ReleaseAccountSecret {
-                account: "hiring@studio.example".into(),
+                item: "vault.item:0123456789abcdef0123456789abcdef".into(),
             },
             None,
         )
@@ -326,11 +326,11 @@ fn account_credentials_taken_while_the_route_joins_answers_once_it_is_admitted()
     assert!(
         matches!(
             answer.expect("the session released the secret"),
-            runtime_collab::BrowserServiceSessionReply::AccountSecret { account, password }
-                if account == "hiring@studio.example"
-                    && password.as_str() == "released-secret"
+            runtime_collab::BrowserServiceSessionReply::AccountSecret { item, secret }
+                if item == "vault.item:0123456789abcdef0123456789abcdef"
+                    && secret.as_str() == "released-secret"
         ),
-        "the app that keeps the account's type is released its secret"
+        "the app is released the secret of the entry it asked for"
     );
 }
 

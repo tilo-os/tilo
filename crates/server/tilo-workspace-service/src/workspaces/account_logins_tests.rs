@@ -24,7 +24,7 @@ use tilo_resource::{Id, Replica, Resource as _};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use zeroize::Zeroizing;
 
-use super::account_logins::{AccountLogin, MAY_NOT_USE_PASSWORDS};
+use super::account_logins::{AccountLogin, MAY_NOT_USE_PASSWORDS, NOT_NAMED};
 use super::fixtures::{
     TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host_holding,
 };
@@ -34,6 +34,8 @@ use super::{MemberDevice, PreAdmitRequest, Workspaces};
 const ADDRESS: &str = "team@example.test";
 /// Its password: made up, and nobody's.
 const PASSWORD: &str = "made-up team password";
+/// The app whose engine signs in.
+const MAIL: &str = tilo_app_id::apps::MAIL;
 
 /// A stand-in mail server taking the account's one login, and the account's settings that
 /// name it.
@@ -294,9 +296,7 @@ async fn released(
     workspace: &str,
     by: &Caller,
     item: &ItemRef,
-    server: &MailServer,
 ) -> Result<Zeroizing<String>, String> {
-    let places = server.login().places;
     tilo_test_env::within("the device's copy of the vault keeps the entry", async {
         loop {
             if workspaces.vault_keeps(workspace, item).await == Ok(true) {
@@ -307,7 +307,7 @@ async fn released(
     })
     .await;
     workspaces
-        .account_password(workspace, by, item, &places, ADDRESS)
+        .account_secret(workspace, by, MAIL, item)
         .await
         .map(|released| released.secret)
 }
@@ -352,7 +352,7 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
             named, item,
             "every device reads the one entry the account names"
         );
-        let password = released(device, &workspace, &by, &named, &server)
+        let password = released(device, &workspace, &by, &named)
             .await
             .expect("a member who may use Passwords is released the account's password");
         let signing = Arc::clone(&server);
@@ -379,32 +379,31 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
         "a password typed anew is kept in the entry the account names"
     );
 
-    // Each release is written down beside the entry, and nothing else was used.
+    // Each release is written down beside the entry, saying which app signed in to which
+    // account.
     let opened = members.member.open_vault(&workspace).await.unwrap();
     let uses = opened
         .entries()
         .iter()
         .find(|(entry, _)| entry.id.0 == item.id())
-        .map(|(_, uses)| uses.len())
+        .map(|(_, uses)| uses.clone())
         .unwrap();
-    assert!(uses >= 1, "the member's release is written down");
-
-    // The entry is kept only for the account's own servers.
-    let elsewhere =
-        [accounts::vault_items::Place::server("imap", "mail.elsewhere.test", 993).unwrap()];
     assert!(
+        uses.iter()
+            .any(|used| used.what == format!("{MAIL} signed in to Team")),
+        "the member's release is written down with the app and the account: {uses:?}"
+    );
+
+    // An entry no account of the workspace names is released to nobody.
+    let unnamed = ItemRef::parse("vault.item:0123456789abcdef0123456789abcdef").unwrap();
+    assert_eq!(
         members
             .member
-            .account_password(
-                &workspace,
-                &members.member_caller(),
-                &item,
-                &elsewhere,
-                ADDRESS
-            )
+            .account_secret(&workspace, &members.member_caller(), MAIL, &unnamed)
             .await
-            .is_err(),
-        "the entry is released for no other server"
+            .map(|released| released.secret),
+        Err(NOT_NAMED.to_owned()),
+        "only an account's own entry is released"
     );
 }
 
@@ -439,12 +438,9 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     // though the device holds the vault's keys.
     let member = members.member.clone();
     let by = members.member_caller();
-    let places = server.login().places;
     let refused = tilo_test_env::within("the member's device reads the rule", async {
         loop {
-            match member
-                .account_password(&workspace, &by, &named, &places, ADDRESS)
-                .await
+            match member.account_secret(&workspace, &by, MAIL, &named).await
             {
                 Err(error) if error == MAY_NOT_USE_PASSWORDS => return error,
                 _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
@@ -471,13 +467,7 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     assert_eq!(
         members
             .owner
-            .account_password(
-                &workspace,
-                &members.owner_caller(),
-                &named,
-                &places,
-                ADDRESS
-            )
+            .account_secret(&workspace, &members.owner_caller(), MAIL, &named)
             .await
             .unwrap()
             .secret
@@ -530,7 +520,6 @@ async fn a_password_the_device_kept_is_carried_into_the_vault_once_and_leaves_th
             &workspace,
             &members.member_caller(),
             &item,
-            &server
         )
         .await
         .unwrap()

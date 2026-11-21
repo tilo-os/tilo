@@ -446,6 +446,12 @@ takes back asks nothing: it runs at once and offers Undo.
   bespoke in-app "OpenDialog", or an app-drawn `ui::FilePicker` used for OS file
   open/save, is a bug. (`ui::FilePicker` exists only for the compositor's own
   portal-backend rendering, or non-filesystem in-cluster pickers.)
+- **An account's password or grant comes from the session, by its vault entry.**
+  An app that signs in to a server of one of the workspace's accounts asks
+  `ui::collaboration::browser_service_sessions::AccountSecrets::through(cx.session()?)`
+  for the entry the account names (`accounts::email::password_item` of its
+  settings in the accounts record); it never opens a vault, a keyring or a
+  credentials file, and its sandbox needs nothing more.
 - Prefer host/portal services generally (screenshot, sharing, notifications)
   over reinventing them in-app, so a Tilo app behaves like a native app on
   whatever OS it runs.

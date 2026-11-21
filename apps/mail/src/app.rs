@@ -962,6 +962,7 @@ impl Mailroom {
 impl MailApp {
     /// Take the accounts' passwords from `ownership`, the session's release, when it is one:
     /// until an account's arrives, nothing this window asks for it reaches its server.
+    #[cfg(any(test, feature = "live"))]
     pub(crate) fn release_passwords_through(
         &mut self,
         ownership: Option<mail_engine::account_secrets::SecretRelease>,

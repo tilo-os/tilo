@@ -1,19 +1,14 @@
-//! The secrets of the person's email accounts, released to this window by
-//! the session's account credentials.
+//! The secrets of the workspace's email accounts, released to this window by the session.
 //!
-//! Mail runs sandboxed: it reaches neither the person's account vault nor
-//! the key storage that seals it. The session holds both. On this window's
-//! own route Mail asks for one email account's secret at a time
-//! ([`BrowserServiceSessionCommand::ReleaseAccountSecret`]); the session
-//! answers only for an enabled account of the type Mail keeps, and only to
-//! Mail. A secret it releases stays in this process's memory, never in a
+//! Mail runs sandboxed: it reaches neither the workspace's vault nor the key storage that seals
+//! it. It asks the way every app's engine does
+//! ([`ui::collaboration::browser_service_sessions::AccountSecrets`]): by the vault entry each
+//! account names as its sign-in. A secret released stays in this process's memory, never in a
 //! file or the document.
 
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 
-use ui::collaboration::browser_service_sessions::{
-    BrowserServiceSessionCommand, BrowserServiceSessionReply, Client, Pending,
-};
+use ui::collaboration::browser_service_sessions::{AccountSecret, AccountSecrets, Client};
 use zeroize::Zeroizing;
 
 pub enum Released {
@@ -29,117 +24,136 @@ pub enum Released {
 
 pub struct SecretRelease {
     source: Source,
-    waiting: VecDeque<String>,
-    asking: Option<(String, Pending)>,
+}
+
+enum Source {
+    /// The window's route: each account asked for by its entry, and answered for it.
+    Route {
+        asks: Box<AccountSecrets>,
+        /// The account each entry asked for is the sign-in of.
+        accounts: BTreeMap<String, String>,
+        /// Accounts that name no entry: refused in words on the next pass.
+        unnamed: Vec<String>,
+    },
+    /// A profile's own stores, outside a session.
+    #[cfg(any(test, feature = "test-support"))]
+    Root {
+        root: std::path::PathBuf,
+        waiting: Vec<String>,
+    },
 }
 
 impl SecretRelease {
     /// The session's release on the window's own route, through `client`: the connection the
-    /// window captured while it was built ([`Client::capture`]), which is the only time it can.
+    /// window captured while it was built.
     #[must_use]
     pub fn through(client: Client) -> Self {
-        Self::from(Source::Route(Box::new(client)))
+        Self {
+            source: Source::Route {
+                asks: Box::new(AccountSecrets::through(client)),
+                accounts: BTreeMap::new(),
+                unnamed: Vec::new(),
+            },
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn kept_under(root: std::path::PathBuf) -> Self {
-        Self::from(Source::Root(root))
-    }
-
-    fn from(source: Source) -> Self {
         Self {
-            source,
-            waiting: VecDeque::new(),
-            asking: None,
+            source: Source::Root {
+                root,
+                waiting: Vec::new(),
+            },
         }
     }
 
-    pub fn ask(&mut self, account: &str) {
-        if self
-            .asking
-            .as_ref()
-            .is_some_and(|(asked, _)| asked == account)
-            || self.waiting.iter().any(|waiting| waiting == account)
-        {
+    /// Ask for the password of `account`, which names the vault entry `item` as its sign-in
+    /// (`None` where it names none, which is refused in words when polled).
+    pub fn ask(&mut self, account: &str, item: Option<&str>) {
+        if self.awaits(account) {
             return;
         }
-        self.waiting.push_back(account.to_owned());
+        match &mut self.source {
+            Source::Route {
+                asks,
+                accounts,
+                unnamed,
+            } => match item {
+                Some(item) => {
+                    accounts.insert(item.to_owned(), account.to_owned());
+                    asks.ask(item);
+                }
+                None => unnamed.push(account.to_owned()),
+            },
+            #[cfg(any(test, feature = "test-support"))]
+            Source::Root { waiting, .. } => waiting.push(account.to_owned()),
+        }
     }
 
     pub fn awaits(&self, account: &str) -> bool {
-        self.asking
-            .as_ref()
-            .is_some_and(|(asked, _)| asked == account)
-            || self.waiting.iter().any(|waiting| waiting == account)
+        match &self.source {
+            Source::Route {
+                accounts, unnamed, ..
+            } => accounts
+                .values()
+                .chain(unnamed.iter())
+                .any(|asked| asked == account),
+            #[cfg(any(test, feature = "test-support"))]
+            Source::Root { waiting, .. } => waiting.iter().any(|asked| asked == account),
+        }
     }
 
     pub fn poll(&mut self, wake: Option<&ui::WakeHandle>) -> Vec<Released> {
-        let mut released = Vec::new();
-        loop {
-            if let Some((account, pending)) = &mut self.asking {
-                let Some(reply) = pending.poll() else {
-                    break;
-                };
-                let account = account.clone();
-                self.asking = None;
-                released.push(match reply {
-                    Ok(BrowserServiceSessionReply::AccountSecret {
-                        account: answered,
-                        password,
-                    }) if answered == account => Released::Secret { account, password },
-                    Ok(_) => Released::Refused {
+        match &mut self.source {
+            Source::Route {
+                asks,
+                accounts,
+                unnamed,
+            } => {
+                let mut released: Vec<Released> = std::mem::take(unnamed)
+                    .into_iter()
+                    .map(|account| Released::Refused {
                         account,
-                        error: "account credentials answered something else".into(),
-                    },
-                    Err(error) => Released::Refused { account, error },
-                });
+                        error: crate::engine::NO_PASSWORD.into(),
+                    })
+                    .collect();
+                for answer in asks.poll(wake) {
+                    let (item, answer) = match answer {
+                        AccountSecret::Released { item, secret } => (item, Ok(secret)),
+                        AccountSecret::Refused { item, error } => (item, Err(error)),
+                    };
+                    let Some(account) = accounts.remove(&item) else {
+                        continue;
+                    };
+                    released.push(match answer {
+                        Ok(password) => Released::Secret { account, password },
+                        Err(error) => Released::Refused { account, error },
+                    });
+                }
+                released
             }
-            let Some(account) = self.waiting.pop_front() else {
-                break;
-            };
-            match self.source.ask(account, wake) {
-                Asked::Pending(account, pending) => self.asking = Some((account, pending)),
-                Asked::Answered(answer) => released.push(answer),
-            }
-        }
-        released
-    }
-}
-
-enum Asked {
-    Pending(String, Pending),
-    Answered(Released),
-}
-
-enum Source {
-    Route(Box<Client>),
-    #[cfg(any(test, feature = "test-support"))]
-    Root(std::path::PathBuf),
-}
-
-impl Source {
-    fn ask(&self, account: String, wake: Option<&ui::WakeHandle>) -> Asked {
-        match self {
-            Self::Route(client) => match client.request(
-                BrowserServiceSessionCommand::ReleaseAccountSecret {
-                    account: account.clone(),
-                },
-                wake.cloned(),
-            ) {
-                Ok(pending) => Asked::Pending(account, pending),
-                Err(error) => Asked::Answered(Released::Refused { account, error }),
-            },
             #[cfg(any(test, feature = "test-support"))]
-            Self::Root(root) => Asked::Answered(release_under(root, account)),
+            Source::Root { root, waiting } => std::mem::take(waiting)
+                .into_iter()
+                .map(|account| release_under(root, account))
+                .collect(),
         }
     }
 }
 
+/// The password a profile's own credentials keep for its enabled account `account`, typed for
+/// the servers the account names.
 #[cfg(any(test, feature = "test-support"))]
 fn release_under(root: &std::path::Path, account: String) -> Released {
     let store = accounts::AccountStore::load_in(root);
     let released = accounts::AccountCredentials::open_in(root).and_then(|credentials| {
-        accounts::secret_release::release(&store, &credentials, crate::account::KEEPER, &account)
+        store
+            .get(&accounts::AccountId::from(account.clone()))
+            .filter(|kept| kept.enabled)
+            .and_then(|kept| credentials.get_for(kept))
+            .map(|secret| Zeroizing::new(secret.password))
+            .filter(|password| !password.is_empty())
+            .ok_or_else(|| "This profile keeps no password for that account".to_owned())
     });
     match released {
         Ok(password) => Released::Secret { account, password },

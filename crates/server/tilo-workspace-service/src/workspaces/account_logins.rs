@@ -36,6 +36,9 @@ pub const MAY_NOT_USE_PASSWORDS: &str = "Your role in this workspace does not in
 pub const ENTRY_GONE: &str = "This account's password is no longer in the workspace's vault. \
                               Sign the account in again in Settings.";
 
+/// The words for an entry of the vault that no enabled account of the workspace signs in with.
+pub const NOT_NAMED: &str = "No account of this workspace signs in with that entry of its vault";
+
 /// The words for an account that names no entry of the vault.
 pub const NO_ENTRY: &str =
     "This account keeps no password in the workspace's vault yet. Sign it in in Settings.";
@@ -131,32 +134,51 @@ impl Workspaces {
         ItemRef::from_id(kept.id.as_str()).ok_or_else(|| "the vault named no entry".to_owned())
     }
 
-    /// The login the entry `item` of `workspace`'s vault keeps, released for `by` to sign in to
-    /// `account` at every one of `places`, its use written down first.
+    /// The secret of the vault entry `item` names, for `app` to sign in with on `by`'s behalf:
+    /// the sign-in of the enabled account of `workspace`'s accounts that names that entry
+    /// ([`accounts::email::password_item`]), released only for the servers that account names
+    /// now, with the use written into the entry first, saying which app signed in to which
+    /// account. Any kind of account and any app: what decides is whether `by` may use
+    /// Passwords.
     ///
     /// # Errors
-    /// `by` may not use the vault, the entry is gone, is no login, or does not belong to every
-    /// one of `places`, or the use could not be written down.
-    pub async fn account_password(
+    /// `by` may not use the vault, no enabled account names the entry, the account names no
+    /// server its sign-in belongs to, or the entry is gone or kept for other servers.
+    pub async fn account_secret(
         &self,
         workspace: &str,
         by: &Caller,
+        app: &str,
         item: &ItemRef,
-        places: &[Place],
-        account: &str,
     ) -> Result<Released, String> {
         self.using_vault(workspace, by).await?;
+        let held = self.workspace_accounts(workspace).await?;
+        let store = held.store();
+        let account = store
+            .all()
+            .iter()
+            .find(|account| {
+                account.enabled
+                    && super::person_settings::kept_sign_ins::sign_in_of(&account.config).as_ref()
+                        == Some(item)
+            })
+            .ok_or(NOT_NAMED)?;
+        let places = super::person_settings::kept_sign_ins::places_of(account)?;
         let id = ItemId::parse(item.id()).ok_or(ENTRY_GONE)?;
         // An agent is named; a person's own use is theirs, as every other release writes it.
         let who = by
             .agent_called()
             .map_or_else(String::new, ToOwned::to_owned);
-        let what = format!("signed in to {account}");
+        let name = if account.display_name.trim().is_empty() {
+            account.id.as_str()
+        } else {
+            account.display_name.as_str()
+        };
+        let what = format!("{app} signed in to {name}");
         self.changing_vault(workspace, |items| {
-            items.use_for(
+            items.use_as_kept(
                 &id,
-                ItemKind::Login,
-                places,
+                &places,
                 &who,
                 UsedFor {
                     using: SIGN_IN,
@@ -332,9 +354,7 @@ impl Workspaces {
                     continue;
                 }
                 let id = account.id.as_str().to_owned();
-                match self
-                    .carry_one(&workspace, &by, account, secret.password)
-                    .await
+                match Box::pin(self.carry_one(&workspace, &by, account, secret.password)).await
                 {
                     Ok(()) => {
                         carried.insert(id);

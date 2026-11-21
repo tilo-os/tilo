@@ -845,7 +845,6 @@ accounts-browser-identity-hide = Hide from browser picker
 accounts-browser-identity-show = Show in browser picker
 accounts-browser-identity-remove = Remove browser choice
 
-accounts-vault-local = No keyring is available, so saved credentials are kept in a private file on this device. Unlock or install a keyring for stronger protection.
 accounts-empty-sample = You have no accounts yet. The entries below are examples. Choose a provider under “Add account” to connect your own.
 accounts-empty = You have no accounts yet. Choose a provider under “Add account” to connect your first.
 accounts-cancel = Cancel

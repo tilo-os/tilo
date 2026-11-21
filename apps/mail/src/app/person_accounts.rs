@@ -150,7 +150,12 @@ impl MailApp {
         };
         let active_changed = {
             let mut st = self.shared.borrow_mut();
-            keep_released_secrets(self.ownership.as_mut(), &mut adopted, &st.accounts);
+            keep_released_secrets(
+                self.ownership.as_mut(),
+                &mut adopted,
+                &st.accounts,
+                &person.store(),
+            );
             let previous = st.accounts.active_account().cloned();
             if let Some(shown) = st
                 .accounts
@@ -291,10 +296,13 @@ pub(crate) fn needs_released_secret(config: &AccountConfig) -> bool {
         && config.password.is_empty()
 }
 
+/// Keep the passwords already released for accounts whose settings did not change, and ask
+/// for the rest by the vault entry each account names in the workspace's accounts (`person`).
 fn keep_released_secrets(
     ownership: Option<&mut mail_engine::account_secrets::SecretRelease>,
     adopted: &mut AccountStore,
     shown: &AccountStore,
+    person: &accounts::AccountStore,
 ) {
     for account in &mut adopted.accounts {
         if account.config.password.is_empty()
@@ -313,7 +321,10 @@ fn keep_released_secrets(
     if let Some(ownership) = ownership {
         for account in &adopted.accounts {
             if needs_released_secret(&account.config) {
-                ownership.ask(&account.id);
+                let item = person
+                    .get(&accounts::AccountId::from(account.id.clone()))
+                    .and_then(|kept| accounts::email::password_item(&kept.config));
+                ownership.ask(&account.id, item);
             }
         }
     }

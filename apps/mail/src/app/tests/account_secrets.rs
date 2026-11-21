@@ -135,30 +135,3 @@ fn the_choice_is_kept_and_the_secret_stays_ownerships(
         "Mail keeps no copy of a secret storage released"
     );
 }
-
-#[test]
-fn ownership_releases_nothing_mail_does_not_keep() {
-    let kept = tempfile::tempdir().unwrap();
-    let mut store = accounts::AccountStore::new();
-    store.upsert(accounts::Account::new(
-        accounts::AccountId::from("dav@example.test"),
-        "caldav",
-    ));
-    store.save_in(kept.path()).unwrap();
-    let mut credentials = accounts::AccountCredentials::open_in(kept.path()).unwrap();
-    accounts::secret_release::seal(
-        &mut credentials,
-        accounts::person::ACCOUNTS_OWNER,
-        "dav@example.test",
-        "dav-password",
-    )
-    .unwrap();
-    let mut release =
-        mail_engine::account_secrets::SecretRelease::kept_under(kept.path().to_path_buf());
-    release.ask("dav@example.test");
-    let answers = release.poll(None);
-    assert!(matches!(
-        answers.as_slice(),
-        [mail_engine::account_secrets::Released::Refused { account, .. }] if account == "dav@example.test"
-    ));
-}
