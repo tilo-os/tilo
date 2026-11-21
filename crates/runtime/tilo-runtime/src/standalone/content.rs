@@ -65,10 +65,10 @@ impl ProfileShelf {
     }
 
     fn scoped(&self, scope: &ContentScope) -> Result<BlobClient, BlobError> {
-        let mut connection = self.connection.lock_recover();
-        let connection = match &mut *connection {
+        let mut guard = self.connection.lock_recover();
+        let connection = match &mut *guard {
             Some(connection) => connection,
-            None => connection.insert(Connection {
+            None => guard.insert(Connection {
                 session: BlobClient::connect_session(&self.socket)?,
                 scopes: HashMap::new(),
             }),
@@ -81,6 +81,7 @@ impl ProfileShelf {
             connection.scopes.clear();
         }
         connection.scopes.insert(scope.clone(), scoped.clone());
+        drop(guard);
         Ok(scoped)
     }
 }
