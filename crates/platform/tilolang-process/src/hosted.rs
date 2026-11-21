@@ -1256,7 +1256,8 @@ impl Hosted {
         let Some(target) = self.bundle.meta.target_of(&action.params) else {
             return;
         };
-        let media = tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
+        let media =
+            tilolang_tilo::runtime::blob::media_of(file.name.as_deref().unwrap_or_default());
         // What a person's file is: its bytes, or the chunks of a workspace file the store keeps a
         // manifest of, joined as the file they are.
         let Some(content) = self.files.as_ref() else {

@@ -407,7 +407,12 @@ fn session_task(
         admitted_here: BTreeSet::new(),
     };
     // The link's own queue is there before the session says anything.
-    let link = Link::new(Arc::new(Commands::holding(commands, held.clone())), engine, held, reports);
+    let link = Link::new(
+        Arc::new(Commands::holding(commands, held.clone())),
+        engine,
+        held,
+        reports,
+    );
     (task, link, receiver)
 }
 

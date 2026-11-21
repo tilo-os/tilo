@@ -126,7 +126,9 @@ struct SessionPeer {
 impl tilo_fs::tree_sync::TreePeer for SessionPeer {
     fn open(&self, chunk: TreeChunk) {
         let route = route(self.workspace, chunk);
-        let _ = self.link.send(Cmd::OpenDocumentAt(self.workspace, route.clone()));
+        let _ = self
+            .link
+            .send(Cmd::OpenDocumentAt(self.workspace, route.clone()));
         let _ = self.link.send(Cmd::OpenRoute(route.clone()));
         // And on the workspace's live session, whose host answers what it holds.
         let _ = self.link.engine().open_resource(
@@ -267,9 +269,7 @@ fn wake_of(
     let name = workspace.to_string();
     let here = |route: &DocumentRoute| route.cluster_id == name && route.app_id == FILES_APP;
     match event {
-        Event::HostReady { ws, .. } if ws == workspace => {
-            Some(tilo_fs::tree_sync::Wake::HostReady)
-        }
+        Event::HostReady { ws, .. } if ws == workspace => Some(tilo_fs::tree_sync::Wake::HostReady),
         Event::Refused { route, refusal, .. } if here(&route) => {
             fs_protocol::tree::chunk_of_record(&route.document).map(|chunk| {
                 tilo_fs::tree_sync::Wake::Refused {

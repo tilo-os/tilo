@@ -1256,7 +1256,12 @@ mod tests {
         event.fire(None);
         assert_eq!(
             reconciler.adapter().take_events(),
-            vec![UiEvent::Fire("b".to_owned(), "press".to_owned(), None, None)],
+            vec![UiEvent::Fire(
+                "b".to_owned(),
+                "press".to_owned(),
+                None,
+                None
+            )],
             "the window fires the action reference the view attached"
         );
 

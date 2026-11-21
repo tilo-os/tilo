@@ -178,7 +178,11 @@ impl BlockEditor {
         }
         placed
     }
-    pub(crate) fn try_paste_image_key(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+    pub(crate) fn try_paste_image_key(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+    ) -> bool {
         use winit::event::{ElementState, KeyEvent};
         use winit::keyboard::Key;
 
@@ -223,8 +227,11 @@ pub enum PictureIn<'a> {
 
 /// Where a picture the person pasted or dropped goes: the host keeps it and answers where its
 /// bytes are, or refuses it with the reason, which leaves the editor's document as it was.
-pub type ImageInserter =
-    Box<dyn for<'a> FnMut(PictureIn<'a>) -> Result<ui::pictures::KeptPicture, ui::pictures::PictureRefusal>>;
+pub type ImageInserter = Box<
+    dyn for<'a> FnMut(
+        PictureIn<'a>,
+    ) -> Result<ui::pictures::KeptPicture, ui::pictures::PictureRefusal>,
+>;
 
 /// What a picture copied to the clipboard is called: the name a document writes beside its
 /// bytes, from the type it was copied as (`Pasted image.png`).

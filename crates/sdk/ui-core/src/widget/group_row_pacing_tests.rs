@@ -99,11 +99,11 @@ impl Strip {
     /// notch's own instant, not a frame's.
     fn reveal(&mut self, group: u64, at: Instant) {
         with_monotonic_time(at, || {
-            let _ = self.harness.root_mut::<FedRow>().row.scroll_group_into_view_animated(
-                group,
-                at,
-                crate::tokens::MotionSource::Pointer,
-            );
+            let _ = self
+                .harness
+                .root_mut::<FedRow>()
+                .row
+                .scroll_group_into_view_animated(group, at, crate::tokens::MotionSource::Pointer);
         });
     }
 

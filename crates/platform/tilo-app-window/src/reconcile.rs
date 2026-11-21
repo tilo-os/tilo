@@ -1514,7 +1514,12 @@ impl Reconciler {
                     button = button.with_detail(detail);
                 }
                 list = list.push(Box::new(button.on_click(move || {
-                    sink.push(UiEvent::Fire(key.clone(), format!("pick.{name}"), None, None));
+                    sink.push(UiEvent::Fire(
+                        key.clone(),
+                        format!("pick.{name}"),
+                        None,
+                        None,
+                    ));
                 })));
             }
             return Box::new(list);
@@ -1528,7 +1533,12 @@ impl Reconciler {
             Box::new(
                 ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_change(move |index| {
                     if let Some(case) = names.get(index) {
-                        sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None, None));
+                        sink.push(UiEvent::Fire(
+                            key.clone(),
+                            format!("pick.{case}"),
+                            None,
+                            None,
+                        ));
                     }
                 }),
             )
@@ -1549,7 +1559,12 @@ impl Reconciler {
                             .position(|shown| shown == label)
                             .and_then(|index| names.get(index))
                         {
-                            sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None, None));
+                            sink.push(UiEvent::Fire(
+                                key.clone(),
+                                format!("pick.{case}"),
+                                None,
+                                None,
+                            ));
                         }
                     }),
             )

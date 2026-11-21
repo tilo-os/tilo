@@ -1768,7 +1768,10 @@ impl NativeWorkspaceOwner {
             Ok(publication.governance.is_empty()
                 && publication.entries.is_empty()
                 && publication.tail.is_empty()
-                && publication.spilled.iter().all(|run| run.taken >= run.writes))
+                && publication
+                    .spilled
+                    .iter()
+                    .all(|run| run.taken >= run.writes))
         })
     }
     /// How many of this device's committed writes to `workspace` are still in

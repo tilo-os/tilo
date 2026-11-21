@@ -290,7 +290,10 @@ impl Hydrator {
             tokio::task::spawn_blocking(move || files.ensure(&key, size, retention, &chunks))
                 .await??;
             if tracing {
-                eprintln!("range of {content}: its area entry in {:?}", began.elapsed());
+                eprintln!(
+                    "range of {content}: its area entry in {:?}",
+                    began.elapsed()
+                );
             }
         } else if priority == Priority::Pinned {
             files.keep_offline(&key, true)?;
@@ -318,7 +321,10 @@ impl Hydrator {
         // filled stays.
         tokio::task::spawn_blocking(move || files.evict_to_budget(&[key])).await?;
         if tracing {
-            eprintln!("range of {content}: its pieces and budget in {:?}", began.elapsed());
+            eprintln!(
+                "range of {content}: its pieces and budget in {:?}",
+                began.elapsed()
+            );
         }
         Ok(())
     }

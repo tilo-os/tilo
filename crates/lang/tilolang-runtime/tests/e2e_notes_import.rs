@@ -554,7 +554,9 @@ mod cases {
         let made = returned_ref(n.call("import_markdown", vec![Value::resource(&n.nb), file]));
         assert_eq!(n.title_of(&made), "Imported");
         assert!(
-            n.body_of(&made).written_text().contains("Words from a file."),
+            n.body_of(&made)
+                .written_text()
+                .contains("Words from a file."),
             "the file's words are the note's"
         );
         assert_eq!(
@@ -599,7 +601,10 @@ mod cases {
             "Notes.zip",
             &[
                 ("Plan.md", b"# Plan\n\nGo.\n".as_slice()),
-                ("Plan/Standups.md", b"# Standups\n\nTen minutes.\n".as_slice()),
+                (
+                    "Plan/Standups.md",
+                    b"# Standups\n\nTen minutes.\n".as_slice(),
+                ),
             ],
         );
         let n = Notes::new(device);

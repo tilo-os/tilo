@@ -2043,9 +2043,7 @@ impl Resolver<'_> {
             let Some((root, files, kinds)) = self.env.own_callable(&a.name.name).map(|c| {
                 (
                     c.params.first().and_then(|p| match &p.ty {
-                        Ty::Record(key) => {
-                            self.env.roots.contains(key).then(|| key.clone())
-                        }
+                        Ty::Record(key) => self.env.roots.contains(key).then(|| key.clone()),
                         _ => None,
                     }),
                     c.params.get(1).is_some_and(|p| p.ty == Ty::File) && c.params.len() == 2,

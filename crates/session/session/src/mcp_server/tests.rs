@@ -51,8 +51,14 @@ fn the_shell_runtime_proves_it_holds_the_device_identity() {
     let device = CallerKey::for_session(&[7; 32]).unwrap();
     let other_device = CallerKey::for_session(&[8; 32]).unwrap();
     let store = CallerKey::derive(&[7; 32]).unwrap();
-    let mut runtime = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-    let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let mut runtime = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut other = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
     let pid = runtime.id();
     let op = runtime_portal::workspace_terminal::OP;
     let proof = |key: &CallerKey, of: u32, op: &str| {
@@ -108,7 +114,10 @@ fn the_shell_runtime_proves_it_holds_the_device_identity() {
 /// namespaces, and a process the session can look at is not hidden.
 #[test]
 fn a_process_holding_the_device_key_is_hidden_from_the_session() {
-    let mut shown = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let mut shown = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
     assert_eq!(shares_security_namespaces(shown.id()), Some(true));
     let _ = shown.kill();
     let _ = shown.wait();
@@ -132,7 +141,10 @@ fn a_process_holding_the_device_key_is_hidden_from_the_session() {
     }
     let mut byte = [0_u8; 1];
     // SAFETY: one byte into a buffer of one, from the pipe this test made.
-    assert_eq!(unsafe { libc::read(ready[0], byte.as_mut_ptr().cast(), 1) }, 1);
+    assert_eq!(
+        unsafe { libc::read(ready[0], byte.as_mut_ptr().cast(), 1) },
+        1
+    );
     let hidden = shares_security_namespaces(u32::try_from(pid).unwrap());
     // SAFETY: the child this test forked, and the pipe it made.
     unsafe {

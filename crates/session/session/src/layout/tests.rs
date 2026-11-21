@@ -318,7 +318,11 @@ fn a_record_skipped_for_its_write_is_read_once_the_write_is_done() {
         ..Layouts::default()
     };
     let key = (workspace, Route::layout());
-    let at = |revision| EngineVersion { revision, keys: 0, landed: 0 };
+    let at = |revision| EngineVersion {
+        revision,
+        keys: 0,
+        landed: 0,
+    };
     let read_at = |revision| {
         desktops.held(&key, |held| {
             held.read = true;
@@ -375,11 +379,15 @@ fn a_record_skipped_for_its_write_is_read_once_the_write_is_done() {
         ),
         "a record read before its keys came is read again"
     );
-    read_at_version(&desktops, &key, EngineVersion {
-        revision: 8,
-        keys: 1,
-        landed: 0,
-    });
+    read_at_version(
+        &desktops,
+        &key,
+        EngineVersion {
+            revision: 8,
+            keys: 1,
+            landed: 0,
+        },
+    );
     assert!(
         desktops.settled(
             EngineVersion {

@@ -793,12 +793,9 @@ fn a_refused_role_change_says_why_and_keeps_the_role() {
         .expect("the sheet says the workspace refused it");
     assert_eq!(notice.title, "The workspace refused that change");
     assert!(
-        notice
-            .detail
-            .as_deref()
-            .is_some_and(|detail| {
-                detail.contains("ownership is handed over by the workspace's owner")
-            }),
+        notice.detail.as_deref().is_some_and(|detail| {
+            detail.contains("ownership is handed over by the workspace's owner")
+        }),
         "the sheet says why: {:?}",
         notice.detail
     );

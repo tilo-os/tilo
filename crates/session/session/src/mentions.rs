@@ -806,7 +806,10 @@ impl Reads {
     /// `changed`'s document changed again: a read of it out now reads what it held before.
     #[cfg_attr(
         not(target_os = "linux"),
-        expect(clippy::unused_self, reason = "a page reads its mentions at once and keeps no route")
+        expect(
+            clippy::unused_self,
+            reason = "a page reads its mentions at once and keeps no route"
+        )
     )]
     fn renoted(&self, changed: &Changed) {
         #[cfg(target_os = "linux")]

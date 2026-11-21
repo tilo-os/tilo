@@ -158,7 +158,6 @@ mod cases {
                 Value::Text(said) => said,
                 other => panic!("{field} reads {other:?}"),
             }
-
         }
 
         /// The clock reads `now` from here on: a change made now is later than those before it.
@@ -710,7 +709,9 @@ mod cases {
         view.fire_with(
             &body,
             "headings",
-            Some(&Value::List(lines.iter().map(|line| Value::text(*line)).collect())),
+            Some(&Value::List(
+                lines.iter().map(|line| Value::text(*line)).collect(),
+            )),
         )
         .unwrap();
         view.poll_patches().unwrap();

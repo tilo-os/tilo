@@ -2,8 +2,8 @@
 //! with the document; text still pastes as text.
 
 use super::*;
-use ui::component::Described as _;
 use automerge::ROOT;
+use ui::component::Described as _;
 use ui::testing::Dispatch;
 use winit::keyboard::ModifiersState;
 

@@ -45,7 +45,10 @@ mod tests {
         let stat = "4242 (tilo ush) (x)) S 1 4242 4242 0 -1 4194560 120 0 0 0 1 2 0 0 20 0 3 0 \
                     987654 1000 200 18446744073709551615";
         assert_eq!(statement_of(4242, stat).unwrap(), b"4242:987654");
-        assert!(statement_of(4242, "4242 (sleep").is_none(), "a cut-off stat");
+        assert!(
+            statement_of(4242, "4242 (sleep").is_none(),
+            "a cut-off stat"
+        );
         let own = statement(std::process::id()).expect("this process's own");
         assert!(own.starts_with(format!("{}:", std::process::id()).as_bytes()));
         assert!(statement(u32::MAX).is_none(), "no such process");

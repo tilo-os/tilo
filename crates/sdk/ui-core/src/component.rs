@@ -72,8 +72,8 @@ use crate::widget::Element;
 
 pub use tilo_ui_graph::component::{
     Accepts, Binding as BindingDescription, Catalogue, Description, EnumDescription,
-    Event as EventDescription, FORMAT_VERSION, File, Merge, Offered, Part, Picture, Prop, Semantics,
-    State as StateDescription, Type, Value,
+    Event as EventDescription, FORMAT_VERSION, File, Merge, Offered, Part, Picture, Prop,
+    Semantics, State as StateDescription, Type, Value,
 };
 pub use tilo_ui_macros::{Component, not_a_component};
 
@@ -764,11 +764,7 @@ impl Intent {
 
     /// Queue the intent, carrying `value`, as one part of the act `gesture`: the changes the
     /// event's action makes and the edit it was made with are one step of the person's.
-    pub fn fire_in_gesture(
-        &self,
-        value: Option<Value>,
-        gesture: Option<tilo_actions::ActionId>,
-    ) {
+    pub fn fire_in_gesture(&self, value: Option<Value>, gesture: Option<tilo_actions::ActionId>) {
         self.queue.push(Fired {
             value,
             gesture,

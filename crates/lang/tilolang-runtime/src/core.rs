@@ -455,25 +455,25 @@ impl Core {
             Abort, ActChoose, ActMadeFrom, ActMany, ActOpen, ActRef, ActSave, ActSet, ActThen,
             ActUndo, Actions, ActorEq, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt,
             BytesLength, CallFn, ChangeView, CollCount, CollCounted, CollEmpty, CollInsert,
-            CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere,
-            CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek,
-            DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField, EntryParts,
-            EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart,
-            EventValue, FieldChanged, FileAt, FileFiles, FileOfBytes, FileOfText, FilePart,
-            FileSize, FileText, FileZip, FilterLit, Filters, Find, FirstUnseen, FloatAbs,
-            FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin,
-            FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy, IdentPart, IntAbs,
-            IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoker,
-            IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, Links, ListAvg,
-            ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
-            ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
-            MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
-            MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
-            MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed,
-            Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat,
-            RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH,
-            RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI,
-            ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
+            CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove,
+            CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart, DayShift,
+            DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField,
+            EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
+            EnumSetI, EventPart, EventValue, FieldChanged, FileAt, FileFiles, FileOfBytes,
+            FileOfText, FilePart, FileSize, FileText, FileZip, FilterLit, Filters, Find,
+            FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo,
+            FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef, Grep, GroupBy,
+            IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush,
+            Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses,
+            Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
+            ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF,
+            ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue,
+            MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions,
+            MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt,
+            PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
+            RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF,
+            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
+            ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
             RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichTime, RowOpen, RunChanges,
             SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI,
             Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains,
@@ -523,11 +523,11 @@ impl Core {
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
-            | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong | CollPlace
-            | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
-            | MapGetValue | MapKeys | MapKeysValue | MapNew | MapPutValue | MapRemoveValue
-            | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId
-            | ResourceRef => self.resource_import(imp, a),
+            | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
+            | CollPlace | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove
+            | MapGetH | MapGetValue | MapKeys | MapKeysValue | MapNew | MapPutValue
+            | MapRemoveValue | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs
+            | RefId | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
             | OutsideAt | Withdraw | ModelCall | Notify | Invoker | ActorEq | ActorName
             | QueueBlock | Now | TimeShift | PersonNamed | AgentNamed | InvocationPush

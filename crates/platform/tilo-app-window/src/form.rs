@@ -144,7 +144,9 @@ impl Shown {
         let (field, text) = match event {
             UiEvent::Edit(key, text) => (key.clone(), text.clone()),
             UiEvent::Toggle(key, checked) => (key.clone(), checked.to_string()),
-            UiEvent::Fire(key, event, _, _) => (key.clone(), event.strip_prefix("pick.")?.to_owned()),
+            UiEvent::Fire(key, event, _, _) => {
+                (key.clone(), event.strip_prefix("pick.")?.to_owned())
+            }
             _ => return None,
         };
         let answered = self.completes.contains(&field);

@@ -456,7 +456,12 @@ fn within(name: &str, len: usize, limit: usize) -> Result<i64, String> {
 /// [`MAX_TEXT`], or bytes that are not UTF-8.
 fn read_text(blobs: &dyn BlobHost, file: &FileValue) -> Result<String, String> {
     if file.size > MAX_TEXT_BYTES {
-        return Err(too_large(&file.name, file.size, MAX_TEXT, "an action reads as text"));
+        return Err(too_large(
+            &file.name,
+            file.size,
+            MAX_TEXT,
+            "an action reads as text",
+        ));
     }
     let Some(bytes) = blobs.read(&file.hash) else {
         return Err(format!(
@@ -468,7 +473,12 @@ fn read_text(blobs: &dyn BlobHost, file: &FileValue) -> Result<String, String> {
     // never lets a larger file through.
     let len = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
     if len > MAX_TEXT_BYTES {
-        return Err(too_large(&file.name, len, MAX_TEXT, "an action reads as text"));
+        return Err(too_large(
+            &file.name,
+            len,
+            MAX_TEXT,
+            "an action reads as text",
+        ));
     }
     String::from_utf8(bytes).map_err(|_| format!("`{}` is not text", file.name))
 }

@@ -2562,8 +2562,9 @@ fn serve_connection(opened: Opened, serving: &Serving) {
 /// identity, and is served nothing else.
 fn serve_shell_runtime(stream: UnixStream, first: &[u8], pid: u32, serving: &Serving) {
     let key = tilo_secrets::device_session_key();
-    let proven =
-        |op: &str, proof: &Option<String>| holds_device_identity(key.as_ref(), pid, op, proof.as_deref());
+    let proven = |op: &str, proof: &Option<String>| {
+        holds_device_identity(key.as_ref(), pid, op, proof.as_deref())
+    };
     if let Some(request) = runtime_portal::environment_socket::Request::of(first)
         && proven(&request.op, &request.proof)
     {

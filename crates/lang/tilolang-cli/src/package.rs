@@ -131,7 +131,11 @@ fn opens_of(meta: &PackageMeta) -> (Vec<String>, Vec<String>) {
     let mut ext: Vec<String> = Vec::new();
     for action in &meta.actions {
         for kind in &action.opens {
-            let list = if kind.contains('/') { &mut mime } else { &mut ext };
+            let list = if kind.contains('/') {
+                &mut mime
+            } else {
+                &mut ext
+            };
             if !list.contains(kind) {
                 list.push(kind.clone());
             }
@@ -162,7 +166,10 @@ pub fn manifest_text(
     let category = meta.category.as_deref().map_or("Utility", menu_category);
     let resource_type = tilolang_tilo::meta::MetaExt::resource_type(meta);
     let (providers_mime, providers_ext) = opens_of(meta);
-    let providers_mime: Vec<String> = providers_mime.iter().map(|mime| toml_string(mime)).collect();
+    let providers_mime: Vec<String> = providers_mime
+        .iter()
+        .map(|mime| toml_string(mime))
+        .collect();
     let providers_ext: Vec<String> = providers_ext.iter().map(|ext| toml_string(ext)).collect();
     let origins = origins_of(meta);
     let (capabilities, namespaces, net) = sandbox(&origins);

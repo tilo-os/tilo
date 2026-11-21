@@ -215,7 +215,8 @@ async fn a_member_copy_held_again_with_its_link_up_keeps_that_link() {
     let member_state = tempfile::tempdir().unwrap();
     let (serving, device, created, invitation) = shared(serving_state.path(), "Held", 17).await;
     let workspace = created.workspace.clone();
-    let workspace_id = tilo_server_protocol::WorkspaceId::parse(&workspace).expect("a workspace id");
+    let workspace_id =
+        tilo_server_protocol::WorkspaceId::parse(&workspace).expect("a workspace id");
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
     copies

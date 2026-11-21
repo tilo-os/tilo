@@ -379,8 +379,8 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
         wire::Value::Actor(who) => Value::Actor(who.id.clone()),
         // A file a person handed the window: its name, its media type, its size and the hash its
         // bytes are kept at, as the device's content store answers them.
-        wire::Value::File(file) => Value::File(std::rc::Rc::new(
-            tilolang_runtime::blob::FileValue::new(
+        wire::Value::File(file) => {
+            Value::File(std::rc::Rc::new(tilolang_runtime::blob::FileValue::new(
                 file.name.clone(),
                 file.media.clone(),
                 file.size,
@@ -388,8 +388,8 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
                     .strip_prefix(tilolang_runtime::blob::SCHEME)
                     .unwrap_or(&file.url)
                     .to_owned(),
-            ),
-        )),
+            )))
+        }
         // What a drop carries: the card and its place.
         wire::Value::List(items) => {
             Value::List(items.iter().map(runtime_value).collect::<Option<_>>()?)

@@ -514,8 +514,7 @@ mod tests {
             big.len() > MAX_PICTURE_BYTES,
             "the picture starts larger than a document keeps"
         );
-        let (_, wide, tall) =
-            tilo_content::image_size(&big).expect("the picture says its size");
+        let (_, wide, tall) = tilo_content::image_size(&big).expect("the picture says its size");
         let smaller = shrink_picture(&big).expect("a picture can be made to fit");
         assert!(
             smaller.len() <= MAX_PICTURE_BYTES,
@@ -536,7 +535,10 @@ mod tests {
     #[test]
     fn a_smaller_picture_is_named_for_its_new_format() {
         assert_eq!(with_extension("photo.png", "jpg"), "photo.jpg");
-        assert_eq!(with_extension("Pasted image.png", "webp"), "Pasted image.webp");
+        assert_eq!(
+            with_extension("Pasted image.png", "webp"),
+            "Pasted image.webp"
+        );
         assert_eq!(with_extension("photo", "png"), "photo.png");
     }
 
@@ -566,12 +568,7 @@ mod tests {
         }
         let mut bytes = Vec::new();
         image::codecs::png::PngEncoder::new(&mut bytes)
-            .write_image(
-                &rgba,
-                width,
-                height,
-                image::ExtendedColorType::Rgba8,
-            )
+            .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
             .expect("the picture encodes");
         bytes
     }

@@ -209,7 +209,10 @@ pub enum Wake {
     /// The host refused a write of this device's to `chunk`, for `reason`.
     Refused { chunk: TreeChunk, reason: String },
     /// The host answered for `chunk` what it holds of it.
-    Opened { chunk: TreeChunk, answer: DocumentAnswer },
+    Opened {
+        chunk: TreeChunk,
+        answer: DocumentAnswer,
+    },
 }
 
 /// Where the replica stands, as `tilo status` says it.
@@ -1016,7 +1019,8 @@ impl Sync {
         }
         // The reads happen away from the runtime's workers: opening a sealed history takes as long
         // as it is, and a worker inside it leaves the tasks it would take up next (the session's) waiting.
-        let read = tokio::task::spawn_blocking(move || read_due(&*documents, &workspace, due)).await;
+        let read =
+            tokio::task::spawn_blocking(move || read_due(&*documents, &workspace, due)).await;
         if paced {
             self.pulling.ran(now, Instant::now());
         }
@@ -1452,10 +1456,7 @@ impl Sync {
                 .get(chunk)
                 .is_some_and(|held| held.sent == *heads)
         });
-        let durable = !self
-            .documents
-            .keys()
-            .any(|chunk| self.peer.holding(*chunk))
+        let durable = !self.documents.keys().any(|chunk| self.peer.holding(*chunk))
             && self.peer.pending() == 0;
         let mut status = self.status.lock_recover();
         let opened = status.opened;
@@ -1601,7 +1602,10 @@ mod tests {
             None,
             "nothing refused: writes go out"
         );
-        assert!(refusals.refused(start), "the first refusal of a run is said");
+        assert!(
+            refusals.refused(start),
+            "the first refusal of a run is said"
+        );
         assert_eq!(refusals.held_until(start), Some(start + FIRST_REFUSED_WAIT));
         assert!(
             !refusals.refused(start),
@@ -1673,7 +1677,13 @@ mod tests {
         let mut laptop = Namespace::new("laptop").unwrap();
         let hash = iroh_blobs::Hash::new(b"net 30");
         laptop
-            .create_file(crate::namespace::ROOT_INO, "contract.txt", Some(&hash), 6, 1)
+            .create_file(
+                crate::namespace::ROOT_INO,
+                "contract.txt",
+                Some(&hash),
+                6,
+                1,
+            )
             .unwrap();
         laptop
             .take_documents(
@@ -1725,12 +1735,8 @@ mod tests {
         }
         std::fs::write(dir.path().join("stray"), b"x").unwrap();
         let (kept, documents) = KeptDocuments::open(dir.path()).unwrap();
-        let (mut read, _) = open_namespace(
-            &MountAuthor::device("laptop"),
-            &kept,
-            documents,
-        )
-        .unwrap();
+        let (mut read, _) =
+            open_namespace(&MountAuthor::device("laptop"), &kept, documents).unwrap();
         assert!(read.lookup(crate::namespace::ROOT_INO, "a.txt").is_some());
         assert_eq!(read.document_heads(), namespace.document_heads());
     }

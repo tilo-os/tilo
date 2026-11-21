@@ -881,7 +881,7 @@ impl Hydrator {
         Ok(Manifest::decode(&bytes)?)
     }
 
-/// Fetch a whole blob from a specific peer, verify, persist and return it. `get_blob` streams
+    /// Fetch a whole blob from a specific peer, verify, persist and return it. `get_blob` streams
     /// bao-verified content, so a corrupt blob fails the stream instead of returning bad bytes.
     pub async fn fetch_from(&self, hash: Hash, peer: EndpointAddr) -> Result<Bytes> {
         let _guard = self.mark_fetching(hash);

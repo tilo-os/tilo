@@ -1286,7 +1286,8 @@ impl Core {
                 "the collection's items have no field `{parent_name}` to stand under"
             ));
         };
-        let Some(read) = FieldRead::of(&parent.id, parent.kind, &parent.ty, parent.default.as_ref())
+        let Some(read) =
+            FieldRead::of(&parent.id, parent.kind, &parent.ty, parent.default.as_ref())
         else {
             return trap(format!("`{parent_name}` is a map, not a parent field"));
         };
@@ -1403,7 +1404,11 @@ impl Core {
                     PlaceAt::Before(id)
                 } else {
                     let under = self.branch(&ctx, &read, &id, &ty)?;
-                    PlaceAt::After(under.last().map_or_else(|| id.clone(), |(id, _)| id.clone()))
+                    PlaceAt::After(
+                        under
+                            .last()
+                            .map_or_else(|| id.clone(), |(id, _)| id.clone()),
+                    )
                 };
                 (parent, at)
             }

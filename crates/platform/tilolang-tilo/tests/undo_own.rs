@@ -295,7 +295,8 @@ fn two_changes_of_their_own_are_two_undos() {
 }
 
 #[test]
-fn a_sync_reads_each_arrived_change_off_its_operations_once() {    let (mut ada, mut ben) = workspace();
+fn a_sync_reads_each_arrived_change_off_its_operations_once() {
+    let (mut ada, mut ben) = workspace();
     let note = shared_note(&mut ada, &mut ben, "Shopping.\nChores.");
     type_at(
         &mut ada,

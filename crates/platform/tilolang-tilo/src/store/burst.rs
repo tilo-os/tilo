@@ -108,11 +108,7 @@ impl Inner {
     /// named when the change is one part of the person's act (a picture a paste wrote, and the
     /// app naming it), which ends the burst of typing; else the burst's own, so a word typed is
     /// one undo. A trial run is no change of theirs, and neither joins nor ends the burst.
-    pub(super) fn gesture_of(
-        &mut self,
-        state: &TxnState,
-        note: &ChangeNote,
-    ) -> Option<ActionId> {
+    pub(super) fn gesture_of(&mut self, state: &TxnState, note: &ChangeNote) -> Option<ActionId> {
         if self.trials != 0 {
             return None;
         }

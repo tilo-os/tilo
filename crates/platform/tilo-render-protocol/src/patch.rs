@@ -216,12 +216,12 @@ pub enum Value {
     },
 }
 
+/// A file a node hands over ([`Value::File`]): its name, media type, size and content address.
+pub use tilo_ui_graph::component::File;
 /// An action a node offers ([`Value::Action`]), as the toolkit holds one.
 pub use tilo_ui_graph::component::Offered;
 /// A picture a node shows ([`Value::Picture`]): its address, and its accessible name.
 pub use tilo_ui_graph::component::Picture;
-/// A file a node hands over ([`Value::File`]): its name, media type, size and content address.
-pub use tilo_ui_graph::component::File;
 
 /// The description of the component a node of `kind` is of (`ui.BlockEditor`): what its props
 /// are, which is the one list of them a host reads a node's values by.

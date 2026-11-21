@@ -1607,12 +1607,7 @@ impl AppWindow {
     /// The bound control `composed` now holds `held`: shown as the person left it, and sent, unless
     /// a press it was typed after has not run yet; then it waits, like every control that takes
     /// typing ([`Self::hold`]).
-    fn bound_text(
-        &mut self,
-        composed: &str,
-        held: Held,
-        gesture: Option<String>,
-    ) -> Option<ToApp> {
+    fn bound_text(&mut self, composed: &str, held: Held, gesture: Option<String>) -> Option<ToApp> {
         let (level, key) = level_of(composed);
         // A control that edits no text (a number, a date) sends the value it now holds: how its
         // edits merge, as its component's description says. A control no component built holds text

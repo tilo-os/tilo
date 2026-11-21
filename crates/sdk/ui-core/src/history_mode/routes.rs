@@ -495,7 +495,10 @@ mod snapshot_ask_tests {
         let mut routes = OwnerDocumentRoutes::default();
         let route = RouteSpec::app("so.tilo.settings", uuid::Uuid::new_v4());
         let now = crate::time::Instant::now();
-        assert!(routes.take_snapshot_ask(&route, now), "the first change asks");
+        assert!(
+            routes.take_snapshot_ask(&route, now),
+            "the first change asks"
+        );
         assert!(
             !routes.take_snapshot_ask(&route, now),
             "a run of changes to it asks once"

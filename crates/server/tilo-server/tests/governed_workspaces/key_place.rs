@@ -67,7 +67,10 @@ async fn start_serving(state: &std::path::Path, alice: &TestUser, host: &TestDev
 async fn laptop_service(
     state: &std::path::Path,
     laptop: &TestDevice,
-) -> (tilo_server::service::WorkspaceService, own_device::KeyService) {
+) -> (
+    tilo_server::service::WorkspaceService,
+    own_device::KeyService,
+) {
     let signer: Arc<dyn collab_types::signer::DeviceSigner> = Arc::new(laptop.sk.clone());
     let keys = own_device::KeyService::open(
         "laptop-groups",
@@ -105,13 +108,9 @@ fn layout_route() -> tilo_peer_state::document_frame::DocumentRoute {
 
 /// The layout as `workspaces` reads it now, when it reads.
 fn layout(workspaces: &tilo_server::workspaces::Workspaces) -> Option<automerge::AutoCommit> {
-    let read = ServiceDocuments::of(workspaces.clone()).read(
-        &WORKSPACE.to_string(),
-        DESKTOP_APP,
-        DESKTOP_DOCUMENT,
-        None,
-    )
-    .ok()?;
+    let read = ServiceDocuments::of(workspaces.clone())
+        .read(&WORKSPACE.to_string(), DESKTOP_APP, DESKTOP_DOCUMENT, None)
+        .ok()?;
     let DocumentRead::Whole { bytes, .. } = read else {
         return None;
     };
