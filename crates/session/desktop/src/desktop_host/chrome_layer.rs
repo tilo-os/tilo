@@ -2506,7 +2506,7 @@ impl Widget for DesktopChrome {
             transform,
             text,
             theme,
-            ui::time::now(),
+            ui::motion::frame_now(),
         );
         // The New strip button is as long as its words measured as it was drawn: it is pressed
         // where it stands from the next event on.
@@ -2547,7 +2547,7 @@ impl Widget for DesktopChrome {
             transform,
             text,
             theme,
-            ui::time::now(),
+            ui::motion::frame_now(),
         );
         // Settings' Identify, said on each display so the canvas tile and the physical screen carry
         // the same number.
