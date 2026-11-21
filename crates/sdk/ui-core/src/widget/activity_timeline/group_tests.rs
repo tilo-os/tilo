@@ -1,4 +1,7 @@
 use super::*;
+use crate::presence::PresenceCtx;
+use crate::widget::Widget;
+use winit::event::ElementState;
 use crate::testing::{Dispatch, dispatch};
 use crate::time::Duration;
 use crate::widget::history::HistoryAuthor;
