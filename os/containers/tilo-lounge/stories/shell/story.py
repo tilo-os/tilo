@@ -416,7 +416,8 @@ class Story:
         over = error is None and record["ms"] > budget
         record["status"] = "failed" if error else "over budget" if over else "ok"
         shown = [one for one in (self.people if error else people or self.people) if one.running]
-        record["shots"] = []
+        # Shots the step took while it ran ([`Story.shot`]) come before the one of where it ended.
+        record.setdefault("shots", [])
         for one in shown:
             file = f"shots/{index:02d}-{slug(title)}-{one.key}.png"
             if one.snapshot(self.out / file):
@@ -445,6 +446,15 @@ class Story:
 
     def timing(self, name: str, ms: float) -> None:
         self.timings[name] = round(ms)
+
+    def shot(self, person: Person, what: str) -> None:
+        """A shot of `person`'s shell in the middle of the running step, as `what` names that
+        moment: a step that ends somewhere else than what it shows on the way (a question, before
+        it is answered) keeps both."""
+        record = self.steps[-1]
+        file = f"shots/{record['index']:02d}-{slug(record['title'])}-{slug(what)}-{person.key}.png"
+        if person.snapshot(self.out / file):
+            record.setdefault("shots", []).append({"person": person.name, "file": file})
 
     def note(self, name: str, value) -> None:
         """Something a step learned that whoever reads the recording wants: kept beside it."""

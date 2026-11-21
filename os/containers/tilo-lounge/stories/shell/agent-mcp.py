@@ -214,15 +214,30 @@ def steps(story: Story) -> None:
         # The shell's own history of the workspace: every change, each under who made it, in the
         # Activity window the shell opens on its explore view.
         tree = (ada.session.state_dump() or {}).get("workspace_tree") or {}
-        # History opens on the agent's changes alone, as Ada would narrow it with the person
-        # picker: her own window changes sit between the agent's, and all four of its changes must
-        # be in the shot.
-        ada.session.invoke(SHELL, f"{CHROME}\u001factivity",
-                           {"workspace": tree.get("active"), "view": "explore",
-                            "author": AGENT})
-        until("the Activity window on Ada's shell", lambda: next(
-            (w for w in ada.session.windows()
-             if w.get("app_id") == ACTIVITY and w.get("rect")), None), 60, 0.25)
+
+        def history(author: str, row: str) -> None:
+            """History narrowed to `author`'s changes, as Ada narrows it with the person picker,
+            once it draws the row named with `row`. An open Activity window keeps the filter it
+            has, so it is closed first."""
+            def activity():
+                return next((w for w in ada.session.windows()
+                             if w.get("app_id") == ACTIVITY and w.get("rect")), None)
+
+            if activity():
+                ada.session.invoke(SHELL, f"{CHROME}\u001fclose-activity",
+                                   {"workspace": tree.get("active")})
+                until("the Activity window closed", lambda: activity() is None, 30, 0.25)
+            ada.session.invoke(SHELL, f"{CHROME}\u001factivity",
+                               {"workspace": tree.get("active"), "view": "explore",
+                                "author": author})
+            until("the Activity window on Ada's shell", activity, 60, 0.25)
+            until(f"History listing {author}'s changes", lambda: ada.shows(row), 30, 0.25)
+
+        # Ada's own changes: setting the workspace up reads as what it did, once, under her name.
+        history("Ada", "Added the device")
+        story.shot(ada, "ada-s-changes")
+        # Then the agent's, newest first, each naming its item: the step's shot.
+        history(AGENT, "Write file")
         # Its History lists the workspace's changes. A row of that list is no control the shell
         # names, so what it lists is read from the feed the window draws: the session's
         # `tilo.activity` history of the workspace, each change with its author.
@@ -295,6 +310,26 @@ def steps(story: Story) -> None:
         if unsaid:
             wrong.append("no row names the item it changed: " + "; ".join(
                 f"{what} reads “{summary}”" for what, summary in unsaid.items()))
+        # Newest first, a change after the one it builds on: the line appended to the note above
+        # the note.
+        order = [e.get("summary") or "" for e in entries]
+        appended = next((i for i, said in enumerate(order) if said.startswith("Append to note")), None)
+        made = next((i for i, said in enumerate(order) if said.startswith("New note")), None)
+        if appended is None or made is None or appended > made:
+            wrong.append(f"newest first, “Append to note” is not above “New note”: {order}")
+        # Ada's own rows say what each did, and setting the workspace up is said once: no row of
+        # hers names nothing, and none repeats the one before it.
+        hers = [e.get("summary") or "" for e in entries
+                if (e.get("author") or {}).get("name") == "Ada"]
+        vague = sorted({said for said in hers
+                        if said in ("Updated the workspace", "Changed who is in the workspace")})
+        if vague:
+            wrong.append(f"Ada's rows say nothing of what they did: {'; '.join(vague)}")
+        repeated = sorted({said for said, before in zip(hers[1:], hers) if said == before})
+        if repeated:
+            wrong.append(f"Ada's setup is listed over and over, not folded: {'; '.join(repeated)}")
+        if not hers:
+            wrong.append("History lists none of Ada's own changes")
         if wrong:
             raise Failed("History: " + ". ".join(wrong))
 
@@ -313,6 +348,8 @@ def steps(story: Story) -> None:
         asking = threading.Thread(target=ask, daemon=True)
         asking.start()
         until("the agent's question on Ada's shell", lambda: ada.shows(QUESTION), 30, 0.25)
+        # The question as Ada sees it, before she answers: the step's own shot is taken after.
+        story.shot(ada, "question")
         ada.press(ANSWER, "the answer Ada picks")
         asking.join(60)
         if "text" not in answer:

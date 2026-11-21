@@ -94,7 +94,7 @@
       "The agent adds a Tasks issue": 45000,
       "The agent writes a note": 45000,
       "The agent posts in Chat": 45000,
-      "Ada sees each change under the agent’s name": 45000,
+      "Ada sees each change under the agent’s name": 60000,
       "The agent asks Ada a question, and Ada answers it": 60000
     },
     "big-folder": {
