@@ -154,6 +154,35 @@ fn another_keeper(app: &str) -> bool {
     app == tilo_desktop_model::ownership::DESKTOP_APP || app == tilo_app_id::apps::CHAT
 }
 
+/// How many blobs of the content the records of `workspace` name its host
+/// does not keep yet, or `None` while one of those records does not read here:
+/// what a host can say it holds whole before the last device with a copy
+/// goes away.
+pub async fn lacking(
+    workspaces: &Workspaces,
+    store: &WorkspaceStores,
+    workspace: &str,
+) -> Option<usize> {
+    let store = store.get(workspace).ok()?;
+    let mut missing = 0_usize;
+    for (app, record) in workspaces.workspace_document_routes(workspace).await.ok()? {
+        if another_keeper(&app) {
+            continue;
+        }
+        let Some(bytes) = workspaces
+            .resource_document(workspace, &app, &record)
+            .await
+            .ok()?
+        else {
+            continue;
+        };
+        for address in content_of(&app, &bytes).ok()? {
+            missing = missing.saturating_add(missing_pieces(&store, &address).len());
+        }
+    }
+    Some(missing)
+}
+
 impl KeptContent {
     /// A host that keeps what the records of `workspaces` name, whose device is
     /// `device`, in each workspace's store of `store`.

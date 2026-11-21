@@ -918,11 +918,22 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
         .iter()
         .map(|(_, bytes)| u64::try_from(bytes.len()).unwrap())
         .fold(0, u64::saturating_add);
-    while bytes_under(&kept) < written {
+    // Sealing and manifests add bytes: the bytes alone may add up while a few
+    // small files are still on the member alone, which the wipe would lose.
+    let content = server.content();
+    while bytes_under(&kept) < written
+        || run(tilo_server::kept_content::lacking(
+            workspaces, &content, &workspace,
+        )) != Some(0)
+    {
         assert!(
             started.elapsed() <= bound,
-            "the server keeps {} of the {written} bytes written on the member:\n{}",
+            "the server keeps {} of the {written} bytes written on the member, lacking {:?} \
+             blobs:\n{}",
             bytes_under(&kept),
+            run(tilo_server::kept_content::lacking(
+                workspaces, &content, &workspace
+            )),
             said("first"),
         );
         std::thread::sleep(Duration::from_millis(100));
