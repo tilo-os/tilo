@@ -227,7 +227,11 @@ if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ];
   [[ "$_tilo_mold_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "expected one pinned mold version"
   _tilo_native_assets+=("mold-${_tilo_mold_version}-${TILO_WINDOWS_ARCH}-linux.tar.gz")
   "$TILO_OS_DIR/dev/cache-github-assets.sh" "${_tilo_native_assets[@]}"
-elif [ "${TILO_SKIP_BUILD:-0}" != 1 ]; then
+elif [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ -z "${TILO_LAYER_TARGET:-}" ]; then
+  # A layer action (os/image/build-layer.sh) is given the assets its pieces use by the
+  # os-assets-* checks it needs, which verified them against their pins. Checking every asset
+  # here made each action read all of them and the whole manifest, so t built the OS chain
+  # again whenever any asset of any image changed.
   "$TILO_OS_DIR/dev/cache-github-assets.sh"
 fi
 # The digest-pinned base the build starts FROM — the mirror of the Fedora

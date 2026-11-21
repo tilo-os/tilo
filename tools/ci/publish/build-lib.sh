@@ -61,12 +61,18 @@ stage_context() {
   tar -C "$repo_root" "${excludes[@]}" -cf - . | tar -C "$dest" -xf -
 }
 
-# The pinned external assets NAME... (os/external-assets/github-assets.tsv), checksum-verified;
-# prints their directory, for --build-context. They come from the os-assets check's outputs,
-# which the calling check needs; nothing here downloads them.
+# The pinned external assets NAME... (os/external-assets/github-assets.tsv); prints their
+# directory, for --build-context. They come from the outputs of an os-assets check the calling
+# check needs, which verified them against their pins; nothing here downloads them. Only their
+# presence is checked: reading the manifest again made the check rerun whenever any other
+# asset's line changed.
 pinned_assets() {
-  TILO_ASSET_OFFLINE=1 bash "$repo_root/os/dev/cache-github-assets.sh" "$@" >&2
-  printf '%s' "$repo_root/os/external-assets/cache"
+  local cache=$repo_root/os/external-assets/cache name
+  for name in "$@"; do
+    [[ -f $cache/$name && ! -L $cache/$name ]] \
+      || die "$name is not in $cache: the check needs the os-assets check that restores it"
+  done
+  printf '%s' "$cache"
 }
 
 # The board's firmware, into os/hardware/firmware/BOARD (writable_sources), where the image

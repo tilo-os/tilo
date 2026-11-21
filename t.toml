@@ -5376,6 +5376,82 @@ run = "bash os/dev/cache-github-assets.sh"
 outputs = ["os/external-assets/cache/**"]
 default = false
 
+# The assets of os-assets one kind of OS step uses, as a check of their own. t keys a step by
+# every output of every check it needs, so a step that needed os-assets was built again whenever
+# any asset changed: dropping one Windows asset built the OS builder, host-base and every layer
+# again, to the same bytes. Each of these fetches its set again when the manifest changes, and
+# the steps that need it are served as before while the set's bytes are the same. A piece that
+# starts using another asset names it here; its build fails on the missing file otherwise.
+[[check]]
+name = "os-assets-builder-x86_64"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz mold-2.40.4-x86_64-linux.tar.gz"
+outputs = ["os/external-assets/cache/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz", "os/external-assets/cache/mold-2.40.4-x86_64-linux.tar.gz"]
+default = false
+
+[[check]]
+name = "os-assets-builder-aarch64"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz mold-2.40.4-aarch64-linux.tar.gz"
+outputs = ["os/external-assets/cache/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz", "os/external-assets/cache/mold-2.40.4-aarch64-linux.tar.gz"]
+default = false
+
+[[check]]
+name = "os-assets-tools"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh doubletake-ae06722.tar.gz joycond-0df025a.tar.gz xwayland-satellite-779151f.tar.gz bootc-fa0d3f9.tar.gz composefs-rs-f720d6c.tar.gz"
+outputs = ["os/external-assets/cache/doubletake-ae06722.tar.gz", "os/external-assets/cache/joycond-0df025a.tar.gz", "os/external-assets/cache/xwayland-satellite-779151f.tar.gz", "os/external-assets/cache/bootc-fa0d3f9.tar.gz", "os/external-assets/cache/composefs-rs-f720d6c.tar.gz"]
+default = false
+
+[[check]]
+name = "os-assets-system-x86_64"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh umu-proton-10.0-4.tar.gz umu-database-8297d420.csv bottles-programs-d1160b8.tar.gz doubletake-ae06722-LICENSE joycond-0df025a-LICENSE pdfium-8057-linux-x64.tgz"
+outputs = ["os/external-assets/cache/umu-proton-10.0-4.tar.gz", "os/external-assets/cache/umu-database-8297d420.csv", "os/external-assets/cache/bottles-programs-d1160b8.tar.gz", "os/external-assets/cache/doubletake-ae06722-LICENSE", "os/external-assets/cache/joycond-0df025a-LICENSE", "os/external-assets/cache/pdfium-8057-linux-x64.tgz"]
+default = false
+
+[[check]]
+name = "os-assets-system-aarch64"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh umu-proton-10.0-4.tar.gz umu-database-8297d420.csv bottles-programs-d1160b8.tar.gz doubletake-ae06722-LICENSE joycond-0df025a-LICENSE pdfium-8057-linux-arm64.tgz"
+outputs = ["os/external-assets/cache/umu-proton-10.0-4.tar.gz", "os/external-assets/cache/umu-database-8297d420.csv", "os/external-assets/cache/bottles-programs-d1160b8.tar.gz", "os/external-assets/cache/doubletake-ae06722-LICENSE", "os/external-assets/cache/joycond-0df025a-LICENSE", "os/external-assets/cache/pdfium-8057-linux-arm64.tgz"]
+default = false
+
+[[check]]
+name = "os-assets-image-x86_64"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh cosign-v2.5.2-linux-amd64"
+outputs = ["os/external-assets/cache/cosign-v2.5.2-linux-amd64"]
+default = false
+
+[[check]]
+name = "os-assets-image-aarch64"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh cosign-v2.5.2-linux-arm64"
+outputs = ["os/external-assets/cache/cosign-v2.5.2-linux-arm64"]
+default = false
+
+[[check]]
+name = "os-assets-chromium-x86_64"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh cef-152.0.7977.83-linux64-minimal.tar.bz2"
+outputs = ["os/external-assets/cache/cef-152.0.7977.83-linux64-minimal.tar.bz2"]
+default = false
+
+[[check]]
+name = "os-assets-chromium-aarch64"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh cef-152.0.7977.83-linuxarm64-minimal.tar.bz2"
+outputs = ["os/external-assets/cache/cef-152.0.7977.83-linuxarm64-minimal.tar.bz2"]
+default = false
+
+[[check]]
+name = "os-assets-host"
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash os/dev/cache-github-assets.sh firecracker-v1.17.0-x86_64.tgz"
+outputs = ["os/external-assets/cache/firecracker-v1.17.0-x86_64.tgz"]
+default = false
+
 # Every pinned font (crates/sdk/ui-core/assets/fonts/artifacts.json) by digest, for the builder
 # image to carry (os/Containerfile.builder), so the checks that build with fonts fetch none.
 [[check]]
@@ -5434,7 +5510,7 @@ name = "os-builder-x86_64"
 # of the tree, and every layer and compile built with it would build again on any commit.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh image builder x86_64 /target/os/x86_64/builder"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64"]
+needs = ["os-base-x86_64", "os-assets-builder-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5451,7 +5527,7 @@ name = "os-tools-x86_64"
 # and crates.io send those on to CDN hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash os/image/build-layer.sh image tools x86_64 /target/os/x86_64/tools"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-builder-x86_64"]
+needs = ["os-base-x86_64", "os-assets-tools", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-builder-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5463,7 +5539,7 @@ default = false
 name = "os-chromium-x86_64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh --chromium /target/os/x86_64/chromium"
-needs = ["os-assets"]
+needs = ["os-assets-chromium-x86_64"]
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=x86_64"]
@@ -5517,7 +5593,7 @@ default = false
 name = "os-layer-packages-x86_64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer packages x86_64 /target/os/x86_64/layers/packages"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-builder-x86_64"]
+needs = ["os-base-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-builder-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5531,7 +5607,7 @@ name = "os-layer-kernel-x86_64"
 # root and transparency log, as `pins` does.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer kernel x86_64 /target/os/x86_64/layers/kernel"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64"]
+needs = ["os-base-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5545,7 +5621,7 @@ name = "os-layer-system-x86_64"
 # tilo's package store by the SHA-256 the catalog pins.
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer system x86_64 /target/os/x86_64/layers/system"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-builder-x86_64"]
+needs = ["os-base-x86_64", "os-assets-system-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-builder-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5557,7 +5633,7 @@ default = false
 name = "os-layer-trust-x86_64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust x86_64 /target/os/x86_64/layers/trust"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64"]
+needs = ["os-base-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5597,7 +5673,7 @@ arch = ["x86_64", "aarch64"]
 name = "os-payload-{arch}"
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh image payload {arch} /target/os/{arch}/payload"
-needs = ["os-base-{arch}", "os-assets", "signing-tools", "image-rpms-{arch}", "rpm-snapshot-{arch}", "os-builder-{arch}", "os-compiled-apps-{arch}", "os-chromium-{arch}"]
+needs = ["os-base-{arch}", "signing-tools", "image-rpms-{arch}", "rpm-snapshot-{arch}", "os-builder-{arch}", "os-compiled-apps-{arch}", "os-chromium-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
@@ -5611,7 +5687,7 @@ arch = ["x86_64", "aarch64"]
 name = "os-payload-release-{arch}"
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh image payload {arch} /target/os/{arch}/release-payload"
-needs = ["os-base-{arch}", "os-assets", "signing-tools", "image-rpms-{arch}", "rpm-snapshot-{arch}", "os-builder-{arch}", "os-compiled-apps-release-{arch}", "os-chromium-{arch}"]
+needs = ["os-base-{arch}", "signing-tools", "image-rpms-{arch}", "rpm-snapshot-{arch}", "os-builder-{arch}", "os-compiled-apps-release-{arch}", "os-chromium-{arch}"]
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release" }
 requires = ["arch={arch}", "disk-100g"]
@@ -5626,7 +5702,7 @@ arch = ["x86_64", "aarch64"]
 name = "os-layer-image-x86_64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image x86_64 /target/os/x86_64/layers/image"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-tools-x86_64", "os-compile-x86_64", "os-payload-x86_64"]
+needs = ["os-base-x86_64", "os-assets-image-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-tools-x86_64", "os-compile-x86_64", "os-payload-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -5652,7 +5728,7 @@ default = false
 name = "os-layer-trust-release-x86_64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust x86_64 /target/os/x86_64/release-layers/trust"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64"]
+needs = ["os-base-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release" }
 requires = ["arch=x86_64", "disk-100g"]
@@ -5665,7 +5741,7 @@ default = false
 name = "os-layer-image-release-x86_64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image x86_64 /target/os/x86_64/release-layers/image"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-release-x86_64", "os-tools-x86_64", "os-compile-release-x86_64", "os-payload-release-x86_64"]
+needs = ["os-base-x86_64", "os-assets-image-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-release-x86_64", "os-tools-x86_64", "os-compile-release-x86_64", "os-payload-release-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release" }
 requires = ["arch=x86_64", "disk-100g"]
@@ -5724,7 +5800,7 @@ name = "os-builder-aarch64"
 # of the tree, and every layer and compile built with it would build again on any commit.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh image builder aarch64 /target/os/aarch64/builder"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64"]
+needs = ["os-base-aarch64", "os-assets-builder-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -5741,7 +5817,7 @@ name = "os-tools-aarch64"
 # and crates.io send those on to CDN hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
 run = "bash os/image/build-layer.sh image tools aarch64 /target/os/aarch64/tools"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-builder-aarch64"]
+needs = ["os-base-aarch64", "os-assets-tools", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -5753,7 +5829,7 @@ default = false
 name = "os-chromium-aarch64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/compile.sh --chromium /target/os/aarch64/chromium"
-needs = ["os-assets"]
+needs = ["os-assets-chromium-aarch64"]
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 requires = ["arch=arm64"]
@@ -5807,7 +5883,7 @@ default = false
 name = "os-layer-packages-aarch64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer packages aarch64 /target/os/aarch64/layers/packages"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-builder-aarch64"]
+needs = ["os-base-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -5821,7 +5897,7 @@ name = "os-layer-kernel-aarch64"
 # root and transparency log, as `pins` does.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer kernel aarch64 /target/os/aarch64/layers/kernel"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64"]
+needs = ["os-base-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -5835,7 +5911,7 @@ name = "os-layer-system-aarch64"
 # tilo's package store by the SHA-256 the catalog pins.
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer system aarch64 /target/os/aarch64/layers/system"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-builder-aarch64"]
+needs = ["os-base-aarch64", "os-assets-system-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -5847,7 +5923,7 @@ default = false
 name = "os-layer-trust-aarch64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust aarch64 /target/os/aarch64/layers/trust"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64"]
+needs = ["os-base-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -5859,7 +5935,7 @@ default = false
 name = "os-layer-image-aarch64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/layers/image"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-tools-aarch64", "os-compile-aarch64", "os-payload-aarch64"]
+needs = ["os-base-aarch64", "os-assets-image-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-tools-aarch64", "os-compile-aarch64", "os-payload-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -5885,7 +5961,7 @@ default = false
 name = "os-layer-trust-release-aarch64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust aarch64 /target/os/aarch64/release-layers/trust"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64"]
+needs = ["os-base-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release" }
 requires = ["arch=arm64", "disk-100g"]
@@ -5898,7 +5974,7 @@ default = false
 name = "os-layer-image-release-aarch64"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/release-layers/image"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-release-aarch64", "os-tools-aarch64", "os-compile-release-aarch64", "os-payload-release-aarch64"]
+needs = ["os-base-aarch64", "os-assets-image-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-release-aarch64", "os-tools-aarch64", "os-compile-release-aarch64", "os-payload-release-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release" }
 requires = ["arch=arm64", "disk-100g"]
@@ -5929,7 +6005,7 @@ name = "os-layer-kernel-release-lenovo-83ed"
 # root and transparency log, as `pins` does.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443", "tuf-repo-cdn.sigstore.dev:443", "rekor.sigstore.dev:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer kernel aarch64 /target/os/aarch64/board-layers/lenovo-83ed/kernel"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64"]
+needs = ["os-base-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release", TILO_OS_BOARD = "lenovo-83ed" }
 requires = ["arch=arm64", "disk-100g"]
@@ -5945,7 +6021,7 @@ name = "os-layer-system-release-lenovo-83ed"
 # tilo's package store by the SHA-256 the catalog pins.
 egress = { to = ["registry.tilo.so:443", "code.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer system aarch64 /target/os/aarch64/board-layers/lenovo-83ed/system"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-builder-aarch64"]
+needs = ["os-base-aarch64", "os-assets-system-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-builder-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release", TILO_OS_BOARD = "lenovo-83ed" }
 requires = ["arch=arm64", "disk-100g"]
@@ -5959,7 +6035,7 @@ default = false
 name = "os-layer-trust-release-lenovo-83ed"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer trust aarch64 /target/os/aarch64/board-layers/lenovo-83ed/trust"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed"]
+needs = ["os-base-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release", TILO_OS_BOARD = "lenovo-83ed" }
 requires = ["arch=arm64", "disk-100g"]
@@ -5973,7 +6049,7 @@ default = false
 name = "os-layer-image-release-lenovo-83ed"
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/board-layers/lenovo-83ed/image"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed", "os-layer-trust-release-lenovo-83ed", "os-tools-aarch64", "os-compile-release-aarch64", "os-payload-release-aarch64"]
+needs = ["os-base-aarch64", "os-assets-image-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed", "os-layer-trust-release-lenovo-83ed", "os-tools-aarch64", "os-compile-release-aarch64", "os-payload-release-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 env = { TILO_OS_FLAVOUR = "release", TILO_OS_BOARD = "lenovo-83ed" }
 requires = ["arch=arm64", "disk-100g"]
@@ -6032,7 +6108,7 @@ name = "os-windows-compat-x86_64"
 # Pulls the Windows guest and FEX inputs from registries no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/build-layer.sh image windows-compat x86_64 /target/os/x86_64/windows-compat"
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64"]
+needs = ["os-base-x86_64", "os-assets-system-x86_64", "signing-tools", "image-rpms-x86_64", "rpm-snapshot-x86_64", "os-layer-packages-x86_64"]
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
@@ -6045,7 +6121,7 @@ name = "os-windows-compat-aarch64"
 # Pulls the Windows guest and FEX inputs from registries no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash os/image/build-layer.sh image windows-compat aarch64 /target/os/aarch64/windows-compat"
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64"]
+needs = ["os-base-aarch64", "os-assets-system-aarch64", "signing-tools", "image-rpms-aarch64", "rpm-snapshot-aarch64", "os-layer-packages-aarch64"]
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -7157,7 +7233,7 @@ name = "image-vm-host"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/vm-host-build.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/vm-host/binaries /target/publish/vm-host"
-needs = ["vm-host-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64", "os-assets"]
+needs = ["vm-host-binaries", "rpm-snapshot-x86_64", "image-rpms-x86_64", "os-assets-host"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -7246,7 +7322,7 @@ name = "host-base"
 # from the checksum-verified external assets, which its files and the assets' list decide.
 egress = { to = ["registry.tilo.so:443", "tilo-oci-registry-125650147312-us-west-2.s3.us-west-2.amazonaws.com:443"], pinned = true }
 run = "SOURCE_DATE_EPOCH=$(cat /target/source-date/host-base)\nexport SOURCE_DATE_EPOCH\nbash tools/ci/publish/host-base.sh /target/publish/rpm-snapshot/x86_64 /target/publish/rpms/x86_64 /target/publish/host-base"
-needs = ["source-date-host-base", "rpm-snapshot-x86_64", "image-rpms-x86_64", "os-assets"]
+needs = ["source-date-host-base", "rpm-snapshot-x86_64", "image-rpms-x86_64", "os-assets-host"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"

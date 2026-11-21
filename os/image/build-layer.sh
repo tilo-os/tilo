@@ -242,7 +242,7 @@ build_env() {
   else
     export TILO_RUST_LTO=off TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$dev_owner_key
   fi
-  # The pinned external assets are os-assets' outputs, which the action needs.
+  # The pinned external assets are the outputs of the os-assets-* checks the action needs.
   export TILO_ASSET_OFFLINE=1
 }
 
@@ -382,6 +382,12 @@ oci_arch() {
 given="" components=0
 load_given() {
   local entry what stage id frags
+  # The pinned assets are the asset cache itself, bound where the pieces mount them, not the
+  # external-assets stage, which copies the whole cache in: a step reads only the assets it
+  # opens, which the os-assets-* checks it needs restore.
+  mkdir -p "$repo_root/os/external-assets/cache"
+  layer_args+=(--build-context "external-assets=$repo_root/os/external-assets/cache")
+  given+=external-assets,
   for entry in $(layer_field "$1" given); do
     case $entry in
       compiled | compiled-apps)
