@@ -6331,6 +6331,7 @@ default = false
 # an app walk uses it, and the nested-session build makes one of its own for a developer.
 [[check]]
 name = "tilolang-cli-binary"
+egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo build --locked -p tilolang-cli --bin tilolang"
 outputs = ["/target/debug/tilolang"]
 default = false
