@@ -66,7 +66,7 @@ impl VaultItems {
         let now = unix_now();
         let digits = code_of(&sealed.secret, now).ok_or(ItemError::Damaged)?;
         sealed.used(now, std::slice::from_ref(place), by);
-        self.write(id, &sealed)?;
+        self.write_uses(id, &sealed);
         Ok(Code {
             digits,
             until_unix: half_minute(now).saturating_add(1).saturating_mul(CODE_SECS),
@@ -132,9 +132,6 @@ mod tests {
     /// the setup key a site would show for it.
     const SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
 
-    fn root() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("accounts-vault-codes-{}", uuid::Uuid::new_v4()))
-    }
 
     /// The codes are the standard's own: RFC 6238's table for SHA-1, by its
     /// last six digits, each good for its whole half minute.
@@ -164,9 +161,8 @@ mod tests {
     /// handed out; what is no code generator gives no code.
     #[test]
     fn a_code_generator_gives_its_code_at_its_site_and_never_its_seed() {
-        let root = root();
         let site = Place::parse("https://example.test").unwrap();
-        let mut items = VaultItems::open_in(&root).unwrap();
+        let mut items = VaultItems::default();
         let generator = items
             .add(NewItem::new(
                 ItemKind::CodeGenerator,
@@ -239,9 +235,8 @@ mod tests {
         assert_eq!(written.by, "Assistant");
         assert!(written.at_unix >= before && written.at_unix <= after);
         assert!(items.uses(&login.id).unwrap().is_empty());
-        let facts = VaultItems::open_in(&root).unwrap().facts();
+        let facts = VaultItems::of_entries(items.kept()).facts();
         let kept = facts.iter().find(|item| item.id == generator.id).unwrap();
         assert_eq!(kept.last_used_unix, Some(written.at_unix));
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

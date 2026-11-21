@@ -38,6 +38,8 @@ use kept::{Kept, KeptUse, NotAdded, SignsIn, Why};
 use mcp::{Answered, Session};
 use said::Offered;
 use sign_in::{NotRenewed, Tokens};
+
+use crate::workspaces::vault::VaultAt;
 use wire::Problem;
 pub(crate) use wire::Reach;
 
@@ -165,13 +167,13 @@ pub(crate) fn site(reach: &Reach, address: &str) -> Result<String, String> {
 /// allowed what they were shown. A command defined otherwise now is kept as
 /// changed and is not called.
 async fn defined_as(
-    root: &Path,
+    (root, vault): (&Path, VaultAt<'_>),
     reach: &Reach,
     (kept, address): (&Kept, &Address),
     (command, digest): (&str, &str),
     by: &str,
 ) -> Result<(), (Ended, &'static str)> {
-    let read = match ask(root, reach, (kept, address), by, &Asking::Commands).await {
+    let read = match ask((root, vault), reach, (kept, address), by, &Asking::Commands).await {
         Ok(Answer::Commands(read)) => read,
         Ok(Answer::Called(_)) => return Err((Ended::Failed, CALL_NOT_TAKEN)),
         Err(problem) => return Err((Ended::Failed, why(&problem).words())),
@@ -286,8 +288,8 @@ async fn once(
 
 /// The sign-in of `kept` is over: take what it signed in with out of the
 /// vault under `root`, and let the connection say so.
-fn ran_out(root: &Path, kept: &Kept, tokens: &Tokens) -> Problem {
-    sign_in::forget(root, tokens);
+async fn ran_out((root, vault): (&Path, VaultAt<'_>), kept: &Kept, tokens: &Tokens) -> Problem {
+    sign_in::forget(vault, tokens).await;
     let now = tilo_clock::unix_now_ms();
     let said = kept::update(root, &kept.id, |kept| {
         if let Some(signs) = &mut kept.signs_in {
@@ -305,7 +307,7 @@ fn ran_out(root: &Path, kept: &Kept, tokens: &Tokens) -> Problem {
 /// Renew the sign-in of `kept`, unless another request renewed it while
 /// this one waited: the items the connection signs in with from now on.
 async fn renewed(
-    root: &Path,
+    (root, vault): (&Path, VaultAt<'_>),
     reach: &Reach,
     (kept, address): (&Kept, &Address),
     (signs, tokens): (&SignsIn, &Tokens),
@@ -319,9 +321,9 @@ async fn renewed(
         .and_then(|signs| signs.tokens);
     let outcome = match (now_kept, &signs.client) {
         (Some(newer), _) if newer != *tokens => Ok(newer),
-        (None, _) | (_, None) => Err(ran_out(root, kept, tokens)),
+        (None, _) | (_, None) => Err(ran_out((root, vault), kept, tokens).await),
         (Some(_), Some(client)) => {
-            match sign_in::renew(root, reach, address, (&signs.way, client), tokens, by).await {
+            match sign_in::renew(vault, reach, address, (&signs.way, client), tokens, by).await {
                 Ok(renewed) => {
                     let keeps = renewed.clone();
                     let said = kept::update(root, &kept.id, |kept| {
@@ -333,11 +335,11 @@ async fn renewed(
                         Ok(renewed)
                     } else {
                         // A connection removed meanwhile keeps no sign-in.
-                        sign_in::forget(root, &renewed);
+                        sign_in::forget(vault, &renewed).await;
                         Err(Problem::NotCalled)
                     }
                 }
-                Err(NotRenewed::RanOut) => Err(ran_out(root, kept, tokens)),
+                Err(NotRenewed::RanOut) => Err(ran_out((root, vault), kept, tokens).await),
                 Err(NotRenewed::NotNow(problem)) => Err(problem),
             }
         }
@@ -350,7 +352,7 @@ async fn renewed(
 /// it has no sign-in, else with what its person's vault keeps for it,
 /// renewed once where the service no longer takes that.
 async fn ask(
-    root: &Path,
+    (root, vault): (&Path, VaultAt<'_>),
     reach: &Reach,
     (kept, address): (&Kept, &Address),
     by: &str,
@@ -366,20 +368,21 @@ async fn ask(
     let lapsed = tokens
         .expires_ms
         .is_some_and(|until| until <= tilo_clock::unix_now_ms());
-    if !lapsed && let Some(shown) = sign_in::bearer(root, address, tokens, by) {
+    if !lapsed && let Some(shown) = sign_in::bearer(vault, address, tokens, by).await {
         let first = once(reach, address, Some(shown.secret.as_str()), asking).await;
         if !matches!(first, Err(Problem::SignIn { .. })) {
             return first;
         }
     }
-    let tokens = renewed(root, reach, (kept, address), (signs, tokens), by).await?;
-    let shown =
-        sign_in::bearer(root, address, &tokens, by).ok_or(Problem::SignIn { challenge: None })?;
+    let tokens = renewed((root, vault), reach, (kept, address), (signs, tokens), by).await?;
+    let shown = sign_in::bearer(vault, address, &tokens, by)
+        .await
+        .ok_or(Problem::SignIn { challenge: None })?;
     let again = once(reach, address, Some(shown.secret.as_str()), asking).await;
     if matches!(again, Err(Problem::SignIn { .. })) {
         // A service that turns a sign-in away the moment it was renewed
         // takes it no more.
-        return Err(ran_out(root, kept, &tokens));
+        return Err(ran_out((root, vault), kept, &tokens).await);
     }
     again
 }
@@ -484,12 +487,15 @@ pub(crate) async fn add(root: &Path, reach: &Reach, address: &str) -> Result<Con
 
 /// Forget the connection `id` names under `root`, answering what remains.
 /// What it signed in with leaves the vault with it.
-pub(crate) fn remove(root: &Path, id: &str) -> Result<Connections, String> {
+pub(crate) async fn remove(
+    (root, vault): (&Path, VaultAt<'_>),
+    id: &str,
+) -> Result<Connections, String> {
     let was = kept::forget(root, id)
         .map_err(|error| unavailable(&error))?
         .ok_or_else(|| NOT_KEPT.to_owned())?;
     if let Some(tokens) = was.signs_in.and_then(|signs| signs.tokens) {
-        sign_in::forget(root, &tokens);
+        sign_in::forget(vault, &tokens).await;
     }
     list(root)
 }
@@ -500,7 +506,7 @@ pub(crate) fn remove(root: &Path, id: &str) -> Result<Connections, String> {
 /// they did. A service that cannot be asked leaves the connection as it was
 /// read last, and says how it stands.
 pub(crate) async fn refresh(
-    root: &Path,
+    (root, vault): (&Path, VaultAt<'_>),
     reach: &Reach,
     id: &str,
     calling: Calling<'_>,
@@ -517,7 +523,7 @@ pub(crate) async fn refresh(
         Ok(address) => {
             paced(root)?;
             ask(
-                root,
+                (root, vault),
                 reach,
                 (&kept, &address),
                 calling.by(),
@@ -584,7 +590,7 @@ pub(crate) fn uses(root: &Path, id: &str) -> Result<Uses, String> {
 /// arguments go to the service exactly as given, and neither they nor the
 /// answer are kept.
 pub(crate) async fn call(
-    root: &Path,
+    (root, vault): (&Path, VaultAt<'_>),
     reach: &Reach,
     calling: Calling<'_>,
     call: Call,
@@ -625,7 +631,8 @@ pub(crate) async fn call(
     paced(root)?;
     if let Calling::Allowed { digest, by, .. } = calling
         && let Err((ended, why)) =
-            defined_as(root, reach, (&kept, &address), (&call.command, digest), by).await
+            defined_as((root, vault), reach, (&kept, &address), (&call.command, digest), by)
+                .await
     {
         kept::end_use(root, id, nth, ended, Some(why)).map_err(|error| unavailable(&error))?;
         return Err(why.to_owned());
@@ -635,7 +642,7 @@ pub(crate) async fn call(
         .as_ref()
         .is_some_and(|signs| signs.tokens.is_some());
     let asking = Asking::Call(call.command, call.arguments);
-    let answered = ask(root, reach, (&kept, &address), calling.by(), &asking).await;
+    let answered = ask((root, vault), reach, (&kept, &address), calling.by(), &asking).await;
     let ended = match &answered {
         Ok(Answer::Called(answered)) if answered.is_error => (Ended::Failed, Some(SAID_IT_FAILED)),
         Ok(_) => (Ended::Ok, None),
@@ -733,7 +740,7 @@ pub(crate) async fn begin_sign_in(
 /// issuer hands out goes into the person's vault, and the connection reads
 /// what the service offers them.
 pub(crate) async fn finish_sign_in(
-    root: &Path,
+    (root, vault): (&Path, VaultAt<'_>),
     reach: &Reach,
     id: &str,
     returned: &str,
@@ -745,10 +752,11 @@ pub(crate) async fn finish_sign_in(
     let client = signs.client.as_ref().ok_or(sign_in::BEGIN_AGAIN)?;
     paced(root)?;
     let tokens =
-        sign_in::finish((root, id), reach, &address, (&signs.way, client), returned).await?;
+        sign_in::finish((root, id), vault, reach, &address, (&signs.way, client), returned)
+            .await?;
     // What it signed in with before is over.
     if let Some(before) = &signs.tokens {
-        sign_in::forget(root, before);
+        sign_in::forget(vault, before).await;
     }
     let keeps = tokens.clone();
     let signed = kept::update(root, id, |kept| {
@@ -760,9 +768,9 @@ pub(crate) async fn finish_sign_in(
     .map_err(|error| unavailable(&error))?;
     if signed.is_none() {
         // A connection removed while its person signed in keeps no sign-in.
-        sign_in::forget(root, &tokens);
+        sign_in::forget(vault, &tokens).await;
         return Err(NOT_KEPT.to_owned());
     }
     // The person is here: what the service lists now is what they saw.
-    refresh(root, reach, id, Calling::Person).await
+    refresh((root, vault), reach, id, Calling::Person).await
 }

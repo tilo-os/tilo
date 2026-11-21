@@ -20,8 +20,9 @@ impl Passwords {
 #[resource(kind = "passwords.vault", read_content = Passwords::read_document)]
 impl Passwords {}
 
-/// The vault's published document. The reader presents decrypted entries only while it has
-/// the independent document keys. Legacy documents have no entries.
+/// The workspace's vault: the one place a workspace keeps what its members and agents sign in
+/// with. Each entry is sealed under the document's own keys, which every device policy lets
+/// read Passwords holds, a server among them; a reader without them reads nothing of an entry.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct WorkspaceVaultEntries {
     #[model(readonly)]
@@ -30,7 +31,21 @@ pub struct WorkspaceVaultEntries {
     pub imported: Collection<Atom>,
     #[model(readonly)]
     pub removed: Set<Id>,
+    /// When, where and for whom each entry was handed to something that signs in, sealed per
+    /// entry beside it ([`USES_FIELD`]): a use is written down here, so recording one never
+    /// rewrites the entry a member may be editing at the same time.
+    #[model(readonly)]
+    pub used: Collection<Atom>,
 }
+
+/// The sealed field an entry's uses are kept at, beside the entry `id` itself.
+#[must_use]
+pub fn uses_field(id: &str) -> String {
+    format!("{id}{USES_FIELD}")
+}
+
+/// What [`uses_field`] adds to an entry's id.
+pub const USES_FIELD: &str = "/uses";
 
 impl WorkspaceVaultEntries {
     /// An explicit workspace write takes precedence over an imported value with the same id.
@@ -119,12 +134,36 @@ impl WorkspaceVaultEntries {
     }
 
     /// Delete sealed vault entry
-    #[action(destructive, writes = sealed, writes = imported, writes = removed)]
+    #[action(destructive, writes = sealed, writes = imported, writes = removed, writes = used)]
     pub fn remove_sealed(&mut self, #[param("Opaque item identifier")] id: String) {
         let id = Id::from(id);
         self.sealed.remove(&id);
         self.imported.remove(&id);
+        self.used.remove(&id);
         self.removed.insert(id);
+    }
+
+    /// Record where an entry was used
+    ///
+    /// The uses are sealed under this document's keys at the entry's uses field. An entry that
+    /// is gone keeps none.
+    #[action(writes = used)]
+    pub fn keep_uses(
+        &mut self,
+        #[param("Opaque item identifier")] id: String,
+        #[param("Encrypted uses")] ciphertext: String,
+    ) -> Result<(), Refusal> {
+        let id = Id::from(id);
+        Self::validate_sealed(&id, &ciphertext)?;
+        if self.entry(&id).is_none() {
+            return Err(Refusal::new("that entry is not in the vault"));
+        }
+        if let Some(current) = self.used.get_mut(&id) {
+            *current = Atom(ciphertext);
+        } else {
+            self.used.push(id, Atom(ciphertext));
+        }
+        Ok(())
     }
 }
 

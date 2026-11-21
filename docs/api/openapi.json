@@ -22672,6 +22672,22 @@
         ],
         "description": ""
       },
+      "passwords.workspace-vault.keep-uses.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ciphertext": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "ciphertext"
+        ],
+        "description": ""
+      },
       "pdf.document.record-reading-position.Arguments": {
         "type": "object",
         "properties": {
@@ -43788,6 +43804,12 @@
       "resource": "passwords.workspace-vault",
       "action": "remove-sealed",
       "arguments": "#/components/schemas/passwords.workspace-vault.remove-sealed.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "passwords.workspace-vault",
+      "action": "keep-uses",
+      "arguments": "#/components/schemas/passwords.workspace-vault.keep-uses.Arguments"
     },
     {
       "app": "so.tilo.pdf-viewer",

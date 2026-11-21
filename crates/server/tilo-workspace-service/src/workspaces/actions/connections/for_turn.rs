@@ -398,7 +398,12 @@ impl Workspaces {
                 }
                 let by = Calling::Agent(&using.name);
                 done(
-                    connections::refresh(&root, &reach, &named.connection, by)
+                    connections::refresh(
+                        (&root, self.vault_at(&using.workspace)),
+                        &reach,
+                        &named.connection,
+                        by,
+                    )
                         .await
                         .map_err(refused)?,
                 )
@@ -436,7 +441,7 @@ impl Workspaces {
         if !found.asks {
             let by = Calling::Agent(&using.name);
             return done(
-                connections::call(root, reach, by, call)
+                connections::call((root, self.vault_at(&using.workspace)), reach, by, call)
                     .await
                     .map_err(refused)?,
             );
@@ -459,8 +464,9 @@ impl Workspaces {
                 leave: Leave::Always,
                 digest: &found.digest,
             };
-            let called = connections::call(root, reach, allowed, call)
-                .await
+            let called =
+                connections::call((root, self.vault_at(&using.workspace)), reach, allowed, call)
+                    .await
                 .map_err(refused)?;
             // What let it through is counted where its person reads it.
             if let Some(permission) = self.stands(&using.person, &always) {
@@ -685,7 +691,13 @@ impl Workspaces {
                     self.governed_permission_stands(&using.person, &expected)
                         .await?;
                 }
-                let called = connections::call(&root, &reach, allowed, call).await?;
+                let called = connections::call(
+                    (&root, self.vault_at(&using.workspace)),
+                    &reach,
+                    allowed,
+                    call,
+                )
+                .await?;
                 serde_json::to_value(called)
                     .map(Some)
                     .map_err(|err| err.to_string())

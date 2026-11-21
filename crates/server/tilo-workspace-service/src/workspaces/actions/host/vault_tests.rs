@@ -29,7 +29,8 @@ use tilo_user_identity::DeviceCert;
 use super::super::ServiceWorkspaceActions;
 use super::super::tests::{admit, caller, governed, settled};
 use crate::workspaces::fixtures::test_server_keeping_keys_apart;
-use crate::workspaces::tests::{governor, guest_device, test_host};
+use crate::workspaces::fixtures::test_host_taking_part as test_host;
+use crate::workspaces::tests::{governor, guest_device};
 use crate::workspaces::{AsksPeople, PersonAnswer};
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -269,10 +270,17 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
         let clear = files_holding(dir.path(), needle.as_bytes());
         assert!(clear.is_empty(), "{needle} in the clear: {clear:?}");
     }
-    let own = workspaces.workspace_root(&workspace_id.to_string());
     assert!(
-        accounts::vault_dir_in(&own).join("vault.enc").exists(),
-        "the item is sealed in the workspace's vault"
+        workspaces
+            .resource_document(
+                &workspace_id.to_string(),
+                tilo_app_id::apps::PASSWORDS,
+                tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+            )
+            .await
+            .unwrap()
+            .is_some(),
+        "the item is sealed in the workspace's vault document"
     );
 
     // An editor's device takes it back for the whole workspace.
@@ -337,7 +345,16 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     )
     .await
     .expect("her agent reads the items");
-    assert_eq!(listed["items"], json!([kept]), "{listed}");
+    // One vault: her Passwords login for a site is an item by its own id, beside the one she
+    // kept as an item.
+    let entry_item = format!("vault.item:{}", entry["id"].as_str().unwrap());
+    let items = listed["items"].as_array().cloned().unwrap_or_default();
+    assert_eq!(items.len(), 2, "{listed}");
+    assert!(items.contains(&kept), "{listed}");
+    assert!(
+        items.iter().any(|item| item["reference"] == json!(entry_item)),
+        "{listed}"
+    );
     let entries = ask(
         &service,
         workspace_id,
@@ -347,7 +364,11 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     )
     .await
     .expect("her agent reads the entries");
-    assert_eq!(entries["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        entries["entries"].as_array().map(Vec::len),
+        Some(2),
+        "the item she kept is an entry of Passwords too: {entries}"
+    );
 
     // Every change waits for its person: with nobody to ask, their answer
     // is still wanted and nothing changed.
@@ -378,7 +399,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     )
     .await
     .unwrap();
-    assert_eq!(unchanged["items"], json!([kept]));
+    assert_eq!(unchanged["items"], listed["items"]);
 
     // Allowed by its person, the change it would make is made.
     let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
@@ -402,7 +423,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     )
     .await
     .unwrap();
-    assert_eq!(now["items"].as_array().map(Vec::len), Some(2));
+    assert_eq!(now["items"].as_array().map(Vec::len), Some(3));
 
     // Nobody else reaches it, however it names itself.
     let person = hex::encode(ada.user_public_key);
@@ -453,7 +474,7 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     )
     .await
     .unwrap();
-    assert_eq!(still["items"].as_array().map(Vec::len), Some(2), "{still}");
+    assert_eq!(still["items"].as_array().map(Vec::len), Some(3), "{still}");
     server.shutdown().await;
 }
 
@@ -561,11 +582,16 @@ async fn the_workspaces_passwords_are_kept_and_read_by_its_members_alone() {
     .unwrap();
     assert_eq!(theirs["entries"], json!([]), "{theirs}");
 
-    // Her entries are no items an agent may use, and the other way round.
+    // One vault: her login for a site is an item an agent may name, by the entry's own id.
     let items = ask(&service, workspace_id, hers, person_vault::LIST, json!({}))
         .await
         .unwrap();
-    assert_eq!(items["items"], json!([]));
+    assert_eq!(
+        items["items"][0]["reference"],
+        json!(format!("vault.item:{}", after[0]["id"].as_str().unwrap())),
+        "{items}"
+    );
+    assert_eq!(items["items"].as_array().map(Vec::len), Some(1), "{items}");
 
     let id = after[0]["id"].clone();
     let left = ask(
@@ -1119,14 +1145,68 @@ fn files_called(dir: &std::path::Path, name: &str) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// Copy the folder `from` to `to`, with everything under it.
+/// Keep a key for a provider of the workspace's at `site`, as its person types it: what the
+/// server seals in the workspace's store on its disk, under the workspace's key.
+async fn keeps_a_providers_key(
+    service: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    who: (&DeviceCert, &Caller),
+    site: &str,
+) {
+    let added = ask_at(
+        service,
+        workspace_id,
+        who,
+        person_models::target(person_models::ADD_PROVIDER),
+        json!({"name": site, "protocol": "open-ai-compatible", "endpoint": format!("{site}/v1")}),
+    )
+    .await
+    .expect("a provider is added");
+    ask_at(
+        service,
+        workspace_id,
+        who,
+        person_models::target(person_models::SET_KEY),
+        json!({"provider": added["id"], "key": KEY}),
+    )
+    .await
+    .expect("its person keeps its key");
+}
+
+/// How many of the workspace's providers have a key, as whoever asks reads them.
+async fn providers_keyed(
+    service: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    who: (&DeviceCert, &Caller),
+) -> Result<usize, ActionCallError> {
+    let models = ask_at(
+        service,
+        workspace_id,
+        who,
+        person_models::target(person_models::LIST),
+        json!({}),
+    )
+    .await?;
+    Ok(models["providers"]
+        .as_array()
+        .map_or(0, |providers| {
+            providers
+                .iter()
+                .filter(|provider| provider["configured"] == json!(true))
+                .count()
+        }))
+}
+
+/// Copy the folder `from` to `to`, with every folder and file under it, as a backup does: a
+/// socket a running server listens on is no file to copy.
 fn copy_folder(from: &std::path::Path, to: &std::path::Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap().flatten() {
         let (path, copy) = (entry.path(), to.join(entry.file_name()));
-        if path.is_dir() {
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
             copy_folder(&path, &copy);
-        } else {
+        } else if kind.is_file() {
             std::fs::copy(&path, &copy).unwrap();
         }
     }
@@ -1134,11 +1214,11 @@ fn copy_folder(from: &std::path::Path, to: &std::path::Path) {
 
 /// A server told where to keep the keys of the workspaces' sealed stores
 /// keeps none of them in its state folder. So a copy of that folder, a
-/// backup or a staging copy, opens nothing of a workspace's vault and makes
-/// no key for it; with the keys beside it the same copy opens, which is all
-/// it lacked.
+/// backup or a staging copy, opens nothing of what a workspace's store keeps
+/// sealed and makes no key for it; with the keys beside it the same copy
+/// opens, which is all it lacked.
 #[tokio::test]
-async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_vault() {
+async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_sealed_store() {
     let dir = tempfile::tempdir().unwrap();
     let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
     // The folder its operator made for the keys: a server makes none.
@@ -1147,17 +1227,16 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_vault() 
     let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, actions) = governed(workspaces).await;
-    let ada = admit(workspaces, &workspace, &owner, 1).await;
-    let hers = (&ada, &caller(&ada));
+    let _ada = admit(workspaces, &workspace, &owner, 1).await;
+    let asking = caller(&owner);
+    let theirs = (&owner, &asking);
 
-    let login = a_login("https://example.test");
-    let kept = ask(&actions, workspace_id, hers, person_vault::ADD, login)
-        .await
-        .expect("Ada keeps a login");
-    let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
-        .await
-        .unwrap();
-    assert_eq!(listed["items"], json!([kept]), "she reads it back");
+    keeps_a_providers_key(&actions, workspace_id, theirs, "https://models.example").await;
+    assert_eq!(
+        providers_keyed(&actions, workspace_id, theirs).await.unwrap(),
+        1,
+        "the key reads back"
+    );
 
     // What is sealed lies in the state folder; its key does not.
     assert_eq!(files_called(&state, "vault.enc").len(), 1);
@@ -1167,7 +1246,7 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_vault() 
         "the key of the workspace's vault lies in the state folder"
     );
     assert_eq!(files_called(&keys, "vault.key").len(), 1);
-    assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
+    assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
 
     // A copy of the state folder alone.
     let copy = dir.path().join("copy");
@@ -1176,10 +1255,14 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_vault() 
     let vault_in = |state: &std::path::Path| {
         stores(state).join(hex::encode(workspace_id.to_string().as_bytes()))
     };
-    let opened = accounts::vault_items::VaultItems::open_in(&vault_in(&copy));
+    let (reference, authorization) =
+        accounts::provider_api_key(&provider_of(&actions, workspace_id, theirs).await, "https://models.example/v1")
+            .unwrap();
+    let opened =
+        accounts::ServiceCredentials::open_in(&vault_in(&copy)).resolve(&reference, &authorization);
     assert!(
-        opened.is_err(),
-        "a copy of the state folder opened the workspace's vault"
+        !matches!(opened, Ok(Some(_))),
+        "a copy of the state folder opened the workspace's sealed store"
     );
     assert_eq!(
         files_called(&copy, "vault.key"),
@@ -1191,17 +1274,37 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_workspaces_vault() 
     let copied_keys = dir.path().join("copied-keys");
     copy_folder(&keys, &copied_keys);
     accounts::keep_vault_keys_apart(&stores(&copy), &copied_keys.join("workspaces"));
-    let opened = accounts::vault_items::VaultItems::open_in(&vault_in(&copy))
-        .expect("the copy opens with its keys");
-    assert_eq!(opened.facts().len(), 1);
+    let opened = accounts::ServiceCredentials::open_in(&vault_in(&copy))
+        .resolve(&reference, &authorization)
+        .expect("the copy opens with its keys")
+        .expect("the copy keeps the key");
+    assert_eq!(opened.as_str(), KEY);
 }
 
-/// A server that kept a workspace's key in its state, beside the vault the
-/// key opens, is then told a folder for the keys. Nobody is locked out of
-/// the vault. The key moves under the folder the first time the vault is
+/// The id of the one provider of the workspace's, as whoever asks reads it.
+async fn provider_of(
+    service: &ServiceWorkspaceActions,
+    workspace_id: WorkspaceId,
+    who: (&DeviceCert, &Caller),
+) -> String {
+    let models = ask_at(
+        service,
+        workspace_id,
+        who,
+        person_models::target(person_models::LIST),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    models["providers"][0]["id"].as_str().unwrap().to_owned()
+}
+
+/// A server that kept a workspace's key in its state, beside the sealed store
+/// the key opens, is then told a folder for the keys. Nobody is locked out of
+/// the store. The key moves under the folder the first time the store is
 /// opened, once it was read back from there: the very key, and no new one.
 /// A key whose place under the folder cannot be made stays where it lies
-/// and opens its vault from there, at that start and at the one after it.
+/// and opens its store from there, at that start and at the one after it.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_is_named() {
@@ -1217,13 +1320,10 @@ async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_i
         let server = test_server_keeping_keys_apart(&state, no_folder(), &key, &owner).await;
         let workspaces = server.workspaces().clone();
         let (_, workspace_id, actions) = governed(&workspaces).await;
-        let login = a_login("https://example.test");
-        ask(&actions, workspace_id, hers, person_vault::ADD, login)
-            .await
-            .expect("the workspace keeps a login");
+        keeps_a_providers_key(&actions, workspace_id, hers, "https://models.example").await;
         server.shutdown().await;
         let beside = files_called(&state, "vault.key");
-        assert_eq!(beside.len(), 1, "the key lies beside its vault");
+        assert_eq!(beside.len(), 1, "the key lies beside its store");
         let sealed_under = std::fs::read(&beside[0]).unwrap();
 
         // The folder is named, and it is there. The key's place under it is
@@ -1241,16 +1341,12 @@ async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_i
             let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
             let actions = ServiceWorkspaceActions::new();
             actions.attach(server.workspaces().clone());
-            let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
+            let keyed = providers_keyed(&actions, workspace_id, hers)
                 .await
                 .unwrap_or_else(|error| {
-                    panic!("{start} locked the workspace out of its vault: {error:?}")
+                    panic!("{start} locked the workspace out of its store: {error:?}")
                 });
-            assert_eq!(
-                listed["items"].as_array().map(Vec::len),
-                Some(kept),
-                "{start}: {listed}"
-            );
+            assert_eq!(keyed, kept, "{start}");
             let in_state = files_called(&state, "vault.key");
             let apart = files_called(&keys, "vault.key");
             if movable {
@@ -1263,7 +1359,7 @@ async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_i
                 assert!(apart[0].starts_with(&her_place), "{start}: {apart:?}");
                 assert!(
                     std::fs::read(&apart[0]).unwrap() == sealed_under,
-                    "{start}: the key kept apart is not the one the vault was sealed under"
+                    "{start}: the key kept apart is not the one the store was sealed under"
                 );
             } else {
                 assert_eq!(in_state, beside, "{start}: the key left its place");
@@ -1274,12 +1370,13 @@ async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_i
                 );
             }
             // What is kept from now on is sealed under the same key.
-            let more = a_login(&format!("https://{kept}.example.test"));
-            ask(&actions, workspace_id, hers, person_vault::ADD, more)
-                .await
-                .unwrap_or_else(|error| {
-                    panic!("{start} kept nothing more in the vault: {error:?}")
-                });
+            keeps_a_providers_key(
+                &actions,
+                workspace_id,
+                hers,
+                &format!("https://{kept}.example.test"),
+            )
+            .await;
             server.shutdown().await;
         }
     }
@@ -1364,13 +1461,10 @@ async fn a_server_says_at_every_start_where_it_keeps_peoples_keys_and_logs_no_ke
     );
     let workspaces = server.workspaces().clone();
     let (_, workspace_id, actions) = governed(&workspaces).await;
-    let login = a_login("https://example.test");
-    ask(&actions, workspace_id, hers, person_vault::ADD, login)
-        .await
-        .expect("the workspace keeps a login");
+    keeps_a_providers_key(&actions, workspace_id, hers, "https://models.example").await;
     server.shutdown().await;
     let beside = files_called(&state, "vault.key");
-    assert_eq!(beside.len(), 1, "the key lies beside its vault");
+    assert_eq!(beside.len(), 1, "the key lies beside its store");
     let her_key = std::fs::read(&beside[0]).unwrap();
 
     // A folder is named that is not there: the server makes none, says so,
@@ -1388,13 +1482,11 @@ async fn a_server_says_at_every_start_where_it_keeps_peoples_keys_and_logs_no_ke
     );
     let actions = ServiceWorkspaceActions::new();
     actions.attach(server.workspaces().clone());
-    let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
-        .await
-        .expect("the vault opens");
     assert_eq!(
-        listed["items"].as_array().map(Vec::len),
-        Some(1),
-        "{listed}"
+        providers_keyed(&actions, workspace_id, hers)
+            .await
+            .expect("the store opens"),
+        1
     );
     assert!(!keys.exists(), "the server made the folder it was named");
     assert_eq!(files_called(&state, "vault.key"), beside);
@@ -1424,4 +1516,86 @@ async fn a_server_says_at_every_start_where_it_keeps_peoples_keys_and_logs_no_ke
     for spelled in [hex::encode(&her_key), hex::encode_upper(&her_key)] {
         assert!(!text.contains(&spelled), "the log holds her key in hex");
     }
+}
+
+/// What a host kept of a workspace's vault in its own sealed store before the vault was the
+/// document, a member's login with the uses it recorded and a Passwords entry, is in the vault
+/// document the first time the vault is opened: listed under the reference it had, its uses
+/// kept, and taken out of the host's store, while an account's own sign-in beside it stays.
+#[tokio::test]
+async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let hers = (&ada, &caller(&ada));
+
+    // The host's store, as a host before kept it.
+    let root = workspaces.workspace_root(&workspace_id.to_string());
+    let id = "7".repeat(32);
+    let mut vault = accounts::SecretVault::open_person(Some(&root));
+    let sealed = json!({
+        "kind": "login",
+        "places": ["https://example.test"],
+        "username": NAME,
+        "secret": PASSWORD,
+        "added_unix": 1_700_000_000_u64,
+        "uses": [{"at_unix": 1_700_000_100_u64, "places": ["https://example.test"], "by": "Assistant"}],
+    });
+    vault.put(
+        &accounts::AccountId::new(format!("tilo-vault-item:{id}")),
+        &accounts::Secret {
+            password: String::new(),
+            token: Some(sealed.to_string()),
+        },
+    );
+    vault.put(
+        &accounts::AccountId::new("ada@example.test"),
+        &accounts::Secret::password("an account's own"),
+    );
+    vault.try_save().unwrap();
+    let mut store = accounts::SecretStore::open_person(Some(&root));
+    let mut entry = accounts::SecretItem::login("Example", "bo", "a passwords entry");
+    store.put(&mut entry).unwrap();
+
+    let listed = ask(&service, workspace_id, hers, person_vault::LIST, json!({}))
+        .await
+        .unwrap();
+    let items = listed["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{listed}");
+    assert_eq!(items[0]["reference"], json!(format!("vault.item:{id}")));
+    assert_eq!(items[0]["belongsTo"], json!(["https://example.test"]));
+    let uses = ask(
+        &service,
+        workspace_id,
+        hers,
+        person_vault::USES,
+        json!({"item": format!("vault.item:{id}")}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(uses["uses"].as_array().map(Vec::len), Some(1), "{uses}");
+    let entries = ask(&service, workspace_id, hers, person_vault::ENTRIES, json!({}))
+        .await
+        .unwrap();
+    assert!(
+        entries.to_string().contains(&entry.id.0),
+        "the Passwords entry is in the vault: {entries}"
+    );
+
+    // The host keeps no second copy; what is an account's own stays.
+    assert!(
+        accounts::vault_items::KeptBefore::under(&root)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        accounts::SecretVault::open_person(Some(&root))
+            .get(&accounts::AccountId::new("ada@example.test"))
+            .map(|secret| secret.password),
+        Some("an account's own".to_owned())
+    );
+    server.shutdown().await;
 }

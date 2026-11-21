@@ -65,7 +65,16 @@ pub fn committed_surface(_input: TokenStream) -> TokenStream {
                 .into();
         }
     };
-    quote::quote! { ::core::option::Option::Some(#json) }.into()
+    // The file is an input of the crate's build like its sources: a changed surface rebuilds
+    // the crate, rather than leaving the surface it was built with in a cached build.
+    let tracked = path.display().to_string();
+    quote::quote! {
+        {
+            const _: &[u8] = ::core::include_bytes!(#tracked);
+            ::core::option::Option::Some(#json)
+        }
+    }
+    .into()
 }
 
 /// What `tilo_resource::word!` expands to: the word `key` of the catalogue

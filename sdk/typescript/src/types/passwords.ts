@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.passwords@cdacb161a95d8124";
+export const SURFACE = "so.tilo.passwords@ff5b4c5b16475455";
 
 /** The arguments of `keep-sealed`. */
 export interface KeepSealedArgs {
@@ -39,6 +39,12 @@ export interface ImportSealedArgs {
 /** The arguments of `remove-sealed`. */
 export interface RemoveSealedArgs {
   id: string;
+}
+
+/** The arguments of `keep-uses`. */
+export interface KeepUsesArgs {
+  id: string;
+  ciphertext: string;
 }
 
 /** Password vault — `passwords.vault`. */
@@ -80,6 +86,7 @@ export interface WorkspaceVault extends tilo.Resource {
   readonly sealed: Array<tilo.Entry<string>>;
   readonly imported: Array<tilo.Entry<string>>;
   readonly removed: string[];
+  readonly used: Array<tilo.Entry<string>>;
   keepSealed(args: {
     id: string;
     ciphertext: string;
@@ -97,11 +104,17 @@ export interface WorkspaceVault extends tilo.Resource {
   }): Promise<void>;
   /** Runs `remove-sealed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeSealedMany(items: RemoveSealedArgs[]): Promise<tilo.ActionAnswer[]>;
+  keepUses(args: {
+    id: string;
+    ciphertext: string;
+  }): Promise<void>;
+  /** Runs `keep-uses` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keepUsesMany(items: KeepUsesArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `WorkspaceVault` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACEVAULT_ACTIONS = ["keepSealed", "keepSealedMany", "importSealed", "importSealedMany", "removeSealed", "removeSealedMany"] as const;
+export const WORKSPACEVAULT_ACTIONS = ["keepSealed", "keepSealedMany", "importSealed", "importSealedMany", "removeSealed", "removeSealedMany", "keepUses", "keepUsesMany"] as const;
 
 /** The `passwords.workspace-vault` kind at `path`. */
 export function workspaceVault(ws: tilo.Workspace, path: string): WorkspaceVault {

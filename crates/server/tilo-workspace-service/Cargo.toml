@@ -80,6 +80,9 @@ tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 # Calendar model's own code, so a device and its host agree about time. The
 # app's window is not linked: only the record, its iCalendar and its spans.
 calendar-model = { path = "../../../apps/calendar-model", features = ["store"], optional = true }
+# The workspace's vault: Passwords' document, which this service reads and writes as a holder of
+# its keys.
+passwords-model = { path = "../../../apps/passwords-model" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 tilo-automation = { path = "../../collab/automation" }
 # Resource identity, permissions and invocation leases: the model below the toolkit.

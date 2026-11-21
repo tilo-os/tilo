@@ -70,6 +70,7 @@ fields = [
   { path = "sealed", type = { collection = "text" }, readonly = true, stored = "collection" },
   { path = "imported", type = { collection = "text" }, readonly = true, stored = "collection" },
   { path = "removed", type = { set = "text" }, readonly = true },
+  { path = "used", type = { collection = "text" }, readonly = true, stored = "collection" },
 ]
 
 [[resources.verbs]]
@@ -94,8 +95,17 @@ params = [
 id = "remove-sealed"
 destructive = true
 kind = "undoable"
-writes = ["record", "sealed.*", "imported.*", "removed"]
+writes = ["record", "sealed.*", "imported.*", "removed", "used.*"]
 params = [
   { name = "id", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "keep-uses"
+kind = "undoable"
+writes = ["record", "used.*"]
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "ciphertext", type = "text", required = true, schema = { type = "string" } },
 ]
 

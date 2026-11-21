@@ -276,6 +276,9 @@ pub(super) struct Uses {
     /// password, read from the server's disk once.
     #[cfg(feature = "agents")]
     pub(super) mail_connects: Mutex<Option<Vec<MailAsk>>>,
+    /// The workspaces whose vault this host carried what it kept of it before over from,
+    /// since it started ([`super::vault`]).
+    pub(super) carried_over: Mutex<std::collections::BTreeSet<String>>,
 }
 
 /// A person's "allow" for one fill: `agent` may fill what `item` keeps into
@@ -376,6 +379,7 @@ impl Default for Uses {
             connects: Mutex::default(),
             #[cfg(feature = "agents")]
             mail_connects: Mutex::default(),
+            carried_over: Mutex::default(),
         }
     }
 }
@@ -520,10 +524,10 @@ impl Use {
     }
 
     /// What else it would be refused for when it is carried out, with the
-    /// vault under `root`: said before anyone is asked about it.
-    fn sendable(&self, workspaces: &Workspaces, root: &Path) -> Result<(), String> {
+    /// vault's `items`: said before anyone is asked about it.
+    fn sendable(&self, workspaces: &Workspaces, items: &VaultItems) -> Result<(), String> {
         match self {
-            Self::Call(call) => web_call::sendable(call, workspaces.call_reach(), root),
+            Self::Call(call) => web_call::sendable(call, workspaces.call_reach(), items),
             Self::Mail(_) | Self::Key(_) => Ok(()),
         }
     }
@@ -539,39 +543,32 @@ impl Use {
         matches!(self, Self::Call(_)) && uses.calls.spend(using, arguments)
     }
 
-    /// Carry it out for `by` with what the vault under `root` keeps: the
-    /// one place the reference becomes its secret, inside the code that
-    /// signs in. What it is used for and how its person allowed it
-    /// (`purpose`) is written down with the use.
+    /// Carry it out for `by` with what `workspace`'s vault keeps, its other stores under
+    /// `root`: the one place the reference becomes its secret, inside the code that signs in.
+    /// What it is used for and how its person allowed it (`purpose`) is written down with the
+    /// use.
     async fn carry_out(
         self,
         workspaces: &Workspaces,
-        root: &Path,
+        (workspace, root): (&str, &Path),
         by: &str,
         purpose: UsedFor<'_>,
     ) -> Result<Value, String> {
         match self {
             Self::Mail(adding) => {
-                let kept = super::person_vault::mail_with_item(
-                    workspaces.account_tester(),
-                    root,
-                    adding,
-                    by,
-                    purpose,
-                )
-                .await?;
+                let kept = workspaces
+                    .mail_with_item((workspace, root), adding, by, purpose)
+                    .await?;
                 workspaces.person_settings_changed();
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
             Self::Key(setting) => {
-                let reach = workspaces.model_reach();
-                let kept =
-                    super::person_vault::key_from_item(root, &setting, by, purpose, &reach).await?;
+                let kept = workspaces
+                    .key_from_item((workspace, root), &setting, by, purpose)
+                    .await?;
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
-            Self::Call(call) => {
-                web_call::send(workspaces.call_reach(), root, call, by, purpose).await
-            }
+            Self::Call(call) => web_call::send(workspaces, workspace, call, by, purpose).await,
         }
     }
 }
@@ -600,24 +597,26 @@ fn page_field(kind: vault_items::ItemKind) -> Result<PageField, String> {
     }
 }
 
-/// Hand out what the item `item` fills a page's field at `site` with, for
-/// `by`: a code generator's code of this moment, else what the item keeps.
-/// The use is written down first, as every use is.
-fn page_text(
-    root: &Path,
-    item: &ItemId,
-    kind: vault_items::ItemKind,
+/// Hand out what the item `item` of `workspace`'s vault fills a page's field at `site` with, for
+/// `by`: a code generator's code of this moment, else what the item keeps. The use is written
+/// down first, as every use is.
+async fn page_text(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (item, kind): (&ItemId, vault_items::ItemKind),
     site: &Place,
     by: &str,
 ) -> Result<PageText, String> {
-    let mut items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
-    match kind {
-        vault_items::ItemKind::CodeGenerator => items.code_at(item, site, by).map(PageText::Code),
-        kind => items
-            .use_as(item, kind, std::slice::from_ref(site), by)
-            .map(PageText::Item),
-    }
-    .map_err(|error| error.to_string())
+    workspaces
+        .changing_vault(workspace, |items| match kind {
+            vault_items::ItemKind::CodeGenerator => {
+                items.code_at(item, site, by).map(PageText::Code)
+            }
+            kind => items
+                .use_as(item, kind, std::slice::from_ref(site), by)
+                .map(PageText::Item),
+        })
+        .await
 }
 
 /// What a person is shown of the site a page fill names: its name, and its
@@ -961,12 +960,14 @@ impl Workspaces {
         let word = person_vault::use_word(&request.target);
         // Validate the item and places in the vault, then check the workspace's
         // `tilo-action-policy` grant instead of a bespoke per-item leave table.
-        {
-            let items = VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
-            items
-                .fits(&item, kind, &places)
-                .map_err(|error| refused(error.to_string()))?;
-        }
+        let items = self
+            .open_vault(&using.workspace)
+            .await
+            .map_err(refused)?
+            .items();
+        items
+            .fits(&item, kind, &places)
+            .map_err(|error| refused(error.to_string()))?;
         let stands = self
             .governed_permission_stands(
                 &using.person,
@@ -974,7 +975,8 @@ impl Workspaces {
             )
             .await
             .map_err(refused)?;
-        wanted.sendable(self, &root).map_err(refused)?;
+        wanted.sendable(self, &items).map_err(refused)?;
+        drop(items);
         // A leave that covers the use is what allowed it; else an allow its
         // person gave this very use, which is spent by being found.
         let allowed = if stands && wanted.takes_leave() {
@@ -991,7 +993,7 @@ impl Workspaces {
                 allowed,
             };
             return wanted
-                .carry_out(self, &root, &using.name, purpose)
+                .carry_out(self, (&using.workspace, &root), &using.name, purpose)
                 .await
                 .map(TurnUse::Done)
                 .map_err(refused);
@@ -1226,7 +1228,7 @@ impl Workspaces {
         }
         if target == person_vault::page_target() {
             return self
-                .page_answered(&root, &using, kept, answer)
+                .page_answered(&using, kept, answer)
                 .await
                 .map(Some)
                 .map_err(refused);
@@ -1248,8 +1250,10 @@ impl Workspaces {
         let always = answer == UseAnswer::Always && wanted.takes_leave();
         let scope = vault_use_scope(&using, &target, &item, &places);
         if always {
-            VaultItems::open_in(&root)
-                .map_err(|error| refused(error.to_string()))?
+            self.open_vault(&using.workspace)
+                .await
+                .map_err(refused)?
+                .items()
                 .fits(&item, kind, &places)
                 .map_err(|error| refused(error.to_string()))?;
             self.grant_always_in_workspace(&using.person, &scope)
@@ -1276,7 +1280,7 @@ impl Workspaces {
             }),
         };
         wanted
-            .carry_out(self, &root, &using.name, purpose)
+            .carry_out(self, (&using.workspace, &root), &using.name, purpose)
             .await
             .map(Some)
             .map_err(refused)
@@ -1502,7 +1506,11 @@ impl Workspaces {
             return Err(refused(not_delegated()));
         }
         let kind = {
-            let items = VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
+            let items = self
+                .open_vault(&using.workspace)
+                .await
+                .map_err(refused)?
+                .items();
             let facts = items
                 .belongs_at(&item, &site)
                 .map_err(|error| refused(error.to_string()))?;
@@ -1517,7 +1525,8 @@ impl Workspaces {
             .await
             .map_err(refused)?;
         if stands || self.once_allowed(&using, &item, &site) {
-            return page_text(&root, &item, kind, &site, &using.name)
+            return page_text(self, &using.workspace, (&item, kind), &site, &using.name)
+                .await
                 .map(TurnRelease::Released)
                 .map_err(refused);
         }
@@ -1558,7 +1567,6 @@ impl Workspaces {
     /// fill of that item at that site through.
     async fn page_answered(
         &self,
-        root: &Path,
         using: &KeepersTurn,
         kept: &OpenAsk,
         answer: UseAnswer,
@@ -1570,7 +1578,7 @@ impl Workspaces {
             return Err(not_delegated().to_owned());
         }
         {
-            let items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
+            let items = self.open_vault(&using.workspace).await?.items();
             let facts = items
                 .belongs_at(&item, &site)
                 .map_err(|error| error.to_string())?;

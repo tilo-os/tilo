@@ -133,6 +133,9 @@ pub mod person_asking;
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 mod person_vault;
+// The workspace's one vault, Passwords' document, as this device holds it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod vault;
 #[cfg(not(target_arch = "wasm32"))]
 // What a workspace keeps on the host beside its records, and who reaches it.
 #[cfg(not(target_arch = "wasm32"))]

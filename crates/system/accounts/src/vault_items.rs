@@ -1,44 +1,36 @@
-//! What a person keeps to sign in with, each item bound to where it belongs.
+//! What a workspace keeps to sign in with, each item bound to where it belongs.
 //!
 //! An item is a login, a key, a code generator's seed, an ssh key or a plain
-//! value such as a card number, sealed in the person's vault beside their
-//! account credentials, with the places it may be used at. Nothing here hands an item back to whoever asks:
-//! [`VaultItems::facts`] says what is safe to say of each (its kind, where it
-//! belongs, when it was added and when it was last used), and
-//! [`VaultItems::use_at`] hands the secret to the code that signs in, only at
-//! a place the item names, and writes that use down first: when, where and
-//! for whom, and what for where whoever takes it says so
-//! ([`VaultItems::use_for`]), never what was handed ([`VaultItems::uses`]). An [`ItemId`]
-//! names an item and is not its secret, so it may be held by code that must
-//! never read one.
+//! value such as a card number: an entry of the workspace's vault (Passwords'
+//! [`SecretItem`]) that names the places it may be used at. Nothing here hands
+//! an item back to whoever asks: [`VaultItems::facts`] says what is safe to say
+//! of each (its kind, where it belongs, when it was added and when it was last
+//! used), and [`VaultItems::use_at`] hands the secret to the code that signs
+//! in, only at a place the item names, and writes that use down with it: when,
+//! where and for whom, and what for where whoever takes it says so
+//! ([`VaultItems::use_for`]), never what was handed ([`VaultItems::uses`]). An
+//! [`ItemId`] names an item and is not its secret, so it may be held by code
+//! that must never read one.
 //!
-//! Something that works with nobody watching uses an item only where its
-//! person said it always may ([`VaultItems::let_always`]): the leave names
-//! who, for what and where, is sealed with the item, is read beside its uses
-//! ([`VaultItems::leaves`]) and is taken back by the person
-//! ([`VaultItems::take_back`]). A leave hands nothing out: every use still
-//! goes through [`VaultItems::use_as`] and is written down there.
+//! Nothing here keeps anything. Whoever holds the vault's document reads its
+//! entries into [`VaultItems::of_entries`] and writes back what changed
+//! ([`VaultItems::take_changes`]) before a released secret leaves it.
 //!
 //! A place is compared exactly: the scheme, the host and the port. An item
 //! kept for `https://example.com` is not used at `http://example.com`, at
 //! `https://login.example.com` or at any other port.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now;
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::{AccountId, Secret, SecretVault};
+use crate::{SecretItem, SecretItemKind};
 
 mod codes;
 
 pub use codes::{CODE_SECS, Code};
-
-/// The vault entries that are items, apart from account credentials, the
-/// password inventory and service credentials in the same sealed file.
-const PREFIX: &str = "tilo-vault-item:";
 
 /// The longest secret an item keeps: an ssh key fits, a file does not.
 pub const MAX_SECRET_BYTES: usize = 16 * 1024;
@@ -50,6 +42,10 @@ const MAX_PLACE_BYTES: usize = 2_048;
 const MIN_SEED_CHARS: usize = 16;
 
 mod key_in;
+#[cfg(not(target_arch = "wasm32"))]
+mod kept_before;
+#[cfg(not(target_arch = "wasm32"))]
+pub use kept_before::KeptBefore;
 
 pub use key_in::{KeyIn, MIN_SENT_KEY_BYTES};
 
@@ -264,14 +260,11 @@ impl ItemId {
         Self(uuid::Uuid::new_v4().simple().to_string())
     }
 
-    /// The id `text` spells: 32 lowercase hexadecimal digits.
+    /// The id `text` spells: an entry's id, 32 lowercase hexadecimal digits or the same
+    /// spelled as a UUID with its hyphens.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
-        (text.len() == 32
-            && text
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
-        .then(|| Self(text.to_owned()))
+        crate::is_entry_id(text).then(|| Self(text.to_owned()))
     }
 
     #[must_use]
@@ -354,7 +347,7 @@ pub struct UseRecord {
     /// person knows it under, or empty for the person themselves.
     pub by: String,
     /// What it was used for: the use's own word, as a leave names it
-    /// ([`Leave::using`]). Empty where whoever took it said none.
+    /// (the word a grant to always use it names). Empty where whoever took it said none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub using: String,
     /// What was done with it there, in one line: a web call's method and
@@ -373,7 +366,7 @@ pub struct UseRecord {
 pub enum Allowance {
     /// They were asked and allowed this one use.
     Once,
-    /// A leave of theirs covered it ([`VaultItems::let_always`]).
+    /// A grant of theirs to always allow it covered it.
     Always,
 }
 
@@ -392,7 +385,7 @@ impl Allowance {
 /// item says it, and none of it is anything the item holds.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UsedFor<'a> {
-    /// The use's own word ([`Leave::using`]).
+    /// The use's own word (the word a grant to always use it names).
     pub using: &'a str,
     /// What is done with it, in one line.
     pub what: &'a str,
@@ -405,29 +398,9 @@ pub const MAX_USES_KEPT: usize = 32;
 const MAX_BY_CHARS: usize = 120;
 const MAX_WHAT_CHARS: usize = 200;
 
-/// The leaves an item keeps: the newest of them.
-pub const MAX_LEAVES: usize = 16;
 const MAX_USING_CHARS: usize = 64;
 
-/// A leave its person gave: `by` may use the item for `using` at
-/// every one of `places` without them being asked again. It says who, for
-/// what and where, never what the item holds, and hands nothing out.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Leave {
-    /// Who may: an agent, by its id in the workspace's list of agents.
-    pub by: String,
-    /// The name its person knew it under when they gave the leave.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
-    /// What it may use the item for: the use's own word.
-    pub using: String,
-    /// The places the leave covers.
-    pub places: Vec<Place>,
-    /// When the person gave it, in seconds since the Unix epoch.
-    pub since_unix: u64,
-}
-
-/// `text` as a leave keeps a name or a word: one line, bounded.
+/// `text` as a use keeps a name or a word: one line, bounded.
 fn kept_word(text: &str, most: usize) -> String {
     text.trim()
         .chars()
@@ -436,25 +409,24 @@ fn kept_word(text: &str, most: usize) -> String {
         .collect()
 }
 
-/// One item as the vault seals it.
-#[derive(Serialize, Deserialize)]
+/// The field of an entry that says which kind of item it is, where the entry's own kind does
+/// not: a code generator, an ssh key or a plain value are all entries of another kind.
+pub const KIND_FIELD: &str = "tilo.vault.kind";
+/// The field of a key's entry that says how it rides in a request ([`KeyIn`]).
+pub const SENT_IN_FIELD: &str = "tilo.vault.sent-in";
+
+/// One entry of the vault, as an item reads it.
 struct Sealed {
     kind: ItemKind,
     places: BTreeSet<Place>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     username: String,
     /// How a key rides in a request to its service, where it is no bearer
     /// token ([`KeyIn`]).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     sent_in: String,
     secret: String,
     added_unix: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     last_used_unix: Option<u64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     uses: Vec<UseRecord>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    leaves: Vec<Leave>,
 }
 
 impl Drop for Sealed {
@@ -526,8 +498,81 @@ impl Sealed {
             added_unix: unix_now(),
             last_used_unix: None,
             uses: Vec::new(),
-            leaves: Vec::new(),
         })
+    }
+
+    /// The item an entry of the vault is, with the uses kept beside it: `None` for an entry
+    /// that belongs nowhere an item can be used (a note, a Wi-Fi network), or holds no secret.
+    fn of_entry(entry: &SecretItem, uses: &[UseRecord]) -> Option<Self> {
+        let kind = match entry.fields.get(KIND_FIELD) {
+            Some(kind) => serde_json::from_value(serde_json::Value::String(kind.clone())).ok()?,
+            None => match entry.kind {
+                SecretItemKind::Login => ItemKind::Login,
+                SecretItemKind::ApiKey => ItemKind::Key,
+                SecretItemKind::SecureNote | SecretItemKind::Wifi | SecretItemKind::Other => {
+                    return None;
+                }
+            },
+        };
+        let places: BTreeSet<Place> = entry
+            .origins
+            .iter()
+            .filter_map(|origin| Place::parse(origin).ok())
+            .collect();
+        if places.is_empty() || entry.password.is_empty() {
+            return None;
+        }
+        Some(Self {
+            kind,
+            places,
+            username: entry.username.clone(),
+            sent_in: entry.fields.get(SENT_IN_FIELD).cloned().unwrap_or_default(),
+            secret: entry.password.clone(),
+            added_unix: entry.created_unix,
+            last_used_unix: uses.iter().map(|used| used.at_unix).max(),
+            uses: uses.to_vec(),
+        })
+    }
+
+    /// The entry of the vault this item is kept as: what Passwords shows of it too.
+    fn entry(&self, id: &ItemId) -> SecretItem {
+        let kind = match self.kind {
+            ItemKind::Login => SecretItemKind::Login,
+            ItemKind::Key => SecretItemKind::ApiKey,
+            ItemKind::CodeGenerator | ItemKind::SshKey | ItemKind::Value => SecretItemKind::Other,
+        };
+        let mut fields = std::collections::BTreeMap::new();
+        if !matches!(self.kind, ItemKind::Login | ItemKind::Key) {
+            fields.insert(
+                KIND_FIELD.to_owned(),
+                serde_json::to_value(self.kind)
+                    .ok()
+                    .and_then(|kind| kind.as_str().map(str::to_owned))
+                    .unwrap_or_default(),
+            );
+        }
+        if !self.sent_in.is_empty() {
+            fields.insert(SENT_IN_FIELD.to_owned(), self.sent_in.clone());
+        }
+        let title = self
+            .places
+            .iter()
+            .next()
+            .and_then(|place| place.as_str().split_once("://"))
+            .map_or_else(String::new, |(_, rest)| rest.to_owned());
+        SecretItem {
+            id: crate::SecretId(id.as_str().to_owned()),
+            kind,
+            title,
+            username: self.username.clone(),
+            password: self.secret.clone(),
+            origins: self.places.iter().map(|place| place.as_str().to_owned()).collect(),
+            notes: String::new(),
+            fields,
+            tags: BTreeSet::new(),
+            created_unix: self.added_unix,
+            updated_unix: unix_now(),
+        }
     }
 
     /// Whether a use that needs `kind` and sends the secret to every one of
@@ -566,12 +611,7 @@ impl Sealed {
         self.uses.push(UseRecord {
             at_unix: now,
             places: places.to_vec(),
-            by: by
-                .trim()
-                .chars()
-                .filter(|character| !character.is_control())
-                .take(MAX_BY_CHARS)
-                .collect(),
+            by: kept_word(by, MAX_BY_CHARS),
             using: kept_word(purpose.using, MAX_USING_CHARS),
             what,
             allowed: purpose.allowed,
@@ -609,68 +649,107 @@ fn canonical_seed(text: &str) -> Option<String> {
     .then(|| seed.to_owned())
 }
 
-/// The items one person's vault keeps.
+/// A change [`VaultItems`] made to the vault's entries, for whoever keeps the vault to write:
+/// the entry kept, the entry forgotten, or the uses of an entry. A use changes only an entry's
+/// uses, never the entry, so a use written while a member edits the entry loses neither.
+#[derive(Clone, PartialEq, Eq)]
+pub enum VaultChange {
+    Keep(SecretItem),
+    Forget(crate::SecretId),
+    Uses(crate::SecretId, Vec<UseRecord>),
+}
+
+impl std::fmt::Debug for VaultChange {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Keep(item) => formatter.debug_tuple("Keep").field(&item.id).finish(),
+            Self::Forget(id) => formatter.debug_tuple("Forget").field(id).finish(),
+            Self::Uses(id, uses) => formatter
+                .debug_tuple("Uses")
+                .field(id)
+                .field(&uses.len())
+                .finish(),
+        }
+    }
+}
+
+/// The items of a workspace's vault: its entries, each with the uses kept beside it, read as
+/// what signs in where. Nothing here keeps anything: every change is answered as a
+/// [`VaultChange`] ([`Self::take_changes`]), which whoever read the entries writes back to the
+/// vault's document before what was released leaves it. A use that cannot be written down does
+/// not happen.
+#[derive(Default)]
 pub struct VaultItems {
-    vault: SecretVault,
+    entries: std::collections::BTreeMap<ItemId, (SecretItem, Vec<UseRecord>)>,
+    changes: Vec<VaultChange>,
 }
 
 impl VaultItems {
-    /// The items kept in the vault under the config root `root`; see
-    /// [`SecretVault::open_person`] for what each root's ownership is.
-    pub fn open_in(root: &Path) -> Result<Self, ItemError> {
-        let vault = SecretVault::open_person(Some(root));
-        if let Some(error) = vault.recovery_error() {
-            return Err(ItemError::Storage(error.to_owned()));
+    /// The items of the vault whose entries are `entries`, each with the uses kept beside it.
+    /// An entry whose id names no item is passed over: Passwords keeps entries an item never
+    /// is.
+    pub fn of_entries(entries: impl IntoIterator<Item = (SecretItem, Vec<UseRecord>)>) -> Self {
+        Self {
+            entries: entries
+                .into_iter()
+                .filter_map(|(entry, uses)| Some((ItemId::parse(&entry.id.0)?, (entry, uses))))
+                .collect(),
+            changes: Vec::new(),
         }
-        Ok(Self { vault })
     }
 
-    fn key(id: &ItemId) -> AccountId {
-        AccountId::new(format!("{PREFIX}{}", id.0))
+    /// The changes made since the items were read, oldest first, to be written to the vault.
+    pub fn take_changes(&mut self) -> Vec<VaultChange> {
+        std::mem::take(&mut self.changes)
+    }
+
+    /// Every entry with the uses beside it, as they stand after the changes made: what reads
+    /// back as these same items.
+    #[must_use]
+    pub fn kept(&self) -> Vec<(SecretItem, Vec<UseRecord>)> {
+        self.entries.values().cloned().collect()
     }
 
     fn sealed(&self, id: &ItemId) -> Result<Sealed, ItemError> {
-        let entry = self.vault.get(&Self::key(id)).ok_or(ItemError::NotFound)?;
-        let json = Zeroizing::new(entry.token.ok_or(ItemError::Damaged)?);
-        serde_json::from_str(&json).map_err(|_| ItemError::Damaged)
+        let (entry, uses) = self.entries.get(id).ok_or(ItemError::NotFound)?;
+        Sealed::of_entry(entry, uses).ok_or(ItemError::NotFound)
     }
 
-    fn write(&mut self, id: &ItemId, sealed: &Sealed) -> Result<(), ItemError> {
-        let payload =
-            Zeroizing::new(serde_json::to_string(sealed).map_err(|_| ItemError::Damaged)?);
-        let key = Self::key(id);
-        let previous = self.vault.get(&key);
-        self.vault.put(
-            &key,
-            &Secret {
-                password: String::new(),
-                token: Some(payload.to_string()),
-            },
-        );
-        if let Err(error) = self.vault.try_save() {
-            match previous {
-                Some(previous) => self.vault.put(&key, &previous),
-                None => {
-                    self.vault.remove(&key);
-                }
+    /// Keep `sealed` as the entry `id` names, whole.
+    fn write(&mut self, id: &ItemId, sealed: &Sealed) {
+        let mut entry = sealed.entry(id);
+        if let Some((kept, _)) = self.entries.get(id) {
+            // What Passwords keeps of the entry besides the item stays.
+            entry.title.clone_from(&kept.title);
+            entry.notes.clone_from(&kept.notes);
+            entry.tags.clone_from(&kept.tags);
+            for (name, value) in &kept.fields {
+                entry.fields.entry(name.clone()).or_insert_with(|| value.clone());
             }
-            return Err(ItemError::Storage(error));
         }
-        Ok(())
+        self.changes.push(VaultChange::Keep(entry.clone()));
+        self.entries.insert(id.clone(), (entry, sealed.uses.clone()));
+    }
+
+    /// Write down `sealed`'s uses, leaving its entry as it is.
+    fn write_uses(&mut self, id: &ItemId, sealed: &Sealed) {
+        if let Some((_, uses)) = self.entries.get_mut(id) {
+            uses.clone_from(&sealed.uses);
+        }
+        self.changes.push(VaultChange::Uses(
+            crate::SecretId(id.as_str().to_owned()),
+            sealed.uses.clone(),
+        ));
     }
 
     /// What is safe to say of every item, oldest first.
     #[must_use]
     pub fn facts(&self) -> Vec<ItemFacts> {
         let mut facts: Vec<ItemFacts> = self
-            .vault
-            .entries_with_prefix(PREFIX)
-            .into_iter()
-            .filter_map(|(key, entry)| {
-                let id = ItemId::parse(key.strip_prefix(PREFIX)?)?;
-                let json = Zeroizing::new(entry.token?);
-                let sealed: Sealed = serde_json::from_str(&json).ok()?;
-                Some(sealed.facts(id))
+            .entries
+            .iter()
+            .filter_map(|(id, (entry, uses))| {
+                Some(Sealed::of_entry(entry, uses)?.facts(id.clone()))
             })
             .collect();
         facts.sort_by(|a, b| {
@@ -685,7 +764,7 @@ impl VaultItems {
     pub fn add(&mut self, item: NewItem) -> Result<ItemFacts, ItemError> {
         let sealed = Sealed::checked(item)?;
         let id = ItemId::new();
-        self.write(&id, &sealed)?;
+        self.write(&id, &sealed);
         Ok(sealed.facts(id))
     }
 
@@ -700,30 +779,26 @@ impl VaultItems {
         let mut sealed = Sealed::checked(item)?;
         sealed.sent_in = sent_in.kept();
         let id = ItemId::new();
-        self.write(&id, &sealed)?;
+        self.write(&id, &sealed);
         Ok(sealed.facts(id))
     }
 
     /// Forget the item `id` names, answering whether one was kept.
-    pub fn remove(&mut self, id: &ItemId) -> Result<bool, ItemError> {
-        let key = Self::key(id);
-        let Some(previous) = self.vault.get(&key) else {
-            return Ok(false);
-        };
-        self.vault.remove(&key);
-        if let Err(error) = self.vault.try_save() {
-            self.vault.put(&key, &previous);
-            return Err(ItemError::Storage(error));
+    pub fn remove(&mut self, id: &ItemId) -> bool {
+        if self.entries.remove(id).is_none() {
+            return false;
         }
-        Ok(true)
+        self.changes
+            .push(VaultChange::Forget(crate::SecretId(id.as_str().to_owned())));
+        true
     }
 
     /// Hand the item `id` names to the code that signs in at `place`, for
     /// `by` ([`UseRecord::by`]).
     ///
     /// Refused anywhere the item does not belong, and for a code generator,
-    /// whose seed never leaves. The use is written down before the secret is
-    /// handed out: a use that cannot be recorded does not happen.
+    /// whose seed never leaves. The use is written down with the release: whoever takes the
+    /// secret writes [`Self::take_changes`] first.
     pub fn use_at(&mut self, id: &ItemId, place: &Place, by: &str) -> Result<Released, ItemError> {
         self.release(
             id,
@@ -772,7 +847,7 @@ impl VaultItems {
         let mut sealed = self.sealed(id)?;
         sealed.allows(kind, places)?;
         sealed.used_for(unix_now(), places, by, purpose);
-        self.write(id, &sealed)?;
+        self.write_uses(id, &sealed);
         Ok(Released {
             kind: sealed.kind,
             username: std::mem::take(&mut sealed.username),
@@ -831,103 +906,13 @@ impl VaultItems {
         }
         Ok(sealed.facts(id.clone()))
     }
-
-    /// Whether `by` may use the item `id` names for `using` at every one of
-    /// `places` without its person being asked: one leave of theirs
-    /// ([`Self::let_always`]) names that agent and that use and covers all
-    /// of those places.
-    pub fn stands(
-        &self,
-        id: &ItemId,
-        places: &[Place],
-        by: &str,
-        using: &str,
-    ) -> Result<bool, ItemError> {
-        let sealed = self.sealed(id)?;
-        Ok(!places.is_empty()
-            && !by.is_empty()
-            && sealed.leaves.iter().any(|leave| {
-                leave.by == by
-                    && leave.using == using
-                    && places.iter().all(|place| leave.places.contains(place))
-            }))
-    }
-
-    /// Keep the person's leave: the agent `by`, which they know as
-    /// `name`, may use the item `id` names for `using` at every one of
-    /// `places` without being asked again. Only places the item belongs to
-    /// are covered, and the leave hands nothing out.
-    pub fn let_always(
-        &mut self,
-        id: &ItemId,
-        places: &[Place],
-        (by, name): (&str, &str),
-        using: &str,
-    ) -> Result<(), ItemError> {
-        let mut sealed = self.sealed(id)?;
-        if places.is_empty() || !places.iter().all(|place| sealed.places.contains(place)) {
-            return Err(ItemError::WrongPlace);
-        }
-        let by = kept_word(by, MAX_BY_CHARS);
-        let using = kept_word(using, MAX_USING_CHARS);
-        if by.is_empty() || using.is_empty() {
-            return Err(ItemError::Invalid(
-                "A leave names who may use the item and for what",
-            ));
-        }
-        let mut covered = places.to_vec();
-        covered.sort();
-        covered.dedup();
-        sealed
-            .leaves
-            .retain(|leave| !(leave.by == by && leave.using == using && leave.places == covered));
-        sealed.leaves.push(Leave {
-            by,
-            name: kept_word(name, MAX_BY_CHARS),
-            using,
-            places: covered,
-            since_unix: unix_now(),
-        });
-        let excess = sealed.leaves.len().saturating_sub(MAX_LEAVES);
-        if excess > 0 {
-            sealed.leaves = sealed.leaves.split_off(excess);
-        }
-        self.write(id, &sealed)
-    }
-
-    /// The leaves the item `id` names keeps, oldest first.
-    pub fn leaves(&self, id: &ItemId) -> Result<Vec<Leave>, ItemError> {
-        let mut sealed = self.sealed(id)?;
-        Ok(std::mem::take(&mut sealed.leaves))
-    }
-
-    /// Take back the leaves of the item `id` names: every one, or
-    /// only those of the agent `by`. Answers how many were taken back; from
-    /// then on that agent's next use asks its person again.
-    pub fn take_back(&mut self, id: &ItemId, by: Option<&str>) -> Result<usize, ItemError> {
-        let mut sealed = self.sealed(id)?;
-        let before = sealed.leaves.len();
-        sealed
-            .leaves
-            .retain(|leave| by.is_some_and(|by| leave.by != by));
-        let taken = before.saturating_sub(sealed.leaves.len());
-        if taken > 0 {
-            self.write(id, &sealed)?;
-        }
-        Ok(taken)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     const PASSWORD: &str = "correct horse battery staple";
-
-    fn root() -> PathBuf {
-        std::env::temp_dir().join(format!("accounts-vault-items-{}", uuid::Uuid::new_v4()))
-    }
 
     fn place(text: &str) -> Place {
         Place::parse(text).unwrap()
@@ -940,28 +925,6 @@ mod tests {
             username: "ada@example.test".into(),
             secret: Zeroizing::new(PASSWORD.into()),
         }
-    }
-
-    /// Every file under `dir` whose bytes hold `needle`.
-    fn files_holding(dir: &Path, needle: &[u8]) -> Vec<PathBuf> {
-        let mut holding = Vec::new();
-        let mut waiting = vec![dir.to_path_buf()];
-        while let Some(next) = waiting.pop() {
-            for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
-                let path = entry.path();
-                match std::fs::metadata(&path) {
-                    Ok(metadata) if metadata.is_dir() => waiting.push(path),
-                    Ok(metadata) if metadata.is_file() => {
-                        let bytes = std::fs::read(&path).unwrap();
-                        if bytes.windows(needle.len()).any(|window| window == needle) {
-                            holding.push(path);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        holding
     }
 
     /// A place has one spelling, whatever was typed: a page's address names
@@ -1032,8 +995,7 @@ mod tests {
     /// down, and a refused use leaves no trace of having happened.
     #[test]
     fn an_item_is_used_only_where_it_belongs() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
+        let mut items = VaultItems::default();
         let kept = items
             .add(login(&["https://www.linkedin.com/login"]))
             .unwrap();
@@ -1056,7 +1018,7 @@ mod tests {
             );
         }
         assert_eq!(
-            VaultItems::open_in(&root).unwrap().facts()[0].last_used_unix,
+            VaultItems::of_entries(items.kept()).facts()[0].last_used_unix,
             None,
             "a refused use is not a use"
         );
@@ -1072,7 +1034,7 @@ mod tests {
         assert_eq!(released.username, "ada@example.test");
         assert_eq!(released.secret.as_str(), PASSWORD);
         // The use is on disk, read by another opening of the same vault.
-        let reopened = VaultItems::open_in(&root).unwrap().facts();
+        let reopened = VaultItems::of_entries(items.kept()).facts();
         assert_eq!(reopened.len(), 1);
         assert!(
             reopened[0]
@@ -1089,24 +1051,22 @@ mod tests {
                 .err(),
             Some(ItemError::NotFound)
         );
-        assert!(items.remove(&kept.id).unwrap());
-        assert!(!items.remove(&kept.id).unwrap());
+        assert!(items.remove(&kept.id));
+        assert!(!items.remove(&kept.id));
         assert_eq!(
             items
                 .use_at(&kept.id, &place("https://www.linkedin.com"), "Helper")
                 .err(),
             Some(ItemError::NotFound)
         );
-        assert!(VaultItems::open_in(&root).unwrap().facts().is_empty());
-        std::fs::remove_dir_all(root).unwrap();
+        assert!(VaultItems::of_entries(items.kept()).facts().is_empty());
     }
 
-    /// What is said of an item carries neither its secret nor its name, in
-    /// a listing, in a debug print or in any file in the clear, and the
-    /// vault's other entries are no items.
+    /// What is said of an item carries neither its secret nor its name, in a listing or in a
+    /// debug print; the vault's other entries are no items; and a use changes the entry's uses
+    /// alone, never the entry a member may be editing.
     #[test]
     fn what_is_said_of_an_item_is_only_what_is_safe() {
-        let root = root();
         let adding = login(&[
             "imap://mail.example.test:993",
             "smtp://mail.example.test:465",
@@ -1117,20 +1077,15 @@ mod tests {
             "{printed}"
         );
 
-        // An account credential and a password-inventory item share the
-        // sealed file, and are not items.
-        let mut vault = SecretVault::open_in(&root);
-        vault.put(
-            &AccountId::new("ada@example.test"),
-            &Secret::password("an account's own"),
-        );
-        vault.try_save().unwrap();
-        let mut inventory = crate::SecretStore::open_in(&root);
-        inventory
-            .put(&mut crate::SecretItem::login("Bank", "ada", "inventory"))
-            .unwrap();
+        // A note and a Wi-Fi network of Passwords are entries, and not items.
+        let mut note = crate::SecretItem::login("Bank", "ada", "inventory");
+        note.kind = SecretItemKind::SecureNote;
+        note.origins.insert("https://bank.example".into());
+        let mut wifi = crate::SecretItem::login("Home", "", "wifi-password");
+        wifi.kind = SecretItemKind::Wifi;
+        let mut items = VaultItems::of_entries([(note, Vec::new()), (wifi, Vec::new())]);
+        assert!(items.facts().is_empty());
 
-        let mut items = VaultItems::open_in(&root).unwrap();
         let kept = items.add(adding).unwrap();
         let facts = items.facts();
         assert_eq!(facts, std::slice::from_ref(&kept));
@@ -1146,6 +1101,16 @@ mod tests {
                 place("smtp://mail.example.test:465")
             ]
         );
+        let changes = items.take_changes();
+        let [VaultChange::Keep(entry)] = changes.as_slice() else {
+            panic!("an added item is one kept entry: {changes:?}");
+        };
+        assert_eq!(entry.id.0, kept.id.as_str());
+        assert_eq!(entry.kind, SecretItemKind::Login);
+        assert_eq!(entry.username, "ada@example.test");
+        assert_eq!(entry.password, PASSWORD);
+        let printed = format!("{changes:?}");
+        assert!(!printed.contains(PASSWORD), "{printed}");
 
         let released = items
             .use_at(&kept.id, &place("smtp://mail.example.test:465"), "Helper")
@@ -1155,24 +1120,15 @@ mod tests {
             !printed.contains(PASSWORD) && !printed.contains("ada@"),
             "{printed}"
         );
-
+        let changes = items.take_changes();
         assert!(
-            crate::vault_dir_in(&root).join("vault.enc").exists(),
-            "the items are in the person's one sealed vault"
+            matches!(changes.as_slice(), [VaultChange::Uses(id, uses)] if id.0 == kept.id.as_str() && uses.len() == 1),
+            "a use is written down as the entry's uses alone: {changes:?}"
         );
-        for needle in [PASSWORD, "ada@example.test", "mail.example.test"] {
-            let clear = files_holding(&root, needle.as_bytes());
-            assert!(clear.is_empty(), "{needle} in the clear: {clear:?}");
-        }
-        // Adding an item took nothing of the vault's other entries.
-        assert_eq!(
-            SecretVault::open_in(&root)
-                .get(&AccountId::new("ada@example.test"))
-                .map(|secret| secret.password),
-            Some("an account's own".to_owned())
-        );
-        assert_eq!(crate::SecretStore::open_in(&root).list().len(), 1);
-        std::fs::remove_dir_all(root).unwrap();
+        // The entries read back as the same items, with the use.
+        let reread = VaultItems::of_entries(items.kept());
+        assert_eq!(reread.facts().len(), 1);
+        assert!(reread.facts()[0].last_used_unix.is_some());
     }
 
     const SEED: &str = "jbsw y3dp-ehpk 3pxp";
@@ -1192,8 +1148,7 @@ mod tests {
     /// for a code generator, whose seed is never handed out.
     #[test]
     fn each_kind_is_kept_as_what_it_is() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
+        let mut items = VaultItems::default();
         let generator = items
             .add(item(
                 ItemKind::CodeGenerator,
@@ -1208,7 +1163,7 @@ mod tests {
             Some(ItemError::NeverReleased)
         );
         assert_eq!(
-            VaultItems::open_in(&root).unwrap().facts()[0].last_used_unix,
+            VaultItems::of_entries(items.kept()).facts()[0].last_used_unix,
             None
         );
         for (kind, belongs, used_at, secret) in [
@@ -1244,15 +1199,13 @@ mod tests {
             );
         }
         assert_eq!(items.facts().len(), 4);
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// What is not an item of its kind, or belongs where its kind does not,
     /// is refused before anything is kept.
     #[test]
     fn what_is_not_an_item_of_its_kind_is_refused() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
+        let mut items = VaultItems::default();
         let nowhere = NewItem {
             places: Vec::new(),
             ..login(&[])
@@ -1298,10 +1251,7 @@ mod tests {
             );
         }
         assert!(items.facts().is_empty(), "a refused item is not kept");
-        assert!(
-            !crate::vault_dir_in(&root).join("vault.enc").exists(),
-            "a refused item writes nothing"
-        );
+        assert!(items.take_changes().is_empty(), "a refused item writes nothing");
     }
 
     /// A use that needs one kind at several places is refused unless the
@@ -1309,8 +1259,7 @@ mod tests {
     /// was handed out for is remembered without what was handed.
     #[test]
     fn a_use_names_its_kind_and_every_place_and_is_remembered() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
+        let mut items = VaultItems::default();
         let both = [
             place("imap://mail.example.test:993"),
             place("smtp://mail.example.test:465"),
@@ -1345,7 +1294,7 @@ mod tests {
             .unwrap();
         assert_eq!(released.secret.as_str(), PASSWORD);
         items.use_at(&kept.id, &both[0], "").unwrap();
-        let uses = VaultItems::open_in(&root).unwrap().uses(&kept.id).unwrap();
+        let uses = VaultItems::of_entries(items.kept()).uses(&kept.id).unwrap();
         assert_eq!(uses.len(), 2);
         assert_eq!(uses[0].places, both);
         assert_eq!(uses[0].by, "Helper");
@@ -1364,7 +1313,6 @@ mod tests {
         assert!(uses.iter().all(|used| used.places == [both[1].clone()]));
         let unknown = ItemId::parse("0123456789abcdef0123456789abcdef").unwrap();
         assert_eq!(items.uses(&unknown).err(), Some(ItemError::NotFound));
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// Whether an item fits a use is said without using it: what a use
@@ -1376,8 +1324,7 @@ mod tests {
     /// address is written, and a line that holds the secret is not kept.
     #[test]
     fn what_an_item_was_used_for_is_written_down_without_its_secret_or_a_query() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
+        let mut items = VaultItems::default();
         let service = [place("https://api.example.test")];
         let kept = items.add(login(&["https://api.example.test"])).unwrap();
         let call = UsedFor {
@@ -1403,7 +1350,7 @@ mod tests {
             .unwrap();
 
         // Read again from the sealed file.
-        let uses = VaultItems::open_in(&root).unwrap().uses(&kept.id).unwrap();
+        let uses = VaultItems::of_entries(items.kept()).uses(&kept.id).unwrap();
         assert_eq!(uses.len(), 3);
         assert_eq!(uses[0].using, "tilo.vault/web-call");
         assert_eq!(uses[0].what, "GET /v1/balance");
@@ -1453,13 +1400,11 @@ mod tests {
         let uses = items.uses(&kept.id).unwrap();
         assert_eq!(uses[3].using.len(), MAX_USING_CHARS);
         assert_eq!(uses[3].what.len(), MAX_WHAT_CHARS);
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn whether_an_item_fits_a_use_is_said_without_using_it() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
+        let mut items = VaultItems::default();
         let both = [
             place("imap://mail.example.test:993"),
             place("smtp://mail.example.test:465"),
@@ -1510,163 +1455,13 @@ mod tests {
                 .iter()
                 .all(|facts| facts.last_used_unix.is_none())
         );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    /// A leave is for one agent, one use and the places it names.
-    /// It covers no place the item does not belong to, is kept once however
-    /// often it is given, stays with the item across a reopening, and hands
-    /// nothing out.
-    #[test]
-    fn a_leave_is_for_one_agent_one_use_and_the_places_it_names() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
-        let both = [
-            place("imap://mail.example.test:993"),
-            place("smtp://mail.example.test:465"),
-        ];
-        let elsewhere = place("imap://mail.attacker.example:993");
-        let kept = items
-            .add(login(&[
-                "imap://mail.example.test:993",
-                "smtp://mail.example.test:465",
-            ]))
-            .unwrap();
-        let scout = ("scout", "Scout");
-        assert!(!items.stands(&kept.id, &both, "scout", "add-mail").unwrap());
-
-        // A leave covers only where the item belongs, and names who and
-        // for what.
-        for (places, who, using) in [
-            (std::slice::from_ref(&elsewhere), scout, "add-mail"),
-            (&[][..], scout, "add-mail"),
-            (&both[..], ("", ""), "add-mail"),
-            (&both[..], scout, " "),
-        ] {
-            assert!(
-                items.let_always(&kept.id, places, who, using).is_err(),
-                "{places:?} {who:?} {using:?}"
-            );
-        }
-        assert!(items.leaves(&kept.id).unwrap().is_empty());
-
-        items
-            .let_always(&kept.id, &both, scout, "add-mail")
-            .unwrap();
-        // Given twice it is kept once.
-        let turned = [both[1].clone(), both[0].clone()];
-        items
-            .let_always(&kept.id, &turned, scout, "add-mail")
-            .unwrap();
-        let items = VaultItems::open_in(&root).unwrap();
-        let leaves = items.leaves(&kept.id).unwrap();
-        assert_eq!(leaves.len(), 1, "{leaves:?}");
-        assert_eq!(leaves[0].by, "scout");
-        assert_eq!(leaves[0].name, "Scout");
-        assert_eq!(leaves[0].using, "add-mail");
-        assert_eq!(leaves[0].places, both);
-        let said = format!("{leaves:?}");
-        assert!(!said.contains(PASSWORD) && !said.contains("ada@"), "{said}");
-
-        assert!(items.stands(&kept.id, &both, "scout", "add-mail").unwrap());
-        assert!(
-            items
-                .stands(&kept.id, &both[..1], "scout", "add-mail")
-                .unwrap(),
-            "a leave for both servers covers one of them"
-        );
-        for (places, by, using) in [
-            (&both[..], "scout-two", "add-mail"),
-            (&both[..], "Scout", "add-mail"),
-            (&both[..], "scout", "fill-page"),
-            (&both[..], "", "add-mail"),
-            (&[][..], "scout", "add-mail"),
-            (std::slice::from_ref(&elsewhere), "scout", "add-mail"),
-        ] {
-            assert!(
-                !items.stands(&kept.id, places, by, using).unwrap(),
-                "{places:?} {by} {using}"
-            );
-        }
-        // A leave is not a use: nothing was handed out for it.
-        assert!(items.uses(&kept.id).unwrap().is_empty());
-        assert_eq!(items.facts()[0].last_used_unix, None);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    /// Its person takes a leave back, one agent's or every one. An item
-    /// that is forgotten keeps none, and an item keeps its newest leaves,
-    /// not all it ever had.
-    #[test]
-    fn a_leave_is_taken_back_and_goes_with_its_item() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
-        let both = [
-            place("imap://mail.example.test:993"),
-            place("smtp://mail.example.test:465"),
-        ];
-        let kept = items
-            .add(login(&[
-                "imap://mail.example.test:993",
-                "smtp://mail.example.test:465",
-            ]))
-            .unwrap();
-        let scout = ("scout", "Scout");
-        items
-            .let_always(&kept.id, &both, scout, "add-mail")
-            .unwrap();
-
-        // Another agent's leaves, which are none, then this one's.
-        assert_eq!(items.take_back(&kept.id, Some("scout-two")).unwrap(), 0);
-        assert!(items.stands(&kept.id, &both, "scout", "add-mail").unwrap());
-        assert_eq!(items.take_back(&kept.id, Some("scout")).unwrap(), 1);
-        assert!(!items.stands(&kept.id, &both, "scout", "add-mail").unwrap());
-        assert_eq!(items.take_back(&kept.id, None).unwrap(), 0);
-
-        // Every leave of the item at once.
-        items
-            .let_always(&kept.id, &both, scout, "add-mail")
-            .unwrap();
-        items
-            .let_always(&kept.id, &both[..1], ("other", "Other"), "add-mail")
-            .unwrap();
-        assert_eq!(items.take_back(&kept.id, None).unwrap(), 2);
-        assert!(items.leaves(&kept.id).unwrap().is_empty());
-
-        // An item that is forgotten keeps none.
-        items
-            .let_always(&kept.id, &both, scout, "add-mail")
-            .unwrap();
-        assert!(items.remove(&kept.id).unwrap());
-        assert_eq!(
-            items.stands(&kept.id, &both, "scout", "add-mail").err(),
-            Some(ItemError::NotFound)
-        );
-        assert_eq!(
-            items.let_always(&kept.id, &both, scout, "add-mail").err(),
-            Some(ItemError::NotFound)
-        );
-
-        // An item keeps its newest leaves.
-        let many = items.add(login(&["imap://mail.example.test:993"])).unwrap();
-        for agent in 0..(MAX_LEAVES + 4) {
-            let name = format!("agent-{agent}");
-            items
-                .let_always(&many.id, &both[..1], (&name, ""), "add-mail")
-                .unwrap();
-        }
-        let leaves = items.leaves(&many.id).unwrap();
-        assert_eq!(leaves.len(), MAX_LEAVES);
-        assert_eq!(leaves[0].by, "agent-4");
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// What an item is is said only where it belongs, and saying it uses
     /// nothing.
     #[test]
     fn what_an_item_is_is_said_only_where_it_belongs() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
+        let mut items = VaultItems::default();
         let kept = items.add(login(&["https://example.com"])).unwrap();
         let said = items
             .belongs_at(&kept.id, &place("https://example.com"))
@@ -1692,6 +1487,5 @@ mod tests {
             Some(ItemError::NotFound)
         );
         assert!(items.uses(&kept.id).unwrap().is_empty());
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

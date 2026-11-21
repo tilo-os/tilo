@@ -41,8 +41,29 @@ pub struct SecretId(pub String);
 const MESSAGING_PROFILE_SCOPE: &str = "tilo.messaging.profile.scope";
 
 impl SecretId {
+    /// A new entry's id: random, and spelled as a reference to a vault item names it
+    /// ([`is_entry_id`]).
     pub fn new() -> Self {
-        Self(uuid::Uuid::new_v4().to_string())
+        Self(uuid::Uuid::new_v4().simple().to_string())
+    }
+}
+
+/// Whether `text` is an entry's id: 32 lowercase hexadecimal digits, or an older entry's, the
+/// same spelled as a UUID with its four hyphens. What names a vault entry from outside it (a
+/// reference to a vault item) names it by this id.
+#[must_use]
+pub fn is_entry_id(text: &str) -> bool {
+    let hex = |part: &str| {
+        part.bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    match text.len() {
+        32 => hex(text),
+        36 => {
+            let parts: Vec<&str> = text.split('-').collect();
+            parts.iter().map(|part| part.len()).eq([8, 4, 4, 4, 12]) && parts.iter().all(|part| hex(part))
+        }
+        _ => false,
     }
 }
 

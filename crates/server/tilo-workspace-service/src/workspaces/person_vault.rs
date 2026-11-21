@@ -2,19 +2,18 @@
 //! on: logins, keys, code generators, ssh keys and plain values such as a
 //! card number, each bound to where it belongs.
 //!
-//! The items are sealed in the vault that already keeps the workspace's mail
-//! sign-ins and provider keys ([`super::person_settings`]), under the
-//! workspace's own key, and they are reached as the workspace's policy says
+//! The items are entries of the workspace's one vault, Passwords' vault
+//! document ([`super::vault`]), which this device holds and opens with the
+//! document's own keys, and they are reached as the workspace's policy says
 //! at Passwords' vault ([`Store::VAULT`]): a member through their role, an
 //! agent or a key through a grant there. A Mail grant opens no vault.
 //!
 //! A secret travels in and never back. A listing says what is safe to say
 //! of an item and no request answers more.
 //!
-//! The entries of the workspace's Passwords are kept in the same vault, and
-//! they are the exception: whoever reads the vault reads them, secrets
-//! included, from any device, a browser page as much as a laptop
-//! ([`person_vault::ENTRIES`]).
+//! The entries themselves are the exception: whoever reads the vault reads
+//! them, secrets included, from any device, a browser page as much as a
+//! laptop ([`person_vault::ENTRIES`]).
 //!
 //! What uses an item names it by its reference and carries no secret, so an
 //! agent whose grants reach both the vault and what it uses the item for may
@@ -34,11 +33,9 @@
 //! agent does either.
 
 use std::path::Path;
-use std::sync::Arc;
 
-use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultItems};
+use accounts::vault_items::{self, ItemFacts, NewItem, Place, UsedFor, VaultChange, VaultItems};
 use serde_json::Value;
-use tilo_account_probe::AccountTester;
 use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::person_accounts::{self, AddMailAccount, AddMailWithItem, MailAccount};
 use tilo_actions::remote::person_models::{self, ProviderView, SetKey, SetKeyFromItem};
@@ -77,7 +74,6 @@ impl Workspaces {
         else {
             return Ok(None);
         };
-        let root = self.workspace_root(workspace);
         let adding = AddItem {
             kind: asked.kind,
             belongs_to: asked.belongs_to,
@@ -85,10 +81,9 @@ impl Workspaces {
             sent_in: asked.sent_in,
             secret: typed.expose().to_owned(),
         };
-        let kept = tokio::task::spawn_blocking(move || add(&root, adding))
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.to_string())?;
+        let kept = self
+            .changing_vault(workspace, |items| add(items, adding))
+            .await?;
         Ok(Some(kept.reference))
     }
 
@@ -118,39 +113,50 @@ impl Workspaces {
                 effect,
             )
             .await?;
-        let root = self.workspace_root(&reach.workspace.to_string());
+        let workspace = reach.workspace.to_string();
         match action {
-            person_vault::LIST => answer(kept(&root)),
+            person_vault::LIST => {
+                let opened = self.open_vault(&workspace).await.map_err(refused)?;
+                answer(kept(&opened.items()))
+            }
             person_vault::ADD => {
                 let adding: AddItem = argument(
                     request,
                     "an item to keep names its kind, where it belongs and its secret",
                 )?;
-                answer(add(&root, adding))
+                said(
+                    self.changing_vault(&workspace, |items| add(items, adding))
+                        .await,
+                )
             }
             person_vault::REMOVE => {
                 let removing: RemoveItem =
                     argument(request, "an item to forget is named by its reference")?;
-                answer(remove(&root, &removing.item))
+                said(
+                    self.changing_vault(&workspace, |items| remove(items, &removing.item))
+                        .await,
+                )
             }
-            person_vault::ENTRIES => said(entries(&root)),
+            person_vault::ENTRIES => said(self.vault_entries(&workspace).await),
             person_vault::KEEP_ENTRY => {
                 let keeping: KeepEntry =
                     argument(request, "an entry to keep is an entry of Passwords")?;
-                said(keep_entry(&root, keeping))
+                said(self.keep_entry(&workspace, keeping).await)
             }
             person_vault::FORGET_ENTRY => {
                 let forgetting: ForgetEntry =
                     argument(request, "an entry to forget is named by its id")?;
-                said(forget_entry(&root, forgetting))
+                said(self.forget_entry(&workspace, forgetting).await)
             }
             person_vault::USES => {
                 let of: UsesOf = argument(request, "an item's uses are read by its reference")?;
-                let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
+                let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
                 let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
-                let mut history = uses(&root, &of.item).map_err(|err| refused(err.to_string()))?;
+                let opened = self.open_vault(&workspace).await.map_err(refused)?;
+                let mut history =
+                    uses(&opened.items(), &of.item).map_err(|err| refused(err.to_string()))?;
                 history.always = self
-                    .vault_approvals(workspace, cert, &of.item, None)
+                    .vault_approvals(workspace_id, cert, &of.item, None)
                     .await?;
                 answer(Ok(history))
             }
@@ -159,17 +165,59 @@ impl Workspaces {
                     request,
                     "what an agent may always use is taken back by the item's reference",
                 )?;
-                let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
+                let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
                 let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
+                let opened = self.open_vault(&workspace).await.map_err(refused)?;
                 let mut history =
-                    uses(&root, &taking.item).map_err(|err| refused(err.to_string()))?;
+                    uses(&opened.items(), &taking.item).map_err(|err| refused(err.to_string()))?;
                 history.always = self
-                    .vault_approvals(workspace, cert, &taking.item, Some(&taking))
+                    .vault_approvals(workspace_id, cert, &taking.item, Some(&taking))
                     .await?;
                 answer(Ok(history))
             }
             _ => Err(ActionCallError::UnknownAction),
         }
+    }
+
+    /// Every entry of `workspace`'s vault, secrets included.
+    async fn vault_entries(&self, workspace: &str) -> Result<Entries, String> {
+        let opened = self.open_vault(workspace).await?;
+        entries_of(opened.entries().iter().map(|(entry, _)| entry))
+    }
+
+    /// Keep `keeping`'s entry, a new one or the edit of one kept, answering every entry then.
+    /// What was handed is never echoed in a refusal.
+    async fn keep_entry(&self, workspace: &str, keeping: KeepEntry) -> Result<Entries, String> {
+        let mut entry: accounts::SecretItem = serde_json::from_value(keeping.entry)
+            .map_err(|_| "That is no entry of Passwords".to_owned())?;
+        if !accounts::is_entry_id(&entry.id.0) {
+            return Err("That is no entry of Passwords".to_owned());
+        }
+        entry.updated_unix = tilo_clock::unix_now();
+        let opened = self.open_vault(workspace).await?;
+        self.write_vault(&opened, vec![VaultChange::Keep(entry)])
+            .await
+            .map_err(|error| format!("The entry could not be kept: {error}"))?;
+        self.vault_entries(workspace).await
+    }
+
+    /// Forget the entry `forgetting` names, answering every entry left. One already gone is no
+    /// refusal: another device may have forgotten it first.
+    async fn forget_entry(
+        &self,
+        workspace: &str,
+        forgetting: ForgetEntry,
+    ) -> Result<Entries, String> {
+        let opened = self.open_vault(workspace).await?;
+        if opened.entry(&forgetting.id).is_some() {
+            self.write_vault(
+                &opened,
+                vec![VaultChange::Forget(accounts::SecretId(forgetting.id))],
+            )
+            .await
+            .map_err(|error| format!("The entry could not be forgotten: {error}"))?;
+        }
+        self.vault_entries(workspace).await
     }
 
     /// Read a vault item's grants, and revoke those the person chose to take back.
@@ -269,7 +317,8 @@ impl Workspaces {
         self.reaching_allowed(asked, Store::VAULT, action, ActionKind::Undoable)
             .await?;
         let by = reach.by();
-        let root = self.workspace_root(&reach.workspace.to_string());
+        let workspace = reach.workspace.to_string();
+        let root = self.workspace_root(&workspace);
         // What the item is used for is written down with the use. How it
         // was allowed is not the vault's to say here: nothing of it asked.
         let word = person_vault::use_word(target);
@@ -283,7 +332,9 @@ impl Workspaces {
                     request,
                     "a mail account to add names its address, its servers and the vault item that is its password",
                 )?;
-                let kept = mail_with_item(self.account_tester(), &root, adding, &by, purpose).await;
+                let kept = self
+                    .mail_with_item((&workspace, &root), adding, &by, purpose)
+                    .await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -294,7 +345,10 @@ impl Workspaces {
                     request,
                     "a key to keep names its provider and the vault item that is the key",
                 )?;
-                said(key_from_item(&root, &setting, &by, purpose, &self.model_reach()).await)
+                said(
+                    self.key_from_item((&workspace, &root), &setting, &by, purpose)
+                        .await,
+                )
             }
             (person_vault::PROVIDER, person_vault::ASK) => {
                 let asked: AskForItem = argument(
@@ -389,10 +443,10 @@ fn view(facts: ItemFacts) -> Result<ItemView, vault_items::ItemError> {
     })
 }
 
-/// What is safe to say of every item the vault under `root` keeps.
-fn kept(root: &Path) -> Result<KeptItems, vault_items::ItemError> {
+/// What is safe to say of every item `items` holds.
+fn kept(items: &VaultItems) -> Result<KeptItems, vault_items::ItemError> {
     Ok(KeptItems {
-        items: VaultItems::open_in(root)?
+        items: items
             .facts()
             .into_iter()
             .map(view)
@@ -400,7 +454,7 @@ fn kept(root: &Path) -> Result<KeptItems, vault_items::ItemError> {
     })
 }
 
-fn add(root: &Path, adding: AddItem) -> Result<ItemView, vault_items::ItemError> {
+fn add(items: &mut VaultItems, adding: AddItem) -> Result<ItemView, vault_items::ItemError> {
     let AddItem {
         kind,
         belongs_to,
@@ -420,7 +474,6 @@ fn add(root: &Path, adding: AddItem) -> Result<ItemView, vault_items::ItemError>
         ItemKind::Value => vault_items::ItemKind::Value,
     };
     let item = NewItem::new(kind, places, username, secret);
-    let mut items = VaultItems::open_in(root)?;
     let kept = if sent_in.trim().is_empty() {
         items.add(item)?
     } else {
@@ -430,55 +483,31 @@ fn add(root: &Path, adding: AddItem) -> Result<ItemView, vault_items::ItemError>
     view(kept)
 }
 
-fn remove(root: &Path, item: &ItemRef) -> Result<KeptItems, vault_items::ItemError> {
+fn remove(items: &mut VaultItems, item: &ItemRef) -> Result<KeptItems, vault_items::ItemError> {
     let id = vault_items::ItemId::parse(item.id()).ok_or(vault_items::ItemError::NotFound)?;
-    let mut items = VaultItems::open_in(root)?;
-    if !items.remove(&id)? {
+    if !items.remove(&id) {
         return Err(vault_items::ItemError::NotFound);
     }
-    kept(root)
+    kept(items)
 }
 
-/// The workspace's Passwords, in the vault under `root`, refusing a vault
-/// whose key is gone rather than answering it empty.
-fn passwords(root: &Path) -> Result<accounts::SecretStore, String> {
-    let store = accounts::SecretStore::open_in(root);
-    match store.recovery_error() {
-        Some(error) => Err(format!("Your vault could not be opened: {error}")),
-        None => Ok(store),
-    }
-}
-
-/// Every entry of the workspace's Passwords, secrets included.
-fn entries(root: &Path) -> Result<Entries, String> {
-    let entries = passwords(root)?
-        .list()
-        .iter()
+/// `entries` as Passwords reads them, secrets included.
+fn entries_of<'a>(
+    entries: impl Iterator<Item = &'a accounts::SecretItem>,
+) -> Result<Entries, String> {
+    let mut listed: Vec<&accounts::SecretItem> = entries.collect();
+    listed.sort_by(|a, b| {
+        a.title
+            .to_lowercase()
+            .cmp(&b.title.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let entries = listed
+        .into_iter()
         .map(serde_json::to_value)
         .collect::<Result<_, _>>()
         .map_err(|_| "An entry of Passwords could not be read".to_owned())?;
     Ok(Entries { entries })
-}
-
-/// Keep `keeping`'s entry, a new one or the edit of one kept, answering
-/// every entry then. What was handed is never echoed in a refusal.
-fn keep_entry(root: &Path, keeping: KeepEntry) -> Result<Entries, String> {
-    let mut entry: accounts::SecretItem = serde_json::from_value(keeping.entry)
-        .map_err(|_| "That is no entry of Passwords".to_owned())?;
-    passwords(root)?
-        .put(&mut entry)
-        .map_err(|error| format!("The entry could not be kept: {error}"))?;
-    entries(root)
-}
-
-/// Forget the entry `forgetting` names, answering every entry left. One
-/// already gone is no refusal: another device may have
-/// forgotten it first.
-fn forget_entry(root: &Path, forgetting: ForgetEntry) -> Result<Entries, String> {
-    passwords(root)?
-        .remove(&accounts::SecretId(forgetting.id))
-        .map_err(|error| format!("The entry could not be forgotten: {error}"))?;
-    entries(root)
 }
 
 /// What the caller reads of a use's outcome, or the reason it was refused.
@@ -528,9 +557,8 @@ fn vault_approval(grant: &Grant, item: &ItemRef) -> Option<AlwaysUse> {
 /// When and where the item `item` names was handed to something that signs
 /// in, for whom and what for; and who may use it without its person being
 /// asked.
-fn uses(root: &Path, item: &ItemRef) -> Result<ItemUses, vault_items::ItemError> {
+fn uses(items: &VaultItems, item: &ItemRef) -> Result<ItemUses, vault_items::ItemError> {
     let id = vault_items::ItemId::parse(item.id()).ok_or(vault_items::ItemError::NotFound)?;
-    let items = VaultItems::open_in(root)?;
     Ok(ItemUses {
         always: Vec::new(),
         uses: items
@@ -550,243 +578,117 @@ fn uses(root: &Path, item: &ItemRef) -> Result<ItemUses, vault_items::ItemError>
     })
 }
 
-/// Hand the item `item` names to the code that signs in at every one of
-/// `places` with a `kind`, for `by`: the one way a reference becomes its
-/// secret, and only inside this host.
-///
-/// Built where its one caller is: a person's calendars, which need the
-/// feature `agents`.
-#[cfg(feature = "agents")]
-pub(super) fn released(
-    root: &Path,
-    item: &ItemRef,
-    kind: vault_items::ItemKind,
-    places: &[Place],
-    by: &str,
-) -> Result<vault_items::Released, String> {
-    released_for(root, item, kind, places, by, UsedFor::default())
-}
+impl Workspaces {
+    /// Hand the item `item` of `workspace`'s vault names to the code that signs in at every one
+    /// of `places` with a `kind`, for `by`, with what it is used for written down with the use:
+    /// the one way a reference becomes its secret, and only inside this device. The use is
+    /// written to the vault before the secret is answered.
+    ///
+    /// # Errors
+    /// The vault does not open here, does not hold the item, the item is not a `kind` that
+    /// belongs to every one of `places`, or the use was not written down.
+    pub(super) async fn release_item(
+        &self,
+        workspace: &str,
+        item: &ItemRef,
+        (kind, places): (vault_items::ItemKind, &[Place]),
+        by: &str,
+        purpose: UsedFor<'_>,
+    ) -> Result<vault_items::Released, String> {
+        let id = vault_items::ItemId::parse(item.id())
+            .ok_or_else(|| vault_items::ItemError::NotFound.to_string())?;
+        self.changing_vault(workspace, |items| {
+            items.use_for(&id, kind, places, by, purpose)
+        })
+        .await
+    }
 
-/// [`released`], with what the item is used for written down with the use:
-/// the use's word, and how its person allowed it where the vault asked.
-fn released_for(
-    root: &Path,
-    item: &ItemRef,
-    kind: vault_items::ItemKind,
-    places: &[Place],
-    by: &str,
-    purpose: UsedFor<'_>,
-) -> Result<vault_items::Released, String> {
-    let id = vault_items::ItemId::parse(item.id()).ok_or(vault_items::ItemError::NotFound);
-    id.and_then(|id| VaultItems::open_in(root)?.use_for(&id, kind, places, by, purpose))
-        .map_err(|error| error.to_string())
-}
-
-/// Add `adding` with the sign-in its vault item keeps, once `tester` saw its
-/// server accept it. The item must be a login that belongs to both servers
-/// the account names: a server it does not belong to is never sent it.
-pub(super) async fn mail_with_item(
-    tester: Arc<dyn AccountTester>,
-    root: &Path,
-    adding: AddMailWithItem,
-    by: &str,
-    purpose: UsedFor<'_>,
-) -> Result<MailAccount, String> {
-    let server = |scheme: &str, host: &str, port: u16| {
-        Place::server(scheme, host, port).map_err(|error| error.to_string())
-    };
-    let places = [
-        server("imap", &adding.incoming_host, adding.incoming_port)?,
-        server("smtp", &adding.outgoing_host, adding.outgoing_port)?,
-    ];
-    let mut sign_in = released_for(
-        root,
-        &adding.password,
-        vault_items::ItemKind::Login,
-        &places,
-        by,
-        purpose,
-    )?;
-    // The account signs in under the name the request gives, else the
-    // item's own, else its address.
-    let username = adding
-        .username
-        .filter(|username| !username.trim().is_empty())
-        .or_else(|| Some(std::mem::take(&mut sign_in.username)).filter(|name| !name.is_empty()));
-    super::person_settings::add_mail_with(
-        tester,
-        root,
-        AddMailAccount {
-            address: adding.address,
-            display_name: adding.display_name,
-            username,
-            incoming_host: adding.incoming_host,
-            incoming_port: adding.incoming_port,
-            outgoing_host: adding.outgoing_host,
-            outgoing_port: adding.outgoing_port,
-            password: sign_in.secret.to_string(),
-            identities: Vec::new(),
-            services: person_accounts::Services::default(),
-        },
-    )
-    .await
-}
-
-/// Keep the key the vault item `setting` names as its provider's API key.
-/// The item must be a key that belongs to the provider's endpoint, as the
-/// person set it: a key is never kept for an endpoint it does not belong to.
-/// Where the provider keeps a key already, the item's key takes its place
-/// only once the provider took it ([`super::person_models::take_key`]).
-pub(super) async fn key_from_item(
-    root: &Path,
-    setting: &SetKeyFromItem,
-    by: &str,
-    purpose: UsedFor<'_>,
-    reach: &super::person_models::Reach,
-) -> Result<ProviderView, String> {
-    let keeping = {
-        let config = super::person_settings::provider_config(root);
-        let profile = config
-            .profiles
-            .iter()
-            .find(|profile| profile.id == setting.provider)
-            .ok_or_else(|| "That provider is not kept here".to_owned())?;
-        let endpoint = Place::parse(&profile.endpoint).map_err(|error| error.to_string())?;
-        let key = released_for(
+    /// Add `adding` to `workspace`'s mail accounts, kept under `root`, with the sign-in its vault
+    /// item keeps, once its server accepted it. The item must be a login that belongs to both
+    /// servers the account names: a server it does not belong to is never sent it.
+    pub(super) async fn mail_with_item(
+        &self,
+        (workspace, root): (&str, &Path),
+        adding: AddMailWithItem,
+        by: &str,
+        purpose: UsedFor<'_>,
+    ) -> Result<MailAccount, String> {
+        let server = |scheme: &str, host: &str, port: u16| {
+            Place::server(scheme, host, port).map_err(|error| error.to_string())
+        };
+        let places = [
+            server("imap", &adding.incoming_host, adding.incoming_port)?,
+            server("smtp", &adding.outgoing_host, adding.outgoing_port)?,
+        ];
+        let mut sign_in = self
+            .release_item(
+                workspace,
+                &adding.password,
+                (vault_items::ItemKind::Login, &places),
+                by,
+                purpose,
+            )
+            .await?;
+        // The account signs in under the name the request gives, else the
+        // item's own, else its address.
+        let username = adding
+            .username
+            .filter(|username| !username.trim().is_empty())
+            .or_else(|| {
+                Some(std::mem::take(&mut sign_in.username)).filter(|name| !name.is_empty())
+            });
+        super::person_settings::add_mail_with(
+            self.account_tester(),
             root,
-            &setting.key,
-            vault_items::ItemKind::Key,
-            std::slice::from_ref(&endpoint),
-            by,
-            purpose,
-        )?;
-        SetKey {
+            AddMailAccount {
+                address: adding.address,
+                display_name: adding.display_name,
+                username,
+                incoming_host: adding.incoming_host,
+                incoming_port: adding.incoming_port,
+                outgoing_host: adding.outgoing_host,
+                outgoing_port: adding.outgoing_port,
+                password: sign_in.secret.to_string(),
+                identities: Vec::new(),
+                services: person_accounts::Services::default(),
+            },
+        )
+        .await
+    }
+
+    /// Keep the key the vault item `setting` names as its provider's API key. The item must be
+    /// a key that belongs to the provider's endpoint, as the person set it: a key is never kept
+    /// for an endpoint it does not belong to. Where the provider keeps a key already, the item's
+    /// key takes its place only once the provider took it ([`super::person_models::take_key`]).
+    pub(super) async fn key_from_item(
+        &self,
+        (workspace, root): (&str, &Path),
+        setting: &SetKeyFromItem,
+        by: &str,
+        purpose: UsedFor<'_>,
+    ) -> Result<ProviderView, String> {
+        let endpoint = {
+            let config = super::person_settings::provider_config(root);
+            let profile = config
+                .profiles
+                .iter()
+                .find(|profile| profile.id == setting.provider)
+                .ok_or_else(|| "That provider is not kept here".to_owned())?;
+            Place::parse(&profile.endpoint).map_err(|error| error.to_string())?
+        };
+        let key = self
+            .release_item(
+                workspace,
+                &setting.key,
+                (vault_items::ItemKind::Key, std::slice::from_ref(&endpoint)),
+                by,
+                purpose,
+            )
+            .await?;
+        let keeping = SetKey {
             provider: setting.provider.clone(),
             key: key.secret.to_string(),
-        }
-    };
-    super::person_models::take_key(root, keeping, reach).await
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )]
-
-    use std::sync::Mutex;
-
-    use super::*;
-
-    /// A tester that accepts every sign-in, and keeps what it was asked.
-    #[derive(Default)]
-    struct Accepting {
-        asked: Mutex<Vec<String>>,
-    }
-
-    impl AccountTester for Accepting {
-        fn test(
-            &self,
-            account: &accounts::Account,
-            secret: &accounts::Secret,
-        ) -> Result<String, String> {
-            self.asked
-                .lock()
-                .unwrap()
-                .push(format!("{} with {}", account.id, secret.password));
-            Ok("signed in".into())
-        }
-    }
-
-    /// A mail account is added with the sign-in a vault item keeps: the
-    /// server sees the password, the account signs in under the item's own
-    /// name, the item remembers the use, and a server the item does not
-    /// belong to is never sent the password.
-    #[test]
-    fn a_mail_account_is_added_with_a_sign_in_the_vault_keeps() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let both = vec![
-            Place::server("imap", "imap.example.test", 993).unwrap(),
-            Place::server("smtp", "smtp.example.test", 465).unwrap(),
-        ];
-        let kept = VaultItems::open_in(root)
-            .unwrap()
-            .add(NewItem::new(
-                vault_items::ItemKind::Login,
-                both.clone(),
-                "ada".into(),
-                "mail-password".into(),
-            ))
-            .unwrap();
-        let password = ItemRef::from_id(kept.id.as_str()).unwrap();
-        let adding = |incoming: &str| AddMailWithItem {
-            address: "ada@example.test".into(),
-            display_name: "Ada".into(),
-            username: None,
-            incoming_host: incoming.into(),
-            incoming_port: 993,
-            outgoing_host: "smtp.example.test".into(),
-            outgoing_port: 465,
-            password: password.clone(),
-            reason: String::new(),
         };
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let tester = Arc::new(Accepting::default());
-
-        let refused = runtime
-            .block_on(mail_with_item(
-                tester.clone(),
-                root,
-                adding("imap.attacker.example"),
-                "Helper",
-                UsedFor::default(),
-            ))
-            .unwrap_err();
-        assert_eq!(refused, "That item belongs somewhere else");
-        assert!(tester.asked.lock().unwrap().is_empty());
-        let mail = accounts::AccountTypeId::from(accounts::email::TYPE_ID);
-        assert!(accounts::AccountStore::load_in(root).list(&mail).is_empty());
-        assert!(
-            VaultItems::open_in(root)
-                .unwrap()
-                .uses(&kept.id)
-                .unwrap()
-                .is_empty()
-        );
-
-        let account = runtime
-            .block_on(mail_with_item(
-                tester.clone(),
-                root,
-                adding("IMAP.example.test"),
-                "Helper",
-                UsedFor::default(),
-            ))
-            .unwrap();
-        assert!(account.has_secret);
-        assert_eq!(account.address, "ada@example.test");
-        assert_eq!(
-            tester.asked.lock().unwrap().clone(),
-            vec!["ada@example.test with mail-password".to_owned()],
-            "the sign-in is proved with the password the item keeps"
-        );
-        let said = serde_json::to_string(&account).unwrap();
-        assert!(!said.contains("mail-password"), "{said}");
-        let store = accounts::AccountStore::load_in(root);
-        let stored = store
-            .get(&accounts::AccountId::from("ada@example.test"))
-            .expect("the account is kept");
-        let config = accounts::email::AccountConfig::from_value(stored.config.clone()).unwrap();
-        assert_eq!(config.username, "ada");
-        let uses = VaultItems::open_in(root).unwrap().uses(&kept.id).unwrap();
-        assert_eq!(uses.len(), 1);
-        assert_eq!(uses[0].places, both);
-        assert_eq!(uses[0].by, "Helper");
+        super::person_models::take_key(root, keeping, &self.model_reach()).await
     }
 }

@@ -47,7 +47,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
 
-use accounts::vault_items::{ItemId, ItemKind, Place, VaultItems};
+use accounts::vault_items::{ItemId, ItemKind, Place};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_actions::remote::person_accounts;
@@ -59,7 +59,7 @@ use tilo_dav::Url;
 use tilo_lock::MutexRecover as _;
 
 use super::{
-    AddWithItem, CONNECT, RESOURCE, account_id, accounts_at, add_with_item, argument, off_thread,
+    AddWithItem, CONNECT, RESOURCE, account_id, accounts_at, argument,
     server_of,
 };
 use crate::connections::wire::{Destinations, Lookup, check_destination, is_public, system_lookup};
@@ -384,15 +384,18 @@ fn kept_under(stores: &Path) -> Vec<ConnectAsk> {
     asks
 }
 
-/// The item `item` names in the vault under `root`, when it is the one the
+/// The item `item` names in the workspace's vault, when it is the one the
 /// protected field of `ask`'s question made: a login that belongs to the
 /// calendar server's origin and to nothing else, which their vault did not
 /// keep when it was asked. Such an item is taken out again when nothing is
 /// connected with it; any other stays.
-fn typed_for(root: &Path, item: &ItemRef, ask: &ConnectAsk) -> Option<ItemId> {
+async fn typed_for(workspaces: &Workspaces, item: &ItemRef, ask: &ConnectAsk) -> Option<ItemId> {
     let id = ItemId::parse(item.id())?;
-    let facts = VaultItems::open_in(root)
+    let facts = workspaces
+        .open_vault(&ask.workspace)
+        .await
         .ok()?
+        .items()
         .facts()
         .into_iter()
         .find(|facts| facts.id == id)?;
@@ -406,9 +409,11 @@ fn typed_for(root: &Path, item: &ItemRef, ask: &ConnectAsk) -> Option<ItemId> {
     own.then_some(id)
 }
 
-/// Take the item `id` out of the vault under `root` again.
-fn take_out(root: &Path, id: &ItemId) {
-    let taken = VaultItems::open_in(root).and_then(|mut items| items.remove(id));
+/// Take the item `id` out of the workspace's vault again.
+async fn take_out(workspaces: &Workspaces, workspace: &str, id: &ItemId) {
+    let taken = workspaces
+        .changing_vault(workspace, |items| Ok(items.remove(id)))
+        .await;
     if let Err(error) = taken {
         tracing::warn!(%error, "an item typed for a calendar that was not connected stays in the workspace's vault");
     }
@@ -538,8 +543,11 @@ impl Workspaces {
             return Err(refused(ALREADY));
         }
         // What the vault keeps now stays whatever comes of this.
-        let known = VaultItems::open_in(&root)
-            .map_err(|error| refused(error.to_string()))?
+        let known = self
+            .open_vault(&using.workspace)
+            .await
+            .map_err(refused)?
+            .items()
             .facts()
             .into_iter()
             .map(|facts| facts.id.as_str().to_owned())
@@ -684,9 +692,10 @@ impl Workspaces {
     ) -> Result<Option<Connected>, String> {
         let root = self.workspace_root(&claimed.workspace);
         let item = typed.and_then(ItemRef::parse);
-        let own = item
-            .as_ref()
-            .and_then(|item| typed_for(&root, item, claimed));
+        let own = match &item {
+            Some(item) => typed_for(self, item, claimed).await,
+            None => None,
+        };
         let carried = match typed {
             None => Ok(None),
             Some(_) => self.connect(turn, claimed, &root, item).await.map(Some),
@@ -694,7 +703,7 @@ impl Workspaces {
         if !matches!(carried, Ok(Some(_)))
             && let Some(id) = &own
         {
-            take_out(&root, id);
+            take_out(self, &claimed.workspace, id).await;
         }
         self.forget_connect(&claimed.workspace, &claimed.ask);
         carried
@@ -732,9 +741,9 @@ impl Workspaces {
             // Always: nothing a turn hands over says otherwise.
             read_only: true,
         };
-        let (at, by) = (root.to_path_buf(), using.name);
-        let reach = self.inner.models.mail_reach();
-        let view = off_thread(move || add_with_item(&at, &reach, adding, &by)).await?;
+        let view = self
+            .calendar_with_item((&kept.workspace, root), adding, &using.name)
+            .await?;
         self.person_settings_changed();
         Ok(Connected {
             account: view.id,

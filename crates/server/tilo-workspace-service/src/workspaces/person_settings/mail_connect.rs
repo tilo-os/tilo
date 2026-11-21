@@ -42,7 +42,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
 
-use accounts::vault_items::{ItemId, ItemKind, Place, UsedFor, VaultItems};
+use accounts::vault_items::{ItemId, ItemKind, Place, UsedFor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_account_probe::mail_servers::{Found, Server};
@@ -416,25 +416,30 @@ fn kept_under(stores: &Path) -> Vec<MailAsk> {
     asks
 }
 
-/// The ids of every item the vault under `root` keeps now.
-fn kept_items(root: &Path) -> Result<Vec<String>, String> {
-    Ok(VaultItems::open_in(root)
-        .map_err(|error| error.to_string())?
+/// The ids of every item the workspace's vault keeps now.
+async fn kept_items(workspaces: &Workspaces, workspace: &str) -> Result<Vec<String>, String> {
+    Ok(workspaces
+        .open_vault(workspace)
+        .await?
+        .items()
         .facts()
         .into_iter()
         .map(|facts| facts.id.as_str().to_owned())
         .collect())
 }
 
-/// The item `item` names in the vault under `root`, when it is the one the
+/// The item `item` names in the workspace's vault, when it is the one the
 /// protected field of `ask`'s question made: a login that belongs to the
 /// account's two servers and to nothing else, which their vault did not keep
 /// when it was asked. Such an item is taken out again when nothing is signed
 /// in with it; any other stays.
-fn typed_for(root: &Path, item: &ItemRef, ask: &MailAsk) -> Option<ItemId> {
+async fn typed_for(workspaces: &Workspaces, item: &ItemRef, ask: &MailAsk) -> Option<ItemId> {
     let id = ItemId::parse(item.id())?;
-    let facts = VaultItems::open_in(root)
+    let facts = workspaces
+        .open_vault(&ask.workspace)
+        .await
         .ok()?
+        .items()
         .facts()
         .into_iter()
         .find(|facts| facts.id == id)?;
@@ -449,9 +454,11 @@ fn typed_for(root: &Path, item: &ItemRef, ask: &MailAsk) -> Option<ItemId> {
     own.then_some(id)
 }
 
-/// Take the item `id` out of the vault under `root` again.
-fn take_out(root: &Path, id: &ItemId) {
-    let taken = VaultItems::open_in(root).and_then(|mut items| items.remove(id));
+/// Take the item `id` out of the workspace's vault again.
+async fn take_out(workspaces: &Workspaces, workspace: &str, id: &ItemId) {
+    let taken = workspaces
+        .changing_vault(workspace, |items| Ok(items.remove(id)))
+        .await;
     if let Err(error) = taken {
         tracing::warn!(%error, "an item typed for a mail account that was not signed in stays in the workspace's vault");
     }
@@ -644,7 +651,7 @@ impl Workspaces {
             place("smtp", &servers.sends)?,
         ];
         // What their vault keeps now is theirs whatever comes of this.
-        let known = kept_items(&root).map_err(refused)?;
+        let known = kept_items(self, &using.workspace).await.map_err(refused)?;
         let asked_at_ms = tilo_clock::unix_now_ms();
         let ask = ask_id(
             &person,
@@ -775,9 +782,10 @@ impl Workspaces {
     ) -> Result<MailCarried, String> {
         let root = self.workspace_root(&claimed.workspace);
         let item = typed.and_then(ItemRef::parse);
-        let own = item
-            .as_ref()
-            .and_then(|item| typed_for(&root, item, claimed));
+        let own = match &item {
+            Some(item) => typed_for(self, item, claimed).await,
+            None => None,
+        };
         let carried = match typed {
             None => Ok(None),
             Some(_) => self
@@ -788,7 +796,7 @@ impl Workspaces {
         if !matches!(carried, Ok(Some(_)))
             && let Some(id) = &own
         {
-            take_out(&root, id);
+            take_out(self, &claimed.workspace, id).await;
         }
         self.forget_mail_connect(&claimed.workspace, &claimed.ask);
         match carried {
@@ -797,6 +805,7 @@ impl Workspaces {
             Err(why) => match refused_by(&why, claimed) {
                 Some(server) => self
                     .ask_mail_again(claimed, &root, server)
+                    .await
                     .map(|again| MailCarried::AsksAgain(Box::new(again))),
                 None => Err(why),
             },
@@ -806,7 +815,7 @@ impl Workspaces {
     /// Keep a new ask for the account `spent` kept, after `server` did not
     /// take the password typed for it: the same servers, and the items the
     /// vault keeps now.
-    fn ask_mail_again(
+    async fn ask_mail_again(
         &self,
         spent: &MailAsk,
         root: &Path,
@@ -819,7 +828,7 @@ impl Workspaces {
             started: false,
             interrupted: false,
             asked_at_ms,
-            known: kept_items(root)?,
+            known: kept_items(self, &spent.workspace).await?,
             ..spent.clone()
         };
         keep(root, &again)?;
@@ -862,14 +871,14 @@ impl Workspaces {
         };
         // No agent uses the item: this server signs in with it once, for the account its
         // person typed it for.
-        let view = crate::workspaces::person_vault::mail_with_item(
-            self.account_tester(),
-            root,
-            adding,
-            &using.name,
-            UsedFor::default(),
-        )
-        .await?;
+        let view = self
+            .mail_with_item(
+                (&kept.workspace, root),
+                adding,
+                &using.name,
+                UsedFor::default(),
+            )
+            .await?;
         self.person_settings_changed();
         Ok(MailSignedIn {
             account: view.id,

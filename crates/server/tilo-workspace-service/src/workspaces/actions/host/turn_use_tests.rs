@@ -27,7 +27,8 @@ use super::vault_tests::{a_provider, ask, ask_at, files_holding, kept_item};
 use crate::workspaces::hosted_use::{
     CARRIED_OUT, HostedTurn, NOTHING_WAITS, OpenAsk, TurnUse, UseAnswer,
 };
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::fixtures::test_host_taking_part as test_host;
+use crate::workspaces::tests::governor;
 use crate::workspaces::{WorkspaceId, Workspaces};
 
 const PASSWORD: &str = "correct horse battery staple";

@@ -758,24 +758,21 @@ pub(super) fn linked_to(root: &Path, account: &str) -> Option<String> {
         .map(|calendar| calendar.id)
 }
 
-/// Add an account with the sign-in the vault item `adding` names keeps:
-/// a login that belongs to the server's own origin, and to nothing else.
+/// The place a calendar account's sign-in belongs to: its server's own
+/// origin, and nothing else.
+fn sign_in_place(adding: &AddWithItem) -> Result<accounts::vault_items::Place, String> {
+    let server = server_of(&adding.server_url)?;
+    accounts::vault_items::Place::parse(server.as_str()).map_err(|error| error.to_string())
+}
+
+/// Add an account with `sign_in`, what the vault item `adding` names
+/// released for the server's own origin ([`sign_in_place`]).
 fn add_with_item(
     root: &Path,
     reach: &Reach,
     adding: AddWithItem,
-    by: &str,
+    mut sign_in: accounts::vault_items::Released,
 ) -> Result<AccountView, String> {
-    let server = server_of(&adding.server_url)?;
-    let place =
-        accounts::vault_items::Place::parse(server.as_str()).map_err(|error| error.to_string())?;
-    let mut sign_in = crate::workspaces::person_vault::released(
-        root,
-        &adding.password,
-        accounts::vault_items::ItemKind::Login,
-        std::slice::from_ref(&place),
-        by,
-    )?;
     let username = adding
         .username
         .filter(|username| !username.trim().is_empty())
@@ -791,6 +788,30 @@ fn add_with_item(
             read_only: adding.read_only,
         },
     )
+}
+
+impl Workspaces {
+    /// Add `adding` to `workspace`'s calendar accounts, kept under `root`, with the sign-in its
+    /// vault item keeps: a login that belongs to the server's own origin.
+    async fn calendar_with_item(
+        &self,
+        (workspace, root): (&str, &Path),
+        adding: AddWithItem,
+        by: &str,
+    ) -> Result<AccountView, String> {
+        let place = sign_in_place(&adding)?;
+        let sign_in = self
+            .release_item(
+                workspace,
+                &adding.password,
+                (accounts::vault_items::ItemKind::Login, std::slice::from_ref(&place)),
+                by,
+                accounts::vault_items::UsedFor::default(),
+            )
+            .await?;
+        let (root, reach) = (root.to_path_buf(), self.inner.models.mail_reach());
+        off_thread(move || add_with_item(&root, &reach, adding, sign_in)).await
+    }
 }
 
 fn remove(root: &Path, account: &str) -> Result<Listed, String> {
@@ -1660,8 +1681,9 @@ impl Workspaces {
             request,
             "a calendar account names its server and the vault item that is its password",
         )?;
-        let reach = self.inner.models.mail_reach();
-        let kept = off_thread(move || add_with_item(&root, &reach, adding, &by)).await;
+        let kept = self
+            .calendar_with_item((&reach.workspace.to_string(), &root), adding, &by)
+            .await;
         if kept.is_ok() {
             self.person_settings_changed();
         }

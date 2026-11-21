@@ -162,9 +162,6 @@ mod tests {
     /// A made-up key: no service ever issued it.
     const KEY: &str = "made-up-key-0123456789-for-tests";
 
-    fn root() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("accounts-key-in-{}", uuid::Uuid::new_v4()))
-    }
 
     fn item(kind: ItemKind, place: &str, secret: &str) -> NewItem {
         NewItem::new(
@@ -253,8 +250,7 @@ mod tests {
     /// out of an answer is not sent at all.
     #[test]
     fn a_key_says_where_it_rides_and_a_short_one_is_not_sent() {
-        let root = root();
-        let mut items = VaultItems::open_in(&root).unwrap();
+        let mut items = VaultItems::default();
         let service = "https://api.example.test";
         let plain = items.add(item(ItemKind::Key, service, KEY)).unwrap();
         assert_eq!(items.key_in(&plain.id).unwrap(), KeyIn::Bearer);
@@ -266,7 +262,7 @@ mod tests {
         assert_eq!(kept.kind, ItemKind::Key);
         assert_eq!(items.key_in(&kept.id).unwrap(), named);
         // Read again from the sealed file.
-        let again = VaultItems::open_in(&root).unwrap();
+        let again = VaultItems::of_entries(items.kept());
         assert_eq!(again.key_in(&kept.id).unwrap(), named);
         assert!(
             again.uses(&kept.id).unwrap().is_empty(),
@@ -289,6 +285,5 @@ mod tests {
         ));
         let nobody = ItemId::parse(&"0".repeat(32)).unwrap();
         assert_eq!(items.key_in(&nobody).err(), Some(ItemError::NotFound));
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

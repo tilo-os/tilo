@@ -4,10 +4,11 @@
 //!
 //! [`Workspaces::workspace_secret`] is the one place an item becomes its secret for the
 //! machine. Whether the one starting the program may read the workspace's vault is decided by
-//! the workspace's policy for them, as for any reader of the vault's document; an item the vault
-//! does not hold is refused, and nothing is read from anywhere else.
+//! the workspace's policy for them, as for any reader of the vault's document; the item is read
+//! from that document as this server holds it ([`super::vault`]), an item the vault does not
+//! hold is refused, and nothing is read from anywhere else.
 
-use accounts::vault_items::{ItemId, UsedFor, VaultItems};
+use accounts::vault_items::{ItemId, UsedFor};
 use tilo_action_policy::{ActionKind, Answer, Authority, roles};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::environment_commands::VmSecret;
@@ -85,18 +86,19 @@ impl Workspaces {
             );
         }
         let id = ItemId::parse(item.id()).ok_or(NOT_KEPT)?;
-        let mut items = self.workspace_vault_items(workspace).await?;
-        let facts = items
-            .facts()
-            .into_iter()
-            .find(|facts| facts.id == id)
-            .ok_or(NOT_KEPT)?;
         let by_name = by
             .agent_called()
             .map_or_else(String::new, ToOwned::to_owned);
         let what = format!("handed to the workspace's machine in {variable}");
-        items
-            .use_for(
+        // The workspace's one vault, as this server holds it: the item is used wherever it
+        // belongs, and its use is written down before its secret is handed to the machine.
+        self.changing_vault(workspace, |items| {
+            let facts = items
+                .facts()
+                .into_iter()
+                .find(|facts| facts.id == id)
+                .ok_or(accounts::vault_items::ItemError::NotFound)?;
+            items.use_for(
                 &id,
                 facts.kind,
                 &facts.places,
@@ -107,16 +109,16 @@ impl Workspaces {
                     allowed: None,
                 },
             )
-            .map(|released| released.secret)
-            .map_err(|error| error.to_string())
-    }
-
-    /// The items of `workspace`'s vault, which this server keeps in the workspace's own store.
-    async fn workspace_vault_items(&self, workspace: &str) -> Result<VaultItems, String> {
-        self.policy_of(workspace)
-            .await
-            .ok_or("this server does not hold that workspace")?;
-        VaultItems::open_in(&self.workspace_root(workspace)).map_err(|error| error.to_string())
+        })
+        .await
+        .map(|released| released.secret)
+        .map_err(|error| {
+            if error == accounts::vault_items::ItemError::NotFound.to_string() {
+                NOT_KEPT.to_owned()
+            } else {
+                error
+            }
+        })
     }
 }
 

@@ -470,6 +470,8 @@ fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::works
     compactor.with_group_keys(Arc::new(workspaces.clone()));
     let (repairing, compactor) = (workspaces.clone(), compactor.clone());
     tokio::spawn(async move {
+        #[cfg(not(target_arch = "wasm32"))]
+        repairing.carry_vaults_over().await;
         repairing.reseal_before_reader_sets().await;
         repairing.fold_away_unsent(&compactor).await;
     });

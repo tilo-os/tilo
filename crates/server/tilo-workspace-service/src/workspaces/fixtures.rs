@@ -408,7 +408,16 @@ pub async fn test_server_keeping_keys_apart(
     key: &SigningKey,
     cert: &DeviceCert,
 ) -> TestHost {
-    host_on(state_root, key, cert, None, None, Some(keys)).await
+    host_on(state_root, key, cert, Some(taking_part()), None, Some(keys)).await
+}
+
+/// The key groups of a host that holds its workspaces' keys, as a server whose device may own
+/// workspaces does: what opens the workspace's vault on it.
+fn taking_part() -> DeviceKeyGroups {
+    DeviceKeyGroups {
+        keys: Arc::<TestGroupKeys>::default(),
+        sink: None,
+    }
 }
 
 /// The same host, run on a device that takes part in its workspaces' channels,

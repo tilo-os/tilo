@@ -192,7 +192,9 @@ impl Workspaces {
         } else {
             Calling::Agent(&by)
         };
-        let root = workspaces.workspace_root(&reach.workspace.to_string());
+        let workspace = reach.workspace.to_string();
+        let root = workspaces.workspace_root(&workspace);
+        let vault = workspaces.vault_at(&workspace);
         let reach = workspaces.connections_reach();
         let by_address = "a service is named by its address";
         let by_id = "a connection is named by its id";
@@ -208,7 +210,7 @@ impl Workspaces {
             }
             person_connections::REMOVE => {
                 let named: Named = argument(request, by_id)?;
-                said(connections::remove(&root, &named.connection))
+                said(connections::remove((&root, vault), &named.connection).await)
             }
             person_connections::USES => {
                 let named: Named = argument(request, by_id)?;
@@ -228,18 +230,21 @@ impl Workspaces {
                     "a sign-in to finish names its connection and the address the browser came back to",
                 )?;
                 let (id, back) = (&finish.connection, &finish.returned);
-                said(connections::finish_sign_in(&root, &reach, id, back).await)
+                said(connections::finish_sign_in((&root, vault), &reach, id, back).await)
             }
             person_connections::CALL => {
                 let call: Call = argument(
                     request,
                     "a call names its connection, a command of it and the command's arguments",
                 )?;
-                said(connections::call(&root, &reach, calling, call).await)
+                said(connections::call((&root, vault), &reach, calling, call).await)
             }
             _ => {
                 let named: Named = argument(request, by_id)?;
-                said(connections::refresh(&root, &reach, &named.connection, calling).await)
+                said(
+                    connections::refresh((&root, vault), &reach, &named.connection, calling)
+                        .await,
+                )
             }
         }
     }

@@ -25,6 +25,7 @@ __all__ = [
     "KeepSealedArgs",
     "ImportSealedArgs",
     "RemoveSealedArgs",
+    "KeepUsesArgs",
 ]
 
 KeepSealedArgs = TypedDict("KeepSealedArgs", {
@@ -44,9 +45,15 @@ RemoveSealedArgs = TypedDict("RemoveSealedArgs", {
 })
 """The arguments of `remove-sealed`."""
 
+KeepUsesArgs = TypedDict("KeepUsesArgs", {
+    "id": "str",
+    "ciphertext": "str",
+})
+"""The arguments of `keep-uses`."""
+
 class Vault(Resource):
     """Password vault — `passwords.vault`."""
-    __surface__ = "so.tilo.passwords@cdacb161a95d8124"
+    __surface__ = "so.tilo.passwords@ff5b4c5b16475455"
     def deny_access(self, *, proposal: str) -> None:
         """Runs the app's action."""
         return self.action("deny-access", proposal=proposal)
@@ -90,7 +97,7 @@ class Vault(Resource):
 
 class WorkspaceVault(Resource):
     """Workspace vault — `passwords.workspace-vault`."""
-    __surface__ = "so.tilo.passwords@cdacb161a95d8124"
+    __surface__ = "so.tilo.passwords@ff5b4c5b16475455"
     @property
     def sealed(self) -> list[Entry[str]]:
         """Read only."""
@@ -103,6 +110,10 @@ class WorkspaceVault(Resource):
     def removed(self) -> list[str]:
         """Read only."""
         return self.fields["removed"]
+    @property
+    def used(self) -> list[Entry[str]]:
+        """Read only."""
+        return self.fields["used"]
 
     def keep_sealed(self,
         *,
@@ -136,8 +147,20 @@ class WorkspaceVault(Resource):
         """Runs `remove-sealed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("remove-sealed", items)
 
+    def keep_uses(self,
+        *,
+        id: str,
+        ciphertext: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("keep-uses", id=id, ciphertext=ciphertext)
+
+    def keep_uses_many(self, items: list[KeepUsesArgs]) -> list[dict[str, Any]]:
+        """Runs `keep-uses` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep-uses", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"keep_sealed", "keep_sealed_many", "import_sealed", "import_sealed_many", "remove_sealed", "remove_sealed_many"})
+    __actions__ = frozenset({"keep_sealed", "keep_sealed_many", "import_sealed", "import_sealed_many", "remove_sealed", "remove_sealed_many", "keep_uses", "keep_uses_many"})
 
 

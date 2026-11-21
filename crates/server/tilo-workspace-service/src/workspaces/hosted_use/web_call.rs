@@ -37,7 +37,6 @@
 //! that made it, so it is sent when that agent makes the same call again.
 
 use std::net::IpAddr;
-use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -250,18 +249,20 @@ pub(super) fn wanted(
 }
 
 /// What `call` would be refused for when it is sent by a server that
-/// reaches `reach`, with the vault under `root`: said before anyone is
+/// reaches `reach`, with the vault's `items`: said before anyone is
 /// asked about it. Nothing is handed out and nothing is written down.
-pub(super) fn sendable(call: &WebCall, reach: Destinations, root: &Path) -> Result<(), String> {
+pub(super) fn sendable(
+    call: &WebCall,
+    reach: Destinations,
+    items: &VaultItems,
+) -> Result<(), String> {
     let url = address(call, reach)?;
     method(call)?;
     if call.body.len() > MAX_SENT_BYTES {
         return Err("That is more than one web call sends".to_owned());
     }
     let item = item_of(call)?;
-    let key_in = VaultItems::open_in(root)
-        .and_then(|items| items.key_in(&item))
-        .map_err(|error| error.to_string())?;
+    let key_in = items.key_in(&item).map_err(|error| error.to_string())?;
     headers(call, &key_in)?;
     rides_alone(&url, &key_in)
 }
@@ -282,35 +283,58 @@ fn in_a_line(method: &Method, url: &Url) -> String {
     format!("{} {}", method.as_str(), url.path())
 }
 
-/// Make `call` for `by` with the key the vault under `root` keeps, from a
-/// server that reaches `reach`, its name looked up as every server's own
-/// request looks one up ([`send_through`]). `purpose` is what the key's use
-/// is written down with: the use's word and how its person allowed it.
+/// Make `call` for `by` with the key `workspace`'s vault keeps, from a server that reaches what
+/// `workspaces` reaches, its name looked up as every server's own request looks one up
+/// ([`deliver`]). `purpose` is what the key's use is written down with: the use's word and how
+/// its person allowed it. The use is written to the vault before the request leaves.
 pub(super) async fn send(
-    reach: Destinations,
-    root: &Path,
+    workspaces: &super::Workspaces,
+    workspace: &str,
     call: WebCall,
     by: &str,
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
-    send_through(reach, system_lookup(), root, call, by, purpose).await
+    let reach = workspaces.call_reach();
+    let opened = workspaces.open_vault(workspace).await?;
+    let mut items = opened.items();
+    let ready = ready(reach, &mut items, call, by, purpose)?;
+    workspaces.write_vault(&opened, items.take_changes()).await?;
+    deliver(reach, system_lookup(), ready).await
 }
 
-/// Make `call` for `by` with the key the vault under `root` keeps, from a
-/// server that reaches `reach` and looks a name up with `lookup`: the one
-/// place the reference becomes its secret. The client asks `lookup` once,
-/// checks every address it answers and connects to exactly those. Answers
-/// the status, the headers and the body, the key struck out of all of it.
-/// The use is written down with `purpose` and with what this call does
-/// ([`in_a_line`]), whatever `purpose` says of that.
+/// [`send`] with the vault's `items` in hand, looking a name up with `lookup`.
+#[cfg(test)]
 async fn send_through(
     reach: Destinations,
     lookup: Lookup,
-    root: &Path,
+    items: &mut VaultItems,
     call: WebCall,
     by: &str,
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
+    let ready = ready(reach, items, call, by, purpose)?;
+    deliver(reach, lookup, ready).await
+}
+
+/// A call with its key in place, nothing of it sent yet.
+struct Ready {
+    url: Url,
+    method: Method,
+    sent: Vec<(HeaderName, HeaderValue)>,
+    struck: Struck,
+    body: String,
+}
+
+/// `call` for `by` with the key the vault's `items` keep, from a server that reaches `reach`:
+/// the one place the reference becomes its secret. The use is written down in `items` with
+/// `purpose` and with what this call does ([`in_a_line`]), whatever `purpose` says of that.
+fn ready(
+    reach: Destinations,
+    items: &mut VaultItems,
+    call: WebCall,
+    by: &str,
+    purpose: UsedFor<'_>,
+) -> Result<Ready, String> {
     let mut url = address(&call, reach)?;
     let method = method(&call)?;
     if call.body.len() > MAX_SENT_BYTES {
@@ -319,30 +343,46 @@ async fn send_through(
     let (item, kind, places) = wanted(&call)?;
     // The key leaves the vault last, once nothing else refuses the call,
     // and its use is written down before it is handed out.
-    let (key_in, mut sent, key) = {
-        let mut items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
-        let key_in = items.key_in(&item).map_err(|error| error.to_string())?;
-        let sent = headers(&call, &key_in)?;
-        rides_alone(&url, &key_in)?;
-        // Said before the key is anywhere in the request.
-        let what = in_a_line(&method, &url);
-        let purpose = UsedFor {
-            what: &what,
-            ..purpose
-        };
-        let key = items
-            .use_for(&item, kind, &places, by, purpose)
-            .map_err(|error| error.to_string())?;
-        (key_in, sent, key)
+    let key_in = items.key_in(&item).map_err(|error| error.to_string())?;
+    let mut sent = headers(&call, &key_in)?;
+    rides_alone(&url, &key_in)?;
+    // Said before the key is anywhere in the request.
+    let what = in_a_line(&method, &url);
+    let purpose = UsedFor {
+        what: &what,
+        ..purpose
     };
+    let key = items
+        .use_for(&item, kind, &places, by, purpose)
+        .map_err(|error| error.to_string())?;
     let struck = keyed(&mut url, &mut sent, &key_in, &key)?;
+    Ok(Ready {
+        url,
+        method,
+        sent,
+        struck,
+        body: call.body,
+    })
+}
+
+/// Send what [`ready`] made from a server that reaches `reach` and looks a name up with
+/// `lookup`. The client asks `lookup` once, checks every address it answers and connects to
+/// exactly those. Answers the status, the headers and the body, the key struck out of all of it.
+async fn deliver(reach: Destinations, lookup: Lookup, ready: Ready) -> Result<Value, String> {
+    let Ready {
+        url,
+        method,
+        sent,
+        struck,
+        body: sending,
+    } = ready;
     let client = guarded_client(reach, lookup).map_err(|_| UNREACHED.to_owned())?;
     let mut request = client.request(method, url).timeout(DEADLINE);
     for (name, value) in sent {
         request = request.header(name, value);
     }
-    if !call.body.is_empty() {
-        request = request.body(call.body);
+    if !sending.is_empty() {
+        request = request.body(sending);
     }
     // The address may carry the key, and an error of the client's names the
     // address: no refusal here repeats what the client says.
@@ -670,12 +710,10 @@ mod tests {
         (lookup, asked)
     }
 
-    /// A vault under a new root that keeps the made-up key for `service`,
-    /// and the call for a number there.
-    fn kept_for(service: &str) -> (tempfile::TempDir, WebCall) {
-        let root = tempfile::tempdir().unwrap();
-        let kept = VaultItems::open_in(root.path())
-            .unwrap()
+    /// A vault that keeps the made-up key for `service`, and the call for a number there.
+    fn kept_for(service: &str) -> (VaultItems, WebCall) {
+        let mut items = VaultItems::default();
+        let kept = items
             .add(vault_items::NewItem::new(
                 vault_items::ItemKind::Key,
                 vec![Place::parse(service).unwrap()],
@@ -688,7 +726,7 @@ mod tests {
             "key": format!("vault.item:{}", kept.id.as_str()),
         }))
         .unwrap();
-        (root, call)
+        (items, call)
     }
 
     /// The name of a call is looked up once, every address the lookup
@@ -705,7 +743,7 @@ mod tests {
             "https://api.example.test:{}",
             quiet.local_addr().unwrap().port()
         );
-        let (root, call) = kept_for(&service);
+        let (mut items, call) = kept_for(&service);
         for answers in [
             vec!["127.0.0.1"],
             vec!["10.0.0.7"],
@@ -719,7 +757,7 @@ mod tests {
             let refused = send_through(
                 Destinations::Public,
                 lookup,
-                root.path(),
+                &mut items,
                 call.clone(),
                 "Scout",
                 UsedFor::default(),
@@ -737,7 +775,7 @@ mod tests {
         let nowhere = send_through(
             Destinations::Public,
             lookup,
-            root.path(),
+            &mut items,
             call,
             "Scout",
             UsedFor::default(),
@@ -755,12 +793,12 @@ mod tests {
             listening.local_addr().unwrap().port()
         );
         let reached = std::thread::spawn(move || listening.accept().is_ok());
-        let (root, call) = kept_for(&service);
+        let (mut items, call) = kept_for(&service);
         let (lookup, asked) = answering(&["127.0.0.1"]);
         let cut = send_through(
             Destinations::Any,
             lookup,
-            root.path(),
+            &mut items,
             call,
             "Scout",
             UsedFor::default(),
@@ -785,7 +823,7 @@ mod tests {
             listening.local_addr().unwrap().port()
         );
         let reached = std::thread::spawn(move || listening.accept().is_ok());
-        let (root, mut call) = kept_for(&service);
+        let (mut items, mut call) = kept_for(&service);
         let item = item_of(&call).unwrap();
         call.url = format!("{service}/v1/charges?account=7&note=kept-nowhere#end-kept-nowhere");
         call.method = "post".to_owned();
@@ -799,7 +837,7 @@ mod tests {
         let cut = send_through(
             Destinations::Any,
             lookup,
-            root.path(),
+            &mut items,
             call,
             "Scout",
             purpose,
@@ -807,9 +845,7 @@ mod tests {
         .await;
         assert_eq!(cut, Err(UNREACHED.to_owned()));
         assert!(reached.join().unwrap(), "the call went out");
-        let uses = VaultItems::open_in(root.path())
-            .unwrap()
-            .uses(&item)
+        let uses = items.uses(&item)
             .unwrap();
         assert_eq!(uses.len(), 1);
         assert_eq!(uses[0].using, "tilo.vault/web-call");

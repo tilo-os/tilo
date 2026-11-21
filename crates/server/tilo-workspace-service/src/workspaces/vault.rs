@@ -1,0 +1,591 @@
+//! The workspace's vault, as the device this service runs on holds it.
+//!
+//! A workspace keeps one vault: Passwords' vault document
+//! ([`roles::WORKSPACE_VAULT_DOCUMENT`]). Its entries are sealed under the document's own keys,
+//! which every device the workspace's policy lets read Passwords holds: a member's laptop, a
+//! page, and a server, which is a device that stores more and holds them through the grant its
+//! administrator membership is. Whatever this service needs a secret for (a mail account it signs
+//! in to, a provider's key, a program the workspace's machine starts, an agent's turn) reads it
+//! here, from this device's own copy of the document, and asks no other device for it.
+//!
+//! Reading opens each entry with the document's keys ([`OpenVault::entries`]); every change is
+//! sealed with them and written as this device's own write of the document
+//! ([`Workspaces::write_vault`]), which syncs to every other holder as any member's write does.
+//! A use of an entry is written down in its uses beside it, never into the entry, so a use and a
+//! member's edit of the entry at the same time keep both.
+//!
+//! Who may read what is not decided here: the device reads the document as the policy lets it,
+//! and each caller is decided by the policy for its own acting before anything it asked for is
+//! read ([`super::person_vault`], [`super::machine_secrets`], [`super::hosted_use`]).
+
+use accounts::vault_items::{UseRecord, VaultChange, VaultItems};
+use accounts::{SecretId, SecretItem};
+use passwords_model::WorkspaceVaultEntries;
+use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
+use tilo_resource::{Id, Replica};
+use zeroize::Zeroizing;
+
+use tilo_lock::MutexRecover as _;
+
+use super::Workspaces;
+
+/// The app that keeps the vault: whose grants decide each reader of it.
+pub(crate) const APP: &str = tilo_app_id::apps::PASSWORDS;
+
+/// The most bytes of the vault document one read takes.
+const MAX_VAULT_BYTES: usize = 64 * 1024 * 1024;
+
+/// How many changes one write carries when a host carries its earlier vault over: each write of
+/// a document is bounded in size.
+const CARRIED_PER_WRITE: usize = 16;
+
+/// The words for a vault this device cannot open.
+const UNAVAILABLE: &str = "The workspace's vault is not open on this device";
+
+/// The workspace's vault as this device read it: the document, its keys, and its entries
+/// opened with them.
+pub(crate) struct OpenVault {
+    workspace: String,
+    keys: key_group::ContentKeys,
+    /// The document as it was read: `None` where nobody has made it yet.
+    document: Option<Vec<u8>>,
+    entries: Vec<(SecretItem, Vec<UseRecord>)>,
+}
+
+impl OpenVault {
+    /// Every entry of the vault, each with the uses kept beside it.
+    pub(crate) fn entries(&self) -> &[(SecretItem, Vec<UseRecord>)] {
+        &self.entries
+    }
+
+    /// The vault's entries read as items: what signs in where.
+    pub(crate) fn items(&self) -> VaultItems {
+        VaultItems::of_entries(self.entries.iter().cloned())
+    }
+
+    /// The entry `id` names, when the vault keeps it.
+    pub(crate) fn entry(&self, id: &str) -> Option<&SecretItem> {
+        self.entries
+            .iter()
+            .map(|(entry, _)| entry)
+            .find(|entry| entry.id.0 == id)
+    }
+}
+
+impl std::fmt::Debug for OpenVault {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenVault")
+            .field("workspace", &self.workspace)
+            .field("entries", &self.entries.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The route the vault's document travels on in `workspace`.
+fn route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
+    tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.to_owned(),
+        cluster_id: workspace.to_owned(),
+        document: WORKSPACE_VAULT_DOCUMENT.to_owned(),
+    }
+}
+
+/// The field an entry's uses are sealed at.
+fn uses_field(id: &str) -> String {
+    passwords_model::uses_field(id)
+}
+
+impl Workspaces {
+    /// `workspace`'s vault, opened on this device with the document's own keys.
+    ///
+    /// # Errors
+    /// This service does not hold the workspace, its device holds no keys of the vault (the
+    /// policy does not let it read Passwords), or the document does not read.
+    pub(crate) async fn open_vault(&self, workspace: &str) -> Result<OpenVault, String> {
+        // The keys are made where nobody made them yet, as this device's own write of any of
+        // the workspace's documents makes them.
+        let keys = match self.own_route_keys(&route(workspace), true).await {
+            Some(Ok(keys)) => keys,
+            Some(Err(reason)) => {
+                tracing::debug!(%workspace, %reason, "the vault's keys are not held here");
+                return Err(UNAVAILABLE.to_owned());
+            }
+            None => return Err(UNAVAILABLE.to_owned()),
+        };
+        let opened = self.read_vault(workspace, keys).await?;
+        self.carry_over(opened).await
+    }
+
+    /// Carry what this host kept of each of its workspaces' vaults before into their vault
+    /// documents, as it starts ([`Self::carry_over`]). A workspace whose keys are not here yet
+    /// is carried the first time its vault opens.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    pub(crate) async fn carry_vaults_over(&self) {
+        let governed: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
+        for workspace in governed {
+            let kept = accounts::vault_items::KeptBefore::under(&self.workspace_root(&workspace))
+                .is_ok_and(|kept| !kept.is_empty());
+            if kept && let Err(error) = self.open_vault(&workspace).await {
+                tracing::info!(%workspace, %error, "what the host kept of the workspace's vault is carried over once its vault opens here");
+            }
+        }
+    }
+
+    /// `workspace`'s vault document as this device holds it now, opened with `keys`.
+    async fn read_vault(
+        &self,
+        workspace: &str,
+        keys: key_group::ContentKeys,
+    ) -> Result<OpenVault, String> {
+        let document = self.vault_document(workspace).await?;
+        let entries = match &document {
+            Some(bytes) => open_entries(&keys, bytes)?,
+            None => Vec::new(),
+        };
+        Ok(OpenVault {
+            workspace: workspace.to_owned(),
+            keys,
+            document,
+            entries,
+        })
+    }
+
+    /// Carry what this host kept of `opened`'s vault in its own sealed store, before the
+    /// workspace's vault was the document, into the document, once after each start: every item
+    /// and entry the document does not keep yet, with its uses. Only once they are written are
+    /// they taken out of the host's store, so a failed write loses nothing and is carried at the
+    /// next open.
+    async fn carry_over(&self, opened: OpenVault) -> Result<OpenVault, String> {
+        let workspace = opened.workspace.clone();
+        if self
+            .inner
+            .vault_uses
+            .carried_over
+            .lock_recover()
+            .contains(&workspace)
+        {
+            return Ok(opened);
+        }
+        let root = self.workspace_root(&workspace);
+        let kept = match accounts::vault_items::KeptBefore::under(&root) {
+            Ok(kept) => kept,
+            Err(error) => {
+                tracing::warn!(%workspace, %error, "what the host kept of the workspace's vault before does not open; it stays");
+                return Ok(opened);
+            }
+        };
+        if kept.is_empty() {
+            self.inner
+                .vault_uses
+                .carried_over
+                .lock_recover()
+                .insert(workspace);
+            return Ok(opened);
+        }
+        let mut changes = Vec::new();
+        for (entry, uses) in kept.entries() {
+            if opened.entry(&entry.id.0).is_some() {
+                continue;
+            }
+            changes.push(VaultChange::Keep(entry.clone()));
+            if !uses.is_empty() {
+                changes.push(VaultChange::Uses(entry.id.clone(), uses.clone()));
+            }
+        }
+        let carried = changes.len();
+        // A few at a time: one write of a document carries a bounded number of bytes.
+        let mut opened = opened;
+        let mut changes = changes.into_iter().peekable();
+        while changes.peek().is_some() {
+            let batch: Vec<VaultChange> = changes.by_ref().take(CARRIED_PER_WRITE).collect();
+            self.write_vault(&opened, batch).await?;
+            opened = self.read_vault(&workspace, opened.keys).await?;
+        }
+        kept.forget().map_err(|error| error.to_string())?;
+        tracing::info!(%workspace, carried, "carried what the host kept of the workspace's vault into the vault document");
+        self.inner
+            .vault_uses
+            .carried_over
+            .lock_recover()
+            .insert(workspace.clone());
+        let keys = opened.keys;
+        self.read_vault(&workspace, keys).await
+    }
+
+    /// The vault document of `workspace` as this device reads it, `None` where nobody has made
+    /// it yet.
+    async fn vault_document(&self, workspace: &str) -> Result<Option<Vec<u8>>, String> {
+        if self.holds_own_copy(workspace).await {
+            return self
+                .resource_document(workspace, APP, WORKSPACE_VAULT_DOCUMENT)
+                .await
+                .map_err(|error| error.to_string());
+        }
+        if !self.holds_resource(workspace, APP, WORKSPACE_VAULT_DOCUMENT) {
+            return Ok(None);
+        }
+        let read = self
+            .own_read(
+                workspace,
+                (APP, WORKSPACE_VAULT_DOCUMENT),
+                &[],
+                MAX_VAULT_BYTES,
+            )
+            .await?;
+        match read {
+            tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }
+            | tilo_peer_state::workspace_documents::DocumentRead::Changes { bytes, .. } => {
+                Ok(Some(bytes))
+            }
+            tilo_peer_state::workspace_documents::DocumentRead::Absent => Ok(None),
+            tilo_peer_state::workspace_documents::DocumentRead::Pending => {
+                Err("The workspace's vault is still arriving on this device; try again in a moment".to_owned())
+            }
+            tilo_peer_state::workspace_documents::DocumentRead::Unchanged(_) => {
+                Err("the vault's document did not read".to_owned())
+            }
+        }
+    }
+
+    /// Write `changes` to `opened`'s vault as this device's own write of its document, sealed
+    /// under its keys: the entries kept, forgotten and used. A vault nobody has made yet is
+    /// made with them, as Passwords makes it.
+    ///
+    /// # Errors
+    /// An entry does not seal, the document cannot be made here, or the workspace refused the
+    /// write.
+    pub(crate) async fn write_vault(
+        &self,
+        opened: &OpenVault,
+        changes: Vec<VaultChange>,
+    ) -> Result<(), String> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        if self.holds_own_copy(&opened.workspace).await {
+            // The workspace's own copy is this service's: it writes the document as its
+            // governor, onto the copy it holds now, as every other document it authors.
+            let cert = self.inner.host.cert.clone();
+            let start = match opened.document {
+                Some(_) => None,
+                None => Some(Box::new(founding_document(&opened.workspace)?)),
+            };
+            let keys = &opened.keys;
+            return Box::pin(self.author_workspace_document_from(
+                (&opened.workspace, &cert),
+                (APP, WORKSPACE_VAULT_DOCUMENT),
+                start,
+                |doc| {
+                    let mut replica = in_passwords(Replica::from_doc(std::mem::take(doc)));
+                    replica
+                        .doc_mut()
+                        .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
+                    let applied = apply_changes(&mut replica, keys, changes);
+                    std::mem::swap(doc, replica.doc_mut());
+                    applied
+                },
+            ))
+            .await
+            .map_err(|error| error.to_string());
+        }
+        let founding = opened.document.is_none();
+        let keys = &opened.keys;
+        let changes = vault_changes(opened, &self.signing_device().device(), changes)?;
+        self.own_write(
+            &opened.workspace,
+            (APP, WORKSPACE_VAULT_DOCUMENT),
+            None,
+            &changes,
+            founding,
+            founding,
+            Some(keys),
+        )
+        .await
+        .map(drop)
+        .map_err(|refusal| refusal.to_string())
+    }
+
+    /// Whether this service holds `workspace`'s own copy, governing it, rather than a member's.
+    async fn holds_own_copy(&self, workspace: &str) -> bool {
+        match collab_types::WorkspaceId::parse(workspace) {
+            Some(id) => self.governed_copy(id).await.is_some(),
+            None => false,
+        }
+    }
+
+    /// Open `workspace`'s vault, let `change` read and change its items, and write what it
+    /// changed before answering what it answered: the one way a secret leaves the vault for code
+    /// on this device, with its use written down first.
+    ///
+    /// # Errors
+    /// The vault does not open here, `change` refused, or what it changed was not written: then
+    /// nothing it released is answered.
+    pub(crate) async fn changing_vault<T>(
+        &self,
+        workspace: &str,
+        change: impl FnOnce(&mut VaultItems) -> Result<T, accounts::vault_items::ItemError>,
+    ) -> Result<T, String> {
+        let opened = self.open_vault(workspace).await?;
+        let mut items = opened.items();
+        let answer = change(&mut items).map_err(|error| error.to_string())?;
+        self.write_vault(&opened, items.take_changes()).await?;
+        Ok(answer)
+    }
+}
+
+/// Where code outside the workspaces' own (a connection's sign-in) reaches a workspace's vault:
+/// the vault of one workspace this device holds, or, in a test of that code alone, items in
+/// hand.
+#[derive(Clone, Copy)]
+pub(crate) enum VaultAt<'a> {
+    Workspace(&'a Workspaces, &'a str),
+    #[cfg(test)]
+    Held(&'a std::sync::Mutex<VaultItems>),
+}
+
+impl std::fmt::Debug for VaultAt<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Workspace(_, workspace) => {
+                formatter.debug_tuple("Workspace").field(workspace).finish()
+            }
+            #[cfg(test)]
+            Self::Held(_) => formatter.write_str("Held"),
+        }
+    }
+}
+
+impl VaultAt<'_> {
+    /// Let `change` read and change the vault's items, writing what it changed before
+    /// answering ([`Workspaces::changing_vault`]).
+    ///
+    /// # Errors
+    /// As [`Workspaces::changing_vault`].
+    pub(crate) async fn changing<T>(
+        &self,
+        change: impl FnOnce(&mut VaultItems) -> Result<T, accounts::vault_items::ItemError>,
+    ) -> Result<T, String> {
+        match self {
+            Self::Workspace(workspaces, workspace) => {
+                workspaces.changing_vault(workspace, change).await
+            }
+            #[cfg(test)]
+            Self::Held(items) => {
+                let mut items = items.lock().map_err(|_| "the vault is poisoned".to_owned())?;
+                change(&mut items).map_err(|error| error.to_string())
+            }
+        }
+    }
+}
+
+impl Workspaces {
+    /// `workspace`'s vault, for code that carries it beside what else it reaches.
+    pub(crate) fn vault_at<'a>(&'a self, workspace: &'a str) -> VaultAt<'a> {
+        VaultAt::Workspace(self, workspace)
+    }
+}
+
+/// The vault's genesis in `workspace`: the same change Passwords makes it with on any device,
+/// so a vault this device makes and one a window made at the same time are one document.
+#[cfg(any(feature = "agents", feature = "apps"))]
+fn founding_document(workspace: &str) -> Result<automerge::AutoCommit, String> {
+    use tilo_resource::Resource as _;
+    let id = collab_types::document::DocumentId::parse(WORKSPACE_VAULT_DOCUMENT)
+        .ok_or("the vault's id is no document's")?;
+    let kind = collab_types::document::ResourceType::new(WorkspaceVaultEntries::KIND);
+    let mut doc = automerge::AutoCommit::new();
+    collaboration::resource::genesis(
+        &mut doc,
+        &collab_types::document::DocumentCheckout::new(id, kind),
+        workspace,
+        |doc| WorkspaceVaultEntries::initialize(doc).map_err(|error| error.to_string()),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(doc)
+}
+
+/// Where this service is built without the resources' genesis, a vault nobody has made yet is
+/// made by the first member's Passwords.
+#[cfg(not(any(feature = "agents", feature = "apps")))]
+fn founding_document(_workspace: &str) -> Result<automerge::AutoCommit, String> {
+    Err("The workspace's vault is made by Passwords on a member's device first".to_owned())
+}
+
+/// Every entry of the vault document `bytes` holds, opened with `keys`, each with its uses.
+/// The changes that write `changes` to `opened`'s vault as the device `device`, sealed under the
+/// vault's keys; the whole document where nobody has made it yet. Made apart from any wait: the
+/// document as it changes is not shared between threads.
+fn vault_changes(
+    opened: &OpenVault,
+    device: &[u8; 32],
+    changes: Vec<VaultChange>,
+) -> Result<Vec<u8>, String> {
+    let mut replica = in_passwords(match &opened.document {
+        Some(bytes) => {
+            Replica::<WorkspaceVaultEntries>::load(bytes).map_err(|error| error.to_string())?
+        }
+        None => Replica::from_doc(founding_document(&opened.workspace)?),
+    });
+    // This device's own actor: the genesis is the founding actor's change, and two devices
+    // continuing it under that actor would make one sequence with two different changes.
+    replica
+        .doc_mut()
+        .set_actor(automerge::ActorId::from(device.to_vec()));
+    let heads = replica.heads();
+    let founding = opened.document.is_none();
+    apply_changes(&mut replica, &opened.keys, changes)?;
+    Ok(if founding {
+        replica.save()
+    } else {
+        replica.doc_mut().save_after(&heads)
+    })
+}
+
+/// `replica` writing as Passwords does: each change claims Passwords' verb, which every member
+/// decides against Passwords' surface.
+fn in_passwords(
+    replica: Replica<WorkspaceVaultEntries>,
+) -> Replica<WorkspaceVaultEntries> {
+    replica.in_app(APP, "Passwords")
+}
+
+/// Apply `changes` to `replica`, each entry and its uses sealed under `keys`.
+fn apply_changes(
+    replica: &mut Replica<WorkspaceVaultEntries>,
+    keys: &key_group::ContentKeys,
+    changes: Vec<VaultChange>,
+) -> Result<(), String> {
+    for change in changes {
+        let action = match change {
+            VaultChange::Keep(entry) => {
+                let sealed = seal_entry(keys, &entry)?;
+                WorkspaceVaultEntries::KEEP_SEALED.with((entry.id.0.clone(), sealed))
+            }
+            VaultChange::Forget(SecretId(id)) => WorkspaceVaultEntries::REMOVE_SEALED.with(id),
+            VaultChange::Uses(SecretId(id), uses) => {
+                let payload = Zeroizing::new(
+                    serde_json::to_vec(&uses).map_err(|error| error.to_string())?,
+                );
+                let sealed = keys
+                    .seal_private_field(&uses_field(&id), &payload)
+                    .map_err(|error| error.to_string())?;
+                WorkspaceVaultEntries::KEEP_USES.with((id, sealed))
+            }
+        };
+        replica
+            .apply_confirmed(action)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn open_entries(
+    keys: &key_group::ContentKeys,
+    bytes: &[u8],
+) -> Result<Vec<(SecretItem, Vec<UseRecord>)>, String> {
+    let state = Replica::<WorkspaceVaultEntries>::load(bytes)
+        .and_then(|replica| replica.state())
+        .map_err(|error| error.to_string())?;
+    let mut entries = Vec::new();
+    for (id, sealed) in state.entries() {
+        let entry = match open_entry(keys, id, &sealed.0) {
+            Ok(entry) => entry,
+            Err(reason) => {
+                // An entry sealed under an epoch this device never held is passed over, not the
+                // whole vault: the others still read.
+                tracing::debug!(entry = %id.as_str(), %reason, "a vault entry did not open");
+                continue;
+            }
+        };
+        let uses = state
+            .used
+            .get(id)
+            .and_then(|sealed| {
+                let payload = keys
+                    .open_private_field(&uses_field(id.as_str()), &sealed.0)
+                    .ok()?;
+                serde_json::from_slice::<Vec<UseRecord>>(&payload).ok()
+            })
+            .unwrap_or_default();
+        entries.push((entry, uses));
+    }
+    Ok(entries)
+}
+
+/// The entry `sealed` holds at `id`, opened with `keys`: what a Passwords window opens it to.
+fn open_entry(key: &key_group::ContentKeys, id: &Id, sealed: &str) -> Result<SecretItem, String> {
+    let payload = key
+        .open_private_field(id.as_str(), sealed)
+        .map_err(|error| error.to_string())?;
+    let entry: SecretItem =
+        serde_json::from_slice(&payload).map_err(|_| "invalid encrypted vault item".to_owned())?;
+    if entry.id.0 != id.as_str() {
+        return Err("vault item identifier mismatch".to_owned());
+    }
+    Ok(entry)
+}
+
+/// `entry` sealed at its id with `keys`, as a Passwords window seals it.
+fn seal_entry(keys: &key_group::ContentKeys, entry: &SecretItem) -> Result<String, String> {
+    if !entry.may_share_with_workspace() {
+        return Err("a device credential must stay with its device".to_owned());
+    }
+    let payload =
+        Zeroizing::new(serde_json::to_vec(entry).map_err(|_| "invalid vault item".to_owned())?);
+    keys.seal_private_field(&entry.id.0, &payload)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "a test: a failed step is the assertion")]
+
+    use super::*;
+    use crate::workspaces::fixtures::{governor, test_host_taking_part};
+
+    /// What this device keeps in the vault it reads back, opened under the document's keys,
+    /// with a use written beside it; what it forgets is gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn what_a_device_keeps_in_the_vault_it_reads_back() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (key, cert) = governor();
+        let server = test_host_taking_part(scratch.path(), &key, &cert).await;
+        let workspaces = server.workspaces();
+        let workspace = workspaces.create("Vault").await.unwrap().workspace;
+
+        let opened = workspaces.open_vault(&workspace).await.unwrap();
+        assert!(opened.entries().is_empty());
+        let mut entry = SecretItem::login("Example", "ada", "correct horse battery staple");
+        entry.add_origin("https://example.test").unwrap();
+        let use_record = UseRecord {
+            at_unix: 7,
+            places: Vec::new(),
+            by: "Assistant".to_owned(),
+            using: String::new(),
+            what: String::new(),
+            allowed: None,
+        };
+        workspaces
+            .write_vault(
+                &opened,
+                vec![
+                    VaultChange::Keep(entry.clone()),
+                    VaultChange::Uses(entry.id.clone(), vec![use_record.clone()]),
+                ],
+            )
+            .await
+            .unwrap();
+        let again = workspaces.open_vault(&workspace).await.unwrap();
+        assert_eq!(again.entries().len(), 1, "{again:?}");
+        assert_eq!(again.entries()[0].0, entry);
+        assert_eq!(again.entries()[0].1, vec![use_record]);
+
+        workspaces
+            .write_vault(&again, vec![VaultChange::Forget(entry.id.clone())])
+            .await
+            .unwrap();
+        assert!(workspaces.open_vault(&workspace).await.unwrap().entries().is_empty());
+        server.shutdown().await;
+    }
+}

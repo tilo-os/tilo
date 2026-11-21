@@ -310,16 +310,7 @@ impl ContentLink {
     /// The document's own keys are unavailable or encryption fails.
     pub fn seal_private_field(&self, field: &str, bytes: &[u8]) -> Result<String, String> {
         self.with_document_keys(|keys| {
-            let artifact = collab_types::document_artifact_id(
-                "tilo.private-field",
-                &keys.workspace().to_string(),
-                field,
-            );
-            let envelope = keys
-                .seal_content(artifact, collab_types::ContentRetention::Delta, bytes)
-                .map_err(|error| error.to_string())?;
-            postcard::to_allocvec(&envelope)
-                .map(hex::encode)
+            keys.seal_private_field(field, bytes)
                 .map_err(|error| error.to_string())
         })
     }
@@ -334,19 +325,7 @@ impl ContentLink {
         encoded: &str,
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, String> {
         self.with_document_keys(|keys| {
-            let artifact = collab_types::document_artifact_id(
-                "tilo.private-field",
-                &keys.workspace().to_string(),
-                field,
-            );
-            let bytes = hex::decode(encoded).map_err(|error| error.to_string())?;
-            let (metadata, sealed): (collab_types::EncryptionMetadata, Vec<u8>) =
-                postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-            if !matches!(metadata.scheme, collab_types::EncryptionScheme::DocumentContentKey { group, .. } if group == keys.workspace())
-            {
-                return Err("field was sealed for another document".into());
-            }
-            keys.open_content(artifact, &metadata, &sealed)
+            keys.open_private_field(field, encoded)
                 .map_err(|error| error.to_string())
         })
     }

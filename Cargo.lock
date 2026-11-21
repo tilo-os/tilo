@@ -24049,6 +24049,7 @@ dependencies = [
  "n0-future",
  "neighbour-wire",
  "parking_lot",
+ "passwords-model",
  "postcard",
  "rand 0.10.3",
  "rcgen",

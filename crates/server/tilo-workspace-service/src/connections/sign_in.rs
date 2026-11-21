@@ -22,7 +22,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use accounts::vault_items::{ItemId, ItemKind, NewItem, Place, VaultItems};
+use accounts::vault_items::{ItemId, ItemKind, NewItem, Place};
+
+use crate::workspaces::vault::VaultAt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
@@ -504,60 +506,69 @@ fn place(of: &str) -> Result<Place, String> {
     Place::parse(of).map_err(|_| NO_VAULT.to_owned())
 }
 
-/// Keep what an issuer handed out in the vault under `root`: the token the
+/// Keep what an issuer handed out in the workspace's `vault`: the token the
 /// service takes for the service's own address, the one that renews it for
 /// the address it is renewed at, and nothing anywhere else.
-fn keep(root: &Path, address: &Address, way: &Way, issued: Issued) -> Result<Tokens, String> {
-    let unavailable = |error: accounts::vault_items::ItemError| {
-        tracing::warn!(%error, "a sign-in could not be kept in its person's vault");
-        NO_VAULT.to_owned()
-    };
-    let mut vault = VaultItems::open_in(root).map_err(unavailable)?;
-    let access = vault
-        .add(NewItem::new(
-            ItemKind::Key,
-            vec![place(address.as_str())?],
-            String::new(),
-            issued.access,
-        ))
-        .map_err(unavailable)?;
-    let renewal = match issued.renewal {
-        None => None,
-        Some(renewal) => Some(
-            vault
-                .add(NewItem::new(
-                    ItemKind::Key,
-                    vec![place(&way.token)?],
-                    String::new(),
-                    renewal,
-                ))
-                .map_err(unavailable)?
-                .id
-                .as_str()
-                .to_owned(),
-        ),
-    };
-    Ok(Tokens {
-        access: access.id.as_str().to_owned(),
-        renewal,
-        expires_ms: issued.expires_ms,
-    })
+async fn keep(
+    vault: VaultAt<'_>,
+    address: &Address,
+    way: &Way,
+    issued: Issued,
+) -> Result<Tokens, String> {
+    let access_at = place(address.as_str())?;
+    let renewal_at = place(&way.token)?;
+    vault
+        .changing(|items| {
+            let access = items.add(NewItem::new(
+                ItemKind::Key,
+                vec![access_at],
+                String::new(),
+                issued.access,
+            ))?;
+            let renewal = match issued.renewal {
+                None => None,
+                Some(renewal) => Some(
+                    items
+                        .add(NewItem::new(
+                            ItemKind::Key,
+                            vec![renewal_at],
+                            String::new(),
+                            renewal,
+                        ))?
+                        .id
+                        .as_str()
+                        .to_owned(),
+                ),
+            };
+            Ok(Tokens {
+                access: access.id.as_str().to_owned(),
+                renewal,
+                expires_ms: issued.expires_ms,
+            })
+        })
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "a sign-in could not be kept in the workspace's vault");
+            NO_VAULT.to_owned()
+        })
 }
 
-/// Take the items `tokens` names out of the vault under `root`. An item
+/// Take the items `tokens` names out of the workspace's `vault`. An item
 /// that is gone already is gone.
-pub(crate) fn forget(root: &Path, tokens: &Tokens) {
-    let forgotten = VaultItems::open_in(root).and_then(|mut vault| {
-        for id in [Some(&tokens.access), tokens.renewal.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            if let Some(id) = ItemId::parse(id) {
-                vault.remove(&id)?;
+pub(crate) async fn forget(vault: VaultAt<'_>, tokens: &Tokens) {
+    let forgotten = vault
+        .changing(|items| {
+            for id in [Some(&tokens.access), tokens.renewal.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(id) = ItemId::parse(id) {
+                    items.remove(&id);
+                }
             }
-        }
-        Ok(())
-    });
+            Ok(())
+        })
+        .await;
     if let Err(error) = forgotten {
         tracing::warn!(%error, "a sign-in that is over could not be taken out of the vault");
     }
@@ -569,6 +580,7 @@ pub(crate) fn forget(root: &Path, tokens: &Tokens) {
 /// A sign-in is finished once: whatever comes of it, it is begun again.
 pub(crate) async fn finish(
     (root, id): (&Path, &str),
+    vault: VaultAt<'_>,
     reach: &Reach,
     address: &Address,
     (way, client): (&Way, &Client),
@@ -624,22 +636,23 @@ pub(crate) async fn finish(
         Ok((200, answer)) => issued(answer),
         _ => None,
     };
-    keep(root, address, way, issued.ok_or(NOT_SIGNED_IN)?)
+    keep(vault, address, way, issued.ok_or(NOT_SIGNED_IN)?).await
 }
 
 /// What the service is shown as the connection's sign-in, handed out of
-/// the vault under `root` for the service's own address and no other, and
+/// the workspace's `vault` for the service's own address and no other, and
 /// written down there as used for `by`.
-pub(crate) fn bearer(
-    root: &Path,
+pub(crate) async fn bearer(
+    vault: VaultAt<'_>,
     address: &Address,
     tokens: &Tokens,
     by: &str,
 ) -> Option<accounts::vault_items::Released> {
     let id = ItemId::parse(&tokens.access)?;
     let at = Place::parse(address.as_str()).ok()?;
-    let released =
-        VaultItems::open_in(root).and_then(|mut vault| vault.use_as(&id, ItemKind::Key, &[at], by));
+    let released = vault
+        .changing(|items| items.use_as(&id, ItemKind::Key, &[at], by))
+        .await;
     match released {
         Ok(released) => Some(released),
         Err(error) => {
@@ -658,9 +671,9 @@ pub(crate) enum NotRenewed {
 }
 
 /// Renew the sign-in `tokens` names, at the address `way` renews it at:
-/// what the issuer hands out replaces what the vault under `root` kept.
+/// what the issuer hands out replaces what the workspace's `vault` kept.
 pub(crate) async fn renew(
-    root: &Path,
+    vault: VaultAt<'_>,
     reach: &Reach,
     address: &Address,
     (way, client): (&Way, &Client),
@@ -670,16 +683,15 @@ pub(crate) async fn renew(
     let token =
         endpoint(&way.token, reach.destinations).ok_or(NotRenewed::NotNow(Problem::NotCalled))?;
     let at = Place::parse(&way.token).map_err(|_| NotRenewed::NotNow(Problem::NotCalled))?;
-    let renewal = tokens
+    let renewal_id = tokens
         .renewal
         .as_deref()
         .and_then(ItemId::parse)
-        .and_then(|id| {
-            VaultItems::open_in(root)
-                .and_then(|mut vault| vault.use_as(&id, ItemKind::Key, &[at], by))
-                .ok()
-        })
         .ok_or(NotRenewed::RanOut)?;
+    let renewal = vault
+        .changing(|items| items.use_as(&renewal_id, ItemKind::Key, &[at], by))
+        .await
+        .map_err(|_| NotRenewed::RanOut)?;
     let wire = Wire::new(reach).map_err(NotRenewed::NotNow)?;
     let asking = form(&[
         ("grant_type", "refresh_token"),
@@ -702,13 +714,14 @@ pub(crate) async fn renew(
     };
     // An issuer that hands out no new renewal keeps the one it had.
     let kept_renewal = issued.renewal.is_none();
-    let mut renewed =
-        keep(root, address, way, issued).map_err(|_| NotRenewed::NotNow(Problem::NoAnswer))?;
+    let mut renewed = keep(vault, address, way, issued)
+        .await
+        .map_err(|_| NotRenewed::NotNow(Problem::NoAnswer))?;
     let mut over = tokens.clone();
     if kept_renewal {
         renewed.renewal = over.renewal.take();
     }
-    forget(root, &over);
+    forget(vault, &over).await;
     Ok(renewed)
 }
 

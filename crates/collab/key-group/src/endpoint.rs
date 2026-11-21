@@ -70,6 +70,11 @@ struct Wire {
     keys: Vec<(u64, [u8; 32])>,
 }
 
+/// The address a private field of the document whose own key group is `group` is sealed at.
+fn private_field_artifact(group: WorkspaceId, field: &str) -> ArtifactId {
+    collab_types::document_artifact_id("tilo.private-field", &group.to_string(), field)
+}
+
 impl ContentKeys {
     pub(crate) fn new(workspace: WorkspaceId, epoch: u64, keyring: ContentKeyring) -> Self {
         Self {
@@ -170,6 +175,44 @@ impl ContentKeys {
         }
         self.keyring
             .open(self.workspace, artifact, metadata, payload)
+    }
+
+    /// Seal one sensitive field of the document these keys are its own group's, under the
+    /// current epoch, bound to the field's address `field`: what a document such as a vault
+    /// keeps in a field, sealed again inside the document's sealed writes, so a reader that
+    /// holds the document but not its own keys reads nothing of it. Every holder of the keys
+    /// seals and opens a field the same way, a window as much as a workspace's service.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::seal_content`], or [`Error::Serialization`].
+    pub fn seal_private_field(&self, field: &str, bytes: &[u8]) -> Result<String> {
+        let artifact = private_field_artifact(self.workspace, field);
+        let envelope = self.seal_content(artifact, ContentRetention::Delta, bytes)?;
+        postcard::to_allocvec(&envelope)
+            .map(hex::encode)
+            .map_err(|error| Error::Serialization(error.to_string()))
+    }
+
+    /// Open a field [`Self::seal_private_field`] sealed at `field` for this document.
+    ///
+    /// # Errors
+    ///
+    /// The field does not decode, was sealed for another document or another field, or its
+    /// epoch's key is not held.
+    pub fn open_private_field(&self, field: &str, encoded: &str) -> Result<Zeroizing<Vec<u8>>> {
+        let artifact = private_field_artifact(self.workspace, field);
+        let bytes =
+            hex::decode(encoded).map_err(|error| Error::Serialization(error.to_string()))?;
+        let (metadata, sealed): (EncryptionMetadata, Vec<u8>) = postcard::from_bytes(&bytes)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        if !matches!(metadata.scheme, EncryptionScheme::DocumentContentKey { group, .. } if group == self.workspace)
+        {
+            return Err(Error::InvalidState(
+                "field was sealed for another document".into(),
+            ));
+        }
+        self.open_content(artifact, &metadata, &sealed)
     }
 
     /// Open a new write's payload: only one sealed under the workspace's

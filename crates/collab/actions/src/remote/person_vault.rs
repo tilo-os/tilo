@@ -141,15 +141,25 @@ pub struct ItemRef {
 }
 
 impl ItemRef {
-    /// The reference to the item `id` names, when `id` is an item's id: 32
-    /// lowercase hexadecimal digits.
+    /// The reference to the entry of the workspace's vault `id` names, when `id` is an
+    /// entry's id: 32 lowercase hexadecimal digits, or an older entry's, the same spelled as a
+    /// UUID with its four hyphens.
     #[must_use]
     pub fn from_id(id: &str) -> Option<Self> {
-        (id.len() == 32
-            && id
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
-        .then(|| Self { id: id.to_owned() })
+        let hex = |part: &str| {
+            part.bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        let entry = match id.len() {
+            32 => hex(id),
+            36 => {
+                let parts: Vec<&str> = id.split('-').collect();
+                parts.iter().map(|part| part.len()).eq([8, 4, 4, 4, 12])
+                    && parts.iter().all(|part| hex(part))
+            }
+            _ => false,
+        };
+        entry.then(|| Self { id: id.to_owned() })
     }
 
     /// The reference `address` spells, when it is one.

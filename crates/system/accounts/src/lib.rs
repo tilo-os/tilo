@@ -82,7 +82,7 @@ pub mod typed_for;
 pub use secrets::{
     AccessDecision, AccessRequest, BrokerError, CredentialBroker, CredentialGrant, CredentialOwner,
     CredentialProposal, CredentialScope, GeneratedPasswordPolicy, GrantLifetime, SecretId,
-    SecretItem, SecretItemKind, SecretStore,
+    SecretItem, SecretItemKind, SecretStore, is_entry_id,
 };
 pub mod service_credentials;
 #[cfg(test)]

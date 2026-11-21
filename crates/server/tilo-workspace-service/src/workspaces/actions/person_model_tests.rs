@@ -27,7 +27,8 @@ use super::ServiceWorkspaceActions;
 use super::tests::{admit, ask_own, caller, governed, request, settled};
 use crate::workspaces::person_model::scripted::{Reply, ScriptedProvider};
 use crate::workspaces::person_model::{Interaction, ModelRefusal};
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::fixtures::test_host_taking_part as test_host;
+use crate::workspaces::tests::governor;
 use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 
 const ADA_KEY: &str = "sk-ada-linked-through-settings";

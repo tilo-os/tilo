@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use accounts::vault_items::{ItemError, ItemId, ItemKind, Place, VaultItems};
+
+use crate::workspaces::vault::VaultAt;
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 use tilo_actions::remote::person_connections::{
@@ -185,11 +187,11 @@ async fn a_service_is_connected_by_its_address_and_its_commands_are_read() {
     // Another person's root holds nothing of it and reaches nothing of it.
     let other = tempfile::tempdir().unwrap();
     assert!(list(other.path()).unwrap().connections.is_empty());
-    let read_by_another = refresh(other.path(), &reach, &added.id, Calling::Person).await;
+    let read_by_another = refresh((other.path(), vault(other.path())), &reach, &added.id, Calling::Person).await;
     assert_eq!(read_by_another.unwrap_err(), NOT_KEPT);
-    assert_eq!(remove(other.path(), &added.id).unwrap_err(), NOT_KEPT);
+    assert_eq!(remove((other.path(), vault(other.path())), &added.id).await.unwrap_err(), NOT_KEPT);
 
-    let read_again = refresh(root.path(), &reach, &added.id, Calling::Agent("Assistant"))
+    let read_again = refresh((root.path(), vault(root.path())), &reach, &added.id, Calling::Agent("Assistant"))
         .await
         .unwrap();
     assert_eq!(read_again.commands, added.commands);
@@ -197,13 +199,14 @@ async fn a_service_is_connected_by_its_address_and_its_commands_are_read() {
     assert!(read_again.commands_read_at_ms >= added.commands_read_at_ms);
 
     assert!(
-        remove(root.path(), &added.id)
+        remove((root.path(), vault(root.path())), &added.id)
+            .await
             .unwrap()
             .connections
             .is_empty()
     );
     assert!(!file.exists());
-    assert_eq!(remove(root.path(), &added.id).unwrap_err(), NOT_KEPT);
+    assert_eq!(remove((root.path(), vault(root.path())), &added.id).await.unwrap_err(), NOT_KEPT);
 }
 
 /// A service that lies about itself is kept as what it is: its name one
@@ -245,7 +248,7 @@ async fn what_a_service_says_of_itself_is_kept_as_data_and_bounded() {
 
     // Read again without its person looking: the service now calls
     // planting only reading, and lists a command it did not have.
-    let later = refresh(root.path(), &reach, &added.id, Calling::Agent("Assistant"))
+    let later = refresh((root.path(), vault(root.path())), &reach, &added.id, Calling::Agent("Assistant"))
         .await
         .unwrap();
     assert_eq!(
@@ -259,7 +262,7 @@ async fn what_a_service_says_of_itself_is_kept_as_data_and_bounded() {
     assert_eq!(later.unusable, 2);
 
     // Its person reads them: what they saw now is what holds.
-    let seen = refresh(root.path(), &reach, &added.id, Calling::Person)
+    let seen = refresh((root.path(), vault(root.path())), &reach, &added.id, Calling::Person)
         .await
         .unwrap();
     assert!(
@@ -344,7 +347,7 @@ async fn a_service_that_goes_away_is_unreachable_and_keeps_what_was_read() {
     let added = add(root.path(), &reach, &address).await.unwrap();
     service.stop();
 
-    let stood = refresh(root.path(), &reach, &added.id, Calling::Person)
+    let stood = refresh((root.path(), vault(root.path())), &reach, &added.id, Calling::Person)
         .await
         .unwrap();
     assert_eq!(stood.state, State::Unreachable);
@@ -390,7 +393,7 @@ async fn nothing_is_asked_where_the_server_does_not_call() {
         .await
         .unwrap();
     assert!(!service.seen().is_empty());
-    let stood = refresh(root.path(), &outside, &added.id, Calling::Person)
+    let stood = refresh((root.path(), vault(root.path())), &outside, &added.id, Calling::Person)
         .await
         .unwrap();
     assert_eq!(stood.state, State::Refused);
@@ -401,7 +404,7 @@ async fn nothing_is_asked_where_the_server_does_not_call() {
         "the service was asked after the leave was gone"
     );
 
-    let back = refresh(root.path(), &let_in(), &added.id, Calling::Person)
+    let back = refresh((root.path(), vault(root.path())), &let_in(), &added.id, Calling::Person)
         .await
         .unwrap();
     assert_eq!(back.state, State::Ready);
@@ -457,7 +460,7 @@ async fn a_command_is_called_as_an_action_and_written_down() {
 
     let planting = json!({"kind": "apple", "row": 4, "notes": {"deep": [1, {"er": null}]}});
     let planted = call(
-        root.path(),
+        (root.path(), vault(root.path())),
         &reach,
         Calling::Person,
         a_call(id, "plant_tree", planting.clone()),
@@ -474,7 +477,7 @@ async fn a_command_is_called_as_an_action_and_written_down() {
     let assistant = Calling::Agent("Assistant");
     let finding = json!({"orchard": "north"});
     let found = call(
-        root.path(),
+        (root.path(), vault(root.path())),
         &reach,
         assistant,
         a_call(id, "find_trees", finding.clone()),
@@ -485,7 +488,7 @@ async fn a_command_is_called_as_an_action_and_written_down() {
     assert_eq!(found.content[0]["text"], "3 trees in \"north\"");
 
     let refused = call(
-        root.path(),
+        (root.path(), vault(root.path())),
         &reach,
         assistant,
         a_call(id, "plant_tree", planting.clone()),
@@ -493,7 +496,7 @@ async fn a_command_is_called_as_an_action_and_written_down() {
     .await;
     assert_eq!(refused.unwrap_err(), ASKS_FIRST);
     let unknown = call(
-        root.path(),
+        (root.path(), vault(root.path())),
         &reach,
         Calling::Person,
         a_call(id, "fell_all", json!({})),
@@ -555,7 +558,7 @@ async fn a_service_cannot_mark_its_way_past_the_person() {
     let added = add(root.path(), &reach, &service.address()).await.unwrap();
     let id = added.id.as_str();
     let assistant = Calling::Agent("Assistant");
-    let later = refresh(root.path(), &reach, id, Calling::Agent("Assistant"))
+    let later = refresh((root.path(), vault(root.path())), &reach, id, Calling::Agent("Assistant"))
         .await
         .unwrap();
     assert!(later.commands.iter().all(|command| command.read_only));
@@ -563,7 +566,7 @@ async fn a_service_cannot_mark_its_way_past_the_person() {
 
     for command in ["plant_tree", "fell_all"] {
         let refused = call(
-            root.path(),
+            (root.path(), vault(root.path())),
             &reach,
             assistant,
             a_call(id, command, json!({})),
@@ -577,12 +580,12 @@ async fn a_service_cannot_mark_its_way_past_the_person() {
     );
 
     // The person reads the commands and so takes them as they are now.
-    refresh(root.path(), &reach, id, Calling::Person)
+    refresh((root.path(), vault(root.path())), &reach, id, Calling::Person)
         .await
         .unwrap();
     service.seen();
     call(
-        root.path(),
+        (root.path(), vault(root.path())),
         &reach,
         assistant,
         a_call(id, "plant_tree", json!({})),
@@ -605,7 +608,7 @@ async fn a_call_that_fails_says_how_and_is_written_down() {
     let id = added.id.as_str();
 
     let dead = call(
-        root.path(),
+        (root.path(), vault(root.path())),
         &reach,
         Calling::Person,
         a_call(id, "plant_tree", json!({"kind": "dead"})),
@@ -617,7 +620,7 @@ async fn a_call_that_fails_says_how_and_is_written_down() {
 
     let large = json!({"notes": "n".repeat(300 * 1024)});
     let too_large = call(
-        root.path(),
+        (root.path(), vault(root.path())),
         &reach,
         Calling::Person,
         a_call(id, "plant_tree", large),
@@ -630,7 +633,7 @@ async fn a_call_that_fails_says_how_and_is_written_down() {
 
     service.stop();
     let gone = call(
-        root.path(),
+        (root.path(), vault(root.path())),
         &reach,
         Calling::Person,
         a_call(id, "plant_tree", json!({})),
@@ -674,7 +677,7 @@ async fn a_call_that_fails_says_how_and_is_written_down() {
 async fn sign_in(root: &Path, reach: &Reach, service: &StandIn, id: &str) -> Connection {
     let step = begin_sign_in(root, reach, id, APP).await.unwrap();
     let returned = service.browse(&step.open);
-    finish_sign_in(root, reach, id, &returned).await.unwrap()
+    finish_sign_in((root, vault(root)), reach, id, &returned).await.unwrap()
 }
 
 /// What `name` is in the address a browser came back to.
@@ -687,10 +690,27 @@ fn came_back_with(returned: &str, name: &str) -> String {
         .to_owned()
 }
 
+/// The vault of the person at `root`, as the workspace's vault stands in for them here.
+fn held(root: &Path) -> &'static std::sync::Mutex<VaultItems> {
+    static HELD: std::sync::Mutex<
+        std::collections::BTreeMap<PathBuf, &'static std::sync::Mutex<VaultItems>>,
+    > = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    HELD.lock()
+        .unwrap()
+        .entry(root.to_path_buf())
+        .or_insert_with(|| Box::leak(Box::default()))
+}
+
+/// The workspace's vault for the person at `root`.
+fn vault(root: &Path) -> VaultAt<'static> {
+    VaultAt::Held(held(root))
+}
+
 /// The items of the vault under `root`: each one's id, its kind and where
 /// it belongs.
 fn vault_items(root: &Path) -> Vec<(String, ItemKind, Vec<String>)> {
-    VaultItems::open_in(root)
+    held(root)
+        .lock()
         .unwrap()
         .facts()
         .into_iter()
@@ -806,7 +826,7 @@ async fn a_person_signs_in_by_the_services_own_flow_and_the_vault_keeps_what_it_
     assert!(step.expires_at_ms > added.added_at_ms);
     let returned = service.browse(&step.open);
     assert!(returned.starts_with(APP));
-    let signed = finish_sign_in(root.path(), &reach, id, &returned)
+    let signed = finish_sign_in((root.path(), vault(root.path())), &reach, id, &returned)
         .await
         .unwrap();
     assert_eq!(
@@ -838,14 +858,14 @@ async fn a_person_signs_in_by_the_services_own_flow_and_the_vault_keeps_what_it_
 
     let assistant = Calling::Agent("Assistant");
     let finding = a_call(id, "find_trees", json!({"orchard": "north"}));
-    let found = call(root.path(), &reach, assistant, finding).await.unwrap();
+    let found = call((root.path(), vault(root.path())), &reach, assistant, finding).await.unwrap();
     assert_eq!(found.structured, Some(json!({"trees": 3})));
     assert!(service.seen().iter().all(|asked| asked["taken"] == true));
 
     a_sign_in_left(root.path(), &service, (id, returned.as_str()), &lines);
 
     // Its sign-in leaves the vault with the connection.
-    remove(root.path(), id).unwrap();
+    remove((root.path(), vault(root.path())), id).await.unwrap();
     assert!(vault_items(root.path()).is_empty());
 }
 
@@ -867,7 +887,7 @@ async fn a_sign_in_that_ran_out_is_renewed_and_one_that_cannot_be_says_so() {
     service.seen();
 
     service.lapse();
-    let found = call(root.path(), &reach, assistant, finding())
+    let found = call((root.path(), vault(root.path())), &reach, assistant, finding())
         .await
         .unwrap();
     assert_eq!(found.structured, Some(json!({"trees": 3})));
@@ -884,7 +904,7 @@ async fn a_sign_in_that_ran_out_is_renewed_and_one_that_cannot_be_says_so() {
     assert_eq!((kept.state, kept.sign_in), (State::Ready, SignIn::SignedIn));
 
     service.withdraw();
-    let refused = call(root.path(), &reach, assistant, finding()).await;
+    let refused = call((root.path(), vault(root.path())), &reach, assistant, finding()).await;
     assert_eq!(refused.unwrap_err(), RAN_OUT);
     let stood = &list(root.path()).unwrap().connections[0];
     assert_eq!(
@@ -898,7 +918,7 @@ async fn a_sign_in_that_ran_out_is_renewed_and_one_that_cannot_be_says_so() {
         "a sign-in that is over leaves the vault"
     );
     // Reading it again says the same until the person signed in again.
-    let read = refresh(root.path(), &reach, id, assistant).await.unwrap();
+    let read = refresh((root.path(), vault(root.path())), &reach, id, assistant).await.unwrap();
     assert_eq!(read.state, State::SignInRanOut);
     let written = uses(root.path(), id).unwrap().uses;
     assert_eq!(
@@ -941,7 +961,7 @@ async fn a_sign_in_is_finished_once_and_only_by_what_its_own_browser_came_back_w
     let id = added.id.as_str();
 
     let unbegun = format!("{APP}?code=orchard-code-1&state=guessed");
-    let refused = finish_sign_in(root.path(), &reach, id, &unbegun).await;
+    let refused = finish_sign_in((root.path(), vault(root.path())), &reach, id, &unbegun).await;
     assert_eq!(refused.unwrap_err(), BEGIN_AGAIN);
     for back in [
         "javascript:alert(1)",
@@ -958,16 +978,16 @@ async fn a_sign_in_is_finished_once_and_only_by_what_its_own_browser_came_back_w
     let step = begin_sign_in(root.path(), &reach, id, APP).await.unwrap();
     let returned = service.browse(&step.open);
     let forged = returned.replacen("state=", "state=x", 1);
-    let refused = finish_sign_in(root.path(), &reach, id, &forged).await;
+    let refused = finish_sign_in((root.path(), vault(root.path())), &reach, id, &forged).await;
     assert_eq!(refused.unwrap_err(), BEGIN_AGAIN);
-    let late = finish_sign_in(root.path(), &reach, id, &returned).await;
+    let late = finish_sign_in((root.path(), vault(root.path())), &reach, id, &returned).await;
     assert_eq!(late.unwrap_err(), BEGIN_AGAIN);
 
     // Come back to another place than its app's.
     let step = begin_sign_in(root.path(), &reach, id, APP).await.unwrap();
     let returned = service.browse(&step.open);
     let elsewhere = returned.replacen(APP, "https://app.example/other", 1);
-    let refused = finish_sign_in(root.path(), &reach, id, &elsewhere).await;
+    let refused = finish_sign_in((root.path(), vault(root.path())), &reach, id, &elsewhere).await;
     assert_eq!(refused.unwrap_err(), BEGIN_AGAIN);
 
     // The code of another sign-in under this one's state: the issuer does
@@ -982,7 +1002,7 @@ async fn a_sign_in_is_finished_once_and_only_by_what_its_own_browser_came_back_w
         1,
     );
     assert_ne!(mixed, second_back);
-    let refused = finish_sign_in(root.path(), &reach, id, &mixed).await;
+    let refused = finish_sign_in((root.path(), vault(root.path())), &reach, id, &mixed).await;
     assert_eq!(refused.unwrap_err(), NOT_SIGNED_IN);
 
     assert!(vault_items(root.path()).is_empty());
@@ -1013,7 +1033,7 @@ async fn a_refused_sign_in_says_so_and_no_step_of_one_follows_a_redirect() {
             .unwrap();
         let returned = service.browse(&step.open);
         assert!(returned.contains("error="));
-        let refused = finish_sign_in(root.path(), &reach, &added.id, &returned).await;
+        let refused = finish_sign_in((root.path(), vault(root.path())), &reach, &added.id, &returned).await;
         assert_eq!(refused.unwrap_err(), NOT_SIGNED_IN);
         assert!(vault_items(root.path()).is_empty());
         assert!(grants(&service.seen()).is_empty(), "nothing was exchanged");
@@ -1035,7 +1055,7 @@ async fn a_refused_sign_in_says_so_and_no_step_of_one_follows_a_redirect() {
         .await
         .unwrap();
     let returned = service.browse(&step.open);
-    let refused = finish_sign_in(root.path(), &reach, &added.id, &returned).await;
+    let refused = finish_sign_in((root.path(), vault(root.path())), &reach, &added.id, &returned).await;
     assert_eq!(refused.unwrap_err(), NOT_SIGNED_IN);
     assert!(elsewhere.drain_requests().is_empty(), "the server followed");
     assert!(vault_items(root.path()).is_empty());
@@ -1059,7 +1079,7 @@ async fn the_calls_leave(root: &Path, reach: &Reach, service: &StandIn, id: &str
 
     let other = tempfile::tempdir().unwrap();
     let theirs = call(
-        other.path(),
+        (other.path(), vault(other.path())),
         reach,
         Calling::Person,
         a_call(id, "find_trees", json!({})),
@@ -1070,7 +1090,7 @@ async fn the_calls_leave(root: &Path, reach: &Reach, service: &StandIn, id: &str
     assert!(calls(&service.seen()).is_empty());
 
     // Its uses go with the connection.
-    remove(root, id).unwrap();
+    remove((root, vault(root)), id).await.unwrap();
     assert_eq!(uses(root, id).unwrap_err(), NOT_KEPT);
     let written = root.join("connections").join(format!("{id}.uses.json"));
     assert!(
@@ -1100,7 +1120,7 @@ fn a_sign_in_left(root: &Path, service: &StandIn, (id, returned): (&str, &str), 
         ItemId::parse(id).unwrap()
     };
     let (access, renewal) = (item_at(&at_service), item_at(&at_issuer));
-    let mut vault = VaultItems::open_in(root).unwrap();
+    let mut vault = held(root).lock().unwrap();
     for (item, elsewhere) in [(&access, &at_issuer), (&renewal, &at_service)] {
         let elsewhere = Place::parse(elsewhere).unwrap();
         let handed = vault

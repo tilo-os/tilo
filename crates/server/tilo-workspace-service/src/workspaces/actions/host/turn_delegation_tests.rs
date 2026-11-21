@@ -21,7 +21,8 @@ use serde_json::json;
 
 use super::turn_use_tests::{a_mail_login, add_mail, asked, proving};
 use crate::workspaces::hosted_use::{HostedTurn, UseAnswer};
-use crate::workspaces::tests::{governor, test_host};
+use crate::workspaces::fixtures::test_host_taking_part as test_host;
+use crate::workspaces::tests::governor;
 use crate::workspaces::{WorkspaceId, Workspaces};
 use collab_types::work_delegation::WorkDelegation;
 use tilo_actions::remote::ActionCallError::Refused;
