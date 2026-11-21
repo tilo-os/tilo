@@ -7315,7 +7315,7 @@ impl BooksApp {
             self.page_turn = None;
             return (false, t, 1.0);
         }
-        let now = ui::time::now();
+        let now = ui::motion::frame_now();
         let turning = match self.page_turn {
             Some(pt) if !pt.done(now) && !mode.is_continuous() => true,
             Some(_) => {

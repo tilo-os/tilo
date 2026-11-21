@@ -2256,7 +2256,9 @@ impl VideoEditorApp {
         // The panels slide on the standard panel slide, each from when it
         // was asked for: the first frame after idle covers the time since
         // the toggle, not the idle gap.
-        let now = ui::time::now();
+        // The frame's instant, which its layout draws the panels at: at the clock, a panel on its
+        // way was read past where the frame had placed it.
+        let now = ui::motion::frame_now();
         let motion = self.chrome_theme.motion();
         self.bin_flap.advance(layout, now, motion);
         self.inspector_flap.advance(insp, now, motion);
