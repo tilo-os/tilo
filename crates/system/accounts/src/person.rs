@@ -12,10 +12,6 @@ use crate::{Account, AccountId, AccountStore, AccountTypeId};
 /// The app that keeps the workspace's accounts.
 pub use tilo_app_id::apps::SETTINGS as ACCOUNTS_OWNER;
 
-/// The other apps that change the workspace's accounts: Mail adds the mail
-/// accounts its provider sign-in sets up.
-pub const ACCOUNTS_EDITORS: &[&str] = &["so.tilo.mail"];
-
 /// A Tilo identity's public connection metadata, edited in shared accounts.
 pub const TILO_IDENTITY_TYPE: &str = "tilo.identity";
 
@@ -258,29 +254,9 @@ impl PersonAccounts {
 
 impl SharedResource for PersonAccounts {
     const OWNER: &'static str = ACCOUNTS_OWNER;
-    const EDITORS: &'static [&'static str] = ACCOUNTS_EDITORS;
 }
 
 impl PersonAccounts {
-    /// The edits that take in the accounts of `device`, a store this device
-    /// kept before the record did: each account the record lacks. Once the
-    /// file is the record's projection it brings nothing back — an account
-    /// removed on another device stays removed — except into a copy of the
-    /// record that holds no account yet, which takes what this device shows.
-    #[must_use]
-    pub fn taking_in(&self, device: &AccountStore) -> Vec<Invoke<Self>> {
-        if device.is_projection() && !self.accounts.is_empty() {
-            return Vec::new();
-        }
-        let mut edits = Vec::new();
-        for account in device.all() {
-            if !self.accounts.contains(&Id::from_raw(account.id.0.clone())) {
-                edits.push(Self::saving(account));
-            }
-        }
-        edits
-    }
-
     /// The accounts as the device's [`AccountStore`] holds them: what
     /// readers that work with the store's types take.
     #[must_use]
@@ -297,7 +273,7 @@ impl PersonAccounts {
                 owner: None,
             });
         }
-        store.as_projection()
+        store
     }
 
     /// The edit that saves `account` as it is.
@@ -668,33 +644,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_device_file_is_taken_in_once_then_follows_the_record() {
-        let mut replica = Replica::<PersonAccounts>::new();
-        save(&mut replica, "roamed", "caldav", "dav.example");
-        let mut device = AccountStore::new();
-        device.upsert(Account::new("local@x.example", "email"));
-        device.upsert(Account::new("roamed", "caldav"));
-        for edit in replica.state().unwrap().taking_in(&device) {
-            replica.apply(edit).unwrap();
-        }
-        let person = replica.state().unwrap().store();
-        assert!(person.get(&"local@x.example".into()).is_some(), "taken in");
-        assert_eq!(
-            person.get(&"roamed".into()).unwrap().config["host"],
-            "dav.example",
-            "the record's own account is kept as it is"
-        );
-
-        // Removed on another device: the projected file never brings it back.
-        replica
-            .apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("local@x.example")))
-            .unwrap();
-        let projected = person;
-        assert!(projected.is_projection());
-        assert!(replica.state().unwrap().taking_in(&projected).is_empty());
-    }
-
     /// The edit that saves the account `id` of `type_id` with `config`.
     fn saving(id: &str, type_id: &str, config: serde_json::Value) -> Invoke<PersonAccounts> {
         PersonAccounts::SAVE_ACCOUNT.with((
@@ -842,6 +791,7 @@ mod tests {
         };
         use tilo_resource::Resource as _;
         const WORKSPACE: &str = "w";
+        const MAIL: &str = "so.tilo.mail";
         let editor = "ab".repeat(32);
         let viewer = "cd".repeat(32);
         let mut policy = WorkspacePolicy::new(WORKSPACE, &editor);
@@ -849,7 +799,7 @@ mod tests {
         policy.members.insert(viewer.clone(), Role::Viewer);
         // Mail publishes the accounts record, so its actions are Mail's.
         let accounts = TreePath::workspace(WORKSPACE)
-            .app(tilo_app_id::apps::MAIL)
+            .app(MAIL)
             .kind(PersonAccounts::KIND);
         let cx = Context::at_secs(1);
         let answer = |acting: &Acting, granted: &[Grant]| {
@@ -863,7 +813,7 @@ mod tests {
         let mail = [Grant::new(
             "turn:helper:0",
             Grantee::agent("helper"),
-            TreePath::workspace(WORKSPACE).app(tilo_app_id::apps::MAIL),
+            TreePath::workspace(WORKSPACE).app(MAIL),
             KindSet::READ_UNDOABLE,
             Answer::Allow,
             Grantee::person(&editor),

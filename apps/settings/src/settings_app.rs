@@ -142,10 +142,7 @@ impl SettingsApp {
         } else if let Some(record) = accounts {
             self.account_root = self.account_root.clone().with_person(record);
             if self.devices
-                && let Err(error) = self
-                    .account_root
-                    .take_in_device_accounts()
-                    .and_then(|()| self.account_root.project())
+                && let Err(error) = self.account_root.project()
             {
                 tracing::warn!(%error, "the device's account file could not follow the person's accounts");
             }

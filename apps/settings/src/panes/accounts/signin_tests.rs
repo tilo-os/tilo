@@ -28,12 +28,8 @@ impl BrowserOpener for FakeBrowser {
 
 #[test]
 fn live_second_account_refusal_restores_already_published_metadata() {
-    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    let record = app
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
-        .unwrap();
     let (_dir, root) = scratch_root();
-    let root = root.with_person(record.clone());
+    let record = root.record_for_test();
     let mut existing = accounts::Account::new("a-cloud", "nextcloud");
     existing.config = serde_json::json!({"kept": true});
     let mut original = accounts::AccountStore::new();
@@ -69,13 +65,9 @@ fn live_second_account_refusal_restores_already_published_metadata() {
 }
 
 #[test]
-fn live_pair_projection_failure_restores_person_metadata_and_keeps_recovery_intent() {
-    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    let record = app
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
-        .unwrap();
+fn live_pair_projection_failure_restores_person_metadata() {
     let (dir, root) = scratch_root();
-    let root = root.with_person(record.clone());
+    let record = root.record_for_test();
     let first = accounts::Account::new("cloud", "nextcloud");
     let second = accounts::Account::new("ada@example.org", "email");
     // The live resource accepts both edits; only its device projection fails.
@@ -84,19 +76,15 @@ fn live_pair_projection_failure_restores_person_metadata_and_keeps_recovery_inte
     let error =
         AccountsPane::commit_accounts(&root, vec![(first, Some(&secret)), (second, Some(&secret))])
             .unwrap_err();
-    assert!(error.contains("metadata rollback also failed"), "{error}");
+    assert!(error.contains("could not persist account"), "{error}");
     assert!(
         record.get().store().is_empty(),
         "published live metadata must be restored even when projection is still blocked"
     );
     assert!(root.vault().get(&"cloud".into()).is_none());
     assert!(root.vault().get(&"ada@example.org".into()).is_none());
-    assert!(root.mutation_pending());
-    std::fs::remove_dir(dir.path().join("tilo/accounts/store.json")).unwrap();
-    root.recover_mutation().unwrap();
+    // The record holds no account again, which a missing projection already says.
     assert!(!root.mutation_pending());
-    assert!(record.get().store().is_empty());
-    assert!(accounts::AccountStore::load_in(&dir.path().join("tilo")).is_empty());
 }
 
 #[test]
@@ -142,7 +130,7 @@ fn nextcloud_connects_through_login_flow_v2_without_a_typed_password() {
 
 fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
     let dir = tempfile::tempdir().expect("scratch config root");
-    let root = AccountRoot::at(dir.path().join("tilo"));
+    let root = AccountRoot::scratch_at(dir.path().join("tilo"));
     (dir, root)
 }
 

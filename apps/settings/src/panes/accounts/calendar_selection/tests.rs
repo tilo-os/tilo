@@ -3,7 +3,7 @@ use crate::SettingsShell;
 
 pub(super) fn reviewed_nextcloud(config: serde_json::Value) -> (tempfile::TempDir, AccountsPane) {
     let root = tempfile::tempdir().unwrap();
-    let account_root = crate::accounts::AccountRoot::at(root.path());
+    let account_root = crate::accounts::AccountRoot::scratch_at(root.path());
     let mut account = accounts::Account::new("cloud", "nextcloud");
     account.config = config;
     let mut store = account_root.store();
@@ -144,7 +144,7 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
     tilo_test_env::require_isolated_desktop();
     let _home = tilo_test_env::TestHome::new().unwrap();
     let root = tempfile::tempdir().unwrap();
-    let account_root = crate::accounts::AccountRoot::at(root.path());
+    let account_root = crate::accounts::AccountRoot::scratch_at(root.path());
     let server = Responder::start(vec![
         Reply::status(207).body(r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/dav/</d:href><d:propstat><d:prop><c:calendar-home-set><d:href>/calendars/</d:href></c:calendar-home-set></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#),
         Reply::status(207).body(r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/calendars/personal/</d:href><d:propstat><d:prop><d:resourcetype><c:calendar/></d:resourcetype><d:displayname>Personal</d:displayname></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#),

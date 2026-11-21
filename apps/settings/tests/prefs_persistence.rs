@@ -28,7 +28,12 @@ fn local_prefs_and_accounts_persist_to_disk() {
     {
         let config = tempfile::tempdir().unwrap();
         let config_root = config.path().join("tilo");
-        let account_root = AccountRoot::at(&config_root);
+        let mut window = ui::framework::testing::TestApp::<settings::SettingsShell>::new()
+            .expect("settings opens headlessly");
+        let record = window
+            .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .expect("Settings keeps the workspace's accounts");
+        let account_root = AccountRoot::at(&config_root).with_person(record);
 
         assert!(AccountDirectory::load_in(&account_root).is_empty());
 

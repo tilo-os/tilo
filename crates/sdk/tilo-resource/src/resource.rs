@@ -2787,16 +2787,6 @@ pub trait SharedResource: Resource {
     /// The app that keeps the record: whose route holds it, and whose surface
     /// its changes are decided against.
     const OWNER: &'static str;
-    /// The other apps that change the record by design. The workspace's
-    /// grants decide every change either way.
-    const EDITORS: &'static [&'static str] = &[];
-
-    /// Whether `app_id` is one of the record's writers by design
-    /// ([`Self::OWNER`] or [`Self::EDITORS`]).
-    #[must_use]
-    fn edited_by(app_id: &str) -> bool {
-        app_id == Self::OWNER || Self::EDITORS.contains(&app_id)
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

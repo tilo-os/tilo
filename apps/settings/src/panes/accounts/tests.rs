@@ -78,7 +78,7 @@ impl crate::account_probe::AccountTester for RejectCandidate {
 /// test never meet another's, and nothing reaches the user's own.
 fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
     let dir = tempfile::tempdir().expect("scratch config root");
-    let root = AccountRoot::at(dir.path().join("tilo"));
+    let root = AccountRoot::scratch_at(dir.path().join("tilo"));
     (dir, root)
 }
 
@@ -112,7 +112,6 @@ tilo_test_env::scenario! {
             original.display_name = "Old label".into();
             original.enabled = false;
             original.tint = 7;
-            original.owner = Some("local-owner".into());
             original.config = serde_json::json!({
                 "id": "nextcloud-stable-id",
                 "label": "Old label",
@@ -151,7 +150,6 @@ tilo_test_env::scenario! {
             let saved = root.store().get(&id).cloned().expect("saved account");
             assert!(!saved.enabled);
             assert_eq!(saved.tint, 7);
-            assert_eq!(saved.owner.as_deref(), Some("local-owner"));
             assert_eq!(saved.config["use_files"], false);
             assert_eq!(saved.config["use_calendar"], true);
             assert_eq!(saved.config["use_mail"], false);
@@ -799,23 +797,26 @@ fn a_stalled_vault_never_holds_the_window() {
     use std::sync::Arc;
     use std::time::Instant;
 
-    let (_dir, root) = scratch_root();
+    let dir = tempfile::tempdir().expect("scratch config root");
+    let config = dir.path().join("tilo");
     let id = accounts::AccountId::from("stalled@example.test");
-    let mut store = accounts::AccountStore::new();
-    store.upsert(accounts::Account::new(id.clone(), "email"));
-    root.save_store(&store).expect("the store is saved");
-    let mut vault = root.vault();
-    vault.put(&id, &accounts::Secret::password("test-only-password"));
-    vault.try_save().expect("the vault is saved");
-    let read = AccountsRead::of(&root);
-    let config = root.path().expect("an explicit root");
     let hold = crate::stall::Stall::new();
     let window = {
-        let id = id.clone();
+        let (id, config) = (id.clone(), config.clone());
         std::thread::spawn(move || {
+            // The workspace's accounts record is the window's: it is opened,
+            // seeded and read on the window's thread.
+            let root = AccountRoot::scratch_at(config);
+            let mut store = accounts::AccountStore::new();
+            store.upsert(accounts::Account::new(id.clone(), "email"));
+            root.save_store(&store).expect("the store is saved");
+            let mut vault = root.vault();
+            vault.put(&id, &accounts::Secret::password("test-only-password"));
+            vault.try_save().expect("the vault is saved");
+            let read = AccountsRead::of(&root);
             ui::rt::mark_ui_thread();
             let stalled = Arc::clone(&hold);
-            let root = AccountRoot::at(config).with_vault_hold(move || {
+            let root = root.with_vault_hold(move || {
                 stalled.wait();
             });
             let dir = AccountDirectory::load_in(&root);
@@ -856,6 +857,7 @@ fn a_stalled_vault_never_holds_the_window() {
     if let Err(panic) = window.join() {
         std::panic::resume_unwind(panic);
     }
+    let root = AccountRoot::at(config);
     assert!(
         root.vault().get(&id).is_none(),
         "the credential went with the account"
@@ -898,12 +900,11 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
         )
         .expect("the grant is sealed");
     let read = AccountsRead::of(&root);
-    let config = root.path().expect("an explicit root");
     let hold = crate::stall::Stall::new();
     // A window that waited on the vault would sit until the stall gives up,
     // which `assert_held` reports.
     let stalled = std::sync::Arc::clone(&hold);
-    let root = AccountRoot::at(config).with_vault_hold(move || {
+    let root = root.with_vault_hold(move || {
         stalled.wait();
     });
     let dir = AccountDirectory::load_in(&root);

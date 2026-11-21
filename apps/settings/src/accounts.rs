@@ -7,6 +7,11 @@ use std::path::PathBuf;
 use accounts::email::AccountConfig;
 use serde::{Deserialize, Serialize};
 
+/// What a person reads when an account is changed before the workspace's
+/// accounts reached this device.
+pub const ACCOUNTS_ARRIVING: &str =
+    "This workspace's accounts are still arriving on this device. Try again in a moment.";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountMutationJournal {
     #[serde(rename = "previous_store")]
@@ -23,7 +28,34 @@ pub struct AccountRoot {
     person: Option<PersonAccountsResource>,
     #[cfg(test)]
     vault_hold: VaultHold,
+    #[cfg(test)]
+    window: KeptWindow,
 }
+
+/// The test window a scratch root's record lives in, kept open with it.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub struct KeptWindow(
+    #[allow(dead_code, reason = "held, never read: it keeps the window open")]
+    Option<std::rc::Rc<dyn std::any::Any>>,
+);
+
+#[cfg(test)]
+impl std::fmt::Debug for KeptWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("KeptWindow")
+    }
+}
+
+#[cfg(test)]
+impl PartialEq for KeptWindow {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+impl Eq for KeptWindow {}
 
 #[cfg(test)]
 #[derive(Clone, Default)]
@@ -141,6 +173,31 @@ impl AccountRoot {
         self
     }
 
+    /// A root at `config_root` over a new workspace's accounts record, the
+    /// one a test's Settings window opens.
+    #[cfg(test)]
+    pub(crate) fn scratch_at(config_root: impl Into<PathBuf>) -> Self {
+        let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
+            .expect("settings opens headlessly");
+        let record = app
+            .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            .expect("Settings keeps the workspace's accounts");
+        let mut root = Self::at(config_root).with_person(record);
+        root.window = KeptWindow(Some(std::rc::Rc::new(app)));
+        root
+    }
+
+    /// The workspace's accounts record this root keeps them in.
+    #[cfg(test)]
+    pub(crate) fn record_for_test(
+        &self,
+    ) -> ui::framework::WorkspaceResource<accounts::person::PersonAccounts> {
+        let Some(PersonAccountsResource(record)) = &self.person else {
+            panic!("a scratch root keeps its accounts in a record");
+        };
+        record.clone()
+    }
+
     pub fn explicit(&self) -> Option<&std::path::Path> {
         self.explicit.as_deref()
     }
@@ -163,12 +220,12 @@ impl AccountRoot {
             .ok_or_else(|| std::io::Error::other("no config dir"))
     }
 
+    /// The workspace's accounts, as its record holds them: none while the
+    /// record has not reached this device.
     pub fn store(&self) -> accounts::AccountStore {
-        if let Some(PersonAccountsResource(record)) = &self.person {
-            return record.get().store();
-        }
-        self.path()
-            .map(|root| accounts::AccountStore::load_in(&root))
+        self.person
+            .as_ref()
+            .map(|PersonAccountsResource(record)| record.get().store())
             .unwrap_or_default()
     }
 
@@ -176,22 +233,6 @@ impl AccountRoot {
         self.person
             .as_ref()
             .map(|PersonAccountsResource(record)| record.revision())
-    }
-
-    pub fn take_in_device_accounts(&self) -> std::io::Result<()> {
-        let Some(PersonAccountsResource(record)) = &self.person else {
-            return Ok(());
-        };
-        let Some(root) = self.path() else {
-            return Ok(());
-        };
-        let device = accounts::AccountStore::load_in(&root);
-        for edit in record.get().taking_in(&device) {
-            record
-                .invoke(&edit)
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-        }
-        Ok(())
     }
 
     pub fn publish_browser_identity(
@@ -324,10 +365,14 @@ impl AccountRoot {
         }
     }
 
+    /// Make the workspace's accounts record hold `store`'s accounts: each
+    /// one it lacks or holds otherwise saved, each one `store` lacks
+    /// removed. Refused while the record has not reached this device: an
+    /// account is the workspace's, never this device's alone.
     pub fn save_store(&self, store: &accounts::AccountStore) -> std::io::Result<()> {
         let root = self.require_io()?;
         let Some(PersonAccountsResource(record)) = &self.person else {
-            return store.save_in(&root);
+            return Err(std::io::Error::other(ACCOUNTS_ARRIVING));
         };
         let refused =
             |error: ui::tilo_actions::ActionError| std::io::Error::other(error.to_string());
@@ -935,44 +980,6 @@ mod tests {
         assert!(accounts::AccountStore::load_in(dir.path()).is_empty());
     }
 
-    /// The accounts this device's file held before it followed the person's
-    /// resource are taken in once, the resource's own accounts stay, and a file
-    /// that is the resource's projection brings nothing back.
-    #[test]
-    fn the_device_files_accounts_are_taken_into_the_persons_resource_once() {
-        use accounts::person::PersonAccounts;
-        let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
-            .expect("settings opens headlessly");
-        let record = app
-            .shared_workspace::<PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
-            .expect("person accounts");
-        let dir = tempfile::tempdir().unwrap();
-        let root = AccountRoot::at(dir.path()).with_person(record.clone());
-        let mut kept = accounts::Account::new("kept@x.example", "email");
-        kept.config = serde_json::json!({ "imap": "imap.x.example" });
-        record.invoke(&PersonAccounts::saving(&kept)).unwrap();
-
-        let mut local = accounts::Account::new("cal-1", "caldav");
-        let mut device = accounts::AccountStore::new();
-        device.upsert(local.clone());
-        device.save_in(dir.path()).unwrap();
-        local.config = serde_json::json!({});
-
-        root.take_in_device_accounts()
-            .and_then(|()| root.project())
-            .unwrap();
-        let person = record.get().store();
-        assert_eq!(person.get(&local.id), Some(&local));
-        assert_eq!(person.get(&kept.id), Some(&kept));
-        assert_eq!(accounts::AccountStore::load_in(dir.path()), person);
-
-        record
-            .invoke(&PersonAccounts::REMOVE_ACCOUNT.with(ui::tilo_resource::Id::from_raw("cal-1")))
-            .unwrap();
-        root.take_in_device_accounts().unwrap();
-        assert!(record.get().store().get(&local.id).is_none());
-    }
-
     #[cfg(feature = "tilo-os")]
     #[test]
     fn account_directory_views_summarise_and_autofill() {
@@ -1012,8 +1019,15 @@ mod tests {
     #[test]
     fn journal_recovers_each_interrupted_removal_phase() {
         for phase in 1..=3 {
+            let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
+                .expect("settings opens headlessly");
+            let record = app
+                .shared_workspace::<accounts::person::PersonAccounts>(
+                    accounts::person::ACCOUNTS_OWNER,
+                )
+                .expect("Settings keeps the workspace's accounts");
             let dir = tempfile::tempdir().expect("scratch config root");
-            let root = AccountRoot::at(dir.path().join("tilo"));
+            let root = AccountRoot::at(dir.path().join("tilo")).with_person(record);
             let id = accounts::AccountId::from(format!("recover-{phase}"));
             let mut original_store = accounts::AccountStore::new();
             let mut account = accounts::Account::new(id.clone(), NEXTCLOUD_TYPE);

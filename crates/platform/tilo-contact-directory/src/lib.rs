@@ -575,7 +575,6 @@ impl ContactDirectory {
 
 impl SharedResource for ContactDirectory {
     const OWNER: &'static str = tilo_app_id::apps::CONTACTS;
-    const EDITORS: &'static [&'static str] = &["so.tilo.messages"];
 }
 
 fn validate_person(person: &Id) -> Result<(), Refusal> {

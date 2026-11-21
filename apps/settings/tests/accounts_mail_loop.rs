@@ -16,75 +16,77 @@ impl settings::account_probe::AccountTester for AcceptAccount {
     }
 }
 
+type Window = ui::framework::testing::TestApp<settings::SettingsShell>;
+type Accounts = ui::framework::WorkspaceResource<accounts::person::PersonAccounts>;
+
+/// `person`'s Settings window in the test workspace, the workspace's
+/// accounts record it keeps, and the accounts root over it at `tilo_root`.
+fn member(
+    person: &str,
+    tilo_root: &std::path::Path,
+) -> Result<(Window, Accounts, AccountRoot), String> {
+    let mut window = Window::for_person(person).map_err(|error| error.to_string())?;
+    let record = window
+        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .ok_or("Settings keeps the workspace's accounts")?;
+    let root = AccountRoot::at(tilo_root).with_person(record.clone());
+    Ok((window, record, root))
+}
+
+/// An email account one member adds in Settings is the workspace's: another
+/// member's Settings lists it once the workspace delivers the record, and no
+/// device keeps a copy of its own.
 #[test]
-fn adding_an_email_account_in_settings_lands_in_the_shared_store() {
-    // Settings writes and Mail reads the same explicit config root, so the
-    // test never touches the user's accounts and needs no environment.
-    let root_dir = tempfile::tempdir().unwrap();
-    let tilo_root = root_dir.path().join("tilo");
+fn an_email_account_added_by_one_member_is_listed_for_another() {
+    let ada_dir = tempfile::tempdir().unwrap();
+    let bo_dir = tempfile::tempdir().unwrap();
+    let (mut ada, ada_accounts, ada_root) =
+        member(&"ad".repeat(32), &ada_dir.path().join("tilo")).unwrap();
+    let (mut bo, bo_accounts, bo_root) =
+        member(&"b0".repeat(32), &bo_dir.path().join("tilo")).unwrap();
 
-    assert!(
-        accounts::AccountStore::load_in(&tilo_root).is_empty(),
-        "precondition: the shared store starts empty"
-    );
-
-    let mut pane = AccountsPane::in_root(AccountRoot::at(&tilo_root))
-        .with_account_tester(std::sync::Arc::new(AcceptAccount));
-
+    let mut pane =
+        AccountsPane::in_root(ada_root).with_account_tester(std::sync::Arc::new(AcceptAccount));
     pane.command(AccountViewCommand::Add(AccountKind::Mail));
     assert!(pane.form_open(), "Add opens the inline form");
-
-    // 2) Fill the form (a Gmail address so IMAP/SMTP autofill kicks in).
+    // A Gmail address, so the servers are worked out from it.
     pane.set_form_fields_for_test("Ada Personal", "ada@gmail.com", "", "");
     pane.set_form_password_for_test("s3cret-app-password");
-
     pane.submit_form_for_test();
     assert!(
         pane.finish_form_submission_for_test(tilo_test_env::hang_bound()),
-        "bounded account probe and disk transaction complete"
+        "bounded account probe and save complete"
     );
     assert!(!pane.form_open(), "a successful save closes the form");
 
-    let shared = accounts::AccountStore::load_in(&tilo_root);
     let email = accounts::AccountTypeId::from("email");
-    let listed = shared.list(&email);
-    assert_eq!(listed.len(), 1, "exactly the account Settings added");
-    let stored = listed[0];
-    assert_eq!(
-        shared.active_id(&email),
-        Some(&stored.id),
-        "the first account becomes the active one"
-    );
+    assert_eq!(ada_accounts.get().store().list(&email).len(), 1);
+    assert!(bo_root.store().is_empty(), "not delivered yet");
+    ada.deliver_resource_to(&mut bo, ada_accounts.id())
+        .expect("the other member holds the workspace's accounts");
 
-    let config = stored
+    let shared = bo_accounts.get().store();
+    let listed = shared.list(&email);
+    assert_eq!(listed.len(), 1, "exactly the account Ada added");
+    let config = listed[0]
         .config_as::<serde_json::Value>()
         .expect("the connection config deserialises");
     assert_eq!(config["email"], "ada@gmail.com", "the address round-trips");
-    assert_eq!(
-        config["imap_host"], "imap.gmail.com",
-        "Settings' autofill reached the shared store"
-    );
+    assert_eq!(config["imap_host"], "imap.gmail.com");
     assert_eq!(config["smtp_host"], "smtp.gmail.com");
-    assert_eq!(
-        config["imap_tls"], true,
-        "TLS defaults survive the round-trip"
-    );
-
-    // The password must NOT be in the plaintext store, but MUST be readable
-    // from the sealed vault: the credential genuinely made it across,
-    // encrypted at rest.
-    let store_json =
-        std::fs::read_to_string(accounts::store_path_in(&tilo_root)).expect("store.json exists");
+    assert_eq!(config["imap_tls"], true);
     assert!(
-        !store_json.contains("s3cret-app-password"),
-        "the password never touches the plaintext store: {store_json}"
+        !serde_json::to_string(&config)
+            .unwrap()
+            .contains("s3cret-app-password"),
+        "the password never reaches the record: {config}"
     );
     assert_eq!(
-        accounts::SecretVault::open_in(&tilo_root)
-            .get(&stored.id)
-            .map(|secret| secret.password),
-        Some("s3cret-app-password".to_string()),
-        "the password is sealed in the shared secret vault"
+        settings::accounts::AccountDirectory::load_in(&bo_root)
+            .views_of(AccountKind::Mail)
+            .len(),
+        1,
+        "Bo's Settings lists it"
     );
 }
 
@@ -106,9 +108,9 @@ impl settings::account_probe::AccountTester for Checked {
     }
 }
 
-/// The one email account the shared store keeps under `root`, as it is stored.
-fn stored_mail_config(root: &std::path::Path) -> serde_json::Value {
-    let shared = accounts::AccountStore::load_in(root);
+/// The one email account the workspace's accounts keep, as it is stored.
+fn stored_mail_config(accounts: &Accounts) -> serde_json::Value {
+    let shared = accounts.get().store();
     let listed = shared.list(&accounts::AccountTypeId::from("email"));
     assert_eq!(listed.len(), 1, "exactly the account Settings added");
     listed
@@ -126,8 +128,8 @@ fn a_mail_account_keeps_the_servers_its_person_wrote() {
     let root_dir = tempfile::tempdir().unwrap();
     let tilo_root = root_dir.path().join("tilo");
     let checked = std::sync::Arc::new(Checked::default());
-    let mut pane =
-        AccountsPane::in_root(AccountRoot::at(&tilo_root)).with_account_tester(checked.clone());
+    let (_window, record, root) = member(&"ad".repeat(32), &tilo_root).unwrap();
+    let mut pane = AccountsPane::in_root(root).with_account_tester(checked.clone());
 
     // What is no server name is said, and nothing is checked or kept.
     pane.command(AccountViewCommand::Add(AccountKind::Mail));
@@ -146,7 +148,7 @@ fn a_mail_account_keeps_the_servers_its_person_wrote() {
         pane.form_error_for_test()
     );
     assert!(checked.0.lock().unwrap().is_empty());
-    assert!(accounts::AccountStore::load_in(&tilo_root).is_empty());
+    assert!(record.get().store().is_empty());
 
     pane.set_form_mail_servers_for_test("mail.example.org:143", "mail.example.org:587");
     pane.submit_form_for_test();
@@ -155,7 +157,7 @@ fn a_mail_account_keeps_the_servers_its_person_wrote() {
         "{:?}",
         pane.form_error_for_test()
     );
-    let config = stored_mail_config(&tilo_root);
+    let config = stored_mail_config(&record);
     assert_eq!(config["imap_host"], "mail.example.org");
     assert_eq!(config["imap_port"], 143);
     assert_eq!(
@@ -202,7 +204,7 @@ fn a_mail_account_keeps_the_servers_its_person_wrote() {
         "{:?}",
         pane.form_error_for_test()
     );
-    let config = stored_mail_config(&tilo_root);
+    let config = stored_mail_config(&record);
     assert_eq!(config["imap_host"], "imap.example.org");
     assert_eq!(config["imap_port"], 993);
     assert_eq!(config["imap_tls"], true);
@@ -216,14 +218,15 @@ fn a_mail_account_keeps_the_servers_its_person_wrote() {
 fn a_mail_account_without_written_servers_is_worked_out_from_its_address() {
     let root_dir = tempfile::tempdir().unwrap();
     let tilo_root = root_dir.path().join("tilo");
-    let mut pane = AccountsPane::in_root(AccountRoot::at(&tilo_root))
-        .with_account_tester(std::sync::Arc::new(AcceptAccount));
+    let (_window, record, root) = member(&"ad".repeat(32), &tilo_root).unwrap();
+    let mut pane =
+        AccountsPane::in_root(root).with_account_tester(std::sync::Arc::new(AcceptAccount));
     pane.command(AccountViewCommand::Add(AccountKind::Mail));
     pane.set_form_fields_for_test("Ada", "ada@example.org", "", "");
     pane.set_form_password_for_test("s3cret-app-password");
     pane.submit_form_for_test();
     assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
-    let config = stored_mail_config(&tilo_root);
+    let config = stored_mail_config(&record);
     assert_eq!(config["imap_host"], "imap.example.org");
     assert_eq!(config["imap_port"], 993);
     assert_eq!(config["imap_tls"], true);

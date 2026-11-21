@@ -3,10 +3,22 @@ use settings::accounts::{AccountKind, AccountRoot};
 use settings::panes::accounts::{AccountViewCommand, AccountsPane};
 use test_http::{Reply, Responder};
 
+type Window = ui::framework::testing::TestApp<settings::SettingsShell>;
+
 fn response(href: &str, props: &str) -> String {
     format!(
         r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>{href}</d:href><d:propstat><d:prop>{props}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#
     )
+}
+
+/// An accounts root at `config_root` over a new workspace's accounts record,
+/// the one a Settings window opens, with the window that keeps it.
+fn scratch_root(config_root: &std::path::Path) -> Result<(Window, AccountRoot), String> {
+    let mut window = Window::new().map_err(|error| error.to_string())?;
+    let record = window
+        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .ok_or("Settings keeps the workspace's accounts")?;
+    Ok((window, AccountRoot::at(config_root).with_person(record)))
 }
 
 tilo_test_env::scenario! {
@@ -32,7 +44,7 @@ tilo_test_env::scenario! {
             Reply::status(207).body(listing),
         ]);
         let root = tempfile::tempdir().unwrap();
-        let account_root = AccountRoot::at(root.path());
+        let (_window, account_root) = scratch_root(root.path()).unwrap();
         let mut pane = AccountsPane::in_root(account_root.clone());
         pane.command(AccountViewCommand::Add(AccountKind::CalDav));
         // The responder listens on 127.0.0.1 only. A `localhost` URL would let
@@ -117,7 +129,7 @@ tilo_test_env::scenario! {
             Reply::status(207).body(response("/cloud/calendars/opaque-id/personal/", "<d:resourcetype><c:calendar/></d:resourcetype><d:displayname>Personal</d:displayname>")),
         ]);
             let root = tempfile::tempdir().unwrap();
-            let account_root = AccountRoot::at(root.path());
+            let (_window, account_root) = scratch_root(root.path()).unwrap();
             let mut account = accounts::Account::new("canonical-nextcloud", "nextcloud");
             account.display_name = "My cloud".into();
             account.config = serde_json::json!({
@@ -221,7 +233,7 @@ tilo_test_env::scenario! {
                 )),
             ]);
             let root = tempfile::tempdir().unwrap();
-            let account_root = AccountRoot::at(root.path());
+            let (_window, account_root) = scratch_root(root.path()).unwrap();
             let mut pane = AccountsPane::in_root(account_root.clone());
             pane.command(AccountViewCommand::Add(AccountKind::CalDav));
             let url = format!("http://127.0.0.1:{}/cal/", server.port());
@@ -263,7 +275,7 @@ tilo_test_env::scenario! {
         ] {
             let server = Responder::start(replies);
             let root = tempfile::tempdir().unwrap();
-            let account_root = AccountRoot::at(root.path());
+            let (_window, account_root) = scratch_root(root.path()).unwrap();
             let mut pane = AccountsPane::in_root(account_root.clone());
             pane.command(AccountViewCommand::Add(AccountKind::CalDav));
             pane.set_form_fields_for_test(

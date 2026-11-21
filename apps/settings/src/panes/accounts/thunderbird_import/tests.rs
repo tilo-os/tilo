@@ -171,24 +171,18 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     let prefs = temp.path().join("prefs.js");
     fixture(&prefs);
     let profile = temp.path().join("profile");
-    let root = crate::accounts::AccountRoot::at(&profile);
+    let mut app = TestApp::<crate::SettingsShell>::open_data_dir(&profile).unwrap();
+    let person = app
+        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        .unwrap();
+    let root = crate::accounts::AccountRoot::at(&profile).with_person(person);
     let mut original = accounts::Account::new("existing", "caldav");
     original.display_name = "Existing owner label".into();
     original.config = serde_json::json!({"owner_extension": "preserve-me"});
     let mut store = root.store();
     store.upsert(original.clone());
     root.save_store(&store).unwrap();
-    let mut app = TestApp::<crate::SettingsShell>::open_data_dir(&profile).unwrap();
-    // A headless host does not take in the device's file; seed its resource instead.
-    let person = app
-        .shared_workspace::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
-        .unwrap();
-    person
-        .invoke(&accounts::person::PersonAccounts::saving(&original))
-        .unwrap();
     app.flush().unwrap();
-    person.get().project_in(&profile).unwrap();
-    drop(person);
     crate::effects::show_pane(&mut app, crate::categories::Category::ExternalAccounts);
     review_and_cancel(&mut app, &prefs, &root);
     discover(&mut app, &prefs);

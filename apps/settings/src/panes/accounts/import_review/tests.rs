@@ -37,7 +37,7 @@ tilo_test_env::scenario! {
     phase reviewed_metadata_is_pending_idempotent_and_leaves_orphan_credentials_untouched;
     {
         let temp = tempfile::tempdir().unwrap();
-        let root = AccountRoot::at(temp.path());
+        let root = AccountRoot::scratch_at(temp.path());
         let id = accounts::AccountId::from("person@example.org");
         let mut vault = root.vault();
         vault.put(&id, &accounts::Secret::password("fixture-orphan-secret"));
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
     phase existing_configured_accounts_are_not_overwritten_and_cancel_fences_discovery;
     {
         let temp = tempfile::tempdir().unwrap();
-        let root = AccountRoot::at(temp.path());
+        let root = AccountRoot::scratch_at(temp.path());
         let mut original = accounts::Account::new("person@example.org", "email");
         original.display_name = "Existing owner label".into();
         original.config = serde_json::json!({"owner_extension": "preserve-me"});
@@ -113,7 +113,7 @@ tilo_test_env::scenario! {
     phase an_account_change_during_review_refuses_the_import;
     {
         let temp = tempfile::tempdir().unwrap();
-        let root = AccountRoot::at(temp.path());
+        let root = AccountRoot::scratch_at(temp.path());
         let mut review = review(&root, candidate("person@example.org"));
         review
             .select("account1:id1", "password", true, review.revision)
@@ -144,7 +144,7 @@ tilo_test_env::scenario! {
             }
         }
         let temp = tempfile::tempdir().unwrap();
-        let root = AccountRoot::at(temp.path());
+        let root = AccountRoot::scratch_at(temp.path());
         let mut review = review(&root, candidate("person@example.org"));
         review
             .select("account1:id1", "password", true, review.revision)
