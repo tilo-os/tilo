@@ -250,7 +250,11 @@ fn list(rows: u64) -> Element {
         crate::widget::VecListModel::new((0..rows).collect(), |row| *row).expect("unique rows");
     Box::new(
         crate::widget::VirtualList::new(model, 40.0, |_, index, _| {
-            Box::new(crate::widget::Text::new(&format!("Conversation {index}")))
+            Box::new(
+                crate::widget::Container::new().with_height(40.0).with_child(Box::new(
+                    crate::widget::Text::new(&format!("Conversation {index}")),
+                )),
+            )
         })
         .filling(),
     )
