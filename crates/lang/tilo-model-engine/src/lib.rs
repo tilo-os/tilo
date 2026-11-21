@@ -777,7 +777,7 @@ mod history_is_the_devices {
                 w.put(&automerge::ActorId::from(&b"someone else"[..]));
             }),
             call(&mut documents, op::LOAD_INCREMENTAL, 0, |w| {
-                w.bytes(&forged)
+                w.bytes(&forged);
             }),
             call(&mut documents, op::MERGE, 0, |w| {
                 w.put(&0_u32);
