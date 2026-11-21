@@ -105,7 +105,7 @@ class Case:
             found = module.audit(repository.root, staged)[0]
             return [Path(v.path).relative_to(repository.root).as_posix() for v in found]
         if self.check == "check_swallowed_failures":
-            return [entry.split(":", 1)[0] for entry in module.audit(repository.root, staged)[0]]
+            return [entry.split(":", 1)[0] for entry in module.audit(repository.root, staged)]
         if self.check == "check_app_window_inputs_contract":
             return [entry.split(":", 1)[0] for entry in module.audit(repository.root, staged)]
         if self.check == "check_ui_clock_contract":

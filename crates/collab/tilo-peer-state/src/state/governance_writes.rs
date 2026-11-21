@@ -178,10 +178,18 @@ impl StatePeer {
             if prior.kept_by(&is.get(&person).cloned().unwrap_or_default()) {
                 continue;
             }
-            let Some(root) = hex::decode(&person)
-                .ok()
-                .and_then(|root| <[u8; 32]>::try_from(root).ok())
-            else {
+            let Ok(bytes) = hex::decode(&person) else {
+                tracing::warn!(
+                    person = %person,
+                    "a standing a change takes away is keyed by no key; its devices are not reached"
+                );
+                continue;
+            };
+            let Ok(root) = <[u8; 32]>::try_from(bytes) else {
+                tracing::warn!(
+                    person = %person,
+                    "a standing a change takes away is keyed by something other than a key; its devices are not reached"
+                );
                 continue;
             };
             let taken = held

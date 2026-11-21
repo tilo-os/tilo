@@ -400,7 +400,17 @@ pub(crate) fn withdrawn(doc: &AutoCommit) -> BTreeSet<[u8; 32]> {
     crate::workspace::policy::read(doc)
         .identities
         .values()
-        .filter_map(|bytes| crate::state::GovernedIdentity::decode(bytes).ok())
+        .filter_map(
+            |bytes| match crate::state::GovernedIdentity::decode(bytes) {
+                Ok(identity) => Some(identity),
+                // An agent the row withdrew for would act with its standing if the row were
+                // read as one that withdrew nothing, so a row that does not decode is said.
+                Err(error) => {
+                    tracing::warn!(%error, "a governance identity row does not decode; its withdrawn delegation is not read");
+                    None
+                }
+            },
+        )
         .filter(|identity| {
             identity
                 .delegate

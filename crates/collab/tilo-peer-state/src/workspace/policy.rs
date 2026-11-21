@@ -285,7 +285,7 @@ pub(crate) fn whole(document: &automerge::AutoCommit) -> PolicyData {
     // The destination's operations are infallible, and a malformed lookup
     // reads as absent inside visit_governance_entries.
     let _ = tilo_failure::ignored!(
-        "the destination's operations are infallible",
+        "the destination's operations are infallible, so no failure is dropped here",
         project(document, &mut value)
     );
     value

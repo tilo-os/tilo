@@ -115,7 +115,12 @@ impl Inner {
         if let Some(named) = note
             .gesture
             .as_deref()
-            .and_then(|gesture| uuid::Uuid::parse_str(gesture).ok())
+            .and_then(|gesture| {
+                tilo_failure::ignored!(
+                    "a note's gesture that is not a uuid names no gesture, so the burst names the change",
+                    uuid::Uuid::parse_str(gesture).ok()
+                )
+            })
         {
             self.end_burst();
             return Some(ActionId(named));

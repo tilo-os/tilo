@@ -41,16 +41,14 @@ leaves the finding where it was. The reason is code the compiler keeps, so
 tidying the comments around an expression never takes its reason away; this
 check reads the call, never a comment.
 
-What remains is counted per file in ``swallowed_failures_baseline.toml``: a
-count may only fall, and a file that sheds some records it (``--update``).
+Every failure in those crates is judged; there is no list of old ones left to
+shrink.
 """
 
 from __future__ import annotations
 
 import re
 import sys
-import tomllib
-from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -59,7 +57,6 @@ from judged import STAGED_FLAG, Judged, alternations, judged  # noqa: E402
 from rust_source import Literal, blank_test_items, is_test_file, lex, matching  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = Path("tools/policy/swallowed_failures_baseline.toml")
 # Where a failure is the person's or a peer's problem when it is dropped: every
 # rule below holds here.
 SCANNED = (
@@ -540,13 +537,12 @@ def findings_of_file(
     ]
 
 
-def audit(root: Path = ROOT, staged: bool = False) -> tuple[list[str], set[Path]]:
-    """Every swallowed failure, and the files it was found by judging."""
+def audit(root: Path = ROOT, staged: bool = False) -> list[str]:
+    """Every swallowed failure."""
     files = judged(root, staged)
     scoped = [(top, files.files(top)) for top in SCANNED + DECODE_ONLY]
-    judged_here = {relative for _, paths in scoped for relative in paths}
-    if not judged_here:
-        return [], judged_here
+    if not any(paths for _, paths in scoped):
+        return []
     fallible = fallible_names(files if not staged else definitions_of(files))
     found: list[str] = []
     for top, paths in scoped:
@@ -554,54 +550,17 @@ def audit(root: Path = ROOT, staged: bool = False) -> tuple[list[str], set[Path]
             found += findings_of_file(
                 relative, files.read(relative, "strict"), fallible, top in SCANNED
             )
-    return found, judged_here
-
-
-def load_baseline(root: Path) -> dict[str, int]:
-    path = root / BASELINE
-    if not path.exists():
-        return {}
-    return {name: int(count) for name, count in tomllib.loads(path.read_text()).get("files", {}).items()}
-
-
-def write_baseline(root: Path, counts: Counter[str]) -> None:
-    lines = [
-        "# Failures whose error is discarded, per file, in session, collaboration and",
-        "# app-hosting code. Counts may only fall; tools/policy/check_swallowed_failures.py",
-        "# --update records a file that shed some. Report the error, or keep it",
-        '# with `tilo_failure::ignored!("<why>", <expr>)`.',
-        "[files]",
-    ]
-    lines += [f'"{name}" = {count}' for name, count in sorted(counts.items())]
-    (root / BASELINE).write_text("\n".join(lines) + "\n")
+    return found
 
 
 def main(argv: list[str]) -> int:
-    root = ROOT
-    # Recording the baseline counts the whole tree; a commit's files say
-    # nothing about the counts of the rest.
-    update = "--update" in argv
-    staged = STAGED_FLAG in argv and not update
-    found, judged_here = audit(root, staged=staged)
-    counts = Counter(entry.split(":", 1)[0] for entry in found)
-    if update:
-        write_baseline(root, counts)
-        print(f"recorded {sum(counts.values())} swallowed failure(s)", file=sys.stderr)
-        return 0
+    staged = STAGED_FLAG in argv
+    found = audit(ROOT, staged=staged)
     if "--list" in argv:
         print("\n".join(found))
         return 0
-    baseline = load_baseline(root)
-    grown = [entry for entry in found if counts[entry.split(":", 1)[0]] > baseline.get(entry.split(":", 1)[0], 0)]
-    # A count can only fall in a file whose code changed, so a baseline entry
-    # the judged files do not include keeps the count it was recorded with.
-    shed = sorted(
-        name
-        for name, count in baseline.items()
-        if (not staged or Path(name) in judged_here) and counts.get(name, 0) < count
-    )
-    if grown:
-        print("\n".join(grown))
+    if found:
+        print("\n".join(found))
         print(
             "\na failure is discarded: propagate it, refuse or tell the person, or log it at warn "
             "with what failed; a genuinely ignorable one says why with "
@@ -609,12 +568,7 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
-    if shed:
-        for name in shed:
-            print(f"{name}: swallowed failures fell below {BASELINE}; record it with "
-                  "tools/policy/check_swallowed_failures.py --update")
-        return 1
-    print(f"Swallowed failures contract OK ({sum(counts.values())} left, none new)", file=sys.stderr)
+    print("Swallowed failures contract OK (every failure is heard)", file=sys.stderr)
     return 0
 
 

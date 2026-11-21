@@ -58,7 +58,10 @@ pub(crate) async fn serving(
         let by = by.clone();
         tokio::spawn(async move {
             if let Err(error) = connection(stream, &workspaces, &by).await {
-                tracing::debug!(%error, "an account sign-ins connection ended");
+                tilo_failure::ignored!(
+                    "a connection that ends is its client's to end, and nothing here waits on it",
+                    tracing::debug!(%error, "an account sign-ins connection ended")
+                );
             }
         });
     }
