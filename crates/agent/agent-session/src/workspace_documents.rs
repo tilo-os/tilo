@@ -99,7 +99,9 @@ impl Reads {
     ) -> Result<DocumentRead, String> {
         #[cfg(feature = "test-support")]
         if crate::workspace_actions::held_back::hidden(&route.cluster_id, &route.document) {
-            return Ok(DocumentRead::Absent);
+            // A part held back is on its way, not one the workspace holds none of: a request
+            // reading it waits, as it does for one the workspace has still to send.
+            return Ok(DocumentRead::Pending);
         }
         self.0
             .read(&route.cluster_id, &route.app_id, &route.document, since)
