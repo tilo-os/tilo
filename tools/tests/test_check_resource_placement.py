@@ -80,6 +80,22 @@ class ResourcePlacementTests(unittest.TestCase):
         (root / "apps/a/src/move.rs").write_text("pub fn carry() {}\n")
         self.assertEqual(placement.against("main", root), [])
 
+    def test_a_tilolang_migration_carries_a_kind_its_package_took_over(self):
+        root = self.repository({"a": ["a.thing"]}, {"a": []})
+        self.surfaces(root, {"a": []})
+        self.entries(
+            root,
+            '[[change]]\nkind = "a.thing"\napp = "a"\nchange = "removed"\n'
+            'conversion = "apps/tl/a/app.tl:carry_native"\n',
+        )
+        (root / "apps/tl/a").mkdir(parents=True)
+        (root / "apps/tl/a/app.tl").write_text("action carry_native(t: Thing) {}\n")
+        found = placement.against("main", root)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("does not declare as a `migration action`", found[0])
+        (root / "apps/tl/a/app.tl").write_text("migration action carry_native(t: Thing) {}\n")
+        self.assertEqual(placement.against("main", root), [])
+
     def test_a_kind_gone_from_every_app_needs_an_entry(self):
         root = self.repository({"a": ["a.thing"]}, {"a": []})
         self.surfaces(root, {"a": []})

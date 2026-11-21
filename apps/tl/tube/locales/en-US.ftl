@@ -1,7 +1,7 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
-d-so-tilo-lang-tube = YouTube
+d-so-tilo-tube = YouTube
 
 d-m5wewovo = Channel
     .doc = A channel someone publishes videos on.
@@ -236,6 +236,9 @@ d-wx26izlg = Refresh
 
 d-khblapap = Refresh trending
     .doc = Asks the service for the videos it lists as trending.
+
+d-t3cwabaw = Carry native tube
+    .doc = What the native Tube kept before this app took its id over, carried into this one once: the channels subscribed to, the videos liked and kept for later, and the watch history with when each video was watched.
 
 d-yc4rjoeg = Play again
     .doc = Plays the video a history entry names, from where the person left off.

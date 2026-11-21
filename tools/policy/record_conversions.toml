@@ -219,7 +219,19 @@ conversion = "apps/terminal/src/target.rs:open"
 kind = "tube.watch-history"
 app = "tube"
 change = "left-own"
-conversion = "apps/tube/src/history.rs:import_previous"
+lost = "history a member kept as their own before it moved into the workspace's, and never imported with the native Tube's Import previous watch history, stays in that member's own documents: no app reads it any more"
+
+[[change]]
+kind = "tube.library"
+app = "tube"
+change = "removed"
+conversion = "apps/tl/tube/app.tl:carry_native_tube"
+
+[[change]]
+kind = "tube.watch-history"
+app = "tube"
+change = "removed"
+conversion = "apps/tl/tube/app.tl:carry_native_tube"
 
 [[change]]
 kind = "video-player.recent"

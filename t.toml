@@ -235,7 +235,7 @@ packages = [
     "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
     "tilo-paint-stream", "tilo-pdf", "tilo-server", "tilo-staging-reclaim", "tilo-ui", "tilo-vmd",
     "tilo-web-search", "tilo-wet-media", "tilolang-app", "tilolang-process", "tilolang-tilo",
-    "tube", "typst-editor", "ui-examples", "ush", "windows-vm", "word-processor",
+    "typst-editor", "ui-examples", "ush", "windows-vm", "word-processor",
 ]
 # tools/test-env.sh reads this to leave out the native NTFS images, which no example reads: the
 # harness's switch, not the tests', and it is unset before cargo runs, so no build carries it. The

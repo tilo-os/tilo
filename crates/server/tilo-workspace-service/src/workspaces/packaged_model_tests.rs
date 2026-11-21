@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use super::fixtures::{governor, test_host};
 use super::packaged_model::PackagedAction;
 use tilo_app_package::{Manifest, SigningIdentity, pack, tapp};
-use tilo_model_engine::{Invocation, Model};
+use tilo_model_engine::Model;
 use tilo_resource::Resource as _;
 
 /// The app the test installs, which the server does not have compiled in.
@@ -390,73 +390,4 @@ async fn a_package_without_a_model_applies_nothing() {
         "a package with no model module installs no resource"
     );
     server.shutdown().await;
-}
-
-/// One module serves every resource its app declares, told apart by the kind
-/// each request names: Tube's library and its watch history come from the same
-/// bytes, and each kind's own verbs answer it.
-#[test]
-#[ignore = "reads the model module the app-models check built (t test test-packaged-model)"]
-fn one_module_serves_every_resource_of_its_app() {
-    const LIBRARY: &str = "tube.library";
-    const HISTORY: &str = "tube.watch-history";
-    let model = Model::compile(&model_module("tube")).unwrap();
-    let genesis = |kind: &str| {
-        model
-            .initialize(kind, "", "a workspace")
-            .expect("the module made the resource's genesis")
-    };
-    let library = automerge::AutoCommit::load(&genesis(LIBRARY)).unwrap();
-    tube_model::Library::read(&library).expect("the library's own code reads its genesis");
-    let history_document = genesis(HISTORY);
-    let mut history = automerge::AutoCommit::load(&history_document).unwrap();
-    tube_model::WatchHistory::read(&history)
-        .expect("the watch history's own code reads its genesis");
-    let surface = collab_types::surface::SurfaceFile::parse(include_bytes!(
-        "../../../../../apps/tube/surface.toml"
-    ))
-    .unwrap();
-    let verb = surface
-        .resources
-        .iter()
-        .filter(|resource| resource.kind == HISTORY)
-        .flat_map(|resource| resource.verbs.iter())
-        .find(|verb| verb.id == tube_model::WatchHistory::PROGRESS.id())
-        .expect("the surface declares the verb");
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("video".into(), serde_json::Value::from("a video"));
-    arguments.insert("position_ms".into(), serde_json::Value::from(5_u64));
-    arguments.insert("duration_ms".into(), serde_json::Value::from(600_000_u64));
-    let member = tilo_actions::MemberId::person(hex::encode([7_u8; 32]));
-    let acting = tilo_actions::Acting::member(member.clone());
-    let invocation = |arguments| Invocation {
-        app: "so.tilo.tube",
-        kind: HISTORY,
-        verb,
-        id: "",
-        document: &history_document,
-        member: &member,
-        acting: &acting,
-        arguments,
-        now: NOW_MS,
-    };
-    let played = model.apply(invocation(arguments.clone())).unwrap();
-    tilo_automerge::ApplyIncoming::load_incoming(&mut history, &played.changes).unwrap();
-    assert!(
-        tube_model::WatchHistory::read(&history)
-            .unwrap()
-            .positions
-            .contains_key("a video"),
-        "the request naming the watch history ran that resource's verb"
-    );
-    let mut wrong = arguments;
-    wrong.insert("position_ms".into(), serde_json::Value::from("five"));
-    assert!(
-        model.apply(invocation(wrong)).is_err(),
-        "the device refuses an argument of the wrong type"
-    );
-    assert!(
-        model.initialize("tube.nothing", "", "a workspace").is_err(),
-        "the module refuses a request for a kind it does not serve"
-    );
 }

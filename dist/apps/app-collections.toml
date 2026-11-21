@@ -2,7 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-include = ["*", "tl-notes"]
+include = ["*", "tl-notes", "tl-tube"]
 
 [collections.desktop]
 extends = ["default"]
@@ -25,8 +25,6 @@ include = ["file-explorer", "settings", "terminal"]
 music = ["audio", "live", "runtime-engine"]
 video-player = ["decode"]
 camera = ["live-capture"]
-# The YouTube client from its engine library beside the runtime.
-tube = ["live", "media", "grayjay-sync", "runtime-engine"]
 # Account credentials with the IMAP client, and the contact directory, from their
 # engine libraries beside the runtime.
 mail = ["live", "runtime-engine"]

@@ -48,11 +48,6 @@ dev-session = []
 # throwaway identity, so the feature carries the identity crate's minting too: a
 # session built on its own (a component swap) mints as a dev image's does.
 dev-overrides = ["tilo-identity/throwaway-test-identity"]
-# Publishes a Rust app's (Tube's) resources and views in a development session, so a
-# shell draws them live: Tube's sample catalogue, with the views a
-# `#[view]` declares, never the live worker. A shot of a Rust app's view on the canvas builds
-# with it (`--features dev-rust-views`); a production image never does.
-dev-rust-views = ["dep:tube"]
 # The session's search sources (`search::SEARCH_FEED`) are handed over by the
 # bundling crate, with the desktop's search engine, rather than linked: the
 # browser desktop fetches them as their own module.
@@ -213,9 +208,6 @@ tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "macros", "time"] }
 # Tilo's API, which the session serves its own person's programs on this computer.
 tilo-api = { path = "../../server/tilo-api" }
-# A Rust app's views and resources, published in a development session only
-# (`dev-rust-views`): the sample catalogue, never the live worker.
-tube = { path = "../../../apps/tube", default-features = false, features = ["samples"], optional = true }
 # Which app opens a file or a link: the workspace's and the person's default apps, and this
 # machine's own `mimeapps.list`, resolved in that order.
 desktop-policy = { path = "../../system/desktop-policy" }
@@ -461,9 +453,6 @@ tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
 tilo-service = { path = "../service" }
 # The manager an app's window joins its workspace's record with: a test speaks as the window.
 collaboration = { path = "../../collab/collaboration" }
-# A Rust app's views, drawn by the shell as it draws a tilolang app's (one-app-model.md §2):
-# the sample catalogue's channels and videos, never the live worker.
-tube = { path = "../../../apps/tube", default-features = false, features = ["samples"] }
 # A notebook as a page's store holds it, read for what Notes tells search it holds: the page's
 # search finds a note by its title and its words.
 # A development session's tilolang apps, built into signed `.tapp`s the tests install into

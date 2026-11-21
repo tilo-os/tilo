@@ -213,7 +213,6 @@ engines() (
   failed=0
   for probe in "canvas libtilo_paint_engine.so --probe-paint-engine" \
                "music libtilo_youtube_engine.so --probe-youtube-engine" \
-               "tube libtilo_youtube_engine.so --probe-youtube-engine" \
                "settings libtilo_accounts_engine.so via:libtilo_settings_engine.so" \
                "settings libtilo_settings_engine.so" \
                "calendar libtilo_timezone_engine.so --probe-timezone-engine" \

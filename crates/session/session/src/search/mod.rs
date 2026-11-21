@@ -919,7 +919,7 @@ impl SessionSearch {
     /// type, exactly as the one search ranks by what a resource is. `None` when no word of the
     /// query names a type, or the type's app holds no origin the platform can ask.
     ///
-    /// The app is named by the id its resources publish under (`so.tilo.lang.tube`), and the kind
+    /// The app is named by the id its resources publish under (`so.tilo.tube`), and the kind
     /// as its app publishes it (`tube.channel`): the origin's own search action is the one that
     /// asks the service for it, and an answer of that kind is what a place becomes.
     #[must_use]
@@ -933,7 +933,7 @@ impl SessionSearch {
         let own = self.own.borrow();
         let types = self.own_types.borrow();
         // The app each of the session's resources belongs to, by its id in the app's own address
-        // (`tl:so.tilo.lang.tube:…` → `so.tilo.lang.tube`).
+        // (`tl:so.tilo.tube:…` → `so.tilo.tube`).
         let app_of = |resource: &str| {
             resource
                 .strip_prefix("tl:")

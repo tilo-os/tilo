@@ -9,7 +9,8 @@
 //! The layout read is the one every native resource is stored in (`tilo_resource`): a record's
 //! fields at the document's root, and each collection a map of item ids, each item an order key
 //! (`k`) and its fields (`v`). A field reads as what it holds, generically: words and numbers as
-//! text, rich text as rich text, a set or a map as its keys, and a map of bytes (a native app's
+//! text, rich text as rich text, a set or a map as its keys (and a map of words as what each key
+//! holds too), and a map of bytes (a native app's
 //! pictures, by their digest) as the files they are. A field that holds a record of its own (a
 //! draft's sender, its account and address) reads as that record's fields too, each under the
 //! field's name and its own (`sender.email`); one at a document's root (the draft a composer
@@ -57,6 +58,9 @@ pub struct EarlierItem {
     /// Each field that holds bytes by key (a native app's pictures, by their digest): the bytes
     /// under each key, which [`Self::value`] keeps as files.
     pub bytes: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
+    /// Each field that maps keys to words (a native app's watch times, by video): what each key
+    /// holds, as words. Its keys are in [`Self::lists`] too.
+    pub entries: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl EarlierItem {
@@ -107,6 +111,18 @@ impl EarlierItem {
                             })
                             .collect();
                         (text(name), Value::Map(files))
+                    })
+                    .collect(),
+            ),
+            Value::Map(
+                self.entries
+                    .iter()
+                    .map(|(name, held)| {
+                        let said = held
+                            .iter()
+                            .map(|(key, said)| (text(key), text(said)))
+                            .collect();
+                        (text(name), Value::Map(said))
                     })
                     .collect(),
             ),
@@ -322,6 +338,9 @@ fn read_field_at(
             } else if let Some(held) = bytes_by_key(doc, obj) {
                 item.bytes.insert(name.to_owned(), held);
             } else {
+                if let Some(said) = words_by_key(doc, obj) {
+                    item.entries.insert(name.to_owned(), said);
+                }
                 item.lists.insert(name.to_owned(), doc.keys(obj).collect());
                 if depth < RECORD_DEPTH && record(doc, value, obj) {
                     read_fields(doc, item, name, obj, depth.saturating_add(1));
@@ -391,6 +410,21 @@ fn bytes_by_key(doc: &AutoCommit, obj: &ObjId) -> Option<BTreeMap<String, Vec<u8
             return None;
         };
         held.insert(key, bytes.clone());
+    }
+    (!held.is_empty()).then_some(held)
+}
+
+/// What the map `obj` holds under each of its keys as words, when it holds some and nothing but
+/// words: a set's `true`s, or a native app's times by video.
+fn words_by_key(doc: &AutoCommit, obj: &ObjId) -> Option<BTreeMap<String, String>> {
+    let mut held = BTreeMap::new();
+    for key in doc.keys(obj) {
+        let said = match doc.get(obj, key.as_str()).ok()?? {
+            (AmValue::Scalar(s), _) => scalar_words(&s)?,
+            (AmValue::Object(ObjType::Text), text) => doc.text(&text).ok()?,
+            (AmValue::Object(_), _) => return None,
+        };
+        held.insert(key, said);
     }
     (!held.is_empty()).then_some(held)
 }

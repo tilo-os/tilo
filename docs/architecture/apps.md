@@ -59,8 +59,7 @@ An app's model is one crate, `apps/<app>-model`, and the module is one guest
 crate beside it, `apps/<app>-model-wasm`, whose whole content is the app's
 resources, `tilo_model_guest::model!("<app>", <resource>, ...)`, served
 through `tilo-model-guest`. A module is one per app, whatever number of
-resource kinds the app declares (Tube serves `tube.library` and
-`tube.watch-history` alike): each request names the resource kind it is for,
+resource kinds the app declares: each request names the resource kind it is for,
 and the module routes it to that resource's verbs. The guest crates are
 workspace members, so every app's module shares one lockfile and one wasm32
 target directory, and each is built for size (opt-level `z`, no unwinding, no

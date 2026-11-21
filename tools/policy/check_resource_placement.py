@@ -21,7 +21,8 @@ Each such change passes when a ``[[change]]`` entry in
 ``tools/policy/record_conversions.toml`` names it by ``kind``, ``app`` and
 ``change``, and says either where the data now goes (``conversion =
 "<path>:<fn>"``, a function that exists in this tree and moves what the old
-place held) or what a person loses (``lost = "<what and why>"``). An entry
+place held, or a tilolang package's ``migration action`` of that name in a
+``.tl`` file) or what a person loses (``lost = "<what and why>"``). An entry
 whose conversion names no function, and one that says neither, fails.
 
 ``check`` reads the recorded entries alone: each names a conversion that
@@ -149,7 +150,16 @@ def conversion_problem(root: Path, entry: dict) -> str | None:
                 f"{CONVERSIONS}: {entry.get('kind')!r} names conversion {conversion!r}, "
                 "which is no `<path>:<fn>` of a file in this tree"
             )
-        definition = item_definition(text.read_text(errors="replace"), name)
+        source = text.read_text(errors="replace")
+        if path.endswith(".tl"):
+            # A tilolang package carries what a native app of its id kept in a migration.
+            if re.search(rf"^\s*migration\s+action\s+{re.escape(name)}\s*\(", source, re.M):
+                return None
+            return (
+                f"{CONVERSIONS}: {entry.get('kind')!r} names conversion {conversion!r}, "
+                "which that package does not declare as a `migration action`"
+            )
+        definition = item_definition(source, name)
         if definition is None or not re.search(rf"\bfn\s+{re.escape(name)}\b", definition):
             return (
                 f"{CONVERSIONS}: {entry.get('kind')!r} names conversion {conversion!r}, "

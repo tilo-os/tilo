@@ -1,6 +1,6 @@
 # YouTube auf Deutsch. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
 
-d-so-tilo-lang-tube = YouTube
+d-so-tilo-tube = YouTube
 
 d-m5wewovo = Kanal
     .doc = Ein Kanal, auf dem jemand Videos veröffentlicht.

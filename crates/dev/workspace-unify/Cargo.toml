@@ -119,7 +119,6 @@ doc = false
 "bitflags-1_3_2" = { package = "bitflags", version = "^1.3.2", default-features = false, features = ["default"] }
 "bitflags-2_11_0" = { package = "bitflags", version = "^2.11.0", default-features = false, features = ["serde", "serde_core", "std"] }
 "bitpacking-0_9_3" = { package = "bitpacking", version = "^0.9.3", default-features = false, features = ["bitpacker1x", "bitpacker4x"] }
-"blake2-0_10_6" = { package = "blake2", version = "^0.10.6", default-features = false, features = ["default", "std"] }
 "blake2-0_11_0" = { package = "blake2", version = "^0.11.0", default-features = false, features = [] }
 "blake3-1_8_5" = { package = "blake3", version = "^1.8.5", default-features = false, features = ["default", "std"] }
 "block-buffer-0_10_4" = { package = "block-buffer", version = "^0.10.4", default-features = false, features = [] }
@@ -1076,7 +1075,6 @@ doc = false
 "smol_str-0_3_6" = { package = "smol_str", version = "^0.3.6", default-features = false, features = ["default", "serde", "std"] }
 "smoothutf8-0_2_3" = { package = "smoothutf8", version = "^0.2.3", default-features = false, features = ["simdutf8"] }
 "snippets" = { path = "../../../apps/snippets", default-features = false, features = [] }
-"snow-0_9_6" = { package = "snow", version = "^0.9.6", default-features = false, features = ["aes-gcm", "blake2", "chacha20poly1305", "curve25519-dalek", "default", "default-resolver", "sha2"] }
 "socket-pktinfo-0_4_1" = { package = "socket-pktinfo", version = "^0.4.1", default-features = false, features = [] }
 "socket2-0_6_3" = { package = "socket2", version = "^0.6.3", default-features = false, features = ["all"] }
 "sorted-index-buffer-0_2_1" = { package = "sorted-index-buffer", version = "^0.2.1", default-features = false, features = [] }
@@ -1480,9 +1478,6 @@ doc = false
 "trash-5_2_6" = { package = "trash", version = "^5.2.6", default-features = false, features = ["chrono", "coinit_apartmentthreaded", "default"] }
 "try-lock-0_2_5" = { package = "try-lock", version = "^0.2.5", default-features = false, features = [] }
 "ttf-parser-0_25_1" = { package = "ttf-parser", version = "^0.25.1", default-features = false, features = ["apple-layout", "core_maths", "default", "glyph-names", "gvar-alloc", "no-std-float", "opentype-layout", "std", "variable-fonts"] }
-"tube" = { path = "../../../apps/tube", default-features = false, features = ["default", "grayjay-sync", "live", "media", "samples"] }
-"tube-model" = { path = "../../../apps/tube-model", default-features = false, features = [] }
-"tube-model-wasm" = { path = "../../../apps/tube-model-wasm", default-features = false, features = [] }
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
 "twilight-http-ratelimiting-0_17_1" = { package = "twilight-http-ratelimiting", path = "../../../vendor/twilight-http-ratelimiting", default-features = false, features = [] }
 "two-face-0_4_5" = { package = "two-face", version = "^0.4.5", default-features = false, features = ["syntect-fancy"] }
@@ -2558,7 +2553,7 @@ doc = false
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../../crates/collab/workspace-keys", default-features = false, features = ["test-support"] }
-"time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
+"time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }
 "time-macros-0_2_27" = { package = "time-macros", version = "^0.2.27", default-features = false, features = ["formatting", "parsing", "serde"] }
 "tiny-skia-0_12_0" = { package = "tiny-skia", version = "^0.12.0", default-features = false, features = ["default", "png-format", "simd", "std"] }
@@ -4171,9 +4166,6 @@ doc = false
 "trash-5_2_6" = { package = "trash", version = "^5.2.6", default-features = false, features = ["chrono", "coinit_apartmentthreaded", "default"] }
 "try-lock-0_2_5" = { package = "try-lock", version = "^0.2.5", default-features = false, features = [] }
 "ttf-parser-0_25_1" = { package = "ttf-parser", version = "^0.25.1", default-features = false, features = ["apple-layout", "core_maths", "default", "glyph-names", "gvar-alloc", "no-std-float", "opentype-layout", "std", "variable-fonts"] }
-"tube" = { path = "../../../apps/tube", default-features = false, features = ["default", "grayjay-sync", "live", "media", "samples"] }
-"tube-model" = { path = "../../../apps/tube-model", default-features = false, features = [] }
-"tube-model-wasm" = { path = "../../../apps/tube-model-wasm", default-features = false, features = [] }
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
 "twilight-http-ratelimiting-0_17_1" = { package = "twilight-http-ratelimiting", path = "../../../vendor/twilight-http-ratelimiting", default-features = false, features = [] }
 "two-face-0_4_5" = { package = "two-face", version = "^0.4.5", default-features = false, features = ["syntect-fancy"] }

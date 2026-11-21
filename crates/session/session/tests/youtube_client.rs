@@ -1,7 +1,7 @@
 //! The `YouTube` client as a tilolang app (apps/tl/tube): a canvas query "youtube videos of
 //! <creator>" places the Channel, and its page draws.
 //!
-//! The channel is the client's, published under `tl.so.tilo.lang.tube.Channel`; the typed
+//! The channel is the client's, published under `tl.so.tilo.tube.Channel`; the typed
 //! words "youtube" (the app's name) and "videos" (a type of the app) need not match its text,
 //! so the creator's name is all that must, and the channel leads by its title with the type
 //! bonus (search.md §4). Its default view is its page, which reads the client's videos and
@@ -25,7 +25,7 @@ use tilo_session::Session;
 use crate::common::{Api, CANVAS, on_screen, placed_resources, private_home, until};
 
 /// The `YouTube` client, as a package names it.
-const TUBE: &str = "so.tilo.lang.tube";
+const TUBE: &str = "so.tilo.tube";
 /// The channel the client's scenario seeds, by the name its page shows.
 const CREATOR: &str = "MKBHD";
 /// A video the channel published, by the title its page lists.

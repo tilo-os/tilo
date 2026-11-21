@@ -25,7 +25,7 @@ use tilolang_youtube::{
     TrendingPage, VideoItem, YouTubeOrigin,
 };
 
-const TUBE: &str = "so.tilo.lang.tube";
+const TUBE: &str = "so.tilo.tube";
 
 fn package() -> (&'static str, &'static str) {
     (

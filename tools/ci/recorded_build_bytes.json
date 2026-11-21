@@ -422,8 +422,6 @@
   "tilolang-youtube": {"libraries": 6556288, "tests": 661163624},
   "tinker": {"libraries": 3389617, "tests": 11984664},
   "totp": {"libraries": 15050144, "tests": 305615216},
-  "tube": {"libraries": 26941081, "tests": 3427629600},
-  "tube-model": {"libraries": 4569600, "tests": 2856400},
   "typst-editor": {"libraries": 13106960, "tests": 544697856},
   "ush": {"libraries": 32222867, "tests": 416471320},
   "ush-shell": {"libraries": 20660619, "tests": 5161464},

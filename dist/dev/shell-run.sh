@@ -28,7 +28,6 @@
 #
 # Usage:
 #   dist/dev/shell-run.sh [--no-build] [--profile P] [--size WxH] [--scale S] [--no-apps]
-#                         [--dev-rust-views]
 #
 # Options:
 #   --no-build    use the binaries already built (target/debug, or the --profile's)
@@ -49,9 +48,6 @@
 #                 there when FILE is empty or absent): an MCP client presenting it
 #                 (`TILO_AGENT_KEY=FILE`, or the key in its `initialize`) is admitted as the
 #                 person's agent without the sheet, as an external agent such as Claude Code is
-#   --dev-rust-views  seed a Rust app's sample resources and views too (Tube's channels and
-#                     videos), so a shell draws their views live: a shot of a Rust view on the
-#                     canvas. Development builds only.
 #
 # Drive it from another terminal with the commands it prints:
 #   TILO_TEST_CONTROL=... target/debug/tilo-control snapshot /tmp/shot.png
@@ -83,7 +79,6 @@ build=1
 size=1280x800
 scale=
 apps=(--seed-apps)
-rust_views=0
 window=0
 agent_key=
 profile=debug
@@ -91,10 +86,9 @@ while (($#)); do
     case $1 in
         --no-build) build=0; shift ;;
         --profile) profile=${2:?--profile needs debug or nested}; shift 2 ;;
-        --no-apps) apps=(); rust_views=0; shift ;;
+        --no-apps) apps=(); shift ;;
         --size) size=${2:?--size needs WxH}; shift 2 ;;
         --scale) scale=${2:?--scale needs a number}; shift 2 ;;
-        --dev-rust-views) rust_views=1; shift ;;
         --window) window=1; shift ;;
         --agent-key) agent_key=$(realpath -m "${2:?--agent-key needs FILE}"); shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p' "$0"; exit 0 ;;
@@ -106,7 +100,6 @@ case $profile in
     debug | nested) ;;
     *) die "unknown profile $profile (debug or nested)" ;;
 esac
-((rust_views)) && [[ $profile != debug ]] && die "--dev-rust-views is a debug build's"
 bin=$repo_root/target/$profile
 if ((build)) && [[ $profile == nested ]]; then
     # The optimised development build is the nested session's own: its host programs, its thin
@@ -116,15 +109,10 @@ if ((build)) && [[ $profile == nested ]]; then
     TILO_NESTED_APPS="${rust_apps[*]}" "$repo_root/dist/dev/nested-session-build.sh"
 elif ((build)); then
     say "building tilo-session, tilo-quick-settings, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
-    # A shot of a Rust app's view on the canvas builds the session with Tube's sample
-    # resources and views linked (`--dev-rust-views`, development builds only).
-    session_features=()
-    ((rust_views)) && session_features=(--features dev-rust-views)
     # Quick settings is a surface app the session starts beside itself: built here, it is found
     # beside the session before the system's own, which is another tree's build and reads
     # another shape of the session's readings.
     (cd "$repo_root" && cargo build --locked -p tilo-session --bin tilo-session \
-        "${session_features[@]}" \
         -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
         -p launcher --bin tilo-launcher -p install --bin tilo-install \

@@ -42,4 +42,3 @@ extern crate publisher_model_wasm;
 extern crate remote_model_wasm;
 extern crate scratchpad_model_wasm;
 extern crate tasks_model_wasm;
-extern crate tube_model_wasm;

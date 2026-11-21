@@ -211,8 +211,6 @@ mod region_formats;
 mod repl_api;
 #[path = "rotation.rs"]
 mod rotation;
-#[path = "rust_views.rs"]
-mod rust_views;
 #[path = "search.rs"]
 mod search;
 #[path = "second_device.rs"]

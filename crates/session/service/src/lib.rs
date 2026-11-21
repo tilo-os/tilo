@@ -311,7 +311,7 @@ pub trait Service {
 /// it, and the origin's name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Connector {
-    /// The app, by its package id (`so.tilo.lang.tube`): the launch whose manifest names the
+    /// The app, by its package id (`so.tilo.tube`): the launch whose manifest names the
     /// origin, and whose sandbox the connector runs in.
     pub app: String,
     /// The origin's name, as the manifest and the app's capabilities name it (`youtube`).

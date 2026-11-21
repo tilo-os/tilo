@@ -1,4 +1,4 @@
-app so.tilo.lang.tube "YouTube" (
+app so.tilo.tube "YouTube" (
     icon: .film,
     category: .multimedia,
     tagline: "Browses and plays YouTube videos",
@@ -371,6 +371,50 @@ action load_trending(yt: YouTube) (icon: .flame, label: "Refresh trending") {
         yt.title = "YouTube"
     }
     outside("youtube.trending", "")
+}
+
+/// What the native Tube kept before this app took its id over, carried into this one once: the
+/// channels subscribed to, the videos liked and kept for later, and the watch history with when
+/// each video was watched. The native app kept a video by its key alone, so each one carried is
+/// that key until the service answers with the rest. Its comment likes and replies stay where
+/// they are: this app shows no comments. The native app's own documents are left as they are.
+migration action carry_native_tube(yt: YouTube) {
+    for kept in earlier(yt).filter(e -> e.of == "") {
+        for key in kept.lists.get("subscriptions") ?? [] {
+            if not yt.subscriptions.any(s -> s.key == key) {
+                yt.subscriptions.insert(Subscription(key: key, name: ""))
+            }
+        }
+        for key in kept.lists.get("likes") ?? [] {
+            if let v = yt.videos.find(x -> x.key == key) {
+                v.liked = true
+            } else {
+                yt.videos.insert(Video(key: key, liked: true))
+            }
+        }
+        for key in kept.lists.get("queue") ?? [] {
+            if let v = yt.videos.find(x -> x.key == key) {
+                v.watch_later = true
+            } else {
+                yt.videos.insert(Video(key: key, watch_later: true))
+            }
+        }
+        // When each video was watched, in milliseconds since 1970 as the native app kept it.
+        let watched = kept.entries.get("watched") ?? Map<Text>()
+        for key in watched.keys() {
+            let ms = (watched.get(key) ?? "").to_int() ?? 0
+            if not yt.history.any(h -> h.key == key) {
+                yt.history.insert(
+                    WatchEntry(
+                        key: key,
+                        title: "",
+                        channel_name: "",
+                        watched: 1970-01-01T00:00Z + Duration(ms / 1000),
+                    ),
+                )
+            }
+        }
+    }
 }
 
 /// The app's window: the person's subscriptions, trending, what they kept and what they watched,

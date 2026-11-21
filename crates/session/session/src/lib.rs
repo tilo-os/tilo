@@ -163,10 +163,6 @@ mod controls;
 #[cfg(target_os = "linux")]
 pub mod desktop_services;
 #[cfg(target_os = "linux")]
-/// A Rust app's sample resources and views, in a development session only.
-#[cfg(feature = "dev-rust-views")]
-pub mod dev_rust_views;
-#[cfg(target_os = "linux")]
 mod device_actions;
 #[cfg(target_os = "linux")]
 mod device_inbox;

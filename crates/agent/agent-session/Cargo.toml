@@ -85,7 +85,6 @@ tasks = { path = "../../../apps/tasks" }
 terminal = { path = "../../../apps/terminal", default-features = false, features = [] }
 themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
-tube = { path = "../../../apps/tube", default-features = false, features = [] }
 typst-editor = { path = "../../../apps/typst-editor" }
 video-editor = { path = "../../../apps/video-editor", default-features = false, features = [] }
 video-player = { path = "../../../apps/video-player", default-features = false, features = [] }

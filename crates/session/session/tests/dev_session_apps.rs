@@ -169,7 +169,7 @@ fn the_installed_apps_connectors_are_planned_from_their_manifests(session: &DevS
     let apps = Apps::with_launcher(environment, None, Some(launcher.path().to_owned()));
     let workspace = apps.workspace_named("workspace-1");
     for (app, origin) in [
-        ("so.tilo.lang.tube", "youtube"),
+        ("so.tilo.tube", "youtube"),
         ("so.tilo.lang.mail", "imap"),
     ] {
         let planned = apps
@@ -255,8 +255,8 @@ fn the_installed_apps_scenarios_fill_the_sessions_records(session: &DevSession) 
     let mut kinds = std::collections::BTreeSet::new();
     kinds_of(&crate::common::published(&apps), &mut kinds);
     for kind in [
-        "tl.so.tilo.lang.tube.Channel",
-        "tl.so.tilo.lang.tube.Video",
+        "tl.so.tilo.tube.Channel",
+        "tl.so.tilo.tube.Video",
         "tl.so.tilo.notes.Note",
     ] {
         assert!(kinds.contains(kind), "{kind} is seeded: {kinds:?}");

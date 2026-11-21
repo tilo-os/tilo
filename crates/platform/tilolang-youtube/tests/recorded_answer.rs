@@ -29,7 +29,7 @@ use rustypipe::model::YouTubeItem;
 use tilolang_tilo::origin::{Origin, OriginCx};
 use tilolang_tilo::runtime::Value;
 
-const TUBE: &str = "so.tilo.lang.tube";
+const TUBE: &str = "so.tilo.tube";
 
 /// The recorded answer: a real search's rows, as the client receives them.
 const RECORDED: &str = include_str!("fixtures/search-recorded.json");

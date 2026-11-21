@@ -101,12 +101,12 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().expect("a scratch directory");
         let server = Server::start(dir.path());
 
-        let connector = server.app("workspace-1", "so.tilo.lang.tube");
+        let connector = server.app("workspace-1", "so.tilo.tube");
         let kept = connector
             .put(PICTURE, "image/png")
             .expect("the connector keeps a picture as this device's content");
 
-        let window = server.app("workspace-1", "so.tilo.lang.tube");
+        let window = server.app("workspace-1", "so.tilo.tube");
         assert_eq!(
             window
                 .read_all(&kept.hash)
@@ -151,7 +151,7 @@ fn the_session_reads_what_the_connector_kept_through_its_own_store() {
     let dir = tempfile::tempdir().expect("a scratch directory");
     let server = Server::start(dir.path());
 
-    let connector = server.app("workspace-1", "so.tilo.lang.tube");
+    let connector = server.app("workspace-1", "so.tilo.tube");
     let kept = connector
         .put(PICTURE, "image/png")
         .expect("the connector keeps a still");

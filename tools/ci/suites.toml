@@ -866,6 +866,7 @@ package = "tilolang-youtube"
 # The origin's tests compile tube's package from its source and ids lock.
 inputs = ["apps/tl/tube/"]
 readers = [
+  "crates/platform/tilolang-youtube/tests/native_tube.rs",
   "crates/platform/tilolang-youtube/tests/origin.rs",
   "crates/platform/tilolang-youtube/tests/recorded_answer.rs",
 ]
@@ -1485,10 +1486,10 @@ readers = ["apps/themes/src/studio.rs"]
 
 [[cargo]]
 package = "tilo-workspace-service"
-# The packaged-model tests bind actions against the surfaces the Tasks and
-# Tube apps ship, read from the tree; the modules their packages carry come
-# from the app-models check.
-inputs = ["apps/tasks/surface.toml", "apps/tube/surface.toml"]
+# The packaged-model tests bind actions against the surface the Tasks app
+# ships, read from the tree; the module its package carries comes from the
+# app-models check.
+inputs = ["apps/tasks/surface.toml"]
 readers = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs"]
 
 [[cargo]]

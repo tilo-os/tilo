@@ -111,7 +111,7 @@ tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Decode stack — only linked under `--features decode`. Same pins as
-# `apps/tube` / `apps/camera` so no second gstreamer copy resolves.
+# `apps/camera` so no second gstreamer copy resolves.
 #
 # `v1_24` is required, not cosmetic: `VideoInfoDmaDrm` (which parses a
 # `drm-format` caps field into a fourcc + modifier) and `AppSinkCallbacks::

@@ -2978,8 +2978,8 @@ fn leaves_of(resource: &tilo_actions::ResourceSpec) -> Vec<&tilo_actions::Resour
     out
 }
 
-/// The app a resource belongs to, from its address in the app: `tl:so.tilo.lang.tube:...` gives
-/// `so.tilo.lang.tube`; `None` for a resource that is no app own.
+/// The app a resource belongs to, from its address in the app: `tl:so.tilo.tube:...` gives
+/// `so.tilo.tube`; `None` for a resource that is no app own.
 fn app_of_resource(resource: &str) -> Option<String> {
     resource
         .strip_prefix("tl:")

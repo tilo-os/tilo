@@ -187,12 +187,12 @@ class LiveRowsTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("apps/mail/src/app.rs: 1 untyped-live-row", errors[0])
 
-        typed = self.fixture({"apps/tube/src/rows.rs": TYPED})
+        typed = self.fixture({"apps/feeds/src/rows.rs": TYPED})
         self.assertEqual(live_rows.check(typed), [])
 
     def test_a_hand_built_tree_or_bound_action_fails(self):
         root = self.fixture({
-            "apps/tube/src/rows.rs": (
+            "apps/feeds/src/rows.rs": (
                 "fn tree() { ResourceSpec::new(\"a\", \"b\", \"c\"); }\n"
                 "fn action() { ActionSpec::typed(id, label, \"\", locus, params, build); }\n"
             ),
@@ -201,7 +201,7 @@ class LiveRowsTests(unittest.TestCase):
         self.assertEqual(rules, ["hand-bound-action", "hand-built-tree"])
 
     def test_a_fully_typed_tree_passes(self):
-        root = self.fixture({"apps/tube/src/rows.rs": TYPED})
+        root = self.fixture({"apps/feeds/src/rows.rs": TYPED})
         self.assertEqual(live_rows.check(root), [])
 
 

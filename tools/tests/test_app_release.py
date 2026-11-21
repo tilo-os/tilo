@@ -95,9 +95,12 @@ class AppReleaseTests(unittest.TestCase):
                 ),
                 sorted(
                     name for name, app in catalog.items()
-                    if app["kind"] == "native" or name == "tl-notes"
+                    if app["kind"] == "native" or name in ("tl-notes", "tl-tube")
                 ),
             )
+            # YouTube is the package that retired the native Tube, under the id it had.
+            self.assertEqual(catalog["tl-tube"]["kind"], "tilolang")
+            self.assertEqual(catalog["tl-tube"]["id"], "so.tilo.tube")
         with self.subTest(phase='an image ships the tilolang packages its collection names'):
             # The image's collection is the default one: every native app, and the tilolang
             # packages in place of the native apps they replaced.

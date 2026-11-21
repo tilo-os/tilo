@@ -43,7 +43,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         terminal::definition(),
         themes::definition(),
         totp::definition(),
-        tube::definition(),
         typst_editor::definition(),
         video_editor::definition(),
         video_player::definition(),

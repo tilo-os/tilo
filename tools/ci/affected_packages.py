@@ -254,7 +254,6 @@ HEAVY_PACKAGES = {
     "tilo-doc-pdf",
     "tilo-session",
     "slides",
-    "tube",
     "typst-editor",
     "tilo-ui",
     "video-editor",

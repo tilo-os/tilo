@@ -17712,7 +17712,6 @@ dependencies = [
  "totp",
  "tracing",
  "tracing-subscriber",
- "tube",
  "typst-editor",
  "ush",
  "uuid",
@@ -20619,7 +20618,6 @@ dependencies = [
  "remote-model-wasm",
  "scratchpad-model-wasm",
  "tasks-model-wasm",
- "tube-model-wasm",
  "workspace-hack",
 ]
 
@@ -22440,7 +22438,6 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "tube",
  "url",
  "uuid",
  "wayland-client",
@@ -23882,7 +23879,6 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
- "tube-model",
  "uuid",
  "web-time",
  "wire-frame",
@@ -24208,6 +24204,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app",
+ "tilo-automerge-fork",
  "tilo-innertube",
  "tilo-net",
  "tilo-resource",
@@ -24807,66 +24804,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 dependencies = [
  "core_maths",
-]
-
-[[package]]
-name = "tube"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "flate2",
- "fnv",
- "getrandom 0.4.3",
- "runtime-dylib",
- "rustypipe",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "snow",
- "taffy",
- "tempfile",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-clock",
- "tilo-files",
- "tilo-innertube",
- "tilo-media",
- "tilo-net",
- "tilo-secrets",
- "tilo-test-env",
- "tilo-vello",
- "tilo-vello-encoding",
- "tilo-view",
- "tilo-view-macros",
- "tilo-winit",
- "tilo-youtube-engine",
- "tracing",
- "tracing-subscriber",
- "tube",
- "tube-model",
- "uuid",
- "wire-frame",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
-name = "tube-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "tube-model-wasm"
-version = "0.1.0"
-dependencies = [
- "tilo-model-guest",
- "tube-model",
- "workspace-hack",
 ]
 
 [[package]]
@@ -29826,9 +29763,6 @@ dependencies = [
  "trash",
  "try-lock",
  "ttf-parser",
- "tube",
- "tube-model",
- "tube-model-wasm",
  "tungstenite",
  "twilight-http-ratelimiting",
  "two-face",

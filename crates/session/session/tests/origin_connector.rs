@@ -34,7 +34,7 @@ use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
 use crate::common::{PERSON, private_home};
 
 /// The `YouTube` client, as a package names it.
-const TUBE: &str = "so.tilo.lang.tube";
+const TUBE: &str = "so.tilo.tube";
 /// The channel the scripted `YouTube` service answers with.
 const NAME: &str = "Low Level Learning";
 /// The video the scripted service answers with.

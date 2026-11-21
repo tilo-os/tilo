@@ -280,7 +280,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "lists",
                 "Map<List<Text>>",
-                "Each field that holds several, by its name: a set or a map as its keys, a list as its entries.",
+                "Each field that holds several, by its name: a set or a map as its keys, a list as what it holds.",
             ),
             (
                 "rich",
@@ -291,6 +291,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "files",
                 "Map<Map<File>>",
                 "Each field that holds bytes by key, by its name: the file of each key's bytes, kept on this device (a native app's pictures, by their digest). A key whose bytes could not be kept is missing.",
+            ),
+            (
+                "entries",
+                "Map<Map<Text>>",
+                "Each field that maps keys to words, by its name: what each key holds, as words (a native app's watch times, by video). Its keys are in `lists` too.",
             ),
         ],
     },

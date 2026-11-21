@@ -29371,289 +29371,6 @@
         "required": [],
         "description": ""
       },
-      "tube.library.reply-to-comment.Arguments": {
-        "type": "object",
-        "properties": {
-          "comment": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "text": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "comment",
-          "text"
-        ],
-        "description": ""
-      },
-      "tube.library.retract.Arguments": {
-        "type": "object",
-        "properties": {
-          "reply": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "reply"
-        ],
-        "description": ""
-      },
-      "tube.library.open-video.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "video"
-        ],
-        "description": ""
-      },
-      "tube.library.open-creator.Arguments": {
-        "type": "object",
-        "properties": {
-          "creator": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "creator"
-        ],
-        "description": ""
-      },
-      "tube.library.open-playlist.Arguments": {
-        "type": "object",
-        "properties": {
-          "playlist": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "playlist"
-        ],
-        "description": ""
-      },
-      "tube.library.search.Arguments": {
-        "type": "object",
-        "properties": {
-          "query": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "query"
-        ],
-        "description": ""
-      },
-      "tube.library.toggle-playback.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "tube.library.seek.Arguments": {
-        "type": "object",
-        "properties": {
-          "seconds": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "seconds"
-        ],
-        "description": ""
-      },
-      "tube.library.skip-segment.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "tube.library.share.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "video"
-        ],
-        "description": ""
-      },
-      "tube.library.mark-watched.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "video"
-        ],
-        "description": ""
-      },
-      "tube.library.forget-watched.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "video"
-        ],
-        "description": ""
-      },
-      "tube.library.clear-history.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "tube.library.set-preference.Arguments": {
-        "type": "object",
-        "properties": {
-          "preference": {
-            "type": "string"
-          },
-          "enabled": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "preference",
-          "enabled"
-        ],
-        "description": ""
-      },
-      "tube.library.set-preferred-quality.Arguments": {
-        "type": "object",
-        "properties": {
-          "quality": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "quality"
-        ],
-        "description": ""
-      },
-      "tube.library.set-segment-handling.Arguments": {
-        "type": "object",
-        "properties": {
-          "category": {
-            "type": "string"
-          },
-          "mode": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "category",
-          "mode"
-        ],
-        "description": ""
-      },
-      "tube.watch-history.record.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {
-            "type": "string"
-          },
-          "at_ms": {
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "video",
-          "at_ms"
-        ],
-        "description": ""
-      },
-      "tube.watch-history.progress.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {
-            "type": "string"
-          },
-          "position_ms": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "duration_ms": {
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "video",
-          "position_ms",
-          "duration_ms"
-        ],
-        "description": ""
-      },
-      "tube.watch-history.import.Arguments": {
-        "type": "object",
-        "properties": {
-          "watched": {
-            "items": {
-              "maxItems": 2,
-              "minItems": 2,
-              "type": "array"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "watched"
-        ],
-        "description": ""
-      },
-      "tube.watch-history.forget.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "video"
-        ],
-        "description": ""
-      },
-      "tube.watch-history.clear.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "tube.watch-history.import-previous.Arguments": {
-        "type": "object",
-        "properties": {
-          "previous": {
-            "items": {
-              "maxItems": 3,
-              "minItems": 3,
-              "type": "array"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "previous"
-        ],
-        "description": ""
-      },
       "typst-editor.workspace.new-file.Arguments": {
         "type": "object",
         "properties": {
@@ -38635,13 +38352,13 @@
         ],
         "description": "Clears the finished tasks, when there are any, and files a note saying how many were done.\nBoth changes are the Tasks and Notes apps' own, asked at their action APIs: what they did comes\nback as their resources' next readings."
       },
-      "tl.so.tilo.lang.tube.Channel.$create.Arguments": {
+      "tl.so.tilo.tube.Channel.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.tube.Channel.edit-text.Arguments": {
+      "tl.so.tilo.tube.Channel.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38666,7 +38383,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.Channel.edit-flag.Arguments": {
+      "tl.so.tilo.tube.Channel.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38686,7 +38403,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.Channel.subscribe.Arguments": {
+      "tl.so.tilo.tube.Channel.subscribe.Arguments": {
         "type": "object",
         "properties": {
           "subscribed": {
@@ -38696,25 +38413,25 @@
         "required": [],
         "description": "Subscribes to the channel, or unsubscribes: the button says which it will do."
       },
-      "tl.so.tilo.lang.tube.Channel.toggle_subscription.Arguments": {
+      "tl.so.tilo.tube.Channel.toggle_subscription.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Subscribes to the channel, or takes the subscription back."
       },
-      "tl.so.tilo.lang.tube.Channel.refresh_channel.Arguments": {
+      "tl.so.tilo.tube.Channel.refresh_channel.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Asks the service for the channel's videos."
       },
-      "tl.so.tilo.lang.tube.Video.$create.Arguments": {
+      "tl.so.tilo.tube.Video.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.tube.Video.edit-text.Arguments": {
+      "tl.so.tilo.tube.Video.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38741,7 +38458,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.Video.edit-flag.Arguments": {
+      "tl.so.tilo.tube.Video.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38764,7 +38481,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.Video.like.Arguments": {
+      "tl.so.tilo.tube.Video.like.Arguments": {
         "type": "object",
         "properties": {
           "liked": {
@@ -38774,7 +38491,7 @@
         "required": [],
         "description": "Likes the video, or takes the like back."
       },
-      "tl.so.tilo.lang.tube.Video.watch_later.Arguments": {
+      "tl.so.tilo.tube.Video.watch_later.Arguments": {
         "type": "object",
         "properties": {
           "saved": {
@@ -38784,19 +38501,19 @@
         "required": [],
         "description": "Keeps the video to watch later, or takes it off the list."
       },
-      "tl.so.tilo.lang.tube.Video.play.Arguments": {
+      "tl.so.tilo.tube.Video.play.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Plays the video, whether or not it was played before."
       },
-      "tl.so.tilo.lang.tube.Video.resume.Arguments": {
+      "tl.so.tilo.tube.Video.resume.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Plays the video from where the person left off, when they did not finish it."
       },
-      "tl.so.tilo.lang.tube.Video.progress.Arguments": {
+      "tl.so.tilo.tube.Video.progress.Arguments": {
         "type": "object",
         "properties": {
           "at": {
@@ -38808,19 +38525,19 @@
         ],
         "description": "Records how far into the video the person is, and that they watched it now: it moves to the\nfront of the history, and asks the service for the address its bytes play from when that is\nnot known yet. Starting a video, resuming it and moving the playhead as it plays are one\naction, so a video has one place it is played from."
       },
-      "tl.so.tilo.lang.tube.Video.forget.Arguments": {
+      "tl.so.tilo.tube.Video.forget.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Takes one video out of the history."
       },
-      "tl.so.tilo.lang.tube.Playlist.$create.Arguments": {
+      "tl.so.tilo.tube.Playlist.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.tube.Playlist.edit-text.Arguments": {
+      "tl.so.tilo.tube.Playlist.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38844,7 +38561,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.Playlist.edit-flag.Arguments": {
+      "tl.so.tilo.tube.Playlist.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38862,13 +38579,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.Subscription.$create.Arguments": {
+      "tl.so.tilo.tube.Subscription.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.tube.Subscription.edit-text.Arguments": {
+      "tl.so.tilo.tube.Subscription.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38888,7 +38605,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.Subscription.edit-flag.Arguments": {
+      "tl.so.tilo.tube.Subscription.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38906,13 +38623,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.WatchEntry.$create.Arguments": {
+      "tl.so.tilo.tube.WatchEntry.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.tube.WatchEntry.edit-text.Arguments": {
+      "tl.so.tilo.tube.WatchEntry.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38933,7 +38650,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.WatchEntry.edit-flag.Arguments": {
+      "tl.so.tilo.tube.WatchEntry.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38951,13 +38668,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.YouTube.$create.Arguments": {
+      "tl.so.tilo.tube.YouTube.$create.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "The resource is made the first time it is wanted."
       },
-      "tl.so.tilo.lang.tube.YouTube.edit-text.Arguments": {
+      "tl.so.tilo.tube.YouTube.edit-text.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -38981,7 +38698,7 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.YouTube.edit-flag.Arguments": {
+      "tl.so.tilo.tube.YouTube.edit-flag.Arguments": {
         "type": "object",
         "properties": {
           "field": {
@@ -39001,13 +38718,13 @@
         ],
         "description": "A bound control changes the field it shows."
       },
-      "tl.so.tilo.lang.tube.YouTube.delete_history.Arguments": {
+      "tl.so.tilo.tube.YouTube.delete_history.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Deletes the watch history: everything the person watched."
       },
-      "tl.so.tilo.lang.tube.YouTube.search.Arguments": {
+      "tl.so.tilo.tube.YouTube.search.Arguments": {
         "type": "object",
         "properties": {
           "query": {
@@ -39017,25 +38734,25 @@
         "required": [],
         "description": "Searches YouTube: the service answers with channels, playlists and videos, written where the\nsearch view lists them. The answer arrives through the platform's network, never the app's."
       },
-      "tl.so.tilo.lang.tube.YouTube.end_search.Arguments": {
+      "tl.so.tilo.tube.YouTube.end_search.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Leaves the search the feed is showing for the place the person chose: the results stay where\nthe service wrote them (found again by the query that found them), and the client shows the\nplace chosen."
       },
-      "tl.so.tilo.lang.tube.YouTube.refresh_feed.Arguments": {
+      "tl.so.tilo.tube.YouTube.refresh_feed.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Asks the service for the newest videos of each subscribed channel: what the subscriptions feed\nshows."
       },
-      "tl.so.tilo.lang.tube.YouTube.load_trending.Arguments": {
+      "tl.so.tilo.tube.YouTube.load_trending.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": "Asks the service for the videos it lists as trending."
       },
-      "tl.so.tilo.lang.tube.YouTube.play_again.Arguments": {
+      "tl.so.tilo.tube.YouTube.play_again.Arguments": {
         "type": "object",
         "properties": {
           "h": {
@@ -39067,7 +38784,7 @@
               "id",
               "label"
             ],
-            "resource_kind": "tl.so.tilo.lang.tube.WatchEntry",
+            "resource_kind": "tl.so.tilo.tube.WatchEntry",
             "type": "object"
           }
         },
@@ -44335,138 +44052,6 @@
       "arguments": "#/components/schemas/totp.vault.add-account.Arguments"
     },
     {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "reply-to-comment",
-      "arguments": "#/components/schemas/tube.library.reply-to-comment.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "retract",
-      "arguments": "#/components/schemas/tube.library.retract.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "open-video",
-      "arguments": "#/components/schemas/tube.library.open-video.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "open-creator",
-      "arguments": "#/components/schemas/tube.library.open-creator.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "open-playlist",
-      "arguments": "#/components/schemas/tube.library.open-playlist.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "search",
-      "arguments": "#/components/schemas/tube.library.search.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "toggle-playback",
-      "arguments": "#/components/schemas/tube.library.toggle-playback.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "seek",
-      "arguments": "#/components/schemas/tube.library.seek.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "skip-segment",
-      "arguments": "#/components/schemas/tube.library.skip-segment.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "share",
-      "arguments": "#/components/schemas/tube.library.share.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "mark-watched",
-      "arguments": "#/components/schemas/tube.library.mark-watched.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "forget-watched",
-      "arguments": "#/components/schemas/tube.library.forget-watched.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "clear-history",
-      "arguments": "#/components/schemas/tube.library.clear-history.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "set-preference",
-      "arguments": "#/components/schemas/tube.library.set-preference.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "set-preferred-quality",
-      "arguments": "#/components/schemas/tube.library.set-preferred-quality.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "set-segment-handling",
-      "arguments": "#/components/schemas/tube.library.set-segment-handling.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.watch-history",
-      "action": "record",
-      "arguments": "#/components/schemas/tube.watch-history.record.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.watch-history",
-      "action": "progress",
-      "arguments": "#/components/schemas/tube.watch-history.progress.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.watch-history",
-      "action": "import",
-      "arguments": "#/components/schemas/tube.watch-history.import.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.watch-history",
-      "action": "forget",
-      "arguments": "#/components/schemas/tube.watch-history.forget.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.watch-history",
-      "action": "clear",
-      "arguments": "#/components/schemas/tube.watch-history.clear.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.watch-history",
-      "action": "import-previous",
-      "arguments": "#/components/schemas/tube.watch-history.import-previous.Arguments"
-    },
-    {
       "app": "so.tilo.typst-editor",
       "resource": "typst-editor.workspace",
       "action": "new-file",
@@ -47389,232 +46974,232 @@
       "arguments": "#/components/schemas/tl.so.tilo.lang.today.morning_cleanup.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
+      "app": "so.tilo.tube",
       "resource": "tl.host",
       "action": "commit",
       "arguments": "#/components/schemas/tl.host.commit.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
+      "app": "so.tilo.tube",
       "resource": "tilolang.personal",
       "action": "view-state",
       "arguments": "#/components/schemas/tilolang.personal.view-state.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
+      "app": "so.tilo.tube",
       "resource": "tilolang.personal",
       "action": "seen",
       "arguments": "#/components/schemas/tilolang.personal.seen.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
+      "app": "so.tilo.tube",
       "resource": "tilolang.personal",
       "action": "seen-runs",
       "arguments": "#/components/schemas/tilolang.personal.seen-runs.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
+      "app": "so.tilo.tube",
       "resource": "tilolang.personal",
       "action": "reminded",
       "arguments": "#/components/schemas/tilolang.personal.reminded.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Channel",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Channel",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Channel.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Channel",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Channel",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Channel.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Channel",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Channel",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Channel.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Channel",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Channel",
       "action": "subscribe",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Channel.subscribe.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.subscribe.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Channel",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Channel",
       "action": "toggle_subscription",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Channel.toggle_subscription.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.toggle_subscription.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Channel",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Channel",
       "action": "refresh_channel",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Channel.refresh_channel.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Channel.refresh_channel.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Video",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Video.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Video",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Video.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Video",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Video.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Video",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "like",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Video.like.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.like.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Video",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "watch_later",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Video.watch_later.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.watch_later.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Video",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "play",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Video.play.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.play.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Video",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "resume",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Video.resume.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.resume.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Video",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "progress",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Video.progress.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.progress.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Video",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Video",
       "action": "forget",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Video.forget.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Video.forget.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Playlist",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Playlist",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Playlist.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Playlist",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Playlist",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Playlist.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Playlist",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Playlist",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Playlist.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Playlist.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Subscription",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Subscription",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Subscription.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Subscription",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Subscription",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Subscription.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.Subscription",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.Subscription",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.Subscription.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.Subscription.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.WatchEntry",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.WatchEntry",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.WatchEntry.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.WatchEntry.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.WatchEntry",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.WatchEntry",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.WatchEntry.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.WatchEntry.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.WatchEntry",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.WatchEntry",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.WatchEntry.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.WatchEntry.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.YouTube",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "$create",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.YouTube.$create.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.$create.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.YouTube",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "edit-text",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.YouTube.edit-text.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.edit-text.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.YouTube",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "edit-flag",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.YouTube.edit-flag.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.edit-flag.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.YouTube",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "delete_history",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.YouTube.delete_history.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.delete_history.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.YouTube",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "search",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.YouTube.search.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.search.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.YouTube",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "end_search",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.YouTube.end_search.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.end_search.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.YouTube",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "refresh_feed",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.YouTube.refresh_feed.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.refresh_feed.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.YouTube",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "load_trending",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.YouTube.load_trending.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.load_trending.Arguments"
     },
     {
-      "app": "so.tilo.lang.tube",
-      "resource": "tl.so.tilo.lang.tube.YouTube",
+      "app": "so.tilo.tube",
+      "resource": "tl.so.tilo.tube.YouTube",
       "action": "play_again",
-      "arguments": "#/components/schemas/tl.so.tilo.lang.tube.YouTube.play_again.Arguments"
+      "arguments": "#/components/schemas/tl.so.tilo.tube.YouTube.play_again.Arguments"
     },
     {
       "app": "so.tilo.lang.views",

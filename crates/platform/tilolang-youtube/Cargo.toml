@@ -35,6 +35,8 @@ live = ["dep:tilo-innertube", "dep:rustypipe", "dep:ui", "dep:tilo-net"]
 connector = ["dep:runtime-portal"]
 
 [dev-dependencies]
+# The documents the native Tube kept, read as a workspace hands them to the migration.
+automerge.workspace = true
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 tempfile.workspace = true
 

@@ -41,7 +41,7 @@ pub const APPS: [&str; 5] = [
     "so.tilo.lang.tasks",
     "so.tilo.lang.chat",
     "so.tilo.lang.mail",
-    "so.tilo.lang.tube",
+    "so.tilo.tube",
 ];
 
 /// The records of the installed apps [`APPS`] names, each in a record of its own as its windows

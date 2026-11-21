@@ -47,7 +47,6 @@ exclude = [
     "tasks",
     "terminal",
     "tilo-console",
-    "tube",
     "typst-editor",
     "video-editor",
     "weather",
