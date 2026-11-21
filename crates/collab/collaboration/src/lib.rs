@@ -232,6 +232,9 @@ mod portable_committed {
         pub fn applied(&self) {
             match self.never {}
         }
+        pub fn was_applied(&self) -> bool {
+            match self.never {}
+        }
         pub fn applies_to(&self, _document: &impl automerge::ReadDoc) -> bool {
             match self.never {}
         }
