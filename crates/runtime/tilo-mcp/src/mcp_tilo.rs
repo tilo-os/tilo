@@ -47,10 +47,6 @@ use tilo_lock::MutexRecover as _;
 
 use super::{ActionProvider, Addressed, Failure, McpServer, OneCall, Reply, app_names};
 
-/// The most of the workspace's content one program's read may ask for whole: what a file it
-/// reads holds, which is bounded as a file an app chooses is.
-const TASK_CONTENT_BYTES: u64 = 64 << 20;
-
 /// How long a program waits for an action it invoked to settle before it gives up on the
 /// action's outcome: as long as any caller of an invoke may ask. A program cannot poll and a trap
 /// loses the step it was taking, so it holds on to the action's own answer instead.
@@ -1407,10 +1403,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Box::pin(self.task_reads(reads, &mut providers)).await
             } else if let Some(reading) = message.get("reading") {
                 self.task_reading(reading)
-            } else if let Some(content) = message.get("content") {
-                self.task_content(content).await
-            } else if let Some(put) = message.get("content_put") {
-                self.task_content_put(put).await
             } else if let Some(call) = message.get("invoke") {
                 Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
@@ -1464,91 +1456,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         known.insert(app.to_owned(), found.clone());
         Ok(found)
-    }
-
-    /// The task's read of the workspace's content `content` (`{hash}`): `{"ok": {"bytes":
-    /// base64}}`, `{"absent": true}` or `{"err": why}`. It is read through the workspace's
-    /// content store as the caller, which is the store `tilo_put_*` writes: a program's
-    /// `File.at` and `.text()` read what the same workspace's uploads put there.
-    async fn task_content(&self, content: &Value) -> Value {
-        let Some(hash) = content["hash"].as_str() else {
-            return json!({"err": "a content read names its hash"});
-        };
-        let Some(reference) = tilo_actions::content_resource(hash) else {
-            return json!({"err": "a content read names a hash, not an address"});
-        };
-        let Some(gets) = self.host().content_gets() else {
-            return json!({"err": "this API reads no workspace content"});
-        };
-        let caller = self.execution_caller();
-        let read = tokio::task::spawn_blocking(move || {
-            let mut bytes: Vec<u8> = Vec::new();
-            loop {
-                let at = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                let piece = gets.get(&caller, &reference, at, 0)?;
-                if piece.offset != at {
-                    return Err(tilo_actions::remote::ActionCallError::Unavailable {
-                        reason: format!("the content answered {at} with a piece at {}", piece.offset),
-                    });
-                }
-                if piece.size > TASK_CONTENT_BYTES {
-                    return Err(tilo_actions::remote::ActionCallError::Unavailable {
-                        reason: format!(
-                            "the content is {} bytes: more than the {TASK_CONTENT_BYTES} a program may read",
-                            piece.size
-                        ),
-                    });
-                }
-                let moved = piece.bytes.len();
-                bytes.extend_from_slice(&piece.bytes);
-                if at.saturating_add(u64::try_from(moved).unwrap_or(u64::MAX)) >= piece.size {
-                    return Ok(bytes);
-                }
-                if moved == 0 {
-                    return Err(tilo_actions::remote::ActionCallError::Unavailable {
-                        reason: "the content arrived as no bytes".to_owned(),
-                    });
-                }
-            }
-        })
-        .await;
-        match read {
-            Ok(Ok(bytes)) => {
-                use base64::Engine as _;
-                json!({"ok": {"bytes": base64::engine::general_purpose::STANDARD.encode(bytes)}})
-            }
-            Ok(Err(error)) => json!({"err": error.to_string()}),
-            Err(error) => json!({"err": format!("the content read ended: {error}")}),
-        }
-    }
-
-    /// The task's upload of `bytes` (`content_put`): `{"ok": {"content": "tilo.content:<hash>"}}`
-    /// or `{"err": why}`. What it keeps is the workspace's content, which the same store's reads
-    /// and the workspace's actions find by its address.
-    async fn task_content_put(&self, put: &Value) -> Value {
-        use base64::Engine as _;
-        let Some(encoded) = put["bytes"].as_str() else {
-            return json!({"err": "a content put names the bytes it keeps"});
-        };
-        let bytes = match base64::engine::general_purpose::STANDARD.decode(encoded) {
-            Ok(bytes) => bytes,
-            Err(error) => return json!({"err": format!("the bytes are not base64: {error}")}),
-        };
-        let Some(puts) = self.host().content_puts() else {
-            return json!({"err": "this API keeps no workspace content"});
-        };
-        let caller = self.execution_caller();
-        let stored = tokio::task::spawn_blocking(move || {
-            let mut sink = puts.begin(&caller, u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
-            sink.append(0, &bytes)?;
-            sink.finish()
-        })
-        .await;
-        match stored {
-            Ok(Ok(reference)) => json!({"ok": {"content": reference}}),
-            Ok(Err(error)) => json!({"err": error.to_string()}),
-            Err(error) => json!({"err": format!("the content put ended: {error}")}),
-        }
     }
 
     /// The task's read of the record `record` (`{app, record}`): its committed content, as the

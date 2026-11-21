@@ -527,23 +527,3 @@ fn a_programs_answer_reads_for_a_person_without_its_references() {
         "the day reads in the person's words, a field that is none left out"
     );
 }
-
-/// A program's files are the workspace's content: what it keeps it reads back by the same
-/// address, through the store the workspace's actions and uploads use, not one of the host's own.
-#[test]
-fn a_programs_files_are_the_workspaces_content() {
-    let task = task(Vec::new());
-    let address = task.said("print(File.of_text(\"a.md\", \"hello\").url)");
-    assert!(
-        address.starts_with("tilo-blob://"),
-        "a file the program made is named by its content address: {address:?}"
-    );
-    let read = task.said(&format!(
-        "let f = File.at(\"b.md\", \"{address}\")\n\
-         match f.text() {{ .ok(t) => print(t), .err(e) => print(e) }}"
-    ));
-    assert_eq!(
-        read, "hello",
-        "the address the program kept is one it reads back"
-    );
-}

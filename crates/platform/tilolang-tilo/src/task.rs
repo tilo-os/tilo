@@ -38,7 +38,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use serde_json::{Value as Json, json};
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 use tilolang_runtime::catalogue::SignatureKind;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::ids::{DocId, RunId, TypeId};
@@ -92,29 +91,6 @@ pub trait TaskApi {
         Ok(None)
     }
 
-    /// The content the workspace the task runs in holds at `hash` (lowercase BLAKE3 hex): what a
-    /// program's `File.at` reads, and what `.text()` of a file it names reads. `Ok(None)` when
-    /// the workspace holds none of it; `Err` when the API cannot read it now.
-    ///
-    /// # Errors
-    ///
-    /// Why the content is not here: the workspace keeps none of it, or the API could not ask.
-    fn content(&self, _hash: &str) -> Result<Option<Vec<u8>>, String> {
-        Ok(None)
-    }
-
-    /// Keep `bytes` as the workspace's content, answering their hash (lowercase BLAKE3 hex):
-    /// what a program's `File.of_text`, `File.of_bytes` and `File.zip` keep, so a file it makes
-    /// is one the workspace's actions read by the same address.
-    ///
-    /// # Errors
-    ///
-    /// Why the bytes were not kept: the workspace refuses content uploads, or the API could not
-    /// ask.
-    fn keep(&self, _bytes: &[u8]) -> Result<String, String> {
-        Err("this host keeps no files".to_owned())
-    }
-
     /// A program starts: what was read for an earlier one is read again
     /// ([`crate::task_documents::DocumentReads::forget`]).
     fn begin_program(&self) {}
@@ -126,37 +102,6 @@ pub trait TaskApi {
     /// The app lists no such resource.
     fn resource_id(&self, _app: &str, resource: &str) -> Result<String, String> {
         Ok(resource.to_owned())
-    }
-}
-
-/// The workspace's content, as a task's programs reach their files: what `File.at` and
-/// `.text()` read, and what a file the program makes is kept as. It has no chooser and writes no
-/// file on this device: a program names content, and a person chooses in an app's window.
-struct TaskFiles {
-    api: Rc<dyn TaskApi>,
-}
-
-impl BlobHost for TaskFiles {
-    fn read(&self, hash: &str) -> Option<Vec<u8>> {
-        self.api.content(hash).ok().flatten()
-    }
-
-    fn choose(&self, _: &FileRequest) -> Result<Option<FileValue>, String> {
-        Err("a program has no file chooser: name the content instead".to_owned())
-    }
-
-    fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {
-        Err("a program writes no file on this device: give the content to an action".to_owned())
-    }
-
-    fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-        let hash = self.api.keep(bytes)?;
-        Ok(FileValue::new(
-            name,
-            media,
-            i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-            hash,
-        ))
     }
 }
 
@@ -265,11 +210,6 @@ impl TaskSession {
             fresh: 0,
         };
         let runtime = Runtime::new(store, DecidesNothing).map_err(|error| error.to_string())?;
-        // A program's files are the workspace's content: the same store `tilo_put_*` writes and
-        // the workspace's actions read, asked of the API as the task.
-        runtime.set_blobs(TaskFiles {
-            api: Rc::clone(api),
-        });
         let mut apps: HashMap<String, Meta> = HashMap::new();
         // Each app's loaded module, by the app: the id an action records as its authorship.
         let mut modules: HashMap<String, ModuleHash> = HashMap::new();

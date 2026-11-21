@@ -171,41 +171,6 @@ impl TaskApi for Api {
     /// `{"err": why}`. What a platform root no service of the device serves reads as (an empty
     /// reading, as the shell's own parts are handed it) is the session's to say, so a program and
     /// a view read the device alike.
-    /// The workspace's content at `hash`, as the API reads it for this task: `{"ok":
-    /// {"bytes": base64}}`, `{"absent": true}` or `{"err": why}`.
-    fn content(&self, hash: &str) -> Result<Option<Vec<u8>>, String> {
-        let reply = self.line.ask(&json!({"content": {"hash": hash}}))?;
-        if reply.get("absent").and_then(Json::as_bool) == Some(true) {
-            return Ok(None);
-        }
-        if let Some(bytes) = reply.pointer("/ok/bytes").and_then(Json::as_str) {
-            return base64::engine::general_purpose::STANDARD
-                .decode(bytes)
-                .map(Some)
-                .map_err(|error| format!("the API sent content that is not base64: {error}"));
-        }
-        Err(reply.get("err").and_then(Json::as_str).map_or_else(
-            || format!("the API answered a content read with neither ok, absent nor err: {reply}"),
-            str::to_owned,
-        ))
-    }
-
-    /// Keep `bytes` as the workspace's content, as the API keeps what this task uploads:
-    /// `{"ok": {"content": "tilo.content:<hash>"}}` or `{"err": why}`.
-    fn keep(&self, bytes: &[u8]) -> Result<String, String> {
-        let bytes = base64::engine::general_purpose::STANDARD.encode(bytes);
-        let reply = self.line.ask(&json!({"content_put": {"bytes": bytes}}))?;
-        if let Some(content) = reply.pointer("/ok/content").and_then(Json::as_str) {
-            return tilo_actions::content_hash(content).map(str::to_owned).ok_or_else(|| {
-                format!("the API answered `{content}`, which is no content address")
-            });
-        }
-        Err(reply.get("err").and_then(Json::as_str).map_or_else(
-            || format!("the API answered a content put with neither ok nor err: {reply}"),
-            str::to_owned,
-        ))
-    }
-
     fn reading(&self, target: &ResourceRef) -> Result<Option<Json>, String> {
         let (app, ty) = target
             .ty
