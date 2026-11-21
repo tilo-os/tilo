@@ -260,6 +260,14 @@ try {
     else if (!seen.elements) problems.push(`${app}: shows nothing`);
   }
 
+  // The appearance the person's browser asks for: a page follows it, as a
+  // window follows the system it runs on.
+  await openPage('light appearance');
+  await tab.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-color-scheme', value: 'light'}]});
+  await sleep(900);
+  await look('14-light');
+  await tab.send('Emulation.setEmulatedMedia', {features: []});
+
   const context = await browser.context();
   await arrive({context, label: 'second'});
   await openPage('second profile');

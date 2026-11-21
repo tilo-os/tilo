@@ -336,11 +336,13 @@ impl Worker {
                 .app_id()
                 .rsplit_once('.')
                 .map_or_else(|| app.app_id(), |(_, last)| last);
+            // Every tile holds its icon's place, so a grid of apps reads as
+            // rows: an app with no artwork of its own stands as its first
+            // letter on the same tile.
             let icon = match &app.icon {
-                ui::IconDescriptor::Named(icon) => {
-                    ui::icons::Icon::from_name(icon).map_or_else(String::new, ui::icons::icon_svg)
-                }
-                ui::IconDescriptor::Glyph(_) => String::new(),
+                ui::IconDescriptor::Named(icon) => ui::icons::Icon::from_name(icon)
+                    .map_or_else(|| initial_tile(app.title()), ui::icons::icon_svg),
+                ui::IconDescriptor::Glyph(_) => initial_tile(app.title()),
             };
             let _ = write!(
                 body,
@@ -515,7 +517,18 @@ border-radius:14px;color:var(--tilo-text);text-decoration:none;font-size:13px;fo
 .tilo-home-app:hover{background:var(--tilo-hover);}\
 .tilo-home-app:active{background:var(--tilo-press);}\
 .tilo-home-app:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
-.tilo-home-app svg{width:52px;height:52px;border-radius:12px;}";
+.tilo-home-app svg{width:52px;height:52px;border-radius:12px;}\
+.tilo-home-initial{width:52px;height:52px;border-radius:12px;display:grid;place-items:center;\
+background:var(--tilo-raised);color:var(--tilo-text-dim);font-size:22px;font-weight:600;}";
+
+/// An app's first letter, on the tile an icon stands on.
+fn initial_tile(title: &str) -> String {
+    let initial = title.chars().next().map(|first| first.to_uppercase().to_string());
+    format!(
+        "<span class=\"tilo-home-initial\">{}</span>",
+        escape(initial.as_deref().unwrap_or(""))
+    )
+}
 
 /// `text` as HTML shows it.
 fn escape(text: &str) -> String {
