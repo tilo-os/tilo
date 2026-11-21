@@ -119,13 +119,24 @@ pub(super) fn collect_targets(
     sibling_counts: &mut HashMap<String, usize>,
     out: &mut HashMap<String, Rect>,
 ) {
+    collect_targets_called(w, parent_path, None, sibling_counts, out);
+}
+
+/// [`collect_targets`] of a widget its parent calls `called` ([`Widget::child_path_name`]).
+fn collect_targets_called(
+    w: &dyn Widget,
+    parent_path: &str,
+    called: Option<String>,
+    sibling_counts: &mut HashMap<String, usize>,
+    out: &mut HashMap<String, Rect>,
+) {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(w) else {
         return;
     };
     if w.accessibility_hidden() {
         return;
     }
-    let (name, path, my_index) = next_widget_path(w, parent_path, sibling_counts);
+    let (name, path, my_index) = crate::widget::widget_path(w, parent_path, called, sibling_counts);
     out.insert(path.clone(), w.get_rect());
     if my_index == 0 {
         let bare = if parent_path.is_empty() {
@@ -151,8 +162,14 @@ pub(super) fn collect_targets(
         out.insert(id.to_string(), rect);
     }
     let mut child_counts: HashMap<String, usize> = HashMap::new();
-    for child in w.children() {
-        collect_targets(child, &path, &mut child_counts, out);
+    for (index, child) in w.children().into_iter().enumerate() {
+        collect_targets_called(
+            child,
+            &path,
+            w.child_path_name(index),
+            &mut child_counts,
+            out,
+        );
     }
 }
 
@@ -178,10 +195,22 @@ pub(super) fn collect_named_targets(
     sibling_counts: &mut HashMap<String, usize>,
     out: &mut Vec<RetainedNamedTarget>,
 ) {
+    collect_named_targets_called(widget, parent_path, None, sibling_counts, out);
+}
+
+/// [`collect_named_targets`] of a widget its parent calls `called` ([`Widget::child_path_name`]).
+fn collect_named_targets_called(
+    widget: &dyn Widget,
+    parent_path: &str,
+    called: Option<String>,
+    sibling_counts: &mut HashMap<String, usize>,
+    out: &mut Vec<RetainedNamedTarget>,
+) {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return;
     };
-    let (name, path, my_index) = next_widget_path(widget, parent_path, sibling_counts);
+    let (name, path, my_index) =
+        crate::widget::widget_path(widget, parent_path, called, sibling_counts);
     // Include even unregistered wrappers: otherwise their same-name inline
     // child could be mistaken for them by a registration-only uniqueness check.
     let bare = (my_index == 0).then(|| {
@@ -197,26 +226,38 @@ pub(super) fn collect_named_targets(
         bare,
         id: widget.test_id().map(str::to_owned),
     });
+    // Every child a walk of the retained tree must see, in the order it lists them: those the
+    // widget routes input to, then the ones it hosts without routing — a subtree it does not own
+    // and answers the person's events for itself, like the chrome's search card.
     let mut child_counts = HashMap::new();
-    let mut visit = |child: &dyn Widget| {
-        collect_named_targets(child, &path, &mut child_counts, out);
-    };
-    for_each_retained_child(widget, &mut visit);
-}
-
-/// Every child a walk of the retained tree must see, in the order it lists them: those the widget
-/// routes input to, then the ones it hosts without routing — a subtree it does not own and answers the
-/// person's events for itself, like the chrome's search card.
-fn for_each_retained_child(widget: &dyn Widget, visit: &mut dyn FnMut(&dyn Widget)) {
-    for child in widget.children() {
-        visit(child);
+    for (index, child) in widget.children().into_iter().enumerate() {
+        collect_named_targets_called(
+            child,
+            &path,
+            widget.child_path_name(index),
+            &mut child_counts,
+            out,
+        );
     }
-    widget.for_each_hosted_child(visit);
+    widget.for_each_hosted_child(&mut |child| {
+        collect_named_targets_called(child, &path, None, &mut child_counts, out);
+    });
 }
 
 pub(super) fn collect_inspection(
     widget: &dyn Widget,
     parent_path: &str,
+    sibling_counts: &mut HashMap<String, usize>,
+    slot: Option<(&dyn Widget, usize)>,
+) -> InspectionNode {
+    collect_inspection_called(widget, parent_path, None, sibling_counts, slot)
+}
+
+/// [`collect_inspection`] of a widget its parent calls `called` ([`Widget::child_path_name`]).
+fn collect_inspection_called(
+    widget: &dyn Widget,
+    parent_path: &str,
+    called: Option<String>,
     sibling_counts: &mut HashMap<String, usize>,
     slot: Option<(&dyn Widget, usize)>,
 ) -> InspectionNode {
@@ -235,7 +276,7 @@ pub(super) fn collect_inspection(
             children: vec![],
         };
     };
-    let (name, path, _) = next_widget_path(widget, parent_path, sibling_counts);
+    let (name, path, _) = crate::widget::widget_path(widget, parent_path, called, sibling_counts);
     let rect = widget.get_rect();
     let mut semantics = widget.accessibility();
     if let Some(node) = &mut semantics {
@@ -255,7 +296,13 @@ pub(super) fn collect_inspection(
         } else {
             inherited
         };
-        children.push(collect_inspection(child, &path, &mut child_counts, slot));
+        children.push(collect_inspection_called(
+            child,
+            &path,
+            widget.child_path_name(index),
+            &mut child_counts,
+            slot,
+        ));
     }
     widget.for_each_hosted_child(&mut |child| {
         children.push(collect_inspection(child, &path, &mut child_counts, None));
@@ -561,25 +608,6 @@ fn push_audit_issue(
         code: code.to_owned(),
         message: message.into(),
     });
-}
-
-fn next_widget_path(
-    widget: &dyn Widget,
-    parent_path: &str,
-    sibling_counts: &mut HashMap<String, usize>,
-) -> (String, String, usize) {
-    let name = widget.name().to_string();
-    let sibling_key = format!("{parent_path}::{name}");
-    let index = sibling_counts.entry(sibling_key).or_insert(0);
-    let current = *index;
-    // Bounded by siblings under one parent; saturating makes that explicit.
-    *index = index.saturating_add(1);
-    let path = if parent_path.is_empty() {
-        format!("{name}[{current}]")
-    } else {
-        format!("{parent_path}/{name}[{current}]")
-    };
-    (name, path, current)
 }
 
 impl super::FrameHarness {

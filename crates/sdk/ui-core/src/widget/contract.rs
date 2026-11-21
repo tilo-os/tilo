@@ -628,6 +628,15 @@ pub trait Widget {
         None
     }
 
+    /// What one retained [`children`](Widget::children) entry is called in a widget's path, when this
+    /// widget names its children by what they show rather than by their place among the siblings
+    /// of their kind: a list calls a row by its key, so a row still on its way, shown by a
+    /// placeholder, renames neither itself when it arrives nor the rows after it. Unique among the
+    /// children, and free of `/` and `#`, which separate a path's parts.
+    fn child_path_name(&self, _child_index: usize) -> Option<String> {
+        None
+    }
+
     /// Perform an accessibility [`Action`](crate::a11y::Action) on this
     /// widget, or on one of its **synthetic** accessibility nodes. May mutate
     /// the CRDT like [`handle_event`](Widget::handle_event).

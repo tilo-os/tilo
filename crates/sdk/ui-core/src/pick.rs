@@ -107,22 +107,20 @@ fn usable(rect: Rect) -> bool {
     rect.width() > 0.0 && rect.height() > 0.0 && rect.x0.is_finite() && rect.y0.is_finite()
 }
 
-/// The path of each child of `widget`, as the inspection numbers them.
+/// The path of each child of `widget`, as the inspection names them.
 fn child_paths<'a>(widget: &'a dyn Widget, path: &str) -> Vec<(&'a dyn Widget, String)> {
-    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut counts = HashMap::new();
     widget
         .children()
         .into_iter()
-        .map(|child| {
-            let name = child.name();
-            let index = counts.entry(name).or_insert(0);
-            let at = *index;
-            *index = index.saturating_add(1);
-            let path = if path.is_empty() {
-                format!("{name}[{at}]")
-            } else {
-                format!("{path}/{name}[{at}]")
-            };
+        .enumerate()
+        .map(|(index, child)| {
+            let (_, path, _) = crate::widget::widget_path(
+                child,
+                path,
+                widget.child_path_name(index),
+                &mut counts,
+            );
             (child, path)
         })
         .collect()

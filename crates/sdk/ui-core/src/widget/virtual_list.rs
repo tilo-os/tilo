@@ -2237,6 +2237,14 @@ impl Widget for VirtualRows {
         self.mounted.iter().map(|row| row.widget.as_ref()).collect()
     }
 
+    /// A row is called by its key where the list words its keys: a row still on its way and the
+    /// row that arrives in its place are one element of a page, and the rows after it keep theirs.
+    fn child_path_name(&self, child_index: usize) -> Option<String> {
+        let encode = self.semantic_key.as_ref()?;
+        let row = self.mounted.get(child_index)?;
+        Some(format!("row[{}]", path_safe(&encode(&row.key))))
+    }
+
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for row in &self.mounted {
             visitor(row.widget.as_ref());
@@ -2628,3 +2636,9 @@ mod paint;
 mod component;
 pub(crate) use component::by_hand;
 pub use component::{DescribedList, DescribedRows, ItemRow, ListItemProps, VirtualListProps};
+
+/// `key` as one part of a widget path: the characters that separate a path's parts (`/`, `#`) and
+/// the one that escapes them stand as escapes.
+fn path_safe(key: &str) -> String {
+    key.replace('%', "%25").replace('/', "%2F").replace('#', "%23")
+}

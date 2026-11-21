@@ -17,26 +17,21 @@ use crate::widget::Widget;
 /// widget.
 fn index_widgets<'a>(
     widget: &'a dyn Widget,
-    parent_path: &str,
-    sibling_counts: &mut HashMap<String, usize>,
+    path: String,
     out: &mut HashMap<usize, Vec<(String, &'a dyn Widget)>>,
 ) {
-    let name = widget.name();
-    let index = sibling_counts
-        .entry(format!("{parent_path}::{name}"))
-        .or_insert(0);
-    let path = if parent_path.is_empty() {
-        format!("{name}[{index}]")
-    } else {
-        format!("{parent_path}/{name}[{index}]")
-    };
-    *index = index.saturating_add(1);
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return;
     };
     let mut child_counts = HashMap::new();
-    for child in widget.children() {
-        index_widgets(child, &path, &mut child_counts, out);
+    for (index, child) in widget.children().into_iter().enumerate() {
+        let (_, child_path, _) = crate::widget::widget_path(
+            child,
+            &path,
+            widget.child_path_name(index),
+            &mut child_counts,
+        );
+        index_widgets(child, child_path, out);
     }
     // A widget whose first field is a child widget shares its address: the one that holds the
     // other comes first.
@@ -494,7 +489,8 @@ impl FrameHarness {
         let mut widgets = HashMap::new();
         let mut sibling_counts = HashMap::new();
         for root in self.presentation_roots() {
-            index_widgets(root, "", &mut sibling_counts, &mut widgets);
+            let (_, path, _) = crate::widget::widget_path(root, "", None, &mut sibling_counts);
+            index_widgets(root, path, &mut widgets);
         }
         let kept = kept.map(|kept| KeptParts::of(kept, &widgets));
         let walk = Walk {

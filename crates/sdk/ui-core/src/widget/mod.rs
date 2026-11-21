@@ -156,6 +156,30 @@ pub(crate) fn semantic_action_bindings_into(
     }
 }
 
+/// Where `widget` stands in the widget tree, under `parent_path`: the name its parent calls it by
+/// ([`Widget::child_path_name`]), else its kind numbered among the siblings of that kind before it.
+/// With its kind and that number, which a path's bare form (`parent/Kind`, the first of its kind)
+/// reads. `counts` holds the numbering of one parent's children.
+pub(crate) fn widget_path(
+    widget: &dyn Widget,
+    parent_path: &str,
+    called: Option<String>,
+    counts: &mut std::collections::HashMap<String, usize>,
+) -> (String, String, usize) {
+    let name = widget.name().to_string();
+    let index = counts.entry(name.clone()).or_insert(0);
+    let current = *index;
+    // Bounded by siblings under one parent; saturating makes that explicit.
+    *index = index.saturating_add(1);
+    let part = called.unwrap_or_else(|| format!("{name}[{current}]"));
+    let path = if parent_path.is_empty() {
+        part
+    } else {
+        format!("{parent_path}/{part}")
+    };
+    (name, path, current)
+}
+
 /// How readily `widget` takes the keyboard when its app does without a control of its own choosing:
 /// its default keyboard control first (`Some(0)`), else one that takes typing — a field, an editor,
 /// a terminal (`Some(1)`) — never a button merely for being first (`None`): Enter would press it.

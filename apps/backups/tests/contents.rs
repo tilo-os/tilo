@@ -42,7 +42,7 @@ fn the_snapshot_lists_its_files_under_their_folders_and_folds_them_away() {
         .1;
     let row = targets
         .iter()
-        .find(|(name, _)| name.ends_with("/VirtualList[0]/ListRow[0]"))
+        .find(|(name, _)| name.ends_with("/VirtualList[0]/ListRow"))
         .unwrap_or_else(|| panic!("the contents list has a first row"))
         .1;
     let disclosure = (
