@@ -45,11 +45,10 @@ fn on_server(person: &DeviceCert, device: &DeviceCert, workspace: &str) -> Calle
 }
 
 /// The turn of `AGENT`, its person, and the workspace it works in.
-fn turn<'a>(workspace_id: WorkspaceId, caller: &'a Caller, keeper: &'a str) -> HostedTurn<'a> {
+fn turn(workspace_id: WorkspaceId, caller: &Caller) -> HostedTurn<'_> {
     HostedTurn {
         workspace: workspace_id,
         caller,
-        keeper,
         bound: None,
     }
 }
@@ -112,19 +111,15 @@ async fn a_turn_acts_on_the_server_only_under_the_members_live_delegation() {
     let workspaces = server.workspaces();
     let (workspace, workspace_id, _service) = governed(workspaces).await;
     let (ada_key, ada) = admit_device(workspaces, &workspace, &owner, 1).await;
-    let keeper = hex::encode(ada.user_public_key);
     let hers = on_server(&ada, &owner, &workspace);
     let theirs = on_server(&ada, &ada, &workspace);
-    let by_server = turn(workspace_id, &hers, &keeper);
-    let by_her_device = turn(workspace_id, &theirs, &keeper);
+    let by_server = turn(workspace_id, &hers);
+    let by_her_device = turn(workspace_id, &theirs);
 
     // Nothing delegated yet: the server's own device is no device her work is
     // admitted on, and her own device is.
-    assert_eq!(
-        workspaces.keepers_turn(&by_server).await,
-        Err(UnknownAction)
-    );
-    assert!(workspaces.keepers_turn(&by_her_device).await.is_ok());
+    assert_eq!(workspaces.asked_turn(&by_server).await, Err(UnknownAction));
+    assert!(workspaces.asked_turn(&by_her_device).await.is_ok());
     assert_eq!(
         workspaces
             .work_device(
@@ -149,10 +144,10 @@ async fn a_turn_acts_on_the_server_only_under_the_members_live_delegation() {
     );
     author(workspaces, &workspace, &ada_key, &delegation).await;
     assert!(
-        workspaces.keepers_turn(&by_server).await.is_ok(),
+        workspaces.asked_turn(&by_server).await.is_ok(),
         "the server takes her work on its own device under her delegation"
     );
-    assert!(workspaces.keepers_turn(&by_her_device).await.is_ok());
+    assert!(workspaces.asked_turn(&by_her_device).await.is_ok());
     assert_eq!(
         workspaces
             .work_device(
@@ -175,9 +170,9 @@ async fn a_turn_acts_on_the_server_only_under_the_members_live_delegation() {
             tilo_action_policy::turn::Turn::new("conversation-1", "message-1"),
             Vec::new(),
         );
-    let theirs_agent = turn(workspace_id, &another, &keeper);
+    let theirs_agent = turn(workspace_id, &another);
     assert_eq!(
-        workspaces.keepers_turn(&theirs_agent).await,
+        workspaces.asked_turn(&theirs_agent).await,
         Err(UnknownAction)
     );
 
@@ -187,7 +182,7 @@ async fn a_turn_acts_on_the_server_only_under_the_members_live_delegation() {
         .unwrap();
     author(workspaces, &workspace, &ada_key, &revoked).await;
     assert_eq!(
-        workspaces.keepers_turn(&by_server).await,
+        workspaces.asked_turn(&by_server).await,
         Err(UnknownAction),
         "a revocation stops the server's turn at once"
     );
@@ -366,9 +361,9 @@ async fn a_server_uses_only_the_vault_items_the_members_delegation_names() {
         .trim_start_matches("vault.item:")
         .to_owned();
     let proved = proving(workspaces);
-    let keeper = hex::encode(ada.user_public_key);
+    let asker = hex::encode(ada.user_public_key);
     let on_its_device = on_server(&ada, &owner, &workspace);
-    let by_server = turn(workspace_id, &on_its_device, &keeper);
+    let by_server = turn(workspace_id, &on_its_device);
     let with = |address: &str| add_mail(address, "imap.example.test", &login);
 
     // Her delegation names the work and no item of hers: the server is refused
@@ -399,14 +394,14 @@ async fn a_server_uses_only_the_vault_items_the_members_delegation_names() {
     // A device of her own is not the server's: everything of hers is hers to use
     // there, and the same use asks her there.
     let on_hers = on_server(&ada, &ada, &workspace);
-    let by_her_device = turn(workspace_id, &on_hers, &keeper);
+    let by_her_device = turn(workspace_id, &on_hers);
     let later = with("later@example.test");
     let hers = asked(
         workspaces
             .use_for_turn(&by_her_device, &later, json!({}))
             .await,
     );
-    assert_eq!(hers.person, keeper);
+    assert_eq!(hers.person, asker);
 
     // Named, the server's turn is asked about it, and what she allows is made.
     let named = delegating(
@@ -424,7 +419,7 @@ async fn a_server_uses_only_the_vault_items_the_members_delegation_names() {
             .await,
     );
     assert_eq!(open.agent, AGENT);
-    assert_eq!(open.person, keeper);
+    assert_eq!(open.person, asker);
     let account = workspaces
         .answer_use(&by_server, &open.ask, &open.detail, UseAnswer::Always)
         .await

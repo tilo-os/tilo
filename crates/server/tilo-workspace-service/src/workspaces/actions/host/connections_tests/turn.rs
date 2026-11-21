@@ -200,8 +200,8 @@ struct Team<'a> {
     ada: DeviceCert,
     bo: DeviceCert,
     as_ada: Caller,
-    /// Ada, as the workspace's list of its agents names an agent's keeper.
-    keeper: String,
+    /// Ada, by her person id.
+    ada_id: String,
     /// The caller a turn of Scout's for Ada acts as.
     scout: Caller,
 }
@@ -214,7 +214,7 @@ impl<'a> Team<'a> {
         let bo = admit(workspaces, &workspace, owner, 2).await;
         Self {
             as_ada: caller(&ada),
-            keeper: hex::encode(ada.user_public_key),
+            ada_id: hex::encode(ada.user_public_key),
             scout: on_turn(&ada, &workspace, SCOUT),
             workspaces,
             workspace,
@@ -244,7 +244,7 @@ impl<'a> Team<'a> {
         actions.attach(workspaces.clone());
         Self {
             as_ada: caller(&members.ada),
-            keeper: hex::encode(members.ada.user_public_key),
+            ada_id: hex::encode(members.ada.user_public_key),
             scout: on_turn(&members.ada, &members.workspace, SCOUT),
             workspaces,
             workspace: members.workspace,
@@ -257,15 +257,14 @@ impl<'a> Team<'a> {
 
     /// A turn of Scout's for Ada, with nothing that narrows the agent.
     fn turn(&self) -> HostedTurn<'_> {
-        self.turn_of(&self.scout, &self.keeper)
+        self.turn_of(&self.scout)
     }
 
-    /// The turn `caller` acts as, of an agent whose keeper is `keeper`.
-    const fn turn_of<'t>(&self, caller: &'t Caller, keeper: &'t str) -> HostedTurn<'t> {
+    /// The turn `caller` acts as, with nothing that narrows its agent.
+    const fn turn_of<'t>(&self, caller: &'t Caller) -> HostedTurn<'t> {
         HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper,
             bound: None,
         }
     }
@@ -274,7 +273,7 @@ impl<'a> Team<'a> {
     fn narrowed<'t>(&'t self, caller: &'t Caller, bound: &'t [Rule]) -> HostedTurn<'t> {
         HostedTurn {
             bound: Some(bound),
-            ..self.turn_of(caller, &self.keeper)
+            ..self.turn_of(caller)
         }
     }
 
@@ -454,10 +453,10 @@ async fn the_turn_calls_what_only_reads(team: &Team<'_>, service: &StandIn, id: 
     );
 }
 
-/// Another member's own agent, acting for them, reaches the connections the
+/// Another member's agent, acting for them, reaches the connections the
 /// workspace keeps as this one does: they are the workspace's, not Ada's.
-/// Whoever else writes to Ada's agent makes its turn act for them: such a
-/// turn is told nothing, and neither is a caller that is no turn.
+/// The agent Ada asks reaches them when Bo asks it too, and a caller that is
+/// no turn is told nothing.
 async fn another_members_turn_reaches_what_the_workspace_connected(
     team: &Team<'_>,
     service: &StandIn,
@@ -465,9 +464,8 @@ async fn another_members_turn_reaches_what_the_workspace_connected(
 ) {
     let its = person_connections::connection_resource(id);
     let finding = calling(id, "find_trees", json!({"orchard": "north"}));
-    let bos = hex::encode(team.bo.user_public_key);
     let bos_agent = on_turn(&team.bo, &team.workspace, "bos-agent");
-    let for_bo = team.turn_of(&bos_agent, &bos);
+    let for_bo = team.turn_of(&bos_agent);
     let theirs = done(team.takes(&for_bo, &of(LIST, json!({}))).await);
     assert_eq!(theirs["connections"][0]["id"], id, "{theirs}");
     let found = done(team.takes(&for_bo, &finding).await);
@@ -478,22 +476,22 @@ async fn another_members_turn_reaches_what_the_workspace_connected(
         "{theirs:?}"
     );
 
-    let bo_writes = on_turn(&team.bo, &team.workspace, SCOUT);
-    for (who, stranger) in [
-        ("another member writing to the agent", &bo_writes),
-        ("the person's own device", &team.as_ada),
+    let bo_asks_scout = on_turn(&team.bo, &team.workspace, SCOUT);
+    let for_bo = team.turn_of(&bo_asks_scout);
+    let theirs = done(team.takes(&for_bo, &of(LIST, json!({}))).await);
+    assert_eq!(theirs["connections"][0]["id"], id, "{theirs}");
+
+    // The person's own device is no turn.
+    let strange = team.turn_of(&team.as_ada);
+    for asked in [
+        of(LIST, json!({})),
+        finding.clone(),
+        of(PROPOSE, json!({"address": service.address()})),
     ] {
-        let strange = team.turn_of(stranger, &team.keeper);
-        for asked in [
-            of(LIST, json!({})),
-            finding.clone(),
-            of(PROPOSE, json!({"address": service.address()})),
-        ] {
-            let refused = team.takes(&strange, &asked).await;
-            assert_eq!(refused, Err(Refused::UnknownAction), "{who}");
-        }
-        assert!(team.finds(&strange).await.is_empty(), "{who}");
+        let refused = team.takes(&strange, &asked).await;
+        assert_eq!(refused, Err(Refused::UnknownAction));
     }
+    assert!(team.finds(&strange).await.is_empty());
     assert!(
         !calls(&service.seen()).is_empty(),
         "the workspace's connection was called for its other member's agent"
@@ -569,23 +567,17 @@ async fn it_asks_and_calls_nothing(team: &Team<'_>, service: &StandIn, id: &str)
 }
 
 /// An answer is carried out for the agent that asked, acting for the person
-/// asked, and for nobody else: not for another member's own agent, another
-/// member who writes to the agent, or another agent of the person's; and
+/// asked, and for nobody else: not for another member's ask of the same
+/// agent, or another agent of the person's; and
 /// what was kept for another carrier is no connection's to carry out.
 async fn an_answer_for_anybody_else_does_nothing(team: &Team<'_>, waits: &KeptAsk) {
-    let bos = hex::encode(team.bo.user_public_key);
-    let bos_agent = on_turn(&team.bo, &team.workspace, SCOUT);
+    let bos_ask = on_turn(&team.bo, &team.workspace, SCOUT);
     let another = on_turn(&team.ada, &team.workspace, "another-agent");
-    for (who, stranger, keeper) in [
-        ("another member's own agent", &bos_agent, &bos),
-        (
-            "another member writing to the agent",
-            &bos_agent,
-            &team.keeper,
-        ),
-        ("another agent of the person's", &another, &team.keeper),
+    for (who, stranger) in [
+        ("another member's ask of the same agent", &bos_ask),
+        ("another agent of the person's", &another),
     ] {
-        let strange = team.turn_of(stranger, keeper);
+        let strange = team.turn_of(stranger);
         let carried = team.answered(&strange, waits, Some(Leave::Once)).await;
         assert!(carried.is_err(), "{who}: {carried:?}");
     }
@@ -758,7 +750,7 @@ async fn always_lets_it_go_ahead_unasked(team: &Team<'_>, service: &StandIn, id:
         .find(|grant| {
             grant.node == policy_node(&scope)
                 && grant.grantee == Grantee::agent(SCOUT)
-                && grant.granted_by == Grantee::person(team.keeper.clone())
+                && grant.granted_by == Grantee::person(team.ada_id.clone())
         })
         .expect("the workspace keeps the precise approval");
     assert_eq!(grant.answer, Answer::Allow);
@@ -798,7 +790,7 @@ async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_b
     let elsewhere = calling(&other, "plant_tree", json!({"kind": "plum"}));
     asked(team.takes(&turn, &elsewhere).await);
     let second = on_turn(&team.ada, &team.workspace, "another-agent");
-    let for_second = team.turn_of(&second, &team.keeper);
+    let for_second = team.turn_of(&second);
     let planting = calling(&id, "plant_tree", json!({"kind": "plum"}));
     asked(team.takes(&for_second, &planting).await);
 
@@ -1099,7 +1091,7 @@ async fn an_agent_proposes_a_connection_and_only_its_persons_yes_adds_it() {
         .await
         .expect("a no is carried out by doing nothing");
     let bos_agent = on_turn(&team.bo, &team.workspace, SCOUT);
-    let strange = team.turn_of(&bos_agent, &team.keeper);
+    let strange = team.turn_of(&bos_agent);
     let carried = team.answered(&strange, &waits, Some(Leave::Once)).await;
     assert!(carried.is_err(), "{carried:?}");
     assert_eq!(team.her_connections().await, json!([]));

@@ -222,7 +222,6 @@ async fn a_use_on_a_server_asks_the_person_where_their_device_hears_it_and_their
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &caller,
-        keeper: &keeper,
         bound: None,
     };
     let adding = add_mail("ada@example.test", &reference);

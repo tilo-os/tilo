@@ -1,15 +1,13 @@
 //! A workspace's connections as a turn this server carries out itself
 //! reaches them.
 //!
-//! An agent a person keeps on this server works with every device of theirs
-//! off, so no transport verified a device behind what it asks. This is the
-//! server's own entry for such a turn, reached from no transport: only the
-//! code that carries the turn out calls it, with the very caller the turn's
-//! tools act as ([`HostedTurn`]). The turn is its keeper's own or it is
-//! answered as if the provider were not there
-//! ([`Workspaces::keepers_turn`]), and the workspace's policy lets its keeper
-//! reach the workspace's connections ([`Store::CONNECTIONS`]). Then the
-//! connections' own rule:
+//! An agent this server runs works with every device of whoever asked it off, so no transport
+//! verified a device behind what it asks. This is the server's own entry for such a turn, reached
+//! from no transport: only the code that carries the turn out calls it, with the very caller the
+//! turn's tools act as ([`HostedTurn`]). The turn is one this server carries out or it is answered
+//! as if the provider were not there ([`Workspaces::asked_turn`]), and the workspace's policy lets
+//! its agent reach the workspace's connections ([`Store::CONNECTIONS`]). Then the connections' own
+//! rule:
 //!
 //! - an agent that anything narrows (what its entry bounds it to; a
 //!   sub-agent) reaches only a connection a rule of its own names, and looks
@@ -52,7 +50,7 @@ use super::super::Verb;
 use super::{AGENT_VERBS, CONNECTIONS, Refused, address_params, argument};
 use crate::connections::{self, Calling, Reach};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{HostedTurn, KeepersTurn};
+use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
 use crate::workspaces::workspace_stores::Store;
 
@@ -121,7 +119,7 @@ fn done<T: Serialize>(answered: T) -> Result<Taken, Refused> {
 
 /// What `waits` asks the person of `using`.
 fn asks(
-    using: &KeepersTurn,
+    using: &AskedTurn,
     waits: &Waits,
     always: Option<Asked>,
     named: Words,
@@ -310,12 +308,11 @@ fn command_row(connection: &Connection, site: &str, command: &Command) -> Catalo
 }
 
 impl Workspaces {
-    /// Whether the person `using` acts for reaches the workspace's
-    /// connections, as the workspace's policy decides for them.
-    async fn reaches_connections(&self, turn: &HostedTurn<'_>, using: &KeepersTurn) -> bool {
-        self.person_reaches(
-            turn.workspace,
-            &using.person,
+    /// Whether the agent `turn` carries out reaches the workspace's
+    /// connections, as the workspace's policy decides for it.
+    async fn reaches_connections(&self, turn: &HostedTurn<'_>) -> bool {
+        self.turn_reaches(
+            turn,
             Store::CONNECTIONS,
             person_connections::LIST,
             tilo_action_policy::ActionKind::Read,
@@ -326,7 +323,7 @@ impl Workspaces {
     /// Take what `request` asks of its person's connections, for `turn`.
     ///
     /// # Errors
-    /// The turn is none this server carries out for its agent's keeper, or
+    /// The turn is none this server carries out, or
     /// the request names nothing an agent does with a connection
     /// ([`Refused::UnknownAction`]: adding, removing, signing in and
     /// reading what a connection was used for are the person's own); its
@@ -338,12 +335,12 @@ impl Workspaces {
         turn: &HostedTurn<'_>,
         request: &InvokeRequest,
     ) -> Result<Taken, Refused> {
-        let using = self.keepers_turn(turn).await?;
+        let using = self.asked_turn(turn).await?;
         let target = &request.target;
         if target.provider != person_connections::PROVIDER {
             return Err(Refused::UnknownAction);
         }
-        if !self.reaches_connections(turn, &using).await {
+        if !self.reaches_connections(turn).await {
             return Err(Refused::UnknownAction);
         }
         let root = self.workspace_root(&using.workspace);
@@ -429,7 +426,7 @@ impl Workspaces {
     async fn call_for_turn(
         &self,
         turn: &HostedTurn<'_>,
-        using: &KeepersTurn,
+        using: &AskedTurn,
         (root, reach): (&Path, &Reach),
         call: Call,
     ) -> Result<Taken, Refused> {
@@ -514,7 +511,7 @@ impl Workspaces {
     /// Look at the service at `address` and answer what the person of
     /// `using` is asked about connecting it. Nothing is kept.
     async fn propose_for_turn(
-        using: &KeepersTurn,
+        using: &AskedTurn,
         (root, reach): (&Path, &Reach),
         address: &str,
     ) -> Result<Taken, Refused> {
@@ -576,12 +573,12 @@ impl Workspaces {
     /// What `turn` finds of its person's connections in its listing: what an
     /// agent does with them, and each command of each connection it
     /// reaches, with whether it asks first. Read anew at every listing.
-    /// Nothing for a turn that is not its keeper's own.
+    /// Nothing for a turn this server does not carry out.
     pub async fn connection_rows_for_turn(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
-        let Ok(using) = self.keepers_turn(turn).await else {
+        let Ok(using) = self.asked_turn(turn).await else {
             return Vec::new();
         };
-        if !self.reaches_connections(turn, &using).await {
+        if !self.reaches_connections(turn).await {
             return Vec::new();
         }
         let root = self.workspace_root(&using.workspace);
@@ -650,7 +647,7 @@ impl Workspaces {
         let waits: Waits =
             serde_json::from_value(ask.kept.clone()).map_err(|_| NO_LONGER_WAITS.to_owned())?;
         let using = self
-            .keepers_turn(turn)
+            .asked_turn(turn)
             .await
             .map_err(|_| NOT_THEIRS.to_owned())?;
         if hex::encode(using.person) != ask.person

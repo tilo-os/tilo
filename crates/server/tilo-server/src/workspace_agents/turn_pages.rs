@@ -12,7 +12,7 @@
 //! ([`HostedBrowsers::page_for_turn`]), so what a turn may do there is decided here, before
 //! anything is handed over:
 //!
-//! - The turn is its keeper's own ([`Workspaces::keepers_turn`]), and an agent that anything
+//! - The turn is one this server carries out ([`Workspaces::asked_turn`]), and an agent that anything
 //!   narrows uses Browser only where a rule of its own names it and does not deny it.
 //! - It reaches the window of the workspace it works in, and no other.
 //! - A navigation goes to a public web address: what the fetch refuses is refused here in
@@ -156,7 +156,7 @@ pub(super) struct TurnPages {
     /// What narrows the turn's agent, where anything does: the rules a page operation must name
     /// to be granted.
     bound: Option<Vec<tilo_action_policy::Rule>>,
-    /// Whether this turn is offered the window's page at all: its keeper's own turn, of an
+    /// Whether this turn is offered the window's page at all: one this server carries out turn, of an
     /// agent its rules do not keep from Browser.
     offered: bool,
 }
@@ -175,12 +175,11 @@ impl TurnPages {
         let asked_as = HostedTurn {
             workspace: workspace_id,
             caller: &reply.caller,
-            keeper: &turn.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let offered = browsers.is_some()
             && asked_as.may_take(&reply.workspace, &on_browser(NAVIGATE))
-            && workspaces.keepers_turn(&asked_as).await.is_ok();
+            && workspaces.asked_turn(&asked_as).await.is_ok();
         Arc::new(Self {
             browsers,
             workspaces: workspaces.clone(),
@@ -220,12 +219,11 @@ impl TurnPages {
         let asked_as = HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
-        // The turn is its keeper's own, as the workspace admits them now: nothing else is a
+        // The turn is one this server carries out, as the workspace admits them now: nothing else is a
         // turn this server reaches a window for.
-        let theirs = self.workspaces.keepers_turn(&asked_as).await?;
+        let theirs = self.workspaces.asked_turn(&asked_as).await?;
         let action = request.target.address.action.as_str();
         let navigating = action == NAVIGATE;
         let reading = reads_of(action);

@@ -1,15 +1,15 @@
 //! A workspace's calendars and a turn this server carries out for a member's
-//! agent: its keeper's own turn reads what the calendars hold with no device
+//! agent: a member's turn reads what the calendars hold with no device
 //! behind it, as every member's does; a member of another workspace, a
-//! person who is no member and every turn that is not its keeper's own
-//! reaches nothing and is offered nothing; a narrowed agent reads where a
+//! person who is no member and every caller that is not a turn this server
+//! carries out reaches nothing and is offered nothing; a narrowed agent reads where a
 //! rule of its names the read; and no turn changes a calendar, so the
 //! calendar server is asked to read and nothing else, and writes to nobody.
 
 use tilo_action_policy::{ActionKind, Answer, KindSet, Level, Rule, TreePath};
 
 use super::super::super::tests::{admit, governed};
-use super::super::turn_use_tests::{not_her_agents_turns, on_turn};
+use super::super::turn_use_tests::{not_hosted_turns, on_turn};
 use super::*;
 use crate::workspaces::hosted_use::HostedTurn;
 
@@ -96,23 +96,12 @@ impl Hers {
         added["id"].as_str().expect("its id").to_owned()
     }
 
-    /// Ada, as the keeper an agent's entry names.
-    fn keeper(&self) -> String {
-        hex::encode(self.ada.user_public_key)
-    }
-
-    /// The turn `caller` acts on in her workspace, for an agent `keeper`
-    /// keeps and `bound` narrows.
-    const fn turn<'a>(
-        &self,
-        caller: &'a Caller,
-        keeper: &'a str,
-        bound: Option<&'a [Rule]>,
-    ) -> HostedTurn<'a> {
+    /// The turn `caller` acts on in her workspace, for an agent `bound`
+    /// narrows.
+    const fn turn<'a>(&self, caller: &'a Caller, bound: Option<&'a [Rule]>) -> HostedTurn<'a> {
         HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper,
             bound,
         }
     }
@@ -176,14 +165,14 @@ impl Hers {
 /// A member's agent's turn is offered the reads, lists the workspace's
 /// account without its sign-in, reads what the calendars hold and when its
 /// person is free, and another member's agent's turn reads the same. What
-/// changes a calendar or an account is not there for a turn, and a turn that
-/// is not its keeper's own reaches nothing. Before the workspace keeps an
+/// changes a calendar or an account is not there for a turn, and a caller
+/// that is not a turn this server carries out reaches nothing. Before the workspace keeps an
 /// account, a turn is offered nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_nothing() {
     let hers = Hers::new().await;
-    let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
-    let turn = hers.turn(&scout, &keeper, None);
+    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let turn = hers.turn(&scout, None);
 
     assert!(hers.offered(&turn).await.is_empty(), "no account yet");
     nobody(
@@ -254,11 +243,8 @@ async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_
     // Another member's agent's turn reads the same account, as the
     // workspace's calendars are every member's.
     let bo = admit(&hers.workspaces, &hers.workspace, &hers.owner, 2).await;
-    let (bos_caller, bos_keeper) = (
-        on_turn(&bo, &hers.workspace, SCOUT),
-        hex::encode(bo.user_public_key),
-    );
-    let bos_turn = hers.turn(&bos_caller, &bos_keeper, None);
+    let bos_caller = on_turn(&bo, &hers.workspace, SCOUT);
+    let bos_turn = hers.turn(&bos_caller, None);
     assert_eq!(
         hers.offered(&bos_turn).await,
         [held::LIST, held::ENTRIES, held::FREE]
@@ -269,9 +255,9 @@ async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_
         .expect("another member's agent reads them");
     assert_eq!(his["entries"][0]["title"], "Review", "{his}");
 
-    // Every caller that is not a turn of some member's own agent.
-    for (who, asks, kept_by) in not_her_agents_turns(&hers.ada, &bo, &hers.workspace) {
-        let turn = hers.turn(&asks, &kept_by, None);
+    // Every caller that is not a turn this server carries out.
+    for (who, asks) in not_hosted_turns(&hers.ada, &hers.workspace) {
+        let turn = hers.turn(&asks, None);
         nobody(who, hers.asks(&turn, held::ENTRIES, week()).await);
         assert!(hers.offered(&turn).await.is_empty(), "{who}");
     }
@@ -284,11 +270,8 @@ async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_
     // A member of another workspace's turn reaches nothing here.
     let (elsewhere, _, _) = governed(&hers.workspaces).await;
     let cy = admit(&hers.workspaces, &elsewhere, &hers.owner, 3).await;
-    let (cys_caller, cys_keeper) = (
-        on_turn(&cy, &elsewhere, SCOUT),
-        hex::encode(cy.user_public_key),
-    );
-    let elsewhere_turn = hers.turn(&cys_caller, &cys_keeper, None);
+    let cys_caller = on_turn(&cy, &elsewhere, SCOUT);
+    let elsewhere_turn = hers.turn(&cys_caller, None);
     nobody(
         "a member of another workspace",
         hers.asks(&elsewhere_turn, held::ENTRIES, week()).await,
@@ -306,10 +289,7 @@ async fn the_turn_of_a_members_agent_reads_the_workspaces_calendars_and_changes_
 async fn a_narrowed_agent_reads_them_only_where_a_rule_names_the_read() {
     let hers = Hers::new().await;
     hers.adds().await;
-    let (sub, keeper) = (
-        on_turn(&hers.ada, &hers.workspace, "sub-agent"),
-        hers.keeper(),
-    );
+    let sub = on_turn(&hers.ada, &hers.workspace, "sub-agent");
     let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
         tilo_automation::action_rule(
@@ -343,7 +323,7 @@ async fn a_narrowed_agent_reads_them_only_where_a_rule_names_the_read() {
             vec![whole_provider, named(held::ENTRIES, Answer::Deny)],
         ),
     ] {
-        let turn = hers.turn(&sub, &keeper, Some(&bound));
+        let turn = hers.turn(&sub, Some(&bound));
         let reads = hers.asks(&turn, held::ENTRIES, week()).await;
         assert!(
             matches!(reads, Err(ActionError::NotPermitted)),
@@ -357,14 +337,14 @@ async fn a_narrowed_agent_reads_them_only_where_a_rule_names_the_read() {
     }
 
     let bound = vec![named(held::ENTRIES, Answer::Allow)];
-    let turn = hers.turn(&sub, &keeper, Some(&bound));
+    let turn = hers.turn(&sub, Some(&bound));
     assert_eq!(hers.offered(&turn).await, [held::ENTRIES]);
     hers.asks(&turn, held::ENTRIES, week())
         .await
         .expect("the read its rule names");
 
     let bound = vec![named(held::SET_CATEGORIES, Answer::Allow)];
-    let turn = hers.turn(&sub, &keeper, Some(&bound));
+    let turn = hers.turn(&sub, Some(&bound));
     nobody(
         "a change its rule names",
         hers.asks(
@@ -413,8 +393,8 @@ async fn a_turn_reads_an_entrys_notes_whole_when_short_and_by_their_beginning_wh
             pasted.trim_end(),
         ),
     );
-    let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
-    let turn = hers.turn(&scout, &keeper, None);
+    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let turn = hers.turn(&scout, None);
     hers.adds().await;
 
     let read = hers

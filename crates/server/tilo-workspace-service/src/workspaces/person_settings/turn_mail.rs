@@ -1,20 +1,18 @@
 //! A person's mail, as a turn this server carries out for them reaches it.
 //!
-//! An agent a person keeps on this server works with every device of theirs
-//! off, so no transport certified a device behind what it asks, and the
-//! check a device's request passes ([`Workspaces::asking_about_mail`]) has
-//! nothing to compare. This is the server's own entry for such a turn. It is
-//! reached from no transport: only the code that carries out the turn calls
-//! it, with the caller the turn's tools act as and what the workspace's list
-//! of its agents says of the agent ([`HostedTurn`]).
+//! An agent this server runs works with every device of whoever asked it off, so no transport
+//! certified a device behind what it asks, and the check a device's request passes
+//! ([`Workspaces::asking_about_mail`]) has nothing to compare. This is the server's own entry for
+//! such a turn. It is reached from no transport: only the code that carries out the turn calls it,
+//! with the caller the turn's tools act as and what the workspace's list of its agents says of the
+//! agent ([`HostedTurn`]).
 //!
-//! Two checks, in this order, and neither is the whole rule. The turn is its
-//! keeper's own ([`Workspaces::keepers_turn`]): an agent on a turn for the
-//! person who keeps it, whom the workspace admits now. And the workspace's
-//! policy lets that person reach its mail ([`Store::MAIL`]). An agent that
-//! anything narrows (what its entry bounds it to; a sub-agent) also holds a
-//! rule that names the very action ([`HostedTurn::may_take`]). Unknown and
-//! forbidden are the same answer.
+//! Two checks, in this order, and neither is the whole rule. The turn is one this server carries
+//! out ([`Workspaces::asked_turn`]): an agent on a turn for the person who asked it, whom the
+//! workspace admits now. And the workspace's policy lets that agent, on that ask, reach its mail
+//! ([`Store::MAIL`]). An agent that anything narrows (what its entry bounds it to; a sub-agent)
+//! also holds a rule that names the very action ([`HostedTurn::may_take`]). Unknown and forbidden
+//! are the same answer.
 //!
 //! What such a turn may do is what an agent may behind a device of its
 //! person: list the workspace's accounts, read what arrived, read a folder
@@ -45,7 +43,7 @@ use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteA
 
 use super::kept_sign_ins::Signing;
 use super::{Staged, argument, begun_for, send_staged, sends_root};
-use crate::workspaces::hosted_use::{HostedTurn, KeepersTurn};
+use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
 use crate::workspaces::person_asking::kept_asks::KeptAsk;
 use crate::workspaces::workspace_stores::Store;
 use crate::workspaces::{WorkspaceId, Workspaces};
@@ -181,23 +179,17 @@ impl Workspaces {
     /// it, and the workspace's mail accounts.
     ///
     /// # Errors
-    /// [`ActionCallError::UnknownAction`] for a turn that is not its keeper's
-    /// own, for a keeper the workspace's policy does not let read its mail,
-    /// and in a workspace that keeps no mail account.
+    /// [`ActionCallError::UnknownAction`] for a turn this server does not carry out, for an agent
+    /// the workspace's policy does not let read its mail, and in a workspace that keeps no mail
+    /// account.
     async fn mail_of_turn(
         &self,
         turn: &HostedTurn<'_>,
-    ) -> Result<(KeepersTurn, String, BTreeSet<String>), ActionCallError> {
-        let using = self.keepers_turn(turn).await?;
+    ) -> Result<(AskedTurn, String, BTreeSet<String>), ActionCallError> {
+        let using = self.asked_turn(turn).await?;
         let workspace = turn.workspace.to_string();
         if !self
-            .person_reaches(
-                turn.workspace,
-                &using.person,
-                Store::MAIL,
-                person_accounts::LIST,
-                ActionKind::Read,
-            )
+            .turn_reaches(turn, Store::MAIL, person_accounts::LIST, ActionKind::Read)
             .await
         {
             return Err(ActionCallError::UnknownAction);
@@ -215,9 +207,9 @@ impl Workspaces {
     }
 
     /// The mail actions `turn` is offered, as a catalogue lists them: each
-    /// one it would not be refused. None for a turn that is not its keeper's
-    /// own, for a keeper who does not reach the workspace's mail and in a
-    /// workspace that keeps no mail account; a narrowed agent is offered the ones a rule of its names.
+    /// one it would not be refused. None for a turn this server does not carry out, for an agent
+    /// that does not reach the workspace's mail and in a workspace that keeps no mail account; a
+    /// narrowed agent is offered the ones a rule of its names.
     pub async fn mail_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let Ok((using, ..)) = self.mail_of_turn(turn).await else {
             return Vec::new();

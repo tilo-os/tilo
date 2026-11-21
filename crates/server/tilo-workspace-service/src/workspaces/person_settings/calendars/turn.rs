@@ -1,15 +1,12 @@
 //! A workspace's calendars, as a turn this server carries out reads them.
 //!
-//! An agent a person keeps on this server works with every device of theirs
-//! off, so no transport certified a device behind what it asks, and the
-//! check a device's request passes ([`Workspaces::calendars_asked`]) has
-//! nothing to compare. This is the server's own entry for such a turn,
-//! bounded as the workspace's mail is
-//! ([`crate::workspaces::hosted_use::TurnMail`]): the turn is its keeper's
-//! own ([`Workspaces::keepers_turn`]), and the workspace's policy lets that
-//! person read its calendars. An agent that anything narrows also holds a
-//! rule that names the very action ([`HostedTurn::may_take`]). Unknown and
-//! forbidden are the same answer.
+//! An agent this server runs works with every device of whoever asked it off, so no transport
+//! certified a device behind what it asks, and the check a device's request passes
+//! ([`Workspaces::calendars_asked`]) has nothing to compare. This is the server's own entry for
+//! such a turn, bounded as the workspace's mail is ([`crate::workspaces::hosted_use::TurnMail`]):
+//! the turn is one this server carries out ([`Workspaces::asked_turn`]), and the workspace's policy
+//! lets that agent read its calendars. An agent that anything narrows also holds a rule that names
+//! the very action ([`HostedTurn::may_take`]). Unknown and forbidden are the same answer.
 //!
 //! Such a turn reads: which accounts and calendars there are, what they hold
 //! in a span, and when their person is free ([`READS`]). Nothing that
@@ -33,7 +30,7 @@ use super::{
     argument, entries, free, off_thread, view,
 };
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{HostedTurn, KeepersTurn};
+use crate::workspaces::hosted_use::{AskedTurn, HostedTurn};
 use crate::workspaces::workspace_stores::Store;
 
 /// What a turn asks of its person's calendars: the reads, and nothing that
@@ -45,18 +42,17 @@ impl Workspaces {
     /// the calendar accounts it keeps.
     ///
     /// # Errors
-    /// [`ActionError::UnknownAction`] for a turn that is not its keeper's
-    /// own, for a person the workspace's policy does not let read its
-    /// calendars, and for a workspace that keeps no calendar account.
+    /// [`ActionError::UnknownAction`] for a turn this server does not carry out, for an agent the
+    /// workspace's policy does not let read its calendars, and for a workspace that keeps no
+    /// calendar account.
     async fn calendars_of_turn(
         &self,
         turn: &HostedTurn<'_>,
-    ) -> Result<(KeepersTurn, PathBuf, Vec<Account>), ActionError> {
-        let using = self.keepers_turn(turn).await?;
+    ) -> Result<(AskedTurn, PathBuf, Vec<Account>), ActionError> {
+        let using = self.asked_turn(turn).await?;
         if !self
-            .person_reaches(
-                turn.workspace,
-                &using.person,
+            .turn_reaches(
+                turn,
                 Store::CALENDARS,
                 LIST,
                 tilo_action_policy::ActionKind::Read,
@@ -74,9 +70,8 @@ impl Workspaces {
     }
 
     /// The reads of its person's calendars `turn` is offered, as a catalogue
-    /// lists them: each one it would not be refused. None for a turn that is
-    /// not its keeper's own and for a person who may not read the
-    /// workspace's calendars; a narrowed agent is offered the
+    /// lists them: each one it would not be refused. None for a turn this server does not carry out
+    /// and for an agent that may not read the workspace's calendars; a narrowed agent is offered the
     /// ones a rule of its names.
     pub async fn calendars_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let Ok((using, ..)) = self.calendars_of_turn(turn).await else {

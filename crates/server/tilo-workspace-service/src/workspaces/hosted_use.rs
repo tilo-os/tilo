@@ -1,12 +1,11 @@
 //! A secret used by reference by a turn this server carries out itself.
 //!
-//! An agent a person keeps on this server works with every device of theirs
-//! off, so no transport verified a device behind what it asks, and the check
-//! a device's request passes ([`Workspaces::reaching`]) has nothing to
-//! compare. This is the server's own entry for such a turn. It is reached
-//! from no transport: only the code that carries out the turn calls it, with
-//! the very caller the turn's tools act as and what the workspace's list of
-//! its agents says of the agent ([`HostedTurn`]).
+//! An agent this server runs works with every device of whoever asked it off, so no transport
+//! verified a device behind what it asks, and the check a device's request passes
+//! ([`Workspaces::reaching`]) has nothing to compare. This is the server's own entry for such a
+//! turn. It is reached from no transport: only the code that carries out the turn calls it, with
+//! the very caller the turn's tools act as and what the workspace's list of its agents says of the
+//! agent ([`HostedTurn`]).
 //!
 //! The rule is the vault's own, and nothing here hands a secret to whoever
 //! asks. A reference becomes its secret only inside this server, only in the
@@ -16,23 +15,23 @@
 //! first ([`accounts::vault_items::VaultItems::use_as`]). The caller is
 //! answered what the person would be: the account, the provider.
 //!
-//! Before the vault is opened a turn is refused unless it is its keeper's
-//! own ([`Workspaces::keepers_turn`]):
+//! Before the vault is opened a turn is refused unless it is one this server
+//! carries out ([`Workspaces::asked_turn`]):
 //!
 //! - the caller is an agent a person's session was handed to, working
 //!   inside a turn, confined to this workspace. A bot, an app, an agent
 //!   admitted as a member and a person asking for themselves are not turns
 //!   this server carries out;
 //! - the workspace admits that person now, on the device the caller names:
-//!   a person removed from it leaves their agent nothing;
-//! - the agent's keeper is that person. Whoever else writes to the agent
-//!   makes its turn act for them, and then it uses nothing: not its
-//!   keeper's vault, which is not theirs, and not their own, which the
-//!   agent is not kept for.
+//!   a person removed from it leaves the turn they asked nothing.
 //!
-//! That check is the same for everything of a person's own that a turn on
-//! this server reaches. It does not say that the keeper made the agent or
-//! agreed to it, so it is never the whole rule. Here, an agent that anything
+//! Any member may ask any of the workspace's agents, and what the turn then
+//! reaches of the workspace's vault, mail, calendars and connections is what
+//! the workspace's policy decides for that agent acting on that ask
+//! ([`Workspaces::turn_reaches`]): the same decision every record of the
+//! workspace takes, so the agent's own grants, and an owner's word on them,
+//! hold whoever asked. The person who asked is who the turn's History names
+//! and who a question about a use goes to. Here, an agent that anything
 //! narrows (what its entry bounds it to; a sub-agent) must hold a rule that
 //! names exactly this use ([`HostedTurn::may_take`]), and nothing is used
 //! unasked.
@@ -71,7 +70,7 @@ use std::sync::{Mutex, MutexGuard};
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{ActionKind, Answer, PersonId, Rule, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Rule, TreePath};
 use tilo_actions::remote::ActionCallError::{
     self, InvalidRequest, NotPermitted, Refused, UnknownAction,
 };
@@ -90,8 +89,8 @@ use super::{WorkspaceId, Workspaces};
 
 mod web_call;
 
-/// A person's mail as such a turn reaches it: after [`Workspaces::keepers_turn`], their own
-/// word on which agent of theirs may use which account ([`Workspaces::mail_for_turn`]).
+/// The workspace's mail as such a turn reaches it: after [`Workspaces::asked_turn`], the
+/// workspace's word on which agent may use which account ([`Workspaces::mail_for_turn`]).
 pub use super::person_settings::turn_mail::{AskedSend, SEND_CARRIER, TurnMail};
 
 /// A person's calendars as such a turn reads them ([`Workspaces::calendars_for_turn`]): the
@@ -131,17 +130,15 @@ pub const CARRIED_OUT: &str = "That answer was carried out already";
 /// under with.
 pub const NOTHING_WAITS: &str = "Nothing waits for an answer under that question";
 
-/// A turn this server carries out for a person, as the code that carries it out knows it.
+/// A turn this server carries out for the person who asked it, as the code that carries it
+/// out knows it.
 #[derive(Clone, Copy, Debug)]
 pub struct HostedTurn<'a> {
     /// The workspace the turn works in.
     pub workspace: WorkspaceId,
-    /// The caller the turn's tools act as: the person's session, handed to
-    /// the agent on this turn.
+    /// The caller the turn's tools act as: the asking person's session,
+    /// handed to the agent on this turn.
     pub caller: &'a Caller,
-    /// The agent's keeper, as the workspace's list of its agents names
-    /// them.
-    pub keeper: &'a str,
     /// The rules the turn is decided by, where anything narrows its agent:
     /// what its entry bounds it to and, for a sub-agent, what keeps it from
     /// whoever started it. `None` for an agent nothing narrows.
@@ -393,11 +390,11 @@ impl Uses {
     }
 }
 
-/// Whose turn a turn on this server is, where it is its keeper's own: what
-/// [`Workspaces::keepers_turn`] answers.
+/// Who asked a turn on this server, and which agent carries it out: what
+/// [`Workspaces::asked_turn`] answers.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KeepersTurn {
-    /// The person the turn acts for and whose agent it is: their key.
+pub struct AskedTurn {
+    /// The person who asked the turn, whom it acts for: their key.
     pub person: [u8; 32],
     /// The workspace, as the caller names it.
     pub workspace: String,
@@ -412,7 +409,7 @@ pub struct KeepersTurn {
     pub secrets: Option<BTreeSet<String>>,
 }
 
-impl KeepersTurn {
+impl AskedTurn {
     /// Whether the turn may use the vault item `item`.
     #[must_use]
     pub fn may_use(&self, item: &str) -> bool {
@@ -530,12 +527,7 @@ impl Use {
 
     /// Whether its person allowed `using` this very use once, where their
     /// allow carries nothing out by itself: it is spent by being found.
-    fn allowed_once(
-        &self,
-        uses: &Uses,
-        using: &KeepersTurn,
-        arguments: &Map<String, Value>,
-    ) -> bool {
+    fn allowed_once(&self, uses: &Uses, using: &AskedTurn, arguments: &Map<String, Value>) -> bool {
         matches!(self, Self::Call(_)) && uses.calls.spend(using, arguments)
     }
 
@@ -661,7 +653,7 @@ fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
 
 /// Build the workspace `tilo-action-policy` scope for a vault use.
 fn vault_use_scope(
-    using: &KeepersTurn,
+    using: &AskedTurn,
     target: &RemoteActionTarget,
     item: &ItemId,
     places: &[Place],
@@ -768,26 +760,21 @@ impl Workspaces {
         }
     }
 
-    /// Whose turn `turn` is, where it is one this server carries out for its
-    /// agent's keeper: the first check of everything of a person's own that
-    /// such a turn reaches. Unknown and forbidden are the same answer.
+    /// Who asked `turn`, where it is one this server carries out: the first
+    /// check of everything of the workspace's that such a turn reaches.
+    /// Unknown and forbidden are the same answer.
     ///
     /// It holds where the caller is an agent on a turn, on an agent session
-    /// its person handed it, and no app; the caller's workspace is the
-    /// turn's; the device the caller names is one the workspace admits that
-    /// person's work on now (one of their own, or this server's own where they
-    /// delegated that work to it as the actor the turn acts as); and the
-    /// agent's keeper is that person. It does
-    /// not say that the keeper made the agent or agreed to it, so whatever
-    /// uses or hands out something of the person's decides that by a rule of
-    /// its own after this one.
+    /// the asking person handed it, and no app; the caller's workspace is the
+    /// turn's; and the device the caller names is one the workspace admits
+    /// that person's work on now (one of their own, or this server's own
+    /// where they delegated that work to it as the actor the turn acts as).
+    /// What the turn may then reach is the workspace policy's word on the
+    /// agent ([`Self::turn_reaches`]), decided after this one.
     ///
     /// # Errors
     /// [`UnknownAction`] for every other caller.
-    pub async fn keepers_turn(
-        &self,
-        turn: &HostedTurn<'_>,
-    ) -> Result<KeepersTurn, ActionCallError> {
+    pub async fn asked_turn(&self, turn: &HostedTurn<'_>) -> Result<AskedTurn, ActionCallError> {
         let caller = turn.caller;
         let acting = caller.acting();
         // An agent a person's own session was handed to, inside a turn:
@@ -814,7 +801,7 @@ impl Workspaces {
         // turn names: one of their own devices, or — where they delegated that
         // work to this server as the actor this turn acts as — this server's
         // own device, which their work is carried out on then. A person it no longer
-        // admits leaves their agent nothing, on any device.
+        // admits leaves the turns they asked nothing, on any device.
         let Some(member) = acting.by.member_id().cloned() else {
             return Err(UnknownAction);
         };
@@ -824,17 +811,10 @@ impl Workspaces {
         {
             return Err(UnknownAction);
         }
-        // The agent acts for its keeper and for nobody else.
-        let Ok(keeper) = PersonId::parse(turn.keeper) else {
-            return Err(UnknownAction);
-        };
-        if keeper.root() != Some(person) {
-            return Err(UnknownAction);
-        }
-        // What the turn may use of the person's own: every item on a device of
-        // theirs, and only what their delegation names on this server.
+        // What the turn may use: every item on a device of the asker's own,
+        // and only what their delegation names on this server.
         let secrets = self.turn_secrets(turn.workspace, person, device).await;
-        Ok(KeepersTurn {
+        Ok(AskedTurn {
             person,
             workspace: workspace.to_owned(),
             agent: agent.to_owned(),
@@ -843,35 +823,34 @@ impl Workspaces {
         })
     }
 
-    /// Whether `turn` may ask its person for a secret ([`person_vault::ASK`]): the turn is its
-    /// keeper's own, and an agent that anything narrows holds a rule that names the ask. The
-    /// turn as the entry knows it.
+    /// Whether `turn` may ask its person for a secret ([`person_vault::ASK`]): the turn is one
+    /// this server carries out, its agent reaches the vault, and an agent that anything
+    /// narrows holds a rule that names the ask. The turn as the entry knows it.
     ///
     /// # Errors
-    /// As [`Self::keepers_turn`], and [`NotPermitted`] for a narrowed agent without that rule.
+    /// As [`Self::asked_turn`], and [`NotPermitted`] for a narrowed agent without that rule.
     pub async fn secret_ask_for_turn(
         &self,
         turn: &HostedTurn<'_>,
-    ) -> Result<KeepersTurn, ActionCallError> {
+    ) -> Result<AskedTurn, ActionCallError> {
         self.turn_uses_for(turn, &person_vault::ask_target()).await
     }
 
-    /// [`Self::keepers_turn`] for a use by reference: an agent that anything
+    /// [`Self::asked_turn`] for a use by reference: an agent that anything
     /// narrows also holds a rule that names `target`.
     async fn turn_uses_for(
         &self,
         turn: &HostedTurn<'_>,
         target: &RemoteActionTarget,
-    ) -> Result<KeepersTurn, ActionCallError> {
-        let using = self.keepers_turn(turn).await?;
+    ) -> Result<AskedTurn, ActionCallError> {
+        let using = self.asked_turn(turn).await?;
         if !turn.may_take(&using.workspace, target) {
             return Err(NotPermitted);
         }
         // The workspace's vault is used only by whom its policy lets use it.
         if !self
-            .person_reaches(
-                turn.workspace,
-                &using.person,
+            .turn_reaches(
+                turn,
                 Store::VAULT,
                 &target.address.action,
                 ActionKind::Undoable,
@@ -934,7 +913,7 @@ impl Workspaces {
     /// ([`Self::use_not_asked`]).
     ///
     /// # Errors
-    /// The turn is none this server carries out for the item's person
+    /// The turn is none this server carries out
     /// ([`UnknownAction`]), its agent is narrowed and holds
     /// no rule for this use ([`NotPermitted`]), the
     /// arguments do not read, or the vault refuses the use: no such item in
@@ -1014,7 +993,7 @@ impl Workspaces {
     fn ask_first(
         &self,
         root: &Path,
-        using: KeepersTurn,
+        using: AskedTurn,
         (request, arguments): (&InvokeRequest, Map<String, Value>),
         (kind, belongs): (vault_items::ItemKind, Vec<String>),
         (reason, asked_in): (String, Value),
@@ -1464,7 +1443,7 @@ impl Workspaces {
     /// any window is.
     ///
     /// # Errors
-    /// As [`Self::keepers_turn`], and [`NotPermitted`] for a narrowed agent that holds no
+    /// As [`Self::asked_turn`], and [`NotPermitted`] for a narrowed agent that holds no
     /// rule for this use.
     pub async fn may_fill_pages(&self, turn: &HostedTurn<'_>) -> Result<(), ActionCallError> {
         self.turn_uses_for(turn, &person_vault::page_target())
@@ -1563,7 +1542,7 @@ impl Workspaces {
     /// fill of that item at that site through.
     async fn page_answered(
         &self,
-        using: &KeepersTurn,
+        using: &AskedTurn,
         kept: &OpenAsk,
         answer: UseAnswer,
     ) -> Result<Value, String> {
@@ -1596,7 +1575,7 @@ impl Workspaces {
     }
 
     /// Keep a person's allow for one fill by `using` of `item` at `site`.
-    fn allow_once(&self, using: &KeepersTurn, item: &ItemId, site: &Place) {
+    fn allow_once(&self, using: &AskedTurn, item: &ItemId, site: &Place) {
         let now = tilo_clock::unix_now_ns();
         let mut once = self.inner.vault_uses.once.lock_recover();
         once.retain(|leave| leave.until_ns > now);
@@ -1615,7 +1594,7 @@ impl Workspaces {
 
     /// Whether `using` holds its person's allow for one fill of `item` at
     /// `site`: it is spent by being found.
-    fn once_allowed(&self, using: &KeepersTurn, item: &ItemId, site: &Place) -> bool {
+    fn once_allowed(&self, using: &AskedTurn, item: &ItemId, site: &Place) -> bool {
         let now = tilo_clock::unix_now_ns();
         let person = hex::encode(using.person);
         let mut once = self.inner.vault_uses.once.lock_recover();

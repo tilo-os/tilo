@@ -47,7 +47,7 @@ use tilo_net::{HeaderMap, HeaderName, HeaderValue, Method, Url};
 
 pub(super) use tilo_actions::remote::person_vault::WebCall;
 
-use super::{KeepersTurn, Workspaces};
+use super::{AskedTurn, Workspaces};
 // The guard's own names, from the one place this crate takes them.
 use crate::connections::wire::{
     Destinations, Lookup, check_destination, guarded_client, is_public, refused_address,
@@ -632,7 +632,7 @@ struct Allowed {
 }
 
 impl Allowed {
-    fn is(&self, using: &KeepersTurn, arguments: &Map<String, Value>) -> bool {
+    fn is(&self, using: &AskedTurn, arguments: &Map<String, Value>) -> bool {
         self.person == using.person
             && self.workspace == using.workspace
             && self.agent == using.agent
@@ -650,7 +650,7 @@ pub(super) struct AllowedOnce(Mutex<Vec<Allowed>>);
 impl AllowedOnce {
     /// Keep its person's allow of the call `using` asked for with
     /// `arguments`.
-    pub(super) fn allow(&self, using: &KeepersTurn, arguments: &Map<String, Value>) {
+    pub(super) fn allow(&self, using: &AskedTurn, arguments: &Map<String, Value>) {
         let now = tilo_clock::unix_now_ns();
         let mut allowed = self.0.lock_recover();
         allowed.retain(|kept| kept.until_ns > now && !kept.is(using, arguments));
@@ -668,7 +668,7 @@ impl AllowedOnce {
 
     /// Whether `using` holds its person's allow of the call with
     /// `arguments`: it is spent by being found.
-    pub(super) fn spend(&self, using: &KeepersTurn, arguments: &Map<String, Value>) -> bool {
+    pub(super) fn spend(&self, using: &AskedTurn, arguments: &Map<String, Value>) -> bool {
         let now = tilo_clock::unix_now_ns();
         let mut allowed = self.0.lock_recover();
         allowed.retain(|kept| kept.until_ns > now);

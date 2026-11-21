@@ -3,7 +3,7 @@
 //! An agent's tools act on the workspace's action service, which knows the workspace's
 //! resources and nothing of a person's own connections. Those are the server's own to answer,
 //! through its entry for a turn it carries out
-//! ([`crate::workspaces::Workspaces::connections_for_turn`]): the turn is its keeper's own, and
+//! ([`crate::workspaces::Workspaces::connections_for_turn`]): the turn is one this server carries out, and
 //! an agent that anything narrows reaches only a connection a rule of its own names.
 //! [`TurnConnections`] is that entry as one turn's tools reach it, a provider of the turn's own
 //! ([`TurnProvider`]): at every listing it names what an agent does with its person's
@@ -69,7 +69,7 @@ pub(super) struct TurnConnections {
     workspace: String,
     workspace_id: WorkspaceId,
     agent: Agent,
-    /// Whether the turn is its keeper's own: no other turn is told that a person's
+    /// Whether the turn is one this server carries out: no other turn is told that a person's
     /// connections exist.
     theirs: bool,
     /// Where a listing's rows are read: a tool may list from outside any task.
@@ -88,10 +88,9 @@ pub(super) async fn of(
     let hosted = HostedTurn {
         workspace: workspace_id,
         caller: &reply.caller,
-        keeper: &turn.agent.keeper,
         bound: narrowed.as_deref(),
     };
-    let theirs = asker.workspaces.keepers_turn(&hosted).await.is_ok();
+    let theirs = asker.workspaces.asked_turn(&hosted).await.is_ok();
     Arc::new(TurnConnections {
         asker,
         workspace: reply.workspace.clone(),
@@ -111,7 +110,6 @@ impl TurnConnections {
         let hosted = HostedTurn {
             workspace,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let workspaces = &self.asker.workspaces;
@@ -152,7 +150,7 @@ impl TurnConnections {
 
 impl TurnProvider for TurnConnections {
     /// The provider of a person's connections, as a listing of everything names it beside the
-    /// workspace's resources, for a turn that is its keeper's own.
+    /// workspace's resources, for a turn that is one this server carries out.
     fn providers(&self, _caller: &Caller) -> Vec<CatalogueProvider> {
         if !self.theirs {
             return Vec::new();
@@ -181,7 +179,6 @@ impl TurnProvider for TurnConnections {
             let hosted = HostedTurn {
                 workspace,
                 caller: &caller,
-                keeper: &agent.keeper,
                 bound: narrowed.as_deref(),
             };
             completer.complete(Ok(workspaces.connection_rows_for_turn(&hosted).await));
@@ -368,7 +365,6 @@ impl Carries for Answers {
             let hosted = HostedTurn {
                 workspace,
                 caller: &caller,
-                keeper: &agent.keeper,
                 bound: narrowed.as_deref(),
             };
             self.workspaces

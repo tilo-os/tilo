@@ -19,16 +19,16 @@
 //!   Nothing of whoever started the turn's agent is in the answer, and nothing of a
 //!   sub-agent beside it, so the one-way rule stays whole: a lead reads down, never up.
 //!
-//! Whom it answers: a turn of the agent's own keeper and nobody else
-//! ([`Workspaces::keepers_turn`]). A turn another member started on the agent, and anything
-//! that is no turn, is answered what an unknown action is. That check is never the whole
-//! rule. The list's verbs are Assistant's, so each is also decided by the rules the turn
-//! carries, at the place the list's own verb of that name is decided at: what an agent's keeper
-//! bounds it to holds here, and a sub-agent keeps exactly the verbs of its own team
-//! ([`tilo_workspace_agent::sub::one_way`]). Reading a team is part of steering it and is
-//! decided as a note is. And the list is the workspace's own document, which a member changes
-//! as an editor: a keeper who is less than that here starts and steers nothing through
-//! their agent.
+//! Whom it answers: a turn of the agent this server carries out, whichever member asked it
+//! ([`Workspaces::asked_turn`]). Anything that is no turn is answered what an unknown action
+//! is. That check is never the whole rule. The list's verbs are Assistant's, so each is also
+//! decided by the rules the turn carries, at the place the list's own verb of that name is
+//! decided at: what the agent's entry bounds it to holds here, and a sub-agent keeps exactly
+//! the verbs of its own team ([`tilo_workspace_agent::sub::one_way`]). Reading a team is part
+//! of steering it and is decided as a note is. And the list is the workspace's own document,
+//! which a member changes as an editor: a member who is less than that here starts and steers
+//! nothing through an agent they ask, and what the list records is written as the agent acting
+//! for them.
 
 use std::sync::Arc;
 
@@ -79,9 +79,9 @@ const TOLD: &str = "You can hand parts of your work to sub-agents. Each works on
      `sub-agents/team#note-sub-agent` tells one something more while it works, and \
      `sub-agents/team#stop-sub-agent` stops one. Do small things yourself.";
 
-/// What `turn`'s agent is told about a team of its own: said where the turn is its keeper's
-/// and its person lets it start one, so to a person's own agent, and to a sub-agent that
-/// does not stand as deep as sub-agents go under that agent.
+/// What `turn`'s agent is told about a team of its own: said where it may start one, so to a
+/// workspace's agent whose entry lets it, and to a sub-agent that does not stand as deep as
+/// sub-agents go under that agent.
 pub(super) fn told(turn: &Turn) -> String {
     let deepest = |root: &Agent| root.sub_depth.unwrap_or(sub::DEFAULT_DEPTH);
     let may_start = match (&turn.agent.sub, &turn.line) {
@@ -89,7 +89,7 @@ pub(super) fn told(turn: &Turn) -> String {
         (Some(own), Some(line)) => own.depth < deepest(&line.root),
         (Some(_), None) => false,
     };
-    if may_start && turn.person == turn.agent.keeper {
+    if may_start {
         format!("\n\n{TOLD}")
     } else {
         String::new()
@@ -110,7 +110,7 @@ struct TurnTeam {
     workspace_id: WorkspaceId,
     /// The turn's agent, as the list held it when the turn began.
     agent: Agent,
-    /// What the turn is offered: nothing for a turn that is not its keeper's own.
+    /// What the turn is offered: nothing for a caller that is no turn of this agent.
     offered: Vec<CatalogueRow>,
 }
 
@@ -137,7 +137,7 @@ impl TurnTeam {
             offered: Vec::new(),
         };
         let caller = scope.reply(turn).caller;
-        if team.keepers(&caller).await.is_ok() {
+        if team.asker(&caller).await.is_ok() {
             team.offered = rows()
                 .into_iter()
                 .filter(|row| {
@@ -150,18 +150,17 @@ impl TurnTeam {
         Arc::new(team)
     }
 
-    /// Whether `caller` is on a turn of this agent that is its keeper's own: the first check
-    /// of everything here. Every other caller is answered what an unknown action is.
-    async fn keepers(&self, caller: &Caller) -> Result<(), NotTaken> {
+    /// Who asked the turn of this agent `caller` is on, by their person id: the first check of
+    /// everything here. Every other caller is answered what an unknown action is.
+    async fn asker(&self, caller: &Caller) -> Result<String, NotTaken> {
         let turn = HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper: &self.agent.keeper,
             bound: None,
         };
-        let kept = self.workspaces.keepers_turn(&turn).await?;
-        if kept.agent == self.agent.id.0 {
-            Ok(())
+        let asked = self.workspaces.asked_turn(&turn).await?;
+        if asked.agent == self.agent.id.0 {
+            Ok(hex::encode(asked.person))
         } else {
             Err(NotTaken::UnknownAction)
         }
@@ -169,7 +168,7 @@ impl TurnTeam {
 
     /// Whether the rules `caller`'s turn carries let it take `verb`, on the sub-agent `on`
     /// where the verb names one. Decided where the list's own verb of that name is decided,
-    /// so what the agent's keeper bounds it to holds here, and a sub-agent keeps the verbs of
+    /// so what the agent's entry bounds it to holds here, and a sub-agent keeps the verbs of
     /// its own team and no other. Reading a team is part of steering it: it is decided as a
     /// note is.
     fn lets(&self, caller: &Caller, verb: &str, on: Option<&str>) -> bool {
@@ -204,7 +203,7 @@ impl TurnTeam {
     /// Whether the person `caller` acts for changes the workspace's own documents as a
     /// member: an editor or more, admitted now. The server's own person keeps theirs: a
     /// listing leaves the server's own account out, and its agents work all the same.
-    async fn keeper_edits(&self, caller: &Caller) -> bool {
+    async fn asker_edits(&self, caller: &Caller) -> bool {
         let Some(person) = caller.user_public_key().map(hex::encode) else {
             return false;
         };
@@ -231,11 +230,11 @@ impl TurnTeam {
         crate::workspace_bots::opened::<WorkspaceAgents>(&mut doc)
     }
 
-    /// Apply `invoke` on the list as the turn's agent acting for its keeper: the list's own
-    /// rules decide, and what it refuses is the error.
-    async fn on_list(&self, invoke: Invoke<WorkspaceAgents>) -> Result<(), String> {
+    /// Apply `invoke` on the list as the turn's agent acting for `asker`, who asked the turn:
+    /// the list's own rules decide, and what it refuses is the error.
+    async fn on_list(&self, invoke: Invoke<WorkspaceAgents>, asker: &str) -> Result<(), String> {
         let document = collab_types::workspace_document_id(KIND);
-        let (by, keeper) = (self.agent.id.0.clone(), self.agent.keeper.clone());
+        let by = self.agent.id.0.clone();
         self.workspaces
             .author_application(
                 &self.workspace,
@@ -246,7 +245,7 @@ impl TurnTeam {
                 |doc| {
                     let mut list =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_agent_for(&by, &keeper)
+                            .as_agent_for(&by, asker)
                             .in_app(tilo_workspace_agent::OWNER, "Assistant");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     list.set_now_ms(tilo_clock::unix_now_ms_i64());
@@ -328,7 +327,11 @@ impl TurnTeam {
     }
 
     /// Start the sub-agent `given` asks for.
-    async fn start(&self, given: &Map<String, Value>) -> Result<Result<Value, String>, NotTaken> {
+    async fn start(
+        &self,
+        given: &Map<String, Value>,
+        asker: &str,
+    ) -> Result<Result<Value, String>, NotTaken> {
         let mut new: NewSubAgent = read_as(given)?;
         // Named here where the starter gave no id, so it is told the id at once.
         let id = match new.id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
@@ -340,7 +343,10 @@ impl TurnTeam {
         };
         new.id = Some(id.clone());
         let started = self
-            .on_list(WorkspaceAgents::START_SUB_AGENT.with(StartSubAgent { sub_agent: new }))
+            .on_list(
+                WorkspaceAgents::START_SUB_AGENT.with(StartSubAgent { sub_agent: new }),
+                asker,
+            )
             .await;
         Ok(match started {
             Ok(()) => self.one(&id).await,
@@ -356,7 +362,7 @@ impl TurnTeam {
         request: &InvokeRequest,
     ) -> Result<InvocationUpdate, NotTaken> {
         let invocation = request.invocation;
-        self.keepers(caller).await?;
+        let asker = self.asker(caller).await?;
         let address = &request.target.address;
         let verb = address.action.as_str();
         if address.resource != TEAM || ![READ, START, NOTE, STOP].contains(&verb) {
@@ -378,18 +384,18 @@ impl TurnTeam {
             } else {
                 Some(read_as::<Named>(given)?.agent)
             };
-            if !self.lets(caller, verb, named.as_deref()) || !self.keeper_edits(caller).await {
+            if !self.lets(caller, verb, named.as_deref()) || !self.asker_edits(caller).await {
                 return Err(NotTaken::NotPermitted);
             }
             match (verb, named) {
-                (START, _) => self.start(given).await?,
+                (START, _) => self.start(given, &asker).await?,
                 (NOTE, Some(agent)) => match NonBlank::parse(&read_as::<Noted>(given)?.text) {
                     Some(text) => {
                         let noted = WorkspaceAgents::NOTE_SUB_AGENT.with(NoteSubAgent {
                             agent: Id::from_raw(agent.clone()),
                             text,
                         });
-                        match self.on_list(noted).await {
+                        match self.on_list(noted, &asker).await {
                             Ok(()) => self.one(&agent).await,
                             Err(why) => Err(why),
                         }
@@ -400,7 +406,7 @@ impl TurnTeam {
                     let stopped = WorkspaceAgents::STOP_SUB_AGENT.with(StopSubAgent {
                         agent: Id::from_raw(agent.clone()),
                     });
-                    match self.on_list(stopped).await {
+                    match self.on_list(stopped, &asker).await {
                         Ok(()) => self.one(&agent).await,
                         Err(why) => Err(why),
                     }

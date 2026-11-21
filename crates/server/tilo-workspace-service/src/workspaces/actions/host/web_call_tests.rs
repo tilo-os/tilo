@@ -250,11 +250,9 @@ async fn a_call_asks_its_person_first_and_their_allow_sends_that_call_once() {
         .await,
     );
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let offered = workspaces.calls_offered(&turn).await;
@@ -427,11 +425,9 @@ async fn a_key_is_sent_to_its_own_service_and_to_no_other() {
     let item = reference(key_for(paying.url(), "key").await);
     let value = reference(key_for(paying.url(), "value").await);
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let elsewhere = format!("{}/v1/balance", other.url());
@@ -549,11 +545,9 @@ async fn a_key_rides_where_its_item_says_and_nowhere_the_agent_says() {
     );
     let hers = (&ada, &as_ada);
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let ways: [(&str, Shown, Value); 5] = [
@@ -707,11 +701,9 @@ async fn what_a_service_repeats_comes_back_without_the_key() {
     );
     let hers = (&ada, &as_ada);
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let (lines, guard) = logged();
@@ -821,13 +813,13 @@ async fn what_a_service_repeats_comes_back_without_the_key() {
     assert!(files_holding(dir.path(), KEY.as_bytes()).is_empty());
 }
 
-/// Only a turn of the key's own keeper makes a call with it: not a person
+/// Only a turn this server carries out makes a call with a key: not a person
 /// asking for themselves, not an agent that anything narrows without a rule
 /// that names the call, and another member's turn holds the workspace's
 /// reference, its use asking his person. And no device's request makes one
 /// at all.
 #[tokio::test]
-async fn only_a_turn_of_its_keepers_makes_a_call() {
+async fn only_a_hosted_turn_makes_a_call() {
     stage!(
         dir,
         workspaces,
@@ -850,14 +842,12 @@ async fn only_a_turn_of_its_keepers_makes_a_call() {
         )
         .await,
     );
-    let keeper = hex::encode(ada.user_public_key);
     let scout = on_turn(&ada, &workspace, "scout");
 
     // A person asking for themselves is no turn this server carries out.
     let herself = HostedTurn {
         workspace: workspace_id,
         caller: &as_ada,
-        keeper: &keeper,
         bound: None,
     };
     assert!(workspaces.calls_offered(&herself).await.is_empty());
@@ -871,7 +861,6 @@ async fn only_a_turn_of_its_keepers_makes_a_call() {
     let narrowed = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: Some(&[]),
     };
     assert!(workspaces.calls_offered(&narrowed).await.is_empty());
@@ -885,11 +874,10 @@ async fn only_a_turn_of_its_keepers_makes_a_call() {
     // the workspace's, and its use asks his person, not hers.
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let his = on_turn(&bo, &workspace, "rover");
-    let his_keeper = hex::encode(bo.user_public_key);
+    let his_asker = hex::encode(bo.user_public_key);
     let theirs = HostedTurn {
         workspace: workspace_id,
         caller: &his,
-        keeper: &his_keeper,
         bound: None,
     };
     let open = asked(
@@ -898,21 +886,8 @@ async fn only_a_turn_of_its_keepers_makes_a_call() {
             .await,
     );
     assert_eq!(
-        open.person, his_keeper,
+        open.person, his_asker,
         "the workspace's item asks his person"
-    );
-    // His agent's turn said to be kept by her is nobody's.
-    let claimed = HostedTurn {
-        workspace: workspace_id,
-        caller: &his,
-        keeper: &keeper,
-        bound: None,
-    };
-    assert_eq!(
-        workspaces
-            .use_for_turn(&claimed, &own_with(&paying, &item), json!({}))
-            .await,
-        Err(UnknownAction)
     );
     // No device's request makes a call: the person's is no action the
     // vault has, and her agent's asks her first.

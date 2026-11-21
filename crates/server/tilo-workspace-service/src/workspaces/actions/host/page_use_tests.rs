@@ -144,11 +144,10 @@ async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     let hers = (&ada, &as_ada);
     let login = kept(&service, workspace_id, hers, ("login", SITE, PASSWORD)).await;
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
+    let asker = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     assert_eq!(
@@ -160,7 +159,7 @@ async fn the_first_fill_at_a_site_asks_and_an_allow_releases_once() {
     let wanted = fill(SITE, &login);
     let open = asked(release(workspaces, &turn, &wanted).await);
     assert_eq!(open.agent, "scout");
-    assert_eq!(open.person, keeper);
+    assert_eq!(open.person, asker);
     assert_eq!(open.reason, "To sign in for you.");
     assert_eq!(open.asked_in, json!({"part": "p0"}));
     assert_eq!(
@@ -251,11 +250,9 @@ async fn after_always_the_agent_fills_there_alone_until_the_leave_is_taken_back(
     let hers = (&ada, &as_ada);
     let login = kept(&service, workspace_id, hers, ("login", SITE, PASSWORD)).await;
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let wanted = fill(SITE, &login);
@@ -354,11 +351,9 @@ async fn a_code_and_a_value_are_released_and_what_the_vault_refuses_asks_nobody(
     )
     .await;
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
 
@@ -409,11 +404,11 @@ async fn a_code_and_a_value_are_released_and_what_the_vault_refuses_asks_nobody(
     server.shutdown().await;
 }
 
-/// Only a turn for its agent's own keeper fills from their vault, and an agent that
-/// anything narrows fills only where a rule of its bound names exactly this use, and is
-/// then asked first like any agent.
+/// Only a turn this server carries out fills from the workspace's vault, whichever member
+/// asked it; an agent that anything narrows fills only where a rule of its bound names exactly
+/// this use, and is then asked first like any agent.
 #[tokio::test]
-async fn only_its_keepers_own_turn_fills_and_a_narrowed_agent_needs_the_rule() {
+async fn any_members_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = serving(dir.path(), &key, &owner).await;
@@ -430,31 +425,19 @@ async fn only_its_keepers_own_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     )
     .await;
     let wanted = fill(SITE, &login);
-    let keeper = hex::encode(ada.user_public_key);
     let scout = on_turn(&ada, &workspace, "scout");
 
-    // Herself, asking as herself, is no turn this server carries out; and an agent kept
-    // by her that acts for somebody else uses nothing of hers.
+    // Herself, asking as herself, is no turn this server carries out.
     let herself = as_ada.clone().in_workspace(workspace.as_str());
-    let bobs = on_turn(&bob, &workspace, "scout");
-    for (why, asking) in [
-        ("the person herself", &herself),
-        ("a turn for another", &bobs),
-    ] {
-        let turn = HostedTurn {
-            workspace: workspace_id,
-            caller: asking,
-            keeper: &keeper,
-            bound: None,
-        };
-        assert!(
-            matches!(
-                release(workspaces, &turn, &wanted).await,
-                Err(Refusal::UnknownAction)
-            ),
-            "{why}"
-        );
-    }
+    let turn = HostedTurn {
+        workspace: workspace_id,
+        caller: &herself,
+        bound: None,
+    };
+    assert!(matches!(
+        release(workspaces, &turn, &wanted).await,
+        Err(Refusal::UnknownAction)
+    ));
 
     let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str| {
@@ -474,7 +457,6 @@ async fn only_its_keepers_own_turn_fills_and_a_narrowed_agent_needs_the_rule() {
         let turn = HostedTurn {
             workspace: workspace_id,
             caller: &scout,
-            keeper: &keeper,
             bound: Some(&bound),
         };
         assert!(
@@ -493,10 +475,19 @@ async fn only_its_keepers_own_turn_fills_and_a_narrowed_agent_needs_the_rule() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: Some(&bound),
     };
     asked(release(workspaces, &turn, &wanted).await);
+
+    // Bob's ask of the same agent fills from the same workspace item, and is put to him.
+    let bobs = on_turn(&bob, &workspace, "scout");
+    let his = HostedTurn {
+        workspace: workspace_id,
+        caller: &bobs,
+        bound: None,
+    };
+    let open = asked(release(workspaces, &his, &wanted).await);
+    assert_eq!(open.person, hex::encode(bob.user_public_key));
     assert!(files_holding(dir.path(), PASSWORD.as_bytes()).is_empty());
     server.shutdown().await;
 }

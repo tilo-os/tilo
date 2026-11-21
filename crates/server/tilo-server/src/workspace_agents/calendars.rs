@@ -3,7 +3,7 @@
 //! An agent's tools act on the workspace's action service, which knows the workspace's
 //! resources and nothing of a person's own calendars. Those are the server's own to answer,
 //! through its entry for a turn it carries out
-//! ([`crate::workspaces::Workspaces::calendars_for_turn`]): the turn is its keeper's own, and
+//! ([`crate::workspaces::Workspaces::calendars_for_turn`]): the turn is one this server carries out, and
 //! its person named the agent for the calendar account. [`TurnCalendars`] is that entry as one
 //! turn's tools reach it, a provider of the turn's own ([`TurnProvider`]): it lists the reads
 //! the turn is offered beside the workspace's resources, and takes them. So an assistant reads
@@ -54,7 +54,6 @@ impl TurnCalendars {
             let hosted = HostedTurn {
                 workspace,
                 caller: &reply.caller,
-                keeper: &turn.agent.keeper,
                 bound: narrowed.as_deref(),
             };
             workspaces.calendars_offered(&hosted).await
@@ -83,7 +82,6 @@ impl TurnCalendars {
         let hosted = HostedTurn {
             workspace,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let value = self.workspaces.calendars_for_turn(&hosted, request).await?;

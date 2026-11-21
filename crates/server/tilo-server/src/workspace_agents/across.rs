@@ -8,9 +8,8 @@
 //!
 //! Whom it answers, decided again at every call:
 //!
-//! - a turn this server carries out for the agent's own keeper
-//!   ([`Workspaces::keepers_turn`]): never a sub-agent's, and an agent its keeper narrowed
-//!   only where a rule of its own names the action ([`HostedTurn::may_take`]);
+//! - a turn this server carries out ([`Workspaces::asked_turn`]): never a sub-agent's,
+//!   and an agent its entry narrows only where a rule of its own names the action ([`HostedTurn::may_take`]);
 //! - in a workspace that is its person's own: one this server keeps as theirs
 //!   ([`Workspaces::owns`]), or, on a server that keeps none for people, one they are the
 //!   owner of;
@@ -144,7 +143,7 @@ pub(super) async fn join(
 
 impl TurnElsewhere {
     /// The person `caller`'s turn acts for, where it is one this answers `action` to: a turn
-    /// of the agent's own keeper, in a workspace that is theirs and holds nobody else now.
+    /// they asked of the agent, in a workspace that is theirs and holds nobody else now.
     async fn whose(&self, caller: &Caller, action: &str) -> Result<[u8; 32], Refusal> {
         if self.agent.is_sub() {
             return Err(Refusal::Unknown);
@@ -156,25 +155,24 @@ impl TurnElsewhere {
         let turn = HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper: &self.agent.keeper,
             bound: bound.as_deref(),
         };
-        let Ok(kept) = self.workspaces.keepers_turn(&turn).await else {
+        let Ok(asked) = self.workspaces.asked_turn(&turn).await else {
             return Err(Refusal::Unknown);
         };
         let target = RemoteActionTarget {
             provider: PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(MINE, action),
         };
-        if kept.agent != self.agent.id.0 || !turn.may_take(&self.workspace, &target) {
+        if asked.agent != self.agent.id.0 || !turn.may_take(&self.workspace, &target) {
             return Err(Refusal::Unknown);
         }
-        let person = hex::encode(kept.person);
+        let person = hex::encode(asked.person);
         let Ok((_, people)) = self.workspaces.membership(&self.workspace).await else {
             return Err(Refusal::Unknown);
         };
         let theirs = if self.workspaces.keeps_own_workspaces() {
-            self.workspaces.owns(&kept.person, &self.workspace)
+            self.workspaces.owns(&asked.person, &self.workspace)
         } else {
             people
                 .get(&person)
@@ -189,7 +187,7 @@ impl TurnElsewhere {
         {
             return Err(Refusal::NotAlone);
         }
-        Ok(kept.person)
+        Ok(asked.person)
     }
 
     /// The device of `person`'s own that a read for them in the workspace `there` acts as:

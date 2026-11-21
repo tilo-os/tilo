@@ -11,7 +11,7 @@
 //!
 //! A provider is added where a turn's service is put together, and decides for itself whom it
 //! answers. For anything of a person's own, the turn's caller passes
-//! [`crate::workspaces::Workspaces::keepers_turn`] first.
+//! [`crate::workspaces::Workspaces::asked_turn`] first.
 
 use std::collections::VecDeque;
 use std::future::Future;

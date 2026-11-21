@@ -109,7 +109,6 @@ impl TurnMailConnects {
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &reply.caller,
-            keeper: &turn.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let offered = carrier.workspaces.mail_connect_offered(&hosted).await;
@@ -133,7 +132,6 @@ impl TurnMailConnects {
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let taken = self
@@ -270,7 +268,6 @@ impl Carrier {
         let hosted = HostedTurn {
             workspace: asker.workspace_id,
             caller: &asker.turn,
-            keeper: &asker.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let carried = self

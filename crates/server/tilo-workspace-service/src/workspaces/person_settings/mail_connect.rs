@@ -32,8 +32,8 @@
 //! ([`MailCarried::AsksAgain`]), as often as it takes: nothing here counts
 //! their tries, and no question ends because time passed.
 //!
-//! The turn is its keeper's own ([`Workspaces::keepers_turn`]), whom the
-//! workspace's policy lets change its mail, or it is offered nothing and
+//! The turn is one this server carries out ([`Workspaces::asked_turn`]), whose
+//! agent the workspace's policy lets change its mail, or it is offered nothing and
 //! reaches nothing, and an agent that anything narrows
 //! holds a rule that names this very action ([`HostedTurn::may_take`]). The
 //! same account told twice adds nothing: signed in already, it is refused in
@@ -55,7 +55,7 @@ use tilo_lock::MutexRecover as _;
 
 use super::{answers_in_public, argument};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{CARRIED_OUT, HostedTurn, KeepersTurn, NOTHING_WAITS};
+use crate::workspaces::hosted_use::{AskedTurn, CARRIED_OUT, HostedTurn, NOTHING_WAITS};
 use crate::workspaces::person_asking::workspace_store_root;
 use crate::workspaces::workspace_stores::Store;
 
@@ -487,25 +487,24 @@ impl Workspaces {
     }
 
     /// Whose turn `turn` is, where it may ask `target`, the signing in of a
-    /// mail account: its keeper's own, whom the workspace's policy lets
+    /// mail account: one this server carries out, whose agent the workspace's policy lets
     /// change its mail, and for an agent that anything narrows one a rule of
     /// its names.
     async fn mail_connecting(
         &self,
         turn: &HostedTurn<'_>,
         target: &RemoteActionTarget,
-    ) -> Result<KeepersTurn, ActionError> {
+    ) -> Result<AskedTurn, ActionError> {
         if target.provider != person_accounts::PROVIDER
             || target.address.resource != person_accounts::RESOURCE
             || target.address.action != CONNECT
         {
             return Err(ActionError::UnknownAction);
         }
-        let using = self.keepers_turn(turn).await?;
+        let using = self.asked_turn(turn).await?;
         if !self
-            .person_reaches(
-                turn.workspace,
-                &using.person,
+            .turn_reaches(
+                turn,
                 Store::MAIL,
                 CONNECT,
                 tilo_action_policy::ActionKind::Undoable,
@@ -521,7 +520,7 @@ impl Workspaces {
     }
 
     /// The signing in of a mail account `turn` is offered, as a catalogue
-    /// lists it: none for a turn that is not its keeper's own, and none for
+    /// lists it: none for a turn this server does not carry out, and none for
     /// a narrowed agent no rule of which names it.
     pub async fn mail_connect_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let target = person_accounts::target(CONNECT);
@@ -593,7 +592,7 @@ impl Workspaces {
     /// ([`Self::mail_connect_not_asked`]).
     ///
     /// # Errors
-    /// The turn is none this server carries out for its agent's keeper
+    /// The turn is none this server carries out
     /// ([`ActionError::UnknownAction`]); its agent is narrowed and holds no
     /// rule for this ([`ActionError::NotPermitted`]); the arguments are not
     /// an address and what its person said alone; the account is signed in
@@ -927,8 +926,8 @@ mod tests {
     }
 
     /// The question names the account and both servers in a few words that fit the
-    /// protected field's prompt, and its field is a login that belongs to both; asked again, it says
-    /// first which server did not take the password.
+    /// protected field's prompt, and its field is a login that belongs to both; asked again, it
+    /// says first which server did not take the password.
     #[test]
     fn a_question_names_both_servers_and_after_a_refusal_which_one_refused() {
         let ask = an_ask();

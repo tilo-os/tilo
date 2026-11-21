@@ -3,7 +3,7 @@
 //! An agent's tools act on the workspace's action service, which knows the workspace's
 //! resources and nothing of a person's own mail. That mail is the server's own to answer,
 //! through its entry for a turn it carries out
-//! ([`crate::workspaces::Workspaces::mail_for_turn`]): the turn is its keeper's own, and its
+//! ([`crate::workspaces::Workspaces::mail_for_turn`]): the turn is one this server carries out, and its
 //! person named the agent for the account. [`TurnMail`] is that entry as one turn's tools reach
 //! it, a provider of the turn's own ([`TurnProvider`]): it lists the mail actions the turn is
 //! offered beside the workspace's resources, and takes them. So an assistant lists what
@@ -76,7 +76,6 @@ impl TurnMail {
             let hosted = HostedTurn {
                 workspace,
                 caller: &reply.caller,
-                keeper: &turn.agent.keeper,
                 bound: narrowed.as_deref(),
             };
             agents.workspaces.mail_offered(&hosted).await
@@ -106,7 +105,6 @@ impl TurnMail {
         let hosted = HostedTurn {
             workspace,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let workspaces = &self.agents.workspaces;

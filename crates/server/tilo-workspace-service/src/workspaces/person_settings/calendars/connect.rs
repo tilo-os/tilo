@@ -36,8 +36,8 @@
 //! address there taken. The connection that signs in later looks the name
 //! up again, so a name that answers differently then is not caught here.
 //!
-//! The turn is its keeper's own ([`Workspaces::keepers_turn`]), whom the
-//! workspace's policy lets change its calendars, or it is offered nothing and
+//! The turn is one this server carries out ([`Workspaces::asked_turn`]), whose
+//! agent the workspace's policy lets change its calendars, or it is offered nothing and
 //! reaches nothing, and an agent that anything narrows
 //! holds a rule that names this very action ([`HostedTurn::may_take`]). The
 //! same account told twice adds nothing: connected already, it is refused in
@@ -61,7 +61,7 @@ use tilo_lock::MutexRecover as _;
 use super::{AddWithItem, CONNECT, RESOURCE, account_id, accounts_at, argument, server_of};
 use crate::connections::wire::{Destinations, Lookup, check_destination, is_public, system_lookup};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::{CARRIED_OUT, HostedTurn, KeepersTurn, NOTHING_WAITS};
+use crate::workspaces::hosted_use::{AskedTurn, CARRIED_OUT, HostedTurn, NOTHING_WAITS};
 use crate::workspaces::person_asking::workspace_store_root;
 use crate::workspaces::workspace_stores::Store;
 
@@ -439,25 +439,24 @@ impl Workspaces {
     }
 
     /// Whose turn `turn` is, where it may ask `target`, the connecting of a
-    /// calendar: its keeper's own, whom the workspace's policy lets change
+    /// calendar: one this server carries out, whose agent the workspace's policy lets change
     /// its calendars, and for an agent that anything narrows one a rule of
     /// its names.
     async fn connecting(
         &self,
         turn: &HostedTurn<'_>,
         target: &RemoteActionTarget,
-    ) -> Result<KeepersTurn, ActionError> {
+    ) -> Result<AskedTurn, ActionError> {
         if target.provider != person_accounts::PROVIDER
             || target.address.resource != RESOURCE
             || target.address.action != CONNECT
         {
             return Err(ActionError::UnknownAction);
         }
-        let using = self.keepers_turn(turn).await?;
+        let using = self.asked_turn(turn).await?;
         if !self
-            .person_reaches(
-                turn.workspace,
-                &using.person,
+            .turn_reaches(
+                turn,
                 Store::CALENDARS,
                 CONNECT,
                 tilo_action_policy::ActionKind::Undoable,
@@ -473,7 +472,7 @@ impl Workspaces {
     }
 
     /// The connecting of a calendar `turn` is offered, as a catalogue lists
-    /// it: none for a turn that is not its keeper's own, and none for a
+    /// it: none for a turn this server does not carry out, and none for a
     /// narrowed agent no rule of which names it.
     pub async fn calendar_connect_offered(&self, turn: &HostedTurn<'_>) -> Vec<CatalogueRow> {
         let row = Self::calendar_connect_row();
@@ -500,7 +499,7 @@ impl Workspaces {
     /// cannot put the question says so ([`Self::connect_not_asked`]).
     ///
     /// # Errors
-    /// The turn is none this server carries out for its agent's keeper
+    /// The turn is none this server carries out
     /// ([`ActionError::UnknownAction`]); its agent is narrowed and holds no
     /// rule for this ([`ActionError::NotPermitted`]); the arguments are not
     /// an address, a user name and a name alone; the address is not https,

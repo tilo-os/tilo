@@ -158,8 +158,8 @@ async fn what_they_tell_is_asked_for_and_their_typing_connects_it_for_reading_on
     // this server call its own network.
     hers.workspaces.call_private_model_addresses(true);
     hers.server.add_calendar("family", "Family");
-    let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
-    let turn = hers.turn(&scout, &keeper, None);
+    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let turn = hers.turn(&scout, None);
 
     assert_eq!(
         hers.connecting_offered(&turn).await,
@@ -284,8 +284,8 @@ async fn what_they_tell_is_asked_for_and_their_typing_connects_it_for_reading_on
 async fn a_telling_takes_no_password_and_nothing_that_makes_the_account_writable() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
-    let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
-    let turn = hers.turn(&scout, &keeper, None);
+    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let turn = hers.turn(&scout, None);
     for (name, value) in [
         ("readOnly", json!(false)),
         ("readOnly", json!(true)),
@@ -327,8 +327,8 @@ async fn an_address_that_is_not_https_or_is_inside_is_refused_before_anybody_is_
     // operator lets the server call its own network. This test is of a
     // server that calls public addresses alone, as a server does by default.
     hers.workspaces.call_private_model_addresses(false);
-    let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
-    let turn = hers.turn(&scout, &keeper, None);
+    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let turn = hers.turn(&scout, None);
     for (address, words) in [
         (hers.server.url(), "https"),
         ("http://calendar.example.test/dav/".to_owned(), "https"),
@@ -362,8 +362,8 @@ async fn an_address_that_is_not_https_or_is_inside_is_refused_before_anybody_is_
 async fn a_calendar_server_that_refuses_the_password_keeps_no_item_and_no_account() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
-    let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
-    let turn = hers.turn(&scout, &keeper, None);
+    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let turn = hers.turn(&scout, None);
 
     // A login she kept before, which her calendar server does not take.
     let before = hers
@@ -423,8 +423,8 @@ async fn a_calendar_server_that_refuses_the_password_keeps_no_item_and_no_accoun
 async fn declining_connects_nothing() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
-    let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
-    let turn = hers.turn(&scout, &keeper, None);
+    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let turn = hers.turn(&scout, None);
 
     let ask = hers.is_asked(&turn).await;
     let came = hers.answered(&turn, &ask, None).await;
@@ -441,8 +441,8 @@ async fn declining_connects_nothing() {
 async fn the_same_account_told_twice_asks_once_and_adds_nothing_once_connected() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
-    let (scout, keeper) = (on_turn(&hers.ada, &hers.workspace, SCOUT), hers.keeper());
-    let turn = hers.turn(&scout, &keeper, None);
+    let scout = on_turn(&hers.ada, &hers.workspace, SCOUT);
+    let turn = hers.turn(&scout, None);
 
     let ask = hers.is_asked(&turn).await;
     let again = hers.tells(&turn, hers.telling()).await;
@@ -472,27 +472,17 @@ async fn the_same_account_told_twice_asks_once_and_adds_nothing_once_connected()
 async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
     let hers = Hers::new().await;
     hers.workspaces.call_private_model_addresses(true);
-    let keeper = hers.keeper();
     let bo = admit(&hers.workspaces, &hers.workspace, &hers.owner, 2).await;
     // Another member's own agent's turn connects for the workspace too.
-    let (bos_caller, bos_keeper) = (
-        on_turn(&bo, &hers.workspace, SCOUT),
-        hex::encode(bo.user_public_key),
-    );
-    let bos_turn = hers.turn(&bos_caller, &bos_keeper, None);
+    let bos_caller = on_turn(&bo, &hers.workspace, SCOUT);
+    let bos_turn = hers.turn(&bos_caller, None);
     assert_eq!(
         hers.connecting_offered(&bos_turn).await,
         [held::CONNECT],
         "another member's agent connects the workspace's calendars"
     );
-    let mut others = not_her_agents_turns(&hers.ada, &bo, &hers.workspace);
-    others.push((
-        "another member's own agent under her agent's id, said to be hers",
-        on_turn(&bo, &hers.workspace, SCOUT),
-        keeper.clone(),
-    ));
-    for (who, asks, kept_by) in others {
-        let turn = hers.turn(&asks, &kept_by, None);
+    for (who, asks) in not_hosted_turns(&hers.ada, &hers.workspace) {
+        let turn = hers.turn(&asks, None);
         let told = hers.tells(&turn, hers.telling()).await;
         assert!(
             matches!(told, Err(ActionError::UnknownAction)),
@@ -535,7 +525,7 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
             vec![whole_provider, named(held::CONNECT, Answer::Deny)],
         ),
     ] {
-        let turn = hers.turn(&sub, &keeper, Some(&bound));
+        let turn = hers.turn(&sub, Some(&bound));
         let told = hers.tells(&turn, hers.telling()).await;
         assert!(
             matches!(told, Err(ActionError::NotPermitted)),
@@ -544,7 +534,7 @@ async fn only_a_turn_of_a_members_own_agent_is_offered_the_connecting() {
         assert!(hers.connecting_offered(&turn).await.is_empty(), "{why}");
     }
     let bound = vec![named(held::CONNECT, Answer::Allow)];
-    let turn = hers.turn(&sub, &keeper, Some(&bound));
+    let turn = hers.turn(&sub, Some(&bound));
     assert_eq!(hers.connecting_offered(&turn).await, [held::CONNECT]);
     hers.is_asked(&turn).await;
     assert!(

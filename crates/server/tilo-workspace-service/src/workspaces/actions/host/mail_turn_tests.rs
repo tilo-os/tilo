@@ -28,7 +28,7 @@ use super::super::ServiceWorkspaceActions as HolderActions;
 use super::super::tests::{admit, governed};
 use super::accounts_tests::asking;
 use super::mail_assistant_tests::{lunch, lunch_with};
-use super::turn_use_tests::{not_her_agents_turns, on_turn};
+use super::turn_use_tests::{not_hosted_turns, on_turn};
 use crate::workspaces::hosted_use::{AskedSend, HostedTurn, SEND_CARRIER, TurnMail};
 use crate::workspaces::mail_watch::testing::{Watched, keep};
 use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
@@ -73,23 +73,17 @@ impl Mail {
         }
     }
 
-    /// Ada's person, as the keeper a turn's entry names.
-    fn keeper(&self) -> String {
+    /// Ada, by her person id: who asks the turns of these tests.
+    fn ada_id(&self) -> String {
         hex::encode(self.ada.user_public_key)
     }
 
-    /// The turn `caller` acts on in her workspace, for an agent `keeper`
-    /// keeps and `bound` narrows.
-    const fn turn<'a>(
-        &self,
-        caller: &'a Caller,
-        keeper: &'a str,
-        bound: Option<&'a [Rule]>,
-    ) -> HostedTurn<'a> {
+    /// The turn `caller` acts on in her workspace, for an agent `bound`
+    /// narrows.
+    const fn turn<'a>(&self, caller: &'a Caller, bound: Option<&'a [Rule]>) -> HostedTurn<'a> {
         HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper,
             bound,
         }
     }
@@ -202,8 +196,8 @@ async fn a_members_turn_reads_searches_and_drafts() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
-    let turn = mail.turn(&scout, &keeper, None);
+    let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
+    let turn = mail.turn(&scout, None);
     let nobody = Err(ActionCallError::UnknownAction);
 
     assert_eq!(
@@ -284,11 +278,11 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     let bo = admit(&mail.workspaces, &mail.workspace, &owner, 2).await;
     let (elsewhere, elsewhere_id, _) = governed(&mail.workspaces).await;
     let cy = admit(&mail.workspaces, &elsewhere, &owner, 3).await;
-    let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
-    let hers = mail.turn(&scout, &keeper, None);
+    let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
+    let hers = mail.turn(&scout, None);
     let nobody = Err(ActionCallError::UnknownAction);
 
-    let mut others = not_her_agents_turns(&mail.ada, &bo, &mail.workspace);
+    let mut others = not_hosted_turns(&mail.ada, &mail.workspace);
     others.push((
         "a turn in another workspace",
         Caller::authenticated(cy.user_public_key, cy.device_public_key)
@@ -298,10 +292,9 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
                 tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
                 Vec::new(),
             ),
-        hex::encode(cy.user_public_key),
     ));
-    for (who, asks, kept_by) in others {
-        let turn = mail.turn(&asks, &kept_by, None);
+    for (who, asks) in others {
+        let turn = mail.turn(&asks, None);
         let reads = mail.asks(&turn, person_accounts::READ, reading()).await;
         assert_eq!(reads, nobody, "{who}");
         assert!(mail.offered(&turn).await.is_empty(), "{who}");
@@ -309,11 +302,9 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     // A turn carried out in the other workspace reaches that one's mail,
     // which keeps none.
     let cys = on_turn(&cy, &elsewhere, SCOUT);
-    let cy_keeper = hex::encode(cy.user_public_key);
     let there = HostedTurn {
         workspace: elsewhere_id,
         caller: &cys,
-        keeper: &cy_keeper,
         bound: None,
     };
     let reads = mail.asks(&there, person_accounts::READ, reading()).await;
@@ -323,11 +314,8 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     assert!(mail.servers.asked().is_empty(), "no mail server was asked");
 
     // Another member's turn in the same workspace reads the one store.
-    let (bos, bos_keeper) = (
-        on_turn(&bo, &mail.workspace, SCOUT),
-        hex::encode(bo.user_public_key),
-    );
-    let his = mail.turn(&bos, &bos_keeper, None);
+    let bos = on_turn(&bo, &mail.workspace, SCOUT);
+    let his = mail.turn(&bos, None);
     let message: FetchedMessage = done(mail.asks(&his, person_accounts::READ, reading()).await);
     assert_eq!(message.uid, 4, "a member's turn reads the workspace's mail");
     let hers_read: FetchedMessage = done(mail.asks(&hers, person_accounts::READ, reading()).await);
@@ -346,10 +334,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let (sub, keeper) = (
-        on_turn(&mail.ada, &mail.workspace, "sub-agent"),
-        mail.keeper(),
-    );
+    let sub = on_turn(&mail.ada, &mail.workspace, "sub-agent");
     let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
         tilo_automation::action_rule(
@@ -379,7 +364,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
         ("a rule for another action", vec![listing]),
         ("a rule that denies it", vec![whole_provider, denying]),
     ] {
-        let turn = mail.turn(&sub, &keeper, Some(&bound));
+        let turn = mail.turn(&sub, Some(&bound));
         let reads = mail.asks(&turn, person_accounts::READ, reading()).await;
         assert_eq!(reads, Err(ActionCallError::NotPermitted), "{why}");
         let offered = mail.offered(&turn).await;
@@ -394,7 +379,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
         named(person_accounts::READ, Answer::Allow),
         named(person_accounts::BEGIN_SEND, Answer::Allow),
     ];
-    let turn = mail.turn(&sub, &keeper, Some(&bound));
+    let turn = mail.turn(&sub, Some(&bound));
     assert_eq!(
         mail.offered(&turn).await,
         [person_accounts::READ, person_accounts::BEGIN_SEND]
@@ -414,7 +399,7 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
 
     let mut bound = bound;
     bound.push(named(person_accounts::SEND, Answer::Allow));
-    let turn = mail.turn(&sub, &keeper, Some(&bound));
+    let turn = mail.turn(&sub, Some(&bound));
     asked(mail.asks(&turn, person_accounts::SEND, sending).await);
     assert!(
         mail.left().is_empty(),
@@ -434,8 +419,8 @@ async fn a_send_from_a_turn_is_set_apart_and_shows_its_person_everything() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
-    let turn = mail.turn(&scout, &keeper, None);
+    let (scout, asker) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.ada_id());
+    let turn = mail.turn(&scout, None);
 
     let many: Vec<String> = (0..21).map(|n| format!("p{n}@example.test")).collect();
     for (why, fields) in [
@@ -483,7 +468,7 @@ async fn a_send_from_a_turn_is_set_apart_and_shows_its_person_everything() {
     );
     assert_eq!(shown.send, started.send);
     assert_eq!(shown.account, ACCOUNT);
-    assert_eq!(shown.person, keeper);
+    assert_eq!(shown.person, asker);
     assert_eq!(shown.workspace, mail.workspace_id.to_string());
     let words = shown.words();
     for line in [
@@ -534,8 +519,8 @@ async fn only_what_its_person_was_shown_leaves_and_once() {
     let (key, owner) = governor();
     let server = test_server(dir.path(), &key, &owner).await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
-    let turn = mail.turn(&scout, &keeper, None);
+    let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
+    let turn = mail.turn(&scout, None);
     let workspaces = &mail.workspaces;
 
     // Allowed: it leaves, and a second reader of the answer finds nothing.
@@ -605,8 +590,8 @@ async fn a_message_that_waits_is_found_again_after_the_server_stopped() {
         crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &owner, keys.clone())
             .await;
     let mail = Mail::on(server.workspaces(), &owner).await;
-    let (scout, keeper) = (on_turn(&mail.ada, &mail.workspace, SCOUT), mail.keeper());
-    let turn = mail.turn(&scout, &keeper, None);
+    let scout = on_turn(&mail.ada, &mail.workspace, SCOUT);
+    let turn = mail.turn(&scout, None);
     let shown = mail.sends(&turn, lunch()).await;
     let new = NewAsk {
         workspace: mail.workspace.clone(),

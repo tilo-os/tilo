@@ -3,8 +3,7 @@
 //! An agent's tools act on the workspace's action service, which knows the workspace's
 //! resources and nothing of a person's own calendars. Connecting one is the server's own to
 //! answer, through its entry for a turn it carries out
-//! ([`crate::workspaces::Workspaces::connect_calendar_for_turn`]): the turn is its keeper's
-//! own. [`TurnConnects`] is that entry as one turn's tools reach it, a provider of the turn's
+//! ([`crate::workspaces::Workspaces::connect_calendar_for_turn`]): the turn is one this server carries out. [`TurnConnects`] is that entry as one turn's tools reach it, a provider of the turn's
 //! own ([`TurnProvider`]): it lists the one action beside the workspace's resources, and takes
 //! it. The action takes what the person said (the calendar server's address, the user name
 //! there, a name for the account) and nothing else.
@@ -276,7 +275,6 @@ impl TurnConnects {
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &reply.caller,
-            keeper: &turn.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let offered = carrier.workspaces.calendar_connect_offered(&hosted).await;
@@ -300,7 +298,6 @@ impl TurnConnects {
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let taken = self
@@ -502,7 +499,6 @@ impl Carrier {
         let hosted = HostedTurn {
             workspace: asker.workspace_id,
             caller: &asker.turn,
-            keeper: &asker.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let carried = self

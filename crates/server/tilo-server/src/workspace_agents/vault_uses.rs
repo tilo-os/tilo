@@ -153,7 +153,6 @@ impl TurnUses {
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &reply.caller,
-            keeper: &turn.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let mut offered = agents.workspaces.uses_offered(&hosted).await;
@@ -190,7 +189,6 @@ impl TurnUses {
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let workspaces = &self.agents.workspaces;
@@ -257,7 +255,6 @@ impl TurnUses {
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
         self.agents.workspaces.may_fill_pages(&hosted).await?;
@@ -294,7 +291,6 @@ impl TurnUses {
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let fill = FillPage {
@@ -514,7 +510,6 @@ impl TurnUses {
         let hosted = HostedTurn {
             workspace: self.workspace_id,
             caller,
-            keeper: &self.agent.keeper,
             bound: narrowed.as_deref(),
         };
         let using = self.agents.workspaces.secret_ask_for_turn(&hosted).await?;
@@ -894,7 +889,6 @@ impl ServerAgents {
         let hosted = HostedTurn {
             workspace: workspace_id,
             caller: &turn,
-            keeper: &agent.keeper,
             bound: narrowed.as_deref(),
         };
         let carried = self

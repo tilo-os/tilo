@@ -1,5 +1,5 @@
 //! A secret used by reference by a turn the server carries out itself: the turn is
-//! its keeper's own or it is refused, the first use asks its person, their
+//! one it carries out or it is refused, the agent's own grants decide what it reaches, the first use asks its person, their
 //! "Always" lets that agent use that item there without asking, and they
 //! read that leave and take it back.
 
@@ -158,11 +158,10 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     let login = a_mail_login(&service, workspace_id, hers).await;
     let proved = proving(workspaces);
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
+    let asker = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     assert_eq!(workspaces.uses_offered(&turn).await.len(), 2);
@@ -175,7 +174,7 @@ async fn the_first_use_by_a_hosted_turn_asks_its_person_and_uses_nothing() {
     );
     assert_eq!(open.agent, "scout");
     assert_eq!(open.name, "Scout");
-    assert_eq!(open.person, keeper);
+    assert_eq!(open.person, asker);
     assert_eq!(open.workspace, workspace);
     assert_eq!(open.reason, "You asked me to read your mail.");
     assert_eq!(open.asked_in, json!({"part": "p0"}));
@@ -255,11 +254,9 @@ async fn allowed_once_the_use_is_made_once_and_leaves_no_leave() {
     let login = a_mail_login(&service, workspace_id, hers).await;
     let proved = proving(workspaces);
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let add = |address: &str| add_mail(address, "imap.example.test", &login);
@@ -359,11 +356,9 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
     let login = a_mail_login(&service, workspace_id, hers).await;
     let proved = proving(workspaces);
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let add = |address: &str| add_mail(address, "imap.example.test", &login);
@@ -455,11 +450,9 @@ async fn an_answer_is_claimed_once_and_not_carried_out_again_after_the_server_st
     let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
     let proved = proving(workspaces);
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let adding = add_mail("ada@example.test", "imap.example.test", &login);
@@ -514,15 +507,10 @@ async fn an_answer_is_claimed_once_and_not_carried_out_again_after_the_server_st
     server.shutdown().await;
 }
 
-/// Callers that are not a turn of Ada's own agent for her: what each is,
-/// the caller, and whom the agent is said to be kept by.
-pub(super) fn not_her_agents_turns(
-    ada: &DeviceCert,
-    bo: &DeviceCert,
-    workspace: &str,
-) -> Vec<(&'static str, Caller, String)> {
+/// Callers that are not a turn this server carries out for a member of the workspace: what
+/// each is, and the caller.
+pub(super) fn not_hosted_turns(ada: &DeviceCert, workspace: &str) -> Vec<(&'static str, Caller)> {
     let hers = hex::encode(ada.user_public_key);
-    let his = hex::encode(bo.user_public_key);
     let session = || Caller::authenticated(ada.user_public_key, ada.device_public_key);
     let turn = || tilo_action_policy::turn::Turn::new("conversation-1", "message-1");
     let on_another_device = Caller::authenticated(ada.user_public_key, [7; 32])
@@ -538,55 +526,29 @@ pub(super) fn not_her_agents_turns(
     let bot =
         Caller::bot("bot", ada.user_public_key, ada.device_public_key).in_workspace(workspace);
     let member = Caller::local_agent("scout").acting_for(hers.clone());
-    let app = Caller::local_app("so.tilo.chat").acting_for(hers.clone());
+    let app = Caller::local_app("so.tilo.chat").acting_for(hers);
     vec![
-        (
-            "the person themselves",
-            session().in_workspace(workspace),
-            hers.clone(),
-        ),
-        ("an agent outside a turn", outside_a_turn, hers.clone()),
-        ("an agent admitted as a member", member, hers.clone()),
-        ("a bot", bot, hers.clone()),
-        ("an app", app, hers.clone()),
-        ("a turn confined to no workspace", unconfined, hers.clone()),
-        (
-            "a turn confined to another workspace",
-            confined_elsewhere,
-            hers.clone(),
-        ),
+        ("the person themselves", session().in_workspace(workspace)),
+        ("an agent outside a turn", outside_a_turn),
+        ("an agent admitted as a member", member),
+        ("a bot", bot),
+        ("an app", app),
+        ("a turn confined to no workspace", unconfined),
+        ("a turn confined to another workspace", confined_elsewhere),
         (
             "a turn on a device she is not admitted on",
             on_another_device,
-            hers.clone(),
-        ),
-        // Bo wrote to her agent: the turn acts for Bo, and the agent is hers.
-        (
-            "another member's ask of her agent",
-            on_turn(bo, workspace, "scout"),
-            hers,
-        ),
-        (
-            "her turn for an agent somebody else keeps",
-            on_turn(ada, workspace, "scout"),
-            his,
-        ),
-        (
-            "her turn for an agent nobody keeps",
-            on_turn(ada, workspace, "scout"),
-            String::new(),
         ),
     ]
 }
 
-/// Every caller that is not an agent's turn for its own keeper is refused
-/// before the vault is opened: a person, an agent with no turn, an agent
-/// admitted as a member, a bot, an app, a turn confined elsewhere, a turn
-/// on a device the workspace does not admit that person on, and another
-/// member's ask of the agent. Another member's own turn uses the
-/// workspace's item, and its use asks his person.
+/// Every caller that is not a turn this server carries out is refused before the vault is
+/// opened: a person, an agent with no turn, an agent admitted as a member, a bot, an app, a turn
+/// confined elsewhere and a turn on a device the workspace does not admit that person on. Any
+/// member's ask of the workspace's agent is such a turn: Bo's ask of the agent Ada asks uses the
+/// same workspace item, and its use asks him, the person who asked.
 #[tokio::test]
-async fn only_an_agents_turn_for_its_own_keeper_uses_their_vault() {
+async fn any_members_turn_of_an_agent_reaches_the_workspaces_vault() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -600,11 +562,10 @@ async fn only_an_agents_turn_for_its_own_keeper_uses_their_vault() {
     let proved = proving(workspaces);
     let adding = add_mail("ada@example.test", "imap.example.test", &login);
 
-    for (who, asks, keeper) in not_her_agents_turns(&ada, &bo, &workspace) {
+    for (who, asks) in not_hosted_turns(&ada, &workspace) {
         let turn = HostedTurn {
             workspace: workspace_id,
             caller: &asks,
-            keeper: &keeper,
             bound: None,
         };
         let refused = workspaces.use_for_turn(&turn, &adding, json!({})).await;
@@ -618,29 +579,125 @@ async fn only_an_agents_turn_for_its_own_keeper_uses_their_vault() {
         "nobody was asked"
     );
 
-    // Bo's own agent, on Bo's own turn, is not refused as a turn: the item
-    // is the workspace's, and its use asks his person, not hers.
+    // The same agent, asked by Ada and by Bo, is offered the same uses and reaches the same
+    // item: each ask is put to whoever asked.
+    let ada_id = hex::encode(ada.user_public_key);
     let bo_id = hex::encode(bo.user_public_key);
-    let bos = on_turn(&bo, &workspace, "bos-agent");
-    let his = HostedTurn {
-        workspace: workspace_id,
-        caller: &bos,
-        keeper: &bo_id,
-        bound: None,
-    };
-    let open = asked(workspaces.use_for_turn(&his, &adding, json!({})).await);
-    assert_eq!(open.person, bo_id, "the workspace's item asks his person");
-    assert_eq!(open.agent, "bos-agent");
-
-    assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
-    assert_eq!(
-        workspaces.open_use_asks(&workspace).len(),
-        1,
-        "his person is asked about it"
+    let for_ada = on_turn(&ada, &workspace, "scout");
+    let for_bo = on_turn(&bo, &workspace, "scout");
+    let (hers, his) = (
+        HostedTurn {
+            workspace: workspace_id,
+            caller: &for_ada,
+            bound: None,
+        },
+        HostedTurn {
+            workspace: workspace_id,
+            caller: &for_bo,
+            bound: None,
+        },
     );
     assert_eq!(
-        remembered(&service, workspace_id, hers, &login).await,
+        workspaces.uses_offered(&hers).await,
+        workspaces.uses_offered(&his).await
+    );
+    let open = asked(workspaces.use_for_turn(&his, &adding, json!({})).await);
+    assert_eq!(
+        open.person, bo_id,
+        "the workspace's item asks whoever asked"
+    );
+    assert_eq!(open.agent, "scout");
+    let open = asked(workspaces.use_for_turn(&hers, &adding, json!({})).await);
+    assert_eq!(open.person, ada_id);
+    assert_eq!(open.agent, "scout");
+
+    assert!(proved.lock().unwrap().is_empty(), "nothing signed in");
+    assert_eq!(workspaces.open_use_asks(&workspace).len(), 2);
+    assert_eq!(
+        remembered(&service, workspace_id, (&ada, &as_ada), &login).await,
         json!({"uses": []})
+    );
+    server.shutdown().await;
+}
+
+/// What reaches the workspace's vault is the agent's own word in the workspace's policy, not
+/// the asker's: an owner's grant that keeps the agent from the vault refuses its turn though
+/// Ada, who asked it, keeps and reads the item herself, and once the grant is gone the same
+/// turn reaches it again. Another agent Ada asks is not held by that grant.
+#[tokio::test]
+async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
+    let adding = add_mail("ada@example.test", "imap.example.test", &login);
+    let scout = on_turn(&ada, &workspace, "scout");
+    let other = on_turn(&ada, &workspace, "other");
+    let turn = |caller| HostedTurn {
+        workspace: workspace_id,
+        caller,
+        bound: None,
+    };
+
+    let kept_from_vault = tilo_action_policy::Grant::new(
+        "test:scout-kept-from-vault",
+        tilo_action_policy::Grantee::agent("scout"),
+        TreePath::workspace(&workspace)
+            .app(tilo_app_id::apps::PASSWORDS)
+            .kind("passwords.workspace-vault"),
+        KindSet::ALL,
+        Answer::Deny,
+        tilo_action_policy::Grantee::person(hex::encode(owner.user_public_key)),
+    );
+    workspaces
+        .put_workspace_grants(&workspace, &owner, [61; 32], vec![kept_from_vault])
+        .await
+        .unwrap();
+    assert_eq!(
+        workspaces
+            .use_for_turn(&turn(&scout), &adding, json!({}))
+            .await,
+        Err(NotPermitted),
+        "the agent is kept from the vault"
+    );
+    assert!(workspaces.uses_offered(&turn(&scout)).await.is_empty());
+    assert!(
+        remembered(&service, workspace_id, (&ada, &as_ada), &login).await["uses"].is_array(),
+        "Ada still reads the item herself"
+    );
+    let open = asked(
+        workspaces
+            .use_for_turn(&turn(&other), &adding, json!({}))
+            .await,
+    );
+    assert_eq!(
+        open.agent, "other",
+        "another agent is not held by the grant"
+    );
+
+    workspaces
+        .remove_workspace_grants(
+            &workspace,
+            &owner,
+            [62; 32],
+            vec![tilo_action_policy::GrantId(
+                "test:scout-kept-from-vault".into(),
+            )],
+        )
+        .await
+        .unwrap();
+    let open = asked(
+        workspaces
+            .use_for_turn(&turn(&scout), &adding, json!({}))
+            .await,
+    );
+    assert_eq!(
+        open.agent, "scout",
+        "without the grant the agent reaches the item"
     );
     server.shutdown().await;
 }
@@ -661,7 +718,6 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
     let login = a_mail_login(&service, workspace_id, (&ada, &as_ada)).await;
     let proved = proving(workspaces);
     let scout = on_turn(&ada, &workspace, "sub-agent");
-    let keeper = hex::encode(ada.user_public_key);
     let adding = add_mail("ada@example.test", "imap.example.test", &login);
     let outside = KindSet::of(ActionKind::Outside);
     let named = |action: &str, answer: Answer| {
@@ -703,7 +759,6 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
         let turn = HostedTurn {
             workspace: workspace_id,
             caller: &scout,
-            keeper: &keeper,
             bound: Some(&bound),
         };
         let refused = workspaces.use_for_turn(&turn, &adding, json!({})).await;
@@ -722,7 +777,6 @@ async fn a_narrowed_agent_needs_a_rule_that_names_the_use() {
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: Some(&bound),
     };
     let offered = workspaces.uses_offered(&turn).await;
@@ -760,11 +814,9 @@ async fn a_use_the_vault_refuses_asks_nobody() {
     .await;
     let proved = proving(workspaces);
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let unknown = json!("vault.item:0123456789abcdef0123456789abcdef");
@@ -841,11 +893,9 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     )
     .await;
     let scout = on_turn(&ada, &workspace, "scout");
-    let keeper = hex::encode(ada.user_public_key);
     let turn = HostedTurn {
         workspace: workspace_id,
         caller: &scout,
-        keeper: &keeper,
         bound: None,
     };
     let keeping = || {

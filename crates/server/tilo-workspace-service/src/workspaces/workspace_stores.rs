@@ -296,4 +296,46 @@ impl Workspaces {
         let access = tilo_action_policy::MemberAccess::person(policy, person.as_str());
         access.answer(&node, effect, &Context::at_time(tilo_clock::wall())) != Answer::Deny
     }
+
+    /// Whether the agent `turn` carries out may do `effect` with `action` of
+    /// `store` in its workspace now: the workspace's policy decides it for that
+    /// agent acting on its asker's word, as it decides every change the agent
+    /// makes to the workspace's records. The agent's own grants and the rules
+    /// its entry bounds it to hold whoever asked; the asker's role bounds what
+    /// their ask may reach, and a person the workspace no longer admits asks
+    /// nothing. A policy that asks first has not refused: the turn waits on
+    /// that answer for the one change, and this is where the change is weighed
+    /// again after it.
+    pub(super) async fn turn_reaches(
+        &self,
+        turn: &super::hosted_use::HostedTurn<'_>,
+        store: Store,
+        action: &str,
+        effect: ActionKind,
+    ) -> bool {
+        let acting = turn.caller.acting();
+        let (Some(agent), Some(person)) = (acting.agent_id(), acting.people().first().copied())
+        else {
+            return false;
+        };
+        let Some(policy) = self.policy_of(&turn.workspace.to_string()).await else {
+            return false;
+        };
+        if policy.active_role(person).is_none() {
+            return false;
+        }
+        let bound = turn
+            .bound
+            .map(|bound| tilo_action_policy::roles::agent_bound(agent, person, bound))
+            .unwrap_or_default();
+        let person = person.to_owned();
+        let Some(access) = tilo_action_policy::MemberAccess::person(policy, person.as_str())
+            .as_acting(acting.clone())
+        else {
+            return false;
+        };
+        let access = access.granted(bound);
+        let node = store.node(access.workspace(), action);
+        access.answer(&node, effect, &Context::at_time(tilo_clock::wall())) != Answer::Deny
+    }
 }
