@@ -6860,6 +6860,30 @@ outputs = ["/target/wait-list/**"]
 timeout_secs = 1800
 on = ["dispatch"]
 
+[[check]]
+name = "page-notes"
+# No egress: as e2e, the walk meets its Lounge on loopback (direct-lounge.sh) and its
+# programs and fonts are its needs'.
+run = "TILO_PAGE_NOTES_IN_LOG=1 bash os/containers/tilo-lounge/test-page-notes.sh /target/publish/web-entry/bundle /target/page-notes"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
+requires = ["arch=x86_64"]
+outputs = ["/target/page-notes/**"]
+timeout_secs = 1800
+default = false
+
+[[check]]
+name = "page-reopen"
+# No egress: as page-notes, the walk meets its Lounge on loopback (direct-lounge.sh) and its
+# programs and fonts are its needs'.
+run = "TILO_PAGE_REOPEN_IN_LOG=1 bash os/containers/tilo-lounge/test-page-reopen.sh /target/publish/web-entry/bundle /target/page-reopen"
+needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
+env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-server", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto" }
+requires = ["arch=x86_64"]
+outputs = ["/target/page-reopen/**"]
+timeout_secs = 1800
+default = false
+
 # The user stories (os/containers/tilo-lounge/stories/stories.json): what people set out to do with
 # Tilo, each walked end to end by its people in fresh browser profiles on a fresh tilo.sh stack of
 # its own, every step recorded (screenshots, each person's video), timed and held to its budget,
