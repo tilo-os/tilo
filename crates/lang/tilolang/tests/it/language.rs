@@ -2,7 +2,7 @@
 //! calendar literals, `if let`, `?.` and `??`, key paths, `remove_where`, moves by neighbour and
 //! optional views. Each means the same in an action, a fn and a view.
 
-use crate::common::{codes, compile, validate};
+use crate::common::{codes, compile, compile_body, validate};
 
 const C: &str = "type C {\n    t: Text\n    b: Bool = false\n    due: Option<Date> = .none\n    at: Option<Time> = .none\n    items: Collection<C>\n}\nroot C\ndefault view v for C\nview v(c: C) {\n    text(c.t)\n}\n";
 
@@ -681,5 +681,88 @@ tilo_test_env::scenario! {
         if let Err(diags) = compile_against(lib, app) {
             panic!("a for variable stands as its own name: {diags:#?}");
         }
+    }
+
+    phase the_kinds_of_file_an_action_opens_are_what_its_app_offers;
+    {
+        let compiled = compile_body(
+            "type Doc {\n    title: Text\n}\nroot doc: Doc\n\
+             default view doc_view for Doc\n\
+             view doc_view(d: Doc) {\n    text(d.title)\n}\n\
+             action take(r: Doc, file: File) -> Text (\n    icon: .file_plus,\n    \
+             opens: [\"text/markdown\", .md, .Markdown],\n) { file.name }",
+        );
+        assert_eq!(
+            compiled.meta.actions[0].opens,
+            ["text/markdown", "md", "markdown"],
+            "each kind once, the extensions as media types and names: {:?}",
+            compiled.meta.actions[0].opens
+        );
+        // The canonical text reads back as itself.
+        let src = "app t.x \"X\"\ntype Doc {\n    title: Text\n}\nroot doc: Doc\n\
+                   default view doc_view for Doc\nview doc_view(d: Doc) {\n    text(d.title)\n}\n\
+                   action take(r: Doc, file: File) -> Text (\n    icon: .file_plus,\n    \
+                   opens: [\"text/markdown\", .md, .markdown],\n) { file.name }\n";
+        let printed = tilolang::print_module(&tilolang::parse(src).expect("parses"));
+        assert_eq!(
+            tilolang::print_module(&tilolang::parse(&printed).expect("the printed text parses")),
+            printed,
+            "an `opens:` list prints back as it was written"
+        );
+    }
+
+    phase a_file_opened_with_the_app_reaches_a_root_taking_file;
+    {
+        let types = "type Doc {\n    title: Text\n}\n\
+                     type Page {\n    body: Text\n}\nroot doc: Doc\n\
+                     default view doc_view for Doc\n\
+                     view doc_view(d: Doc) {\n    text(d.title)\n}\n";
+        // The action a file opens takes a root first — the record it is opened into — and the
+        // file after it.
+        let not_root = crate::common::compile_with(
+            &format!(
+                "app t.x \"X\"\n{types}action take(p: Page, file: File) (opens: [.md]) {{\n    p.body = file.name\n}}\n"
+            ),
+            &[],
+        )
+        .expect_err("a page is no root of the package");
+        assert!(
+            not_root[0].message.contains("takes no root"),
+            "{not_root:#?}"
+        );
+        let no_file = crate::common::compile_with(
+            &format!("app t.x \"X\"\n{types}action take(r: Doc) (opens: [.md]) {{\n    r.title = \"no file\"\n}}\n"),
+            &[],
+        )
+        .expect_err("an action that opens files takes one");
+        assert!(
+            no_file[0].message.contains("takes the root it opens into and the file"),
+            "{}",
+            no_file[0].message
+        );
+        // The file is the one thing after the root: an action that takes more is no way to open a
+        // file, which the launch has nothing else to give.
+        assert_eq!(
+            codes(&format!(
+                "{types}action take(r: Doc, file: File, title: Text) (opens: [.md]) {{\n    r.title = title\n}}"
+            )),
+            ["E090"]
+        );
+        // Each kind is a media type in quotes or an extension with a dot.
+        assert_eq!(
+            codes(&format!(
+                "{types}action take(r: Doc, file: File) (opens: [\"not a type\"]) {{\n    r.title = file.name\n}}"
+            )),
+            ["E090"]
+        );
+        // One action of an app opens a kind of file.
+        assert_eq!(
+            codes(&format!(
+                "{types}action take(r: Doc, file: File) (opens: [.md]) {{\n    r.title = file.name\n}}\n\
+                 action also(r: Doc, file: File) (opens: [.md]) {{\n    r.title = file.name\n}}"
+            )),
+            ["E090"],
+            "two actions cannot open Markdown"
+        );
     }
 }

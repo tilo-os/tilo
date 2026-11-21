@@ -220,6 +220,10 @@ pub struct Presentation {
     /// `did: "moved this"`: what the action did, as history's sentence reads it after who did it ("Ana
     /// moved this").
     pub did: Option<String>,
+    /// `opens: ["text/markdown", .md]`: the kinds of file this action takes, each a media type
+    /// (`text/markdown`) or an extension (`md`). The platform opens a file of one of them with this
+    /// action ([`crate::meta::ActionMeta::opens`]).
+    pub opens: Vec<String>,
 }
 
 /// The shortcut an action's `key:` declares, as it is published and compared: the modifiers in one

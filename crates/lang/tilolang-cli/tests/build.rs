@@ -104,6 +104,56 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     every_payload_carries_the_standard_library(&apps, &installed);
 }
 
+/// The kinds of file an app's actions open (`opens:`) are what its manifest offers, so Files and
+/// the person's own file system open exactly those with the app, and no name of the app stands in
+/// a table of file types anywhere.
+#[test]
+fn a_package_offers_the_files_its_actions_open() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    for name in with_used(&["notes"]) {
+        copy_package(&packages().join(&name), &source.join(&name));
+    }
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let options = BuildOptions {
+        dir: source.join("notes"),
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: "tilo-runtime/2026.07".into(),
+        tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.into(),
+        version: "0.1.0".into(),
+    };
+    let apps = package::build(&options, &identity).unwrap();
+    let notes = apps
+        .iter()
+        .find(|app| app.app == "so.tilo.lang.notes")
+        .unwrap();
+    let manifest =
+        Manifest::from_toml_str(&std::fs::read_to_string(&notes.manifest).unwrap()).unwrap();
+    assert_eq!(
+        manifest.providers.mime,
+        ["text/markdown", "text/plain", "application/zip"],
+        "the media types its importing actions declare"
+    );
+    assert_eq!(
+        manifest.providers.ext,
+        ["md", "markdown", "txt", "zip"],
+        "the extensions they declare"
+    );
+    // A package whose actions open nothing offers nothing.
+    let discussion = apps
+        .iter()
+        .find(|app| app.app == "so.tilo.lang.discussion")
+        .expect("the package Notes is made with is built");
+    let discussion =
+        Manifest::from_toml_str(&std::fs::read_to_string(&discussion.manifest).unwrap()).unwrap();
+    assert!(
+        discussion.providers.mime.is_empty() && discussion.providers.ext.is_empty(),
+        "an app that opens no files offers none: {:?}",
+        discussion.providers
+    );
+}
+
 /// Today uses Notes: it declares that it reads their kinds, carries their module and their schema.
 fn today_reads_notes(
     today: &package::BuiltApp,

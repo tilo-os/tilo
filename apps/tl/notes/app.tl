@@ -328,6 +328,9 @@ fn page_path(n: Note, pages: Map<Text>) -> Text {
 action import_markdown(nb: Notebook, file: File) -> Note (
     icon: .file_plus,
     did: "imported a note",
+    // A Markdown or plain-text file opens in the notebook with this: Files and the person's own
+    // file system hand the file over as the file it is.
+    opens: ["text/markdown", "text/plain", .md, .markdown, .txt],
 ) {
     import_page(nb, file, "", "", "", "", "")
 }
@@ -403,7 +406,12 @@ action import_page(
 /// stands beside, a reference read from the page's own folder, and a link to a page of the archive
 /// is the reference to the note that page made. A migration says where each page came from in its
 /// own file beside the pages, and a page that is imported already keeps the note it made.
-action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "imported a notebook") {
+action import_archive(nb: Notebook, file: File) (
+    icon: .file_plus,
+    did: "imported a notebook",
+    // An archive of pages opens in the notebook with this, as one holding a notebook does.
+    opens: ["application/zip", .zip],
+) {
     match file.files() {
         .ok(files) => {
             let names = files.map(f -> f.name)

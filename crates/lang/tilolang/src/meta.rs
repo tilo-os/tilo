@@ -633,6 +633,11 @@ pub struct ActionMeta {
     /// what the platform tags the action with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outside: Vec<String>,
+    /// `opens: ["text/markdown", .md]`: the kinds of file this action takes, each a media type
+    /// (`text/markdown`) or an extension without its dot (`md`). A file of one of them opens in the
+    /// app with this action, which the platform knows by the manifest's `[providers]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opens: Vec<String>,
 }
 
 impl ActionMeta {

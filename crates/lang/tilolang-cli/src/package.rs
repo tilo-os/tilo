@@ -122,6 +122,24 @@ fn sandbox(origins: &[&str]) -> (&'static str, &'static str, &'static str) {
     )
 }
 
+/// The kinds of file the package's actions open (`opens:`), each once: the media types first, as
+/// the manifest's `[providers] mime`, then the extensions, as its `ext`. An app that opens no files
+/// offers none, and Files opens none of them with it.
+#[must_use]
+fn opens_of(meta: &PackageMeta) -> (Vec<String>, Vec<String>) {
+    let mut mime: Vec<String> = Vec::new();
+    let mut ext: Vec<String> = Vec::new();
+    for action in &meta.actions {
+        for kind in &action.opens {
+            let list = if kind.contains('/') { &mut mime } else { &mut ext };
+            if !list.contains(kind) {
+                list.push(kind.clone());
+            }
+        }
+    }
+    (mime, ext)
+}
+
 /// The manifest's `[entrypoint]` line naming each of the outside `origins`' connectors: one launch
 /// per origin the package's types hold, and nothing when it holds none.
 fn connector_origins(origins: &[&str]) -> String {
@@ -143,6 +161,9 @@ pub fn manifest_text(
 ) -> String {
     let category = meta.category.as_deref().map_or("Utility", menu_category);
     let resource_type = tilolang_tilo::meta::MetaExt::resource_type(meta);
+    let (providers_mime, providers_ext) = opens_of(meta);
+    let providers_mime: Vec<String> = providers_mime.iter().map(|mime| toml_string(mime)).collect();
+    let providers_ext: Vec<String> = providers_ext.iter().map(|ext| toml_string(ext)).collect();
     let origins = origins_of(meta);
     let (capabilities, namespaces, net) = sandbox(&origins);
     let mut extra = if meta.icon.is_some() {
@@ -220,8 +241,8 @@ bin = {bin}
 type = "gui"
 {origins}
 [providers]
-mime = []
-ext = []
+mime = [{providers_mime}]
+ext = [{providers_ext}]
 "#,
         id = toml_string(&meta.app),
         name = toml_string(&meta.title),
@@ -246,6 +267,8 @@ ext = []
         // the app's types hold, in this sandbox, window or
         // not.
         origins = connector_origins(&origins),
+        providers_mime = providers_mime.join(", "),
+        providers_ext = providers_ext.join(", "),
     )
 }
 

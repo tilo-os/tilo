@@ -97,6 +97,26 @@ A resource's document body is its `RichText` field, whether it is kept as `RichT
 paragraphs, lists, quotes, tables and code kept as such) or as `Text` (the body kept as
 Markdown); the document's own view places the editor for it, `ui.BlockEditor(bind: note.body)`.
 
+## Opening files
+
+An action that takes a `File` says which kinds of file open the app with it:
+
+```
+action import_markdown(nb: Notebook, file: File) -> Note (
+    icon: .file_plus,
+    opens: ["text/markdown", .md, .markdown, .txt],
+) { … }
+```
+
+Each kind is a media type in quotes or an extension with a dot. They become the app's manifest's
+`[providers]`, so Files, and the person's own file system, offer the app for exactly those kinds
+and for no other; the app's name never appears in a table of file types. A file opened that way
+reaches the action as the same `File` a chooser gives it — the address of its content and its name,
+since an app has no path of its own — and what the action returns opens in the window. The action
+takes one of the package's roots and the file, and nothing else: that root is the record the file
+is opened into. One action of an app opens a kind of file, so a Markdown file and an archive of
+pages are two actions.
+
 ## Effects
 
 An effect is something a replay cannot compute again: a draw, the time, a service outside

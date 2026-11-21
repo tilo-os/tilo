@@ -447,6 +447,7 @@ impl Env {
                 key: a.key.clone(),
                 group: a.group.clone(),
                 did: a.did.clone(),
+                opens: a.opens.clone(),
             };
             add(
                 CKind::Action,
@@ -548,6 +549,8 @@ pub fn resolve(
         }
     }
     r.package_decls(module);
+    // After the roots are named: an action that opens files acts on one of them.
+    r.opening_actions(module);
     r.one_shortcut_each(module);
     r.env
 }
@@ -1798,6 +1801,7 @@ impl Resolver<'_> {
             key: None,
             group: None,
             did: None,
+            opens: Vec::new(),
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -1890,10 +1894,27 @@ impl Resolver<'_> {
                     opt.value.span,
                     "`did:` takes words in quotes, without `{ }`: `did: \"moved this\"`",
                 ),
+                // `opens: ["text/markdown", .md]`: the kinds of file a person opens this app
+                // with, each a media type in quotes or an extension with a dot.
+                ("opens", ExprKind::List(items)) => {
+                    out.opens = self.opening_kinds(items);
+                    if items.is_empty() {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "`opens:` names at least one kind of file: a media type in quotes or an extension with a dot, such as `[\"text/markdown\", .md]`",
+                        );
+                    }
+                }
+                ("opens", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`opens:` takes a list of the kinds of file the action opens, each a media type in quotes or an extension with a dot: `opens: [\"text/markdown\", .md, .markdown]`",
+                ),
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:` and `did:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `did:` and `opens:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }
@@ -2006,6 +2027,108 @@ impl Resolver<'_> {
             }
             seen.push((target, a.name.name.clone()));
         }
+    }
+
+    /// What an action with `opens:` may be: it takes one of the package's roots and the file, and
+    /// nothing else, since the launch hands it nothing but those two, and what a person's own file
+    /// system opens with the app is a record of the app's. One action of an app opens a kind of
+    /// file, so no two of them can be handed the same one.
+    fn opening_actions(&mut self, module: &ast::Module) {
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for item in &module.items {
+            let Item::Action(a) = item else { continue };
+            let Some(opt) = a.opts.iter().find(|opt| opt.name.name == "opens") else {
+                continue;
+            };
+            let Some((root, files, kinds)) = self.env.own_callable(&a.name.name).map(|c| {
+                (
+                    c.params.first().and_then(|p| match &p.ty {
+                        Ty::Record(key) => {
+                            self.env.roots.contains(key).then(|| key.clone())
+                        }
+                        _ => None,
+                    }),
+                    c.params.get(1).is_some_and(|p| p.ty == Ty::File) && c.params.len() == 2,
+                    c.present.opens.clone(),
+                )
+            }) else {
+                continue;
+            };
+            let Some(root) = root else {
+                self.err(
+                    "E090",
+                    opt.name.span,
+                    format!(
+                        "an app opens a file in the record its action acts on, and the action a file opens takes a root of the package first: `{}` takes no root. Write it with the package's root first, such as `{}(r: R, file: File)`",
+                        a.name.name, a.name.name
+                    ),
+                );
+                continue;
+            };
+            if !files {
+                self.err(
+                    "E090",
+                    opt.name.span,
+                    format!(
+                        "`{}` opens no file: the action a file is opened with takes the root it opens into and the file, and nothing else (`{}(r: {}, file: File)`)",
+                        a.name.name, a.name.name, root.name
+                    ),
+                );
+                continue;
+            }
+            for kind in &kinds {
+                if let Some((_, holder)) = seen.iter().find(|(held, _)| held == kind) {
+                    self.err(
+                        "E090",
+                        opt.value.span,
+                        format!(
+                            "`{kind}` is opened by `{holder}` already: one action of an app opens a kind of file. Move what `{}` does to one of them, or name another kind",
+                            a.name.name
+                        ),
+                    );
+                    continue;
+                }
+                seen.push((kind.clone(), a.name.name.clone()));
+            }
+        }
+    }
+
+    /// The kinds of file an `opens:` list names, each a media type (`text/markdown`) or an extension
+    /// without its dot (`md`): what the app's manifest offers to open.
+    fn opening_kinds(&mut self, items: &[Expr]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let token = |part: &str| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "!#$&-^_.+".contains(c))
+        };
+        for item in items {
+            let kind = match &item.kind {
+                ExprKind::Str(_) => plain_text(item).and_then(|text| {
+                    let text = text.trim().to_ascii_lowercase();
+                    let (kind, subtype) = text.split_once('/')?;
+                    (token(kind) && token(subtype)).then_some(text)
+                }),
+                ExprKind::Variant { name, args: None } => {
+                    let extension = name.name.to_ascii_lowercase();
+                    token(&extension).then_some(extension)
+                }
+                _ => None,
+            };
+            let Some(kind) = kind else {
+                self.err(
+                    "E090",
+                    item.span,
+                    "`opens:` takes a media type in quotes, such as `\"text/markdown\"`, or an extension with a dot, such as `.md`",
+                );
+                continue;
+            };
+            if !out.contains(&kind) {
+                out.push(kind);
+            }
+        }
+        out
     }
 
     /// Two actions of one target that declare the same shortcut: one would silently take the other's
