@@ -182,6 +182,8 @@ pub enum BundleError {
         "included binary must be a bounded regular native executable with a fixed basename: {path}"
     )]
     IncludeInvalidBinary { path: PathBuf },
+    #[error("included binary is {bytes} bytes, over the {limit} a bundle takes: {path}")]
+    IncludeBinaryTooLarge { path: PathBuf, bytes: u64, limit: u64 },
     #[error("different included binaries claim the same basename: {name}")]
     IncludeDuplicateBinary { name: String },
     #[error(
@@ -1456,6 +1458,11 @@ fn hash_payload_files<'a>(
 /// queue and several big cores, few enough not to starve the desktop.
 const MAX_HASH_WORKERS: usize = 8;
 
+/// The largest program a bundle carries. A bound, not a budget: the tilolang
+/// runtime host links the whole runtime and a release build with line tables
+/// passes 64 MiB, so the bound leaves it room to grow.
+const MAX_INCLUDED_BINARY_BYTES: u64 = 256 << 20;
+
 fn digest_file(path: &Path, with_verity: bool) -> Result<FileDigests, BundleError> {
     let mut f = fs::File::open(path)?;
     // Taken from the open descriptor, before and after the read: what a
@@ -1598,8 +1605,15 @@ fn copy_binaries(
             return Err(invalid());
         }
         let metadata = fs::symlink_metadata(source).map_err(|_| invalid())?;
-        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 64 * 1024 * 1024 {
+        if !metadata.is_file() || metadata.len() == 0 {
             return Err(invalid());
+        }
+        if metadata.len() > MAX_INCLUDED_BINARY_BYTES {
+            return Err(BundleError::IncludeBinaryTooLarge {
+                path: source.clone(),
+                bytes: metadata.len(),
+                limit: MAX_INCLUDED_BINARY_BYTES,
+            });
         }
         if !binary_is_executable(&metadata) {
             return Err(invalid());
@@ -1846,6 +1860,23 @@ mod tests {
                 include(&[launcher.clone(), launcher]).is_ok(),
                 "same source is copied once"
             );
+            // A runtime host larger than 64 MiB is taken; one past the bound is
+            // refused with its size. Sparse files: no bytes are written.
+            let host = source.path().join("tilolang-process");
+            fs::File::create(&host).unwrap().set_len(117 << 20).unwrap();
+            fs::set_permissions(&host, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(include(std::slice::from_ref(&host)).is_ok());
+            let oversized = other.path().join("oversized");
+            fs::File::create(&oversized)
+                .unwrap()
+                .set_len(MAX_INCLUDED_BINARY_BYTES + 1)
+                .unwrap();
+            fs::set_permissions(&oversized, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(matches!(
+                include(&[oversized]),
+                Err(BundleError::IncludeBinaryTooLarge { bytes, .. })
+                    if bytes == MAX_INCLUDED_BINARY_BYTES + 1
+            ));
         }
     }
 
