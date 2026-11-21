@@ -1269,7 +1269,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "measurement; run with --ignored --nocapture"]
     fn matching_ten_thousand_pages_fits_a_frame() {
         let mut idx = index(&ten_thousand_pages());
         let start = Instant::now();

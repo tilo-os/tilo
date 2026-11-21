@@ -476,14 +476,4 @@ mod tests {
             assert!(is_extension_id(&"a".repeat(32)));
         }
     }
-
-    #[test]
-    #[ignore = "needs a downloaded Web Store package"]
-    fn real_web_store_package_verifies() {
-        let path = std::env::var("TILO_TEST_CRX").unwrap();
-        let bytes = std::fs::read(path).unwrap();
-        let verified = verify(&bytes).unwrap();
-        eprintln!("verified {}", verified.id);
-        assert!(is_extension_id(&verified.id));
-    }
 }

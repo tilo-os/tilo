@@ -408,7 +408,6 @@ fn private_mode_is_empty_indicated_and_leaves_no_root() {
             .args([
                 "--exact",
                 "browser_widget::library_tests::private_discovery_failure_filter_worker_does_not_recreate_root_child",
-                "--ignored",
                 "--nocapture",
             ])
             .env_remove("TILO_CHROMIUM_HOST")
@@ -432,12 +431,15 @@ fn private_mode_is_empty_indicated_and_leaves_no_root() {
     }
 }
 
+/// The child the test above re-executes its binary into: it does nothing when it
+/// runs as part of an ordinary test run, which has no private root to enter.
 #[test]
-#[ignore = "child entry point for private discovery/filter lifecycle regression"]
 #[cfg(unix)]
 fn private_discovery_failure_filter_worker_does_not_recreate_root_child() {
-    let root =
-        std::path::PathBuf::from(std::env::var_os("TILO_TEST_PRIVATE_ROOT").expect("private root"));
+    let Some(root) = std::env::var_os("TILO_TEST_PRIVATE_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
     let done = std::path::PathBuf::from(
         std::env::var_os("TILO_TEST_FILTER_LOADER_DONE").expect("completion marker"),
     );

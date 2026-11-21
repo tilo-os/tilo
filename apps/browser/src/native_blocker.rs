@@ -284,13 +284,18 @@ mod tests {
     }
     use std::io::{Read, Write};
 
+    /// The child the scenario test below re-executes its binary into: it does
+    /// nothing when it runs as part of an ordinary test run, which has no private
+    /// root to enter.
     #[test]
-    #[ignore = "child entry point for private refresh/root lifecycle regression"]
     #[cfg(unix)]
     fn private_refresh_does_not_recreate_root_after_helper_exit_child() {
         use std::os::unix::fs::PermissionsExt;
 
-        let root = std::path::PathBuf::from(std::env::var_os("TILO_TEST_PRIVATE_ROOT").unwrap());
+        let Some(root) = std::env::var_os("TILO_TEST_PRIVATE_ROOT") else {
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
         crate::storage::configure(root.to_str()).unwrap();
         let fixture = tempfile::tempdir().unwrap();
         let trigger = fixture.path().join("exit-helper");
@@ -390,7 +395,6 @@ mod tests {
                     "--exact",
                     own_test("private_refresh_does_not_recreate_root_after_helper_exit_child")
                         .as_str(),
-                    "--ignored",
                     "--nocapture",
                 ])
                 .env("TILO_TEST_PRIVATE_ROOT", &root)
