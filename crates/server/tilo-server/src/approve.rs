@@ -23,12 +23,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use tilo_device_identity::persist::write_signing_key;
+use tilo_device_identity::{IdentityPaths, persist};
 use tilo_identity::certification_ceremony::PersonSigner;
 use tilo_server_client::questions::{MemberQuestions, QuestionServer};
 use tilo_server_client::{MemberApprover, ServerAddress};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
-use tilo_user_identity::StatementSigner as _;
 use tilo_user_identity::root_envelope::{RecoveryKey, RootEnvelope};
 
 /// How often a watching device asks the host whether a question is waiting.
@@ -193,7 +192,7 @@ fn open_person(document: &std::path::Path, root: &std::path::Path) -> anyhow::Re
     Ok(signing.verifying_key().to_bytes())
 }
 
-/// The person's root, from the identity store [`Command::Person`] kept it in.
+/// The person's signer for the host's questions.
 fn person_root(root: &std::path::Path) -> anyhow::Result<PersonSigner> {
     let active = tilo_identity_client::resolve_active_identity(root).with_context(|| {
         format!(
@@ -206,11 +205,6 @@ fn person_root(root: &std::path::Path) -> anyhow::Result<PersonSigner> {
     Ok(PersonSigner::new(Box::new(identity)))
 }
 
-/// The file a paired device's key is kept in, under its directory.
-const DEVICE_KEY: &str = "device.key";
-/// The file a paired device's certificate is kept in, under its directory.
-const DEVICE_CERT: &str = "device.cert.json";
-
 /// Certify a fresh key as a device of the person whose root `root` holds,
 /// with a device's member capabilities and no root, and keep both under
 /// `device`.
@@ -219,28 +213,28 @@ fn pair(
     device: &std::path::Path,
     label: &str,
 ) -> anyhow::Result<tilo_user_identity::DeviceCert> {
-    let root_key = person_root(root)?;
-    let mut seed = [0u8; 32];
-    getrandom::fill(&mut seed).map_err(|error| anyhow::anyhow!("no randomness: {error}"))?;
-    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: root_key.public_key(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root_key)
-        .map_err(|error| anyhow::anyhow!("certify the device: {error}"))?;
-    std::fs::create_dir_all(device).with_context(|| format!("make {}", device.display()))?;
-    write_signing_key(&device.join(DEVICE_KEY), &key)
-        .with_context(|| format!("write the device's key under {}", device.display()))?;
-    std::fs::write(device.join(DEVICE_CERT), serde_json::to_vec(&cert)?)
-        .with_context(|| format!("write the device's certificate under {}", device.display()))?;
-    Ok(cert)
+    let root_key = tilo_enrollment::load_root(Some(root))?;
+    let paths = IdentityPaths::under(device);
+    let private = paths
+        .device_privkey
+        .parent()
+        .context("the device key has no directory")?;
+    tilo_files::native::private::directory(private)?;
+    persist::provision_joined_device(
+        &paths,
+        root_key.public_key(),
+        |digest| {
+            let digest = digest
+                .try_into()
+                .map_err(|_| "the certificate digest must be 32 bytes".to_owned())?;
+            root_key
+                .sign_digest(digest)
+                .map_err(|error| error.to_string())
+        },
+        label,
+        tilo_clock::unix_now_ns(),
+    )
+    .with_context(|| format!("enroll the device under {}", device.display()))
 }
 
 /// Answer the next question the host at `server` puts to the person whose
@@ -258,11 +252,11 @@ async fn next(
     let host = tilo_server_protocol::hosted::endpoint(server)
         .map_err(|error| anyhow::anyhow!("--server: {error}"))?;
     if let Some(device) = device {
-        let key = tilo_device_identity::persist::read_owned_signing_key(&device.join(DEVICE_KEY))
+        let paths = IdentityPaths::under(device);
+        let key = persist::load_device_key(&paths)
             .context("read the device's key: run `tilo-approve pair` first")?;
-        let cert: tilo_user_identity::DeviceCert =
-            serde_json::from_slice(&std::fs::read(device.join(DEVICE_CERT))?)
-                .context("read the device's certificate")?;
+        let cert = persist::read_device_cert(&paths.device_cert)
+            .context("read the device's certificate")?;
         let member = MemberApprover::new(ServerAddress::at(host));
         let seen = {
             let mut questions = MemberQuestions {
@@ -407,7 +401,7 @@ mod tests {
                 signing.verifying_key().to_bytes(),
                 "the person the page made"
             );
-            let kept = person_root(&root).unwrap();
+            let kept = tilo_enrollment::load_root(Some(&root)).unwrap();
             assert_eq!(
                 kept.public_key(),
                 signing.verifying_key().to_bytes(),
@@ -426,6 +420,14 @@ mod tests {
             assert_eq!(cert.user_public_key, public);
             assert_eq!(cert.device_label, "Phone");
             assert!(!cert.capabilities.can_admit_devices);
+            let paths = IdentityPaths::under(&phone);
+            assert_eq!(persist::read_device_cert(&paths.device_cert).unwrap(), cert);
+            assert_eq!(
+                persist::load_device_key(&paths).unwrap().verifying_key().to_bytes(),
+                cert.device_public_key
+            );
+            assert!(pair(&root, &phone, "Phone").is_err());
+            assert_eq!(persist::read_device_cert(&paths.device_cert).unwrap(), cert);
         }
 
         phase another_persons_recovery_key_opens_nothing;
