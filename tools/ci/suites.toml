@@ -894,6 +894,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/make_from.rs",
   "crates/platform/tilolang-tilo/tests/marks.rs",
   "crates/platform/tilolang-tilo/tests/naming.rs",
+  "crates/platform/tilolang-tilo/tests/native_notes.rs",
   "crates/platform/tilolang-tilo/tests/note_import.rs",
   "crates/platform/tilolang-tilo/tests/notebook_order.rs",
   "crates/platform/tilolang-tilo/tests/notes.rs",
