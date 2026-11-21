@@ -77,12 +77,20 @@ fn read_present() -> Present {
             photo: None,
         };
     };
-    let Ok(metadata) = tilo_identity_client::load_metadata_from_path(&record) else {
+    let Ok(mut metadata) = tilo_identity_client::load_metadata_from_path(&record) else {
         return Present {
             identity: None,
             photo: None,
         };
     };
+    // The dev control provisions a marked primary record with a fixture label. It is still an
+    // unnamed person in the shell until they give that identity a name.
+    if metadata.display_name == tilo_identity::provisioning::THROWAWAY_TEST_IDENTITY_NAME
+        && record == directory.join(tilo_identity::provisioning::PRIMARY_IDENTITY_FILE)
+        && tilo_identity::provisioning::is_throwaway_test_identity(&directory)
+    {
+        metadata.display_name.clear();
+    }
     Present {
         identity: Some(LocalIdentity {
             group_public_key: metadata.group_public_key,

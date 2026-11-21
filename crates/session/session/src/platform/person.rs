@@ -10,13 +10,15 @@
 /// its bar name them alike; a computer whose identity is in is named by its key, which is never
 /// shown as a name.
 pub fn person_name(chosen: Option<String>, person: &str) -> String {
-    chosen_name(chosen).unwrap_or_else(|| {
+    session_name(chosen, person).unwrap_or_else(account_name)
+}
+
+/// The session's name to publish in presence, or none before a person identified by a root key
+/// has given a name. Sessions without an identity can still publish their account name.
+pub(crate) fn session_name(chosen: Option<String>, person: &str) -> Option<String> {
+    chosen_name(chosen).or_else(|| {
         let known = person.trim();
-        if known.is_empty() || is_identity_key(known) {
-            account_name()
-        } else {
-            known.to_owned()
-        }
+        (!known.is_empty() && !is_identity_key(known)).then(|| known.to_owned())
     })
 }
 

@@ -100,10 +100,9 @@ pub(crate) fn own_live_rgb(sync: Option<&crate::sync::Client>, identity: &str) -
         .unwrap_or_else(|| own_rgb(identity))
 }
 
-/// This person as their own surfaces show them: the name they go by here, and the identity their
-/// face's letters and colour come from — the root key they are here by, else the id this device
-/// sits as. The bar's own avatar and their own card both read it here, so one person wears one
-/// initial and one colour wherever they see themselves.
+/// The name and identity of this person's face, shared by their own surfaces and their presence.
+/// The name stays empty until one is known so each surface can localize the unnamed label.
+/// The identity is the root key they are here by, else the id this device sits as.
 pub(crate) fn own_face(own: &crate::sync::OwnPresence, device_person: &str) -> (String, String) {
     let identity = own
         .user
@@ -112,10 +111,10 @@ pub(crate) fn own_face(own: &crate::sync::OwnPresence, device_person: &str) -> (
         .filter(|user| !user.is_empty())
         .unwrap_or(device_person)
         .to_owned();
-    let name = crate::platform::person::person_name(
+    let name = crate::platform::person::given_name(
         ui::local_identity::load().map(|identity| identity.display_name),
-        &own.label,
-    );
+    )
+    .unwrap_or_else(|| own.label.clone());
     (name, identity)
 }
 
@@ -902,7 +901,7 @@ impl Panel {
         let key = own.user.clone();
         let (red, green, blue) = own_live_rgb(self.sync.as_deref(), &identity);
         ProfileModel {
-            name,
+            name: ui::presence::person_label(&name),
             given_name: Some(given_name),
             identity,
             colour: Some(Color::from_rgb8(red, green, blue)),

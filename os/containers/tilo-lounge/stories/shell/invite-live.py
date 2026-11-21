@@ -120,6 +120,8 @@ def steps(story: Story) -> None:
         took = grace.start(apps=APPS, env={JOIN_INVITATION: str(path)})
         story.timing("Grace's session start with the invitation, to its first frame", took["tookMs"])
         story.timing("Grace's session start with the invitation, to its first frame, with the development launcher's installing", took["launcherMs"])
+        until("Grace's profile to show the unnamed person",
+              lambda: grace.shows(f"Someone without a name yet{PROFILE}"), 10, 0.2)
         return {"tookMs": took["tookMs"]}
 
     story.step("Grace opens the invitation on her computer", grace_opens)

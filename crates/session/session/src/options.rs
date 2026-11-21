@@ -353,11 +353,12 @@ fn collaborating(
         beside.push(device_agents.protocol(std::sync::Arc::clone(devices)));
     }
     let own = sync::OwnPresence {
-        // What everyone here calls them: the name they gave, else their account's, never their key.
-        label: crate::platform::person::person_name(
+        // Publish a name only when the session has one; viewers supply the unnamed label.
+        label: crate::platform::person::session_name(
             ui::local_identity::load().map(|identity| identity.display_name),
             &options.person,
-        ),
+        )
+        .unwrap_or_default(),
         user: identity
             .as_ref()
             .map(|identity| hex::encode(identity.device_cert.user_public_key)),

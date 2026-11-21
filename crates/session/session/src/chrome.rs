@@ -541,7 +541,7 @@ impl ChromeSource for SessionChrome {
         OwnChip {
             // The name they go by, and the root key the picture they chose hangs on: the id is
             // never shown as their name.
-            name,
+            name: ui::presence::person_label(&name),
             rgb: (red, green, blue),
             identity,
         }

@@ -192,7 +192,10 @@ impl crate::Session {
                 .as_ref()
                 .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
             let (name, identity) = crate::people::own_face(&own, &self.shared.person);
-            (name, Some(crate::people::own_hue(&identity)))
+            (
+                ui::presence::person_label(&name),
+                Some(crate::people::own_hue(&identity)),
+            )
         } else {
             let shown = lock.shown();
             (shown.person, shown.hue)
