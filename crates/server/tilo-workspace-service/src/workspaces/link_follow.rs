@@ -423,28 +423,8 @@ impl Workspaces {
             }
         }
         // A compaction this copy refused while it held no keys of the record is taken now that
-        // it may hold them ([`GovernedWorkspace::take_behind`]): the writes it folds are nowhere
-        // but inside it, and whoever reads the record is told.
-        let kept: Vec<(String, String)> = workspace.behind.keys().cloned().collect();
-        for (app, document) in kept {
-            let Some(taken) = workspace.take_behind(&(app.clone(), document.clone())).await else {
-                continue;
-            };
-            let author = *taken.author.as_bytes();
-            let message = NeighbourMsg::AppDocument {
-                peer: tilo_peer_state::peer_handle(&author),
-                app_id: app.clone(),
-                cluster_id: workspace.workspace().to_owned(),
-                document_id: document.clone(),
-                envelope: Box::new(taken),
-                own: None,
-                readers: None,
-            };
-            self.tell_followers(workspace, author, (app.clone(), document.clone()), &message, true)
-                .await;
-            changed = true;
-            written.insert((app, document));
-        }
+        // it may hold them: the writes it folds are nowhere but inside it.
+        changed |= self.take_behind_compactions(workspace, &mut written).await;
         if changed {
             workspace.keep_followed();
         }
@@ -458,6 +438,47 @@ impl Workspaces {
         if again {
             self.replay_soon(workspace.workspace().to_owned());
         }
+    }
+
+    /// Take each compaction this copy refused while it held no keys of its record
+    /// ([`GovernedWorkspace::take_behind`]) now that it may hold them, and tell whoever reads the
+    /// record. Says whether any was taken; the records they changed are added to `written`.
+    async fn take_behind_compactions(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        written: &mut std::collections::BTreeSet<(String, String)>,
+    ) -> bool {
+        let mut took = false;
+        let kept: Vec<(String, String)> = workspace.behind.keys().cloned().collect();
+        for (app, document) in kept {
+            let Some(taken) = workspace
+                .take_behind(&(app.clone(), document.clone()))
+                .await
+            else {
+                continue;
+            };
+            let author = *taken.author.as_bytes();
+            let message = NeighbourMsg::AppDocument {
+                peer: tilo_peer_state::peer_handle(&author),
+                app_id: app.clone(),
+                cluster_id: workspace.workspace().to_owned(),
+                document_id: document.clone(),
+                envelope: Box::new(taken),
+                own: None,
+                readers: None,
+            };
+            self.tell_followers(
+                workspace,
+                author,
+                (app.clone(), document.clone()),
+                &message,
+                true,
+            )
+            .await;
+            took = true;
+            written.insert((app, document));
+        }
+        took
     }
 
     /// Take `windows`, members' changes to the workspace's own state the

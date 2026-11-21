@@ -106,16 +106,17 @@ pub fn holds_root() -> bool {
 /// when it did: it kept their root as a file in `$XDG_STATE_HOME/tilo/identity`.
 /// Only the public key is read. That person comes back with their recovery
 /// words (`tilo login --recovery-key`), never as a new person made beside them.
-fn earlier() -> Option<[u8; 32]> {
-    let dir = tilo_paths::state_dir()?.join("tilo/identity");
+fn earlier() -> Result<Option<[u8; 32]>> {
+    let Some(dir) = tilo_paths::state_dir().map(|dir| dir.join("tilo/identity")) else {
+        return Ok(None);
+    };
     if !dir.join("user-identity/privkey.bin").exists() {
-        return None;
+        return Ok(None);
     }
     let public = dir.join("user-identity/pubkey.bin");
-    Some(
-        tilo_device_identity::persist::read_public_key(&public)
-            .unwrap_or_else(|error| panic!("{} cannot be read: {error}", public.display())),
-    )
+    tilo_device_identity::persist::read_public_key(&public)
+        .map(Some)
+        .map_err(|error| anyhow!("{} cannot be read: {error}", public.display()))
 }
 
 /// The person kept here, if this computer holds their root.
@@ -157,7 +158,7 @@ pub fn held() -> Result<Option<Person>> {
 pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     let made = !holds_root();
     if made {
-        if let Some(earlier) = earlier() {
+        if let Some(earlier) = earlier()? {
             bail!(
                 "This computer account holds a Tilo identity an earlier tilo kept: {}. \
                  Sign in as that person with `tilo login --recovery-key` and their 24 words, \
@@ -191,7 +192,7 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
 /// kept here, or the identity could not be written or certified.
 pub fn restore(words: &str) -> Result<Person> {
     let dir = dir()?;
-    if let Some(earlier) = earlier().filter(|_| !holds_root()) {
+    if let Some(earlier) = earlier()?.filter(|_| !holds_root()) {
         let words_are = tilo_identity::store::recovery_words_public_key(words)
             .map_err(|problem| anyhow!("{problem}"))?;
         if words_are != earlier {

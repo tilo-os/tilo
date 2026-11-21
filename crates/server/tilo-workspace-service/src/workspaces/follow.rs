@@ -333,10 +333,7 @@ impl GovernedWorkspace {
             return followed;
         }
         let route = (app_id.clone(), document_id.clone());
-        match self
-            .take_compaction_behind(&route, envelope.as_ref())
-            .await
-        {
+        match self.take_compaction_behind(&route, envelope.as_ref()).await {
             Ok(true) => Followed {
                 changed: true,
                 ..Followed::default()
@@ -573,6 +570,7 @@ impl Workspaces {
             {
                 self.join_soon(&mut governed, app_id.clone(), document_id.clone());
             }
+            drop(governed);
             return Some(refused);
         }
         // The change is this copy's now: what it took is kept, and a verdict

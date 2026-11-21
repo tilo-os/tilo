@@ -121,13 +121,15 @@ mod tests {
             let images: Vec<String> = component
                 .get("images")
                 .and_then(toml::Value::as_array)
-                .map(|images| {
-                    images
-                        .iter()
-                        .map(|image| image.as_str().unwrap().to_owned())
-                        .collect()
-                })
-                .unwrap_or_else(|| vec!["os".to_owned()]);
+                .map_or_else(
+                    || vec!["os".to_owned()],
+                    |images| {
+                        images
+                            .iter()
+                            .map(|image| image.as_str().unwrap().to_owned())
+                            .collect()
+                    },
+                );
             for file in component
                 .get("files")
                 .and_then(toml::Value::as_array)
