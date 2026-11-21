@@ -18,7 +18,11 @@ RUN --mount=type=bind,from=github-assets,source=/,target=/tilo-assets,ro \
     && install -m 0755 "/tmp/${name}/sccache" /usr/local/bin/sccache \
     && rm -rf "/tmp/${name}"
 
-ENV CARGO_INCREMENTAL=0 \
+# The image's own toolchain, named so that rustup ignores the checkout's
+# rust-toolchain.toml: that file also asks for rust-src and rust-analyzer, which
+# this image lacks and a build without network cannot fetch.
+ENV RUSTUP_TOOLCHAIN=1.97.1 \
+    CARGO_INCREMENTAL=0 \
     SCCACHE_IGNORE_SERVER_IO_ERROR=0 \
     SCCACHE_IDLE_TIMEOUT=0 \
     RUSTC_WRAPPER=/usr/local/bin/sccache
