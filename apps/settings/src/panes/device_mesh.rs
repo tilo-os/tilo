@@ -656,6 +656,8 @@ pub struct DeviceMeshModel {
     runtime_status: ServerRuntimeStatus,
     home_peers: Vec<tilo_server_protocol::HomePeerRegistration>,
     home_peer_health: HashMap<String, HomePeerHealth>,
+    /// When each home server last answered while this pane ran: a reading it shows, which the
+    /// app keeps no record of.
     home_peer_last_seen: HashMap<String, u64>,
     /// The person's devices as the session last read them; `None` until its first reading lands.
     personal_devices: Option<Vec<PersonalDevice>>,
@@ -729,45 +731,6 @@ fn name_args(names: &[&str]) -> Vec<(&'static str, ui::i18n::ArgValue)> {
         ("second", names.get(1).copied().unwrap_or_default().into()),
         ("more", count.saturating_sub(2).into()),
     ]
-}
-
-/// When each home server last answered, as Settings keeps it: a document of the store in the
-/// identity directory, under a key no app holds.
-const HOME_PEER_SEEN: &str = "so.tilo.settings-home-peer-seen";
-
-fn load_home_peer_last_seen() -> HashMap<String, u64> {
-    use durable_store::DurableStore as _;
-    let store = app_state::shared_store(identity_root());
-    match store.read(&durable_store::StorageKey::app(HOME_PEER_SEEN)) {
-        Ok(Some(stored)) => serde_json::from_slice(&stored.bytes).unwrap_or_default(),
-        Ok(None) => HashMap::new(),
-        Err(error) => {
-            tracing::warn!(%error, "when home servers last answered does not read back");
-            HashMap::new()
-        }
-    }
-}
-
-fn save_home_peer_last_seen(last_seen: &HashMap<String, u64>) {
-    use durable_store::DurableStore as _;
-    let Ok(bytes) = serde_json::to_vec(last_seen) else {
-        return;
-    };
-    let store = app_state::shared_store(identity_root());
-    let key = durable_store::StorageKey::app(HOME_PEER_SEEN);
-    // The write before this one holds the document until it is on disk.
-    let leased = store.lease(&key).or_else(|error| match error {
-        durable_store::StoreError::Busy(_) => {
-            store.flush(Some(&key))?;
-            store.lease(&key)
-        }
-        error => Err(error),
-    });
-    let written =
-        leased.and_then(|_lease| store.write(&key, durable_store::WriteOp::Replace(bytes), None));
-    if let Err(error) = written {
-        tracing::warn!(%error, "when home servers last answered was not kept");
-    }
 }
 
 fn last_seen_label(last_seen_ms: u64) -> String {
@@ -941,11 +904,7 @@ impl MeshRead {
             status,
             runtime_status,
             home_peers,
-            home_peer_last_seen: if devices {
-                load_home_peer_last_seen()
-            } else {
-                HashMap::new()
-            },
+            home_peer_last_seen: HashMap::new(),
         }
     }
 }
@@ -1182,7 +1141,6 @@ impl DeviceMeshModel {
                     );
                     self.home_peer_last_seen
                         .insert(device, ui::time::unix_now_ms());
-                    save_home_peer_last_seen(&self.home_peer_last_seen);
                 }
                 self.home_peers = registered_home_peers();
             }
