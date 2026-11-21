@@ -76,7 +76,9 @@ fn bind(path: &Path) -> std::io::Result<UnixListener> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let listener = UnixListener::bind(path)?;
+    let bound = tilo_files::native::socket::bind(path)?;
+    bound.set_nonblocking(true)?;
+    let listener = UnixListener::from_std(bound)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
 }

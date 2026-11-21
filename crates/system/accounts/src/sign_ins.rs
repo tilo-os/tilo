@@ -140,7 +140,7 @@ impl Client {
     /// # Errors
     /// The session serves no socket there.
     pub fn connect(path: &Path) -> std::io::Result<Self> {
-        let stream = UnixStream::connect(path)?;
+        let stream = tilo_files::native::socket::connect(path)?;
         stream.set_read_timeout(Some(LONGEST_WAIT.saturating_add(Duration::from_secs(20))))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
         Ok(Self {
@@ -210,7 +210,6 @@ pub mod fixture {
     use crate::AccountStore;
     use std::collections::HashMap;
     use std::io::{BufReader, Write as _};
-    use std::os::unix::net::UnixListener;
     use std::path::Path;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -259,7 +258,7 @@ pub mod fixture {
         )]
         pub fn serve(dir: &Path, config_root: &Path) -> Self {
             let socket = dir.join("sign-ins.sock");
-            let listener = match UnixListener::bind(&socket) {
+            let listener = match tilo_files::native::socket::bind(&socket) {
                 Ok(listener) => listener,
                 Err(error) => panic!("bind the stand-in session at {}: {error}", socket.display()),
             };
@@ -318,7 +317,7 @@ pub mod fixture {
     impl Drop for Fixture {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::SeqCst);
-            let _ = std::os::unix::net::UnixStream::connect(&self.socket);
+            let _ = tilo_files::native::socket::connect(&self.socket);
         }
     }
 
