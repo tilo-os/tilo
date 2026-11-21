@@ -330,7 +330,7 @@ pub fn run(args: &[String]) {
         };
         let (idle, idle_reused) = time(&mut text, &|_| 0.0);
         let drawn_anew = tilo_ui::part_paint::cached_parts().saturating_sub(held);
-        #[allow(clippy::cast_precision_loss, reason = "a frame index")]
+        #[allow(clippy::cast_precision_loss, reason = "an index below 60")]
         let (moving, moving_reused) = time(&mut text, &|index| (index % 60) as f64 * 3.0 + 3.0);
         let ms = |samples: &[Duration], p: f64| percentile(samples, p).as_secs_f64() * 1000.0;
         println!(
