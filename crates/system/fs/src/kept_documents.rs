@@ -565,13 +565,12 @@ mod tests {
                 io::Result::Ok(())
             });
             for n in 0..6_000 {
-                {
-                    let mut namespace = namespace.lock_recover();
-                    namespace
-                        .create_file(ROOT_INO, format!("file-{n}.txt"), None, 1, 1)
-                        .unwrap();
-                    kept.journal(&mut namespace).unwrap();
-                }
+                let mut locked = namespace.lock_recover();
+                locked
+                    .create_file(ROOT_INO, format!("file-{n}.txt"), None, 1, 1)
+                    .unwrap();
+                kept.journal(&mut locked).unwrap();
+                drop(locked);
                 if n % 25 == 0 {
                     kept.keep(&namespace).unwrap();
                 }
