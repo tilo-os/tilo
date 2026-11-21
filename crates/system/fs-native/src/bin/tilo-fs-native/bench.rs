@@ -147,7 +147,7 @@ impl Daemon {
     }
 }
 
-#[allow(clippy::panic, reason = "the hydrator is only taken in Drop")]
+#[allow(clippy::panic, reason = "`Drop` is the only taker, so a live daemon still has it")]
 fn unreachable_hydrator() -> &'static Hydrator {
     panic!("hydrator already stopped")
 }
