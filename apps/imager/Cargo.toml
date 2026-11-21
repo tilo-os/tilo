@@ -184,9 +184,6 @@ path = "tests/profile_transport.rs"
 required-features = ["installation", "destination"]
 
 [dev-dependencies]
-# The destination's capacity test asks the same compiled rule that
-# `tilo-guided-partition` delegates to.
-tilo-install-helpers = { path = "../../crates/system/install-helpers" }
 accounts = { path = "../../crates/system/accounts", features = ["sign-ins-fixture"] }
 account-credentials = { path = "../../crates/system/account-credentials" }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
@@ -205,6 +202,9 @@ tilo-handoff = { path = "../../crates/platform/tilo-handoff", features = ["test-
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+# The destination's capacity test asks the same compiled rule that
+# `tilo-guided-partition` delegates to; the destination, like that helper, is Linux only.
+tilo-install-helpers = { path = "../../crates/system/install-helpers" }
 fs-native = { path = "../../crates/system/fs-native" }
 tilo-secrets.workspace = true
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
