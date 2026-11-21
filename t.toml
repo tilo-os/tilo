@@ -4110,7 +4110,7 @@ run = "bash os/tests/development_signing_native.sh context /target/development-s
 needs = ["signing-tools"]
 requires = ["arch={arch}"]
 outputs = ["/target/development-signing/{arch}/**"]
-on = ["dispatch"]
+on = ["main", "dispatch"]
 heavy = true
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -4124,7 +4124,7 @@ needs = ["development-signing-context-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 timeout_secs = 2700
-on = ["dispatch"]
+on = ["main", "dispatch"]
 heavy = true
 dispatch_inputs = { proof = "full" }
 [check.matrix]
