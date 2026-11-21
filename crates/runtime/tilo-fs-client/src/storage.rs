@@ -230,7 +230,7 @@ impl StorageClient {
     /// exist or refuses the connection.
     pub fn connect(path: impl AsRef<Path>) -> std::io::Result<Self> {
         Ok(Self {
-            stream: UnixStream::connect(path)?,
+            stream: tilo_files::native::socket::connect(path.as_ref())?,
         })
     }
 

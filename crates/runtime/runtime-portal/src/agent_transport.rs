@@ -52,7 +52,7 @@ mod imp {
     }
 
     pub fn connect_endpoint(path: &Path) -> io::Result<RawFd> {
-        Ok(UnixStream::connect(path)?.into_raw_fd())
+        Ok(tilo_files::native::socket::connect(path)?.into_raw_fd())
     }
 
     /// Finish launcher kernel-credential attestation before the connection's traffic.

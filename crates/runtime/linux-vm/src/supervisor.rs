@@ -124,7 +124,7 @@ impl Supervisor {
         };
         let socket = paths.supervisor_socket();
         let _ = std::fs::remove_file(&socket);
-        let listener = UnixListener::bind(&socket)?;
+        let listener = tilo_files::native::socket::bind(&socket)?;
         let (requests, incoming) = mpsc::channel::<(ControlRequest, UnixStream)>();
         std::thread::spawn(move || accept_loop(&listener, &requests));
 

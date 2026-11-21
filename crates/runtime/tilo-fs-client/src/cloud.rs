@@ -302,7 +302,7 @@ impl CloudClient {
     ///
     /// Returns an [`std::io::Error`] if nothing listens at `path`.
     pub fn connect(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let stream = UnixStream::connect(path)?;
+        let stream = tilo_files::native::socket::connect(path.as_ref())?;
         stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
         stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
         Ok(Self { stream })

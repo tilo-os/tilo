@@ -2,7 +2,6 @@
 //! the VM, suspend it, or report.
 
 use std::io;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -44,7 +43,7 @@ pub struct StatusReport {
 /// Send one request and wait for the reply. `None` when no supervisor
 /// listens.
 pub fn ask(socket: &Path, request: &ControlRequest) -> io::Result<Option<ControlReply>> {
-    let mut stream = match UnixStream::connect(socket) {
+    let mut stream = match tilo_files::native::socket::connect(socket) {
         Ok(stream) => stream,
         Err(error)
             if matches!(

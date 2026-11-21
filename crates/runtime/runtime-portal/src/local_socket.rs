@@ -16,17 +16,16 @@ pub type Stream = tokio::net::UnixStream;
 #[cfg(not(unix))]
 pub type Stream = tokio::io::DuplexStream;
 
-#[cfg_attr(
-    not(unix),
-    expect(
-        clippy::unused_async,
-        reason = "shares the signature of the Unix connect"
-    )
+#[expect(
+    clippy::unused_async,
+    reason = "reaches the socket at once; every host's callers await the same signature"
 )]
 pub async fn connect(path: &Path) -> io::Result<Stream> {
     #[cfg(unix)]
     {
-        tokio::net::UnixStream::connect(path).await
+        let socket = tilo_files::native::socket::connect(path)?;
+        socket.set_nonblocking(true)?;
+        tokio::net::UnixStream::from_std(socket)
     }
     #[cfg(not(unix))]
     {

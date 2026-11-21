@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::Shutdown;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -90,7 +90,7 @@ impl Drop for IdentityBrokerHandle {
         // The listener sleeps in `accept`; one connection wakes it to see the
         // flag. If nothing can connect it is not waited for.
         if let Some(listener) = self.listener.take()
-            && UnixStream::connect(&self.path).is_ok()
+            && tilo_files::native::socket::connect(&self.path).is_ok()
         {
             let _ = listener.join();
         }
@@ -121,7 +121,7 @@ pub fn spawn(
     person: Arc<dyn PersonResourceTypes>,
 ) -> io::Result<IdentityBrokerHandle> {
     let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path)?;
+    let listener = tilo_files::native::socket::bind(&path)?;
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let clients = Arc::new(Mutex::new(HashMap::new()));

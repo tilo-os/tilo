@@ -991,7 +991,7 @@ impl Drop for Broker {
     fn drop(&mut self) {
         self.shared.stop();
         if let Some(thread) = self.thread.take()
-            && UnixStream::connect(&self.address.path).is_ok()
+            && tilo_files::native::socket::connect(&self.address.path).is_ok()
         {
             let _ = thread.join();
         }

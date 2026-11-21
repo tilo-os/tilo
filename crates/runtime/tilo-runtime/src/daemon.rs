@@ -287,7 +287,7 @@ struct Status {
 }
 
 fn probe(profile: &Path) -> io::Result<Status> {
-    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+    let mut stream = tilo_files::native::socket::connect(&profile.join("native.sock"))?;
     stream.set_read_timeout(Some(PROBE_TIMEOUT))?;
     stream.set_write_timeout(Some(PROBE_TIMEOUT))?;
     stream.write_all(b"{\"native\":\"status\"}\n")?;
@@ -1058,7 +1058,7 @@ fn answer_join(joiner: Option<&crate::Joiner>, request: &Value) -> Value {
 /// the joined workspace's id.
 pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
     ensure_running(profile)?;
-    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+    let mut stream = tilo_files::native::socket::connect(&profile.join("native.sock"))?;
     let mut request = serde_json::to_vec(&json!({"native": "join", "invitation": invitation}))
         .map_err(io::Error::other)?;
     request.push(b'\n');
@@ -1120,8 +1120,10 @@ pub fn connect(
         Path::exists,
     )?;
     let mut stream = match route {
-        tilo_mcp::session_api::Route::Session(server) => UnixStream::connect(&server)
-            .map_err(|error| tilo_mcp::session_api::unreachable_server(&server, &error))?,
+        tilo_mcp::session_api::Route::Session(server) => {
+            tilo_files::native::socket::connect(&server)
+                .map_err(|error| tilo_mcp::session_api::unreachable_server(&server, &error))?
+        }
         tilo_mcp::session_api::Route::Standalone if workspace.is_some() => {
             return Err(invalid(
                 "--workspace asks a Tilo desktop's MCP server for a workspace, and this process \
@@ -1130,7 +1132,7 @@ pub fn connect(
         }
         tilo_mcp::session_api::Route::Standalone => {
             ensure_running(profile)?;
-            UnixStream::connect(profile.join("native.sock"))?
+            tilo_files::native::socket::connect(&profile.join("native.sock"))?
         }
     };
     if let Some(forward) = forward {
@@ -1227,7 +1229,7 @@ pub fn run_app(
 }
 
 fn activate_existing(profile: &Path, app_id: &str) -> io::Result<bool> {
-    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+    let mut stream = tilo_files::native::socket::connect(&profile.join("native.sock"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let request = serde_json::to_vec(&json!({"native": "activate", "app_id": app_id}))

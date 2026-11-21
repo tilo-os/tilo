@@ -59,7 +59,7 @@ fn connect_blobs(path: &Path, app_id: &str, workspace: &str) -> Option<UnixStrea
     use runtime_fs::blobs::{BlobActor, BlobScope, write_handoff};
 
     let scope = BlobScope::new(workspace, app_id).ok()?;
-    let mut stream = UnixStream::connect(path).ok()?;
+    let mut stream = tilo_files::native::socket::connect(path).ok()?;
     stream
         .set_write_timeout(Some(std::time::Duration::from_secs(5)))
         .ok()?;
@@ -99,8 +99,8 @@ impl ServiceConnections {
                 "app identity is empty",
             ));
         }
-        let collab = UnixStream::connect(sockets.collab)?;
-        let mut identity = UnixStream::connect(sockets.identity)?;
+        let collab = tilo_files::native::socket::connect(sockets.collab)?;
+        let mut identity = tilo_files::native::socket::connect(sockets.identity)?;
         identity.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
         let handshake = serde_json::to_vec(&tilo_identity_client::wire::Handshake {
             workspace_id: workspace.into(),

@@ -2,7 +2,6 @@
 //! with a host command's output streamed as it comes.
 
 use std::io::{BufRead as _, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use super::{Request, Response, SocketAddress, WireFrame};
@@ -33,7 +32,7 @@ pub fn ask_streaming_with_progress(
     show_progress: bool,
 ) -> std::io::Result<Response> {
     let address = SocketAddress::new(socket)?;
-    let stream = UnixStream::connect(&address.path)?;
+    let stream = tilo_files::native::socket::connect(&address.path)?;
     let mut writer = stream.try_clone()?;
     let mut bytes = serde_json::to_vec(req)?;
     bytes.push(b'\n');

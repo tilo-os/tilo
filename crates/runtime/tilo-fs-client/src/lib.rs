@@ -97,7 +97,7 @@ pub fn try_connect() -> Result<FsClient, NotAvailable> {
 /// Returns [`NotAvailable::ConnectionFailed`] when nothing serves `socket`.
 #[cfg(unix)]
 pub fn connect(socket: &std::path::Path) -> Result<FsClient, NotAvailable> {
-    connect_stream(std::os::unix::net::UnixStream::connect(socket)?)
+    connect_stream(tilo_files::native::socket::connect(socket)?)
 }
 
 /// Connect the existing filesystem protocol over an already-admitted stream.

@@ -49,7 +49,7 @@ impl AgentLink {
 }
 
 fn hybrid_connect(socket: &Path, port: u32) -> io::Result<UnixStream> {
-    let mut stream = UnixStream::connect(socket)?;
+    let mut stream = tilo_files::native::socket::connect(socket)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.write_all(format!("CONNECT {port}\n").as_bytes())?;
     // Read the reply byte by byte: anything after the newline is the

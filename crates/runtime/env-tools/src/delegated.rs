@@ -90,8 +90,7 @@ impl ToolBuilder for RemoteBuilder {
         let unavailable = |error: std::io::Error| {
             ToolBuildError::Unavailable(format!("the server's tool builder: {error}"))
         };
-        let mut stream =
-            std::os::unix::net::UnixStream::connect(&self.socket).map_err(unavailable)?;
+        let mut stream = tilo_files::native::socket::connect(&self.socket).map_err(unavailable)?;
         let mut line = serde_json::to_vec(&BuildRequest {
             runtime: runtime.to_string(),
             packages: packages.to_vec(),

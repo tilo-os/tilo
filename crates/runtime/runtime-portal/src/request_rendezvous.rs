@@ -78,7 +78,7 @@ impl Rendezvous {
             return Err(refused());
         }
         let address = format!("/proc/self/fd/{}/capture.sock", parent.file().as_raw_fd());
-        let socket = UnixListener::bind(&address)?;
+        let socket = tilo_files::native::socket::bind(Path::new(&address))?;
         std::fs::set_permissions(address, std::fs::Permissions::from_mode(0o600))?;
         parent.validate()?;
         Ok((
@@ -117,7 +117,7 @@ impl Rendezvous {
         if !facts.file_type().is_socket() || facts.uid() != caller || facts.mode() & 0o077 != 0 {
             return Err(refused());
         }
-        let stream = UnixStream::connect(address)?;
+        let stream = tilo_files::native::socket::connect(Path::new(&address))?;
         parent.validate()?;
         Ok(stream)
     }
