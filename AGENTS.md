@@ -23,6 +23,13 @@ reaches it. Compute in the workspace is shared: a program goes wherever it fits,
 exists only when a program needs one. Apps are untrusted packages. Identity belongs to people
 and devices, not to a service.
 
+A workspace has one set of resources: its files, mail, calendar, vault, models, connections,
+agents and skills. Everyone in the workspace uses that one set. There is no second copy per
+person and nothing that only an owner can reach. The workspace's owners decide who may do
+what, through permissions they set. The code never decides that something can't be shared, such
+as a password in the vault. Only things that belong to a person's identity are per person:
+their keys and devices, appearance, and device settings.
+
 Tilo is a small Rust core plus apps written in tilolang. The core holds workspace state, sync,
 identity and permissions, the tilolang runtime, running programs, and drawing views. Everything
 a person sees is tilolang: apps, the shell, Chat, agent views. A tilolang change needs no Rust
