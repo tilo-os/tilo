@@ -843,3 +843,42 @@ RUN for u in \
 # the FedoraWorkstation zone already permits the outbound side. Adding either
 # service is a decision to be argued for, not a default.
 RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
+
+# Fedora's OpenSSL libraries carry optional legacy-provider and ENGINE DSOs for
+# compatibility with old applications. The GStreamer bad-free bundle also
+# carries OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins; its WebRTC,
+# ICE and SRTP companions are unusable here and likewise serve no Tilo path.
+# libevent's OpenSSL adapter is a separate optional DSO; retain the event-loop
+# libraries for distro consumers but remove that unused TLS integration.
+# Rust-native code owns network security, while foundational distro consumers
+# use the built-in provider. The Shoutcast library has no remaining consumer
+# after its plugin is removed, so delete its payload and package metadata too.
+# The aggregate GStreamer bundle retains a dependency on libshout for the
+# deleted plugin; `--nodeps` is therefore intentional and bounded by the
+# absence audit the rootfs runs on the finished tree. wine-common's helper
+# scripts need a Perl interpreter, and Fedora's Perl core pulls in HTTP::Tiny's
+# HTTPS backend (IO::Socket::SSL over the Net::SSLeay OpenSSL binding). No Tilo
+# path runs Perl networking, so remove that backend the same way; the
+# forbidden-package check below enforces it. Here, at the end of the last layer
+# that changes packages, rather than in the rootfs: these are the packages' own
+# files, and the rootfs is built again with every change to the binaries.
+RUN find /usr/lib /usr/lib64 \
+      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
+         -o -name 'libshout.so*' \
+         -o -name 'libevent_openssl.so*' \
+         -o -path '*/gstreamer-1.0/libgstdtls.so' \
+         -o -path '*/gstreamer-1.0/libgstcurl.so' \
+         -o -path '*/gstreamer-1.0/libgstshout2.so' \
+         -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
+         -o -path '*/gstreamer-1.0/libgstnice.so' \
+         -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
+      \( -type f -o -type l \) -delete \
+    && rpm -e --nodeps libshout \
+    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service \
+       | xargs -r rpm -e --nodeps \
+    && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
+    && bash /usr/local/bin/verify-no-ui-toolkits.sh \
+    && bash /usr/local/bin/verify-no-cisco-openh264.sh \
+    && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
+             /usr/local/bin/verify-no-cisco-openh264.sh \
+    && ${FINALIZE_RPMDB}

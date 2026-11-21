@@ -9,7 +9,8 @@
 # `direct` files (baked runtime, app store) are copied by the rootfs stage from
 # the payload, since the packing writes them at their final paths.
 # tools/policy/check_component_manifest.py fails when a build output is copied
-# into the image outside this path.
+# into the image outside this path. A layer build (os/image/build-layer.sh) runs the
+# same installer on the step's own disk and gives its tree as this stage instead.
 FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/

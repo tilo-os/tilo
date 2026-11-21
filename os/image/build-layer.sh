@@ -379,7 +379,7 @@ oci_arch() {
 
 # What action NAME's piece is given as images (other actions' images, and compositions of
 # layers), as build contexts in layer_args, their stages in `given`; and the compiled tree.
-given=""
+given="" components=0
 load_given() {
   local entry what stage id frags
   for entry in $(layer_field "$1" given); do
@@ -396,7 +396,13 @@ load_given() {
           export TILO_CHROMIUM_ENGINE=$os/chromium
         fi
         continue ;;
+      component-files)
+        [[ -n ${TILO_COMPILED:-} ]] || die "component-files is installed from the compiled tree: give compiled before it"
+        components=1
+        given+=component-files,
+        continue ;;
       *:*) what=${entry%%:*} stage=${entry#*:} ;;
+      *) die "unknown given $entry in os/image/layers.toml" ;;
     esac
     if [[ -d $(image_dir "$what")/$stage/oci ]]; then
       id=$(load "$(image_dir "$what")/$stage/oci")
@@ -409,6 +415,31 @@ load_given() {
     layer_args+=(--build-context "$stage=container-image://$id")
     given+=$stage,
   done
+}
+
+# The component-files stage (os/image/helpers/component-files.Containerfile), made here rather
+# than built: os/components.toml's installer arranges the compiled tree under DIR/image/<layer>/,
+# which the binaries piece copies one layer at a time (`COPY --from=component-files`), given
+# DIR as a build context. As a stage it wrote every binary into the stage, committed that
+# (about as long again) and copied it into the image after; here it is written once onto the
+# step's own disk, then copied. Every file is dated by the build's clock, as the stage's
+# build context dates the files it copies: a compile of the same bytes gives the same layers.
+install_components() {
+  local dir=$scratch/component-files
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  (umask 022
+    TILO_GITHUB_ASSET_CACHE=$repo_root/os/external-assets/cache python3 -I -B os/scripts/install-components.py \
+      --manifest os/components.toml --from "$TILO_COMPILED" --dest "$dir/image" --by-layer --all --quiet)
+  python3 -I - "$SOURCE_DATE_EPOCH" "$dir" <<'PY'
+import os, sys
+clock, top = int(sys.argv[1]), sys.argv[2]
+for root, dirs, files in os.walk(top):
+    for entry in dirs + files:
+        os.utime(os.path.join(root, entry), (clock, clock), follow_symlinks=False)
+os.utime(top, (clock, clock))
+PY
+  layer_args+=(--build-context "component-files=$dir")
 }
 
 cmd_image() {
@@ -473,6 +504,10 @@ cmd_layer() {
     podman tag "$id" localhost/tilo-base:pinned
     layer_args+=(--build-arg BASE_REF=localhost/tilo-base:pinned)
   fi
+  if [[ $components == 1 ]]; then
+    phase components
+    install_components
+  fi
   image=localhost/tilo-layer:$name
   phase build
   build_target "$name" "$target" "$given"
@@ -483,6 +518,16 @@ cmd_layer() {
   # Its key, kept with its layers: the digest of every file its piece reads.
   inputs=$scratch/inputs.json
   mapfile -t globs < <(python3 -I tools/ci/os/pieces.py inputs "$name" --given "$given")
+  # The component-files stage it made itself reads what that stage's piece copies.
+  if [[ $components == 1 ]]; then
+    mapfile -t -O "${#globs[@]}" globs < <(python3 -I - <<'PY'
+import sys
+sys.path.insert(0, "tools/ci/os")
+import pieces
+print("\n".join(pieces.inputs_of_text(pieces.helper("component-files"))))
+PY
+)
+  fi
   python3 -I tools/ci/os/oci_layers.py inputs "${globs[@]}" > "$inputs"
   rm -rf "$out"
   python3 -I tools/ci/os/oci_layers.py take "$below" "$built" "$out" "$name" "$inputs"

@@ -191,22 +191,9 @@ RUN --mount=type=bind,source=os/tests/collaborative-files-image-contract.sh,targ
 # /usr/lib/modules/$kver *directories*, and the split leaves that directory in
 # place, so one kernel is still one kernel; `nonempty-boot` is a warning, not a
 # fatal, so a UKI in /boot does not fail it either.
-# Fedora's OpenSSL libraries carry optional legacy-provider and ENGINE DSOs for
-# compatibility with old applications. The GStreamer bad-free bundle also
-# carries OpenSSL-backed DTLS, curl, and Icecast/Shoutcast plugins; its WebRTC,
-# ICE and SRTP companions are unusable here and likewise serve no Tilo path.
-# libevent's OpenSSL adapter is a separate optional DSO; retain the event-loop
-# libraries for distro consumers but remove that unused TLS integration.
-# Rust-native code owns network security, while foundational distro consumers
-# use the built-in provider. The Shoutcast library has no remaining consumer after its plugin is
-# removed, so delete its payload and package metadata too. The aggregate
-# GStreamer bundle retains a dependency on libshout for the deleted plugin;
-# `--nodeps` is therefore intentional and bounded by the absence audit below.
-# wine-common's helper scripts need a Perl interpreter, and Fedora's Perl
-# core pulls in HTTP::Tiny's HTTPS backend (IO::Socket::SSL over the
-# Net::SSLeay OpenSSL binding). No Tilo path runs Perl networking, so remove
-# that backend the same way; the forbidden-package check below enforces it.
-# Delete these loadable surfaces before the composefs root is sealed.
+# The package payloads no Tilo path loads were removed at the end of the system
+# layer (os/image/system.Containerfile), the last that changes packages; that none
+# is back, in a package file or in anything copied in since, is checked here.
 # Then drop build-time /run, /tmp and /var state (issue #71) so bootc lint
 # does not retain nonempty-run-tmp, var-log or unpackaged var-tmpfiles
 # warnings. greetd's portal mask is declared in tmpfiles.d/tilo.conf and is
@@ -221,21 +208,7 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
     --mount=type=bind,source=os/scripts/seed-env-runtime.py,target=/usr/local/libexec/tilo-seed-env-runtime.py,ro \
     --mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,target=/usr/local/libexec/tilo-apps-built,ro \
-    find /usr/lib /usr/lib64 \
-      \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
-         -o -name 'libshout.so*' \
-         -o -name 'libevent_openssl.so*' \
-         -o -path '*/gstreamer-1.0/libgstdtls.so' \
-         -o -path '*/gstreamer-1.0/libgstcurl.so' \
-         -o -path '*/gstreamer-1.0/libgstshout2.so' \
-         -o -path '*/gstreamer-1.0/libgstwebrtc.so' \
-         -o -path '*/gstreamer-1.0/libgstnice.so' \
-         -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
-      \( -type f -o -type l \) -delete \
-    && rpm -e --nodeps libshout \
-    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service \
-       | xargs -r rpm -e --nodeps \
-    && ! find /usr/lib /usr/lib64 \
+    ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
          -o -name 'libevent_openssl.so*' \
@@ -246,17 +219,13 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          -o -path '*/gstreamer-1.0/libgstnice.so' \
          -o -path '*/gstreamer-1.0/libgstsrtp.so' \) \
       \( -type f -o -type l \) -print -quit | grep -q . \
-    && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
-    && bash /usr/local/bin/verify-no-ui-toolkits.sh \
-    && bash /usr/local/bin/verify-no-cisco-openh264.sh \
     # The rpmdb finaliser ran after every package change; none comes now.
     && rm -f /usr/libexec/tilo/finalize-rpmdb \
     # The base image's tool for deriving base images, a Python program no
     # package owns; a derived image never runs it.
     && rm -f /usr/libexec/bootc-base-imagectl \
     && bash /usr/local/bin/verify-no-python-runtime.sh \
-    && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
-             /usr/local/bin/verify-no-cisco-openh264.sh /usr/local/bin/verify-no-python-runtime.sh \
+    && rm -f /usr/local/bin/verify-no-python-runtime.sh \
              /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
     # The system font cache, written once here: fontconfig records each font
     # directory's time, so those are pinned to the epoch first, the time the

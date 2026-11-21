@@ -63,8 +63,11 @@ instructions="$(containerfile_instructions "$containerfile" | awk -v stages=" $(
 # from the bytes they sign, add two COPYs (158).
 # Declaring TILO_RUST_LTO in the rootfs piece, which tells the initramfs build whether the
 # greeter's size budget is enforced or reported, adds one ARG (159).
-[ "$instructions" -le 159 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 159)" >&2
+# Removing the package payloads no Tilo path loads at the end of the system layer, the
+# last that changes packages, instead of in the rootfs's cleanup that every change to the
+# binaries runs again, adds one RUN (160).
+[ "$instructions" -le 160 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 160)" >&2
   exit 1
 }
 

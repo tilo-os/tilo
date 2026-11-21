@@ -68,9 +68,10 @@ extension = true
 # previous layer's target), unless it is made over nothing (`scratch`). `given`
 # are stages given as images of other actions: `<image>:<target>` of an image
 # above, `<layer>:<stage>` for the image of every layer up to that one (or a stage
-# it saves beside its layers, `also`), `compiled`, the compiled tree, and
-# `compiled-apps`, what of it the apps are packed from. An image action takes
-# `given` too.
+# it saves beside its layers, `also`), `compiled`, the compiled tree,
+# `compiled-apps`, what of it the apps are packed from, and `component-files`, the
+# compiled tree installed as its component-files stage would (after `compiled`). An
+# image action takes `given` too.
 # `release` layers differ in a release image (the registry owner's key, thin LTO), which
 # builds them, and every layer above one, again (os/image/build-layer.sh); `board` layers
 # differ in a board's (its firmware, device tree and update origin), and so does every layer
@@ -105,10 +106,13 @@ board = true
 # The Tilo binaries, the state derived from every layer below (initramfs, font and
 # linker caches, the final checks) and the seal: one action, since the derived state
 # and the seal are made again whenever the binaries change, and one action loads and
-# writes the image once instead of three times.
+# writes the image once instead of three times. `component-files`, the compiled tree
+# arranged by os/components.toml, is installed by the action itself into a directory
+# it gives the build (os/image/build-layer.sh): built as a stage, every binary was
+# written into the stage, committed, and copied into the image again.
 name = "image"
 pieces = ["binaries", "rootfs", "boot"]
 target = "final"
-given = ["tools:image-tool-stages", "tools:uki-tools", "compiled", "payload:native-builder-payload", "payload:runtime-image-payload"]
+given = ["tools:image-tool-stages", "tools:uki-tools", "compiled", "component-files", "payload:native-builder-payload", "payload:runtime-image-payload"]
 release = true
 board = true
