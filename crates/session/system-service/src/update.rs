@@ -23,8 +23,9 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use serde::{Deserialize, Serialize};
-pub use tilo_deployment_status::{Deployment, Deployments};
+use serde::Deserialize;
+use tilo_deployment_status::Deployments;
+pub use tilo_system_resources::update::*;
 
 /// What the live update applied of the staged image, and what waits.
 pub const LIVE_STATE: &str = os_actions::LIVE_UPDATE_STATE;
@@ -46,15 +47,6 @@ pub const UPDATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub const SESSION_UNIT: &str = "tilo-live-update-session.service";
 /// How long finishing a live update may take, the desktop restart included.
 pub const SESSION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-
-/// The `system-update` action that fetches and applies the newest system now.
-pub const UPDATE_NOW: &str = "update-now";
-/// The `system-update` action that restarts the desktop onto the new
-/// interface to finish the update.
-pub const RESTART_DESKTOP: &str = "restart-desktop";
-/// The `system-update` action that restarts the machine into the staged
-/// update.
-pub const RESTART_TO_UPDATE: &str = "restart-to-update";
 
 /// The shortest time between two requests to restart the machine and two
 /// desktop restarts alike: the updates of those days apply together, and
@@ -145,105 +137,48 @@ pub struct LiveState {
     pub detail: String,
 }
 
-/// A deployment this machine went back from: it did not start within its
-/// tries, so the boot loader started the previous one and the machine settled
-/// on it. What the boot-time settling recorded of it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct Fallback {
-    /// The report's directory name, `<when>-<composefs>`, which names the
-    /// fallback once per machine: the session tells each of them once.
-    pub id: String,
-    /// The image that did not start.
-    pub image: Option<String>,
-    /// Its version, where the image has one.
-    pub version: Option<String>,
-    /// How many times it was tried.
-    pub tries: Option<usize>,
-    /// The version the machine runs instead.
-    pub running: Option<String>,
-    /// The report a person reads of what the failed tries left behind.
-    pub summary: String,
-}
-
-/// The `system-update` resource.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each is a reading of its own that a person's update page shows beside the others, not a state one of them implies"
-)]
-pub struct Update {
-    /// The system this machine started; `None` where its admins alone may see it.
-    pub booted: Option<Deployment>,
-    /// The update staged for the next start, where one is. Where the deployments cannot be seen,
-    /// only that one is staged, or the digest the live update names.
-    pub staged: Option<Deployment>,
-    /// What this machine can go back to; `None` where nothing is, or its admins alone may see it.
-    pub rollback: Option<Deployment>,
-    /// The staged update applied live in full: it runs now, and nothing of it waits.
-    pub applied: bool,
-    /// Part of it waits for the desktop to restart.
-    pub desktop_pending: bool,
-    /// The machine must restart to finish it.
-    pub restart_needed: bool,
-    /// Applying the staged update live did not finish and was taken back, so the machine runs
-    /// what it ran before and a restart finishes the update: why, in the live update's words.
-    pub failed: Option<String>,
-    /// An update asked for here is being fetched and applied.
-    pub updating: bool,
-    pub pending: Vec<String>,
-    pub problem: Option<String>,
-    /// Firmware updates `fwupd` offers; `None` where it is not installed.
-    pub firmware: Option<usize>,
-    /// The deployments this machine went back from, oldest first.
-    pub fell_back: Vec<Fallback>,
-}
-
-impl Update {
-    /// The reading of the deployments `deployments` lists and the live update's state `live`.
-    /// Where the deployments cannot be seen, `staged` says whether an update is staged at all.
-    ///
-    /// The state speaks of one image, by its digest: a state an earlier update left says nothing
-    /// of another staged since, which then waits for the live update or a restart.
-    #[must_use]
-    pub fn of(deployments: Option<&Deployments>, staged: bool, live: Option<&LiveState>) -> Self {
-        let live = live.filter(|state| !state.image.is_empty());
-        let staged = match deployments {
-            Some(deployments) => deployments.staged.clone(),
-            None => live
-                .map(|state| Deployment {
-                    digest: Some(state.image.clone()),
-                    ..Deployment::default()
-                })
-                .or_else(|| staged.then(Deployment::default)),
-        };
-        let live = live.filter(|state| {
-            deployments.is_none()
-                || staged.as_ref().and_then(|staged| staged.digest.as_deref())
-                    == Some(state.image.as_str())
-        });
-        let failed = live
-            .filter(|state| state.failed)
-            .map(|state| state.detail.clone());
-        let desktop_pending = live.is_some_and(|state| state.desktop_pending) && failed.is_none();
-        let restart_needed = match live {
-            Some(state) => state.reboot_required || state.failed,
-            None => staged.is_some(),
-        };
-        Self {
-            booted: deployments.and_then(|deployments| deployments.booted.clone()),
-            rollback: deployments.and_then(|deployments| deployments.rollback.clone()),
-            applied: live.is_some_and(|state| state.applied.is_some())
-                && failed.is_none()
-                && !desktop_pending
-                && !restart_needed,
-            desktop_pending,
-            restart_needed,
-            failed,
-            staged,
-            ..Self::default()
-        }
+/// The reading of the deployments `deployments` lists and the live update's state `live`.
+/// Where the deployments cannot be seen, `staged` says whether an update is staged at all.
+///
+/// The state speaks of one image, by its digest: a state an earlier update left says nothing
+/// of another staged since, which then waits for the live update or a restart.
+#[must_use]
+pub fn reading(deployments: Option<&Deployments>, staged: bool, live: Option<&LiveState>) -> Update {
+    let live = live.filter(|state| !state.image.is_empty());
+    let staged = match deployments {
+        Some(deployments) => deployments.staged.clone(),
+        None => live
+            .map(|state| Deployment {
+                digest: Some(state.image.clone()),
+                ..Deployment::default()
+            })
+            .or_else(|| staged.then(Deployment::default)),
+    };
+    let live = live.filter(|state| {
+        deployments.is_none()
+            || staged.as_ref().and_then(|staged| staged.digest.as_deref())
+                == Some(state.image.as_str())
+    });
+    let failed = live
+        .filter(|state| state.failed)
+        .map(|state| state.detail.clone());
+    let desktop_pending = live.is_some_and(|state| state.desktop_pending) && failed.is_none();
+    let restart_needed = match live {
+        Some(state) => state.reboot_required || state.failed,
+        None => staged.is_some(),
+    };
+    Update {
+        booted: deployments.and_then(|deployments| deployments.booted.clone()),
+        rollback: deployments.and_then(|deployments| deployments.rollback.clone()),
+        applied: live.is_some_and(|state| state.applied.is_some())
+            && failed.is_none()
+            && !desktop_pending
+            && !restart_needed,
+        desktop_pending,
+        restart_needed,
+        failed,
+        staged,
+        ..Update::default()
     }
 }
 
@@ -398,7 +333,7 @@ mod tests {
 
         phase nothing_staged_is_nothing_to_do;
         {
-            let update = Update::of(Some(&on_disk(None)), false, None);
+            let update = reading(Some(&on_disk(None)), false, None);
             assert_eq!(update.booted, Some(deployment("sha256:old")));
             assert_eq!(update.rollback, Some(deployment("sha256:older")), "what it can go back to");
             assert_eq!(update.staged, None);
@@ -412,7 +347,7 @@ mod tests {
                 r#"{"schema":1,"image":"sha256:new","applied":"system","desktop_pending":true,
                     "reboot_required":false,"failed":false,"detail":""}"#,
             );
-            let update = Update::of(Some(&on_disk(Some("sha256:new"))), false, Some(&live));
+            let update = reading(Some(&on_disk(Some("sha256:new"))), false, Some(&live));
             assert_eq!(update.staged, Some(deployment("sha256:new")));
             assert!(update.desktop_pending && !update.restart_needed && !update.applied);
         }
@@ -423,7 +358,7 @@ mod tests {
                 r#"{"schema":1,"image":"sha256:new","applied":"session","desktop_pending":false,
                     "reboot_required":false,"failed":false,"detail":""}"#,
             );
-            let update = Update::of(Some(&on_disk(Some("sha256:new"))), false, Some(&live));
+            let update = reading(Some(&on_disk(Some("sha256:new"))), false, Some(&live));
             assert!(update.applied, "nothing of it waits");
             assert!(!update.desktop_pending && !update.restart_needed);
         }
@@ -434,7 +369,7 @@ mod tests {
                 r#"{"schema":1,"image":"sha256:new","applied":"system","desktop_pending":true,
                     "reboot_required":true,"failed":false,"detail":""}"#,
             );
-            let update = Update::of(Some(&on_disk(Some("sha256:new"))), false, Some(&live));
+            let update = reading(Some(&on_disk(Some("sha256:new"))), false, Some(&live));
             assert!(update.restart_needed && !update.applied);
         }
 
@@ -445,7 +380,7 @@ mod tests {
                     "reboot_required":true,"failed":true,
                     "detail":"the desktop did not come back"}"#,
             );
-            let update = Update::of(Some(&on_disk(Some("sha256:new"))), false, Some(&live));
+            let update = reading(Some(&on_disk(Some("sha256:new"))), false, Some(&live));
             assert_eq!(update.failed.as_deref(), Some("the desktop did not come back"));
             assert!(update.restart_needed && !update.desktop_pending && !update.applied);
         }
@@ -456,10 +391,10 @@ mod tests {
                 r#"{"schema":1,"image":"sha256:new","applied":null,"failed":true,
                     "reboot_required":true,"detail":"x"}"#,
             );
-            let update = Update::of(Some(&on_disk(Some("sha256:newer"))), false, Some(&live));
+            let update = reading(Some(&on_disk(Some("sha256:newer"))), false, Some(&live));
             assert_eq!(update.failed, None, "the failure was of another image");
             assert!(update.restart_needed, "a staged image the live update has not taken waits");
-            let update = Update::of(Some(&on_disk(None)), false, Some(&live));
+            let update = reading(Some(&on_disk(None)), false, Some(&live));
             assert_eq!(update.failed, None, "nothing staged any more: nothing failed");
             assert!(!update.restart_needed);
         }
@@ -469,16 +404,16 @@ mod tests {
             let live = state(
                 r#"{"schema":1,"image":"sha256:new","applied":"system","desktop_pending":true}"#,
             );
-            let update = Update::of(None, false, Some(&live));
+            let update = reading(None, false, Some(&live));
             assert_eq!(update.booted, None);
             assert_eq!(
                 update.staged.and_then(|staged| staged.digest).as_deref(),
                 Some("sha256:new")
             );
             assert!(update.desktop_pending);
-            let update = Update::of(None, true, None);
+            let update = reading(None, true, None);
             assert!(update.staged.is_some() && update.restart_needed, "staged with no live update");
-            assert!(!Update::of(None, false, None).restart_needed);
+            assert!(!reading(None, false, None).restart_needed);
         }
     }
 

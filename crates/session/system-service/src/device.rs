@@ -62,11 +62,11 @@ impl System for OsSystem {
         let modes = os_actions::available_power_profiles()
             .unwrap_or_default()
             .into_iter()
-            .map(PowerMode::from)
+            .map(crate::model::power_mode)
             .collect();
         Power {
             modes,
-            mode: os_actions::get_power_profile().ok().map(PowerMode::from),
+            mode: os_actions::get_power_profile().ok().map(crate::model::power_mode),
             user_switching: os_actions::user_switching_supported(),
             ..Power::default()
         }
@@ -82,7 +82,7 @@ impl System for OsSystem {
                 .ok()
                 .map(|offered| offered.len()),
             fell_back: crate::update::fallbacks(),
-            ..Update::of(
+            ..crate::update::reading(
                 deployments.as_ref(),
                 staged,
                 crate::update::live_state().as_ref(),
@@ -103,13 +103,13 @@ impl System for OsSystem {
 
     fn keyboard_light(&self) -> KeyboardLight {
         os_actions::get_keyboard_backlight()
-            .map_or_else(|_| KeyboardLight::default(), KeyboardLight::of)
+            .map_or_else(|_| KeyboardLight::default(), crate::model::keyboard_light)
     }
 
     fn change(&self, change: &Change) -> Result<(), String> {
         use os_actions::{SessionAction, perform_session_action};
         match change {
-            Change::PowerMode(mode) => os_actions::set_power_profile((*mode).into()),
+            Change::PowerMode(mode) => os_actions::set_power_profile(crate::model::power_profile(*mode)),
             Change::Lock => perform_session_action(SessionAction::Lock),
             Change::SwitchUser => perform_session_action(SessionAction::SwitchUser),
             Change::Suspend => perform_session_action(SessionAction::Suspend),

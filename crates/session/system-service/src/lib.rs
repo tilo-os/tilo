@@ -25,7 +25,7 @@
 //! reading's problem until the next.
 
 pub mod device;
-pub mod effects;
+pub use tilo_system_resources::effects;
 /// What a resource of a kind this crate publishes from outside a document is
 /// called, in the person's language: the kind's entry in the catalogue beside
 /// this crate, read the way a declaration's words are.
@@ -56,10 +56,7 @@ use model::{KeyboardLight, Power, PowerMode, Time};
 use update::Update;
 
 /// The resources' ids.
-pub const POWER: &str = "power";
-pub const SYSTEM_UPDATE: &str = "system-update";
-pub const TIME_ZONE: &str = "time-zone";
-pub const KEYBOARD_BACKLIGHT: &str = "device:keyboard-backlight";
+pub use tilo_system_resources::{KEYBOARD_BACKLIGHT, POWER, SYSTEM_UPDATE, TIME_ZONE};
 
 /// How often a device whose zone follows it looks where it is again: often
 /// enough that a flight's arrival shows the local time within the hour.
@@ -606,7 +603,7 @@ impl Service for SystemService {
                 let action =
                     decode::<KeyboardLightAction>(&published, resource, action, arguments)?;
                 let id = action.id();
-                let Some(light) = self.readings.keyboard_light.light() else {
+                let Some(light) = model::backlight_of(&self.readings.keyboard_light) else {
                     return Err(ApiError::Unavailable {
                         code: "no_keyboard_light".into(),
                         reason: "This keyboard has no light".into(),

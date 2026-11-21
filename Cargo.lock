@@ -15799,7 +15799,7 @@ dependencies = [
  "tilo-process",
  "tilo-rt",
  "tilo-server-protocol",
- "tilo-system-service",
+ "tilo-system-resources",
  "tilo-test-env",
  "tilo-vello",
  "tilo-wallpapers",
@@ -19172,10 +19172,10 @@ dependencies = [
 name = "tilo-deployment-status"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
  "tempfile",
  "tilo-files",
+ "tilo-system-resources",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -22965,6 +22965,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-system-resources"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-system-service"
 version = "0.1.0"
 dependencies = [
@@ -22980,6 +22989,7 @@ dependencies = [
  "tilo-location",
  "tilo-resource",
  "tilo-service",
+ "tilo-system-resources",
  "tilo-test-env",
  "tracing",
  "workspace-hack",
@@ -29847,6 +29857,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-subject",
  "tilo-system-info",
+ "tilo-system-resources",
  "tilo-system-service",
  "tilo-system-stats",
  "tilo-test-env",

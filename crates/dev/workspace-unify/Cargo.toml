@@ -1387,6 +1387,7 @@ doc = false
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-subject" = { path = "../../../crates/platform/tilo-subject", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../../crates/platform/tilo-system-info", default-features = false, features = [] }
+"tilo-system-resources" = { path = "../../../crates/platform/tilo-system-resources", default-features = false, features = [] }
 "tilo-system-service" = { path = "../../../crates/session/system-service", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
 "tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }
@@ -4078,6 +4079,7 @@ doc = false
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-subject" = { path = "../../../crates/platform/tilo-subject", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../../crates/platform/tilo-system-info", default-features = false, features = [] }
+"tilo-system-resources" = { path = "../../../crates/platform/tilo-system-resources", default-features = false, features = [] }
 "tilo-system-service" = { path = "../../../crates/session/system-service", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
 "tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document", "iroh-relay", "tokio"] }

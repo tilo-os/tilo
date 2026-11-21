@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+pub use tilo_system_resources::update::Deployment;
 
 /// Where the status service listens.
 pub const SOCKET: &str = "/run/tilo-deployment/status.sock";
@@ -142,34 +142,6 @@ pub fn read(socket: &Path) -> Result<Deployments, AskError> {
         return Err(AskError::Failed(answer));
     }
     Deployments::parse(&answer.text).map_err(AskError::Unreadable)
-}
-
-/// One deployment of the system: the image it was made from.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "kebab-case")]
-pub struct Deployment {
-    /// The image as the update service fetches it (`registry.tilo.so/tilo/tilo-vm:x86_64-ci`).
-    pub image: Option<String>,
-    /// The image's digest: what names it to the live update.
-    pub digest: Option<String>,
-    /// The version the image carries, where it carries one.
-    pub version: Option<String>,
-    /// When the image was built, as RFC 3339.
-    pub built: Option<String>,
-}
-
-impl Deployment {
-    /// What a person calls it: its version, else its image.
-    #[must_use]
-    pub fn name(&self) -> Option<&str> {
-        self.version.as_deref().or(self.image.as_deref())
-    }
-
-    /// The day it was built (`2026-11-21`).
-    #[must_use]
-    pub fn built_on(&self) -> Option<&str> {
-        self.built.as_deref().and_then(|built| built.get(..10))
-    }
 }
 
 /// What is booted, staged for the next start and kept to go back to.

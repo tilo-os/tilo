@@ -91,16 +91,16 @@ fn schedule_from_label(label: &str) -> String {
     }
 }
 
-use tilo_system_service::effects::{PowerAction, UpdateAction};
+use tilo_system_resources::effects::{PowerAction, UpdateAction};
 /// The session's `system-update` resource: what is booted, what is staged and what finishing it
 /// needs, as the session's system service reads the machine. The pane shows this reading and
 /// acts through the resource's own actions; it reads nothing of the update itself.
-pub use tilo_system_service::update::{Deployment, Update};
+pub use tilo_system_resources::update::{Deployment, Update};
 
 /// The resource the pane follows, and its actions.
-const SYSTEM_UPDATE: &str = tilo_system_service::SYSTEM_UPDATE;
+const SYSTEM_UPDATE: &str = tilo_system_resources::SYSTEM_UPDATE;
 /// The power resource, whose restart a firmware update that waits for one takes.
-const POWER: &str = tilo_system_service::POWER;
+const POWER: &str = tilo_system_resources::POWER;
 
 /// The `system-update` resource's readings as they arrive; the window is woken at each.
 pub trait UpdateFeed: Send + Sync {
@@ -282,9 +282,9 @@ impl UpdateState {
         let running = |action: &str| {
             asked.contains(&action) || update.pending.iter().any(|pending| pending == action)
         };
-        if checking(update) || running(tilo_system_service::update::UPDATE_NOW) {
+        if checking(update) || running(tilo_system_resources::update::UPDATE_NOW) {
             Self::Checking
-        } else if running(tilo_system_service::update::RESTART_DESKTOP) {
+        } else if running(tilo_system_resources::update::RESTART_DESKTOP) {
             Self::Finishing
         } else if update.failed.is_some() {
             Self::Failed
@@ -306,14 +306,14 @@ fn checking(update: &Update) -> bool {
         || update
             .pending
             .iter()
-            .any(|pending| pending == tilo_system_service::update::UPDATE_NOW)
+            .any(|pending| pending == tilo_system_resources::update::UPDATE_NOW)
 }
 
 /// The pane's effect that asks for the session's `action`.
 fn operation_of(action: &str) -> &'static str {
     match action {
-        tilo_system_service::update::UPDATE_NOW => UpdatesEffect::CHECK_FOR_UPDATES.id,
-        tilo_system_service::update::RESTART_DESKTOP => UpdatesEffect::RESTART_DESKTOP.id,
+        tilo_system_resources::update::UPDATE_NOW => UpdatesEffect::CHECK_FOR_UPDATES.id,
+        tilo_system_resources::update::RESTART_DESKTOP => UpdatesEffect::RESTART_DESKTOP.id,
         _ => UpdatesEffect::RESTART_TO_UPDATE.id,
     }
 }
@@ -322,8 +322,8 @@ fn operation_of(action: &str) -> &'static str {
 /// own words go to the log: they name units and tools, not what to do.
 fn did_not_finish(action: &str) -> String {
     t(match action {
-        tilo_system_service::update::UPDATE_NOW => "upd-notice-check",
-        tilo_system_service::update::RESTART_DESKTOP => "upd-notice-desktop-failed",
+        tilo_system_resources::update::UPDATE_NOW => "upd-notice-check",
+        tilo_system_resources::update::RESTART_DESKTOP => "upd-notice-desktop-failed",
         _ => "upd-notice-restart",
     })
 }

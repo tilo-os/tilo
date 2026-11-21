@@ -617,8 +617,7 @@ impl Shared {
             OsdKind::KeyboardBacklight => self
                 .published::<tilo_system_service::model::KeyboardLight>(KEYBOARD_BACKLIGHT)
                 .map_or((0.0, true, None), |light| {
-                    let level = light
-                        .light()
+                    let level = tilo_system_service::model::backlight_of(&light)
                         .map_or(0.0, os_actions::KeyboardBacklight::fraction);
                     let device = Device::new(t("osd-keyboard-name"), DeviceGlyph::Keyboard);
                     (level, level > 0.0, Some(device))
