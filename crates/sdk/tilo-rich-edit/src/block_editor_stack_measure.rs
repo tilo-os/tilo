@@ -5,10 +5,14 @@
 use taffy::Size;
 
 use super::BlockEditor;
-use crate::rich_text_line::ASSUMED_LINE_WIDTH;
 use ui::text_render::TextRenderer;
 
 impl BlockEditor {
+    /// The width a line assumes where no definite one is given: the theme's reading measure.
+    fn assumed_line_width(&self) -> f32 {
+        self.layout_theme.tokens.metrics.reading_measure
+    }
+
     /// Measure the block stack. A query without a definite width asks for an
     /// intrinsic size: answer it from the last stack rather than reshaping
     /// every paragraph at a width it will never be painted at.
@@ -43,14 +47,14 @@ impl BlockEditor {
             (None, Some(_)) if self.stack.tops.len() == self.blocks.len() => {
                 return Size {
                     width: if self.stack.measured {
-                        ASSUMED_LINE_WIDTH
+                        self.assumed_line_width()
                     } else {
                         0.0
                     },
                     height: self.stack.total,
                 };
             }
-            (None, _) => ASSUMED_LINE_WIDTH,
+            (None, _) => self.assumed_line_width(),
         };
         self.stack_blocks(width, Some(text_renderer));
         Size {
@@ -83,7 +87,7 @@ impl BlockEditor {
     /// query that reaches no layout of its own leaves the recorded stack be.
     fn probe_stack(&mut self, width: f32, text_renderer: &mut TextRenderer) -> Size<f32> {
         let recorded = std::mem::take(&mut self.stack);
-        self.stack_blocks(width.max(ASSUMED_LINE_WIDTH), Some(text_renderer));
+        self.stack_blocks(width.max(self.assumed_line_width()), Some(text_renderer));
         let size = Size {
             width: if self.stack.measured { width } else { 0.0 },
             height: self.stack.total,
