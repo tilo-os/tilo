@@ -92,6 +92,15 @@ impl VirtualRows {
     }
 
     pub(super) fn report_open(&mut self) {
+        // The rows are asked for the row the person opened or closed with what they did, in the
+        // range they were last asked for: the host hears of both at once and answers with the
+        // row's document, rather than with the document after the frame that follows the press.
+        if let Some(range) = self.requested_range.clone()
+            && self.requested_open != self.open
+        {
+            self.model.request_range(range, self.open.as_ref());
+            self.requested_open = self.open.clone();
+        }
         match self.open.clone() {
             Some(key) => {
                 if let Some(callback) = &mut self.on_opened {
