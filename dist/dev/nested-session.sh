@@ -820,6 +820,7 @@ chmod 700 "$files_runtime" "$runtime/tilo/files-storage"
 setsid "$bin/fs" serve --mount-point "$files_state/mount" --cache-dir "$files_state" \
     --storage-sock "$runtime/tilo/files-storage/storage.sock" \
     --blob-sock "$files_runtime/fs-blobs.sock" \
+    --session-link "$files_runtime/fs-session-link" \
     --backend fuse > "$logs/files-workspace.log" 2>&1 &
 files_pid=$!
 children+=("$files_pid")
