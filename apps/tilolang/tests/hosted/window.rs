@@ -46,7 +46,7 @@ fn fire(session: &mut Session, key: &str, event: &str, value: Option<Value>) {
         .hosted()
         .view()
         .expect("the window is connected")
-        .act(UiEvent::Fire(key.to_owned(), event.to_owned(), value));
+        .act(UiEvent::Fire(key.to_owned(), event.to_owned(), value, None));
     session.settle();
 }
 
