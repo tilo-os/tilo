@@ -55,13 +55,21 @@ fn make_issue(device: &Device, title: &str) {
     );
 }
 
-/// What the site holds of the workspace: its records, and who its governance has in it, the
-/// devices aside: the laptop's are the same before and after, and no other device was let in.
+/// What the site holds of the workspace: its records, and who its governance names in it, the
+/// laptop's devices included: they are the same before and after, and no other device was let in.
+/// The generation the workspace stands at is left out: every record its people write is a commit
+/// that moves it, the issue this test writes next included, and it names nobody.
 fn held_at(site: &Site) -> (Vec<(String, String)>, String) {
-    let summary = site
-        .runtime_summary()
-        .map_or_else(|error| error, |summary| format!("{summary:?}"));
-    (site.records(), summary)
+    let named = site.runtime_summary().map_or_else(
+        |error| error,
+        |summary| {
+            format!(
+                "{} is governed by {:?}, whose devices are {:?}",
+                summary.name, summary.members, summary.devices
+            )
+        },
+    );
+    (site.records(), named)
 }
 
 #[test]
