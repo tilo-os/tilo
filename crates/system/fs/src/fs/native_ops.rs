@@ -181,6 +181,7 @@ impl QuickFS {
             attrs,
             fence,
         )
+        .map_err(|error| to_errno(&error))
     }
 
     /// Applies a locally captured file version whose content is the file at `snapshot` (immutable while
@@ -206,8 +207,11 @@ impl QuickFS {
             attrs,
             fence,
         )
+        .map_err(|error| to_errno(&error))
     }
 
+    /// Writes one version of the file at `rel`, keeping why it failed: a store that cannot take the
+    /// content says why rather than as a bare `EIO`.
     fn apply_local_version(
         &self,
         rel: &Path,
@@ -215,10 +219,11 @@ impl QuickFS {
         mtime_ms: u64,
         attrs: PosixAttrs,
         fence: Option<VersionFence>,
-    ) -> Result<(), i32> {
-        let components = path_components(rel)?;
+    ) -> std::io::Result<()> {
+        let code = std::io::Error::from_raw_os_error;
+        let components = path_components(rel).map_err(code)?;
         let Some((name, parents)) = components.split_last() else {
-            return Err(EISDIR);
+            return Err(code(EISDIR));
         };
         let workspace = self.hydrator.native_workspace(rel);
         let existing = self.ino_at(&components);
@@ -230,24 +235,24 @@ impl QuickFS {
             } else {
                 fs_protocol::file_action::verbs::NEW_FILE
             },
-        )?;
-        let parent = self.ensure_dir_components(parents)?;
+        )
+        .map_err(code)?;
+        let parent = self.ensure_dir_components(parents).map_err(code)?;
         let ino = match self.lookup_kind(parent, name) {
             Some((ino, FileType::RegularFile)) => ino,
             Some((_, FileType::Directory)) => {
-                self.remove_subtree(parent, name)?;
+                self.remove_subtree(parent, name).map_err(code)?;
                 return self
                     .create_local_file(parent, name, source, mtime_ms, attrs, fence, workspace);
             }
-            Some(_) => return Err(libc::EINVAL),
+            Some(_) => return Err(code(libc::EINVAL)),
             None => {
                 return self
                     .create_local_file(parent, name, source, mtime_ms, attrs, fence, workspace);
             }
         };
-        self.set_posix(ino, attrs, false)?;
+        self.set_posix(ino, attrs, false).map_err(code)?;
         self.commit_version_at(ino, source, mtime_ms, fence, workspace)
-            .map_err(|e| to_errno(&e))
     }
 
     /// A new file is published with its content as its first version and its attributes in the same
@@ -261,22 +266,23 @@ impl QuickFS {
         attrs: PosixAttrs,
         fence: Option<VersionFence>,
         workspace: Option<collab_types::WorkspaceId>,
-    ) -> Result<(), i32> {
+    ) -> std::io::Result<()> {
+        let code = std::io::Error::from_raw_os_error;
         if fence.is_some() {
-            let ino = self.create_empty_file_stamped(parent, name, mtime_ms)?;
+            let ino = self
+                .create_empty_file_stamped(parent, name, mtime_ms)
+                .map_err(code)?;
             self.publish();
-            self.set_posix(ino, attrs, false)?;
-            return self
-                .commit_version_at(ino, source, mtime_ms, fence, workspace)
-                .map_err(|e| to_errno(&e));
+            self.set_posix(ino, attrs, false).map_err(code)?;
+            return self.commit_version_at(ino, source, mtime_ms, fence, workspace);
         }
-        let (stored, _) = self
-            .store_version_blocking(source, None, workspace)
-            .map_err(|e| to_errno(&e))?;
+        let (stored, _) = self.store_version_blocking(source, None, workspace)?;
         let (hash, byte_len) = stored.map_or((None, 0), |(hash, len)| (Some(hash), len));
-        let ino = self.create_file_stamped(parent, name, mtime_ms, hash, byte_len)?;
+        let ino = self
+            .create_file_stamped(parent, name, mtime_ms, hash, byte_len)
+            .map_err(code)?;
         self.publish();
-        self.set_posix(ino, attrs, false)
+        self.set_posix(ino, attrs, false).map_err(code)
     }
 
     /// Applies a locally captured removal. Removing a path that is already gone succeeds: the change it
@@ -481,6 +487,16 @@ impl QuickFS {
         value
     }
 
+    /// Makes every new version of the file at `rel` fail with `errno`, or none when `None`.
+    #[cfg(test)]
+    pub(crate) fn fail_versions_at(&self, rel: &Path, errno: Option<i32>) {
+        let ino = path_components(rel)
+            .ok()
+            .and_then(|components| self.ino_at(&components))
+            .expect("the file is in the tree");
+        *self.commit_fault.lock().unwrap() = errno.map(|errno| (ino, errno));
+    }
+
     pub fn record_clock_ms() -> u64 {
         now_ms()
     }
@@ -590,19 +606,20 @@ impl QuickFS {
     }
 
     /// Writes the file at `snapshot` (immutable while this runs) as the whole file at `rel`, as a create
-    /// or an open, write and close of the mount would ([`Self::apply_local_snapshot`]).
-    pub fn write_path(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {
-        let components = path_components(rel)?;
-        let Some((_, parents)) = components.split_last() else {
-            return Err(EISDIR);
-        };
-        self.ensure_dir_components(parents)?;
-        self.write_snapshot(rel, snapshot, mtime_ms)
-    }
-
-    fn write_snapshot(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {
-        let attrs = PosixAttrs::default_for(false);
-        self.apply_local_snapshot(rel, snapshot, None, mtime_ms, attrs, None)
+    /// or an open, write and close of the mount would ([`Self::apply_local_snapshot`]). A failure
+    /// says why: the store's own reason, not only an errno.
+    pub fn write_path(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> std::io::Result<()> {
+        self.apply_local_version(
+            rel,
+            super::VersionSource::File {
+                path: snapshot,
+                manifest: None,
+                adopt: false,
+            },
+            mtime_ms,
+            PosixAttrs::default_for(false),
+            None,
+        )
     }
 
     pub fn write_lease_at(&self, rel: &Path) -> Option<WriteLease> {

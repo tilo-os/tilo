@@ -115,7 +115,8 @@ impl WorkspaceFiles {
             Projection::Mount => {
                 // Changes made in the folder while nothing was mounted over
                 // it enter the workspace before the mount hides them.
-                files.sync_folder(folder, None)?.reconcile()?;
+                let mut sync = files.sync_folder(folder, None)?;
+                while sync.reconcile()?.more() {}
                 match mount::Mount::start(files.quick_fs(), folder, Arc::clone(&files.namespace)) {
                     Ok(mount) => View::Mount { _mount: mount },
                     Err(error) => {

@@ -3085,7 +3085,7 @@ impl QuickFS {
         previous: Option<Hash>,
         workspace: Option<collab_types::WorkspaceId>,
     ) -> io::Result<(Option<(Hash, u64)>, bool)> {
-        let wrap = |error: anyhow::Error| io::Error::other(error.to_string());
+        let wrap = |error: anyhow::Error| io::Error::other(format!("{error:#}"));
         match source {
             VersionSource::Bytes(data) => {
                 let len = data.len() as u64;

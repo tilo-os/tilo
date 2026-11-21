@@ -21,7 +21,8 @@ pub struct Watch {
 impl SyncFolder {
     /// Runs a pass now, then on every change in the folder and at least
     /// every `interval`, on a thread of its own, until the [`Watch`] is
-    /// dropped.
+    /// dropped. A pass that left work within its budget is followed by the
+    /// next one straight away.
     ///
     /// # Errors
     ///
@@ -39,8 +40,13 @@ impl SyncFolder {
             .name("tilo-sync-folder".into())
             .spawn(move || {
                 loop {
-                    if let Err(error) = self.reconcile() {
-                        tracing::warn!(%error, folder = %self.root.display(), "sync pass failed");
+                    match self.reconcile() {
+                        // A pass that did its share and left more goes on at once.
+                        Ok(pass) if pass.more() => continue,
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, folder = %self.root.display(), "sync pass failed");
+                        }
                     }
                     let next = changes
                         .recv_timeout(interval)

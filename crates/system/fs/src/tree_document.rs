@@ -750,7 +750,7 @@ impl TreePublisher {
                 .handle
                 .send(&bytes)
                 .await
-                .context("the session admits this device's change")?;
+                .context("the session did not take this device's change")?;
         }
         Ok(())
     }

@@ -74,6 +74,7 @@ fn pass(imported: usize, exported: usize, removed: usize, renamed: usize) -> Pas
         exported,
         removed,
         renamed,
+        ..Pass::default()
     }
 }
 
@@ -270,4 +271,144 @@ impl Fixture {
         std::fs::create_dir_all(self.folder_path()).unwrap();
         self.local(path)
     }
+}
+
+/// Bytes no two seeds share, with no stretch of them repeating.
+fn bytes(seed: u32, length: usize) -> Vec<u8> {
+    let mut state = u64::from(seed).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    (0..length)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cloned_repository_lands_whole_over_bounded_passes() {
+    use std::io::Write as _;
+
+    let fx = Fixture::new().await;
+    let mut folder = fx.folder();
+    let mut passes = Vec::new();
+    let pack_dir = fx.local("repo/.git/objects/pack");
+    std::fs::create_dir_all(&pack_dir).unwrap();
+    std::fs::write(fx.local("repo/.git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+    // git grows the pack in a temporary file, which passes see half written,
+    // and renames it into place once whole.
+    let mut pack = Vec::new();
+    {
+        let mut file = std::fs::File::create(pack_dir.join("tmp_pack_10wUgj")).unwrap();
+        for step in 0..6 {
+            let part = bytes(10 + step, 1024 * 1024);
+            file.write_all(&part).unwrap();
+            file.flush().unwrap();
+            pack.extend_from_slice(&part);
+            passes.push(folder.reconcile().unwrap());
+        }
+    }
+    std::fs::rename(
+        pack_dir.join("tmp_pack_10wUgj"),
+        pack_dir.join("pack-37ad.pack"),
+    )
+    .unwrap();
+    let index = bytes(20, 90_000);
+    std::fs::write(pack_dir.join("tmp_idx_k2"), &index).unwrap();
+    std::fs::rename(pack_dir.join("tmp_idx_k2"), pack_dir.join("pack-37ad.idx")).unwrap();
+    // Then the worktree lands at once: more files than one pass carries.
+    let files = super::PASS_PATHS * 2 + 300;
+    let mut worktree = Vec::new();
+    for file in 0..files {
+        let path = format!("repo/crates/c{}/src/m{file}.rs", file % 40);
+        let content = bytes(1000 + u32::try_from(file).unwrap(), 200 + file % 900);
+        std::fs::create_dir_all(fx.local(&path).parent().unwrap()).unwrap();
+        std::fs::write(fx.local(&path), &content).unwrap();
+        worktree.push((path, content));
+    }
+    let staged = bytes(30, 40_000);
+    std::fs::write(fx.local("repo/.git/index.lock"), &staged).unwrap();
+    std::fs::rename(
+        fx.local("repo/.git/index.lock"),
+        fx.local("repo/.git/index"),
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    loop {
+        let pass = folder.reconcile().unwrap();
+        passes.push(pass);
+        if pass.deferred == 0 {
+            break;
+        }
+        assert!(pass.more(), "a pass that left work made progress: {pass:?}");
+        assert!(started.elapsed() < Duration::from_secs(120), "{passes:?}");
+    }
+    for pass in &passes {
+        assert_eq!(pass.failed, 0, "{passes:?}");
+        assert!(
+            pass.imported + pass.exported <= super::PASS_PATHS,
+            "{passes:?}"
+        );
+    }
+    assert!(
+        passes.iter().filter(|pass| pass.deferred > 0).count() >= 2,
+        "the worktree took several passes: {passes:?}"
+    );
+    assert_eq!(folder.unsynced().count(), 0);
+    assert_eq!(
+        fx.remote("repo/.git/objects/pack/pack-37ad.pack").unwrap(),
+        pack
+    );
+    assert_eq!(
+        fx.remote("repo/.git/objects/pack/pack-37ad.idx").unwrap(),
+        index
+    );
+    assert_eq!(fx.remote("repo/.git/index").unwrap(), staged);
+    assert!(
+        fx.remote("repo/.git/objects/pack/tmp_pack_10wUgj")
+            .is_none()
+    );
+    assert!(fx.remote("repo/.git/index.lock").is_none());
+    for (path, content) in &worktree {
+        assert_eq!(fx.remote(path).as_ref(), Some(content), "{path}");
+    }
+    assert_eq!(folder.reconcile().unwrap(), Pass::default());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_path_that_keeps_failing_waits_and_holds_nothing_else_back() {
+    let fx = Fixture::new().await;
+    let mut folder = fx.folder();
+    std::fs::write(fx.local("stuck.txt"), b"first").unwrap();
+    assert_eq!(folder.reconcile().unwrap(), pass(1, 0, 0, 0));
+    fx.fs
+        .fail_versions_at(Path::new("stuck.txt"), Some(libc::EIO));
+
+    // Its new version fails; the file beside it is carried across.
+    std::fs::write(fx.local("stuck.txt"), b"second").unwrap();
+    std::fs::write(fx.local("other.txt"), b"other").unwrap();
+    let failed = folder.reconcile().unwrap();
+    assert_eq!((failed.imported, failed.failed), (1, 1), "{failed:?}");
+    assert_eq!(fx.remote("other.txt").unwrap(), b"other");
+    let unsynced: Vec<_> = folder.unsynced().collect();
+    assert_eq!(unsynced.len(), 1, "{unsynced:?}");
+    assert_eq!(unsynced[0].0, "stuck.txt");
+
+    // The passes right after it leave it waiting, and carry what else changed.
+    std::fs::write(fx.local("third.txt"), b"third").unwrap();
+    let waited = folder.reconcile().unwrap();
+    assert_eq!((waited.imported, waited.failed), (1, 0), "{waited:?}");
+    assert_eq!(folder.reconcile().unwrap(), Pass::default());
+    assert_eq!(fx.remote("stuck.txt").unwrap(), b"first");
+
+    // A change to it is worth a try at once.
+    std::fs::write(fx.local("stuck.txt"), b"third try").unwrap();
+    assert_eq!(folder.reconcile().unwrap().failed, 1);
+    fx.fs.fail_versions_at(Path::new("stuck.txt"), None);
+    std::fs::write(fx.local("stuck.txt"), b"the fourth one").unwrap();
+    assert_eq!(folder.reconcile().unwrap(), pass(1, 0, 0, 0));
+    assert_eq!(fx.remote("stuck.txt").unwrap(), b"the fourth one");
+    assert_eq!(folder.unsynced().count(), 0);
 }

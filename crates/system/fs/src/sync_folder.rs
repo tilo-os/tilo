@@ -25,6 +25,15 @@
 //! An empty workspace never empties the folder: when the workspace lost
 //! everything the baseline knew, the folder is imported again instead.
 //!
+//! A pass carries at most [`PASS_PATHS`] paths and [`PASS_BYTES`] bytes
+//! across, as one changeset ([`QuickFS::changeset`]): a repository cloned
+//! into the folder lands over several bounded passes, each made durable at
+//! once, rather than as one pass that holds everything else until all of it
+//! is in. A path that cannot be carried across waits before it is tried
+//! again, longer each time it fails ([`FIRST_RETRY`] doubling up to
+//! [`LAST_RETRY`]), unless it changes meanwhile; a pass that only fails stops
+//! early. What cannot sync is said once, with why ([`SyncFolder::unsynced`]).
+//!
 //! [`SyncFolder::watch`] runs passes on change: `FSEvents` on macOS, `inotify`
 //! on Linux, and a periodic pass that picks up workspace changes.
 
@@ -41,6 +50,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use baseline::{Baseline, Mark, Synced};
 use local::LocalEntry;
@@ -52,6 +62,18 @@ const BASELINE: &str = "sync-folder.json";
 /// Where an import stages the file it reads, in the state directory.
 const STAGING: &str = "sync-folder.staging";
 
+/// The most paths one pass carries across.
+pub const PASS_PATHS: usize = 512;
+/// The most bytes one pass carries across; a single larger file still goes, alone.
+pub const PASS_BYTES: u64 = 256 * 1024 * 1024;
+/// How long a path that failed waits before it is tried again, the first time.
+pub const FIRST_RETRY: Duration = Duration::from_secs(2);
+/// The longest a path that keeps failing waits between tries.
+pub const LAST_RETRY: Duration = Duration::from_secs(60);
+/// A pass whose attempts this many times in a row fail, none carried across,
+/// stops: whatever fails them fails the rest too.
+const FAILURES_IN_A_ROW: usize = 32;
+
 /// What one pass carried across.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pass {
@@ -60,6 +82,72 @@ pub struct Pass {
     /// Paths removed on one side because they were removed on the other.
     pub removed: usize,
     pub renamed: usize,
+    /// Paths that changed and are left to the next pass: past this pass's
+    /// budget, or after it stopped on failures.
+    pub deferred: usize,
+    /// Paths tried in this pass that could not be carried across.
+    pub failed: usize,
+}
+
+impl Pass {
+    /// Whether the next pass should run straight away: this one left work it
+    /// could have done and made progress.
+    #[must_use]
+    pub const fn more(&self) -> bool {
+        self.deferred > 0
+            && (self.imported > 0 || self.exported > 0 || self.removed > 0 || self.renamed > 0)
+    }
+}
+
+/// A path that could not be carried across, and when it is tried again.
+#[derive(Debug)]
+struct Failing {
+    error: String,
+    failures: u32,
+    retry_at: Instant,
+    /// Both sides as they were when it failed: a change on either side is
+    /// worth a try at once.
+    seen: (Option<local::Stamp>, Option<Mark>),
+}
+
+/// What a pass may still do.
+struct Budget {
+    paths: usize,
+    bytes: u64,
+    failures_in_a_row: usize,
+}
+
+impl Budget {
+    const fn new() -> Self {
+        Self {
+            paths: PASS_PATHS,
+            bytes: PASS_BYTES,
+            failures_in_a_row: 0,
+        }
+    }
+
+    /// Takes one path of `bytes`, unless the pass has done its share. The
+    /// first path of a pass always goes, however large.
+    fn take(&mut self, bytes: u64) -> bool {
+        let first = self.paths == PASS_PATHS;
+        if self.paths == 0
+            || (!first && bytes > self.bytes)
+            || self.failures_in_a_row >= FAILURES_IN_A_ROW
+        {
+            return false;
+        }
+        self.paths = self.paths.saturating_sub(1);
+        self.bytes = self.bytes.saturating_sub(bytes);
+        true
+    }
+
+    const fn outcome(&mut self, carried: bool) {
+        self.failures_in_a_row = if carried {
+            0
+        } else {
+            self.failures_in_a_row.saturating_add(1)
+        };
+    }
 }
 
 /// Persists what a pass changed in the workspace; runs before the baseline
@@ -135,6 +223,9 @@ pub struct SyncFolder {
     staging: PathBuf,
     baseline: Baseline,
     commit: Commit,
+    failing: HashMap<String, Failing>,
+    /// Paths that newly failed in this pass, said once at its end.
+    unreported: Vec<String>,
 }
 
 impl SyncFolder {
@@ -153,11 +244,20 @@ impl SyncFolder {
             staging: state.join(STAGING),
             baseline: Baseline::open(&state.join(BASELINE))?,
             commit,
+            failing: HashMap::new(),
+            unreported: Vec::new(),
         })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The paths that cannot be carried across now, with why.
+    pub fn unsynced(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.failing
+            .iter()
+            .map(|(path, failing)| (path.as_str(), failing.error.as_str()))
     }
 
     /// Carries every change since the last pass across, in both directions.
@@ -192,36 +292,11 @@ impl SyncFolder {
             .chain(self.baseline.entries.keys())
             .cloned()
             .collect();
-        let mut next = BTreeMap::new();
-        let mut removals = Vec::new();
-        for path in paths {
-            let (l, r) = (local.get(&path), remote.get(&path));
-            let base = self.baseline.entries.get(&path).copied();
-            let synced = match (decide(l, r, base.as_ref()), l, r) {
-                (Step::Keep, Some(l), Some(r)) => Some(Synced {
-                    dir: l.dir,
-                    record: r.record,
-                    remote: r.mark,
-                    local: l.stamp,
-                }),
-                (Step::Import, Some(l), _) => {
-                    let imported = self.import(&path, l);
-                    self.carried(&path, imported, &mut pass.imported).or(base)
-                }
-                (Step::Export, _, Some(r)) => {
-                    let exported = self.export(&path, l, r);
-                    self.carried(&path, exported, &mut pass.exported).or(base)
-                }
-                (Step::RemoveLocal | Step::RemoveRemote, ..) => {
-                    removals.extend(base.map(|base| (path.clone(), l.is_some(), base)));
-                    None
-                }
-                _ => None,
-            };
-            if let Some(synced) = synced {
-                next.insert(path, synced);
-            }
-        }
+        self.failing.retain(|path, _| paths.contains(path));
+        let fs = Arc::clone(&self.fs);
+        let (mut next, mut removals) =
+            fs.changeset(|| self.carry(&paths, &local, &remote, &mut pass));
+        self.report_failures();
         removals.sort_by_key(|(path, _, _)| std::cmp::Reverse(depth(path)));
         let removed_remotely: BTreeSet<&str> = removals
             .iter()
@@ -249,25 +324,189 @@ impl SyncFolder {
         Ok(pass)
     }
 
-    /// Counts a path carried across; a failure is logged and leaves the
-    /// path to the next pass.
+    /// Decides every path and carries across what changed, within one
+    /// pass's budget: what the baseline becomes, and the removals to make.
+    #[allow(
+        clippy::type_complexity,
+        reason = "the baseline a pass leaves and the removals it still makes"
+    )]
+    fn carry(
+        &mut self,
+        paths: &BTreeSet<String>,
+        local: &BTreeMap<String, LocalEntry>,
+        remote: &BTreeMap<String, RemoteEntry>,
+        pass: &mut Pass,
+    ) -> (BTreeMap<String, Synced>, Vec<(String, bool, Synced)>) {
+        let now = Instant::now();
+        let mut budget = Budget::new();
+        let mut next = BTreeMap::new();
+        let mut removals = Vec::new();
+        for path in paths {
+            let (l, r) = (local.get(path), remote.get(path));
+            let base = self.baseline.entries.get(path).copied();
+            let step = decide(l, r, base.as_ref());
+            let seen = (l.map(|l| l.stamp), r.map(|r| r.mark));
+            let carries = matches!(
+                (&step, l, r),
+                (Step::Import, Some(_), _) | (Step::Export, _, Some(_))
+            );
+            if carries && self.waits(path, seen, now) {
+                if let Some(base) = base {
+                    next.insert(path.clone(), base);
+                }
+                continue;
+            }
+            let bytes = match (&step, l, r) {
+                (Step::Import, Some(l), _) => l.stamp.size,
+                (
+                    Step::Export,
+                    _,
+                    Some(RemoteEntry {
+                        mark: Mark::Content { size, .. },
+                        ..
+                    }),
+                ) => *size,
+                _ => 0,
+            };
+            if carries && !budget.take(bytes) {
+                pass.deferred = pass.deferred.saturating_add(1);
+                if let Some(base) = base {
+                    next.insert(path.clone(), base);
+                }
+                continue;
+            }
+            let synced = match (step, l, r) {
+                (Step::Keep, Some(l), Some(r)) => Some(Synced {
+                    dir: l.dir,
+                    record: r.record,
+                    remote: r.mark,
+                    local: l.stamp,
+                }),
+                (Step::Import, Some(l), _) => {
+                    let imported = self.import(path, l);
+                    self.carried(path, imported, seen, &mut budget, pass, true)
+                        .or(base)
+                }
+                (Step::Export, _, Some(r)) => {
+                    let exported = self.export(path, l, r);
+                    self.carried(path, exported, seen, &mut budget, pass, false)
+                        .or(base)
+                }
+                (Step::RemoveLocal | Step::RemoveRemote, ..) => {
+                    removals.extend(base.map(|base| (path.clone(), l.is_some(), base)));
+                    None
+                }
+                _ => None,
+            };
+            if let Some(synced) = synced {
+                next.insert(path.clone(), synced);
+            }
+        }
+        (next, removals)
+    }
+
+    /// Whether `path`, which failed before, still waits to be tried again:
+    /// neither side changed since, and its wait is not over.
+    fn waits(&self, path: &str, seen: (Option<local::Stamp>, Option<Mark>), now: Instant) -> bool {
+        self.failing
+            .get(path)
+            .is_some_and(|failing| failing.seen == seen && now < failing.retry_at)
+    }
+
+    /// Counts a path carried across; a failure leaves the path to a later
+    /// pass, after a wait that grows each time it fails.
     fn carried(
-        &self,
+        &mut self,
         path: &str,
         outcome: io::Result<Option<Synced>>,
-        count: &mut usize,
+        seen: (Option<local::Stamp>, Option<Mark>),
+        budget: &mut Budget,
+        pass: &mut Pass,
+        import: bool,
     ) -> Option<Synced> {
         match outcome {
             Ok(Some(synced)) => {
+                budget.outcome(true);
+                let count = if import {
+                    &mut pass.imported
+                } else {
+                    &mut pass.exported
+                };
                 *count = count.saturating_add(1);
+                if let Some(failing) = self.failing.remove(path) {
+                    tracing::info!(
+                        path,
+                        folder = %self.root.display(),
+                        failures = failing.failures,
+                        "a path that could not sync syncs again"
+                    );
+                }
                 Some(synced)
             }
-            Ok(None) => None,
+            // It changed while being carried: the next pass takes it again.
+            Ok(None) => {
+                budget.outcome(true);
+                None
+            }
             Err(error) => {
-                tracing::warn!(%error, path, folder = %self.root.display(), "could not sync; retrying");
+                budget.outcome(false);
+                pass.failed = pass.failed.saturating_add(1);
+                let error = error.to_string();
+                let before = self.failing.get(path);
+                let known = before.is_some_and(|before| before.error == error);
+                let failures = before.map_or(1, |before| before.failures.saturating_add(1));
+                let wait = FIRST_RETRY
+                    .saturating_mul(1 << failures.saturating_sub(1).min(16))
+                    .min(LAST_RETRY);
+                if known {
+                    tracing::debug!(
+                        path,
+                        failures,
+                        retry_in_s = wait.as_secs(),
+                        "a path still cannot sync"
+                    );
+                } else {
+                    // New, or failing for another reason: said with the pass's
+                    // other new failures.
+                    self.unreported.push(path.to_owned());
+                }
+                self.failing.insert(
+                    path.to_owned(),
+                    Failing {
+                        error,
+                        failures,
+                        retry_at: Instant::now()
+                            .checked_add(wait)
+                            .unwrap_or_else(Instant::now),
+                        seen,
+                    },
+                );
                 None
             }
         }
+    }
+
+    /// Says what newly cannot sync, once: one line for each reason, naming
+    /// how many paths it holds back and one of them.
+    fn report_failures(&mut self) {
+        let mut reasons: BTreeMap<&str, (usize, &str)> = BTreeMap::new();
+        for path in &self.unreported {
+            if let Some(failing) = self.failing.get(path) {
+                let entry = reasons.entry(failing.error.as_str()).or_insert((0, path));
+                entry.0 = entry.0.saturating_add(1);
+            }
+        }
+        for (error, (paths, example)) in reasons {
+            tracing::warn!(
+                error,
+                paths,
+                example,
+                failing = self.failing.len(),
+                folder = %self.root.display(),
+                "paths cannot sync; each is tried again later, less often the longer it fails"
+            );
+        }
+        self.unreported.clear();
     }
 
     /// Every workspace path the folder can hold, with its current mark.
@@ -410,13 +649,9 @@ impl SyncFolder {
         let Some(stamp) = local::snapshot(&self.root.join(path), &self.staging)? else {
             return Ok(None);
         };
-        match self
-            .fs
-            .write_path(rel(path), &self.staging, stamp.mtime_ms())
-        {
-            Ok(()) => Ok(Some(stamp)),
-            Err(code) => Err(errno(code)),
-        }
+        self.fs
+            .write_path(rel(path), &self.staging, stamp.mtime_ms())?;
+        Ok(Some(stamp))
     }
 
     fn synced_with(
