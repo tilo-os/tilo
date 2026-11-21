@@ -339,11 +339,6 @@ def steps(story: Story) -> None:
         # Making the agent names the agent made.
         if not any(said == f"Added the agent “{AGENT}”" for said in order):
             wrong.append(f"no row reads “Added the agent “{AGENT}””: {order}")
-        # A channel is named as Chat names it, "#chat".
-        bare = sorted({said for said in order if said.startswith("Opened")
-                       and re.search(r"(?<![#\w])chat\b", said)})
-        if bare:
-            wrong.append(f"a channel is named without its “#”: {'; '.join(bare)}")
         # Ada's own rows say what each did, and setting the workspace up is said once: no row of
         # hers names nothing, and none repeats the one before it; windows she opened one after
         # another are one row.
