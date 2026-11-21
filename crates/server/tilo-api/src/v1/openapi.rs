@@ -40,7 +40,11 @@ pub fn document(apps: &[App]) -> Result<Value, String> {
             .map_err(|error| format!("{}'s surface: {error}", app.id))?;
         for resource in &surface.resources {
             for verb in &resource.verbs {
-                let name = schema_name(&resource.kind, &verb.id);
+                // The action as a caller names it: the name the API offers it by, which is a
+                // tilolang app's own (`new_note`) where a change of it claims the id the
+                // declaration keeps.
+                let action = verb.offered();
+                let name = schema_name(&resource.kind, action);
                 // A parameter published as a field of another travels nested
                 // under that one's name, as the call's arguments do.
                 let mut properties = Map::new();
@@ -86,7 +90,7 @@ pub fn document(apps: &[App]) -> Result<Value, String> {
                     schemas.insert(format!("{name}.Result"), returns.schema.clone());
                 }
                 actions.push(json!({
-                    "app": app.id, "resource": resource.kind, "action": verb.id,
+                    "app": app.id, "resource": resource.kind, "action": action,
                     "arguments": format!("#/components/schemas/{name}.Arguments"),
                 }));
             }

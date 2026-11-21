@@ -8,7 +8,9 @@
 //! is the SDK's `Resource`, so `document.read_form_fields()` runs `read-form-fields` there.
 //!
 //! Which apps' types are written: `-w` names a hosted workspace, whose own read of an app
-//! answers its surface; without it, the apps committed in this checkout (`apps/*`).
+//! answers its surface; without it, every app this build ships, native and tilolang alike, from
+//! the fleet's compiled-in manifests (`app_fleet`) — the same list the desktop's search and the
+//! Store read, so the SDK, those apps and a workspace's programs agree on one surface.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -18,7 +20,6 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result, anyhow};
 use clap::{Subcommand, ValueEnum};
 use collab_types::surface::SurfaceFile;
-use serde::Deserialize;
 use tilo_actions::ActionKind;
 use tilo_actions::field_type::{FieldType, NamedType, TypeField};
 use tilo_actions::surface::{Surface, VerbSurface};
@@ -28,7 +29,6 @@ pub const TYPESCRIPT_OUT: &str = "tilo-types";
 pub const OPENAPI_OUT: &str = ".";
 const OPENAPI_FILE: &str = "openapi.json";
 const SURFACE_FILE: &str = "surface.toml";
-const MANIFEST_FILE: &str = "tilo-app.toml";
 
 /// The names the SDK's own resource answers to, which an app's field or action of the same
 /// name cannot be reached by: `document.path` is the resource's path whatever field the app
@@ -112,7 +112,7 @@ pub fn generate(reach: crate::api::Reach<'_>, workspace: Option<&str>, cmd: SdkC
         eprintln!(
             "tilo: no app's surface is here: {}",
             workspace.map_or(
-                "run this in a Tilo checkout, whose apps commit theirs (apps/*/surface.toml)",
+                "this build ships no app whose surface it can write types from",
                 |_| "no app installed in that workspace has published its surface there",
             )
         );
@@ -149,53 +149,27 @@ pub fn generate(reach: crate::api::Reach<'_>, workspace: Option<&str>, cmd: SdkC
 fn surfaces(reach: crate::api::Reach<'_>, workspace: Option<&str>) -> Result<Vec<App>> {
     match workspace {
         Some(workspace) => crate::hosted::surfaces(reach, workspace),
-        None => committed(Path::new("apps")),
+        None => fleet(),
     }
 }
 
-fn committed(apps: &Path) -> Result<Vec<App>> {
-    let dirs = std::fs::read_dir(apps).with_context(|| {
-        format!(
-            "reading {}: name a workspace with -w to write a hosted workspace's types",
-            apps.display()
-        )
-    })?;
-    let mut dirs: Vec<PathBuf> = dirs
-        .filter_map(Result::ok)
-        .map(|dir| dir.path())
-        .filter(|dir| dir.join(SURFACE_FILE).is_file() && dir.join(MANIFEST_FILE).is_file())
-        .collect();
-    dirs.sort();
-    dirs.iter().map(|dir| app_of(dir)).collect()
-}
-
-#[derive(Deserialize)]
-struct Manifest {
-    package: Package,
-}
-
-#[derive(Deserialize)]
-struct Package {
-    id: String,
-    #[serde(default)]
-    name: String,
-}
-
-fn app_of(dir: &Path) -> Result<App> {
-    let read = |name: &str| {
-        let path = dir.join(name);
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))
-    };
-    let manifest: Manifest = toml::from_str(&read(MANIFEST_FILE)?)
-        .with_context(|| format!("{}", dir.join(MANIFEST_FILE).display()))?;
-    let file = read(SURFACE_FILE)?;
-    let (_, surface) = SurfaceFile::kept(file.as_bytes())
-        .map_err(|error| anyhow!("{}: {error}", dir.join(SURFACE_FILE).display()))?;
-    Ok(App {
-        id: manifest.package.id,
-        title: manifest.package.name,
-        surface,
-    })
+/// Every app this build ships, native or tilolang, from the fleet's compiled-in manifests
+/// (`app_fleet`): its id, its name and the surface its package publishes.
+fn fleet() -> Result<Vec<App>> {
+    app_fleet::apps()
+        .iter()
+        .map(|app| {
+            let file = app_fleet::surface(app.id)
+                .ok_or_else(|| anyhow!("{}: ships no surface to write its types from", app.id))?;
+            let (_, surface) = SurfaceFile::kept(file.as_bytes())
+                .map_err(|error| anyhow!("{}: {error}", app.id))?;
+            Ok(App {
+                id: app.id.to_owned(),
+                title: app.name.to_owned(),
+                surface,
+            })
+        })
+        .collect()
 }
 
 fn land(out: &Path, files: &[(PathBuf, String)], check: bool) -> Result<ExitCode> {
@@ -309,11 +283,20 @@ enum Ty {
 
 type Names = BTreeMap<String, String>;
 
+/// The kinds the language's host keeps, rather than an app: every tilolang app's surface declares
+/// them (`tl.host`, `tilolang.personal`), and a program reaches them through the host, not through
+/// the app's own records.
+const PLATFORM_KINDS: [&str; 2] = ["tl.host", "tilolang.personal"];
+
 fn types_of(app: &App) -> Result<Types> {
     let file =
         SurfaceFile::from_json(&app.surface).map_err(|error| anyhow!("{}: {error}", app.id))?;
-    let surfaces = &file.resources;
-    let kinds = class_names(surfaces);
+    let surfaces: Vec<&Surface> = file
+        .resources
+        .iter()
+        .filter(|surface| !PLATFORM_KINDS.contains(&surface.kind.as_str()))
+        .collect();
+    let kinds = class_names(&surfaces);
     let mut types = Types {
         declarations: Vec::new(),
         classes: Vec::new(),
@@ -506,7 +489,7 @@ impl Resolver<'_> {
 /// The type name of a resource kind: its last segment in upper camel case (`chat.workspace`
 /// is `Workspace`), or its last two when a record or enum of the app already has that name
 /// (`tilo.workspace.emoji` is `WorkspaceEmoji`).
-fn class_names(surfaces: &[Surface]) -> BTreeMap<String, String> {
+fn class_names(surfaces: &[&Surface]) -> BTreeMap<String, String> {
     let declared: Vec<&str> = surfaces
         .iter()
         .flat_map(|surface| surface.types.iter())
@@ -556,13 +539,19 @@ fn camel(name: &str) -> String {
 }
 
 fn platform_verb(verb: &VerbSurface) -> bool {
+    // The tilolang host spells its own verbs without the `$` a native app's derive gives them
+    // (`edit-text` against `$edit-text`): both spellings, never a word an app may give an action
+    // of its own (`create` is a Tasks verb).
     matches!(
-        verb.id.as_str(),
-        "$create" | "$edit-text" | "$edit-flag" | "$commit"
+        verb.offered(),
+        "$create" | "$edit-text" | "$edit-flag" | "$commit" | "edit-text" | "edit-flag"
     )
 }
 
 fn action_of(verb: &VerbSurface, resolver: &Resolver<'_>) -> Action {
+    // What the action API admits: the name it offers the action by, which is the verb's own id
+    // for a native app and the name the app declares (`pin`) for a tilolang one.
+    let called = verb.offered();
     let params = verb
         .params
         .iter()
@@ -586,9 +575,9 @@ fn action_of(verb: &VerbSurface, resolver: &Resolver<'_>) -> Action {
         })
         .collect();
     Action {
-        id: verb.id.clone(),
-        snake: snake(&verb.id),
-        camel: camel_method(&verb.id),
+        id: called.to_owned(),
+        snake: snake(called),
+        camel: camel_method(called),
         params,
         result: verb.returns.as_ref().map(|returns| {
             let ty = if returns.ty.is_any() {
@@ -647,6 +636,40 @@ fn module_name(id: &str) -> String {
     } else {
         name
     }
+}
+
+/// Each app's module in the SDK, by its id: its last id segment (`notes`), and for an app whose
+/// last segment another app's id also ends with, the segments before it that tell them apart
+/// (`so.tilo.lang.notes` is `lang_notes` while `so.tilo.notes` is `notes`). Two modules of one
+/// name would be one file, so the app that has been there longest — the shorter id — keeps the
+/// plain name; when the tilolang Notes takes that id, it takes the name too.
+fn module_names(apps: &[App]) -> BTreeMap<String, String> {
+    let mut order: Vec<&App> = apps.iter().collect();
+    // The shorter id first, so it keeps the plain name; the id breaks a tie, so every run writes
+    // the same names.
+    order.sort_by(|left, right| {
+        left.id
+            .split_terminator('.')
+            .count()
+            .cmp(&right.id.split_terminator('.').count())
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let mut names: BTreeMap<String, String> = BTreeMap::new();
+    for app in order {
+        let segments: Vec<String> = app
+            .id
+            .rsplit('.')
+            .map(|segment| module_name(segment))
+            .collect();
+        let mut name = segments[0].clone();
+        let mut written = 1;
+        while written < segments.len() && names.values().any(|used| used == &name) {
+            name = format!("{}_{name}", segments[written]);
+            written += 1;
+        }
+        names.insert(app.id.clone(), name);
+    }
+    names
 }
 
 fn app_path(app: &App) -> &str {
@@ -800,9 +823,10 @@ pub fn openapi_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
 
 pub fn python_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
     let mut files = Vec::new();
+    let modules = module_names(apps);
     for app in apps {
         let types = types_of(app)?;
-        let module = module_name(&app.id);
+        let module = modules.get(&app.id).cloned().unwrap_or_else(|| module_name(&app.id));
         files.push((
             PathBuf::from(format!("{module}.py")),
             python_module(app, &types),
@@ -819,7 +843,7 @@ fn python_package() -> String {
     "\"\"\"Types for the apps this workspace has, written by `tilo sdk gen`.\n\
      \n\
      `tilo sdk gen --lang python -w <workspace>` writes them from the apps installed\n\
-     there; without `-w`, from the apps of the checkout it runs in. Each app has a module\n\
+     there; without `-w`, every app this build ships, native and tilolang. Each app has a module\n\
      of its own, holding a class per resource kind: a `tilo.Resource` named by the\n\
      resource's path, whose fields are the app's fields and whose methods are its actions.\n\
      \n\
@@ -1305,9 +1329,13 @@ const TS_GLOBALS: [&str; 14] = [
 pub fn typescript_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
     let mut files = Vec::new();
     let mut modules = Vec::new();
+    let names = module_names(apps);
     for app in apps {
         let types = types_of(app)?;
-        let module = module_name(&app.id);
+        let module = names
+            .get(&app.id)
+            .cloned()
+            .unwrap_or_else(|| module_name(&app.id));
         files.push((
             PathBuf::from(format!("{module}.ts")),
             typescript_module(app, &types),
@@ -1328,7 +1356,7 @@ fn typescript_package(modules: &[String]) -> String {
             "Types for the apps this workspace has, written by `tilo sdk gen`.",
             "",
             "`tilo sdk gen --lang ts -w <workspace>` writes them from the apps installed",
-            "there; without `-w`, from the apps of the checkout it runs in. Each app has a",
+            "there; without `-w`, every app this build ships, native and tilolang. Each app has a",
             "module of its own, exported here as a namespace: a type is the SDK's `Resource`",
             "of one resource kind, made by its factory with the resource's path.",
             "",
@@ -1739,34 +1767,48 @@ fn typescript_result(action: &Action) -> String {
 mod tests {
     use super::*;
 
-    /// The PDF Viewer, as this checkout commits it: the app whose surface reads a document's
-    /// form fields.
-    fn pdf_viewer() -> App {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/pdf-viewer");
-        app_of(&dir).expect("the PDF Viewer's surface reads")
+    /// The app `id` of the fleet this build ships (`app_fleet`), with its surface.
+    fn app(id: &str) -> App {
+        fleet()
+            .expect("the fleet's surfaces read")
+            .into_iter()
+            .find(|app| app.id == id)
+            .unwrap_or_else(|| panic!("the fleet ships {id}"))
     }
 
-    /// The Tasks app, as this checkout commits it: the app whose tracker creates
-    /// issues without answering a value.
+    /// The PDF Viewer: the app whose surface reads a document's form fields.
+    fn pdf_viewer() -> App {
+        app("so.tilo.pdf-viewer")
+    }
+
+    /// The Tasks app: the app whose tracker creates issues without answering a value.
     fn tasks() -> App {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tasks");
-        app_of(&dir).expect("the Tasks surface reads")
+        app("so.tilo.tasks")
+    }
+
+    /// The module `python_files`/`typescript_files` write `app`'s types in, on its own.
+    fn module_of(app: &App) -> String {
+        module_names(std::slice::from_ref(app))
+            .remove(&app.id)
+            .unwrap_or_else(|| panic!("{} has a module", app.id))
     }
 
     fn python_of(app: &App) -> String {
         let files = python_files(std::slice::from_ref(app)).expect("the types are written");
+        let wanted = PathBuf::from(format!("{}.py", module_of(app)));
         let (_, text) = files
             .iter()
-            .find(|(name, _)| name == Path::new(&format!("{}.py", module_name(&app.id))))
+            .find(|(name, _)| *name == wanted)
             .expect("the app's module is written");
         text.clone()
     }
 
     fn typescript_of(app: &App) -> String {
         let files = typescript_files(std::slice::from_ref(app)).expect("the types are written");
+        let wanted = PathBuf::from(format!("{}.ts", module_of(app)));
         let (_, text) = files
             .iter()
-            .find(|(name, _)| name == Path::new(&format!("{}.ts", module_name(&app.id))))
+            .find(|(name, _)| *name == wanted)
             .expect("the app's module is written");
         text.clone()
     }
@@ -1903,6 +1945,43 @@ mod tests {
                 ),
                 "{ts}"
             );
+        }
+
+        phase a_tilolang_app_gets_a_type_for_each_of_its_records;
+        // A tilolang package's surface comes from the same fleet, so a program reads Notes'
+        // records and runs its actions by the words its author declared, not by the ids its
+        // changes keep.
+        {
+            let notes = app("so.tilo.lang.notes");
+            let python = python_of(&notes);
+            assert!(python.contains("class Note(Resource):"), "{python}");
+            assert!(python.contains("class Notebook(Resource):"), "{python}");
+            assert!(python.contains("    def pin(self,"), "{python}");
+            assert!(python.contains("    def new_note(self,"), "{python}");
+            // What the language's host keeps is the host's, not the app's: a program reaches it
+            // through the host.
+            assert!(!python.contains("class Host("), "{python}");
+            assert!(!python.contains("class Personal("), "{python}");
+            // The platform's bound edits are not the app's actions.
+            assert!(!python.contains("    def edit_text(self"), "{python}");
+            let ts = typescript_of(&notes);
+            assert!(ts.contains("  pin("), "{ts}");
+        }
+
+        phase two_apps_of_one_name_get_a_module_each;
+        // The native Notes and the tilolang one both exist while the migration runs: each app
+        // keeps its own module, and the one that had the id keeps the plain name until the
+        // tilolang Notes takes that id.
+        {
+            let native = app("so.tilo.notes");
+            let tilolang = app("so.tilo.lang.notes");
+            let names = module_names(&[native.clone(), tilolang.clone()]);
+            assert_eq!(names[&native.id], "notes");
+            assert_eq!(names[&tilolang.id], "lang_notes");
+            let mut switched = tilolang;
+            switched.id = "so.tilo.notes".to_owned();
+            let names = module_names(std::slice::from_ref(&switched));
+            assert_eq!(names[&switched.id], "notes");
         }
     }
 }

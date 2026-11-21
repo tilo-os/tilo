@@ -18831,6 +18831,7 @@ dependencies = [
  "account-credentials",
  "accounts",
  "anyhow",
+ "app-fleet",
  "base64 0.22.1",
  "blake3",
  "browser-continuity",

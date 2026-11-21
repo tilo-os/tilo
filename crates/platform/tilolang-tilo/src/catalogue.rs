@@ -704,7 +704,10 @@ impl Reader<'_> {
         });
         self.meta.actions.push(ActionMeta {
             id: verb.id.clone(),
-            name: action_name(&verb.id),
+            // The name the action API offers it by, made a tilolang action's name: a tilolang
+            // app's own (`pin`), else the id a native verb publishes it as
+            // (`read-form-fields` is `read_form_fields`).
+            name: action_name(verb.offered()),
             doc: verb.description.clone().unwrap_or_default(),
             params,
             result,

@@ -52,6 +52,38 @@ tilo_test_env::scenario! {
                 .is_empty()
         );
         assert!(counter.verb("edit-text").is_some() && counter.verb("edit-flag").is_some());
+        // And the name the API offers the action by, so a caller outside the app's code — a
+        // script, an agent, the SDK's typed method — invokes it by the word its author wrote.
+        let published = counter
+            .verbs
+            .iter()
+            .find(|verb| verb.id == increment.id)
+            .unwrap();
+        assert_eq!(published.name, increment.name);
+        assert_eq!(published.offered(), increment.name);
+        // The host's own verbs are named as their ids are.
+        assert_eq!(counter.verbs.iter().find(|verb| verb.id == "edit-text").unwrap().name, "");
+    }
+
+    phase a_surfaces_actions_read_back_by_the_names_callers_use;
+    // A program compiled against the surface (a written view) reaches an action by the word the
+    // app declares, while the change it makes keeps naming the declaration's id.
+    {
+        let meta = counter();
+        let bytes = surface_toml(&[&meta], &SourceWords).unwrap();
+        let read = tilolang_tilo::catalogue::described(
+            &meta.app,
+            &meta.title,
+            std::str::from_utf8(&bytes).unwrap(),
+        )
+        .expect("the surface reads as a package");
+        let increment = &meta.actions[0];
+        let action = read
+            .actions
+            .iter()
+            .find(|action| action.id == increment.id)
+            .expect("the action is in the package");
+        assert_eq!(action.name, increment.name);
     }
 
     phase the_root_the_host_creates_names_a_verb_the_surface_publishes;

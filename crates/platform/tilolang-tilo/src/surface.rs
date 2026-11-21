@@ -285,8 +285,12 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         // The action as the document names it, which is what a change's claim names too
         // ([`crate::action::DynAction::describe`]): its id, the one its words keep
-        // ([`crate::publish::action_type`]'s `label_of`), not the name the API offers it by.
+        // ([`crate::publish::action_type`]'s `label_of`). A receiver decides the app's own changes
+        // by it.
         id: action.id.clone(),
+        // And the name the API offers it by ([`crate::publish::action_type`]): what a caller
+        // outside the app's code — a script, an agent, the SDK's typed method — invokes it as.
+        name: action.name.clone(),
         label: tilolang_runtime::platform::label_of(action),
         description: (!action.doc.is_empty()).then(|| action.doc.clone()),
         kind: action_kind(action.class),
@@ -366,6 +370,7 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
     // as a committed change of its own; receivers decide that change against this verb.
     let create = VerbSurface {
         id: CREATE_ACTION.to_owned(),
+        name: String::new(),
         label: "Create".to_owned(),
         description: Some("The resource is made the first time it is wanted.".to_owned()),
         kind: ActionKind::Undoable,
@@ -381,6 +386,7 @@ fn edit_verbs(declared: &TypeMeta) -> Vec<VerbSurface> {
         let (ty, schema) = direct_edit_value(direct.value);
         VerbSurface {
             id: direct.id.to_owned(),
+            name: String::new(),
             label: direct.label.to_owned(),
             description: Some("A bound control changes the field it shows.".to_owned()),
             kind: ActionKind::Undoable,
@@ -522,6 +528,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
 fn host_verb(id: &str, label: &str, kind: ActionKind, params: Vec<ParamSurface>) -> VerbSurface {
     VerbSurface {
         id: id.to_owned(),
+        name: String::new(),
         label: label.to_owned(),
         description: None,
         kind,

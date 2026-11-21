@@ -2,7 +2,7 @@
  * Types for the apps this workspace has, written by `tilo sdk gen`.
  *
  * `tilo sdk gen --lang ts -w <workspace>` writes them from the apps installed
- * there; without `-w`, from the apps of the checkout it runs in. Each app has a
+ * there; without `-w`, every app this build ships, native and tilolang. Each app has a
  * module of its own, exported here as a namespace: a type is the SDK's `Resource`
  * of one resource kind, made by its factory with the resource's path.
  *
@@ -42,7 +42,6 @@ export * as firewall from "./firewall.ts";
 export * as gitClient from "./git_client.ts";
 export * as hexEditor from "./hex_editor.ts";
 export * as imager from "./imager.ts";
-export * as launcher from "./launcher.ts";
 export * as logs from "./logs.ts";
 export * as mail from "./mail.ts";
 export * as maps from "./maps.ts";
@@ -51,7 +50,6 @@ export * as modelProviders from "./model_providers.ts";
 export * as monitor from "./monitor.ts";
 export * as music from "./music.ts";
 export * as notes from "./notes.ts";
-export * as osk from "./osk.ts";
 export * as passwords from "./passwords.ts";
 export * as pdfViewer from "./pdf_viewer.ts";
 export * as photos from "./photos.ts";
@@ -78,3 +76,15 @@ export * as videoPlayer from "./video_player.ts";
 export * as weather from "./weather.ts";
 export * as windows from "./windows.ts";
 export * as wordProcessor from "./word_processor.ts";
+export * as board from "./board.ts";
+export * as langChat from "./lang_chat.ts";
+export * as counter from "./counter.ts";
+export * as discussion from "./discussion.ts";
+export * as gallery from "./gallery.ts";
+export * as langMail from "./lang_mail.ts";
+export * as langNotes from "./lang_notes.ts";
+export * as shell from "./shell.ts";
+export * as langTasks from "./lang_tasks.ts";
+export * as today from "./today.ts";
+export * as langTube from "./lang_tube.ts";
+export * as views from "./views.ts";

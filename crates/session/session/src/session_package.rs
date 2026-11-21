@@ -267,6 +267,7 @@ fn verb(action: &ActionSpec, declared: Option<Declared>, types: &mut TypeSet) ->
     }
     VerbSurface {
         id: action.id.clone(),
+        name: String::new(),
         label: String::new(),
         description: None,
         kind: action.contract.settled_kind(),

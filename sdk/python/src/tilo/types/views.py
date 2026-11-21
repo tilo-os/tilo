@@ -1,0 +1,168 @@
+"""Types for Views (`so.tilo.lang.views`), from the app's surface.
+
+`tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
+write it again rather than editing it.
+
+`WrittenView` is the app's `tl.so.tilo.lang.views.WrittenView` at `views/<resource>`, read with
+`await ….load()`: its fields are the app's fields (read-only ones without a setter)
+and its methods are its actions. A method answers what the app declares; an action
+that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
+enum whose cases carry fields is an object whose tag the app's schema names. An
+action whose name is one the class already has is run with `action("…")`, which
+the file says where it is. An undoable action that answers nothing also has a
+`<action>_many`, which applies it to every argument object of a list in a few
+all-or-nothing steps, all of them one invocation group.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal, NotRequired, TypedDict
+from tilo import Entry, Invocation, Resource
+
+__all__ = [
+    "Device",
+    "WrittenView",
+    "Default",
+    "Views",
+    "LangViews",
+    "KeepArgs",
+    "SendArgs",
+    "DiscardArgs",
+    "MakeDefaultArgs",
+]
+
+Device = Literal["desktop", "tablet", "phone"]
+"""A kind of device a person chooses how things show on."""
+
+KeepArgs = TypedDict("KeepArgs", {
+})
+"""The arguments of `keep`."""
+
+SendArgs = TypedDict("SendArgs", {
+    "to": "Any",
+})
+"""The arguments of `send`."""
+
+DiscardArgs = TypedDict("DiscardArgs", {
+    "v": "WrittenView",
+})
+"""The arguments of `discard`."""
+
+MakeDefaultArgs = TypedDict("MakeDefaultArgs", {
+    "v": "WrittenView",
+    "device": NotRequired["Device | None"],
+})
+"""The arguments of `make_default`."""
+
+class WrittenView(Resource):
+    """WrittenView — `tl.so.tilo.lang.views.WrittenView`."""
+    __surface__ = "so.tilo.lang.views@d4680cb5c8c73003"
+    _2fxqftu3: str  # title
+    fdxj35iu: str  # question
+    _3pj7zyxo: str  # definition
+    _3eioszed: str  # author
+    loizxjpf: bool  # kept
+    bckibjl6: str  # shows
+
+    def keep(self) -> None:
+        """Keeps a view among the person's own."""
+        return self.action("keep")
+
+    def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
+        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("keep", items)
+
+    def send(self, *, to: Any) -> None:
+        """Sends a view to a channel: anyone there can add it to their own views."""
+        return self.action("send", to=to)
+
+    def send_many(self, items: list[SendArgs]) -> list[dict[str, Any]]:
+        """Runs `send` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("send", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"keep", "keep_many", "send", "send_many"})
+
+
+class Default(Resource):
+    """Default — `tl.so.tilo.lang.views.Default`."""
+    __surface__ = "so.tilo.lang.views@d4680cb5c8c73003"
+    _2atmuo4h: str  # shows
+    h6n4gvgn: Device  # device
+    _7rv6o4rt: WrittenView  # chosen
+
+
+class Views(Resource):
+    """Views — `tl.so.tilo.lang.views.Views`."""
+    __surface__ = "so.tilo.lang.views@d4680cb5c8c73003"
+    bweal36x: list[Entry[WrittenView]]  # items
+    _2tnozirr: list[Entry[Default]]  # defaults
+
+    def answer(self,
+        *,
+        title: str,
+        question: str,
+        definition: str,
+        shows: str | None = None,
+    ) -> WrittenView:
+        """Records the view an agent answered with, under the name of whoever asked. It opens beside what the person pointed at; until they keep it, it is the agent's answer."""
+        args: dict[str, Any] = {}
+        args["title"] = title
+        args["question"] = question
+        args["definition"] = definition
+        if shows is not None:
+            args["shows"] = shows
+        return self.action("answer", **args)
+
+    def write(self,
+        *,
+        title: str,
+        definition: str,
+        shows: str | None = None,
+    ) -> WrittenView:
+        """A view the person writes, kept among their own."""
+        args: dict[str, Any] = {}
+        args["title"] = title
+        args["definition"] = definition
+        if shows is not None:
+            args["shows"] = shows
+        return self.action("write", **args)
+
+    def discard(self, *, v: WrittenView) -> None:
+        """Throws a view away, and with it how a type showed through it."""
+        return self.action("discard", v=v)
+
+    def discard_many(self, items: list[DiscardArgs]) -> list[dict[str, Any]]:
+        """Runs `discard` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("discard", items)
+
+    def make_default(self,
+        *,
+        v: WrittenView,
+        device: Device | None = None,
+    ) -> None:
+        """Makes a view how the person shows its type on a kind of device."""
+        args: dict[str, Any] = {}
+        args["v"] = v
+        if device is not None:
+            args["device"] = device
+        return self.action("make_default", **args)
+
+    def make_default_many(self, items: list[MakeDefaultArgs]) -> list[dict[str, Any]]:
+        """Runs `make_default` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("make_default", items)
+
+    def add(self, *, m: Any) -> WrittenView:
+        """Adds the view a message sent to the person's own views. Its author is who sent the message, as the log recorded them, never who adds it: what it does asks first unless the person trusts that sender. It is a copy: a later change the sender makes to theirs does not reach it."""
+        return self.action("add", m=m)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"answer", "write", "discard", "discard_many", "make_default", "make_default_many", "add"})
+
+
+class LangViews(Resource):
+    """Views — `tl.so.tilo.lang.views`."""
+    __surface__ = "so.tilo.lang.views@d4680cb5c8c73003"
+

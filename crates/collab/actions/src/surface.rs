@@ -76,6 +76,12 @@ pub struct Surface {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VerbSurface {
     pub id: String,
+    /// The name the action API offers this action by, where that is not `id`: a tilolang app
+    /// offers its actions by the name its code declares (`new_note`), while a change of one
+    /// claims the id the declaration keeps (`qymo5lg2`), which is what a receiver holding the
+    /// surface decides it by. Empty where the two are the same, as for a native verb.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,6 +114,19 @@ pub struct VerbSurface {
 
 fn stored_value() -> String {
     STORED_VALUE.to_owned()
+}
+
+impl VerbSurface {
+    /// The name the action API offers this action by: [`Self::name`], or [`Self::id`] where the
+    /// two are the same.
+    #[must_use]
+    pub fn offered(&self) -> &str {
+        if self.name.is_empty() {
+            &self.id
+        } else {
+            &self.name
+        }
+    }
 }
 
 /// How a field holding a plain value is stored.
