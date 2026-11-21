@@ -1,6 +1,6 @@
 //! The connector over Mail's engine (`mail_engine::engine`): IMAP and SMTP in native code, where
 //! the network and the credentials are. It runs in the process the system starts for the app
-//! ([`crate::serve`]), or in a window's own process outside a tilolang host.
+//! ([`crate::serve`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc::{Receiver, Sender};
@@ -61,8 +61,26 @@ pub fn imap_message(m: &Message) -> ImapMessage {
     }
 }
 
-/// Where the accounts come from: the settings' account store, or a test's.
-pub type AccountSource = Box<dyn Fn() -> Vec<AccountConfig>>;
+/// An account the connector signs in to: its settings, with the password the session released
+/// for it, or the session's words for why it released none.
+#[derive(Clone)]
+pub struct MailAccount {
+    pub config: AccountConfig,
+    pub refused: Option<String>,
+}
+
+impl From<AccountConfig> for MailAccount {
+    fn from(config: AccountConfig) -> Self {
+        Self {
+            config,
+            refused: None,
+        }
+    }
+}
+
+/// Where the accounts come from: the session's account sign-ins ([`crate::sign_ins`]), or a
+/// test's.
+pub type AccountSource = Box<dyn Fn() -> Vec<MailAccount>>;
 
 /// The connector over native Mail's engine, which runs requests one at a time on a worker
 /// thread and holds one connection per account.
@@ -117,7 +135,23 @@ impl EngineConnector {
     }
 
     fn config(&self, account: &str) -> Option<AccountConfig> {
-        (self.source)().into_iter().find(|c| c.email == account)
+        (self.source)()
+            .into_iter()
+            .find(|signed| signed.config.email == account)
+            .map(|signed| signed.config)
+    }
+
+    /// The engine's `message` for `account`, or, where it signed in to no server for want of a
+    /// password, why the session released none, in its words.
+    fn in_words(&self, account: &str, message: String) -> String {
+        if message != mail_engine::engine::NO_PASSWORD {
+            return message;
+        }
+        (self.source)()
+            .into_iter()
+            .find(|signed| signed.config.email == account)
+            .and_then(|signed| signed.refused)
+            .unwrap_or(message)
     }
 
     fn request(&mut self, request: EngineRequest) -> Option<Request> {
@@ -169,6 +203,7 @@ impl MailConnector for EngineConnector {
     fn accounts(&self) -> Vec<AccountRef> {
         (self.source)()
             .into_iter()
+            .map(|signed| signed.config)
             .map(|c| AccountRef {
                 id: c.email.clone(),
                 name: if c.display_name.is_empty() {
@@ -411,6 +446,7 @@ impl EngineConnector {
                     .remove(&request_id)
                     .map(|(_, account, _)| account)
                     .unwrap_or_default();
+                let message = self.in_words(&account, message);
                 match kind {
                     EngineRequestKind::Send if context == mail_engine::engine::SMTP_UNREACHED => {
                         out.push(Event::Unsent {

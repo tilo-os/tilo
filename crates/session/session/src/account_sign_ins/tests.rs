@@ -33,7 +33,7 @@ const NOTE: &str = "tab:00000000000000c1";
 struct Served {
     device: Device,
     socket: PathBuf,
-    _runtime: tokio::runtime::Runtime,
+    runtime: tokio::runtime::Runtime,
     _dir: tempfile::TempDir,
 }
 
@@ -54,7 +54,7 @@ fn served() -> Served {
     Served {
         device,
         socket,
-        _runtime: runtime,
+        runtime,
         _dir: dir,
     }
 }
@@ -196,4 +196,72 @@ fn an_asker_that_goes_away_is_no_longer_waited_for() {
 
     drop(asker);
     until_waiting(&served, 0);
+}
+
+/// An origin connector of Mail in the workspace is told that workspace's accounts, its email
+/// account among them, which the cloud service is not; a sign-in it asks of another workspace is
+/// refused before anything is read; and one of its own workspace is decided by the session, in
+/// words, with no fallback: the account names no vault entry yet.
+#[test]
+fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
+    const MAIL: &str = "so.tilo.mail";
+    const ELSEWHERE: &str = "6d1c1f36-0000-4000-8000-0000000000c2";
+    let served = served();
+    let mut account = accounts::Account::new(
+        accounts::AccountId::from("team@example.test"),
+        accounts::email::TYPE_ID,
+    );
+    account.display_name = "Team".into();
+    served.device.keep(
+        WORKSPACE,
+        (ACCOUNTS_OWNER, &accounts_document()),
+        accounts_keeping(&account),
+    );
+    let (session, connector) = std::os::unix::net::UnixStream::pair().unwrap();
+    let (workspaces, changes) = (served.device.workspaces(), served.device.changes());
+    served.runtime.spawn(async move {
+        session.set_nonblocking(true).unwrap();
+        let stream = tokio::net::UnixStream::from_std(session).unwrap();
+        let by = Caller::authenticated([0x30; 32], [0x31; 32]);
+        let scope = super::Scope::connector(MAIL, WORKSPACE);
+        super::connection(stream, &workspaces, &by, &changes, &scope).await
+    });
+    let connector = std::cell::RefCell::new(Client::over(connector).unwrap());
+    let told = std::cell::RefCell::new(Vec::new());
+    served.device.until(|| {
+        let asked = connector.borrow_mut().ask(&Ask::Accounts { after: None });
+        if let Ok(Answer::Accounts { accounts, .. }) = asked {
+            *told.borrow_mut() = accounts;
+        }
+        !told.borrow().is_empty()
+    });
+    assert_eq!(
+        told.borrow()
+            .iter()
+            .map(|told| (told.workspace.as_str(), told.account.id.as_str()))
+            .collect::<Vec<_>>(),
+        [(WORKSPACE, "team@example.test")],
+    );
+    match connect(&served.socket).ask(&Ask::Accounts { after: None }) {
+        Ok(Answer::Accounts { accounts, .. }) => {
+            assert!(accounts.is_empty(), "the cloud service is told file accounts only");
+        }
+        other => panic!("the accounts, not {other:?}"),
+    }
+    let mut connector = connector.into_inner();
+    let entry = "vault.item:0123456789abcdef0123456789abcdef".to_owned();
+    match connector.ask(&Ask::SignIn {
+        workspace: ELSEWHERE.into(),
+        item: entry.clone(),
+    }) {
+        Ok(Answer::Refused { error }) => assert_eq!(error, super::OTHER_WORKSPACE),
+        other => panic!("a refusal, not {other:?}"),
+    }
+    match connector.ask(&Ask::SignIn {
+        workspace: WORKSPACE.into(),
+        item: entry,
+    }) {
+        Ok(Answer::Refused { error }) => assert!(!error.is_empty(), "said in words"),
+        other => panic!("a refusal, not {other:?}"),
+    }
 }

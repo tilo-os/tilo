@@ -7,8 +7,10 @@ license.workspace = true
 description = "The mail origin of tilolang packages: the logic that keeps a package's imap types in step with a mail server, and the connector that speaks IMAP and SMTP, run by the system in a process of its own and reached over a socket."
 
 [dependencies]
-# Mail's model and its IMAP and SMTP engine, and the settings' account store.
+# Mail's model and its IMAP and SMTP engine.
 mail-engine = { path = "../mail-engine", optional = true }
+# The workspace's accounts and their sign-ins, as the session tells the connector them.
+accounts = { path = "../../system/accounts", optional = true }
 tilolang-tilo = { path = "../tilolang-tilo" }
 tilo-content = { path = "../../system/content", optional = true }
 # Whether the device is online: an unreachable mail server is tried again when the network
@@ -16,7 +18,6 @@ tilo-content = { path = "../../system/content", optional = true }
 tilo-net = { path = "../tilo-net", optional = true }
 # The descriptors the session hands the connector: one per instance that attaches.
 runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
-settings-store = { path = "../../system/settings-store", optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -27,14 +28,14 @@ tracing.workspace = true
 [features]
 default = ["engine"]
 # The connector itself, in native code with the network and the credentials: the engine, the
-# connector process's loop and the in-process origin. A tilolang host needs none of it: its
+# connector process's loop. A tilolang host needs none of it: its
 # origins reach the connector over a socket.
 engine = [
     "dep:mail-engine",
     "dep:tilo-content",
     "dep:tilo-net",
     "dep:runtime-portal",
-    "dep:settings-store",
+    "dep:accounts",
     "dep:tokio",
 ]
 

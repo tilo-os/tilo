@@ -9942,7 +9942,6 @@ dependencies = [
  "tracing",
  "uuid",
  "workspace-hack",
- "zeroize",
 ]
 
 [[package]]
@@ -24040,12 +24039,12 @@ dependencies = [
 name = "tilolang-mail"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "jiff",
  "mail-engine",
  "runtime-portal",
  "serde",
  "serde_json",
- "settings-store",
  "tilo-content",
  "tilo-net",
  "tilolang-tilo",

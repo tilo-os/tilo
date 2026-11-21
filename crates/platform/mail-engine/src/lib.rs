@@ -28,7 +28,6 @@
 )]
 
 pub mod account;
-pub mod account_secrets;
 pub mod attachment_store;
 #[cfg(feature = "live")]
 pub mod connect;

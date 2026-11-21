@@ -13,6 +13,12 @@
 //! The socket lives in a directory of its own below the runtime directory, which only the
 //! person's own processes reach; the launcher hands it to no app.
 //!
+//! An app's origin connector, the sandboxed process the session starts for a tilolang app whose
+//! types hold an outside service's resources, speaks the same lines on a connection the session
+//! hands it when it starts ([`Client::over`]). The session scopes that connection to the
+//! connector's workspace and app: it lists every account of that workspace, refuses a sign-in of
+//! another, and the use a sign-in writes names the app.
+//!
 //! One request and one answer per line, as JSON.
 
 use std::io::{BufRead, BufReader, Read as _, Write};
@@ -140,7 +146,15 @@ impl Client {
     /// # Errors
     /// The session serves no socket there.
     pub fn connect(path: &Path) -> std::io::Result<Self> {
-        let stream = tilo_files::native::socket::connect(path)?;
+        Self::over(tilo_files::native::socket::connect(path)?)
+    }
+
+    /// A client over `stream`, a connection the session handed this process rather than one it
+    /// dialled: an origin connector's, which the session scopes to its app and workspace.
+    ///
+    /// # Errors
+    /// The connection's timeouts cannot be set.
+    pub fn over(stream: UnixStream) -> std::io::Result<Self> {
         stream.set_read_timeout(Some(LONGEST_WAIT.saturating_add(Duration::from_secs(20))))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
         Ok(Self {

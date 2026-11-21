@@ -21,8 +21,7 @@ fn pending_metadata_is_visible_without_hydrating_or_changing_an_existing_secret(
     });
     shared.upsert(stored);
     shared.save_in(temp.path()).unwrap();
-    let native =
-        AccountStore::from_store(&shared, &AccountCredentials::open_in(temp.path()).unwrap());
+    let native = AccountStore::from_shared(&shared);
     assert_eq!(native.accounts.len(), 1);
     assert!(native.accounts.first().unwrap().config.password.is_empty());
     assert!(native.accounts.first().unwrap().config.import_pending);

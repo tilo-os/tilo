@@ -7,9 +7,10 @@
 //! [`accounts::AccountCredentials`].
 //!
 //! This module keeps the shapes the rest of Mail works with, [`Account`] and
-//! [`AccountStore`], and hydrates them from that store and vault
-//! ([`AccountStore::load_in`]). The connection settings are serialised into each account's
-//! opaque `config`; the password is read back from the vault, never from the JSON.
+//! [`AccountStore`], and reads them from that store ([`AccountStore::load_in`]). The connection
+//! settings are serialised into each account's opaque `config`. A password is never read here:
+//! the session releases it from the workspace's vault to whoever signs in
+//! (`accounts::sign_ins`).
 
 use std::path::Path;
 
@@ -66,15 +67,8 @@ impl Account {
         stored
     }
 
-    fn from_stored(stored: &StoredAccount, vault: Option<&AccountCredentials>) -> Option<Self> {
-        let payload = stored.config_as::<StoredConfig>()?;
-        let mut config = payload.config;
-        config.import_pending |= stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
-        if !config.import_pending
-            && let Some(secret) = vault.and_then(|vault| vault.get_for(stored))
-        {
-            config.password = secret.password;
-        }
+    fn from_stored(stored: &StoredAccount) -> Option<Self> {
+        let config = config_of(stored)?;
         Some(Self {
             id: stored.id.to_string(),
             config,
@@ -82,6 +76,14 @@ impl Account {
             tint: stored.tint,
         })
     }
+}
+
+/// The mail settings `stored` keeps, without a password.
+#[must_use]
+pub fn config_of(stored: &StoredAccount) -> Option<AccountConfig> {
+    let mut config = stored.config_as::<StoredConfig>()?.config;
+    config.import_pending |= stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
+    Some(config)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -108,32 +110,19 @@ impl AccountStore {
         }
     }
 
+    /// The mail accounts the store under `config_root` keeps, without a password.
     pub fn load_in(config_root: &Path) -> Self {
-        Self::try_load_in(config_root).unwrap_or_else(|_| {
-            tracing::error!("mail account credentials could not be opened");
-            Self::default()
-        })
+        Self::from_shared(&SharedStore::load_in(config_root))
     }
 
-    pub fn try_load_in(config_root: &Path) -> Result<Self, String> {
-        let credentials = AccountCredentials::open_in(config_root)?;
-        Ok(Self::from_shared(
-            &SharedStore::load_in(config_root),
-            Some(&credentials),
-        ))
-    }
-
-    pub fn from_store(shared: &SharedStore, vault: &AccountCredentials) -> Self {
-        Self::from_shared(shared, Some(vault))
-    }
-
-    fn from_shared(shared: &SharedStore, vault: Option<&AccountCredentials>) -> Self {
+    /// The mail accounts `shared` keeps, without a password.
+    pub fn from_shared(shared: &SharedStore) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts: Vec<Account> = shared
             .list(&ty)
             .into_iter()
             .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
-            .filter_map(|stored| Account::from_stored(stored, vault))
+            .filter_map(Account::from_stored)
             .collect();
         let active = shared
             .active_id(&ty)
@@ -328,36 +317,6 @@ mod tests {
         /// The account store over the shared store and the vault; each case has a root of its own.
         fn the_account_store_keeps_accounts_and_their_secrets;
 
-        phase legacy_account_credentials_load_and_damaged_ownership_is_reported;
-        {
-            let root = temp_root();
-            let id = AccountId::from("legacy@example.test");
-            let mut shared = SharedStore::new();
-            let mut account = Account::new(cfg("legacy@example.test", "Legacy"));
-            account.id = id.to_string();
-            shared.upsert(account.to_stored());
-            shared.save_in(&root).unwrap();
-            let mut vault = SecretVault::open_in(&root);
-            vault.put(&id, &accounts::Secret::password("legacy-fixture-password"));
-            vault.try_save().unwrap();
-
-            let loaded = AccountStore::try_load_in(&root).unwrap();
-            assert_eq!(
-                loaded.accounts[0].config.password,
-                "legacy-fixture-password"
-            );
-            let metadata = std::fs::read(accounts::store_path_in(&root)).unwrap();
-            let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
-            std::fs::write(&vault_path, b"damaged").unwrap();
-            assert!(AccountStore::try_load_in(&root).is_err());
-            assert_eq!(std::fs::read(&vault_path).unwrap(), b"damaged");
-            assert_eq!(
-                std::fs::read(accounts::store_path_in(&root)).unwrap(),
-                metadata
-            );
-            std::fs::remove_dir_all(root).unwrap();
-        }
-
         phase account_store_upserts_clamps_and_round_trips_the_shared_store;
         {
             {
@@ -479,9 +438,9 @@ mod tests {
                 );
 
                 let back = AccountStore::load_in(&root);
-                assert_eq!(
-                    back.accounts[0].config.password, "hunter2",
-                    "password rehydrates from the vault"
+                assert!(
+                    back.accounts[0].config.password.is_empty(),
+                    "Mail reads no password from the device: the session releases it"
                 );
                 std::fs::remove_dir_all(&root).ok();
             }
@@ -511,14 +470,10 @@ mod tests {
                 std::fs::write(&vault_path, original_vault).unwrap();
                 let restored = AccountStore::load_in(root.path());
                 assert_eq!(restored.accounts[0].config.display_name, "Original");
-                assert_eq!(
-                    restored.accounts[0].config.password,
-                    "fixture-original-secret"
-                );
             }
         }
 
-        phase a_mail_account_from_the_persons_resource_reads_back_with_the_devices_password;
+        phase a_mail_account_from_the_workspaces_accounts_reads_back_without_a_password;
         {
             use accounts::person::PersonAccounts;
             let root = temp_root();
@@ -540,71 +495,16 @@ mod tests {
                 .apply(PersonAccounts::saving(&account.to_stored()))
                 .unwrap();
             let person = replica.state().unwrap();
-            let shown = AccountStore::from_store(
-                &person.store(),
-                &AccountCredentials::open_in(&root).unwrap(),
-            );
-            assert_eq!(shown.accounts, vec![account]);
+            let shown = AccountStore::from_shared(&person.store());
+            let mut unsigned = account;
+            unsigned.config.password.clear();
+            assert_eq!(shown.accounts, vec![unsigned]);
             assert!(
                 !format!("{person:?}").contains("kept-on-the-device"),
                 "the password never enters the resource"
             );
             std::fs::remove_dir_all(&root).ok();
         }
-    }
-
-    /// A password is typed for the servers its account names then. However
-    /// the account comes to name another server, the password is joined to
-    /// it no more: the next sign-in would send it there.
-    #[test]
-    fn a_password_typed_for_one_server_is_not_joined_to_an_account_that_names_another() {
-        let root = temp_root();
-        let mut typed = cfg("me@example.test", "Me");
-        typed.password = "typed-for-imap-example".into();
-        let mut store = AccountStore::new();
-        store.upsert(Account::new(typed));
-        store.persist_in(&root).unwrap();
-        // The password joined to the account as it is kept, with the one
-        // setting that says `was` saying `now`.
-        let joined = |was: serde_json::Value, now: serde_json::Value| {
-            let mut shared = SharedStore::load_in(&root);
-            let mut account = shared.all()[0].clone();
-            let says: Vec<&mut serde_json::Value> = account
-                .config
-                .as_object_mut()
-                .unwrap()
-                .values_mut()
-                .filter(|value| **value == was)
-                .collect();
-            assert_eq!(says.len(), 1, "one setting says {was}");
-            for value in says {
-                *value = now.clone();
-            }
-            shared.upsert(account);
-            let vault = AccountCredentials::open_in(&root).unwrap();
-            AccountStore::from_store(&shared, &vault).accounts[0]
-                .config
-                .password
-                .clone()
-        };
-        assert_eq!(
-            joined("Me".into(), "Another name".into()),
-            "typed-for-imap-example",
-            "what says nothing of where it signs in changes nothing"
-        );
-        for (was, now) in [
-            ("imap.example".into(), "imap.elsewhere.example".into()),
-            ("smtp.example".into(), "smtp.elsewhere.example".into()),
-            (serde_json::json!(993), serde_json::json!(1993)),
-        ] {
-            assert_eq!(
-                joined(was, now),
-                "",
-                "the password typed for imap.example:993 and smtp.example:465 was joined to \
-                 an account that names another server"
-            );
-        }
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn temp_root() -> std::path::PathBuf {

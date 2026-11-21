@@ -12,7 +12,9 @@
 //! it and stays up when that goes, so what the service says while nothing shows the app waits
 //! in it. Each reader attaches over a connection of its own: one end is handed to the reader,
 //! the other to the connector over the socket it took with its launch
-//! ([`runtime_portal::origin_connector`]).
+//! ([`runtime_portal::origin_connector`]). Before any reader, the connector is handed its
+//! account sign-ins: its workspace's accounts and their sign-ins, as the session decides them
+//! ([`crate::account_sign_ins`]).
 //!
 //! Nothing here is per app: which origins an app has is its manifest's, and what a connector
 //! does is the app runtime's.
@@ -118,6 +120,16 @@ impl ConnectorHost {
             .map_err(|error| format!("no socket for {app}'s {origin} connector: {error}"))?;
         let planned = plan(origin)?;
         let child = Self::start(&planned, &socket)?;
+        // Its account sign-ins come first: the workspace's accounts, and the sign-ins the
+        // person's grant on Passwords releases to the app.
+        let (sign_ins, connectors) = std::os::unix::net::UnixStream::pair()
+            .map_err(|error| format!("no account sign-ins for {app}'s {origin} connector: {error}"))?;
+        origin_connector::send_sign_ins(&ours, connectors.into())
+            .map_err(|error| format!("{app}'s {origin} connector took no account sign-ins: {error}"))?;
+        crate::account_sign_ins::serve_link(
+            sign_ins,
+            crate::account_sign_ins::Scope::connector(app, workspace),
+        );
         origin_connector::send_attachment(&ours, &theirs)
             .map_err(|error| format!("{app}'s {origin} connector took no connection: {error}"))?;
         running.insert(

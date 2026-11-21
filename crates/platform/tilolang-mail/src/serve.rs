@@ -507,7 +507,7 @@ impl Connector {
         }
     }
 
-    /// Follow the settings' accounts: say them again when they changed, and watch each inbox.
+    /// Follow the workspace's accounts: say them again when they changed, and watch each inbox.
     fn follow_accounts(&mut self) {
         let accounts = self.own.accounts();
         if accounts == self.accounts {
@@ -523,12 +523,9 @@ impl Connector {
     }
 }
 
-/// Run the connector for the settings' accounts under `config_root`, taking each attaching
-/// instance's socket from `attachments`, until that ends.
-pub fn serve(
-    config_root: Option<std::path::PathBuf>,
-    attachments: impl Iterator<Item = UnixStream> + Send + 'static,
-) {
+/// Run the connector for the accounts its account sign-ins `sign_ins` tell it, taking each
+/// attaching instance's socket from `attachments`, until that ends.
+pub fn serve(sign_ins: UnixStream, attachments: impl Iterator<Item = UnixStream> + Send + 'static) {
     let (woken, wakeups) = std::sync::mpsc::channel::<Wakeup>();
     let engine_woken = woken.clone();
     let wake: mail_engine::engine::Wake = Arc::new(move || {
@@ -538,6 +535,10 @@ pub fn serve(
     });
     let online = Arc::new(AtomicBool::new(false));
     crate::follow_the_network(Arc::clone(&online), Arc::clone(&wake));
+    let accounts = {
+        let wake = Arc::clone(&wake);
+        crate::sign_ins::follow(sign_ins, move || wake())
+    };
     let (requests, events) = mail_engine::engine::spawn(tilo_content::ContentStore::memory(), wake);
     let attaching = woken.clone();
     let spawned = std::thread::Builder::new()
@@ -553,12 +554,7 @@ pub fn serve(
         tracing::error!(%error, "the mail connector takes no instances");
         return;
     }
-    let connector = Connector::new(
-        crate::settings_accounts(config_root),
-        requests,
-        events,
-        online,
-    );
+    let connector = Connector::new(accounts, requests, events, online);
     connector.run(&wakeups, &woken);
 }
 
@@ -586,15 +582,21 @@ mod tests {
     }
 
     fn rig() -> Rig {
+        rig_of(Box::new(|| {
+            vec![
+                AccountConfig {
+                    email: ME.into(),
+                    ..AccountConfig::default()
+                }
+                .into(),
+            ]
+        }))
+    }
+
+    fn rig_of(source: AccountSource) -> Rig {
         let (requests, asked) = channel();
         let (answer, events) = channel();
         let (woken, wakeups) = channel();
-        let source: AccountSource = Box::new(|| {
-            vec![AccountConfig {
-                email: ME.into(),
-                ..AccountConfig::default()
-            }]
-        });
         let connector = Connector::new(source, requests, events, Arc::default());
         Rig {
             connector,
@@ -781,5 +783,36 @@ mod tests {
         ask(&mut ada, &sending(uuid::Uuid::new_v4(), &message));
         rig.turn();
         assert_eq!(sends(rig.engine_requests()).len(), 1, "tried again");
+    }
+
+    #[test]
+    fn an_account_whose_sign_in_the_session_refused_says_why_in_its_words() {
+        const NO_GRANT: &str = "You may not use this workspace's Passwords";
+        let mut rig = rig_of(Box::new(|| {
+            vec![crate::engine::MailAccount {
+                config: AccountConfig {
+                    email: ME.into(),
+                    ..AccountConfig::default()
+                },
+                refused: Some(NO_GRANT.into()),
+            }]
+        }));
+        // The connector watches the account's inbox, and that is all it asks of the engine.
+        let watch = rig.engine_requests().remove(0);
+        rig.answer(EngineEvent::Error {
+            request_id: watch.request_id(),
+            kind: EngineRequestKind::Watch,
+            context: "imap".into(),
+            message: mail_engine::engine::NO_PASSWORD.into(),
+        });
+        let mut reader = rig.attach();
+        assert!(matches!(heard(&mut reader), FromConnector::Accounts(a) if a.len() == 1));
+        assert_eq!(
+            heard(&mut reader),
+            FromConnector::Event(Event::Unreachable {
+                account: ME.into(),
+                reason: NO_GRANT.into(),
+            })
+        );
     }
 }

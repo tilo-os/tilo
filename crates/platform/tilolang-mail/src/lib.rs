@@ -2,11 +2,12 @@
 //! the mail engine's protocol code ([`connector`]) and the origin that keeps a package's `imap`
 //! types in step with it ([`origin`]).
 //!
-//! The accounts are the workspace's settings' (the account store Settings writes), and their
-//! credentials stay held, read by the connector in native code: package code never sees
-//! them. Where an instance runs in a tilolang host, which holds no network and no credential,
-//! the connector runs in a process of its own that the system starts for the app ([`serve`])
-//! and the instance's origin reaches it over a socket ([`remote`], [`wire`]).
+//! The accounts are the workspace's, and each one's password is the entry
+//! of the workspace's vault the account names, released by the session to the connector in
+//! native code ([`sign_ins`]): package code never sees them. An instance runs in a tilolang
+//! host, which holds no network and no credential; the connector runs in a process of its own
+//! that the system starts for the app ([`serve`]), and the instance's origin reaches it over a
+//! socket ([`remote`], [`wire`]).
 
 pub mod connector;
 #[cfg(feature = "engine")]
@@ -15,6 +16,8 @@ pub mod origin;
 pub mod remote;
 #[cfg(feature = "engine")]
 pub mod serve;
+#[cfg(feature = "engine")]
+pub mod sign_ins;
 pub mod wire;
 
 use std::cell::RefCell;
@@ -24,49 +27,7 @@ use std::sync::atomic::AtomicBool;
 #[cfg(feature = "engine")]
 use std::sync::atomic::Ordering;
 
-#[cfg(feature = "engine")]
-use engine::{AccountSource, EngineConnector};
 use origin::ImapOrigin;
-
-/// The settings' mail accounts under the profile's configuration root.
-#[cfg(feature = "engine")]
-#[must_use]
-pub fn settings_accounts(config_root: Option<std::path::PathBuf>) -> AccountSource {
-    Box::new(move || {
-        config_root
-            .as_deref()
-            .map(mail_engine::account::AccountStore::load_in)
-            .map(|store| store.accounts.into_iter().map(|a| a.config).collect())
-            .unwrap_or_default()
-    })
-}
-
-/// The origin over the live engine, waking the window's frame loop with `wake` when a server
-/// answers.
-#[cfg(feature = "engine")]
-#[must_use]
-pub fn live_origin(
-    accounts: AccountSource,
-    wake: tilolang_tilo::background::Waker,
-) -> Rc<RefCell<ImapOrigin>> {
-    let content = tilo_content::ContentStore::memory();
-    let woken = Arc::new(AtomicBool::new(true));
-    let flag = Arc::clone(&woken);
-    let wake: mail_engine::engine::Wake = Arc::new(move || {
-        flag.store(true, Ordering::Release);
-        wake();
-    });
-    let reconnected = Arc::new(AtomicBool::new(false));
-    follow_the_network(Arc::clone(&reconnected), Arc::clone(&wake));
-    let (requests, events) = mail_engine::engine::spawn(content, wake);
-    Rc::new(RefCell::new(
-        ImapOrigin::new(
-            Box::new(EngineConnector::new(accounts, requests, events)),
-            woken,
-        )
-        .reconnecting_on(reconnected),
-    ))
-}
 
 /// The origin of an instance in a tilolang host, over the mail connector process at the far end
 /// of `stream`, waking the instance with `wake` when it says something.
@@ -138,17 +99,27 @@ pub(crate) fn follow_the_network(reconnected: Arc<AtomicBool>, wake: mail_engine
 pub const CONNECTOR_ORIGIN_ENV: &str = runtime_portal::origin_connector::ORIGIN_ENV;
 
 /// Run the connector for `origin` this process was started as (`TILO_TILOLANG_CONNECTOR`), on
-/// the socket the launcher handed it, for the settings' accounts, until the session closes the
-/// socket.
+/// the socket the launcher handed it, for the accounts of the workspace the session tells it,
+/// until the session closes the socket.
 #[cfg(feature = "engine")]
 pub fn run_connector(origin: &str) -> Result<(), String> {
+    use runtime_portal::origin_connector::{self, Handed};
     if origin != "imap" {
         return Err(format!("there is no connector for the origin `{origin}`"));
     }
-    let socket = runtime_portal::origin_connector::take_socket()
+    let socket = origin_connector::take_socket()
         .ok_or_else(|| "the launcher handed the connector no socket".to_owned())?;
+    // The session hands its account sign-ins before any reader.
+    let sign_ins = match origin_connector::receive(&socket) {
+        Ok(Some(Handed::SignIns(sign_ins))) => std::os::unix::net::UnixStream::from(sign_ins),
+        Ok(Some(Handed::Reader(_))) => {
+            return Err("the session handed the mail connector no account sign-ins".to_owned());
+        }
+        Ok(None) => return Ok(()),
+        Err(error) => return Err(format!("the mail connector's socket: {error}")),
+    };
     let attachments = std::iter::from_fn(move || {
-        match runtime_portal::origin_connector::receive_attachment(&socket) {
+        match origin_connector::receive_attachment(&socket) {
             Ok(Some(connection)) => Some(std::os::unix::net::UnixStream::from(connection)),
             Ok(None) => {
                 tracing::info!("the session closed the mail connector's socket");
@@ -160,6 +131,6 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
             }
         }
     });
-    serve::serve(settings_store::config_root(), attachments);
+    serve::serve(sign_ins, attachments);
     Ok(())
 }

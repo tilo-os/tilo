@@ -168,6 +168,7 @@ impl MailConnector {
             )
             .expect("the engine starts");
             let (requests, events) = ::mail_engine::engine::spawn_waking(Box::new(engine), wake);
+            let source = move || source().into_iter().map(Into::into).collect();
             Connector::new(Box::new(source), requests, events, device).run(&woken, &looping);
         });
         Self { wakeups, online }

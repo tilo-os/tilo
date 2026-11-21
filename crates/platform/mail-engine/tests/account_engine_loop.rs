@@ -93,17 +93,15 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         .persist_in(&root)
         .expect("persist account to the shared store");
 
-    // 2) Mail loads that exact account back through its own loader, rehydrating
-    //    the password from the vault (never from the plaintext store).
+    // 2) Mail loads that exact account back through its own loader, without its
+    //    password: the session releases that to whoever signs in.
     let store = AccountStore::load_in(&root);
     assert_eq!(store.len(), 1, "Mail reads back the one configured account");
-    let loaded = store.active_config();
+    let mut loaded = store.active_config();
     assert_eq!(loaded.email, "ada@analytical.example");
     assert_eq!(loaded.imap_host, "imap.analytical.example");
-    assert_eq!(
-        loaded.password, "app-password",
-        "password rehydrates from the vault"
-    );
+    assert!(loaded.password.is_empty(), "Mail reads no password from the device");
+    loaded.password = "app-password".into();
 
     // 3) Drive the account engine with that loaded account over its real
     //    channel — exactly the requests the app posts. The offline stub backend

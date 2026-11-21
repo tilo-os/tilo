@@ -43,8 +43,6 @@ fnv.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-# Account secrets ownership releases are wiped from memory when dropped.
-zeroize.workspace = true
 tracing.workspace = true
 
 # Live IMAP and SMTP for the engine. These are optional and guarded by

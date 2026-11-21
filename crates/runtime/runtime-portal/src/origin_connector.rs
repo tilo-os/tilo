@@ -7,6 +7,11 @@
 //! own: the session makes a pair, hands one end to the instance with the instance's other
 //! connections (`crate::process_link::InstanceFds::origin`) and the other to the connector on
 //! this socket, as one packet (`crate::packet`) carrying that one descriptor.
+//!
+//! Before any reader, the session hands the connector its account sign-ins on the same socket:
+//! a connection that speaks `accounts::sign_ins`'s lines, scoped to the connector's workspace and
+//! app. A connector reaches the workspace's accounts and their sign-ins over it, and over nothing
+//! else: it opens no file of them.
 
 use std::io;
 
@@ -21,11 +26,22 @@ pub const CHILD_FD: i32 = 37;
 /// tilolang runtime runs that origin's connector instead of a window.
 pub const ORIGIN_ENV: &str = "TILO_TILOLANG_CONNECTOR";
 
-/// An instance's connection, handed to the connector.
+/// A connection handed to the connector: a reader's, or the connector's account sign-ins.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Attach {
     #[serde(with = "crate::packet::fd")]
     connection: Descriptor,
+    #[serde(default)]
+    sign_ins: bool,
+}
+
+/// What the session handed the connector.
+#[derive(Debug)]
+pub enum Handed {
+    /// A reader's connection.
+    Reader(Descriptor),
+    /// The connector's account sign-ins.
+    SignIns(Descriptor),
 }
 
 impl crate::packet::Packet for Attach {}
@@ -71,6 +87,7 @@ pub fn send_attachment(socket: &Descriptor, connection: &Descriptor) -> io::Resu
     {
         Attach {
             connection: connection.try_clone()?,
+            sign_ins: false,
         }
         .send(socket)
     }
@@ -84,14 +101,60 @@ pub fn send_attachment(socket: &Descriptor, connection: &Descriptor) -> io::Resu
     }
 }
 
-/// The next instance's connection on `socket`; `None` at end of file, when the session closed
-/// its end.
+/// Hand the connector behind `socket` its account sign-ins, `connection`.
+///
+/// # Errors
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn send_sign_ins(socket: &Descriptor, connection: Descriptor) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        Attach {
+            connection,
+            sign_ins: true,
+        }
+        .send(socket)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (socket, connection);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "only the Linux session runs origin connectors",
+        ))
+    }
+}
+
+/// The next connection the session handed the connector on `socket`; `None` at end of file,
+/// when the session closed its end.
+///
+/// # Errors
+/// The socket's error; a message that is no attachment with its one descriptor;
+/// [`io::ErrorKind::Unsupported`] off Linux.
+pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
+    Ok(Attach::receive(socket)?.map(|attach| {
+        if attach.sign_ins {
+            Handed::SignIns(attach.connection)
+        } else {
+            Handed::Reader(attach.connection)
+        }
+    }))
+}
+
+/// The next reader's connection on `socket`, for a connector that signs in to no account: the
+/// account sign-ins it is handed are closed. `None` at end of file, when the session closed its
+/// end.
 ///
 /// # Errors
 /// The socket's error; a message that is no attachment with its one descriptor;
 /// [`io::ErrorKind::Unsupported`] off Linux.
 pub fn receive_attachment(socket: &Descriptor) -> io::Result<Option<Descriptor>> {
-    Ok(Attach::receive(socket)?.map(|attach| attach.connection))
+    loop {
+        match receive(socket)? {
+            Some(Handed::Reader(connection)) => return Ok(Some(connection)),
+            Some(Handed::SignIns(_)) => {}
+            None => return Ok(None),
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -103,6 +166,8 @@ mod tests {
         use std::io::{Read as _, Write as _};
         let (session, connector) = pair().unwrap();
         let (instance, theirs) = connection().unwrap();
+        let (_kept, sign_ins) = connection().unwrap();
+        send_sign_ins(&session, sign_ins).unwrap();
         send_attachment(&session, &theirs).unwrap();
         let received = receive_attachment(&connector)
             .unwrap()
