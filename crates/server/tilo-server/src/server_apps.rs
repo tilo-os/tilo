@@ -11,6 +11,10 @@
 //! tilolang-process` (bubblewrap, Landlock, seccomp): a server without that launcher runs no app
 //! at all ([`tilo_launcher`]), never one unconfined.
 //!
+//! The server runs one content store for every app it runs, beside its packages, served on one
+//! socket ([`ContentService`]): each app's connection to it is scoped to that app in the
+//! workspace of the call, exactly as a device's launcher scopes it.
+//!
 //! The only window a server serves is a page open on it. The collaboration connection of each
 //! window is made by this process, and the broker attests the connection as that window only,
 //! once ([`ServerLauncher::connect_window`]); nothing else that reaches the broker's socket is
@@ -111,6 +115,33 @@ impl WorkspacePackages {
             &installed.package_id_hex,
         )
         .map_err(|error| format!("{app} does not verify: {error}"))
+    }
+}
+
+/// The content store this server's apps keep the files a person chooses and the pictures their
+/// resources hold in, served on its socket: one for the whole server, each connection scoped to
+/// one app in one workspace by the launcher that makes it
+/// ([`launcher::services::resolve_blob_bind`]).
+pub struct ContentService {
+    _server: std::thread::JoinHandle<()>,
+}
+
+impl ContentService {
+    /// Open the content store at `content` and serve it on `socket`, on the runtime this is
+    /// awaited on.
+    ///
+    /// # Errors
+    /// The store does not open, or the socket cannot be bound.
+    pub async fn start(content: &Path, socket: &Path) -> std::io::Result<Self> {
+        let store = std::sync::Arc::new(
+            fs::ContentStore::open(content)
+                .await
+                .map_err(std::io::Error::other)?,
+        );
+        let media = fs::document_media::DocumentMedia::new(store);
+        let server = fs::document_media::serve_socket(socket, media)
+            .map_err(std::io::Error::other)?;
+        Ok(Self { _server: server })
     }
 }
 

@@ -22054,6 +22054,7 @@ dependencies = [
  "tilo-enrollment",
  "tilo-files",
  "tilo-fs",
+ "tilo-fs-client",
  "tilo-identity",
  "tilo-identity-client",
  "tilo-live",
