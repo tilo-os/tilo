@@ -79,9 +79,10 @@ impl Workspaces {
         if !question.ask.as_ref().is_some_and(|ask| ask.secret) {
             return Err("only a question for a secret is answered into the vault".to_owned());
         }
-        let typed = match self.ask_person_confirmation(person, question).await? {
-            ConfirmationAnswer::Secret(typed) => typed,
-            _ => return Ok(None),
+        let ConfirmationAnswer::Secret(typed) =
+            self.ask_person_confirmation(person, question).await?
+        else {
+            return Ok(None);
         };
         let root = self.person_settings_root(&person);
         let adding = AddItem {

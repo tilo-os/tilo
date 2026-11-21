@@ -767,6 +767,51 @@ fn put_signed_issue(title: &str) -> Command {
     }
 }
 
+/// A write cancelled before the workspace admits it releases the workspace and
+/// keeps nothing of it: no retained frame and no row.
+async fn a_cancelled_write_keeps_nothing(
+    workspaces: &Workspaces,
+    workspace: &str,
+    workspace_id: collab_types::WorkspaceId,
+    context: &ResourceRequestContext,
+) {
+    let registry = &workspaces.inner.host.workspaces;
+    let records = &workspaces.inner.host.records;
+    let before = records.retained(workspace_id).await.unwrap();
+    let state = workspaces.workspace(workspace).await.unwrap();
+    let registry_guard = registry.lock().await;
+    let cancelled = tokio::spawn({
+        let workspaces = workspaces.clone();
+        let context = context.clone();
+        async move {
+            workspaces
+                .resource_command(&context, put_signed_issue("Cancelled"))
+                .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while state.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the write reaches the workspace");
+    cancelled.abort();
+    assert!(cancelled.await.unwrap_err().is_cancelled());
+    drop(
+        tokio::time::timeout(std::time::Duration::from_secs(5), state.lock())
+            .await
+            .expect("cancellation releases the workspace before admission"),
+    );
+    drop(registry_guard);
+    assert_eq!(records.retained(workspace_id).await.unwrap(), before);
+    assert_eq!(
+        title_through_service(workspaces, context, "i-1").await,
+        None
+    );
+    drop(state);
+}
+
 #[tokio::test]
 async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
     let dir = tempfile::tempdir().unwrap();
@@ -810,41 +855,7 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         "a first write without a durable frame is invisible"
     );
 
-    let state = workspaces.workspace(&workspace).await.unwrap();
-    let registry_guard = registry.lock().await;
-    let cancelled = tokio::spawn({
-        let workspaces = workspaces.clone();
-        let context = context.clone();
-        async move {
-            workspaces
-                .resource_command(&context, put_signed_issue("Cancelled"))
-                .await
-        }
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while state.try_lock().is_ok() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the write reaches the workspace");
-    cancelled.abort();
-    assert!(cancelled.await.unwrap_err().is_cancelled());
-    drop(
-        tokio::time::timeout(std::time::Duration::from_secs(5), state.lock())
-            .await
-            .expect("cancellation releases the workspace before admission"),
-    );
-    drop(registry_guard);
-    assert_eq!(
-        records.retained(created.workspace_id).await.unwrap(),
-        before
-    );
-    assert_eq!(
-        title_through_service(&workspaces, &context, "i-1").await,
-        None
-    );
-    drop(state);
+    a_cancelled_write_keeps_nothing(&workspaces, &workspace, created.workspace_id, &context).await;
 
     let batch = Command::Batch(vec![
         put_signed_issue("First"),

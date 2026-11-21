@@ -647,11 +647,15 @@ impl GovernedWorkspace {
             .draft_document_write_from(
                 peer,
                 &device.device(),
-                (app, &write.doc, named),
-                &bytes,
-                founding,
-                Some(&keys),
-                tilo_clock::wall(),
+                super::writes::DocumentWrite {
+                    app,
+                    document: &write.doc,
+                    readers: named,
+                    changes: &bytes,
+                    founding,
+                    sealed: Some(&keys),
+                    now: tilo_clock::wall(),
+                },
             )
             .map_err(|error| error.to_string())?;
         if let CommitOperation::Document { envelope, .. } = &mut request.operation {
@@ -917,6 +921,85 @@ impl Workspaces {
         Ok(())
     }
 
+    /// Answer an app's read `command` from the store of the workspace `state` holds, with only
+    /// what `device`'s person may read.
+    #[cfg(feature = "apps")]
+    async fn resource_read(
+        &self,
+        state: &tokio::sync::Mutex<GovernedWorkspace>,
+        device: &super::MemberDevice,
+        command: &tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        use tilo_resource_store::wire::{Command, Reply, read};
+        let may_read = may_read(hex::encode(device.cert.user_public_key));
+        let mut governed = state.lock().await;
+        let store = governed.store_with_surfaces();
+        let answer = match command {
+            Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
+                Reply::Versions(
+                    store
+                        .read_versions(kind, id)
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            Command::Versions { .. } => Reply::Versions(Vec::new()),
+            _ => read(store, command, &may_read).unwrap_or(Reply::Written),
+        };
+        drop(governed);
+        Ok(answer)
+    }
+
+    /// Commit `command` as an update of the fields of a resource every member reads that stays
+    /// where it is, when it is one: `false` for any other command, which is drafted whole.
+    #[cfg(feature = "apps")]
+    async fn put_in_place(
+        &self,
+        governed: &mut GovernedWorkspace,
+        device: &super::MemberDevice,
+        app: &str,
+        command: &tilo_resource_store::wire::Command,
+    ) -> Result<bool, String> {
+        let tilo_resource_store::wire::Command::Put {
+            kind,
+            id,
+            resource,
+            stamp,
+        } = command
+        else {
+            return Ok(false);
+        };
+        let in_place = governed.member.is_none()
+            && resource.readers == collab_types::EVERY_MEMBER
+            && governed
+                .resources
+                .store_mut()
+                .index()
+                .get(kind, id)
+                .is_some_and(|held| {
+                    held.parent == resource.parent
+                        && held.order == resource.order
+                        && collab_types::store_document_readers(&held.doc)
+                            == Some(collab_types::EVERY_MEMBER)
+                });
+        if !in_place {
+            return Ok(false);
+        }
+        let admit = |_: &tilo_resource_store::Proposal<'_>| true;
+        let write = governed.store_with_surfaces().draft_field_update(
+            (kind, id),
+            resource,
+            stamp,
+            device.device(),
+            None,
+            &admit,
+        )?;
+        if let Some(write) = write {
+            self.commit_resource_update(governed, device, app, &write, |_| true)
+                .await?;
+        }
+        Ok(true)
+    }
+
     /// Carries out an app's command on its certified route. A write requires the caller's
     /// matching local signer, and a read returns only what this device's person may read.
     /// A batch the store refused partway commits what it wrote before the refusal.
@@ -930,7 +1013,6 @@ impl Workspaces {
         context: &crate::apps::services::ResourceRequestContext,
         mut command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
-        use tilo_resource_store::wire::{Command, Reply, read};
         let workspace = context.workspace_id();
         let device = self.member_identity()?;
         let writing = command.writes();
@@ -953,66 +1035,30 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         if !writing {
-            let may_read = may_read(hex::encode(device.cert.user_public_key));
-            let mut governed = state.lock().await;
-            let store = governed.store_with_surfaces();
-            let answer = match &command {
-                Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
-                    Reply::Versions(
-                        store
-                            .read_versions(kind, id)
-                            .map_err(|error| error.to_string())?,
-                    )
-                }
-                Command::Versions { .. } => Reply::Versions(Vec::new()),
-                _ => read(store, &command, &may_read).unwrap_or(Reply::Written),
-            };
-            drop(governed);
-            return Ok(answer);
+            return self.resource_read(&state, &device, &command).await;
         }
-        let mut governed = state.lock_owned().await;
+        let governed = state.lock_owned().await;
+        self.write_resources(governed, device, context.app_id(), command)
+            .await
+    }
+
+    /// Carry out the write `command` of `app` on the workspace `governed` holds, as `device`,
+    /// holding the workspace until the last of its frames is kept.
+    #[cfg(feature = "apps")]
+    async fn write_resources(
+        &self,
+        mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
+        device: std::sync::Arc<super::MemberDevice>,
+        app: &str,
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        use tilo_resource_store::wire::Reply;
+        if self
+            .put_in_place(&mut governed, &device, app, &command)
+            .await?
         {
-            if let Command::Put {
-                kind,
-                id,
-                resource,
-                stamp,
-            } = &command
-                && governed.member.is_none()
-                && resource.readers == collab_types::EVERY_MEMBER
-                && governed
-                    .resources
-                    .store_mut()
-                    .index()
-                    .get(kind, id)
-                    .is_some_and(|held| {
-                        held.parent == resource.parent
-                            && held.order == resource.order
-                            && collab_types::store_document_readers(&held.doc)
-                                == Some(collab_types::EVERY_MEMBER)
-                    })
-            {
-                let admit = |_: &tilo_resource_store::Proposal<'_>| true;
-                let write = governed.store_with_surfaces().draft_field_update(
-                    (kind, id),
-                    resource,
-                    stamp,
-                    device.device(),
-                    None,
-                    &admit,
-                )?;
-                if let Some(write) = write {
-                    self.commit_resource_update(
-                        &mut governed,
-                        &device,
-                        context.app_id(),
-                        &write,
-                        |_| true,
-                    )
-                    .await?;
-                }
-                return Ok(Reply::Written);
-            }
+            drop(governed);
+            return Ok(Reply::Written);
         }
 
         let (writes, refusal) =
@@ -1020,7 +1066,7 @@ impl Workspaces {
                 Ok(writes) => (writes, None),
                 Err(refused) => (refused.written, Some(refused.error.to_string())),
             };
-        let app = context.app_id().to_owned();
+        let app = app.to_owned();
         let mut candidate = governed.peer().clone();
         let mut documents = BTreeSet::new();
         if writes.iter().any(|write| {
