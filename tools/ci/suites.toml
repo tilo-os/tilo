@@ -1776,17 +1776,9 @@ reason = "needs a whole tilo.sh stack and a FUSE mount, and the tilo-sh-programs
 check = "peer-handover"
 
 [[unrequired]]
-suite = "os/containers/tilo-sh/test-server-handover.sh"
-reason = "needs the programs and server context of an earlier build, named in its environment (TILO_HANDOVER_FROM_PROGRAMS, TILO_HANDOVER_FROM_LOUNGE), and two whole tilo.sh stacks under bwrap; it is run by hand against the build a workspace is handed over from"
-
-[[unrequired]]
 suite = "os/containers/tilo-sh/test-peer-kill-midwrite.sh"
 reason = "needs a whole tilo.sh stack and a FUSE mount, and minutes for the bulk write and its convergence; the peer-kill-midwrite check brings one up when named"
 check = "peer-kill-midwrite"
-
-[[unrequired]]
-suite = "os/containers/tilo-sh/test-warm-restart.sh"
-reason = "restarts a stack after changing a crate, so the stack rebuilds the web bundle from scratch in its own build directory: the checks that bring a stack up (e2e, tilo-sh-local-vm) hand it programs built elsewhere and build nothing, and a job that did compile it would pay a cold bundle build and wasm-split; it is the local bundle's own loop, run where the bundle is being worked on"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-wait-list.sh"
@@ -2257,10 +2249,6 @@ reason = "runs as the graphical user inside an installed Fedora VM with the ship
 [[covered]]
 suite = "os/tests/windows_vm_schema.sh"
 check = "windows-vm-schema"
-
-[[unrequired]]
-suite = "scripts/two-host-sync-test.sh"
-reason = "manual smoke test across two hosts on a LAN"
 
 [[unrequired]]
 suite = "tools/tests/test_vendor_history.sh"

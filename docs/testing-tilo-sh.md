@@ -46,15 +46,6 @@ Terminal also carries the stack's own settings (its state, port base, build tool
 and model), so `stack.sh restart --detach server web` typed there acts on this
 stack.
 
-`os/containers/tilo-sh/test-warm-restart.sh` checks that loop: it changes one
-crate, restarts the web entry, waits for the site to serve the new bundle, and
-then fetches the start module and every split module the site serves and
-instantiates them together the way the page's loader links them. A split
-module the start module does not answer, or answers with another signature —
-the browser's "function signature mismatch" — fails there, and never in the
-page. It prints what the restart cost; `--no-change` measures the same loop
-with nothing changed.
-
 The server keeps no sealed store of its own: every sign-in, provider key and
 vault item is an entry of its workspace's vault, the document Passwords keeps,
 and `stack.sh vaults` fails where a store of the server's own lies in its
@@ -286,31 +277,6 @@ already, so the stack compiles and lays out nothing. With `--images`,
 `TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_API` and `TILO_SH_IMAGE_WEB` each take an
 OCI archive or a registry reference; a release candidate's `sha-<commit>`
 images reproduce what is deployed.
-
-## Handing a workspace over from an earlier build
-
-`os/containers/tilo-sh/test-server-handover.sh WORK` hands a workspace over,
-peer to peer, from a server of an earlier build to one of this checkout. It runs
-two stacks here, the earlier one on port base 26500 and this checkout's on 26600.
-The earlier server's owner has it keep a workspace with members and records in
-notes, chat, files and mail. The second server is another server of the same
-person, as in a real move: it starts with the earlier stack's workspace root and
-its Lounge's id on a fresh state, founds nothing under that id, and comes up once
-the earlier server hands it the Lounge (`workspace/servers#add`). The owner then
-asks the earlier server for `workspace/servers#add` of the workspace with the
-second server's site. The check reads every record back from the
-second server, writes on each side and reads each write on the other. It then
-lets the earlier server go from the second one (`workspace/servers#remove`) and
-reads the workspace again with the earlier stack stopped. Each step prints PASS
-or FAIL with the error the API answered, and `WORK/steps` keeps what each step
-read.
-
-The earlier build comes from the environment, so the check runs against any
-build: `TILO_HANDOVER_FROM_PROGRAMS` names its programs (its own
-`build-on-builder.sh … programs` stage) and `TILO_HANDOVER_FROM_LOUNGE` its
-server context, laid out by its own `tools/ci/publish/lounge-context.sh` with
-its own font catalog. `TILO_SH_PROGRAMS` and `TILO_SH_FONTS` are this
-checkout's. Neither stack is reached through a relay of the web.
 
 ## Releasing
 
