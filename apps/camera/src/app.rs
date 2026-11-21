@@ -39,7 +39,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::ActionEmitter;
-use ui::widget::{CropSelection, Image, ImageCropEditor, ImageFit, Popover, Widget};
+use ui::widget::{CropSelection, Image, ImageCropEditor, ImageFit, Popover, TaffyTreeExt, Widget};
 use winit::event::WindowEvent;
 
 use crate::actions::CameraEffect;
@@ -2730,17 +2730,16 @@ impl Widget for CameraApp {
         }
         // The hosted dropdowns are children so they join focus order and the
         // semantic tree; the document view places them itself.
-        #[allow(clippy::unwrap_used, reason = "adding a node to the tree cannot fail")]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    size: Size::from_percent(1.0, 1.0),
-                    ..Default::default()
-                },
-                &self.document_controls.nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        let children = self.document_controls.nodes.clone();
+        let node = taffy.widget_node(
+            Style {
+                size: Size::from_percent(1.0, 1.0),
+                ..Default::default()
+            },
+            &children,
+            node_map,
+            self,
+        );
         self.node = Some(node);
         node
     }
