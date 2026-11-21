@@ -14,6 +14,13 @@ impl Arrivals {
             .send_modify(|count| *count = count.wrapping_add(1));
     }
 
+    /// How many writes another device made have landed: what a look that reads this device's
+    /// workspaces compares, so a write that reached only its workspace service is read.
+    #[must_use]
+    pub fn now(&self) -> u64 {
+        *self.landed.borrow()
+    }
+
     /// Wait for the next write another device makes to land, from a value read before the wait:
     /// a receiver answers at once when one landed in between, and sleeps until one does.
     #[must_use]

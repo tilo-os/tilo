@@ -318,7 +318,7 @@ fn a_record_skipped_for_its_write_is_read_once_the_write_is_done() {
         ..Layouts::default()
     };
     let key = (workspace, Route::layout());
-    let at = |revision| EngineVersion { revision, keys: 0 };
+    let at = |revision| EngineVersion { revision, keys: 0, landed: 0 };
     let read_at = |revision| {
         desktops.held(&key, |held| {
             held.read = true;
@@ -368,12 +368,50 @@ fn a_record_skipped_for_its_write_is_read_once_the_write_is_done() {
         !desktops.settled(
             EngineVersion {
                 revision: 8,
-                keys: 1
+                keys: 1,
+                landed: 0
             },
             &tree
         ),
         "a record read before its keys came is read again"
     );
+    read_at_version(&desktops, &key, EngineVersion {
+        revision: 8,
+        keys: 1,
+        landed: 0,
+    });
+    assert!(
+        desktops.settled(
+            EngineVersion {
+                revision: 8,
+                keys: 1,
+                landed: 0
+            },
+            &tree
+        ),
+        "the record read with its keys came has nothing more to read"
+    );
+    // A write another device made that reached only this device's workspace service moves the
+    // version without moving the engine's: the record is read again.
+    assert!(
+        !desktops.settled(
+            EngineVersion {
+                revision: 8,
+                keys: 1,
+                landed: 1
+            },
+            &tree
+        ),
+        "a write that landed in this device's service is read again"
+    );
+}
+
+/// Read `key`'s record at `version`, as a look that read it leaves it.
+fn read_at_version(desktops: &Layouts, key: &Key, version: EngineVersion) {
+    desktops.held(key, |held| {
+        held.read = true;
+        held.read_at = Some(version);
+    });
 }
 
 /// A key whose signatures wait for the test to let them go: a write that signs through it is

@@ -144,13 +144,19 @@ struct Held {
     read_at: Option<EngineVersion>,
 }
 
-/// Where the engine's copy of the workspaces stood at a look: its revision, and the generation of
-/// the channel keys that open their sealed records. A record read at one reads the same until
-/// either moves: keys that arrive open writes the copy already held.
+/// Where the workspaces' documents stood at a look: the engine's revision, the generation of the
+/// channel keys that open their sealed records, and how many writes another device made have
+/// landed. A record read at one reads the same until one of them moves: keys that arrive open
+/// writes the copy already held, and a write that reached this device's workspace service without
+/// touching the engine is a landing ([`crate::layout::EngineVersion::landed`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct EngineVersion {
     pub(crate) revision: u64,
     pub(crate) keys: u64,
+    /// Writes another device made that landed in this device's workspace service, which the
+    /// engine's own revision does not count: the layouts and views this session shows are read
+    /// from the service, so a landing is a record to read again.
+    pub(crate) landed: u64,
 }
 
 impl EngineVersion {
@@ -158,6 +164,7 @@ impl EngineVersion {
         Self {
             revision: engine.owner().revision(),
             keys: engine.keys().generation(),
+            landed: engine.arrivals().now(),
         }
     }
 }
