@@ -14,11 +14,6 @@
 //! exchange is the collaboration broker's — content travels on the record's
 //! route (`tilo_workspace_service::content`), never between daemons.
 //!
-//! A host can also offer an explicit owner action
-//! through [`LegacyMediaImportHost`]: it verifies a bounded selection and creates new
-//! workspace references, without claiming historical ownership. That host-only
-//! authority is not exposed on the ordinary blob capability or socket.
-//!
 //! Reachability is per workspace, not per app, because apps in one hand content
 //! to one another by hash (a typed action's content resource, a launch). Bytes
 //! that happen to be in the store for another reason (a file, another
@@ -56,13 +51,6 @@ use runtime_fs::blobs::{
 
 use crate::public_content::PublicContent;
 use crate::store::ContentStore;
-
-mod import;
-pub use import::{
-    LegacyImportApproval, LegacyImportAuthority, LegacyImportPermit, LegacyImportRequest,
-    LegacyMediaImportHost, MAX_LEGACY_IMPORT_BYTES, MAX_LEGACY_IMPORT_ITEMS,
-    MAX_LEGACY_IMPORT_LIFETIME,
-};
 
 const TAG_PREFIX: &str = "tilo/media/v1/";
 
