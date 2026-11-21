@@ -1,5 +1,5 @@
 use super::{
-    Deserialize, DeviceCert, DeviceSigner, Event, JsError, RefCell, RevocationEntry,
+    Deserialize, DeviceCert, Event, JsError, RefCell, RevocationEntry,
     RevocationList, Serialize, WorkspaceId, hex32, js_error,
 };
 
