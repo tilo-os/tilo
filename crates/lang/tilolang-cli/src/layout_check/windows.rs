@@ -1328,7 +1328,7 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
 /// — once, where what it makes will stand.
 fn rows_with_depth(
     node: &ui::headless::InspectionNode,
-    out: &mut Vec<(String, ui::widget::RowLayout)>,
+    out: &mut Vec<(String, ui::widget::RowLayout, [f64; 4])>,
 ) {
     if let Some(ui::widget::LayoutInfo::Row(row)) = &node.layout {
         let name = node
@@ -1336,7 +1336,7 @@ fn rows_with_depth(
             .as_ref()
             .and_then(|said| said.name.clone())
             .unwrap_or_default();
-        out.push((name, *row));
+        out.push((name, *row, node.rect));
     }
     for child in &node.children {
         rows_with_depth(child, out);
@@ -1371,17 +1371,17 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
     let mut laid = Vec::new();
     rows_with_depth(&staged.harness().inspection().root, &mut laid);
     let of = |title: &str| {
-        laid.iter().find(|(name, _)| name == title).map_or_else(
+        laid.iter().find(|(name, _, _)| name == title).map_or_else(
             || {
-                let names: Vec<&str> = laid.iter().map(|(name, _)| name.as_str()).collect();
+                let names: Vec<&str> = laid.iter().map(|(name, _, _)| name.as_str()).collect();
                 panic!("the tree draws {title:?}: {names:?}")
             },
-            |(_, row)| *row,
+            |(_, row, rect)| (*row, rect[3]),
         )
     };
-    let plan = of("Q3 plan");
-    let standups = of("Standups");
-    let monday = of("Monday");
+    let (plan, plan_height) = of("Q3 plan");
+    let (standups, standups_height) = of("Standups");
+    let (monday, _) = of("Monday");
     assert_eq!(
         (plan.depth, standups.depth, monday.depth),
         (0, 1, 2),
@@ -1393,6 +1393,12 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
         plan.content_left,
         standups.content_left,
         monday.content_left
+    );
+    // The sidebar's tree is drawn: the notes' rows have a row's height. A tree given no room
+    // (its stack hugging the sidebar instead of filling it) reports rows and paints none.
+    assert!(
+        plan_height > 0.0 && standups_height > 0.0,
+        "the tree's rows are drawn in the sidebar: Q3 plan {plan_height}, Standups {standups_height}"
     );
 
     // One control starts a note: the window's bar offers it as the window's own action, and the
@@ -1439,6 +1445,104 @@ fn a_notebook_is_a_tree_beside_the_note_it_opens() {
             == Some(&tilo_render_protocol::patch::Value::text("File"))),
         "the sidebar's header keeps the notebook's file commands: {menus:?}"
     );
+}
+
+/// A notebook whose note says its sections keeps the tree in its sidebar: the outline of the note
+/// open stands under the notes, and the notes keep the room they list in — at a desktop's width
+/// and in a phone's, where the sidebar is the window's first screen.
+#[test]
+fn a_notebooks_tree_keeps_its_room_under_the_notes_outline() {
+    tilo_app_window::i18n::ensure();
+    let packages = app_packages("notes");
+    let app = packages.0.last().expect("the app").meta.app.clone();
+    for size in [(1280, 800), (390, 844)] {
+        let mut staged = stage::Staged::over(
+            &app,
+            &packages,
+            "the notebook and a note's outline",
+            size,
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        let input = if size.0 < 600 {
+            ui::interaction::InteractionEnvironment::TOUCH
+        } else {
+            ui::interaction::InteractionEnvironment::POINTER
+        };
+        staged
+            .lay_out(size, ui::Theme::light(), input, 1.0)
+            .expect("the notes lay out");
+        if size.0 < 600 {
+            // A phone opens on the note the notebook shows; Back goes to the notes' list.
+            let mut all = Vec::new();
+            named_with_rect(&staged.harness().inspection().root, &mut all);
+            let back = all
+                .iter()
+                .find(|(said, rect)| said == "Back" && rect[2] > 0.0)
+                .map_or_else(
+                    || panic!("the window offers the way back at {size:?}: {all:?}"),
+                    |(_, rect)| *rect,
+                );
+            staged
+                .press_at(back[0] + back[2] / 2.0, back[1] + back[3] / 2.0)
+                .expect("the window goes back to its notes");
+            staged
+                .lay_out(size, ui::Theme::light(), input, 1.0)
+                .expect("the notes lay out again");
+        }
+        let mut laid = Vec::new();
+        rows_with_depth(&staged.harness().inspection().root, &mut laid);
+        let row = |name: &str| {
+            laid.iter().find(|(said, _, _)| said == name).map_or_else(
+                || {
+                    let names: Vec<&str> = laid.iter().map(|(said, _, _)| said.as_str()).collect();
+                    panic!("the tree draws {name:?} at {size:?}: {names:?}")
+                },
+                |(_, _, rect)| *rect,
+            )
+        };
+        let note = row("Autumn plan");
+        assert!(
+            note[2] > 0.0 && note[3] > 0.0,
+            "the sidebar draws the notes' tree at {size:?}, where the note's outline stands too: \
+             {note:?}"
+        );
+        // The outline is the note's headings, drawn under the notes, in the sidebar.
+        let mut drawn = Vec::new();
+        named_with_rect(&staged.harness().inspection().root, &mut drawn);
+        let heading = drawn
+            .iter()
+            .find(|(said, rect)| said == "Ship the editor" && rect[2] > 0.0)
+            .map_or_else(
+                || {
+                    let names: Vec<&str> = drawn.iter().map(|(said, _)| said.as_str()).collect();
+                    panic!("the window draws the note's heading at {size:?}: {names:?}")
+                },
+                |(_, rect)| *rect,
+            );
+        assert!(
+            heading[1] >= note[1] + note[3],
+            "the outline stands under the tree at {size:?}: note {note:?}, heading {heading:?}"
+        );
+    }
+}
+
+/// Every node of `node` and its children that says a name, with where it is drawn: a widget the
+/// window draws as a row or as anything else.
+fn named_with_rect(node: &ui::headless::InspectionNode, out: &mut Vec<(String, [f64; 4])>) {
+    if let Some(name) = node
+        .semantics
+        .as_ref()
+        .and_then(|said| said.name.clone())
+        .filter(|name| !name.is_empty())
+    {
+        out.push((name, node.rect));
+    }
+    for child in &node.children {
+        named_with_rect(child, out);
+    }
 }
 
 /// `shell` is the traditional desktop staged at 1280×800 in the light theme, which this lays out.

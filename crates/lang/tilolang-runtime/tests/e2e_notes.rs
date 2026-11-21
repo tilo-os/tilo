@@ -175,10 +175,7 @@ mod cases {
         }
 
         fn child_of(&self, parent: &ResourceRef) -> ResourceRef {
-            returned_ref(self.call(
-                "new_child",
-                vec![Value::resource(&self.nb), Value::resource(parent)],
-            ))
+            returned_ref(self.call("new_child", vec![Value::resource(parent)]))
         }
 
         fn titled(&self, title: &str) -> ResourceRef {
@@ -704,32 +701,44 @@ mod cases {
         assert_eq!(labels(&n.window()), ["Plan", "Meetings", "Agenda", "Loose"]);
     }
 
-    /// The note a person writes is the one the window starts a note under: the bar's control
-    /// names the open note, and carries the chord that reaches it.
+    /// The note a person writes is the one the window starts a note under: the open note's row
+    /// offers it — as `Ctrl+Shift+N` does — and the note it makes stands under the one open.
     #[test]
     fn the_open_notes_sub_note_is_a_keystroke_away() {
         let n = Notes::new();
         let plan = n.titled("Q3 plan");
         let mut view = n.window();
-        let shell = of_kind(view.tree(), "ui.NavShell")[0];
-        let head = part(shell, "sidebar_actions");
-        let button = of_kind(head, "ui.Button")
+        // The action is the note's own, so the row it stands for offers it.
+        let button = of_kind(the_tree(&view), "ui.Button")
             .into_iter()
             .find(|button| {
                 matches!(button.props.get("label"), Some(Value::Text(label)) if label == "New sub-note")
             })
-            .unwrap_or_else(|| panic!("no sub-note control in\n{}", dump(head)));
-        assert_eq!(
-            button.props.get("key"),
-            Some(&Value::text("Ctrl+Shift+N")),
-            "the control carries the chord the note page's sub-note takes"
-        );
+            .unwrap_or_else(|| panic!("no sub-note control in\n{}", dump(the_tree(&view))));
         view.fire(&button.key.clone(), "press").unwrap();
         view.poll_patches().unwrap();
         assert_eq!(
             labels(&n.window()),
             ["Q3 plan", "Untitled"],
             "a note is started under the one open, with no title of its own yet"
+        );
+        let made = n
+            .rt
+            .project(&n.rt.read(&n.nb, "notes").unwrap())["count"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(made, 2, "the notebook holds the note the control made");
+        let key = n
+            .app
+            .meta()
+            .actions
+            .iter()
+            .find(|action| action.id == n.app.action("new_child"))
+            .and_then(|action| action.key.clone());
+        assert_eq!(
+            key.as_deref(),
+            Some("Ctrl+Shift+n"),
+            "a note under the open one is a keystroke away"
         );
         let _ = plan;
     }
@@ -789,6 +798,34 @@ mod cases {
             editor.props.get("reveal"),
             Some(&Value::text("2:0")),
             "the editor is asked for the block the row names"
+        );
+    }
+
+    /// A page the person imports is a note of the notebook, drawn in its tree at the top and
+    /// named by the document's first heading; the window shows it when the host shows the note
+    /// the import made, as it shows what a press made.
+    #[test]
+    fn an_imported_page_is_a_note_the_window_shows() {
+        let n = Notes::new();
+        n.titled("Trip to Lisbon");
+        let imported = n.import_file("Lisbon.md", "# Lisbon in May\n\nA week of trams and tiles.");
+        let mut view = n.window();
+        assert_eq!(
+            labels(&view),
+            ["Trip to Lisbon", "Lisbon in May"],
+            "the imported page is a row of the notebook's tree"
+        );
+        // The window shows what the import made: its view answers `on show` for the note, and
+        // the row it opens is the one chosen.
+        assert!(
+            view.show(&imported).unwrap(),
+            "the notebook shows the note the import made"
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(
+            the_tree(&view).props.get("selection"),
+            Some(&Value::List(vec![Value::resource(&imported)])),
+            "the row of the note the import made is the one chosen"
         );
     }
 

@@ -69,15 +69,17 @@ primary action new_note(nb: Notebook, title: Text = "", body: Text = "") -> Note
 
 /// Starts a note inside `n`'s own, after the notes it already holds: the note the window has
 /// open too, so a person writing one starts the note it stands under without finding its row.
-action new_child(nb: Notebook, n: Note) -> Note (
+/// It is `n`'s action, so the window offers it for the note it shows and a person reaches it by
+/// the shortcut or the note's row.
+action new_child(n: Note) -> Note (
     icon: .plus,
     label: "New sub-note",
     key: "Ctrl+Shift+N",
 ) {
-    let made = nb.notes.insert(Note(title: "", parent: n))
-    if let last = nb.notes.filter(x -> x.parent == n and x != made).last() {
-        nb.notes.move(made, after: last)
-    } else { nb.notes.move(made, after: n) }
+    let made = notebook.notes.insert(Note(title: "", parent: n))
+    if let last = notebook.notes.filter(x -> x.parent == n and x != made).last() {
+        notebook.notes.move(made, after: last)
+    } else { notebook.notes.move(made, after: n) }
     made
 }
 
@@ -879,18 +881,11 @@ view note_outline(headings: List<Text>, reveal: State<Option<Text>>) {
 
 /// The notebook's controls in the window's bar, given the note open beside the tree: its file
 /// commands, the notebook's own and the open note's. What makes a note is the window's primary
-/// action, which the bar offers once, so no button of the head's draws it again.
+/// action, which the bar offers once, so no button of the head's draws it again; a note under the
+/// open one is one of the window's own actions, in the bar's menu and on `Ctrl+Shift+N`, and a
+/// row's hover offers the same under the note it will stand in (`add_child`).
 view notebook_head(open: Option<Note>) {
-    let nb = root Notebook
-    row(gap: .tight) {
-        notebook_menu(nb, open)
-        // The note open, written into: a note of its own under it, a keystroke away.
-        if let n = open {
-            ui.Button("New sub-note", icon: .plus, icon_only: true, key: "Ctrl+Shift+N") {
-                on press: new_child(nb, n)
-            }
-        }
-    }
+    notebook_menu(root Notebook, open)
 }
 
 /// The notebook's file commands: a Markdown file or a zip of them in, the whole notebook out,
@@ -925,7 +920,7 @@ view notebook_menu(nb: Notebook, open: Option<Note>) {
 /// The control a row shows while it is hovered: a note inside it.
 view add_child(n: Note) {
     ui.Button("New sub-note", icon: .plus, icon_only: true) {
-        on press: new_child(notebook, n)
+        on press: new_child(n)
     }
 }
 
@@ -1543,6 +1538,20 @@ scenario "a note with headings" -> Note {
             ),
         ),
     )
+}
+
+/// The notebook whose open note says its sections: the tree of notes, and under it the outline
+/// of the note open beside them.
+scenario "the notebook and a note's outline" -> Notebook {
+    notebook.notes.insert(
+        Note(
+            title: "Autumn plan",
+            body: RichText.from_markdown(
+                "## Ship the editor\n\nOffline first, then sharing.\n\n## Grow the garden\n\nTomatoes along the south wall.",
+            ),
+        ),
+    )
+    notebook
 }
 
 /// A notebook nobody has written in yet, as a first window opens on it: the window says what it
