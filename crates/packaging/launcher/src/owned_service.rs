@@ -1588,7 +1588,7 @@ mod tests {
             }
         }
     }
-    use tilo_test_env::idle::context_switches;
+    use tilo_test_env::idle::{context_switches, voluntary_switches};
 
     const WAITING_PROVIDER: &str =
         "trap 'touch /fixture/termed; exit 0' TERM; @WRITER@ while :; do sleep 0.02; done";
@@ -1597,14 +1597,15 @@ mod tests {
     fn owned_service_supervisor_sleeps_while_child_runs() {
         let mut running = Running::with_script(WAITING_PROVIDER);
         let tid = running.worker_tid.to_string();
-        let before = context_switches(&tid);
+        let before = voluntary_switches(&tid);
         let started = Instant::now();
         std::thread::sleep(Duration::from_millis(400));
         let window = started.elapsed();
-        let idle = context_switches(&tid).saturating_sub(before);
-        // Only the authority recheck may wake it, however long the window really lasted, and a woken
-        // thread may be preempted once while it runs; the 10 ms poll this replaces switched about
-        // forty times in 400 ms.
+        // A wake the supervisor asked for is a voluntary switch; a preemption a loaded node
+        // imposes is not a wake. Only the authority recheck may wake it, however long the window
+        // really lasted, and a woken thread may be preempted once while it runs; the 10 ms poll
+        // this replaces switched about forty times in 400 ms.
+        let idle = voluntary_switches(&tid).saturating_sub(before);
         let rechecks = window.as_millis() / AUTHORITY_RECHECK.as_millis() + 1;
         let allowed = u64::try_from(2 * rechecks).unwrap();
         assert!(

@@ -48,6 +48,15 @@ pub fn context_switches(tid: &str) -> u64 {
     voluntary.saturating_add(involuntary)
 }
 
+/// How many times the thread `tid` gave up the processor of its own accord: a wake it asked
+/// for, not a preemption a loaded machine imposed on it.
+#[must_use]
+pub fn voluntary_switches(tid: &str) -> u64 {
+    let status =
+        std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).expect("thread status");
+    switch_counts(&status).0
+}
+
 pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
     let before = own_thread_ids();
     let started = start();
