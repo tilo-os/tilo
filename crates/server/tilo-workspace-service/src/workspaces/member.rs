@@ -645,22 +645,27 @@ impl Workspaces {
         self.inner.member.device.get().map(|device| device.device())
     }
 
-    /// Every workspace held here as a member copy.
+    /// Every workspace held here as a member copy. Read without any
+    /// workspace's lock ([`super::readings`]): a workspace busy taking in a
+    /// flood of changes is still held here, and a read of it never waits
+    /// behind them.
     pub async fn member_ids(&self) -> Vec<WorkspaceId> {
-        let states = self
+        let held: Vec<WorkspaceId> = self
             .inner
             .workspaces
             .lock()
             .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+            .keys()
+            .filter_map(|workspace| WorkspaceId::parse(workspace))
+            .collect();
         let mut ids = Vec::new();
-        for state in states {
-            if let Ok(governed) = state.try_lock()
-                && governed.member.is_some()
+        for workspace in held {
+            if self
+                .reading(workspace)
+                .await
+                .is_some_and(|reading| reading.member)
             {
-                ids.push(governed.workspace_id());
+                ids.push(workspace);
             }
         }
         ids
@@ -670,16 +675,8 @@ impl Workspaces {
     /// governance gives it, and the replica it syncs. `None` for a workspace
     /// this service does not hold as a member copy.
     pub async fn member_copy(&self, workspace: WorkspaceId) -> Option<(String, StatePeer)> {
-        let state = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace.to_string())
-            .cloned()?;
-        let governed = state.lock().await;
-        governed.member.as_ref()?;
-        Some((governed.name(), governed.peer().clone()))
+        let reading = self.reading(workspace).await?;
+        reading.member.then(|| named_copy(&reading))
     }
 
     /// `workspace`'s copy as this device holds it, when this device governs
@@ -687,18 +684,8 @@ impl Workspaces {
     /// the replica it keeps. `None` for a member copy or a workspace not held
     /// here.
     pub async fn governed_copy(&self, workspace: WorkspaceId) -> Option<(String, StatePeer)> {
-        let state = self
-            .inner
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace.to_string())
-            .cloned()?;
-        let governed = state.lock().await;
-        governed
-            .member
-            .is_none()
-            .then(|| (governed.name(), governed.peer().clone()))
+        let reading = self.reading(workspace).await?;
+        (!reading.member).then(|| named_copy(&reading))
     }
 
     /// Send `message` on `workspace`'s member link, while it is up: whether
@@ -1619,4 +1606,12 @@ async fn open_side_by_side(
                 .map_err(|error| super::document_format::unopened(&path, dir, &error))
         })
         .collect()
+}
+
+/// The name a workspace's governance gives it, and its replica, as `reading`
+/// reads them now.
+fn named_copy(reading: &super::readings::Reading) -> (String, StatePeer) {
+    let peer = reading.replica.read(StatePeer::clone);
+    let name = peer.governance().workspace_name().unwrap_or_default();
+    (name, peer)
 }
