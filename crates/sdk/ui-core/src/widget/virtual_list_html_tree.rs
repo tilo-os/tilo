@@ -64,8 +64,7 @@ impl VirtualRows {
         // notes given it then: they are taken out, so each row is given them once, from the rows
         // this frame holds.
         for row in &mut rows {
-            let disclosure = format!("{}/disclosure", row.path);
-            let notes = format!("{}/notes", row.path);
+            let (disclosure, notes) = (disclosure_path(&row.path), notes_path(&row.path));
             row.children
                 .retain(|child| child.path != disclosure && child.path != notes);
         }
@@ -76,13 +75,7 @@ impl VirtualRows {
         let by_order = rows.len() == self.mounted.len();
         let mut paired: Vec<(u32, ListKey, Composed)> = Vec::with_capacity(rows.len());
         let mut loose: Vec<Composed> = Vec::new();
-        for (at, mut row) in rows.into_iter().enumerate() {
-            // A row kept from the frame before holds the disclosure and the notes the tree gave
-            // it then, and those notes the rows under it as they were: the tree gives them again
-            // below, from the rows as they are now.
-            let (disclosure, notes) = (disclosure_path(&row.path), notes_path(&row.path));
-            row.children
-                .retain(|part| part.path != disclosure && part.path != notes);
+        for (at, row) in rows.into_iter().enumerate() {
             let mounted = if by_order {
                 self.mounted.get(at)
             } else {
