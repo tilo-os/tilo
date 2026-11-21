@@ -569,9 +569,14 @@ fn retained_message(
     retained: &crate::workspace_documents::RetainedBody,
     own: bool,
 ) -> Option<neighbour_wire::NeighbourMsg> {
+    if own {
+        return tilo_failure::ignored!(
+            "not all the server's device retains under its key is a write to a document",
+            neighbour_wire::NeighbourMsg::decode(&retained.body).ok()
+        );
+    }
     match neighbour_wire::NeighbourMsg::decode(&retained.body) {
         Ok(message) => Some(message),
-        Err(_) if own => None,
         Err(error) => {
             tracing::warn!(
                 author = %hex::encode(retained.author),
