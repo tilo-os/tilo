@@ -1395,6 +1395,23 @@ impl Engine {
             .unwrap_or(false)
     }
 
+    /// Whether the governance this device holds of `workspace` refuses this person inviting into
+    /// it: their part there does not let them, or this device is not in it. A workspace this
+    /// device has no committed view of yet — one it is still taking in — is not refused: it has no
+    /// part to read here yet, and its holder judges the invitation once it is.
+    #[must_use]
+    pub fn invite_refused(&self, workspace: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        let key = self.identity().signer.as_ref();
+        self.owner
+            .with_current(workspace, |view| {
+                Ok(!view.peer().governance().may_invite(key, tilo_clock::wall()))
+            })
+            .unwrap_or(false)
+    }
+
     /// Whether this device's person may make administrators in `workspace`, as its governance
     /// answers it: whether the invite sheet offers an administrator's invitation.
     #[must_use]

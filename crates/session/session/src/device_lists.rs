@@ -655,10 +655,12 @@ impl DeviceLists {
     ) -> Result<Started, ApiError> {
         let engine = self.engine()?;
         let workspace_id = self.workspace_id(workspace)?;
-        // A workspace held here whose governance does not let this person invite is refused for
-        // that reason, before it reaches anywhere: what an app shares is what its person may hand
-        // out, and a member who may not invite learns which part of the ask they lack.
-        if engine.holds(workspace_id) && !engine.may_invite(&workspace_id.to_string()) {
+        // A workspace whose governance this device reads, and which does not let this person
+        // invite, is refused for that reason, before it reaches anywhere: what an app shares is
+        // what its person may hand out, and a member who may not invite learns which part of the
+        // ask they lack. A workspace still being taken in has no part to read here yet; the ask
+        // waits for its holder, which judges the invitation once the part is held.
+        if engine.invite_refused(&workspace_id.to_string()) {
             return Err(ApiError::Failed(
                 "the person's part in this workspace may not invite".to_owned(),
             ));
