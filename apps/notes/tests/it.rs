@@ -59,6 +59,8 @@ mod paste_image;
 mod read_content;
 #[path = "responsive_drawer.rs"]
 mod responsive_drawer;
+#[path = "rust_notebook_fixture.rs"]
+mod rust_notebook_fixture;
 #[path = "scroll_damage.rs"]
 mod scroll_damage;
 #[path = "scroll_stability.rs"]
