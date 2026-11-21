@@ -1,8 +1,8 @@
 //! A list as elements: each row is named by the row it is, a tree's notes nest in a `<ul>` inside
-//! the row's own `<li>`, and a branch row carries the disclosure its painted chevron stands for. A
-//! page therefore shows the same rows the window paints, presses a row the list's own way rather
-//! than where the frame put it, folds a branch with the same action, and reads the rows at the
-//! levels the list gives them.
+//! the row's own `<li>`, under the row's own line, and a branch row carries the disclosure its
+//! painted chevron stands for. A page therefore shows the same rows the window paints, presses a
+//! row the list's own way rather than where the frame put it, folds a branch with the same
+//! action, and reads the rows at the levels the list gives them.
 
 use std::iter::Peekable;
 
@@ -53,21 +53,38 @@ impl VirtualRows {
         }
     }
 
-    /// The list's rows as elements: a flat list where the list is not a tree, and otherwise
-    /// each row's notes nested in a `<ul>` inside the row's own element, with a branch row's
-    /// disclosure where its chevron does.
-    pub(crate) fn tree_html_rows(&self, mut rows: Vec<Composed>, theme: &Theme) -> Vec<Composed> {
-        let Some(marks) = self.tree.as_ref() else {
-            return rows;
-        };
-        // A row the last frame composed and this one keeps as it was holds the disclosure and
-        // notes given it then: they are taken out, so each row is given them once, from the rows
-        // this frame holds.
-        for row in &mut rows {
+    /// A row the last frame composed and this one keeps as it was holds what the tree gave it
+    /// then (its own line apart from its notes, the notes, the disclosure): it is taken out, so
+    /// the row is as it composed itself, stands at its own box, and each row is given its parts
+    /// once, from the rows this frame holds.
+    pub(super) fn take_tree_parts(&self, rows: &mut [Composed]) {
+        if self.tree.is_none() {
+            return;
+        }
+        for row in rows {
+            let line = line_path(&row.path);
+            if let Some(at) = row.children.iter().position(|child| child.path == line) {
+                let line = row.children.swap_remove(at);
+                row.rect = line.rect;
+                row.layout = line.layout;
+                row.flows = line.flows;
+                row.ground = line.ground;
+                row.own = line.own;
+                row.children = line.children;
+            }
             let (disclosure, notes) = (disclosure_path(&row.path), notes_path(&row.path));
             row.children
                 .retain(|child| child.path != disclosure && child.path != notes);
         }
+    }
+
+    /// The list's rows as elements: a flat list where the list is not a tree, and otherwise
+    /// each row's notes nested in a `<ul>` inside the row's own element, under the row's own
+    /// line, with a branch row's disclosure where its chevron does.
+    pub(crate) fn tree_html_rows(&self, rows: Vec<Composed>, theme: &Theme) -> Vec<Composed> {
+        let Some(marks) = self.tree.as_ref() else {
+            return rows;
+        };
         // Pair each composed row with the row the list holds. The composition lays out the rows
         // the list holds, in the order it holds them, so that order is what names them when the
         // two are the same set; a row whose box drifted from the one the list laid out (a page
@@ -176,7 +193,7 @@ struct Nesting {
 fn nest_rows(rows: &mut Peekable<impl Iterator<Item = Nesting>>, depth: u32) -> Vec<Composed> {
     let mut out = Vec::new();
     while rows.peek().is_some_and(|next| next.depth == depth) {
-        let Some(Nesting { holds, mut row, .. }) = rows.next() else {
+        let Some(Nesting { holds, row, .. }) = rows.next() else {
             break;
         };
         let deeper = rows.peek().map(|next| next.depth).filter(|at| *at > depth);
@@ -184,8 +201,7 @@ fn nest_rows(rows: &mut Peekable<impl Iterator<Item = Nesting>>, depth: u32) -> 
             Some(deeper) if holds => {
                 let children = nest_rows(rows, deeper);
                 let notes = group(&row.path, row.rect, children);
-                row.children.push(notes);
-                out.push(row);
+                out.push(holding(row, notes));
             }
             Some(deeper) => {
                 out.push(row);
@@ -195,6 +211,36 @@ fn nest_rows(rows: &mut Peekable<impl Iterator<Item = Nesting>>, depth: u32) -> 
         }
     }
     out
+}
+
+/// `row` holding `notes` under it, as a page lays them out: the row's element is a column as
+/// tall as both, its own line first, laid out and grounded as the row composed itself, and the
+/// notes below it, as far in as the rows under it stand.
+fn holding(mut row: Composed, mut notes: Composed) -> Composed {
+    let mut line = Composed::new(line_path(&row.path), "TreeRowLine", row.rect);
+    line.tag = Some("div");
+    line.layout = row.layout.take();
+    line.flows = row.flows;
+    line.ground = row.ground.take();
+    line.own = row.own.take();
+    line.children = std::mem::take(&mut row.children);
+    let [x, y, width, height] = row.rect;
+    let [nx, ny, nwidth, nheight] = notes.rect;
+    notes.layout = Some(format!(
+        "margin:{}px 0 0 {}px;",
+        (ny - (y + height)).max(0.0),
+        (nx - x).max(0.0)
+    ));
+    row.rect = [
+        x,
+        y,
+        (x + width).max(nx + nwidth) - x,
+        (y + height).max(ny + nheight) - y,
+    ];
+    row.layout = Some("display:flex;flex-direction:column;min-width:0;".to_owned());
+    row.flows = true;
+    row.children = vec![line, notes];
+    row
 }
 
 /// `children` in a group of their own under `parent`, over the region they take.
@@ -226,6 +272,11 @@ fn group(parent: &str, row: [f64; 4], children: Vec<Composed>) -> Composed {
 /// Where the tree composes the disclosure of the row at `row`.
 fn disclosure_path(row: &str) -> String {
     format!("{row}/disclosure")
+}
+
+/// Where the tree composes the own line of a row at `row` that holds others, apart from them.
+fn line_path(row: &str) -> String {
+    format!("{row}/line")
 }
 
 /// Where the tree composes the notes of the row at `row`, the rows under it.

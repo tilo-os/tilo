@@ -517,3 +517,86 @@ fn a_conversation_shows_its_lines_where_the_list_stands() {
         }
     }
 }
+
+/// The Data page's tree, as a page lays it out: a row that holds others is a column as tall as
+/// both, its own line first and the rows under it below that line, never beside it.
+#[test]
+fn a_tree_lays_the_rows_under_a_row_out_below_it() {
+    crate::support::installed("gallery");
+    let mut app = TestApp::<TlApp>::drive_at("custom", (1280, 800)).expect("the scenario stages");
+    let harness = app.harness();
+    harness.set_scene_drawn(false);
+    harness.set_coalesce_input_frames(true);
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+        let _ = harness.compose_frame();
+    }
+    let (x, y) = words_at(harness.presented_composition(), "Data").expect("the sidebar names Data");
+    harness.click_at(x, y);
+    for _ in 0..4 {
+        let _ = harness.poll_frame();
+        let _ = harness.compose_frame();
+    }
+    let composition = harness
+        .presented_composition()
+        .expect("a composition was handed over")
+        .clone();
+    let mut holding = 0_usize;
+    let mut nodes = vec![&composition.root];
+    while let Some(node) = nodes.pop() {
+        nodes.extend(&node.children);
+        let Some(notes) = node.children.iter().find(|child| child.widget == "TreeNotes") else {
+            continue;
+        };
+        holding = holding.saturating_add(1);
+        assert!(
+            node.flows
+                && node
+                    .layout
+                    .as_deref()
+                    .is_some_and(|css| css.contains("flex-direction:column")),
+            "{}: a row holding others lays them out down the page: {:?}",
+            node.path,
+            node.layout
+        );
+        assert_eq!(
+            node.children.last().map(|child| child.path.as_str()),
+            Some(notes.path.as_str()),
+            "{}: the rows under it come after its own line",
+            node.path
+        );
+        let [x, y, width, height] = node.rect;
+        let [nx, ny, nwidth, nheight] = notes.rect;
+        assert!(
+            nx >= x - 0.5
+                && ny >= y - 0.5
+                && nx + nwidth <= x + width + 0.5
+                && ny + nheight <= y + height + 0.5,
+            "{}: the row's element at {:?} holds the rows under it at {:?}",
+            node.path,
+            node.rect,
+            notes.rect
+        );
+        for line in node.children.iter().filter(|child| child.path != notes.path) {
+            assert!(
+                line.rect[1] + line.rect[3] <= ny + 0.5,
+                "{}: {} at {:?} stands above the rows under it at {:?}",
+                node.path,
+                line.path,
+                line.rect,
+                notes.rect
+            );
+        }
+        for row in &notes.children {
+            assert!(
+                row.rect[1] >= ny - 0.5 && row.rect[0] >= nx - 0.5,
+                "{}: {} at {:?} stands inside the group at {:?}",
+                node.path,
+                row.path,
+                row.rect,
+                notes.rect
+            );
+        }
+    }
+    assert!(holding > 0, "the Data page's tree holds rows under rows");
+}

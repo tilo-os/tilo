@@ -23,7 +23,7 @@ fn find<'a>(node: &'a Composed, widget: &str) -> Vec<&'a Composed> {
 fn says(row: &Composed, title: &str) -> bool {
     row.children.iter().any(|part| {
         matches!(&part.own, Some(Own::Text(look)) if look.text == title)
-            || part.widget == "Region" && says(part, title)
+            || matches!(part.widget.as_str(), "Region" | "TreeRowLine") && says(part, title)
     })
 }
 
