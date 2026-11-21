@@ -26,6 +26,8 @@ device-keys = ["dep:tilo-workspace-keys"]
 # Content a record references, reaching the devices that may read it: what a host serves
 # for its workspaces' records, with or without apps on top.
 content = ["dep:tilo-broker-core"]
+# A workspace's file tree held in the device's own service, its bytes on the records' route.
+files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes"]
 # A session client's pages, read through the document core over the replica its engine admits
 # into: what a session's tests read their workspace through.
 session-pages = ["device-keys", "dep:tilo-session-client"]
@@ -115,6 +117,11 @@ tilo-broker-core = { path = "../../collab/broker-core", optional = true }
 tilo-workspace-keys = { path = "../../collab/workspace-keys", optional = true }
 tilo-test-env = { path = "../../dev/test-env", optional = true }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
+# The file tree's sync, which [features] files runs over this service's member copies.
+tilo-fs = { package = "tilo-fs", path = "../../system/fs", features = ["tree-sync"], optional = true }
+fs-protocol = { path = "../../system/fs-protocol", optional = true }
+iroh-blobs = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

@@ -2,8 +2,8 @@
 //! record and shown as a plain folder.
 //!
 //! A workspace's file truth is its Files app's record: the tree, one Automerge
-//! document ([`tilo_fs::namespace`]), published on the workspace's session by
-//! every device that holds it ([`tilo_fs::tree_document`]), and the bytes its
+//! document ([`tilo_fs::namespace`]), held in this device's own workspace
+//! service as every member copy holds it ([`tilo_workspace_service::files`]), and the bytes its
 //! files are made of, which travel beside the record on the record's own route
 //! ([`tilo_workspace_service::content`]). The workspace's host keeps the
 //! record with the workspace's other records and hands it whole to a device
@@ -16,8 +16,7 @@
 //!
 //! Here this device is the Files app's windowless endpoint for the workspace,
 //! as the files daemon is for a desktop: the runtime attests its own process
-//! for the app and workspace, and the publisher joins the record's route on
-//! the profile's collaboration socket. The tree lives in the profile beside
+//! for the app and workspace. The tree lives in the profile beside
 //! the profile's own workspace files; a folder mirrors it both ways
 //! ([`tilo_fs::sync_folder`]), so a program that knows nothing of Tilo (a
 //! command in a workspace's environment that mounts the folder) makes files
@@ -37,20 +36,21 @@ use std::{
     time::Duration,
 };
 
-use bytes::Bytes;
 use iroh_blobs::Hash;
 use tilo_fs::{
-    hydration::{ContentSource, Hydrator},
+    hydration::Hydrator,
     identity::PeerCredentials,
     namespace::Namespace,
     sync_folder::Watch,
-    tree_document::FILES_APP,
+    tree_sync::{FILES_APP, TreeSync},
 };
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_service::apps::route::CrdtRoute;
-use tilo_workspace_service::content::{ContentState, RouteContent};
+use tilo_workspace_service::content::RouteContent;
+use tilo_workspace_service::files::WorkspaceSource;
+use tilo_workspace_service::workspaces::Workspaces;
 
-use super::{Author, Files, INTERVAL};
+use super::{Author, Files, INTERVAL, NamespaceFile};
 
 /// How long a read waits for content the workspace's members are asked for.
 /// A folder pass waiting longer holds every other path behind it; the next
@@ -69,11 +69,11 @@ pub(in crate::standalone) struct ReplicaParts<'a> {
     pub(in crate::standalone) store: Arc<tilo_fs::ContentStore>,
     pub(in crate::standalone) endpoint: iroh::Endpoint,
     pub(in crate::standalone) author: &'a Author,
-    /// This device as the workspace knows it.
-    pub(in crate::standalone) credentials: PeerCredentials,
+    /// This device's key and its person's, as the workspace knows them.
+    pub(in crate::standalone) keys: ([u8; 32], [u8; 32]),
     pub(in crate::standalone) admission: Arc<tilo_fs::admission::FileAdmission>,
-    /// The profile's collaboration socket, where the record's route is.
-    pub(in crate::standalone) collab: PathBuf,
+    /// The service whose member copy holds the workspace's tree.
+    pub(in crate::standalone) workspaces: Workspaces,
     /// The profile's identity service, which hands over the record's keys.
     pub(in crate::standalone) identity: PathBuf,
     /// The profile's record-content service.
@@ -84,57 +84,59 @@ pub(in crate::standalone) struct ReplicaParts<'a> {
 pub(in crate::standalone) struct ReplicaFiles {
     folder: PathBuf,
     _watch: Watch,
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    _tree: TreeSync,
+    keeper: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for ReplicaFiles {
     fn drop(&mut self) {
-        for task in &self.tasks {
-            task.abort();
-        }
+        self.keeper.abort();
     }
 }
 
 impl ReplicaFiles {
     /// Hold `parts.workspace`'s files: the tree kept in `parts.state`,
-    /// published and received on the workspace's Files record, and mirrored
-    /// at `parts.folder`.
+    /// converged with the workspace's Files records in the member copy, and
+    /// mirrored at `parts.folder`.
     ///
     /// # Errors
     /// The state or the folder cannot be opened.
     pub(in crate::standalone) fn start(parts: ReplicaParts<'_>) -> io::Result<Self> {
         let route = CrdtRoute::app(FILES_APP, parts.workspace);
-        let source = Arc::new(RouteSource {
-            content: Arc::clone(&parts.content),
-            route: route.clone(),
-        });
+        let source = Arc::new(WorkspaceSource::new(
+            Arc::clone(&parts.content),
+            parts.workspace,
+            CONTENT_WAIT,
+        ));
         let workspace = collab_types::WorkspaceId::parse(parts.workspace).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "invalid Files workspace")
         })?;
-        let keys = tilo_fs::hydration::FileKeys::new(workspace, parts.identity.clone());
+        crate::unix::private_directory(parts.state)?;
+        let tree = super::super::service::block_on_owned({
+            let (copies, kept_at) = (parts.workspaces, parts.state.join(super::NAMESPACE));
+            let (store, content) = (Arc::clone(&parts.store), Arc::clone(&parts.content));
+            async move {
+                tilo_workspace_service::files::start(
+                    &copies, workspace, &kept_at, parts.keys, store, content,
+                )
+                .await
+            }
+        })?;
+        let keys = tilo_fs::hydration::FileKeys::new(workspace, parts.identity);
         let files = Files::open(
             parts.state,
+            NamespaceFile::of_tree(&tree),
             parts.store,
             parts.endpoint,
             parts.author,
             Some((source, keys)),
-        )?;
+        );
         std::fs::create_dir_all(parts.folder)?;
         let watch = files
             .sync_folder(parts.folder, Some(parts.admission))?
             .watch(INTERVAL)?;
-        let namespace = Arc::clone(&files.namespace.namespace);
-        let runtime = tilo_rt::app().handle().clone();
-        let _entered = runtime.enter();
-        let publisher = tilo_fs::tree_document::spawn(
-            Arc::clone(&namespace),
-            parts.workspace.to_owned(),
-            parts.credentials,
-            parts.collab,
-            parts.identity,
-        );
-        let keeper = tokio::spawn(keep_content(
-            namespace,
+        let keeper = tilo_rt::app().spawn(keep_content(
+            Arc::clone(&tree.namespace),
             Arc::clone(&files.hydrator),
             parts.content,
             route,
@@ -142,7 +144,8 @@ impl ReplicaFiles {
         Ok(Self {
             folder: parts.folder.to_path_buf(),
             _watch: watch,
-            tasks: vec![publisher, keeper],
+            _tree: tree,
+            keeper,
         })
     }
 
@@ -169,7 +172,6 @@ pub(in crate::standalone) struct ReplicaHost {
     pub(in crate::standalone) endpoint: iroh::Endpoint,
     pub(in crate::standalone) author: Author,
     pub(in crate::standalone) credentials: Credentials,
-    pub(in crate::standalone) collab: PathBuf,
     pub(in crate::standalone) identity: PathBuf,
     pub(in crate::standalone) content: Arc<RouteContent>,
     /// Attests this process as each workspace's Files endpoint.
@@ -226,6 +228,10 @@ impl Replicas {
         let credentials = (self.host.credentials)(workspace)?;
         let id = collab_types::WorkspaceId::parse(workspace)
             .ok_or_else(|| io::Error::other("invalid Files workspace"))?;
+        let service = self
+            .workspaces
+            .upgrade()
+            .ok_or_else(|| io::Error::other("the workspace service closed"))?;
         let workspaces = self.workspaces.clone();
         let admission = tilo_fs::admission::FileAdmission::new(
             &hex::encode(credentials.user_public_key()),
@@ -251,9 +257,12 @@ impl Replicas {
             store: Arc::clone(&self.host.store),
             endpoint: self.host.endpoint.clone(),
             author: &self.host.author,
-            credentials,
+            keys: (
+                credentials.device_public_key(),
+                credentials.user_public_key(),
+            ),
             admission: Arc::new(admission),
-            collab: self.host.collab.clone(),
+            workspaces: service.copies().clone(),
             identity: self.host.identity.clone(),
             content: Arc::clone(&self.host.content),
         });
@@ -353,46 +362,6 @@ async fn keep_one(
         }
     }
     true
-}
-
-/// The workspace's Files record route, as the source of the bytes this device
-/// lacks: kept here under the workspace's scope already, or asked of the
-/// workspace's members through its host.
-struct RouteSource {
-    content: Arc<RouteContent>,
-    route: CrdtRoute,
-}
-
-impl ContentSource for RouteSource {
-    fn fetch(&self, hash: Hash) -> futures_util::future::BoxFuture<'static, Option<Bytes>> {
-        let (content, route) = (Arc::clone(&self.content), self.route.clone());
-        Box::pin(async move {
-            let hash = hash.to_hex();
-            let mut news = content.subscribe(&route);
-            {
-                let (content, route, hash) = (Arc::clone(&content), route.clone(), hash.clone());
-                tokio::task::spawn_blocking(move || content.want(&route, &hash))
-                    .await
-                    .ok()?;
-            }
-            tokio::time::timeout(CONTENT_WAIT, async {
-                while let Some(news) = news.recv().await {
-                    if news.hash != hash {
-                        continue;
-                    }
-                    match news.state {
-                        ContentState::Resolved => return Some(Bytes::from(news.bytes)),
-                        ContentState::Unavailable => return None,
-                        _ => {}
-                    }
-                }
-                None
-            })
-            .await
-            .ok()
-            .flatten()
-        })
-    }
 }
 
 #[cfg(test)]

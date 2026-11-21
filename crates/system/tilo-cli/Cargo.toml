@@ -58,7 +58,7 @@ tilo-server-client = { path = "../../server/tilo-server-client" }
 # The device's own workspace service and the key service beside it, which hold the login's
 # workspaces as member copies, the folders' trees among their records, and route the content of
 # the files those trees name.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "content"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["device-keys", "files"] }
 tilo-workspace-keys = { path = "../../collab/workspace-keys" }
 key-group = { path = "../../collab/key-group" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

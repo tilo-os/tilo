@@ -1,12 +1,12 @@
-//! A workspace's file tree on this computer: the Files app's records, held in this device's own
+//! A workspace's file tree on a device: the Files app's records, held in this device's own
 //! workspace service as every device holding a member copy of the workspace holds them.
 //!
-//! The records of a workspace's tree ([`fs_protocol::tree`]) and this computer's
+//! The records of a workspace's tree ([`fs_protocol::tree`]) and the device's
 //! [`tilo_fs::Namespace`] of it are kept converged by [`tilo_fs::tree_sync`], which knows the
 //! order a tree goes out in, its pacing and what it does when the workspace refuses a change.
 //! This module wires that sync to the member copy: its reads ([`ServiceDocuments`]), its writes
 //! as this device ([`ServiceWrites`]), the serving device's word that it holds them
-//! ([`DeviceWrites::served`]), and the writes the serving device sends the copy
+//! ([`tilo_peer_state::workspace_documents::DeviceWrites::served`]), and the writes the serving device sends the copy
 //! ([`Workspaces::document_writes`]).
 //!
 //! Two answers decide what a sync may found, and both come from the copy alone: a record is
@@ -14,6 +14,10 @@
 //! ([`Workspaces::member_caught_up`]) and still reads absent; and a record the copy holds is
 //! held by the workspace only once the serving device said it holds every write of this
 //! device's to it.
+//!
+//! The bytes a tree's files are made of travel beside its records, on the record's route
+//! ([`crate::content`]): [`StoreShelf`] answers for them from a device's content store, and
+//! [`WorkspaceSource`] asks the workspace for what a read lacks.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,23 +25,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::Bytes;
 use fs_protocol::TreeChunk;
-use tilo_fs::tree_sync::{Reading, Wake};
+use iroh_blobs::Hash;
+use tilo_fs::hydration::ContentSource;
+use tilo_fs::tree_sync::{FILES_APP, Reading, TreeSync, Wake};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DeviceWrites as _, DocumentRead};
 use tilo_server_protocol::{DocumentAnswer, WorkspaceId};
-use tilo_workspace_service::content::RouteContent;
-use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
-use tilo_workspace_service::workspaces::Workspaces;
 use tokio::sync::broadcast::error::RecvError;
 
-/// The app whose record a workspace's tree is.
-pub(crate) use fs_protocol::tree::FILES_APP;
-
-/// What `tilo status` says of one workspace's tree.
-pub(crate) use tilo_fs::tree_sync::Status as TreeStatus;
-/// One workspace's tree, held while this value lives.
-pub(crate) type TreeReplica = tilo_fs::tree_sync::TreeSync;
+use crate::content::{ContentScope, ContentShelf, ContentState, CrdtRoute, RouteContent};
+use crate::device_documents::{ServiceDocuments, ServiceWrites};
+use crate::workspaces::Workspaces;
 
 /// How long the serving device's word that it holds a write is waited for. It answers only the
 /// writes it decides on: one it keeps while it waits for something it lacks gets no word, so a
@@ -57,20 +57,20 @@ fn route(
     }
 }
 
-/// Hold `workspace`'s tree in `workspaces`, this device's own service, kept in `state` between
+/// Hold `workspace`'s tree in `workspaces`, this device's own service, kept in `kept_at` between
 /// runs, as the device whose key is `device`; its file bytes are kept in `store` and asked of
 /// the workspace through `content`.
 ///
 /// # Errors
 /// The kept namespace cannot be read.
-pub(crate) async fn start(
+pub async fn start(
     workspaces: &Workspaces,
     workspace: WorkspaceId,
-    state: &Path,
+    kept_at: &Path,
     (device, person): ([u8; 32], [u8; 32]),
     store: Arc<tilo_fs::ContentStore>,
     content: Arc<RouteContent>,
-) -> std::io::Result<TreeReplica> {
+) -> std::io::Result<TreeSync> {
     let copy = Arc::new(Copy {
         workspaces: workspaces.clone(),
         documents: ServiceDocuments::of(workspaces.clone()),
@@ -90,11 +90,11 @@ pub(crate) async fn start(
         workspaces.document_writes(),
         wakes.clone(),
     ));
-    TreeReplica::start(tilo_fs::tree_sync::Config {
+    TreeSync::start(tilo_fs::tree_sync::Config {
         workspace: copy.name.clone(),
         device,
         person,
-        kept_at: state.join("tree"),
+        kept_at: kept_at.to_path_buf(),
         documents: Arc::new(Records(Arc::clone(&copy))),
         writer: Box::new(Writer {
             copy: Arc::clone(&copy),
@@ -147,7 +147,7 @@ impl Copy {
         }
         let held = match self.writes.served(&self.name, &[(FILES_APP, &document)]) {
             None => true,
-            Some(served) => matches!(futures_util::FutureExt::now_or_never(served), Some(Ok(()))),
+            Some(served) => matches!(futures::FutureExt::now_or_never(served), Some(Ok(()))),
         };
         held.then_some(DocumentAnswer::Sent { frames: 1 })
     }
@@ -329,7 +329,7 @@ async fn write_as_device(
 }
 
 /// Count a write of this device's to `document` as unserved until the serving device answers
-/// for it, or the wait for its word ends: what `tilo status` says is still going out.
+/// for it, or the wait for its word ends: what the tree's status says is still going out.
 fn count_until_served(copy: &Copy, document: &str) {
     let Some(served) = copy.writes.served(&copy.name, &[(FILES_APP, document)]) else {
         return;
@@ -347,7 +347,7 @@ fn count_until_served(copy: &Copy, document: &str) {
 /// can have now. Ends once the sync is gone.
 async fn follow(
     copy: Arc<Copy>,
-    mut writes: tokio::sync::broadcast::Receiver<tilo_workspace_service::workspaces::ResourceWrite>,
+    mut writes: tokio::sync::broadcast::Receiver<crate::workspaces::ResourceWrite>,
     wakes: tokio::sync::mpsc::UnboundedSender<Wake>,
 ) {
     let mut look = tokio::time::interval(tilo_fs::tree_sync::LOOK_AGAIN);
@@ -413,5 +413,119 @@ async fn changed(caught_up: &mut Option<tokio::sync::watch::Receiver<bool>>) {
             }
         }
         None => std::future::pending().await,
+    }
+}
+
+/// A device's content store as the service's shelf: the bytes of the files of the
+/// workspaces it keeps folders of, and nothing of any other app's records.
+pub struct StoreShelf(pub Arc<tilo_fs::ContentStore>);
+
+impl StoreShelf {
+    /// Run `work` on the store from a thread of its own: the service asks from its own tasks,
+    /// and the store is never read by blocking a runtime worker on another runtime.
+    fn on_store<T: Send>(
+        &self,
+        work: impl FnOnce(Arc<tilo_fs::ContentStore>) -> futures::future::BoxFuture<'static, T>
+        + Send,
+    ) -> Option<T> {
+        let store = Arc::clone(&self.0);
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .ok()?;
+                    Some(runtime.block_on(work(store)))
+                })
+                .join()
+                .ok()
+                .flatten()
+        })
+    }
+}
+
+impl ContentShelf for StoreShelf {
+    fn read(&self, scope: &ContentScope, hash: &str) -> Option<Vec<u8>> {
+        if scope.app != FILES_APP {
+            return None;
+        }
+        let hash: Hash = hash.parse().ok()?;
+        self.on_store(move |store| {
+            Box::pin(async move { store.local(hash).await.map(|bytes| bytes.to_vec()) })
+        })
+        .flatten()
+    }
+
+    fn keep(&self, scope: &ContentScope, hash: &str, bytes: &[u8]) -> Result<(), String> {
+        if scope.app != FILES_APP {
+            return Err("this device keeps only the bytes of the workspaces' files".to_owned());
+        }
+        let hash: Hash = hash
+            .parse()
+            .map_err(|_| "not a content address".to_owned())?;
+        let bytes = Bytes::copy_from_slice(bytes);
+        self.on_store(move |store| {
+            Box::pin(async move {
+                store
+                    .store_fetched(hash, bytes)
+                    .await
+                    .map_err(|error| error.to_string())
+            })
+        })
+        .unwrap_or_else(|| Err("the content store could not be reached".to_owned()))
+    }
+}
+
+/// One workspace's files as the source of the bytes this device lacks: asked of the device
+/// serving the workspace, through the service's record content.
+pub struct WorkspaceSource {
+    content: Arc<RouteContent>,
+    route: CrdtRoute,
+    /// How long a read waits for content the workspace is asked for.
+    wait: Duration,
+}
+
+impl WorkspaceSource {
+    #[must_use]
+    pub fn new(content: Arc<RouteContent>, workspace: &str, wait: Duration) -> Self {
+        Self {
+            content,
+            route: CrdtRoute::app(FILES_APP, workspace),
+            wait,
+        }
+    }
+}
+
+impl ContentSource for WorkspaceSource {
+    fn fetch(&self, hash: Hash) -> futures::future::BoxFuture<'static, Option<Bytes>> {
+        let (content, route, wait) = (Arc::clone(&self.content), self.route.clone(), self.wait);
+        Box::pin(async move {
+            let hash = hash.to_hex();
+            // Subscribed before the want goes out: an answer that comes at once is heard.
+            let mut news = content.subscribe(&route);
+            {
+                let (content, route, hash) = (Arc::clone(&content), route.clone(), hash.clone());
+                tokio::task::spawn_blocking(move || content.want(&route, &hash))
+                    .await
+                    .ok()?;
+            }
+            tokio::time::timeout(wait, async {
+                while let Some(news) = news.recv().await {
+                    if news.hash != hash {
+                        continue;
+                    }
+                    match news.state {
+                        ContentState::Resolved => return Some(Bytes::from(news.bytes)),
+                        ContentState::Unavailable => return None,
+                        _ => {}
+                    }
+                }
+                None
+            })
+            .await
+            .ok()
+            .flatten()
+        })
     }
 }

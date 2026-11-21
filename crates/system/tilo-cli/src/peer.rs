@@ -19,8 +19,6 @@
 
 pub(crate) mod folders;
 pub(crate) mod mount;
-pub(crate) mod shelf;
-pub(crate) mod tree;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +30,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_server_session::workspaces::PersonalList;
 use tilo_session_client::PersonalWorkspaces;
 use tilo_session_client::device::Device as Entered;
+use tilo_workspace_service::files;
 
 use crate::mcp::held::UNMOUNTING;
 use crate::own_device::OwnDevice;
@@ -43,7 +42,7 @@ struct Held {
     /// What the workspace takes from this device's writes ([`tilo_fs::admission`]).
     admission: Arc<tilo_fs::admission::FileAdmission>,
     showing: mount::Showing,
-    replica: tree::TreeReplica,
+    replica: tilo_fs::tree_sync::TreeSync,
 }
 
 /// What `tilo status` and `tilo folders` say of one workspace's folder.
@@ -60,7 +59,7 @@ pub(crate) struct Mounted {
     /// sent holds only while it is, and a folder with none is not in sync, whatever it last sent.
     pub(crate) connected: bool,
     #[serde(flatten)]
-    pub(crate) status: tree::TreeStatus,
+    pub(crate) status: tilo_fs::tree_sync::Status,
 }
 
 /// A workspace of the person's, as their list names it.
@@ -115,6 +114,8 @@ const ENTERING_ONE: Duration = Duration::from_secs(30);
 /// time: twice as long after each attempt in a row that failed, up to [`ENTERED_AT_MOST_EVERY`].
 const ENTERED_AGAIN_AFTER: Duration = Duration::from_secs(30);
 const ENTERED_AT_MOST_EVERY: Duration = Duration::from_secs(600);
+/// How long a read waits for content the workspace is asked for.
+const CONTENT_WAIT: Duration = Duration::from_secs(20);
 
 impl Peer {
     /// A peer keeping its files' state under `device_dir` and showing them
@@ -443,15 +444,15 @@ impl Peer {
         let routed = self.routed.get_or_init(|| {
             tilo_workspace_service::content::routes_content(
                 workspaces,
-                Arc::new(shelf::StoreShelf(Arc::clone(&self.store))),
+                Arc::new(files::StoreShelf(Arc::clone(&self.store))),
                 key,
             )
         });
         let state = self.state.join(workspace.to_string());
-        let replica = tree::start(
+        let replica = files::start(
             workspaces,
             workspace,
-            &state,
+            &state.join("tree"),
             (key, person),
             Arc::clone(&self.store),
             Arc::clone(&routed.content),
@@ -479,7 +480,11 @@ impl Peer {
             }
         });
         let content: Arc<dyn tilo_fs::hydration::ContentSource> = Arc::new(
-            shelf::WorkspaceSource::new(Arc::clone(&routed.content), &workspace.to_string()),
+            files::WorkspaceSource::new(
+                Arc::clone(&routed.content),
+                &workspace.to_string(),
+                CONTENT_WAIT,
+            ),
         );
         let parts = mount::Parts {
             keys,

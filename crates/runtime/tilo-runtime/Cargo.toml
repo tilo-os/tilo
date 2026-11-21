@@ -92,7 +92,7 @@ tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # The document-media capability over the content store, and the workspace
 # files mirrored into a folder where nothing mounts them.
-tilo-fs = { package = "tilo-fs", path = "../../system/fs" }
+tilo-fs = { package = "tilo-fs", path = "../../system/fs", features = ["tree-sync"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity = { path = "../tilo-identity" }
 # The surface an app under development names (`app_surface`), and the
@@ -110,7 +110,7 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The neighbour wire messages joined workspaces exchange.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "files"] }
 # The content store app surfaces are read from.
 # The apps' store: the device content store when the launcher handed one over.
 tilo-content-device = { path = "../../system/content-device" }
@@ -166,7 +166,7 @@ tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # process-boundary tests drive as an app inside a login does.
 runtime-portal = { path = "../runtime-portal" }
 # The channel fixtures owner tests seal writes with.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "test-support"] }
+tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # The governor whose workspaces a runtime joins.

@@ -101,7 +101,10 @@ impl WorkspaceFiles {
         author: &Author,
         projection: Projection,
     ) -> io::Result<Self> {
-        let files = Files::open(&profile.join(FILES), store, endpoint, author, None)?;
+        let state = profile.join(FILES);
+        crate::unix::private_directory(&state)?;
+        let namespace = NamespaceFile::open(&state.join(NAMESPACE), hex::encode(author.device))?;
+        let files = Files::open(&state, namespace, store, endpoint, author, None);
         let server = runtime_fs::workspace_server::serve_workspace(
             &profile.join(crate::FILES_SOCKET),
             Arc::new(serve::Backend(Arc::new(files.quick_fs()))),
@@ -144,10 +147,11 @@ struct Files {
 }
 
 impl Files {
-    /// The files kept in `state`, their bytes in `store`; what this device
-    /// lacks is asked of `source` when one is named.
+    /// The files of `namespace`, their folder state kept in `state` and their bytes in `store`;
+    /// what this device lacks is asked of `source` when one is named.
     fn open(
         state: &Path,
+        namespace: NamespaceFile,
         store: Arc<tilo_fs::ContentStore>,
         endpoint: iroh::Endpoint,
         author: &Author,
@@ -155,9 +159,7 @@ impl Files {
             Arc<dyn tilo_fs::hydration::ContentSource>,
             tilo_fs::hydration::FileKeys,
         )>,
-    ) -> io::Result<Self> {
-        crate::unix::private_directory(state)?;
-        let namespace = NamespaceFile::open(&state.join(NAMESPACE), hex::encode(author.device))?;
+    ) -> Self {
         let hydrator = {
             let _entered = tilo_rt::app().handle().enter();
             let hydrator = Hydrator::new(endpoint, store);
@@ -166,7 +168,7 @@ impl Files {
                 None => hydrator,
             })
         };
-        Ok(Self {
+        Self {
             state: state.to_path_buf(),
             namespace: Arc::new(namespace),
             hydrator,
@@ -174,12 +176,11 @@ impl Files {
                 person: collab_types::Ed25519PublicKey(author.person),
                 device: collab_types::Ed25519PublicKey(author.device),
             },
-        })
+        }
     }
 
     fn quick_fs(&self) -> QuickFS {
         let heuristics = Arc::new(Heuristics::new(Arc::clone(&self.hydrator)));
-        let kept = Arc::clone(&self.namespace.kept);
         QuickFS::new(
             Arc::clone(&self.namespace.namespace),
             Arc::clone(&self.hydrator),
@@ -187,7 +188,7 @@ impl Files {
         )
         .with_actor(self.actor)
         // Every change is journaled on disk before the request that made it is answered.
-        .with_change_journal(Arc::new(move |namespace| kept.journal(namespace)))
+        .with_change_journal(Arc::clone(&self.namespace.journal))
     }
 
     fn sync_folder(
@@ -210,7 +211,8 @@ impl Files {
 /// document with the journal of the changes it has made since its last save.
 struct NamespaceFile {
     namespace: Arc<Mutex<Namespace>>,
-    kept: Arc<KeptDocuments>,
+    journal: tilo_fs::fs::ChangeJournal,
+    save: Box<dyn Fn() -> io::Result<()> + Send + Sync>,
 }
 
 impl NamespaceFile {
@@ -226,16 +228,29 @@ impl NamespaceFile {
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
         };
         kept.opened(&mut namespace, read)?;
+        let (namespace, kept) = (Arc::new(Mutex::new(namespace)), Arc::new(kept));
+        let journaled = Arc::clone(&kept);
+        let saved = Arc::clone(&namespace);
         Ok(Self {
-            namespace: Arc::new(Mutex::new(namespace)),
-            kept: Arc::new(kept),
+            namespace,
+            journal: Arc::new(move |namespace| journaled.journal(namespace)),
+            save: Box::new(move || kept.keep(&saved)),
         })
+    }
+
+    /// A workspace tree's namespace, which its sync journals and keeps itself.
+    fn of_tree(tree: &tilo_fs::tree_sync::TreeSync) -> Self {
+        Self {
+            namespace: Arc::clone(&tree.namespace),
+            journal: tree.journal(),
+            save: Box::new(|| Ok(())),
+        }
     }
 
     /// Save each document that changed since its last save; the journals already hold every
     /// change, so this only compacts them.
     fn save_if_changed(&self) -> io::Result<()> {
-        self.kept.keep(&self.namespace)
+        (self.save)()
     }
 }
 

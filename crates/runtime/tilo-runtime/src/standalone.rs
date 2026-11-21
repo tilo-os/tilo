@@ -1286,7 +1286,6 @@ fn joined_files(
                     .ok_or_else(|| io::Error::other("the workspace service closed"))?
                     .files_credentials(workspace)
             }),
-            collab: parts.root.join(COLLAB_SOCKET),
             identity: parts.root.join(IDENTITY_SOCKET),
             content,
             apps: Arc::clone(parts.apps),

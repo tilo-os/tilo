@@ -14,8 +14,7 @@ use std::time::Duration;
 use tilo_fs::fs::QuickFS;
 use tilo_fs::hydration::{FileKeys, Hydrator};
 use tilo_fs::smart::Heuristics;
-
-use super::tree::TreeReplica;
+use tilo_fs::tree_sync::TreeSync;
 
 /// How often a synced folder carries changes across, where nothing mounts it.
 const FOLDER_PASS: Duration = Duration::from_secs(1);
@@ -63,7 +62,7 @@ impl Drop for Showing {
 /// What one workspace's filesystem is made of here.
 pub(crate) struct Parts<'a> {
     pub(crate) keys: FileKeys,
-    pub(crate) replica: &'a TreeReplica,
+    pub(crate) replica: &'a TreeSync,
     pub(crate) store: Arc<tilo_fs::ContentStore>,
     pub(crate) endpoint: iroh::Endpoint,
     /// Where the bytes this device lacks are asked for.
