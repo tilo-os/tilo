@@ -731,3 +731,197 @@ fn a_repository_cloned_into_the_vm_hosts_folder_reaches_a_persons_device_whole()
     drop(member);
     run(server.shutdown());
 }
+
+const WIPED_TEST: &str = "standalone::files::replica::tests::\
+    a_member_whose_disk_was_wiped_gets_the_workspaces_files_back";
+/// The invitation the member redeems, in its own process, each time it starts.
+const MEMBER_INVITATION: &str = "TILO_REPLICA_TEST_MEMBER_INVITATION";
+
+/// Empties the disk of the device whose process runs under `root`, as a VM
+/// host moved to a new disk finds it: its profile, with every workspace it
+/// held, and its home, with every folder. What is left is its identity and the
+/// device settings that name the relay the test reaches.
+fn wipe_all_but_identity(root: &Path) {
+    let environment = root.join("environment");
+    for gone in [
+        root.join("profile"),
+        environment.join("home"),
+        environment.join("state"),
+        environment.join("cache"),
+    ] {
+        if gone.exists() {
+            std::fs::remove_dir_all(&gone).unwrap();
+        }
+        std::fs::create_dir_all(&gone).unwrap();
+    }
+}
+
+/// The member's process: this device joins with `invitation` and holds the
+/// workspace's files until the test stops it.
+fn serve_as_member(invitation: &std::ffi::OsStr) -> ! {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("warn,fs=info,tilo_runtime=info")
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .try_init();
+    let profile = isolated_root(WIPED_TEST).unwrap();
+    let device = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
+    device.joiner().unwrap()(invitation.to_str().unwrap()).unwrap();
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+/// Writes small files across folders under `folder`, and a file large enough
+/// to be kept as chunks. Answers every file it wrote, with its bytes.
+fn write_tree(folder: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    for file in 0..150_u32 {
+        let dir = folder.join(format!("src/m{}", file % 12));
+        std::fs::create_dir_all(&dir).unwrap();
+        let length = usize::try_from(file % 5).unwrap().saturating_mul(400);
+        let bytes = content(file.saturating_add(2000), length.saturating_add(500));
+        let path = dir.join(format!("f{file}.rs"));
+        std::fs::write(&path, &bytes).unwrap();
+        files.push((path, bytes));
+    }
+    let large = content(2999, 3 * 1024 * 1024);
+    std::fs::write(folder.join("build.bin"), &large).unwrap();
+    files.push((folder.join("build.bin"), large));
+    files
+}
+
+/// Wait until every file of `files` holds its bytes, failing, once the test
+/// that `started` then has run as long as it may, with how many do not, what
+/// `folder` holds, and what the member `said`.
+fn wait_for_files(
+    files: &[(PathBuf, Vec<u8>)],
+    folder: &Path,
+    started: std::time::Instant,
+    said: &dyn Fn() -> String,
+) {
+    let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
+    loop {
+        let missing: Vec<&Path> = files
+            .iter()
+            .filter(|(path, bytes)| std::fs::read(path).ok().as_ref() != Some(bytes))
+            .map(|(path, _)| path.as_path())
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        assert!(
+            started.elapsed() <= bound,
+            "{} of the {} files the workspace holds are not in the wiped member's folder, {:?} \
+             among them; the folder holds {} bytes\nthe member:\n{}",
+            missing.len(),
+            files.len(),
+            missing.first(),
+            bytes_under(folder),
+            said(),
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// A member whose disk was wiped, a VM host that moved to a new disk with its
+/// identity alone, holds the workspace's files again in its folder: every
+/// file the workspace holds, with its bytes, though nothing on its disk
+/// remembers them and the workspace's tree names this very device as the
+/// writer of each.
+#[test]
+fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
+    if let Some(invitation) = std::env::var_os(MEMBER_INVITATION) {
+        serve_as_member(&invitation);
+    }
+    let Some(profile) = isolated_root(WIPED_TEST) else {
+        return;
+    };
+    let scenario = profile.parent().unwrap().to_path_buf();
+    let operator = SigningKey::from_bytes(&[81; 32]);
+    let shell = certificate(
+        &operator,
+        &SigningKey::from_bytes(&[83; 32]),
+        DeviceCapabilities::primary(),
+    );
+    let state = scenario.join("server");
+    let server = run(server(&state, &operator));
+    let workspaces = server.workspaces().unwrap();
+    let workspace = run(async {
+        let created = workspaces.create(WORKSPACE_NAME).await?;
+        workspaces
+            .enter(&created.workspace, &shell)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(created.workspace)
+    })
+    .unwrap();
+
+    // The member, a device of its own, joins and holds the workspace's files.
+    let member_root = scenario.join("member");
+    std::fs::create_dir_all(&member_root).unwrap();
+    let start = |request: u8, run_name: &str| {
+        isolated_command(WIPED_TEST, &member_root)
+            .env(
+                MEMBER_INVITATION,
+                run(invitation(&server, &workspace, &shell, None, request)),
+            )
+            .env(
+                tilo_test_env::hang::HANG_BOUND_ENV,
+                super::super::super::tests::helper_hang_bound(),
+            )
+            .stdout(std::fs::File::create(member_root.join(format!("{run_name}.log"))).unwrap())
+            .stderr(std::fs::File::create(member_root.join(format!("{run_name}.err"))).unwrap())
+            .spawn_locked()
+            .unwrap()
+    };
+    let said = |run_name: &str| {
+        std::fs::read_to_string(member_root.join(format!("{run_name}.err"))).unwrap_or_default()
+    };
+    let folder = isolated_home(&member_root)
+        .join("Tilo")
+        .join(WORKSPACE_NAME);
+    let mut first = start(1, "first");
+    let started = std::time::Instant::now();
+    let bound = tilo_test_env::hang_bound().saturating_sub(WAIT_LEAD);
+    while !folder.is_dir() {
+        assert!(
+            started.elapsed() <= bound,
+            "the member never held the workspace's files:\n{}",
+            said("first")
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // A tree of files written on the member reaches the server whole.
+    let written_files = write_tree(&folder);
+    let kept = state
+        .join("state")
+        .join(tilo_server::content::DIRECTORY)
+        .join(&workspace);
+    let written = written_files
+        .iter()
+        .map(|(_, bytes)| u64::try_from(bytes.len()).unwrap())
+        .fold(0, u64::saturating_add);
+    while bytes_under(&kept) < written {
+        assert!(
+            started.elapsed() <= bound,
+            "the server keeps {} of the {written} bytes written on the member:\n{}",
+            bytes_under(&kept),
+            said("first"),
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = first.kill();
+    let _ = first.wait();
+    eprintln!("the server kept the tree after {:?}", started.elapsed());
+
+    // The member's disk is wiped; it starts again with its identity alone and
+    // takes part in the workspace again.
+    wipe_all_but_identity(&member_root);
+    let mut second = start(2, "second");
+    wait_for_files(&written_files, &folder, started, &|| said("second"));
+    let _ = second.kill();
+    let _ = second.wait();
+    run(server.shutdown());
+}
