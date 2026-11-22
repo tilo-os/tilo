@@ -398,9 +398,16 @@ await until(first, `document.documentElement.dataset.firstScreen === undefined`,
 // workspace, never the Lounge.
 const ownWorkspace = `(() => {
   const state = globalThis.tiloMount?.state?.() ?? null;
-  const title = document.title ?? '';
-  return state?.phase === 'presented' && state.workspaceName
-    && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
+  if (state) {
+    const title = document.title ?? '';
+    return state.phase === 'presented' && state.workspaceName
+      && /^Tilo · /.test(title) && !/lounge/i.test(title) ? title : '';
+  }
+  // A page the server renders names its workspace where it says it arrived,
+  // and is titled after the workspace when it shows the workspace itself.
+  const name = document.documentElement.dataset.workspace ?? '';
+  const drawn = document.documentElement.dataset.arrival === 'done' && !!document.querySelector('#tilo-page [data-p]');
+  return drawn && name && !/lounge/i.test(name) ? name : '';
 })()`;
 report.workspace = await until(first, ownWorkspace, "the person's own workspace drawn", stepLimit(2));
 mark('the agent logged in and the tab is in the person\'s own workspace');
@@ -533,8 +540,18 @@ const how = await reloaded(first);
 if (how !== 'presented') {
   await fail(`the reloaded tab never came back (${how}): ${(await pageText(first)).slice(0, 600)}`);
 }
-await until(first, `!!globalThis.tiloMount && JSON.stringify(globalThis.tiloMount.people?.() ?? null).includes('Claude Code')`,
-  'Claude Code present in the workspace after a reload', stepLimit(2));
+// Who is here is what the workspace's page shows: on the page the server
+// renders, the workspace's people, read there; on a desktop, its mount.
+const workspaceId = await first.evaluate(`document.getElementById('tilo-page') ? (location.pathname.split('/')[2] ?? '') : ''`).catch(() => '');
+if (workspaceId) await first.navigate(`${site}/w/${workspaceId}`);
+await until(first, `(() => {
+  const page = document.getElementById('tilo-page');
+  if (page) {
+    return page.dataset.arrival !== 'failed'
+      && (document.querySelector('#tilo-page .tilo-people')?.innerText ?? '').includes('Claude Code');
+  }
+  return !!globalThis.tiloMount && JSON.stringify(globalThis.tiloMount.people?.() ?? null).includes('Claude Code');
+})()`, 'Claude Code present in the workspace after a reload', stepLimit(2));
 mcp.stdin.end();
 const after = await person(first);
 mark('the tab reloaded as the same person, with the agent still there');

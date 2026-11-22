@@ -186,9 +186,13 @@ export async function reloaded(
       old: globalThis[${JSON.stringify(mark)}] === true,
       ready: document.readyState === 'complete',
       phase: globalThis.tiloMount?.state?.()?.phase ?? null,
+      // A page the server renders has no mount: it has arrived when its own
+      // script said so and the workspace's page is drawn.
+      page: document.documentElement.dataset.arrival === 'done'
+        && !!document.querySelector('#tilo-page [data-p]'),
     })`).then(text => JSON.parse(text ?? '{}'), () => ({old: true, ready: false, phase: null}));
     // A new document, its shell up, and still the tab's newest.
-    if (!at.old && at.phase === 'presented' && documents() === before) return 'presented';
+    if (!at.old && (at.phase === 'presented' || at.page === true) && documents() === before) return 'presented';
     if (now() > deadline) return at.old || !at.ready ? 'timeout' : 'stalled';
     await pause(Math.max(1, deadline - now() + 1));
   }

@@ -275,9 +275,44 @@ const searchRows = async (tab, query) => {
   })()`;
   return JSON.parse(await until(tab, answered, `the shell answering "${query}"`, stepLimit(4)));
 };
+/** A person's search on the page the server renders: the workspace's own
+ * search, at the address that names it, typed into and its row titled `title`
+ * pressed — an app, a record, or one of the workspace's actions, which the
+ * server itself runs. */
+const pageSearch = async (tab, query, title) => {
+  const workspace = await until(tab,
+    `location.pathname.startsWith('/w/') ? location.pathname.split('/')[2] : ''`,
+    'the page naming its workspace in its address', stepLimit(4));
+  await tab.navigate(`${siteOrigin}/w/${workspace}/search`);
+  await until(tab, `!!document.querySelector('#tilo-page .tilo-search-field')`, 'the search page opening', stepLimit(6));
+  const field = `document.querySelector('#tilo-page .tilo-search-field')`;
+  await until(tab, `document.activeElement === ${field}`, 'the search field taking the caret', stepLimit(3));
+  await type(tab, query);
+  const row = `[...document.querySelectorAll('#tilo-page .tilo-search-row')]
+    .find(row => (row.innerText || '').includes(${JSON.stringify(title)})) ?? null`;
+  const rows = JSON.parse(await until(tab, `(() => {
+    const rows = [...document.querySelectorAll('#tilo-page .tilo-search-row')].map(row => (row.innerText || '').replace(/\s+/g, ' ').trim());
+    return rows.some(text => text.includes(${JSON.stringify(title)})) ? JSON.stringify(rows) : '';
+  })()`, `the search offering "${title}"`, stepLimit(4)));
+  const box = JSON.parse(await until(tab, `(() => {
+    const found = (${row});
+    if (!found) return '';
+    found.scrollIntoView({block: 'nearest'});
+    const rect = found.getBoundingClientRect();
+    return rect.width && rect.height
+      ? JSON.stringify({x: rect.x + Math.min(rect.width / 2, 40), y: rect.y + rect.height / 2}) : '';
+  })()`, `the row "${title}" drawn`, stepLimit(3)));
+  await clickAt(tab, box.x, box.y);
+  return rows;
+};
 /** A person's search: the chord, the query, and Enter on the row titled
- * `title` — an app, or one of the workspace's own actions. */
+ * `title` — an app, or one of the workspace's own actions. On a page the
+ * server renders there is no mount to open a palette over: the page's own
+ * search is opened instead. */
 const search = async (tab, query, title) => {
+  if (await tab.evaluate(`!!document.getElementById('tilo-page')`).catch(() => false)) {
+    return pageSearch(tab, query, title);
+  }
   if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
     const box = JSON.parse(await canvasBox(tab));
     await clickAt(tab, box.x + shellMetrics.width / 2, box.y + shellMetrics.height - 100);
