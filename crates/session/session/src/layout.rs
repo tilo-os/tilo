@@ -893,12 +893,14 @@ impl Layouts {
             .as_ref()
             .is_some_and(reads::Reads::take_news);
         let person = self.person.borrow().clone();
-        let settled = !news && self.held.borrow().values().all(|held| {
-            held.pending.is_none()
-                && held.pending_step.is_none()
-                && held.pending_view.is_empty()
-                && held.pending_steps.is_empty()
-        }) && self.seen.get() == Some(tree.external_revision)
+        let settled = !news
+            && self.held.borrow().values().all(|held| {
+                held.pending.is_none()
+                    && held.pending_step.is_none()
+                    && held.pending_view.is_empty()
+                    && held.pending_steps.is_empty()
+            })
+            && self.seen.get() == Some(tree.external_revision)
             && tree
                 .workspaces
                 .iter()
