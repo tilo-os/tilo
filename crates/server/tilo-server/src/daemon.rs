@@ -1455,12 +1455,12 @@ async fn bind_endpoint(
         None => Endpoint::builder(presets::N0),
     };
     let builder = builder.transport_config(tilo_server_client::host::transport());
-    // A host told one address binds that one, and opens no port on a router it
-    // was not asked about: the portmapper probes UPnP over SSDP and resolves
-    // names for a port the host would never use. A host given every address is
-    // the one at home behind a router, which that port is how other devices
-    // reach without the relay: it keeps its portmapper.
-    let builder = if cfg.iroh_listen.ip().is_unspecified() {
+    // A host bound to its own loopback is reachable from no router, so the
+    // portmapper's UPnP probe and name lookups would open a port nothing could
+    // use: it stays off there. Every other host — every address, or one on a
+    // network — keeps it, because that port is how other devices reach without
+    // the relay.
+    let builder = if cfg.iroh_listen.ip().is_loopback() {
         builder
     } else {
         builder.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
