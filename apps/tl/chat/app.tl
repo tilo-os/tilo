@@ -345,14 +345,16 @@ action send(
             // Writing to an agent asks it, made from the message, whose replies stand under it.
             // Nothing said goes to an agent that may not read it.
             if d.person.kind() == .agent {
-                agent.ask(
-                    agent.agents,
-                    d.person,
-                    if std.may_read(d.person, sent) { body } else { RichText("") },
-                ).made_from(sent)
+                agent
+                    .ask(
+                        agent.agents,
+                        d.person,
+                        if std.may_read(d.person, sent) { body } else { RichText("") },
+                    )
+                    .made_from(sent)
             }
             sent
-        },
+        }
     }
 }
 
@@ -588,13 +590,49 @@ view direct(d: Direct) {
     state replying: Option<Message> = .none
     state editing: Option<Message> = .none
     state revised: RichText = RichText("")
+    let asked = asked_outright(d, workspace.me)
     std.transcript(d, d.messages, unread: first_unseen(d)) { m ->
+        // What was asked with no message to stand under stands where it was asked.
+        for a in asked.filter(a -> asked_before(d, m, a)) {
+            agent.replies(a)
+        }
         direct_message(d, m, d.messages, replying, editing, revised)
+        if let last = d.messages.last() {
+            if last == m {
+                for a in asked.filter(a -> made_before(m, a)) {
+                    agent.replies(a)
+                }
+            }
+        }
         composer: {
             direct_typing_here(d)
             composer(d, d.messages, draft, replying, "Message {d.name}")
         }
     }
+}
+
+/// The asks of the agent `d` is with that `me`, the person looking, made from something with no
+/// message of Chat's to stand under (an event, a task). An ask made from a message stands under
+/// that message instead.
+fn asked_outright(d: Direct, me: Actor) -> List<agent.Ask> {
+    agent.agents.asks.filter(
+        a -> a.agent == d.person
+            and created(a)?.who == me
+            and if let from = created(a)?.from { [from].of(Message).is_empty() } else { false },
+    )
+}
+
+/// Whether `a` was asked after the message before `m` (or before any) and before `m` itself.
+fn asked_before(d: Direct, m: Message, a: agent.Ask) -> Bool {
+    let after_previous = if let p = d.messages.previous(m) { made_before(p, a) } else { true }
+    after_previous and made_before(a, m)
+}
+
+/// Whether `x` was made before `y`.
+fn made_before(x: host.Resource, y: host.Resource) -> Bool {
+    if let made = created(x)?.at {
+        if let later = created(y)?.at { made < later } else { true }
+    } else { false }
 }
 
 /// A channel as another app's page summarizes it: its name, and what it is about.

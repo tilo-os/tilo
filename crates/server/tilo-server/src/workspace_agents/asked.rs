@@ -87,9 +87,24 @@ pub(super) async fn turns(
                     .from
                     .as_ref()
                     .map(|from| asks::around(opened, from, AROUND));
-                let private = keeper
-                    .as_ref()
-                    .is_some_and(|keeper| asks::private_to(opened, &asked, keeper, &asked.agent));
+                let private = keeper.as_ref().is_some_and(|keeper| {
+                    // What an event of the keeper's asked is shown in their Direct with the
+                    // agent, so it is as private as that conversation.
+                    let by_event = asked
+                        .from
+                        .as_ref()
+                        .and_then(crate::workspace_bots::events::event_named)
+                        .is_some();
+                    let by_keeper =
+                        matches!(&asked.who, Some(asks::Actor::Member(who)) if who == keeper);
+                    if by_event && by_keeper {
+                        asks::direct_with(opened, keeper, &asked.agent).is_some_and(|direct| {
+                            asks::alone_with(opened, &direct, keeper, &asked.agent)
+                        })
+                    } else {
+                        asks::private_to(opened, &asked, keeper, &asked.agent)
+                    }
+                });
                 read.push((agent, asked, around, private));
             }
             Ok(read)

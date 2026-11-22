@@ -354,10 +354,39 @@ fn said(opened: &Opened, at: &ResourceRef, asked_about: bool) -> Said {
 /// reads it: a record opened without the policy knows no readers.
 #[must_use]
 pub fn private_to(opened: &Opened, asked: &Asked, keeper: &MemberId, agent: &MemberId) -> bool {
-    let Some(from) = &asked.from else {
-        return false;
-    };
-    let readers = opened.readers(from);
+    asked
+        .from
+        .as_ref()
+        .is_some_and(|from| alone_with(opened, from, keeper, agent))
+}
+
+/// The direct conversation `person` made with `agent` in Chat's record, where they made one:
+/// where what an event of theirs asks the agent is shown.
+#[must_use]
+pub fn direct_with(opened: &Opened, person: &MemberId, agent: &MemberId) -> Option<ResourceRef> {
+    let meta = opened.host().package(opened.app())?.meta;
+    let direct = meta.type_named("Direct")?.id.clone();
+    let conversations = meta.type_named("Conversations")?.id.clone();
+    let root = ResourceRef::root(format!("root-{conversations}"), conversations);
+    items(opened, &root, "channels").into_iter().find(|channel| {
+        channel.ty == direct
+            && matches!(read(opened, channel, "person"), Some(Value::Actor(Actor::Member(with))) if with == *agent)
+            && opened
+                .host()
+                .store()
+                .versions(channel)
+                .ok()
+                .and_then(|versions| versions.into_iter().next())
+                .and_then(|made| made.who)
+                .is_some_and(|who| matches!(who, Actor::Member(made_by) if made_by == *person))
+    })
+}
+
+/// Whether every member of the workspace who may read `at` is `keeper` or `agent`, and somebody
+/// does; see [`private_to`].
+#[must_use]
+pub fn alone_with(opened: &Opened, at: &ResourceRef, keeper: &MemberId, agent: &MemberId) -> bool {
+    let readers = opened.readers(at);
     !readers.is_empty()
         && readers.iter().all(
             |reader| matches!(reader, Actor::Member(member) if member == keeper || member == agent),

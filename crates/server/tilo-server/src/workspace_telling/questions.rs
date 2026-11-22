@@ -239,16 +239,11 @@ impl Feeder {
         };
         // The part is read and let go of before anything is told: what
         // follows waits on a person's own model and their log.
-        let (found, mentions) = {
+        let found = {
             let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
             let part = crate::workspace_bots::opened::<chat::parts::ChatMessages>(&mut doc)?;
-            let now_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
-            (
-                questions(workspace, &part),
-                super::mentions::named(workspace, &part, now_ms),
-            )
+            questions(workspace, &part)
         };
-        self.tell_mentions(workspace, mentions).await;
         // What waits in each person's log, read once a person.
         let mut waiting: BTreeMap<[u8; 32], BTreeSet<String>> = BTreeMap::new();
         for (person, update) in found {
@@ -284,30 +279,6 @@ impl Feeder {
             }
         }
         Ok(())
-    }
-
-    /// Tell each person `mentions` names that they were mentioned, under the
-    /// name the message keeps for its author, else the one the workspace
-    /// shows for them.
-    async fn tell_mentions(&self, workspace: &str, mentions: Vec<super::mentions::Named>) {
-        let id = tilo_server_protocol::WorkspaceId::parse(workspace);
-        for named in mentions {
-            let mut author = named
-                .author_name
-                .clone()
-                .filter(|name| !name.trim().is_empty());
-            if author.is_none()
-                && let (Some(id), Some(root)) = (id, super::mentions::root_of(&named.author))
-            {
-                author = self.workspaces.name_of_member(id, root).await;
-            }
-            let author = author.unwrap_or_else(|| "Someone".to_owned());
-            let person = named.person;
-            let telling = super::mentions::telling(workspace, named, &author);
-            if let Err(error) = self.workspaces.tell(&person, telling).await {
-                tracing::debug!(%workspace, %error, "a mention was not told to its person");
-            }
-        }
     }
 }
 

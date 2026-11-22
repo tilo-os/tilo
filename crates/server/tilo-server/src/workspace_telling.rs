@@ -32,7 +32,6 @@ use crate::workspaces::person_model::Spender;
 use crate::workspaces::{Spenders, WeakWorkspaces, Workspaces};
 
 mod caused;
-mod mentions;
 mod questions;
 pub(crate) use caused::turn_ended;
 pub use questions::Feeder;
