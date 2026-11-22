@@ -1,11 +1,18 @@
 //! The frames a store device holds for its workspaces.
 //!
-//! Every frame is one immutable file under
-//! `workspaces/<workspace>/<record>/<author>/<seq>.<class>`, written with a
-//! crash-safe replace, so a store that restarts reads back exactly what it
-//! acknowledged and nothing half-written. The index the store answers
-//! replay from is rebuilt by reading those files at [`Store::open`]; the
-//! files are the truth.
+//! A workspace's frames are appended to its segments,
+//! `workspaces/<workspace>/<segment>.pack`, each record framed with its
+//! length and a check of its bytes. A write is acknowledged once the segment
+//! holding it is synced, and the writes that wait at the same time share one
+//! sync. A store that restarts reads back exactly what it acknowledged: a
+//! record cut short by a crash ends its segment and is cut off there. The
+//! index the store answers replay from is rebuilt at [`Store::open`] from the
+//! records' headers, without decoding a frame; the segments are the truth.
+//!
+//! A retired frame is named by a record of its own after it, and a segment
+//! whose bytes are mostly retired is written again with only what it still
+//! holds. A store kept one file per frame before segments
+//! ([`FRAMES_VERSION`]); opening one moves its frames into segments once.
 //!
 //! Retention has three sources and no others: a frame's author retiring its
 //! own earlier frames by publishing a checkpoint ([`Store::retain`]), the
@@ -19,10 +26,12 @@ use crate::join::WorkspaceId;
 pub use crate::retained::{Frame, Lineage, Refusal};
 use collab_types::ContentRetention;
 use neighbour_wire::NeighbourMsg;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io;
+use std::io::{self, Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_lock::MutexRecover as _;
 
 /// How much history a store device keeps.
@@ -128,7 +137,7 @@ pub struct Retired {
     pub bytes: u64,
 }
 
-/// A device's retained history, one directory per workspace.
+/// A device's retained history, one directory of segments per workspace.
 pub struct Store {
     root: PathBuf,
     appetite: Appetite,
@@ -150,6 +159,30 @@ impl std::fmt::Debug for Store {
 struct Held {
     bytes: u64,
     workspaces: BTreeMap<WorkspaceId, Workspace>,
+    /// The segments open for appending, one at most per workspace.
+    writers: usize,
+    /// Counts appends, so the writer appended to longest ago is the one
+    /// closed when too many are open.
+    appends: u64,
+    limits: Limits,
+}
+
+/// How long segments grow and when one is written again.
+#[derive(Clone, Copy)]
+struct Limits {
+    /// A segment this long takes no more appends; the next one starts.
+    segment_bytes: u64,
+    /// A segment shorter than this is not written again for what it frees.
+    rewrite_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            segment_bytes: SEGMENT_BYTES,
+            rewrite_bytes: REWRITE_BYTES,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -159,12 +192,42 @@ struct Workspace {
     /// What each device that asked for the workspace's history said it
     /// holds, by lineage ([`Store::holds`]).
     holders: BTreeMap<[u8; 32], BTreeMap<Lineage, u64>>,
+    /// Every segment of the workspace, by number.
+    segments: BTreeMap<u32, Segment>,
+    /// The newest segment, open for appending.
+    writer: Option<Arc<Writer>>,
+    /// [`Held::appends`] at this workspace's last append.
+    appended: u64,
+    /// Frames appended and waiting for their sync, by the segment they are
+    /// in, so a second copy that arrives meanwhile is a duplicate and the
+    /// segment is not written again without them.
+    staged: BTreeMap<(Lineage, u64), u32>,
+    /// Records of retired frames still in their segments, by segment and
+    /// offset: the retirement records naming them are kept until they go.
+    retired: BTreeSet<(u32, u64)>,
+}
+
+/// What the store knows of one segment.
+#[derive(Clone, Copy, Default)]
+struct Segment {
+    /// How many times it was written again: its file's name, and what a
+    /// record retiring a frame in it names, so one written before a rewrite
+    /// names nothing after it.
+    generation: u32,
+    /// Its length in bytes.
+    len: u64,
+    /// The bytes of its records that hold nothing a replay reads.
+    dead: u64,
+    /// The bytes of retirement records a rewrite had to keep: dead, but not
+    /// what another rewrite frees.
+    kept: u64,
 }
 
 /// One retained frame as the index knows it.
 #[derive(Clone, Copy)]
 struct Entry {
     seq: u64,
+    /// The frame's own bytes.
     bytes: u64,
     authored_at_ns: u64,
     retention: ContentRetention,
@@ -174,6 +237,196 @@ struct Entry {
     /// ([`Store::taken_from_link`]). Known for the frames kept since the store
     /// opened, which is all a reader that subscribed since can miss.
     from_link: bool,
+    /// The segment its record is in.
+    segment: u32,
+    /// Where its record starts there.
+    at: u64,
+}
+
+impl Entry {
+    /// The length of the record holding it.
+    const fn record_len(&self) -> u64 {
+        self.bytes.saturating_add(FRAME_OVERHEAD)
+    }
+}
+
+/// The newest segment of a workspace, appended to under the store's lock
+/// and synced outside it: whoever syncs covers every append before it.
+struct Writer {
+    segment: u32,
+    file: fs::File,
+    /// Bytes appended.
+    written: AtomicU64,
+    /// Bytes known synced.
+    synced: std::sync::Mutex<u64>,
+}
+
+impl Writer {
+    /// Wait until the segment is synced up to `end`.
+    fn sync_to(&self, end: u64) -> io::Result<()> {
+        let mut synced = self.synced.lock_recover();
+        if *synced >= end {
+            return Ok(());
+        }
+        let written = self.written.load(Ordering::Acquire);
+        self.file.sync_data()?;
+        *synced = written;
+        drop(synced);
+        Ok(())
+    }
+
+    fn sync_all_written(&self) -> io::Result<()> {
+        self.sync_to(self.written.load(Ordering::Acquire))
+    }
+}
+
+/// A record holding a frame: its lineage, sequence number, time and class,
+/// then the frame's bytes.
+const FRAME_RECORD: u8 = 1;
+/// A record retiring the frame record at a segment and offset.
+const RETIRE_RECORD: u8 = 2;
+/// Kind and body length.
+const RECORD_HEADER: u64 = 1 + 4;
+/// The check after a record's body.
+const RECORD_CHECK: u64 = 8;
+/// A frame record's header fields before the frame.
+const FRAME_FIELDS: u64 = 32 + 32 + 8 + 8 + 1;
+const FRAME_OVERHEAD: u64 = RECORD_HEADER + FRAME_FIELDS + RECORD_CHECK;
+const RETIRE_BODY: u64 = 32 + 32 + 8 + 4 + 4 + 8;
+const RETIRE_LEN: u64 = RECORD_HEADER + RETIRE_BODY + RECORD_CHECK;
+/// A segment this long takes no more appends; the next one starts.
+const SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
+/// A segment shorter than this is not written again for what it frees.
+const REWRITE_BYTES: u64 = 64 * 1024;
+/// The most segments the store keeps open for appending: a host keeps every
+/// workspace it serves, and closes the least recently written beyond these.
+const OPEN_WRITERS: usize = 256;
+const PACK: &str = "pack";
+/// A segment being written again, renamed over it once synced.
+const NEXT: &str = "next";
+
+/// A record read back from a segment.
+enum Record<'a> {
+    Frame {
+        lineage: Lineage,
+        seq: u64,
+        authored_at_ns: u64,
+        retention: ContentRetention,
+        bytes: &'a [u8],
+    },
+    Retire {
+        lineage: Lineage,
+        seq: u64,
+        segment: u32,
+        generation: u32,
+        at: u64,
+    },
+}
+
+fn check(kind: u8, body: &[u8]) -> [u8; 8] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&[kind]);
+    hasher.update(body);
+    let mut out = [0; 8];
+    out.copy_from_slice(hasher.finalize().as_bytes().get(..8).unwrap_or(&[0; 8]));
+    out
+}
+
+fn record(kind: u8, body: &[u8]) -> Result<Vec<u8>, StoreError> {
+    let len = u32::try_from(body.len()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "a frame too long for a segment")
+    })?;
+    let mut out = Vec::with_capacity(body.len().saturating_add(13));
+    out.push(kind);
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(body);
+    out.extend_from_slice(&check(kind, body));
+    Ok(out)
+}
+
+fn frame_record(frame: &Frame, bytes: &[u8]) -> Result<Vec<u8>, StoreError> {
+    let mut body = Vec::with_capacity(bytes.len().saturating_add(81));
+    body.extend_from_slice(&frame.lineage.record);
+    body.extend_from_slice(&frame.lineage.author);
+    body.extend_from_slice(&frame.seq.to_le_bytes());
+    body.extend_from_slice(&frame.authored_at_ns.to_le_bytes());
+    body.push(match frame.retention {
+        ContentRetention::Checkpoint => 1,
+        ContentRetention::Delta => 0,
+    });
+    body.extend_from_slice(bytes);
+    record(FRAME_RECORD, &body)
+}
+
+fn retire_record(lineage: Lineage, entry: Entry, generation: u32) -> Result<Vec<u8>, StoreError> {
+    let mut body = Vec::with_capacity(88);
+    body.extend_from_slice(&lineage.record);
+    body.extend_from_slice(&lineage.author);
+    body.extend_from_slice(&entry.seq.to_le_bytes());
+    body.extend_from_slice(&entry.segment.to_le_bytes());
+    body.extend_from_slice(&generation.to_le_bytes());
+    body.extend_from_slice(&entry.at.to_le_bytes());
+    record(RETIRE_RECORD, &body)
+}
+
+fn array<const N: usize>(bytes: &[u8], at: usize) -> Option<[u8; N]> {
+    bytes.get(at..at.checked_add(N)?)?.try_into().ok()
+}
+
+/// The record at the start of `bytes` and its length, or `None` where the
+/// segment holds no whole record.
+fn read_record(bytes: &[u8]) -> Option<(Record<'_>, usize)> {
+    let kind = *bytes.first()?;
+    let len = usize::try_from(u32::from_le_bytes(array(bytes, 1)?)).ok()?;
+    let body = bytes.get(5..5_usize.checked_add(len)?)?;
+    let end = 5_usize.checked_add(len)?.checked_add(8)?;
+    if array::<8>(bytes, end.checked_sub(8)?)? != check(kind, body) {
+        return None;
+    }
+    let lineage = Lineage {
+        record: array(body, 0)?,
+        author: array(body, 32)?,
+    };
+    let seq = u64::from_le_bytes(array(body, 64)?);
+    let record = match kind {
+        FRAME_RECORD => Record::Frame {
+            lineage,
+            seq,
+            authored_at_ns: u64::from_le_bytes(array(body, 72)?),
+            retention: match body.get(80)? {
+                1 => ContentRetention::Checkpoint,
+                0 => ContentRetention::Delta,
+                _ => return None,
+            },
+            bytes: body.get(81..)?,
+        },
+        RETIRE_RECORD => Record::Retire {
+            lineage,
+            seq,
+            segment: u32::from_le_bytes(array(body, 72)?),
+            generation: u32::from_le_bytes(array(body, 76)?),
+            at: u64::from_le_bytes(array(body, 80)?),
+        },
+        _ => return None,
+    };
+    Some((record, end))
+}
+
+/// Every whole record of a segment with its offset and length, and where the
+/// whole records end.
+fn records(bytes: &[u8]) -> (Vec<(u64, u64, Record<'_>)>, u64) {
+    let mut found = Vec::new();
+    let mut at = 0_usize;
+    while let Some(rest) = bytes.get(at..)
+        && !rest.is_empty()
+    {
+        let Some((record, len)) = read_record(rest) else {
+            break;
+        };
+        found.push((at as u64, len as u64, record));
+        at = at.saturating_add(len);
+    }
+    (found, at as u64)
 }
 
 impl Store {
@@ -183,10 +436,14 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the root cannot be created or read. A file that
-    /// is not a frame a store keeps is skipped and logged: a crash leaves
-    /// nothing half-written, so such a file came from outside.
+    /// is not a segment is skipped and logged, and so are the bytes after a
+    /// segment's last whole record but in its newest segment, where a crash
+    /// leaves them and they are cut off.
     pub fn open(root: impl Into<PathBuf>, appetite: Appetite) -> Result<Self, StoreError> {
-        let root = root.into();
+        Self::open_with(root.into(), appetite, Limits::default())
+    }
+
+    fn open_with(root: PathBuf, appetite: Appetite, limits: Limits) -> Result<Self, StoreError> {
         let kept = frames_version(&root)?;
         if kept > FRAMES_VERSION {
             return Err(StoreError::Newer(kept));
@@ -198,19 +455,17 @@ impl Store {
             held: std::sync::Mutex::new(Held {
                 bytes: 0,
                 workspaces: BTreeMap::new(),
+                writers: 0,
+                appends: 0,
+                limits,
             }),
         };
-        let (frames, holders) = (store.stored(kept)?, store.stored_holders()?);
-        if kept < FRAMES_VERSION || !store.root.join(FRAMES_VERSION_FILE).is_file() {
-            tilo_files::native::atomic::write(
-                &store.root.join(FRAMES_VERSION_FILE),
-                FRAMES_VERSION.to_string().as_bytes(),
-            )?;
-        }
+        let holders = store.stored_holders()?;
         {
             let mut held = store.held.lock_recover();
-            for (workspace, frame, bytes) in frames {
-                add(&mut held, workspace, &frame, bytes, false);
+            store.read_segments(&mut held)?;
+            if kept < FRAMES_VERSION {
+                store.pack_frame_files(&mut held)?;
             }
             for (workspace, device, cursors) in holders {
                 held.workspaces
@@ -219,9 +474,32 @@ impl Store {
                     .holders
                     .insert(device, holding(&cursors));
             }
+            // A checkpoint's retirements that a crash cut off before they
+            // were synced are made again.
+            let checkpoints: Vec<(WorkspaceId, Lineage, u64)> = held
+                .workspaces
+                .iter()
+                .flat_map(|(workspace, stored)| {
+                    stored.lineages.iter().filter_map(|(lineage, entries)| {
+                        let newest = newest_checkpoint(entries)?;
+                        (entries.first()?.seq < newest).then_some((*workspace, *lineage, newest))
+                    })
+                })
+                .collect();
+            for (workspace, lineage, seq) in checkpoints {
+                retire_before(&store.root, workspace, lineage, seq, &mut held);
+            }
             retire_to_appetite(&store.root, appetite, &mut held);
+            sync_writers(&held)?;
             drop(held);
         }
+        if kept < FRAMES_VERSION || !store.root.join(FRAMES_VERSION_FILE).is_file() {
+            tilo_files::native::atomic::write(
+                &store.root.join(FRAMES_VERSION_FILE),
+                FRAMES_VERSION.to_string().as_bytes(),
+            )?;
+        }
+        store.remove_frame_files()?;
         Ok(store)
     }
 
@@ -271,12 +549,13 @@ impl Store {
     /// Keep `frame` for `workspace`, unless the store holds that frame of
     /// its lineage already. A checkpoint the author published retires the
     /// author's earlier frames of the same lineage, and the appetite retires
-    /// what it must.
+    /// what it must. Returns once the frame is synced, with the frames
+    /// written beside it.
     ///
     /// # Errors
     ///
-    /// Returns an error when the frame cannot be written. The store is
-    /// unchanged then.
+    /// Returns an error when the frame cannot be written. The store does not
+    /// serve it then.
     pub fn retain(&self, workspace: WorkspaceId, frame: &Frame) -> Result<Retained, StoreError> {
         self.retain_from(workspace, frame, false)
     }
@@ -315,28 +594,52 @@ impl Store {
         from_link: bool,
     ) -> Result<Retained, StoreError> {
         let bytes = postcard::to_allocvec(&frame.message)?;
-        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let record = frame_record(frame, &bytes)?;
+        let key = (frame.lineage, frame.seq);
+        let (writer, at) = {
+            let mut held = self.held.lock_recover();
+            if held.workspaces.get(&workspace).is_some_and(|stored| {
+                stored.staged.contains_key(&key)
+                    || stored
+                        .lineages
+                        .get(&frame.lineage)
+                        .is_some_and(|entries| entries.iter().any(|entry| entry.seq == frame.seq))
+            }) {
+                return Ok(Retained::Duplicate);
+            }
+            let appended = append(&self.root, workspace, &mut held, &record)?;
+            held.workspaces
+                .entry(workspace)
+                .or_default()
+                .staged
+                .insert(key, appended.0.segment);
+            drop(held);
+            appended
+        };
+        let synced = writer.sync_to(at.saturating_add(record.len() as u64));
         let mut held = self.held.lock_recover();
-        if held
-            .workspaces
-            .get(&workspace)
-            .and_then(|held| held.lineages.get(&frame.lineage))
-            .is_some_and(|entries| entries.iter().any(|entry| entry.seq == frame.seq))
-        {
-            return Ok(Retained::Duplicate);
+        let stored = held.workspaces.entry(workspace).or_default();
+        stored.staged.remove(&key);
+        let len = bytes.len() as u64;
+        let entry = Entry {
+            seq: frame.seq,
+            bytes: len,
+            authored_at_ns: frame.authored_at_ns,
+            retention: frame.retention,
+            from_link,
+            segment: writer.segment,
+            at,
+        };
+        if let Err(error) = synced {
+            // Not acknowledged, so not served; a restart may read it back,
+            // signed as it is, and serves it then.
+            stored.retired.insert((entry.segment, entry.at));
+            if let Some(segment) = stored.segments.get_mut(&entry.segment) {
+                segment.dead = segment.dead.saturating_add(entry.record_len());
+            }
+            return Err(error.into());
         }
-        let path = frame_path(
-            &self.root,
-            workspace,
-            frame.lineage,
-            frame.seq,
-            frame.retention,
-        );
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        tilo_files::native::atomic::write(&path, &bytes)?;
-        add(&mut held, workspace, frame, len, from_link);
+        add(&mut held, workspace, frame.lineage, entry);
         if frame.retention == ContentRetention::Checkpoint {
             let retired = retire_before(&self.root, workspace, frame.lineage, frame.seq, &mut held);
             tracing::debug!(
@@ -399,6 +702,7 @@ impl Store {
         // line's changes held back for a baseline that came after them.
         let mut carried = 0_usize;
         let mut carried_bytes = 0_u64;
+        let mut reading = Reading::default();
         loop {
             let next = pending
                 .iter()
@@ -417,7 +721,7 @@ impl Store {
             let Some((_, at)) = next else {
                 break;
             };
-            let Some((lineage, rest)) = pending.get_mut(at) else {
+            let Some((_, rest)) = pending.get_mut(at) else {
                 break;
             };
             let Some((entry, after)) = rest.split_first() else {
@@ -431,7 +735,7 @@ impl Store {
             }
             replay
                 .frames
-                .push(self.frame_at(workspace, *lineage, *entry)?);
+                .push(reading.frame(&self.root, workspace, stored, *entry)?);
             carried = carried.saturating_add(1);
             carried_bytes = carried_bytes.saturating_add(entry.bytes);
             *rest = after;
@@ -457,6 +761,9 @@ impl Store {
             let Some(stored) = held.workspaces.remove(&workspace) else {
                 return Ok(Retired::default());
             };
+            if stored.writer.is_some() {
+                held.writers = held.writers.saturating_sub(1);
+            }
             match fs::remove_dir_all(holders_dir(&self.root, workspace)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -560,8 +867,27 @@ impl Store {
                 &mut retired,
             )?;
         }
+        sync_writers(&held)?;
         drop(held);
         Ok(retired)
+    }
+
+    /// The segments `workspace` keeps, and their bytes: what a diagnostic
+    /// shows and a test of the layout reads.
+    #[must_use]
+    pub fn segments(&self, workspace: WorkspaceId) -> Vec<(u32, u64)> {
+        self.held
+            .lock_recover()
+            .workspaces
+            .get(&workspace)
+            .map(|stored| {
+                stored
+                    .segments
+                    .iter()
+                    .map(|(number, segment)| (*number, segment.len))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// What every device said it holds, as [`Store::open`] reads it. A file
@@ -592,74 +918,390 @@ impl Store {
         Ok(found)
     }
 
-    /// Every stored frame, as [`Store::open`] reads it, each written again as this build writes
-    /// it when the store kept it as version `kept` of its frames, before [`FRAMES_VERSION`].
-    fn stored(&self, kept: u32) -> Result<Vec<(WorkspaceId, Frame, u64)>, StoreError> {
-        let mut found = Vec::new();
-        for workspace in directories(&self.root.join(WORKSPACES))? {
-            let Some(workspace) = workspace
+    /// Index every workspace's segments, as [`Store::open`] reads them.
+    fn read_segments(&self, held: &mut Held) -> Result<(), StoreError> {
+        for dir in directories(&self.root.join(WORKSPACES))? {
+            let Some(workspace) = dir
                 .file_name()
                 .and_then(|name| name.to_str())
                 .and_then(WorkspaceId::parse)
             else {
                 continue;
             };
-            for record in directories(&workspace_dir(&self.root, workspace))? {
-                for author in directories(&record)? {
-                    for file in files(&author)? {
-                        let bytes = fs::read(&file)?;
-                        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-                        let message = match NeighbourMsg::decode(&bytes) {
-                            Ok(message) => message,
-                            Err(error) => {
-                                tracing::warn!(path = %file.display(), %error, "a stored frame does not decode; it stays on disk and is not served");
-                                continue;
-                            }
-                        };
-                        let len = if kept < FRAMES_VERSION {
-                            written_as_today(&file, &bytes, &message).unwrap_or(len)
-                        } else {
-                            len
-                        };
-                        match Frame::of(&message) {
-                            Ok(frame) => found.push((workspace, frame, len)),
-                            Err(error) => {
-                                tracing::warn!(path = %file.display(), %error, "a stored file is not a frame a store keeps; it stays on disk and is not served");
-                            }
-                        }
+            let mut numbered = Vec::new();
+            for file in files(&dir)? {
+                if file.extension().is_some_and(|extension| extension == NEXT) {
+                    // A rewrite a crash cut short; the segment it was to
+                    // replace is whole.
+                    fs::remove_file(&file)?;
+                    continue;
+                }
+                match segment_name(&file) {
+                    Some((number, generation)) => numbered.push((number, generation, file)),
+                    None => {
+                        tracing::warn!(path = %file.display(), "not a segment of the store; it stays on disk and is not served");
+                    }
+                }
+            }
+            numbered.sort_by_key(|(number, generation, _)| (*number, *generation));
+            // A rewrite a crash stopped after its rename leaves the
+            // generation before it, which the newer one replaces whole.
+            let mut segments: Vec<(u32, u32, PathBuf)> = Vec::new();
+            for (number, generation, file) in numbered {
+                if let Some(last) = segments.last_mut()
+                    && last.0 == number
+                {
+                    fs::remove_file(&last.2)?;
+                    *last = (number, generation, file);
+                } else {
+                    segments.push((number, generation, file));
+                }
+            }
+            let newest = segments.last().map(|(number, _, _)| *number);
+            for (number, generation, file) in segments {
+                let bytes = fs::read(&file)?;
+                let (found, whole) = records(&bytes);
+                let stored = held.workspaces.entry(workspace).or_default();
+                stored.segments.insert(
+                    number,
+                    Segment {
+                        generation,
+                        len: whole,
+                        dead: 0,
+                        kept: 0,
+                    },
+                );
+                for (at, len, record) in found {
+                    index_record(held, workspace, number, at, len, &record);
+                }
+                if whole < bytes.len() as u64 {
+                    if Some(number) == newest {
+                        tracing::warn!(path = %file.display(), whole, "a segment ends in a record a crash cut short; it is cut off");
+                        let file = fs::OpenOptions::new().write(true).open(&file)?;
+                        file.set_len(whole)?;
+                        file.sync_all()?;
+                    } else {
+                        tracing::warn!(path = %file.display(), whole, "a segment holds bytes that are not a record; what follows them is not served");
                     }
                 }
             }
         }
-        Ok(found)
+        Ok(())
     }
 
-    fn frame_at(
-        &self,
-        workspace: WorkspaceId,
-        lineage: Lineage,
-        entry: Entry,
-    ) -> Result<NeighbourMsg, StoreError> {
-        let path = frame_path(&self.root, workspace, lineage, entry.seq, entry.retention);
-        let bytes = fs::read(&path)?;
-        Ok(NeighbourMsg::decode(&bytes)?)
+    /// Move the frames a store kept one file each, before segments, into
+    /// segments, each as this build writes it ([`FRAMES_VERSION`]).
+    fn pack_frame_files(&self, held: &mut Held) -> Result<(), StoreError> {
+        let mut moved = 0_u64;
+        for dir in directories(&self.root.join(WORKSPACES))? {
+            let Some(workspace) = dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(WorkspaceId::parse)
+            else {
+                continue;
+            };
+            for record in directories(&dir)? {
+                for author in directories(&record)? {
+                    for file in files(&author)? {
+                        let bytes = fs::read(&file)?;
+                        let message = match NeighbourMsg::decode(&bytes) {
+                            Ok(message) => message,
+                            Err(error) => {
+                                tracing::warn!(path = %file.display(), %error, "a stored frame does not decode; it is not served");
+                                continue;
+                            }
+                        };
+                        let frame = match Frame::of(&message) {
+                            Ok(frame) => frame,
+                            Err(error) => {
+                                tracing::warn!(path = %file.display(), %error, "a stored file is not a frame a store keeps; it is not served");
+                                continue;
+                            }
+                        };
+                        if held.workspaces.get(&workspace).is_some_and(|stored| {
+                            stored.lineages.get(&frame.lineage).is_some_and(|entries| {
+                                entries.iter().any(|entry| entry.seq == frame.seq)
+                            })
+                        }) {
+                            continue;
+                        }
+                        let today = postcard::to_allocvec(&message)?;
+                        let packed = frame_record(&frame, &today)?;
+                        let (writer, at) = append(&self.root, workspace, held, &packed)?;
+                        add(
+                            held,
+                            workspace,
+                            frame.lineage,
+                            Entry {
+                                seq: frame.seq,
+                                bytes: today.len() as u64,
+                                authored_at_ns: frame.authored_at_ns,
+                                retention: frame.retention,
+                                from_link: false,
+                                segment: writer.segment,
+                                at,
+                            },
+                        );
+                        moved = moved.saturating_add(1);
+                    }
+                }
+            }
+        }
+        sync_writers(held)?;
+        if moved > 0 {
+            tracing::info!(moved, "the store moved the frames it kept one file each into segments");
+        }
+        Ok(())
+    }
+
+    /// Remove the directories of frames kept one file each, once every frame
+    /// in them is in a segment and the version file says so.
+    fn remove_frame_files(&self) -> io::Result<()> {
+        for dir in directories(&self.root.join(WORKSPACES))? {
+            for record in directories(&dir)? {
+                fs::remove_dir_all(&record)?;
+            }
+        }
+        Ok(())
     }
 }
 
-/// The frame `message`, read from `bytes` at `file`, written again as this build writes it when
-/// it was kept in an earlier layout ([`NeighbourMsg::decode`]). Answers the length kept, or `None`
-/// when the file was not written again (it is served as it reads either way).
-fn written_as_today(file: &Path, bytes: &[u8], message: &NeighbourMsg) -> Option<u64> {
-    let today = postcard::to_allocvec(message).ok()?;
-    if today == bytes {
-        return None;
-    }
-    match tilo_files::native::atomic::write(file, &today) {
-        Ok(()) => u64::try_from(today.len()).ok(),
-        Err(error) => {
-            tracing::warn!(path = %file.display(), %error, "a frame kept in an earlier layout was not written again; it is served as it reads");
-            None
+/// Sync every segment open for appending.
+fn sync_writers(held: &Held) -> io::Result<()> {
+    for stored in held.workspaces.values() {
+        if let Some(writer) = &stored.writer {
+            writer.sync_all_written()?;
         }
+    }
+    Ok(())
+}
+
+/// Index `record`, read at `at` in `segment` of `workspace`.
+fn index_record(
+    held: &mut Held,
+    workspace: WorkspaceId,
+    segment: u32,
+    at: u64,
+    len: u64,
+    record: &Record<'_>,
+) {
+    match *record {
+        Record::Frame {
+            lineage,
+            seq,
+            authored_at_ns,
+            retention,
+            bytes,
+        } => {
+            let entry = Entry {
+                seq,
+                bytes: bytes.len() as u64,
+                authored_at_ns,
+                retention,
+                from_link: false,
+                segment,
+                at,
+            };
+            let stored = held.workspaces.entry(workspace).or_default();
+            let duplicate = stored
+                .lineages
+                .get(&lineage)
+                .is_some_and(|entries| entries.iter().any(|held| held.seq == seq));
+            if duplicate {
+                stored.retired.insert((segment, at));
+                if let Some(segment) = stored.segments.get_mut(&segment) {
+                    segment.dead = segment.dead.saturating_add(len);
+                }
+            } else {
+                add(held, workspace, lineage, entry);
+            }
+        }
+        Record::Retire {
+            lineage,
+            seq,
+            segment: target,
+            generation,
+            at: target_at,
+        } => {
+            let Some(stored) = held.workspaces.get_mut(&workspace) else {
+                return;
+            };
+            if let Some(own) = stored.segments.get_mut(&segment) {
+                own.dead = own.dead.saturating_add(len);
+            }
+            if stored
+                .segments
+                .get(&target)
+                .is_none_or(|target| target.generation != generation)
+            {
+                return;
+            }
+            let found = stored.lineages.get(&lineage).and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.seq == seq && entry.segment == target && entry.at == target_at)
+                    .copied()
+            });
+            if let Some(entry) = found {
+                unindex(held, workspace, lineage, entry);
+            }
+        }
+    }
+}
+
+/// Append `record` to `workspace`'s newest segment, starting one when there
+/// is none or it is full. Answers the segment's writer and where the record
+/// starts; it is synced by [`Writer::sync_to`].
+fn append(
+    root: &Path,
+    workspace: WorkspaceId,
+    held: &mut Held,
+    record: &[u8],
+) -> Result<(Arc<Writer>, u64), StoreError> {
+    held.appends = held.appends.saturating_add(1);
+    let appends = held.appends;
+    let full = held
+        .workspaces
+        .get(&workspace)
+        .and_then(|stored| stored.writer.as_ref())
+        .is_none_or(|writer| writer.written.load(Ordering::Acquire) >= held.limits.segment_bytes);
+    if full {
+        open_writer(root, workspace, held)?;
+    }
+    let stored = held.workspaces.entry(workspace).or_default();
+    stored.appended = appends;
+    let Some(writer) = stored.writer.clone() else {
+        return Err(io::Error::other("a workspace's segment did not open").into());
+    };
+    let at = writer.written.load(Ordering::Acquire);
+    if let Err(error) = (&writer.file).write_all(record) {
+        // What part of the record reached the file goes, so the next one
+        // starts where this one did; failing that, the segment takes no
+        // more and the next record starts the next one.
+        if writer.file.set_len(at).is_err() {
+            stored.writer = None;
+            if let Some(segment) = stored.segments.get_mut(&writer.segment) {
+                segment.len = u64::MAX;
+            }
+            held.writers = held.writers.saturating_sub(1);
+        }
+        return Err(error.into());
+    }
+    let end = at.saturating_add(record.len() as u64);
+    writer.written.store(end, Ordering::Release);
+    if let Some(segment) = stored.segments.get_mut(&writer.segment) {
+        segment.len = end;
+    }
+    Ok((writer, at))
+}
+
+/// Open `workspace`'s newest segment for appending: the one it has when it
+/// has room, or the next one, closing the writer appended to longest ago
+/// when too many are open.
+fn open_writer(root: &Path, workspace: WorkspaceId, held: &mut Held) -> Result<(), StoreError> {
+    let had = held
+        .workspaces
+        .get_mut(&workspace)
+        .and_then(|stored| stored.writer.take());
+    if let Some(writer) = had {
+        writer.sync_all_written()?;
+        held.writers = held.writers.saturating_sub(1);
+    }
+    while held.writers >= OPEN_WRITERS {
+        let Some(idle) = held
+            .workspaces
+            .iter()
+            .filter(|(_, stored)| stored.writer.is_some())
+            .min_by_key(|(_, stored)| stored.appended)
+            .map(|(id, _)| *id)
+        else {
+            break;
+        };
+        if let Some(writer) = held
+            .workspaces
+            .get_mut(&idle)
+            .and_then(|stored| stored.writer.take())
+        {
+            writer.sync_all_written()?;
+        }
+        held.writers = held.writers.saturating_sub(1);
+    }
+    let dir = workspace_dir(root, workspace);
+    if !dir.is_dir() {
+        fs::create_dir_all(&dir)?;
+        tilo_files::native::atomic::sync_directory(&root.join(WORKSPACES))?;
+    }
+    let segment_bytes = held.limits.segment_bytes;
+    let stored = held.workspaces.entry(workspace).or_default();
+    let newest = stored.segments.iter().next_back().map(|(n, s)| (*n, *s));
+    let (number, generation, len) = match newest {
+        Some((number, segment)) if segment.len < segment_bytes => {
+            (number, segment.generation, segment.len)
+        }
+        Some((number, _)) => (number.saturating_add(1), 0, 0),
+        None => (0, 0, 0),
+    };
+    let path = segment_path(root, workspace, number, generation);
+    let created = !path.exists();
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    if created {
+        tilo_files::native::atomic::sync_directory(&dir)?;
+    }
+    stored.segments.entry(number).or_insert(Segment {
+        generation,
+        len,
+        dead: 0,
+        kept: 0,
+    });
+    stored.writer = Some(Arc::new(Writer {
+        segment: number,
+        file,
+        written: AtomicU64::new(len),
+        synced: std::sync::Mutex::new(len),
+    }));
+    held.writers = held.writers.saturating_add(1);
+    Ok(())
+}
+
+/// Reads frames back, keeping the segment it read last open.
+#[derive(Default)]
+struct Reading {
+    open: Option<(WorkspaceId, u32, fs::File)>,
+}
+
+impl Reading {
+    fn frame(
+        &mut self,
+        root: &Path,
+        workspace: WorkspaceId,
+        stored: &Workspace,
+        entry: Entry,
+    ) -> Result<NeighbourMsg, StoreError> {
+        let reuse = matches!(&self.open, Some((id, segment, _)) if *id == workspace && *segment == entry.segment);
+        if !reuse {
+            let generation = stored
+                .segments
+                .get(&entry.segment)
+                .map_or(0, |segment| segment.generation);
+            let file = fs::File::open(segment_path(root, workspace, entry.segment, generation))?;
+            self.open = Some((workspace, entry.segment, file));
+        }
+        let Some((_, _, file)) = &mut self.open else {
+            return Err(io::Error::other("a segment did not open").into());
+        };
+        file.seek(io::SeekFrom::Start(
+            entry
+                .at
+                .saturating_add(RECORD_HEADER)
+                .saturating_add(FRAME_FIELDS),
+        ))?;
+        let mut bytes = vec![0; usize::try_from(entry.bytes).unwrap_or(usize::MAX)];
+        file.read_exact(&mut bytes)?;
+        Ok(NeighbourMsg::decode(&bytes)?)
     }
 }
 
@@ -741,15 +1383,14 @@ pub fn author_of(message: &NeighbourMsg) -> Option<[u8; 32]> {
 
 const WORKSPACES: &str = "workspaces";
 
-/// The layout of the frames a store keeps, one postcard [`NeighbourMsg`] per file. Version 1 kept
-/// a document write without the reader set it is sealed for, which version 2 ends it with
-/// ([`NeighbourMsg::AppDocument`]). Version 3 is the frames a document write may name its own
-/// content key in ([`collab_types::EncryptionScheme::DocumentContentKey`]): a build before it
-/// cannot decode such a frame, so it refuses the store by version instead of reading a frame it
-/// cannot. A store opening frames of an earlier version writes each again as version 3
-/// ([`written_as_today`]) before it records the version it keeps; a version-2 frame reads as
-/// today, its envelope naming the workspace's own key.
-pub(crate) const FRAMES_VERSION: u32 = 3;
+/// The layout of the frames a store keeps. Up to version 3 one postcard [`NeighbourMsg`] per
+/// file: version 1 kept a document write without the reader set it is sealed for, which version 2
+/// ends it with ([`NeighbourMsg::AppDocument`]), and version 3 is the frames a document write may
+/// name its own content key in ([`collab_types::EncryptionScheme::DocumentContentKey`]). Version 4
+/// keeps them in segments, each frame as version 3 writes it. A build before a version refuses
+/// the store by version instead of reading what it cannot; a store opening an earlier version
+/// moves its frames into segments, each written as today, before it records the version it keeps.
+pub(crate) const FRAMES_VERSION: u32 = 4;
 /// Where a store records the version of the frames it keeps: no file is version 1, kept before
 /// a store recorded one.
 const FRAMES_VERSION_FILE: &str = "frames-version";
@@ -784,6 +1425,25 @@ fn workspace_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
     root.join(WORKSPACES).join(workspace.to_string())
 }
 
+fn segment_path(root: &Path, workspace: WorkspaceId, number: u32, generation: u32) -> PathBuf {
+    workspace_dir(root, workspace).join(format!("{number:08x}.{generation:08x}.{PACK}"))
+}
+
+/// The number and generation a segment's file is named by.
+fn segment_name(path: &Path) -> Option<(u32, u32)> {
+    if path.extension()? != PACK {
+        return None;
+    }
+    let (number, generation) = path.file_stem()?.to_str()?.split_once('.')?;
+    if number.len() != 8 || generation.len() != 8 {
+        return None;
+    }
+    Some((
+        u32::from_str_radix(number, 16).ok()?,
+        u32::from_str_radix(generation, 16).ok()?,
+    ))
+}
+
 fn holders_dir(root: &Path, workspace: WorkspaceId) -> PathBuf {
     root.join(HOLDERS).join(workspace.to_string())
 }
@@ -809,23 +1469,6 @@ fn newest_checkpoint(entries: &[Entry]) -> Option<u64> {
         .filter(|entry| entry.retention == ContentRetention::Checkpoint)
         .map(|entry| entry.seq)
         .max()
-}
-
-fn frame_path(
-    root: &Path,
-    workspace: WorkspaceId,
-    lineage: Lineage,
-    seq: u64,
-    retention: ContentRetention,
-) -> PathBuf {
-    let class = match retention {
-        ContentRetention::Checkpoint => "c",
-        ContentRetention::Delta => "d",
-    };
-    workspace_dir(root, workspace)
-        .join(hex::encode(lineage.record))
-        .join(hex::encode(lineage.author))
-        .join(format!("{seq:016x}.{class}"))
 }
 
 /// The directories inside `dir`, sorted, or none when it does not exist.
@@ -864,20 +1507,32 @@ fn files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(found)
 }
 
-fn add(held: &mut Held, workspace: WorkspaceId, frame: &Frame, bytes: u64, from_link: bool) {
-    let entry = Entry {
-        seq: frame.seq,
-        bytes,
-        authored_at_ns: frame.authored_at_ns,
-        retention: frame.retention,
-        from_link,
-    };
+fn add(held: &mut Held, workspace: WorkspaceId, lineage: Lineage, entry: Entry) {
     let stored = held.workspaces.entry(workspace).or_default();
-    let entries = stored.lineages.entry(frame.lineage).or_default();
+    let entries = stored.lineages.entry(lineage).or_default();
     let at = entries.partition_point(|held| held.seq < entry.seq);
     entries.insert(at, entry);
-    stored.bytes = stored.bytes.saturating_add(bytes);
-    held.bytes = held.bytes.saturating_add(bytes);
+    stored.bytes = stored.bytes.saturating_add(entry.bytes);
+    held.bytes = held.bytes.saturating_add(entry.bytes);
+}
+
+/// Drop `entry` from the index, its record now dead in its segment.
+fn unindex(held: &mut Held, workspace: WorkspaceId, lineage: Lineage, entry: Entry) {
+    let Some(stored) = held.workspaces.get_mut(&workspace) else {
+        return;
+    };
+    if let Some(entries) = stored.lineages.get_mut(&lineage) {
+        entries.retain(|held| held.seq != entry.seq);
+        if entries.is_empty() {
+            stored.lineages.remove(&lineage);
+        }
+    }
+    stored.retired.insert((entry.segment, entry.at));
+    if let Some(segment) = stored.segments.get_mut(&entry.segment) {
+        segment.dead = segment.dead.saturating_add(entry.record_len());
+    }
+    stored.bytes = stored.bytes.saturating_sub(entry.bytes);
+    held.bytes = held.bytes.saturating_sub(entry.bytes);
 }
 
 /// Remove every frame of `lineage` before `seq` and report what went.
@@ -903,12 +1558,14 @@ fn retire_before(
         .unwrap_or_default();
     for entry in covered {
         if let Err(error) = retire(root, workspace, lineage, entry, held, &mut retired) {
-            tracing::warn!(%error, "a covered frame could not be removed");
+            tracing::warn!(%error, "a covered frame could not be retired");
         }
     }
     retired
 }
 
+/// Retire `entry`: a record naming it is appended, synced with the next
+/// write, and the segment holding it is written again once mostly retired.
 fn retire(
     root: &Path,
     workspace: WorkspaceId,
@@ -916,26 +1573,131 @@ fn retire(
     entry: Entry,
     held: &mut Held,
     retired: &mut Retired,
-) -> io::Result<()> {
-    let path = frame_path(root, workspace, lineage, entry.seq, entry.retention);
-    match fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
+) -> Result<(), StoreError> {
+    let generation = held
+        .workspaces
+        .get(&workspace)
+        .and_then(|stored| stored.segments.get(&entry.segment))
+        .map_or(0, |segment| segment.generation);
+    let record = retire_record(lineage, entry, generation)?;
+    let (writer, _) = append(root, workspace, held, &record)?;
+    unindex(held, workspace, lineage, entry);
+    if let Some(stored) = held.workspaces.get_mut(&workspace)
+        && let Some(segment) = stored.segments.get_mut(&writer.segment)
+    {
+        segment.dead = segment.dead.saturating_add(RETIRE_LEN);
     }
+    retired.frames = retired.frames.saturating_add(1);
+    retired.bytes = retired.bytes.saturating_add(entry.bytes);
+    if let Err(error) = rewrite(root, workspace, held, entry.segment) {
+        tracing::warn!(%error, segment = entry.segment, "a mostly retired segment was not written again; it is read as it is");
+    }
+    Ok(())
+}
+
+/// Write `number` of `workspace` again with only the records it still needs,
+/// when it is not the newest segment and most of it is retired: the frames
+/// the index serves from it, and the records retiring frames that are still
+/// in other segments. A segment left with none goes.
+fn rewrite(root: &Path, workspace: WorkspaceId, held: &mut Held, number: u32) -> io::Result<()> {
+    let rewrite_bytes = held.limits.rewrite_bytes;
     let Some(stored) = held.workspaces.get_mut(&workspace) else {
         return Ok(());
     };
-    if let Some(entries) = stored.lineages.get_mut(&lineage) {
-        entries.retain(|held| held.seq != entry.seq);
-        if entries.is_empty() {
-            stored.lineages.remove(&lineage);
+    let Some(segment) = stored.segments.get(&number).copied() else {
+        return Ok(());
+    };
+    let newest = stored.segments.keys().next_back().copied();
+    let freed = segment.dead.saturating_sub(segment.kept);
+    if newest == Some(number)
+        || stored.staged.values().any(|staged| *staged == number)
+        || segment.len < rewrite_bytes
+        || freed.saturating_mul(2) <= segment.len
+    {
+        return Ok(());
+    }
+    let path = segment_path(root, workspace, number, segment.generation);
+    let bytes = fs::read(&path)?;
+    let (found, _) = records(&bytes);
+    let mut kept = Vec::new();
+    let mut moved = BTreeMap::new();
+    let mut kept_retirements = 0_u64;
+    for (at, len, record) in &found {
+        let keep = match record {
+            Record::Frame { lineage, seq, .. } => stored.lineages.get(lineage).is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.seq == *seq && entry.segment == number && entry.at == *at)
+            }),
+            Record::Retire {
+                segment,
+                generation,
+                at,
+                ..
+            } => {
+                *segment != number
+                    && stored.retired.contains(&(*segment, *at))
+                    && stored
+                        .segments
+                        .get(segment)
+                        .is_some_and(|target| target.generation == *generation)
+            }
+        };
+        if !keep {
+            continue;
+        }
+        let start = usize::try_from(*at).unwrap_or(usize::MAX);
+        let end = start.saturating_add(usize::try_from(*len).unwrap_or(usize::MAX));
+        let Some(bytes) = bytes.get(start..end) else {
+            continue;
+        };
+        if matches!(record, Record::Frame { .. }) {
+            moved.insert(*at, kept.len() as u64);
+        } else {
+            kept_retirements = kept_retirements.saturating_add(*len);
+        }
+        kept.extend_from_slice(bytes);
+    }
+    let dir = workspace_dir(root, workspace);
+    if kept.is_empty() {
+        fs::remove_file(&path)?;
+        stored.segments.remove(&number);
+    } else {
+        let generation = segment.generation.saturating_add(1);
+        let again = segment_path(root, workspace, number, generation);
+        let next = again.with_extension(NEXT);
+        {
+            let mut file = fs::File::create(&next)?;
+            file.write_all(&kept)?;
+            file.sync_all()?;
+        }
+        fs::rename(&next, &again)?;
+        fs::remove_file(&path)?;
+        stored.segments.insert(
+            number,
+            Segment {
+                generation,
+                len: kept.len() as u64,
+                dead: kept_retirements,
+                kept: kept_retirements,
+            },
+        );
+    }
+    tilo_files::native::atomic::sync_directory(&dir)?;
+    for entries in stored.lineages.values_mut() {
+        for entry in entries.iter_mut().filter(|entry| entry.segment == number) {
+            if let Some(at) = moved.get(&entry.at) {
+                entry.at = *at;
+            }
         }
     }
-    stored.bytes = stored.bytes.saturating_sub(entry.bytes);
-    held.bytes = held.bytes.saturating_sub(entry.bytes);
-    retired.frames = retired.frames.saturating_add(1);
-    retired.bytes = retired.bytes.saturating_add(entry.bytes);
+    stored.retired.retain(|(segment, _)| *segment != number);
+    tracing::debug!(
+        segment = number,
+        before = segment.len,
+        after = kept.len(),
+        "a mostly retired segment was written again"
+    );
     Ok(())
 }
 
@@ -979,7 +1741,7 @@ fn retire_to_appetite(root: &Path, appetite: Appetite, held: &mut Held) {
             continue;
         };
         if let Err(error) = retire(root, workspace, lineage, entry, held, &mut retired) {
-            tracing::warn!(%error, "a frame the appetite retires could not be removed");
+            tracing::warn!(%error, "a frame the appetite retires could not be retired");
             break;
         }
     }
@@ -1253,14 +2015,7 @@ mod tests {
             let checkpoint = frame(&key, 3, ContentRetention::Checkpoint);
             store.retain(workspace(), &checkpoint).unwrap();
             let size = store.bytes();
-            let path = frame_path(
-                dir.path(),
-                workspace(),
-                checkpoint.lineage,
-                checkpoint.seq,
-                checkpoint.retention,
-            );
-            let kept = fs::read(&path).unwrap().len() as u64;
+            let kept = postcard::to_allocvec(&checkpoint.message).unwrap().len() as u64;
             assert!(size >= kept);
 
             // Reopening under an appetite of exactly the checkpoint keeps that
@@ -1272,7 +2027,8 @@ mod tests {
                 reopened.lineages(workspace()),
                 vec![(checkpoint.lineage, 3, 3)]
             );
-            assert!(fs::read(&path).is_ok());
+            let replay = reopened.replay(workspace(), &[], Budget::default()).unwrap();
+            assert_eq!(replay.frames, vec![checkpoint.message]);
         }
 
         phase compaction_retires_the_frames_a_time_covers;
@@ -1431,13 +2187,7 @@ mod tests {
             let key = device(2);
             let frame = frame(&key, 1, ContentRetention::Delta);
             store.retain(workspace(), &frame).unwrap();
-            let stray = frame_path(
-                dir.path(),
-                workspace(),
-                frame.lineage,
-                2,
-                ContentRetention::Delta,
-            );
+            let stray = workspace_dir(dir.path(), workspace()).join("stray");
             fs::write(&stray, b"not a frame").unwrap();
             drop(store);
 
@@ -1521,5 +2271,264 @@ mod tests {
             };
             assert_eq!(Frame::of(&message), Err(Refusal::NotSealed));
         }
+    }
+
+    /// A store with small segments, so a test fills and retires several.
+    fn open_small(root: &Path) -> Store {
+        Store::open_with(
+            root.to_path_buf(),
+            Appetite::StoreAll,
+            Limits {
+                segment_bytes: 4 * 1024,
+                rewrite_bytes: 1024,
+            },
+        )
+        .unwrap()
+    }
+
+    fn seqs(replay: &Replay) -> Vec<u64> {
+        replay
+            .frames
+            .iter()
+            .map(|message| match message {
+                NeighbourMsg::AppDocument { envelope, .. } => envelope.seq,
+                other => panic!("a document frame, not {other:?}"),
+            })
+            .collect()
+    }
+
+    fn pack_files(root: &Path) -> Vec<PathBuf> {
+        files(&workspace_dir(root, workspace()))
+            .unwrap()
+            .into_iter()
+            .filter(|file| segment_name(file).is_some())
+            .collect()
+    }
+
+    tilo_test_env::scenario! {
+        fn segments_hold_what_the_store_acknowledged_and_free_what_it_retired;
+
+        phase writes_fill_one_segment_after_another_and_read_back_after_a_restart;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = open_small(dir.path());
+            let key = device(2);
+            for seq in 1..=60 {
+                store
+                    .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
+                    .unwrap();
+            }
+            let segments = store.segments(workspace());
+            assert!(segments.len() > 2, "the writes filled several segments: {segments:?}");
+            assert_eq!(pack_files(dir.path()).len(), segments.len(), "one file per segment");
+            let bytes = store.bytes();
+            drop(store);
+
+            let reopened = open_small(dir.path());
+            assert_eq!(reopened.bytes(), bytes);
+            let replay = reopened.replay(workspace(), &[], Budget { max_frames: 100, ..Budget::default() }).unwrap();
+            assert_eq!(seqs(&replay), (1..=60).collect::<Vec<_>>());
+        }
+
+        phase a_mostly_retired_segment_is_written_again_with_what_it_still_serves;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = open_small(dir.path());
+            let author = device(2);
+            let other = device(3);
+            // The other author's frames sit between the first author's, in
+            // the same segments; the first author's checkpoint retires its own.
+            for seq in 1..=40 {
+                store
+                    .retain(workspace(), &frame(&author, seq, ContentRetention::Delta))
+                    .unwrap();
+                if seq % 8 == 0 {
+                    store
+                        .retain(workspace(), &frame(&other, seq / 8, ContentRetention::Delta))
+                        .unwrap();
+                }
+            }
+            let on_disk = |root: &Path| -> u64 {
+                pack_files(root)
+                    .iter()
+                    .map(|file| fs::metadata(file).unwrap().len())
+                    .sum()
+            };
+            let before = on_disk(dir.path());
+            store
+                .retain(workspace(), &frame(&author, 41, ContentRetention::Checkpoint))
+                .unwrap();
+            let after = on_disk(dir.path());
+            assert!(after * 2 < before, "the retired frames' bytes are freed: {before} then {after}");
+            let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
+            assert_eq!(seqs(&replay), vec![41, 1, 2, 3, 4, 5]);
+            drop(store);
+
+            let reopened = open_small(dir.path());
+            let again = reopened.replay(workspace(), &[], Budget::default()).unwrap();
+            assert_eq!(again.frames, replay.frames, "a restart reads back what it served");
+        }
+
+        phase a_record_a_crash_cut_short_is_cut_off;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            let key = device(2);
+            for seq in 1..=3 {
+                store
+                    .retain(workspace(), &frame(&key, seq, ContentRetention::Delta))
+                    .unwrap();
+            }
+            drop(store);
+            let segment = pack_files(dir.path()).pop().unwrap();
+            let whole = fs::metadata(&segment).unwrap().len();
+            let mut torn = fs::read(&segment).unwrap();
+            let next = frame_record(&frame(&key, 4, ContentRetention::Delta), &[7; 300]).unwrap();
+            torn.extend_from_slice(&next[..next.len() / 2]);
+            fs::write(&segment, &torn).unwrap();
+
+            let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(fs::metadata(&segment).unwrap().len(), whole, "the cut record is cut off");
+            assert_eq!(
+                seqs(&reopened.replay(workspace(), &[], Budget::default()).unwrap()),
+                vec![1, 2, 3]
+            );
+            reopened
+                .retain(workspace(), &frame(&key, 4, ContentRetention::Delta))
+                .unwrap();
+            drop(reopened);
+            let again = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(
+                seqs(&again.replay(workspace(), &[], Budget::default()).unwrap()),
+                vec![1, 2, 3, 4],
+                "the next write lands where the cut one began"
+            );
+        }
+
+        phase frames_kept_one_file_each_move_into_segments_once;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let key = device(2);
+            let frames: Vec<Frame> = (1..=3)
+                .map(|seq| frame(&key, seq, ContentRetention::Delta))
+                .collect();
+            for frame in &frames {
+                let path = workspace_dir(dir.path(), workspace())
+                    .join(hex::encode(frame.lineage.record))
+                    .join(hex::encode(frame.lineage.author))
+                    .join(format!("{:016x}.d", frame.seq));
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(&path, postcard::to_allocvec(&frame.message).unwrap()).unwrap();
+            }
+            fs::write(dir.path().join(FRAMES_VERSION_FILE), b"3").unwrap();
+
+            let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            let replay = store.replay(workspace(), &[], Budget::default()).unwrap();
+            assert_eq!(
+                replay.frames,
+                frames.iter().map(|frame| frame.message.clone()).collect::<Vec<_>>(),
+                "every frame is served byte for byte"
+            );
+            assert_eq!(
+                fs::read_to_string(dir.path().join(FRAMES_VERSION_FILE)).unwrap(),
+                FRAMES_VERSION.to_string()
+            );
+            assert!(
+                directories(&workspace_dir(dir.path(), workspace())).unwrap().is_empty(),
+                "the one-file frames are gone"
+            );
+            assert_eq!(pack_files(dir.path()).len(), 1);
+            drop(store);
+            let again = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            assert_eq!(again.replay(workspace(), &[], Budget::default()).unwrap().frames, replay.frames);
+        }
+    }
+
+    /// A host keeping a workspace of 10k resources: every resource written,
+    /// then 100k more writes from writers at once, then a restart. The
+    /// writes share their syncs, and a restart reads only the records'
+    /// headers. Frames are signed once per resource and written again under
+    /// later sequence numbers: the store never opens a frame it keeps, so
+    /// what it costs is its own.
+    #[test]
+    fn a_store_takes_a_thousand_writes_a_second_and_reopens_ten_thousand_resources_quickly() {
+        const RESOURCES: usize = 10_000;
+        const WRITES: usize = 100_000;
+        const WRITERS: usize = 16;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path(), Appetite::StoreAll).unwrap());
+        let key = device(2);
+        let signed: Vec<Frame> = (0..RESOURCES)
+            .map(|resource| {
+                let mut op = SignedOp::new_unsigned(
+                    vec![resource as u8; 96],
+                    ArtifactId::new(),
+                    Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                    AttestationId::new(),
+                    OpKind::Change,
+                    at(1),
+                    1,
+                );
+                op.encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
+                sign_op(&mut op, &key).unwrap();
+                Frame::of(&NeighbourMsg::AppDocument {
+                    peer: 0,
+                    app_id: APP.into(),
+                    cluster_id: CLUSTER.into(),
+                    document_id: format!("resource:{resource}"),
+                    envelope: Box::new(op),
+                    own: None,
+                    readers: None,
+                })
+                .unwrap()
+            })
+            .collect();
+        for frame in &signed {
+            store.retain(workspace(), frame).unwrap();
+        }
+        let signed = Arc::new(signed);
+        let started = std::time::Instant::now();
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|writer| {
+                let (store, signed) = (Arc::clone(&store), Arc::clone(&signed));
+                std::thread::spawn(move || {
+                    for write in (writer..WRITES).step_by(WRITERS) {
+                        let resource = write % RESOURCES;
+                        let mut frame = signed[resource].clone();
+                        frame.seq = (write / RESOURCES) as u64 + 2;
+                        frame.authored_at_ns = frame.seq;
+                        assert_eq!(store.retain(workspace(), &frame).unwrap(), Retained::New);
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let elapsed = started.elapsed();
+        let per_second = f64::from(u32::try_from(WRITES).unwrap()) / elapsed.as_secs_f64();
+        let bytes = store.bytes();
+        drop(store);
+
+        let started = std::time::Instant::now();
+        let reopened = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+        let open = started.elapsed();
+        eprintln!("store at 10k resources: {per_second:.0} writes/s ({WRITES} in {elapsed:?}), reopened in {open:?}");
+        assert_eq!(reopened.lineages(workspace()).len(), RESOURCES);
+        assert_eq!(reopened.bytes(), bytes);
+        assert!(
+            reopened.segments(workspace()).len() < 16,
+            "the writes are packed in few files"
+        );
+        assert!(per_second >= 1_000.0, "{per_second:.0} writes/s over {elapsed:?}");
+        assert!(open < Duration::from_secs(5), "reopening took {open:?}");
+        let last = reopened
+            .replay(
+                workspace(),
+                &[cursor(signed[0].lineage, 10)],
+                Budget { max_frames: 1, ..Budget::default() },
+            )
+            .unwrap();
+        assert_eq!(last.frames.len(), 1);
     }
 }

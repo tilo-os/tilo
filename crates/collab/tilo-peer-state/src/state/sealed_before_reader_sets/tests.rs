@@ -226,10 +226,11 @@ tilo_test_env::scenario! {
         assert_eq!(*readers, None);
         collab_types::verify_op(envelope).unwrap();
         assert!(collab_types::sealed_before_reader_sets(APP, WORKSPACE, DOC, envelope));
-        // Kept again in today's layout: the envelope's bytes are the same.
-        let today = std::fs::read(&path).unwrap();
-        assert_eq!(today, postcard::to_allocvec(&replay.frames[0]).unwrap());
+        // Kept again in today's layout, in a segment: the envelope's bytes are the same.
+        let today = postcard::to_allocvec(&replay.frames[0]).unwrap();
+        assert_eq!(store.bytes(), u64::try_from(today.len()).unwrap());
         assert_eq!(today.get(..bytes.len()), Some(bytes.as_slice()));
+        assert!(!path.exists(), "the frame's own file went once it was in a segment");
         // And the store says which layout it keeps now: opened again, nothing is written.
         assert_eq!(
             std::fs::read_to_string(root.path().join("frames-version")).unwrap(),
@@ -366,10 +367,10 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A store that kept its frames as version 2, which a version-3 frame reads as today: it brings
-/// the version it keeps up to today's before serving, and the frame reads whole.
+/// A store that kept its frames as version 2, which today's frame reads as: it brings the
+/// version it keeps up to today's before serving, and the frame reads whole.
 #[test]
-fn a_store_kept_as_version_two_is_brought_up_to_three() {
+fn a_store_kept_as_version_two_is_brought_up_to_today() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join(FRAME_PATH);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -388,7 +389,7 @@ fn a_store_kept_as_version_two_is_brought_up_to_three() {
     ));
     assert_eq!(
         std::fs::read_to_string(root.path().join("frames-version")).unwrap(),
-        "3",
+        crate::store::FRAMES_VERSION.to_string(),
         "the store records the version it keeps now"
     );
 }
