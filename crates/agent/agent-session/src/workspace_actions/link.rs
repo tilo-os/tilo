@@ -272,6 +272,13 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Result<serde_json::Value, ActionCallError> {
         Err(ActionCallError::UnknownAction)
     }
+    /// A short invite link to `workspace`, made now and kept for the page's
+    /// next press of the row that hands one over: a clipboard write happens
+    /// inside a press, and the host's answer comes after it. The action makes
+    /// the next one. `None` where the host makes none ahead.
+    fn ready_invite_link(&self, _workspace: WorkspaceId, _caller: &Caller) -> Option<String> {
+        None
+    }
     /// The listener-owned public locator; absence cannot mint a browser link.
     fn view_locator(
         &self,

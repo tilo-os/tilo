@@ -1369,6 +1369,146 @@ impl Workspaces {
         self.invoke(Some(workspace_id), caller, None, request).await
     }
 
+    /// Whether `caller` may invite into the workspace `workspace_id`, as its
+    /// governance decides: what a page asks before it offers inviting at all,
+    /// a link handed over or an address on the wait list invited.
+    pub async fn page_may_invite(&self, workspace_id: WorkspaceId, caller: &Caller) -> bool {
+        let Some(workspace) = self.workspace_identity(workspace_id).await else {
+            return false;
+        };
+        let wanted = workspace_governance_address(&workspace, governance::INVITE);
+        let query = CatalogueQuery {
+            needle: "invite".to_owned(),
+            provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.to_owned()),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        };
+        self.catalogue(Some(workspace_id), caller, None, &query)
+            .await
+            .rows
+            .iter()
+            .any(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| action.address == wanted)
+            })
+    }
+
+    /// The addresses waiting at the entry of the workspace `workspace_id`, and
+    /// whether the entry mails an invitation to one, for whoever may invite:
+    /// what a page shows as its wait list, and invites from.
+    ///
+    /// # Errors
+    ///
+    /// `caller` may not invite into the workspace.
+    pub async fn page_wait_list(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = self
+            .workspace_identity(workspace_id)
+            .await
+            .ok_or(ActionCallError::UnknownAction)?;
+        let request = Self::governance_ask(&workspace, WAIT_LIST, Map::new());
+        let listed = self.page_invoke(workspace_id, caller, &request).await?;
+        let entries: Vec<tilo_server_protocol::page::WaitingAddress> = listed
+            .get("entries")
+            .and_then(Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| {
+                        Some(tilo_server_protocol::page::WaitingAddress {
+                            entry: entry.get("entry")?.as_str()?.to_owned(),
+                            contact: entry.get("contact")?.as_str()?.to_owned(),
+                            invited: entry.get("invited_at_ns").is_some_and(|at| !at.is_null()),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(json!({
+            "mails": listed.get("mails").and_then(Value::as_bool).unwrap_or(false),
+            "entries": entries,
+        }))
+    }
+
+    /// Invite the address `entry` waiting at the workspace `workspace_id`'s
+    /// entry, as whoever may invite does: the invitation is issued for it,
+    /// with the short link mailed to the address where the entry sends mail.
+    /// Answers what [`governance::INVITE`] answered.
+    ///
+    /// # Errors
+    ///
+    /// `caller` may not invite, or the address is no longer waiting.
+    pub async fn page_invite_waiting(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        entry: &str,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = self
+            .workspace_identity(workspace_id)
+            .await
+            .ok_or(ActionCallError::UnknownAction)?;
+        let mut arguments = Map::new();
+        arguments.insert("role".to_owned(), Value::from("editor"));
+        arguments.insert("wait_list_entry".to_owned(), Value::from(entry));
+        let request = Self::governance_ask(&workspace, governance::INVITE, arguments);
+        self.page_invoke(workspace_id, caller, &request).await
+    }
+
+    /// A short invite link to the workspace `workspace_id`, for whoever may
+    /// invite into it: an editor's invitation, issued as the workspace issues
+    /// every one, sealed on the site's shelf. A page keeps one ready for a
+    /// press, since a clipboard write has to happen inside the press, and
+    /// asks for the next after each is handed over.
+    ///
+    /// # Errors
+    ///
+    /// `caller` may not invite into the workspace.
+    pub async fn page_invite_link(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = self
+            .workspace_identity(workspace_id)
+            .await
+            .ok_or(ActionCallError::UnknownAction)?;
+        let mut arguments = Map::new();
+        arguments.insert("role".to_owned(), Value::from("editor"));
+        let request = Self::governance_ask(&workspace, governance::INVITE, arguments);
+        let issued = self.page_invoke(workspace_id, caller, &request).await?;
+        let link = issued.get("link").cloned().unwrap_or(Value::Null);
+        Ok(json!({"link": link}))
+    }
+
+    /// The request `operation` of the workspace `workspace`'s governance,
+    /// asked by its tree's address, with `arguments`.
+    fn governance_ask(
+        workspace: &str,
+        operation: &str,
+        arguments: Map<String, Value>,
+    ) -> InvokeRequest {
+        InvokeRequest {
+            invocation: InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                address: workspace_governance_address(workspace, operation),
+            },
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
     /// What `caller`, on the device `certificate` when the transport named
     /// it, may do here about workspace `workspace_id` (`None` when asked of
     /// the serving device itself): the governance of the workspace it carries, their own
@@ -2230,7 +2370,12 @@ impl Workspaces {
             &issued.signed_invitation,
             now,
         );
-        let link = self.invitation_link(workspace, &issued.signed_invitation);
+        // The short link the site keeps sealed: what a person hands over, and
+        // what the mail to an address carries. A site with no shelf here
+        // answers the invitation's own link, which joins the same way.
+        let link = self
+            .sealed_invitation_link(&issued.signed_invitation, expires_at_ns)
+            .unwrap_or_else(|| self.invitation_link(workspace, &issued.signed_invitation));
         let mut answered = json!({
             "workspace": workspace,
             "invite": hex::encode(issued.invite_id),

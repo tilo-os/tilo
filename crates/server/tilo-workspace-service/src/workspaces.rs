@@ -231,7 +231,9 @@ pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompleti
 pub use listing::EntryRefusal;
 pub use pages::PreAdmitRequest;
 use tilo_server_protocol::WorkspaceId;
-pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListed};
+pub use wait_list::{
+    Mailbox, SealedInvitations, Secrets as WaitListSecrets, WaitListMail, WaitListed,
+};
 
 // The administration vocabulary (the actions' names and answers), under the
 // daemon's historic paths.

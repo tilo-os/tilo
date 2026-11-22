@@ -544,8 +544,11 @@ function start() {
     if (kept && (kept.dataset.a === 'value' || kept.dataset.a === 'edit')) act(kept, {value: held.value});
     follow();
     // The page says it arrived, as the entry it came from did: what a tool
-    // waits for is the same marker on either.
+    // waits for is the same marker on either. An entry that opened the
+    // workspace this page is says so too, as the entry page's own marker
+    // names it.
     document.documentElement.dataset.arrival = 'done';
+    document.documentElement.dataset.entry = 'open';
     if (!performance.getEntriesByName('tilo-page-shown').length) performance.mark('tilo-page-shown');
   };
 
@@ -581,6 +584,30 @@ function start() {
     }
   };
 
+  // A row that hands a link over: the link it carries was made before the
+  // press, because a browser takes a clipboard write only inside the press
+  // itself, and the host's answer comes after it. A browser that refuses the
+  // write shows the link beside the row, to select.
+  const handOver = element => {
+    const text = element.dataset.copy;
+    if (!text) return;
+    const fallback = element.parentElement?.querySelector('.tilo-search-handover');
+    const show = () => {
+      if (!fallback) return;
+      fallback.hidden = false;
+      const code = fallback.querySelector('code');
+      if (!code) return;
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    const writing = navigator.clipboard?.writeText?.(text);
+    if (writing) writing.then(() => { if (fallback) fallback.hidden = true; }, show);
+    else show();
+  };
+
   // What the person does.
   page.addEventListener('click', event => {
     const element = event.target.closest('[data-a]');
@@ -591,6 +618,7 @@ function start() {
       // What is typed next is not for the field the person clicked away from.
       const active = document.activeElement;
       if (editing(active) && !element.contains(active)) active.blur();
+      handOver(element);
       act(element, 'activate');
     } else if (action === 'value' && element.dataset.v !== undefined) {
       act(element, {value: element.dataset.v});

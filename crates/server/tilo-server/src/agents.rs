@@ -28,7 +28,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::remote::{ActionCallError, Caller, Pending};
+use tilo_actions::remote::{ActionCallError, Caller, CatalogueResource, CatalogueRow, Pending};
+use tilo_actions::{
+    ActionAddress, ActionContract, ActionDescriptor, ActionKind, ExecutionLocus, InputSpec,
+    OperationKind, RiskLevel,
+};
+use tilo_server_protocol::page::{
+    COPY_INVITE_LINK, NEW_WORKSPACE, PAGE_ACTIONS_PROVIDER, WAITING_TO_JOIN,
+};
 
 mod roster;
 
@@ -72,6 +79,19 @@ const CONFIRMATION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
 /// How long a question an agent asks in its own words waits for its person:
 /// a decision or something only they know may take them a while.
 const ASK_WAIT_NS: u64 = 30 * 60 * 1_000_000_000;
+
+/// How long a short invite link made ahead of a press is handed over for: an
+/// invitation is good for a week, and one made longer ago than this is made
+/// again rather than handed on half spent.
+const READY_LINK_FOR_NS: u64 = 30 * 60 * 1_000_000_000;
+
+/// A short invite link made before it was asked for, and when: copying it is
+/// then the press itself, which is what lets a browser take the write.
+#[derive(Clone)]
+struct ReadyLink {
+    link: String,
+    made_at_ns: u64,
+}
 
 /// The server as an agent supervisor sees it.
 #[derive(Clone)]
@@ -830,6 +850,57 @@ fn placed_when_ready(
     pending
 }
 
+/// A page action this host runs itself, as its page's search lists it: not a
+/// record's and not the workspace's governance, but the host's own business a
+/// person does here in one press.
+fn page_row(
+    workspace: WorkspaceId,
+    action: &str,
+    kind: ActionKind,
+    label: &str,
+    resource_label: &str,
+    description: &str,
+) -> CatalogueRow {
+    let resource = format!("page:{workspace}");
+    CatalogueRow {
+        offered: None,
+        provider: PAGE_ACTIONS_PROVIDER.to_owned(),
+        app_id: PAGE_ACTIONS_PROVIDER.to_owned(),
+        parent_resource: String::new(),
+        resource: CatalogueResource {
+            id: resource.clone(),
+            kind: "page".to_owned(),
+            label: resource_label.to_owned(),
+            presentation: None,
+        },
+        action: Some(ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: ActionAddress::new(resource, action),
+            resource_kind: "page".to_owned(),
+            resource_label: resource_label.to_owned(),
+            action_label: label.to_owned(),
+            keywords: Vec::new(),
+            icon: None,
+            description: Some(description.to_owned()),
+            locus: ExecutionLocus::ServerPreferred,
+            kind: OperationKind::Effect,
+            contract: ActionContract {
+                kind,
+                risk: RiskLevel::None,
+                ..ActionContract::default()
+            },
+            input: InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        }),
+        has_children: false,
+        visibility: None,
+        surface: None,
+    }
+}
+
 /// The server's own device, as the workspace actions service joins its workspaces.
 struct ServerRecordsLink {
     user_public_key: [u8; 32],
@@ -848,6 +919,10 @@ struct ServerRecordsLink {
     /// Where a person is asked about an action run for them.
     certification: CertificationProtocol,
     sessions: Option<tilo_agent_session::AgentSessions>,
+    /// The short invite links made ahead of the press that hands one over,
+    /// per workspace and person: a page carries one on its row, and the press
+    /// copies it before the host answers with the next.
+    ready_links: std::sync::Mutex<std::collections::HashMap<(WorkspaceId, [u8; 32]), ReadyLink>>,
 }
 
 impl ServerRecordsLink {
@@ -891,6 +966,100 @@ impl ServerRecordsLink {
             .map(|summary| summary.name)
             .unwrap_or_default();
         format!("{}.tilo", address_slug(&name))
+    }
+
+    /// The actions this host offers a page of the workspace `workspace`, of
+    /// its own business beside the workspace's governance, whose words hold
+    /// `needle`: what its person may do there. A host without the workspaces
+    /// offers none.
+    fn page_rows(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        needle: &str,
+    ) -> Vec<CatalogueRow> {
+        let Some(workspaces) = self.workspaces.as_ref() else {
+            return Vec::new();
+        };
+        let wants = |title: &str| {
+            let title = title.to_lowercase();
+            needle
+                .split_whitespace()
+                .all(|word| title.contains(&word.to_lowercase()))
+        };
+        let may_invite = self
+            .host_device
+            .runtime
+            .block_on(workspaces.page_may_invite(workspace, caller));
+        let mut offered: Vec<(&str, ActionKind, &str, &str, &str)> = Vec::new();
+        if may_invite {
+            offered.push((
+                COPY_INVITE_LINK,
+                ActionKind::Outside,
+                "Copy an invite link",
+                "Invite",
+                "Anyone with it joins as an editor",
+            ));
+            offered.push((
+                WAITING_TO_JOIN,
+                ActionKind::Read,
+                "Waiting to join",
+                "Waiting",
+                "Invite people who left their address at the door",
+            ));
+        }
+        if workspaces.keeps_workspaces_for_people() {
+            offered.push((
+                NEW_WORKSPACE,
+                ActionKind::Outside,
+                "New workspace",
+                "Workspace",
+                "Make a workspace of your own",
+            ));
+        }
+        offered
+            .into_iter()
+            .filter(|(_, _, label, ..)| wants(label))
+            .map(|(action, kind, label, resource, description)| {
+                page_row(workspace, action, kind, label, resource, description)
+            })
+            .collect()
+    }
+
+    /// Run one of the host's own page actions, `request` naming it, for
+    /// `caller` on the page of the workspace `workspace`.
+    fn run_page_action(
+        &self,
+        workspace: WorkspaceId,
+        caller: &Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        let workspaces = self
+            .workspaces
+            .as_ref()
+            .ok_or(ActionCallError::UnknownAction)?;
+        match request.target.address.action.as_str() {
+            COPY_INVITE_LINK => {
+                let link = self
+                    .host_device
+                    .runtime
+                    .block_on(workspaces.page_invite_link(workspace, caller))?;
+                // The link the row carried was handed over: the next one is
+                // hers until it is.
+                if let Some(person) = caller.user_public_key() {
+                    self.ready_links
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&(workspace, *person));
+                }
+                Ok(link)
+            }
+            WAITING_TO_JOIN => self
+                .host_device
+                .runtime
+                .block_on(workspaces.page_wait_list(workspace, caller)),
+            _ => Err(ActionCallError::UnknownAction),
+        }
     }
 }
 
@@ -1119,14 +1288,17 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         caller: &tilo_actions::remote::Caller,
         needle: &str,
     ) -> Vec<tilo_actions::remote::CatalogueRow> {
-        self.workspaces
+        let mut rows = self
+            .workspaces
             .as_ref()
             .map_or_else(Vec::new, |workspaces| {
                 self.host_device
                     .runtime
                     .block_on(workspaces.page_actions(workspace, caller, needle))
                     .rows
-            })
+            });
+        rows.extend(self.page_rows(workspace, caller, needle));
+        rows
     }
 
     fn run_own_action(
@@ -1135,6 +1307,9 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         caller: &tilo_actions::remote::Caller,
         request: &tilo_actions::remote::InvokeRequest,
     ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+        if request.target.provider == PAGE_ACTIONS_PROVIDER {
+            return self.run_page_action(workspace, caller, request);
+        }
         let workspaces = self
             .workspaces
             .as_ref()
@@ -1142,6 +1317,45 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         self.host_device
             .runtime
             .block_on(workspaces.page_invoke(workspace, caller, request))
+    }
+
+    fn ready_invite_link(
+        &self,
+        workspace: WorkspaceId,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Option<String> {
+        let workspaces = self.workspaces.as_ref()?;
+        let person = caller.user_public_key()?;
+        let now = tilo_clock::unix_now_ns();
+        let key = (workspace, *person);
+        if let Some(held) = self
+            .ready_links
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .filter(|held| now.saturating_sub(held.made_at_ns) < READY_LINK_FOR_NS)
+        {
+            return Some(held.link.clone());
+        }
+        let link = self
+            .host_device
+            .runtime
+            .block_on(workspaces.page_invite_link(workspace, caller))
+            .ok()?
+            .get("link")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)?;
+        self.ready_links
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                key,
+                ReadyLink {
+                    link: link.clone(),
+                    made_at_ns: now,
+                },
+            );
+        Some(link)
     }
 
     fn view_read_policy(
@@ -1630,6 +1844,7 @@ fn attach_resources(
             content_links: server.content_links(),
             certification: server.web_context().certification.clone(),
             sessions,
+            ready_links: std::sync::Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
             host_device: HostDevice {
                 endpoint: ServerEndpoint::iroh(server.node_addr(), server_cert.clone()),

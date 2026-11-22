@@ -193,7 +193,7 @@ pub(super) enum Refused {
 }
 
 /// The invitations a site keeps, and nothing it can read.
-pub(super) struct Shelf {
+pub(crate) struct Shelf {
     /// Where what is kept waits across a restart.
     dir: PathBuf,
     inner: Mutex<Inner>,
@@ -201,7 +201,7 @@ pub(super) struct Shelf {
 
 impl Shelf {
     /// The shelf kept in `dir`, with what an earlier start left there.
-    pub(super) fn opening(dir: PathBuf, now_ns: u64) -> Self {
+    pub(crate) fn opening(dir: PathBuf, now_ns: u64) -> Self {
         let mut inner = Inner::default();
         inner.opening(&dir, now_ns);
         Self {
@@ -339,6 +339,26 @@ impl Shelf {
             inner.bytes = inner.bytes.saturating_sub(kept.sealed.len());
         }
         Ok(())
+    }
+}
+
+/// A workspace issuing an invitation seals it here, on the host that keeps
+/// the site's shelf: the same link whether a member hands one over or the
+/// entry mails it to an address.
+impl tilo_workspace_service::workspaces::SealedInvitations for Shelf {
+    fn keep(&self, handle: &str, stored: Stored) -> Result<(), String> {
+        let now_ns = tilo_clock::unix_now_ns();
+        self.put(handle, stored, now_ns).map_err(|refusal| {
+            let why = match refusal {
+                Refused::Malformed(why) => why.to_owned(),
+                Refused::Taken => "the shelf keeps another invitation there".to_owned(),
+                Refused::Full => "the shelf holds as many invitations as it will".to_owned(),
+                Refused::Gone | Refused::Forbidden => "the shelf refused the invitation".to_owned(),
+                Refused::Storage => "the shelf could not be written".to_owned(),
+            };
+            tracing::warn!(handle, %why, "an invitation was not kept on the shelf");
+            why
+        })
     }
 }
 
