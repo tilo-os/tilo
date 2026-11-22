@@ -1770,12 +1770,9 @@ impl Workspaces {
             None => None,
         }
         .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))?;
-        #[cfg(any(feature = "agents", feature = "web"))]
-        return sealed_documents::readable_now(&reading, (app, record))
+        sealed_documents::readable_now(&reading, (app, record))
             .await
-            .map_err(CollaborationError::new);
-        #[cfg(not(any(feature = "agents", feature = "web")))]
-        Ok(reading.replica.read(|peer| peer.document(app, record)))
+            .map_err(CollaborationError::new)
     }
 
     /// The `(app, record)` of every record of `workspace` the governor's copy

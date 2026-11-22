@@ -302,13 +302,6 @@ impl GovernedWorkspace {
 /// # Errors
 ///
 /// As [`GovernedWorkspace::readable_document`].
-#[cfg_attr(
-    not(any(feature = "agents", feature = "web")),
-    allow(
-        dead_code,
-        reason = "sealed documents are read only where a page or an agent reads them"
-    )
-)]
 pub(super) async fn readable_now(
     reading: &super::readings::Reading,
     (app, resource): (&str, &str),
@@ -379,13 +372,6 @@ struct OpenedState {
     reads: u64,
 }
 
-#[cfg_attr(
-    not(any(feature = "agents", feature = "web")),
-    allow(
-        dead_code,
-        reason = "sealed documents are read only where a page or an agent reads them"
-    )
-)]
 impl MergedDocuments {
     /// Documents whose merged state is kept.
     const MERGED: usize = 8;

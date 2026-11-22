@@ -24,13 +24,6 @@ pub(super) struct Reading {
     /// reads only what is in the clear.
     pub(super) device: Option<DeviceKeys>,
     /// What the last reads of its sealed documents opened ([`super::sealed_documents::readable_now`]).
-    #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
-        allow(
-            dead_code,
-            reason = "sealed documents are read only where a page or an agent reads them"
-        )
-    )]
     pub(super) opened: std::sync::Arc<super::sealed_documents::MergedDocuments>,
     /// The invitations the workspace honours, as its last write left them.
     pub(super) invitations: Invitations,
