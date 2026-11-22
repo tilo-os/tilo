@@ -32,10 +32,10 @@ use tilo_session::Options;
 use tilo_session::platform::fabric::Continuity;
 use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_unlock_protocol::{
-    ENROL_ALPN, ENROL_SOCKET, EnrolReply, EnrolRequest, Half, PROTOCOL_VERSION, SlotId,
-    decode_frame, encode_frame, frame_len,
+    ENROL_ALPN, ENROL_SOCKET, EnrolReply, EnrolRequest, Half, SlotId, decode_frame, encode_frame,
+    frame_len,
 };
-use tilo_user_identity::DeviceCapabilities;
+use tilo_user_identity::{DeviceCapabilities, verify_device_cert};
 
 /// The kind the sheet lists a peer's enrolment as.
 const ENROL_KIND: &str = "network.device-enrol";
@@ -65,13 +65,6 @@ fn person() -> (
     )
     .expect("this computer's identity");
     (runtime, env, root)
-}
-
-/// This device's fleet key, as the identity store holds it.
-fn device_key() -> [u8; 32] {
-    let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    let key = tilo_device_identity::persist::load_device_key(&paths).expect("this device's key");
-    key.verifying_key().to_bytes()
 }
 
 #[test]
@@ -121,17 +114,12 @@ fn a_boot_key_enrols_through_the_sessions_socket() {
     let EnrolReply::Enrolled(response) = reply else {
         panic!("the session enrols the boot key: {reply:?}");
     };
-    assert_eq!(response.cert.version, PROTOCOL_VERSION);
-    assert_eq!(response.cert.device_public_key, device_key());
     assert_eq!(
-        response.cert.boot_public_key,
+        response.cert.device_public_key,
         boot_key.verifying_key().to_bytes()
     );
-    assert_eq!(response.cert.slot, slot);
-    response
-        .cert
-        .verify()
-        .expect("the person's root signed the boot key");
+    assert_eq!(response.cert.capabilities, DeviceCapabilities::nothing());
+    verify_device_cert(&response.cert).expect("the person's root signed the boot key");
     assert!(
         !response.cert.signature.iter().all(|byte| *byte == 0),
         "the certificate carries the root's signature"
@@ -373,21 +361,14 @@ fn a_device_without_the_root_enrols_when_the_person_allows_it() {
     let EnrolReply::Enrolled(response) = reply else {
         panic!("the owner's device enrols the boot key: {reply:?}");
     };
-    // The certificate names the device that asked, which is the key its
-    // connection was made with.
+    // The certificate names the boot key and grants nothing; the enrolment
+    // names the device that asked and is kept by the device that answered.
     assert_eq!(
         response.cert.device_public_key,
-        devices.enrollee.verifying_key().to_bytes()
-    );
-    assert_eq!(
-        response.cert.boot_public_key,
         boot_key.verifying_key().to_bytes()
     );
-    assert_eq!(response.cert.slot, slot);
-    response
-        .cert
-        .verify()
-        .expect("the person's root signed the boot key");
+    assert_eq!(response.cert.capabilities, DeviceCapabilities::nothing());
+    verify_device_cert(&response.cert).expect("the person's root signed the boot key");
     assert!(
         !response.siblings.is_empty(),
         "the person's other devices hold the half"

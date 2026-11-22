@@ -48,6 +48,7 @@ use tilo_unlock_protocol::{
     APPROVAL_TIMEOUT_NS, ENROL_ALPN, ENROL_SOCKET, EnrolReply, EnrolRequest, EnrolResponse, Half,
     SlotId, decode_frame, derive_slot_key, encode_frame, frame_len,
 };
+use tilo_user_identity::{DeviceCapabilities, verify_device_cert};
 
 /// Where the enrolment is described for Settings, without secrets.
 pub const STATE_DIR: &str = "/var/lib/tilo/sibling-unlock";
@@ -135,7 +136,7 @@ impl From<EnrolReply> for NotEnrolled {
     fn from(reply: EnrolReply) -> Self {
         match reply {
             EnrolReply::Enrolled(response) => Self::Failed(format!(
-                "the enrolment answered with a certificate for {} instead of replying",
+                "the enrolment answered with a certificate for boot key {} instead of replying",
                 hex::encode(response.cert.device_public_key)
             )),
             EnrolReply::NotKeyHolder => Self::NotKeyHolder,
@@ -798,7 +799,7 @@ pub fn enrol(
         let request = EnrolRequest::new(
             &boot_key,
             slot,
-            attestation_key.clone(),
+            attestation_key,
             unattended_chain,
             sibling_half,
         )
@@ -806,13 +807,12 @@ pub fn enrol(
         let response = registrar.register(&request)?;
         drop(request);
         let cert = &response.cert;
-        cert.verify()
-            .map_err(|error| anyhow!("the issued certificate: {error}"))?;
-        if cert.boot_public_key != boot_key.verifying_key().to_bytes() || cert.slot != slot {
-            bail!("the issued certificate is for another boot key or slot");
+        verify_device_cert(cert).map_err(|error| anyhow!("the issued certificate: {error}"))?;
+        if cert.device_public_key != boot_key.verifying_key().to_bytes() {
+            bail!("the issued certificate is for another boot key");
         }
-        if cert.attestation_key != attestation_key {
-            bail!("the issued certificate is for another attestation key");
+        if cert.capabilities != DeviceCapabilities::nothing() {
+            bail!("the issued certificate grants the boot key more than nothing");
         }
         if response.siblings.is_empty() {
             bail!("none of your other devices holds the sibling half");

@@ -5,8 +5,8 @@
 //! SHA-256 bank, see `docs/security/boot-chain.md`). A request is
 //! auto-approved only when it carries a quote that
 //!
-//! * is signed by the attestation key certified in the device's
-//!   [`crate::BootKeyCert`] (a restricted TPM key, so the TPM produced it),
+//! * is signed by the attestation key recorded in the device's enrolment
+//!   (a restricted TPM key, so the TPM produced it),
 //! * carries [`qualifying_data`] for this exact request as `extraData`, so a
 //!   recorded quote answers no other challenge, and
 //! * reports a PCR composite the owner accepted.
@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use crate::cert::BootKeyCert;
+use tilo_user_identity::{DeviceCert, device_cert_signing_digest};
+
 use crate::wire::Challenge;
 use crate::{BootId, digest};
 
@@ -160,19 +161,19 @@ pub fn pcr_values(bytes: &[u8], indices: &[u8]) -> Result<Vec<(u8, [u8; 32])>, A
 }
 
 /// The 32 bytes early boot passes the TPM as qualifying data for this
-/// request: the certificate, the answering sibling, the challenge nonce, the
-/// boot id and the ephemeral key.
+/// request: the boot key's certificate, the answering sibling, the challenge
+/// nonce, the boot id and the ephemeral key.
 ///
 /// # Errors
 ///
 /// [`AttestError::NotAQuote`] if the inputs cannot be encoded.
 pub fn qualifying_data(
-    cert: &BootKeyCert,
+    cert: &DeviceCert,
     challenge: &Challenge,
     boot_id: &BootId,
     ephemeral_public: &[u8; 32],
 ) -> Result<[u8; 32], AttestError> {
-    let cert = cert.signing_digest().map_err(|_| AttestError::NotAQuote)?;
+    let cert = device_cert_signing_digest(cert).map_err(|_| AttestError::NotAQuote)?;
     digest(
         QUALIFYING_CONTEXT,
         &(

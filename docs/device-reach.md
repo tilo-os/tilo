@@ -158,8 +158,8 @@ the recovery key always remains (`tilo-disk-encrypt`).
   copied boot partition alone gets nothing.
   - `tilo-disk-encrypt enrol --sibling --unattended` asks for exactly that
     auto-approval: at enrolment the machine creates an attestation key under
-    its TPM, the session holding the person's root certifies its public point
-    in the boot key certificate, and the root signs the PCR 4 + 7 composite
+    its TPM, the session holding the person's root records its public point
+    with the enrolment, and the root signs the PCR 4 + 7 composite
     the machine measures then. Every boot loads that key again and answers a
     sibling's challenge with a TPM quote over the challenge nonce, the boot id
     and the request's ephemeral key; a sibling releases the half with no

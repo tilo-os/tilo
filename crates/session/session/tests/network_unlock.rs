@@ -42,11 +42,10 @@ use tilo_session::platform::fabric::{UnlockEnrolment, UnlockFabricState};
 use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_session::{Options, Session};
 use tilo_unlock_protocol::{
-    BootId, BootKeyCert, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, SlotId, UNLOCK_ALPN,
-    UnlockHello, UnlockRequest, decode_frame, encode_frame, frame_len, open_release,
-    seal_sibling_half,
+    BootId, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, SlotId, UNLOCK_ALPN, UnlockHello,
+    UnlockRequest, decode_frame, encode_frame, frame_len, open_release, seal_sibling_half,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
 
 /// What answers the person's own store's link on a device's endpoint, beside its own traffic.
 fn personal_protocol(
@@ -147,7 +146,8 @@ fn seal_key(person: &Person) -> tilo_seal::PublicKey {
 struct Devices {
     person: Person,
     half: Half,
-    cert: BootKeyCert,
+    cert: DeviceCert,
+    slot: SlotId,
     boot_key: ed25519_dalek::SigningKey,
     questions: Questions,
     shell: Rc<Client>,
@@ -168,30 +168,35 @@ impl Devices {
             volume_uuid: [0x11; 16],
             keyslot: 1,
         };
-        // The phone's boot key, certified by the person's root as enrolment certifies it. The shell
-        // only ever sees the published enrolment.
+        // The phone's boot key, certified by the person's root as enrolment certifies it: an
+        // ordinary device certificate that grants nothing. The shell only ever sees the published
+        // enrolment.
         let boot_key = ed25519_dalek::SigningKey::from_bytes(&[0x77; 32]);
-        let mut cert = BootKeyCert {
-            version: PROTOCOL_VERSION,
+        let mut cert = DeviceCert {
             user_public_key: person.user_public_key,
-            device_public_key: person.phone_key.verifying_key().to_bytes(),
-            boot_public_key: boot_key.verifying_key().to_bytes(),
-            slot,
-            attestation_key: None,
+            device_public_key: boot_key.verifying_key().to_bytes(),
+            device_label: "Boot key".into(),
+            capabilities: DeviceCapabilities::nothing(),
             issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
-        person
+        let digest = device_cert_signing_digest(&cert).expect("the boot key's certificate");
+        cert.signature = person
             .store
-            .certify_boot_key(&person.identity, &mut cert)
-            .expect("the person's root certifies the boot key");
+            .sign_root(&person.identity, &digest)
+            .expect("the person's root signs the boot key");
         let phone_id = DeviceId::new(hex::encode(person.phone_key.verifying_key().to_bytes()))
             .expect("a device id");
         let state = UnlockFabricState {
             enrolments: vec![UnlockEnrolment {
                 cert: cert.clone(),
+                device_public_key: person.phone_key.verifying_key().to_bytes(),
                 sealed_half: seal_sibling_half(&seal_key(&person), &cert, &half)
                     .expect("the half is sealed to the person's secret-sync key"),
+                slot,
+                attestation_key: None,
                 stamp: FabricStamp {
                     counter: tilo_clock::unix_now_ms(),
                     device: phone_id,
@@ -318,6 +323,7 @@ impl Devices {
             person,
             half,
             cert,
+            slot,
             boot_key,
             questions,
             shell,
@@ -399,13 +405,15 @@ impl Devices {
                 boot_cert: cert.clone(),
             };
             write_client(&mut send, &ClientFrame::Hello(hello.clone())).await;
-            let Some(SiblingFrame::Challenge(challenge)) = read_sibling(&mut recv).await else {
-                panic!("the sibling issued a challenge");
+            let challenge = match read_sibling(&mut recv).await {
+                Some(SiblingFrame::Challenge(challenge)) => challenge,
+                other => panic!("the sibling issued a challenge, not {other:?}"),
             };
             assert_eq!(challenge.sibling_public_key, shell_key());
             let request = UnlockRequest::sign(
                 &boot_key,
                 &cert,
+                self.slot,
                 &challenge,
                 id,
                 &ephemeral

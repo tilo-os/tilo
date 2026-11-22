@@ -4,10 +4,14 @@ use crate::tpm::Sealing;
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use tilo_unlock_protocol::{BootKeyCert, SiblingContact};
+use tilo_unlock_protocol::SiblingContact;
+use tilo_user_identity::DeviceCert;
 
 pub const TOKEN_TYPE: &str = "tilo-sibling-unlock";
-pub const TOKEN_VERSION: u32 = 1;
+/// The format a token written now carries: the boot key's certificate is an
+/// ordinary `DeviceCert`. A token of an older format is refused rather than
+/// migrated; removing it still works.
+pub const TOKEN_VERSION: u32 = 2;
 
 /// One of the person's devices this machine asks for the sibling half, as
 /// the enrolment recorded it ([`tilo_unlock_protocol::SiblingContact`]).
@@ -39,9 +43,11 @@ pub struct Token {
     pub keyslots: Vec<String>,
     pub tilo_version: u32,
     /// The boot key's certificate, base64 of its postcard encoding. Public:
-    /// it names this device, the boot key and the slot, signed by the
-    /// person's identity.
+    /// it names the boot key, signed by the person's identity, granting
+    /// nothing.
     pub cert: String,
+    /// The person's devices this machine asks for the half, as the enrolment
+    /// recorded them.
     pub siblings: Vec<Sibling>,
     pub sealing: Sealing,
     /// The secret material, base64: a `systemd-creds` blob for
@@ -60,14 +66,14 @@ impl Token {
         }
     }
 
-    pub fn cert(&self) -> Result<BootKeyCert> {
+    pub fn cert(&self) -> Result<DeviceCert> {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&self.cert)
-            .context("the boot key certificate is not base64")?;
-        postcard::from_bytes(&bytes).context("the boot key certificate is malformed")
+            .context("the boot key's certificate is not base64")?;
+        postcard::from_bytes(&bytes).context("the boot key's certificate is malformed")
     }
 
-    pub fn encode_cert(cert: &BootKeyCert) -> Result<String> {
+    pub fn encode_cert(cert: &DeviceCert) -> Result<String> {
         Ok(base64::engine::general_purpose::STANDARD.encode(postcard::to_allocvec(cert)?))
     }
 
@@ -76,12 +82,13 @@ impl Token {
             bail!("token type {:?} is not {TOKEN_TYPE}", self.kind);
         }
         if self.tilo_version != TOKEN_VERSION {
-            bail!("token version {} is not {TOKEN_VERSION}", self.tilo_version);
+            bail!(
+                "this volume's sibling unlock was set up by an older Tilo; \
+                 remove it and set it up again"
+            );
         }
-        let keyslot = self.keyslot()?;
-        if u32::from(self.cert()?.slot.keyslot) != keyslot {
-            bail!("the boot key certificate is for another key slot");
-        }
+        self.cert()?;
+        self.keyslot()?;
         if self.siblings.is_empty() {
             bail!("the token names no device to ask");
         }
@@ -90,7 +97,9 @@ impl Token {
 }
 
 /// Finds the sibling-unlock token, and its id, in the LUKS2 header's
-/// metadata (`cryptsetup luksDump --dump-json-metadata`).
+/// metadata (`cryptsetup luksDump --dump-json-metadata`). Its shape is not
+/// checked here, so a token of an older format can still be found and
+/// removed; [`Token::validate`] is the caller's check.
 ///
 /// # Errors
 /// When the header carries a malformed or more than one sibling-unlock
@@ -115,7 +124,6 @@ pub fn find(metadata: &serde_json::Value) -> Result<Option<(u32, Token)>> {
             .with_context(|| format!("token id {id:?} is not a number"))?;
         let token: Token = serde_json::from_value(token.clone())
             .context("the sibling-unlock token is malformed")?;
-        token.validate()?;
         found = Some((id, token));
     }
     Ok(found)
@@ -124,21 +132,18 @@ pub fn find(metadata: &serde_json::Value) -> Result<Option<(u32, Token)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_unlock_protocol::SlotId;
+    use tilo_user_identity::DeviceCapabilities;
 
-    fn cert(keyslot: u16) -> BootKeyCert {
-        BootKeyCert {
-            version: tilo_unlock_protocol::PROTOCOL_VERSION,
+    fn cert() -> DeviceCert {
+        DeviceCert {
             user_public_key: [1; 32],
-            device_public_key: [2; 32],
-            boot_public_key: [3; 32],
-            slot: SlotId {
-                volume_uuid: [4; 16],
-                keyslot,
-            },
-            attestation_key: None,
+            device_public_key: [3; 32],
+            device_label: "Boot key".into(),
+            capabilities: DeviceCapabilities::nothing(),
             issued_at_ns: 5,
+            expires_at_ns: None,
             signature: [6; 64],
+            issuer: None,
         }
     }
 
@@ -147,7 +152,7 @@ mod tests {
             kind: TOKEN_TYPE.into(),
             keyslots: vec!["3".into()],
             tilo_version: TOKEN_VERSION,
-            cert: Token::encode_cert(&cert(3)).unwrap(),
+            cert: Token::encode_cert(&cert()).unwrap(),
             siblings: vec![Sibling {
                 device: "cc".repeat(32),
                 label: "Tower".into(),
@@ -170,7 +175,7 @@ mod tests {
         let (id, found) = find(&metadata).unwrap().unwrap();
         assert_eq!(id, 1);
         assert_eq!(found, token());
-        assert_eq!(found.cert().unwrap(), cert(3));
+        assert_eq!(found.cert().unwrap(), cert());
         assert_eq!(found.keyslot().unwrap(), 3);
     }
 
@@ -187,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn two_tokens_or_a_bad_slot_fail_closed() {
+    fn two_tokens_or_an_old_format_fail_closed() {
         let metadata = serde_json::json!({ "tokens": {
             "0": serde_json::to_value(token()).unwrap(),
             "1": serde_json::to_value(token()).unwrap(),
@@ -199,9 +204,13 @@ mod tests {
         let metadata = serde_json::json!({ "tokens": { "0": serde_json::to_value(bad).unwrap() } });
         assert!(find(&metadata).is_err());
 
-        let mut other_slot = token();
-        other_slot.cert = Token::encode_cert(&cert(4)).unwrap();
-        assert!(other_slot.validate().is_err());
+        // A token of the older format is found (so it can be removed) but
+        // refused with a message that says to set the unlock up again.
+        let mut old = token();
+        old.tilo_version = 1;
+        assert!(old.validate().is_err());
+        let metadata = serde_json::json!({ "tokens": { "0": serde_json::to_value(old).unwrap() } });
+        assert!(find(&metadata).unwrap().is_some());
 
         let mut lonely = token();
         lonely.siblings.clear();

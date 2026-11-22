@@ -15,9 +15,10 @@ use std::path::Path;
 use std::time::Duration;
 use tilo_rollback::exec::Real;
 use tilo_unlock_protocol::{
-    BootId, BootKeyCert, Challenge, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, UNLOCK_ALPN,
+    BootId, Challenge, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, SlotId, UNLOCK_ALPN,
     UnlockHello, UnlockRequest, attest, decode_frame, encode_frame, frame_len, open_release,
 };
+use tilo_user_identity::DeviceCert;
 
 pub const TRANSCRIPT: &str = "/run/tilo-sibling-unlock/exchange.json";
 
@@ -83,7 +84,7 @@ pub fn address(sibling: &Sibling) -> Result<EndpointAddr> {
 /// TPM. Nothing here falls back to cleartext or to a weaker check.
 fn attest_for(
     source: Option<&AttestationSource>,
-    cert: &BootKeyCert,
+    cert: &DeviceCert,
     challenge: &Challenge,
     boot_id: BootId,
     ephemeral_public: &[u8; 32],
@@ -146,12 +147,19 @@ async fn dial(endpoint: &Endpoint, sibling: &Sibling) -> Result<Connection> {
     }
 }
 
+/// What one early boot asks of the person's devices: the boot key's
+/// certificate, the boot key that signs, this boot and the slot it wants.
+struct Ask<'a> {
+    cert: &'a DeviceCert,
+    key: &'a SigningKey,
+    id: BootId,
+    slot: SlotId,
+}
+
 async fn ask(
     endpoint: &Endpoint,
     sibling: &Sibling,
-    cert: &BootKeyCert,
-    boot_key: &SigningKey,
-    boot_id: BootId,
+    early: &Ask<'_>,
     progress: &impl Progress,
     attestation: Option<&AttestationSource>,
     transcript: &mut Transcript,
@@ -163,7 +171,7 @@ async fn ask(
         .context("no stream to the sibling")?;
     let hello = ClientFrame::Hello(UnlockHello {
         version: PROTOCOL_VERSION,
-        boot_cert: cert.clone(),
+        boot_cert: early.cert.clone(),
     });
     let engine = base64::engine::general_purpose::STANDARD;
     transcript
@@ -182,23 +190,24 @@ async fn ask(
     let ephemeral_public = ephemeral.public_key().map_err(|error| anyhow!("{error}"))?;
     let quote = attest_for(
         attestation,
-        cert,
+        early.cert,
         &challenge,
-        boot_id,
+        early.id,
         &ephemeral_public.to_bytes(),
         transcript,
     );
     let request = UnlockRequest::sign(
-        boot_key,
-        cert,
+        early.key,
+        early.cert,
+        early.slot,
         &challenge,
-        boot_id,
+        early.id,
         &ephemeral_public,
         quote,
     )
     .map_err(|error| anyhow!("{error}"))?;
     let digest = request
-        .digest(cert, &challenge.sibling_public_key)
+        .digest(early.cert, &challenge.sibling_public_key)
         .map_err(|error| anyhow!("{error}"))?;
     transcript
         .sent
@@ -245,16 +254,24 @@ impl<P: Progress> Siblings for Peers<'_, P> {
     async fn release(
         &self,
         token: &Token,
-        cert: &BootKeyCert,
+        cert: &DeviceCert,
         boot_key: &SigningKey,
         boot_id: BootId,
+        slot: SlotId,
     ) -> Result<Half, Refusal> {
         let endpoint = Endpoint::bind(presets::N0)
             .await
             .map_err(|error| Refusal::Unreachable(format!("no peer-network endpoint: {error}")))?;
+        let early = Ask {
+            cert,
+            key: boot_key,
+            id: boot_id,
+            slot,
+        };
         let mut asking = futures::stream::FuturesUnordered::new();
         for sibling in &token.siblings {
             let endpoint = &endpoint;
+            let early = &early;
             asking.push(async move {
                 let mut transcript = Transcript {
                     sibling: sibling.device.clone(),
@@ -264,9 +281,7 @@ impl<P: Progress> Siblings for Peers<'_, P> {
                 let answer = ask(
                     endpoint,
                     sibling,
-                    cert,
-                    boot_key,
-                    boot_id,
+                    early,
                     self.progress,
                     self.attestation,
                     &mut transcript,

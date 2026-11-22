@@ -24,9 +24,8 @@ use tilo_auth::sibling::token::{Sibling, TOKEN_TYPE, TOKEN_VERSION, Token};
 use tilo_auth::tpm::{self, Sealing};
 use tilo_rollback::exec::Real;
 use tilo_rollback::policy::Workspace;
-use tilo_unlock_protocol::{
-    BootId, BootKeyCert, Challenge, PROTOCOL_VERSION, SlotId, UnlockRequest, attest,
-};
+use tilo_unlock_protocol::{BootId, Challenge, PROTOCOL_VERSION, SlotId, UnlockRequest, attest};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 /// An emulated TPM and the handle keeping it alive for the test's duration.
 fn emulated() -> Option<(tilo_test_env::swtpm::Swtpm, Real)> {
@@ -42,23 +41,20 @@ fn emulated() -> Option<(tilo_test_env::swtpm::Swtpm, Real)> {
     }
 }
 
-fn cert(attestation_key: Vec<u8>) -> BootKeyCert {
+fn cert() -> DeviceCert {
     let root = SigningKey::from_bytes(&[3; 32]);
     let boot = SigningKey::from_bytes(&[4; 32]);
-    let mut cert = BootKeyCert {
-        version: PROTOCOL_VERSION,
+    let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: [2; 32],
-        boot_public_key: boot.verifying_key().to_bytes(),
-        slot: SlotId {
-            volume_uuid: [7; 16],
-            keyslot: 0,
-        },
-        attestation_key: Some(attestation_key),
+        device_public_key: boot.verifying_key().to_bytes(),
+        device_label: "Boot key".into(),
+        capabilities: DeviceCapabilities::nothing(),
         issued_at_ns: 1,
+        expires_at_ns: None,
         signature: [0; 64],
+        issuer: None,
     };
-    cert.sign(&root).unwrap();
+    sign_device_cert(&mut cert, &root).unwrap();
     cert
 }
 
@@ -71,13 +67,20 @@ fn challenge() -> Challenge {
     }
 }
 
+fn slot() -> SlotId {
+    SlotId {
+        volume_uuid: [7; 16],
+        keyslot: 0,
+    }
+}
+
 #[test]
 fn a_quote_from_the_tpm_proves_the_chain_a_sibling_accepts() {
     let Some((_swtpm, tpm)) = emulated() else {
         return;
     };
     let (key, point) = tpm::create_attestation_key(&tpm).expect("an attestation key");
-    let cert = cert(point.clone());
+    let cert = cert();
     let boot = SigningKey::from_bytes(&[4; 32]);
     let challenge = challenge();
     let boot_id = BootId([9; 16]);
@@ -88,8 +91,8 @@ fn a_quote_from_the_tpm_proves_the_chain_a_sibling_accepts() {
     let nonce =
         attest::qualifying_data(&cert, &challenge, &boot_id, &ephemeral_public.to_bytes()).unwrap();
     let quote = tpm::quote(&tpm, &key, &nonce).expect("a quote");
-    let chain = attest::verify_quote(&cert.attestation_key.clone().unwrap(), &quote, &nonce)
-        .expect("the sibling accepts the quote");
+    let chain =
+        attest::verify_quote(&point, &quote, &nonce).expect("the sibling accepts the quote");
     assert_eq!(chain, attest::pcr_composite(&quote.pcrs));
     assert_eq!(
         quote
@@ -113,13 +116,14 @@ fn a_quote_from_the_tpm_proves_the_chain_a_sibling_accepts() {
     let request = UnlockRequest::sign(
         &boot,
         &cert,
+        slot(),
         &challenge,
         boot_id,
         &ephemeral_public,
         Some(quote),
     )
     .unwrap();
-    assert!(request.verify(&cert, &challenge, 2).is_ok());
+    assert!(request.verify(&cert, slot(), &challenge, 2).is_ok());
 }
 
 #[test]
@@ -135,7 +139,7 @@ fn the_attestation_key_travels_in_the_luks_header() {
     let Some((_swtpm, tpm)) = emulated() else {
         return;
     };
-    let (attestation, point) = tpm::create_attestation_key(&tpm).expect("an attestation key");
+    let (attestation, _point) = tpm::create_attestation_key(&tpm).expect("an attestation key");
     let dir = tempfile::tempdir().unwrap();
     let image = dir.path().join("disk.img");
     std::fs::File::create(&image)
@@ -163,7 +167,7 @@ fn the_attestation_key_travels_in_the_luks_header() {
     assert!(formatted.success(), "luksFormat failed");
 
     let boot_key = SigningKey::from_bytes(&[4; 32]);
-    let cert = cert(point);
+    let cert = cert();
     let material = Material::new(
         &tilo_unlock_protocol::Half::from_bytes([1; 32]),
         &boot_key,

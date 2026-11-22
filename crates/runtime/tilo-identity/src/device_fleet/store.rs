@@ -367,37 +367,6 @@ impl DeviceFleetStore {
         Ok(certified)
     }
 
-    /// Certify a disk-unlock boot key for an enrolled, unrevoked device of
-    /// `identity_id`: the root signs `cert` in place.
-    pub fn certify_boot_key(
-        &self,
-        identity_id: &str,
-        cert: &mut tilo_unlock_protocol::BootKeyCert,
-    ) -> io::Result<()> {
-        let (root, profile) = self.identity(identity_id)?;
-        let fleet = self.load(identity_id)?;
-        if cert.user_public_key != profile.user_public_key
-            || fleet.is_revoked(&cert.device_public_key)
-            || !fleet
-                .certificates
-                .iter()
-                .any(|enrolled| enrolled.device_public_key == cert.device_public_key)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "the device is not an unrevoked member of this identity's fleet",
-            ));
-        }
-        let digest = cert
-            .signing_digest()
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        cert.signature = root
-            .sign(&digest)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        cert.verify()
-            .map_err(|error| io::Error::other(error.to_string()))
-    }
-
     /// Sign `digest` with `identity_id`'s root. The caller builds the record
     /// whose digest this is; identity-host learns no policy of its own from
     /// it, and a device that does not hold the root cannot sign.

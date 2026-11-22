@@ -20,7 +20,8 @@ use tilo_ask_password as askpass;
 use tilo_rollback::exec::{Real, Runner};
 use tilo_rollback::policy::Workspace;
 use tilo_unlock_protocol::opened::UnlockMethod;
-use tilo_unlock_protocol::{BootId, BootKeyCert, Half, RefusalReason, derive_slot_key};
+use tilo_unlock_protocol::{BootId, Half, RefusalReason, SlotId, derive_slot_key};
+use tilo_user_identity::DeviceCert;
 
 /// Why no sibling released its half. Each is in the owner's history on the
 /// sibling's side too.
@@ -45,19 +46,26 @@ impl std::fmt::Display for Refusal {
 }
 
 pub trait Siblings {
-    /// Asks the token's siblings for the sibling half of `cert`'s slot, for
-    /// boot `boot_id`.
+    /// Asks the token's devices for the sibling half of `slot`, for boot
+    /// `boot_id`.
     fn release(
         &self,
         token: &Token,
-        cert: &BootKeyCert,
+        cert: &DeviceCert,
         boot_key: &SigningKey,
         boot_id: BootId,
+        slot: SlotId,
     ) -> impl Future<Output = Result<Half, Refusal>> + Send;
 }
 
 pub trait Volume {
+    /// Whether `passphrase` opens the volume's `keyslot`.
     fn opens(&self, keyslot: u32, passphrase: &str) -> bool;
+    /// The volume's LUKS2 UUID, as its 16 bytes.
+    ///
+    /// # Errors
+    /// When the volume's header cannot be read.
+    fn uuid(&self) -> Result<[u8; 16]>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,16 +102,20 @@ pub async fn attempt(
     let keyslot = token.keyslot()?;
     let cert = token.cert()?;
     let boot_key = material.boot_key()?;
-    let sibling_half = match siblings.release(token, &cert, &boot_key, boot_id).await {
+    let volume_uuid = volume.uuid()?;
+    let slot = SlotId {
+        volume_uuid,
+        keyslot: u16::try_from(keyslot).context("key slot out of range")?,
+    };
+    let sibling_half = match siblings
+        .release(token, &cert, &boot_key, boot_id, slot)
+        .await
+    {
         Ok(half) => half,
         Err(refusal) => return Ok(Outcome::Refused(refusal)),
     };
     drop(boot_key);
-    let passphrase = derive_slot_key(
-        &material.device_half()?,
-        &sibling_half,
-        &cert.slot.volume_uuid,
-    );
+    let passphrase = derive_slot_key(&material.device_half()?, &sibling_half, &volume_uuid);
     drop(sibling_half);
     if !volume.opens(keyslot, &passphrase) {
         return Ok(Outcome::Refused(Refusal::WrongHalf));
@@ -218,6 +230,10 @@ impl Volume for RealVolume<'_> {
         )
         .unwrap_or(false)
     }
+
+    fn uuid(&self) -> Result<[u8; 16]> {
+        luks::uuid(self.runner, self.device)
+    }
 }
 
 /// Whether `device` carries a sibling-unlock token.
@@ -237,10 +253,7 @@ pub async fn unlock(runner: &Real, device: &Path) -> Result<()> {
     let Some(token) = luks::sibling(runner, device)? else {
         return Ok(());
     };
-    let cert = token.cert()?;
-    if luks::uuid(runner, device)? != cert.slot.volume_uuid {
-        bail!("the sibling-unlock token belongs to another volume");
-    }
+    token.validate()?;
     let material = Material::from_json(&tpm::unseal_material(
         runner,
         token.sealing,
@@ -316,7 +329,8 @@ mod tests {
     use crate::tpm::Sealing;
     use std::os::unix::net::UnixDatagram;
     use std::sync::Mutex;
-    use tilo_unlock_protocol::{HALF_LEN, PROTOCOL_VERSION, SlotId};
+    use tilo_unlock_protocol::HALF_LEN;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
     struct FakeSiblings {
         answer: Result<[u8; HALF_LEN], Refusal>,
@@ -327,11 +341,13 @@ mod tests {
         async fn release(
             &self,
             _token: &Token,
-            cert: &BootKeyCert,
+            cert: &DeviceCert,
             boot_key: &SigningKey,
             boot_id: BootId,
+            slot: SlotId,
         ) -> Result<Half, Refusal> {
-            assert_eq!(boot_key.verifying_key().to_bytes(), cert.boot_public_key);
+            assert_eq!(boot_key.verifying_key().to_bytes(), cert.device_public_key);
+            assert_eq!(slot.keyslot, 5);
             self.seen.lock().unwrap().push(boot_id);
             self.answer.clone().map(Half::from_bytes)
         }
@@ -342,6 +358,10 @@ mod tests {
     impl Volume for FakeVolume {
         fn opens(&self, keyslot: u32, passphrase: &str) -> bool {
             keyslot == 5 && passphrase == self.0
+        }
+
+        fn uuid(&self) -> Result<[u8; 16]> {
+            Ok(UUID)
         }
     }
 
@@ -358,18 +378,15 @@ mod tests {
 
     fn token() -> Token {
         let boot = SigningKey::from_bytes(&[0x22; 32]);
-        let cert = BootKeyCert {
-            version: PROTOCOL_VERSION,
+        let cert = DeviceCert {
             user_public_key: [1; 32],
-            device_public_key: [2; 32],
-            boot_public_key: boot.verifying_key().to_bytes(),
-            slot: SlotId {
-                volume_uuid: UUID,
-                keyslot: 5,
-            },
-            attestation_key: None,
+            device_public_key: boot.verifying_key().to_bytes(),
+            device_label: "Boot key".into(),
+            capabilities: DeviceCapabilities::nothing(),
             issued_at_ns: 1,
+            expires_at_ns: None,
             signature: [0; 64],
+            issuer: None,
         };
         Token {
             kind: TOKEN_TYPE.into(),

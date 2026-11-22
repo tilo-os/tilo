@@ -5,13 +5,17 @@
 //! sibling half is held by the person's other devices, sealed to the person's
 //! root-derived secret-sync key ([`SealedSiblingHalf`]).
 //!
-//! At enrolment the person's identity certifies a boot-only Ed25519 key for
-//! one device and one slot ([`BootKeyCert`]). Early boot proves possession of
-//! that key against a fresh challenge from a sibling, and the sibling releases
-//! its half encrypted to an ephemeral key of that one request
-//! ([`Release`]), only after the owner approved the typed `device.unlock`
-//! action (or the owner turned on auto-approval for the device and its TPM
-//! attested the expected boot chain, see [`attest`]).
+//! At enrolment the person's root certifies the boot-only Ed25519 key as an
+//! ordinary [`tilo_user_identity::DeviceCert`] with no capabilities: it
+//! grants nothing, so a leaked boot partition holds a key that can ask, never
+//! one that can act as the device. Early boot proves possession of that key
+//! against a fresh challenge from a sibling, and the sibling releases its half
+//! encrypted to an ephemeral key of that one request ([`Release`]), only after
+//! the owner approved the typed `device.unlock` action (or the owner turned on
+//! auto-approval for the device and its TPM attested the expected boot chain,
+//! see [`attest`]). Which volume and key slot the request asks for is in the
+//! signed request, and the answering device checks it against the enrolment it
+//! recorded.
 //!
 //! # Exchange
 //!
@@ -50,15 +54,13 @@
 )]
 
 pub mod attest;
-mod cert;
+mod enrol;
 mod half;
 pub mod opened;
 pub mod startup_secret;
 mod wire;
 
-pub use cert::{
-    BootKeyCert, BootKeyCertError, EnrolReply, EnrolRequest, EnrolResponse, SiblingContact,
-};
+pub use enrol::{EnrolReply, EnrolRequest, EnrolResponse, RequestError, SiblingContact};
 pub use half::{
     HALF_LEN, Half, SealedSiblingHalf, derive_slot_key, open_sibling_half, seal_sibling_half,
 };
@@ -74,8 +76,8 @@ pub const UNLOCK_ALPN: &[u8] = b"tilo-device-unlock/1";
 /// ALPN of the enrolment a device without the person's root asks a device
 /// that holds it for: one framed [`EnrolRequest`] in, one framed
 /// [`EnrolReply`] out, on one bidirectional stream. The connection is bound
-/// to the asking device's fleet key, which is the key the certificate names.
-/// Frozen wire ABI.
+/// to the asking device's fleet key, the device the enrolment is recorded
+/// for. Frozen wire ABI.
 pub const ENROL_ALPN: &[u8] = b"tilo-device-enrol/1";
 /// The enrolment socket, relative to the session user's `$XDG_RUNTIME_DIR`.
 ///
