@@ -412,33 +412,6 @@ impl Parts {
                 parts = labelled;
             }
         }
-        // A row too narrow for the words keeps the window's main action and puts the rest
-        // behind its API, rather than showing unlabelled glyphs while width stands empty beside them.
-        let floor = main_action_floor(
-            toolbar,
-            toolbar
-                .row_actions()
-                .min(crate::window_toolbar::MAX_ACTIONS),
-        );
-        if !parts.actions_labelled && parts.actions.len() > floor && floor > 0 {
-            // The main action keeps its words where the row has width for them once the rest
-            // are behind the API: a glyph with width to spare is a glyph nobody can
-            // name. Every other action goes behind the API unnamed, as before.
-            let main = floor.saturating_sub(1);
-            let mut below =
-                Self::arranged_below(toolbar, row, views, shown, (&[], &[]), floor, false);
-            let words = action_labels.get(main).copied().unwrap_or(0.0);
-            if words > CONTROL_PX && spare + CONTROL_PX >= words {
-                let labels: Vec<f64> = action_labels
-                    .iter()
-                    .enumerate()
-                    .map(|(index, width)| if index == main { *width } else { 0.0 })
-                    .collect();
-                below =
-                    Self::arranged_below(toolbar, row, views, shown, (&[], &labels), floor, false);
-            }
-            parts = below;
-        }
         parts.settle(form, labels, action_labels, notice, forms);
         let extra: f64 = action_labels
             .iter()
@@ -578,28 +551,15 @@ impl Parts {
             && (self.location.area() > 0.0) == (other.location.area() > 0.0)
     }
 
+    /// Lay the row out: the parts stand while they fit, the actions folding into the overflow
+    /// menu last first as it narrows. A row that folds down to one action keeps it unless its
+    /// words are what it cannot show: then the menu's row says what its glyph cannot.
     pub(super) fn arranged(
-        toolbar: &WindowToolbar,
-        row: Rect,
-        views: ViewsSize,
-        shown: (f64, f64),
-        labels: (&[f64], &[f64]),
-    ) -> Self {
-        Self::arranged_below(toolbar, row, views, shown, labels, usize::MAX, true)
-    }
-
-    /// [`Self::arranged`] keeping at most `most` actions in the row: a bar too narrow for
-    /// the words keeps the window's main action and puts the rest behind its API. A row that
-    /// folds down to one action keeps it (`keep_alone`) unless its words are what it cannot
-    /// show: then the menu's row says what its glyph cannot.
-    pub(super) fn arranged_below(
         toolbar: &WindowToolbar,
         row: Rect,
         views: ViewsSize,
         (form_w, least): (f64, f64),
         (labels, action_labels): (&[f64], &[f64]),
-        most: usize,
-        keep_alone: bool,
     ) -> Self {
         let row_actions = toolbar
             .row_actions()
@@ -619,8 +579,7 @@ impl Parts {
                 ..m
             });
         let lone = |inline: usize, place: ViewsPlace| {
-            keep_alone
-                && row_actions - inline == 1
+            row_actions - inline == 1
                 && toolbar.actions.len() == row_actions
                 && (toolbar.views.is_none() || place != ViewsPlace::Overflow)
         };
@@ -635,7 +594,7 @@ impl Parts {
         let all = Kept::all(toolbar, row_actions);
         let floor = main_action_floor(toolbar, row_actions);
         for &place in &places {
-            let mut inline = row_actions.min(most).max(floor).min(row_actions);
+            let mut inline = row_actions;
             loop {
                 let parts = Self::with_inline(
                     toolbar,

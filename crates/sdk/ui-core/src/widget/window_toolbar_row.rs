@@ -1272,6 +1272,17 @@ impl ToolbarRow {
         true
     }
 
+    /// Pick the row that folds the sidebar's toggle in the bar's overflow menu, as a click does.
+    pub(crate) fn pick_folded_sidebar(&mut self) -> bool {
+        self.open_overflow();
+        let row = self
+            .menu_entries
+            .iter()
+            .position(|entry| matches!(entry, Some(MenuEntry::Sidebar)));
+        self.close_menu();
+        row.is_some_and(|row| self.run_menu_entry(row))
+    }
+
     fn run_menu_entry(&mut self, row: usize) -> bool {
         match self.menu_entries.get(row).cloned().flatten() {
             Some(MenuEntry::Sidebar) => self.activate(&Part::Sidebar),

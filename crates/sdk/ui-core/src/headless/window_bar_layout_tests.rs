@@ -293,6 +293,17 @@ fn every_bar_gives_every_part_its_own_place_at_every_width() {
             crate::window_toolbar::declare(None);
         }
     }
+    // Files keeps its actions in the row at a wide width: only the menu's own are behind it.
+    crate::window_toolbar::declare(Some(files()));
+    let shown = controls(&harness.window_bar_layout(1280.0)).1;
+    for name in ["Show as grid", "New folder"] {
+        assert!(
+            shown
+                .iter()
+                .any(|(part, shown, _)| *part == "action" && shown == name),
+            "1280 px: {name} in {shown:?}"
+        );
+    }
     // A compact calendar window that lists History: its navigation and name stand, its views
     // fold into the overflow menu, which names them, and the window's search keeps its area.
     crate::format::speak_locale("en-US");
