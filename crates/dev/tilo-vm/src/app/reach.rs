@@ -27,7 +27,9 @@ const WAKE_WAIT: Duration = Duration::from_secs(150);
 const RESEND_EVERY: Duration = Duration::from_secs(15);
 
 fn device_action_outcome(response: serde_json::Value) -> Outcome {
-    let failed = response.get("err").is_some();
+    let failed = response.get("err").is_some()
+        || (response.pointer("/message/Receipt").is_some()
+            && crate::scenario::console::receipt_value(&response).is_err());
     let mut outcome = Outcome::new(response.to_string(), response);
     outcome.failed = failed;
     outcome

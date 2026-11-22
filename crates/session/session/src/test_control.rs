@@ -1545,38 +1545,22 @@ fn frame_answer(line: &str, actions: &Actions, ctx: &Context) -> String {
     let locked = ctx.who != Audience::Dev
         && actions.locked()
         && matches!(message, RemoteActionMessage::Invoke(_));
-    let error = if locked {
-        ActionCallError::Unavailable {
+    if locked {
+        let error = ActionCallError::Unavailable {
             reason: "the session is locked; unlock it at the device, then invoke again".into(),
-        }
-    } else {
-        ActionCallError::Unanswered
-    };
-    let Some(unanswered) = remote::refuse(&message, error) else {
-        return refusal("parse_error", "a frame sent here asks something").to_string();
-    };
-    let answer = if locked {
-        unanswered
-    } else {
-        let caller = actions.caller(ctx);
-        let provider = if ctx.scope.is_some() {
-            actions.host.as_ref()
-        } else {
-            &actions.person
         };
-        remote::serve(provider, &caller, message)
-            .and_then(|pending| {
-                pending
-                    .wait_timeout(remote::MAX_REMOTE_WAIT.saturating_add(HOST_WAIT))
-                    .ok()
-                    .flatten()
-            })
-            .unwrap_or(unanswered)
-    };
-    match RemoteActionFrame::new(answer).encode() {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(error) => refusal("unavailable", &error.to_string()).to_string(),
+        return remote::refuse(&message, error).map_or_else(
+            || refusal("parse_error", "a frame sent here asks something").to_string(),
+            remote::frame_line,
+        );
     }
+    let caller = actions.caller(ctx);
+    let provider = if ctx.scope.is_some() {
+        actions.host.as_ref()
+    } else {
+        &actions.person
+    };
+    remote::answer_message(provider, &caller, message, HOST_WAIT)
 }
 
 /// The controls the session shows now, as the tools read them: each one's name, what it does where it

@@ -99,14 +99,12 @@ validates untrusted descriptors again. Presubmit runs
 and unattached operation handlers. Invoke and inspect actions with:
 
 ```bash
-cargo run -q --bin tilo-control -- actions list
-cargo run -q --bin tilo-control -- actions invoke <provider> <id> --args-json '{"name":"value"}'
-cargo run -q --bin tilo-control -- actions status <broker-invocation-id>
-cargo run -q --bin tilo-control -- actions cancel <broker-invocation-id>
+tilo action list
+tilo do <resource>#<action> name=value
 ```
 
-The same catalogue and invocation/status/cancel protocol is available to
-workspace agents through the certified collaboration channel. Do not add a
+The same action frames reach workspace agents through the certified
+collaboration channel. Do not add a
 second app-specific automation protocol.
 
 Validate one app or the graphical workspace:

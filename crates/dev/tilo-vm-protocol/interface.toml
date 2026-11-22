@@ -217,7 +217,6 @@ roots = [
 "Control" = "struct"
 "Control.account" = "String"
 "Control.args" = "Vec<String>"
-"Control.private_args" = "Option<DeviceActions> optional"
 "ControlResult" = "struct"
 "ControlResult.exit_code" = "i32"
 "ControlResult.stderr" = "String"

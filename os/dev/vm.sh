@@ -42,7 +42,7 @@
 #   ./os/dev/vm.sh shot NAME                   framebuffer -> $TILO_RUN/NAME.png
 #   ./os/dev/vm.sh type STRING                 type a string (sendkey); `type -` reads it from stdin
 #   ./os/dev/vm.sh console                     print the installer/greeter console socket
-#                                             (tilo-control --socket PATH actions list)
+#                                             (os/dev/installer-console.py --socket PATH state)
 #   ./os/dev/vm.sh tool PROGRAM [ARGS...]      run a host tool where QEMU lives (distrobox)
 #   ./os/dev/vm.sh test NAME [ARGS...]         run in-guest test tooling (GUEST_TESTS below,
 #                                             e.g. installed-atspi-apps.sh) from this

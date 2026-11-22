@@ -1,10 +1,13 @@
-//! The canonical console action API, carried by the existing owner-authenticated RPC.
+//! The device's own actions, answered as action frames on the owner-authenticated RPC.
 
-use console_control::{catalog, wire};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
+use tilo_actions::remote::{
+    ActionCallError, CataloguePage, InvocationReceipt, InvokeArgument, InvokeRequest,
+    ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+};
 use tilo_actions::{
-    ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, OperationKind, ParamType,
-    ResourceSpec,
+    ActionOutput, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, OperationKind,
+    ParamType, ResourceSpec,
 };
 use tilo_vm_protocol::{DeviceUnlockEnrol, Request};
 
@@ -49,6 +52,7 @@ fn resources() -> Vec<ResourceSpec> {
 }
 
 impl Daemon {
+    /// The frame that answers the frame `line`.
     pub(crate) fn device_actions(&mut self, line: &str) -> Result<Value, DaemonError> {
         if line.len() > 65536 {
             return Ok(
@@ -57,51 +61,85 @@ impl Daemon {
         }
         // A real current owner session is required even to publish its device surface.
         self.user_device_action_session()?;
-        let request = wire::parse(line)
-            .map_err(|_| DaemonError::InvalidParams("invalid device action request".into()))?;
-        match request {
-            wire::Request::Enumerate { query } => {
-                Ok(json!({"answer":catalog::enumerate(PROVIDER, &resources(), &query)}))
-            }
-            wire::Request::StateDump => {
-                Ok(json!({"state":{"provider":PROVIDER,"resource":"device.encrypted-root"}}))
-            }
-            wire::Request::Unsupported { .. } => Ok(
-                json!({"err":{"code":"not_implemented","message":"This route serves semantic device actions only"}}),
-            ),
-            wire::Request::Invoke {
-                provider,
-                id,
-                mut args,
-            } => {
-                if let Err(refusal) = catalog::admit(PROVIDER, &resources(), &provider, &id, &args)
-                {
-                    // The refusal's details can include malformed argument values. Return the
-                    // authoritative refusal code with a content-free human diagnostic.
-                    return Ok(
-                        json!({"err":{"code":refusal.code,"message":"Device action was refused; inspect its declared parameters and confirmation"}}),
-                    );
+        let message = RemoteActionFrame::decode(line.as_bytes())
+            .map_err(|_| DaemonError::InvalidParams("invalid device action frame".into()))?
+            .message;
+        let answer = match message {
+            RemoteActionMessage::CatalogueRequest { correlation, query } => {
+                RemoteActionMessage::CatalogueResponse {
+                    correlation,
+                    result: Ok(CataloguePage::published(PROVIDER, &resources(), &query)),
                 }
-                args.remove(catalog::CONFIRM_ARG);
-                let request: DeviceUnlockEnrol = serde_json::from_value(Value::Object(args))
-                    .map_err(|_| {
-                        DaemonError::InvalidParams("invalid private enrollment arguments".into())
-                    })?;
-                self.handle(Request::DeviceUnlockEnrol(request))
-                    .map(|result| json!({"answer":result}))
             }
-        }
+            RemoteActionMessage::Invoke(request) => {
+                let invocation = request.invocation;
+                let status = match admit(&request) {
+                    Err(error) => ReceiptStatus::Rejected { error },
+                    Ok(enrol) => {
+                        let value = self.handle(Request::DeviceUnlockEnrol(enrol))?;
+                        ReceiptStatus::Completed {
+                            output: ActionOutput {
+                                value: Some(value),
+                                resources: Vec::new(),
+                            },
+                        }
+                    }
+                };
+                RemoteActionMessage::Receipt(InvocationReceipt { invocation, status })
+            }
+            _ => {
+                return Ok(
+                    json!({"err":{"code":"not_implemented","message":"This route lists and invokes device actions only"}}),
+                );
+            }
+        };
+        serde_json::to_value(RemoteActionFrame::new(answer))
+            .map_err(|error| DaemonError::InvalidParams(error.to_string()))
     }
+}
+
+/// `request` admitted against the device's actions, and the enrollment it asks.
+fn admit(request: &InvokeRequest) -> Result<DeviceUnlockEnrol, ActionCallError> {
+    if request.target.provider != PROVIDER {
+        return Err(ActionCallError::UnknownAction);
+    }
+    let arguments = match &request.argument {
+        InvokeArgument::Json(arguments) => arguments.clone(),
+        InvokeArgument::None | InvokeArgument::Text(_) => Map::new(),
+    };
+    // A refusal's details can include malformed argument values: the code goes back, with a
+    // content-free diagnostic.
+    let refused = |error: &tilo_actions::ApiError| match ActionCallError::from_api(error) {
+        ActionCallError::InvalidRequest { .. } => ActionCallError::InvalidRequest {
+            reason: "Device action was refused; inspect its declared parameters".into(),
+        },
+        other => other,
+    };
+    tilo_actions::api::admit(
+        &resources(),
+        &request.target.address,
+        &arguments,
+        request.confirmation.as_ref(),
+    )
+    .map_err(|error| refused(&error))?;
+    serde_json::from_value(Value::Object(arguments)).map_err(|_| ActionCallError::InvalidRequest {
+        reason: "invalid private enrollment arguments".into(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::remote::{CatalogueQuery, Confirmation};
+
+    fn frame(line: &str) -> RemoteActionMessage {
+        RemoteActionFrame::decode(line.as_bytes()).unwrap().message
+    }
 
     tilo_test_env::scenario! {
         fn device_unlock_enrollment_is_admitted_without_carrying_its_secret;
 
-        phase canonical_cli_request_reaches_the_declared_console_admission;
+        phase canonical_cli_request_reaches_the_declared_admission;
         {
             use clap::Parser as _;
             use tilo_vm::cli::{Cli, Command, VmCommand};
@@ -115,25 +153,25 @@ mod tests {
                 "invoke",
                 PROVIDER,
                 "enroll@device-unlock",
+                "--confirm",
                 "--args-stdin",
             ])
             .unwrap();
             let Some(Command::Vm(VmCommand::Actions { command, .. })) = cli.command else {
                 panic!("the maintained CLI did not select device actions");
             };
-            let input = br#"{"passphrase":"private-fixture-answer","confirm":true}"#;
+            let input = br#"{"passphrase":"private-fixture-answer"}"#;
             let request = tilo_vm::device_actions::request(command, &input[..]).unwrap();
-            let wire::Request::Invoke { provider, id, args } = wire::parse(&request.line).unwrap()
-            else {
-                panic!("the transport did not carry canonical invocation");
+            let RemoteActionMessage::Invoke(invoke) = frame(&request.line) else {
+                panic!("the transport did not carry an invocation");
             };
-            let admitted = catalog::admit(PROVIDER, &resources(), &provider, &id, &args).unwrap();
-            assert_eq!(admitted.encoded.type_id, "device.unlock/v1");
-            assert_eq!(admitted.encoded.payload, br#"{"action":"enroll"}"#);
+            assert_eq!(invoke.confirmation, Some(Confirmation::Confirmed));
+            let enrol = admit(&invoke).unwrap();
+            assert_eq!(enrol.passphrase, "private-fixture-answer");
             assert!(!format!("{request:?}").contains("private-fixture-answer"));
         }
 
-        phase enrollment_is_a_real_secret_action_and_encoding_carries_no_credential;
+        phase the_unlock_secret_is_a_real_secret_action_and_a_refusal_carries_no_credential;
         {
             let resources = resources();
             assert_eq!(
@@ -147,40 +185,38 @@ mod tests {
                     .kind,
                 tilo_actions::ActionKind::Outside
             );
-            let catalogue = catalog::enumerate(PROVIDER, &resources, "disk unlock");
-            assert_eq!(catalogue["count"], 1);
-            let args = json!({"passphrase":"private-fixture-answer","confirm":true})
-                .as_object()
-                .unwrap()
-                .clone();
-            let admitted = catalog::admit(
-                PROVIDER,
-                &resources,
-                PROVIDER,
-                "enroll@device-unlock",
-                &args,
+            let query = CatalogueQuery {
+                needle: "disk unlock".into(),
+                ..CatalogueQuery::default()
+            };
+            let page = CataloguePage::published(PROVIDER, &resources, &query);
+            assert_eq!(page.rows.len(), 1);
+            let enroll = page.rows[0].action.as_ref().unwrap();
+            assert_eq!(enroll.params[0].ty, ParamType::Secret);
+            let invoke = |args: Value, confirmation: Option<Confirmation>| {
+                let mut request = InvokeRequest::plain(
+                    tilo_actions::remote::RemoteActionTarget {
+                        provider: PROVIDER.into(),
+                        address: tilo_actions::ActionAddress::new(PROVIDER, "enroll"),
+                    },
+                    args.as_object().unwrap().clone(),
+                );
+                request.confirmation = confirmation;
+                admit(&request)
+            };
+            assert!(matches!(
+                invoke(json!({"passphrase":"private-fixture-answer"}), None),
+                Err(ActionCallError::ConfirmationRequired { .. })
+            ));
+            let refused = invoke(
+                json!({"passphrase":"private-fixture-answer","device":"/dev/attacker"}),
+                Some(Confirmation::Confirmed),
             )
-            .unwrap();
+            .unwrap_err();
+            assert!(!refused.to_string().contains("private-fixture-answer"));
             assert!(
-                !String::from_utf8(admitted.encoded.payload)
-                    .unwrap()
-                    .contains("private-fixture-answer")
-            );
-            assert_eq!(catalogue["actions"][0]["params"][0]["ty"], "secret");
-            let refused =
-                json!({"passphrase":"private-fixture-answer","device":"/dev/attacker","confirm":true})
-                    .as_object()
-                    .unwrap()
-                    .clone();
-            assert!(
-                catalog::admit(
-                    PROVIDER,
-                    &resources,
-                    PROVIDER,
-                    "enroll@device-unlock",
-                    &refused
-                )
-                .is_err()
+                invoke(json!({"passphrase":"private-fixture-answer"}), Some(Confirmation::Confirmed))
+                    .is_ok()
             );
         }
     }

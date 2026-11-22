@@ -1,26 +1,29 @@
-//! Transport adapter for the existing canonical console semantic operations.
+//! The device's own actions, asked as action frames on the owner-authenticated route.
 
-use serde_json::json;
 use tilo_vm_protocol::DeviceActions;
 
+use crate::scenario::console::{Confirmation, catalogue_frame, invoke_frame};
 use crate::{cli::DeviceActionCommand, error::CliError};
 
-/// Encode the canonical action request; private arguments are read only from stdin.
+/// The frame a command asks; private arguments are read only from stdin.
 pub fn request(
     command: DeviceActionCommand,
     reader: impl std::io::Read,
 ) -> Result<DeviceActions, CliError> {
     let request = match command {
-        DeviceActionCommand::List { query } => {
-            json!({"op":"actions_enumerate","query":query.unwrap_or_default()})
-        }
+        DeviceActionCommand::List { query } => catalogue_frame(&query.unwrap_or_default()),
         DeviceActionCommand::Invoke {
             provider,
             id,
+            confirm,
             args_stdin: _,
         } => {
+            let (action, resource) = id.split_once('@').ok_or_else(|| {
+                CliError::InvalidInput(format!("{id}: name the action as ACTION@RESOURCE"))
+            })?;
+            let confirmation = confirm.then_some(Confirmation::Confirmed);
             let args = private_action_input(reader)?;
-            json!({"op":"actions_invoke","provider":provider,"id":id,"args":args})
+            invoke_frame(&provider, resource, action, args, confirmation.as_ref()).0
         }
     };
     Ok(DeviceActions {

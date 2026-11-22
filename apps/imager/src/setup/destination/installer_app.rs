@@ -61,7 +61,7 @@ mod surface;
 #[cfg(test)]
 mod surface_tests;
 
-pub use console::{CONSOLE_WAKE, redact_recovery_material};
+pub use console::{CONSOLE_WAKE, Console, redact_recovery_material};
 
 const FIDO2_KEYS: [&str; 2] = [
     "installer-security-key-off",
@@ -3856,11 +3856,11 @@ impl Widget for InstallerApp {
 impl InstallerApp {
     pub(crate) fn attach_live(&mut self, waker: ui::WakeHandle) {
         let mailbox = Mailbox::new(move || waker.wake());
-        let console = imager_backend::destination::console::ConsoleServer::new();
+        let console = imager_backend::destination::console::ConsoleServer::new(
+            crate::setup::destination::effects::PROVIDER,
+        );
         let wake = mailbox.clone();
-        let console_waker: imager_backend::destination::console::server::Waker =
-            Arc::new(move || wake.post(CONSOLE_WAKE.to_owned()));
-        console.serve_discovered(crate::setup::destination::effects::PROVIDER, &console_waker);
+        console.serve_discovered(Arc::new(move || wake.post(CONSOLE_WAKE.to_owned())));
         self.mailbox = Some(mailbox);
         self.console = Some(console);
     }

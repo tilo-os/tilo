@@ -470,9 +470,6 @@ pub struct Shot {
 pub struct Control {
     pub account: String,
     pub args: Vec<String>,
-    /// Private action arguments carried only to the control client's stdin.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub private_args: Option<DeviceActions>,
 }
 
 /// Remove what no kept generation references, and evict build dirs.
@@ -1581,7 +1578,6 @@ mod tests {
                 Control {
                     account: "a".into(),
                     args: vec![],
-                    private_args: None,
                 }
                 .into(),
             ];

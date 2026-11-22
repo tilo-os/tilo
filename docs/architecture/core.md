@@ -713,7 +713,7 @@ The entry points on top of it:
 | Session MCP socket | `session` `mcp_server.rs` and `mcp_server/` (4,700) around `tilo-mcp` | `agent.sock` |
 | Device MCP | `device-mcp` (1,336) | iroh, `tilo-mcp-server/1` |
 | `tilo mcp` | `tilo-cli` `mcp.rs`, `mcp/` (3,258), with its held device | stdio, then iroh |
-| tilo-control | server in `session` `test_control.rs` (about 700 lines for actions, re-encoded as "legacy rows"); client `control-cli` (5,163); `console-control` (1,176) with its own `wire.rs` and `catalog.rs` | unix socket, virtio-serial |
+| tilo-control | server in `session` `test_control.rs` (about 700 lines for actions, re-encoded as "legacy rows"); client `control-cli` (input, screenshots and `raw`); `console-control` serves the greeter's and installer's actions as frames | unix socket, virtio-serial |
 | `tilo do` without `-w` | `tilo-cli` `desktop.rs` | tilo-control, falling back to MCP |
 | `tilo do -w`, `tilo run` | `tilo-cli` `hosted.rs` (2,746) | HTTPS `/v1`, or `tilo_api::direct` in process |
 | REST `/v1` | `tilo-api` (21,745): `v1/operations.rs`, a generated OpenAPI, `answers.rs`. Each route is turned into an MCP `tools/call` (`session.rs`) and the answer is parsed back, and `src/session/{members,unattended,invocations,models,keys}.rs` intercept some calls by tool name before any provider sees them | HTTPS, SSE; `api.sock` |
@@ -757,7 +757,7 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
 
 | Delete | Size |
 |---|---|
-| tilo-control's row dialect: the action part of `test_control.rs`, `console-control` `wire.rs` and `catalog.rs`, the row rendering in `control-cli` `front.rs` (tilo-control keeps only input and screenshots) | ~2,200 |
+| tilo-control's row dialect: the action part of `test_control.rs`, the row rendering in `control-cli` `front.rs` (tilo-control keeps only input and screenshots) | ~2,200 |
 | The REST-to-MCP bridge in `tilo-api` `session.rs` and the intercepts in `src/session/` (REST calls the provider directly; members and models become providers, as a workspace's servers, apps and mail accounts already are) | ~2,800 |
 | The hand-typed vocabularies in `actions/src/remote/` (replaced by `surface.toml` and generated bindings) | ~7,000 net |
 | The hand-written REST clients: Rust `client.rs`, the TypeScript and Python runtimes (generated from the OpenAPI, around a kept core of about 600 lines per language for calls, events and errors) | ~6,200 |
@@ -845,7 +845,7 @@ waits on, if anything.
 | Agents | `coding_agents` (4k) and every Claude-specific path, the other agent engines | C −6k | Agent engines |
 | Workspace | `PersonalStore`, `AccountStore` and the `accounts` crate, the second workspace list, the person document of `settings-store`, governor role, `Membership`/`WorkspaceRuntime` | `one-workspace-stores` −11.8k | one workspace |
 | Hosting | `tilo-server` as a second host wrapping the workspace service (it becomes the one daemon keeping more; stack.sh still runs it), `tilo-api`'s grant file, the separate binaries, the VM placer (`linux-vm` placement and `tilo-server` `placed_*`) and a member device's second `tilo-actions/1` handler for shell work, the server's `carries_migrations` flag, which moves onto `takes_turn` | `tilo-server`'s management protocol (AdmitServer moves onto `tilo device add` tickets); `tilo-server` onto the one daemon after the store deletion, taking the VM placer and the second handler with it; agent asks onto `takes_turn` once c-one and the Rust-apps push land. One worker and one `work::takes_turn` on the workspace leases since 9e73c6e787f (−2.7k) | hosting |
-| Actions | four ways in: the frame, MCP over the one walk (`tilo_actions::tree`), `tilo-api`'s unattended and account/keys intercepts, console-control's rows for the greeter and installer; our own REST client (`tilo do -w`, `tilo-api` `client.rs`); the device-signed agent path (`Caller::delegated_to`, `Acting::handed`), which goes once MCP clients hold keys of their own; the hand-typed vocabularies | members.rs gone (member changes as actions, admitted for now by the server, then by the device that writes); console-control onto the frame; the CLI's `-w` onto frames with `client.rs` deleted; then the device's own admission with the grant move. The session's local actions are frames since f5dced4ef5e | actions everywhere |
+| Actions | three ways in: the frame, MCP over the one walk (`tilo_actions::tree`), `tilo-api`'s unattended and account/keys intercepts; our own REST client (`tilo do -w`, `tilo-api` `client.rs`); the device-signed agent path (`Caller::delegated_to`, `Acting::handed`), which goes once MCP clients hold keys of their own; the hand-typed vocabularies | members.rs gone (member changes as actions, admitted for now by the server, then by the device that writes); the CLI's `-w` onto frames with `client.rs` deleted; then the device's own admission with the grant move. The session's local actions, the greeter's, the installer's and tilo-vmd's device actions are frames | actions everywhere |
 
 Progress is measured as net lines removed on `origin/main` in each piece's
 crates since `d81cc1750ff`, and as copies of each concept left.

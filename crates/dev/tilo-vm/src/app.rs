@@ -129,7 +129,6 @@ fn control_json(
     let result = remote.call(Control {
         account: account.to_owned(),
         args: args.to_vec(),
-        private_args: None,
     })?;
     *worst = (*worst).max(started.elapsed());
     if result.exit_code != 0 {
@@ -5217,26 +5216,9 @@ impl App {
     fn control(&mut self, account: Option<String>, args: &[String]) -> Result<Outcome, CliError> {
         let account = self.account_name(account)?;
         let vm = self.resolve_vm(None)?;
-        let private_args = if args.iter().any(|arg| arg == "--args-stdin") {
-            if !matches!(args, [actions, invoke, _, _, stdin] if actions == "actions" && invoke == "invoke" && stdin == "--args-stdin")
-            {
-                return Err(CliError::InvalidInput(
-                    "private arguments require actions invoke PROVIDER ID --args-stdin".into(),
-                ));
-            }
-            Some(tilo_vm_protocol::DeviceActions {
-                line: serde_json::Value::Object(crate::device_actions::private_action_input(
-                    std::io::stdin().lock(),
-                )?)
-                .to_string(),
-            })
-        } else {
-            None
-        };
         let result = self.connect(&vm)?.call(Control {
             account,
             args: args.to_vec(),
-            private_args,
         })?;
         if result.exit_code != 0 {
             return Err(CliError::CommandFailed {

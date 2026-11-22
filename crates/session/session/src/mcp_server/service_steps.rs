@@ -83,13 +83,13 @@ pub(crate) fn invoke_service_step(
             done.complete(match landed {
                 Some(ran) => ran
                     .map(Some)
-                    .map_err(|error| crate::surfaces::refusal(&error)),
+                    .map_err(|error| tilo_actions::remote::ActionCallError::from_api(&error)),
                 None => Err(ActionCallError::Unavailable {
                     reason: "the step's work was given up".to_owned(),
                 }),
             });
         }),
-        Err(error) => done.complete(Err(crate::surfaces::refusal(&error))),
+        Err(error) => done.complete(Err(tilo_actions::remote::ActionCallError::from_api(&error))),
     }
 }
 

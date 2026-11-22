@@ -209,14 +209,13 @@ authenticated device-admin route, using its declared semantic resource:
 
 ```bash
 tilo device vm actions --device yoga list "disk unlock"
-tilo device vm actions --device yoga invoke device-unlock enroll@device-unlock --args-stdin
+tilo device vm actions --device yoga invoke device-unlock enroll@device-unlock --confirm --args-stdin
 ```
 
-The adapter carries the same `actions_enumerate` and `actions_invoke` operations
-as `tilo-control`. VMD publishes `ActionSpec`s and uses the shared console
-catalogue and admission code; it has no additional control socket. The invoke
-command reads a JSON object on private stdin, containing `passphrase`, optional
-saved `networks`, and `confirm: true`. Obtain that input from a private producer;
+The adapter carries the same action frames as the desktop's control socket.
+VMD publishes `ActionSpec`s and uses the shared catalogue and admission code;
+it has no additional control socket. The invoke command reads a JSON object on
+private stdin, containing `passphrase` and optional saved `networks`. Obtain that input from a private producer;
 never put the disk passphrase in command arguments or shell history. The
 passphrase is a `Secret` parameter and is absent from the encoded operation,
 resource catalogue, state and results.

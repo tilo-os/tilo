@@ -920,18 +920,7 @@ impl Daemon {
             }
             Request::Control(p) => {
                 let (_, session) = self.user_account(&p.account)?;
-                if let Some(input) = &p.private_args {
-                    if !matches!(p.args.as_slice(), [actions, invoke, _, _, stdin] if actions == "actions" && invoke == "invoke" && stdin == "--args-stdin")
-                        || input.line.len() > 65536
-                    {
-                        return Err(DaemonError::InvalidParams(
-                            "invalid private control request".into(),
-                        ));
-                    }
-                    to_value(&self.apply.private_control(&session, &p.args, &input.line)?)
-                } else {
-                    to_value(&self.apply.control(&session, &p.args)?)
-                }
+                to_value(&self.apply.control(&session, &p.args)?)
             }
             Request::Gc(p) => {
                 let _vm = self.locks.vm_exclusive()?;

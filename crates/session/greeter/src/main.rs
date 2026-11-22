@@ -104,7 +104,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Slot the event loop populates once it starts; the greeter reads it to
     // spawn the background auth worker.
     let proxy_slot: Arc<OnceLock<EventLoopProxy<UserEvent>>> = Arc::new(OnceLock::new());
-    let console = console_control::ConsoleServer::new();
+    let console = console_control::ConsoleServer::new(greeter::greeter_app::CONSOLE_PROVIDER);
     // The device's sign-in comforts: a screen reader user hears this screen
     // from its first frame, on every boot.
     let socket = std::path::Path::new(greeter::handoff::DEFAULT_SOCKET);
@@ -187,12 +187,11 @@ fn wake_on_device_changes(
 /// Start the console endpoints that exist here: the greeter user's private
 /// runtime socket, and the virtio port only a hypervisor can attach.
 fn serve_console(console: &console_control::ConsoleServer, proxy: EventLoopProxy<UserEvent>) {
-    let waker: console_control::server::Waker = Arc::new(move || {
+    console.serve_discovered(Arc::new(move || {
         let _ = proxy.send_event(UserEvent::External(
             greeter::greeter_app::CONSOLE_WAKE.to_owned(),
         ));
-    });
-    console.serve_discovered(greeter::greeter_app::CONSOLE_PROVIDER, &waker);
+    }));
 }
 
 /// `--displays 1472x920+1920x1080`: the kiosk's outputs left to right, in

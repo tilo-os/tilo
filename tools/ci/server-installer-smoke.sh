@@ -9,7 +9,7 @@
 #
 # The medium boots in a KVM guest with a blank target disk, and the check waits
 # until the graphical installer answers on its console (the same
-# tilo-control protocol its own buttons use). It then proves the medium's
+# action frames its own buttons use). It then proves the medium's
 # preloaded target is the server image: repository, digest, architecture and the
 # update origin the installed machine will follow. Booting runs the medium on a
 # writable overlay, so the artifact itself is never modified.

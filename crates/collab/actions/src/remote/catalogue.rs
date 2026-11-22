@@ -616,6 +616,24 @@ impl CataloguePage {
         Self::window(revision, rows, query, more)
     }
 
+    /// The page `query` asks of the actions the tree `resources` publishes, offered as
+    /// `provider`: what a provider that serves one app's published tree answers. Its revision
+    /// names what the tree offers, so a cursor read before the tree changed starts again.
+    #[must_use]
+    pub fn published(
+        provider: &str,
+        resources: &[crate::ResourceSpec],
+        query: &CatalogueQuery,
+    ) -> Self {
+        let rows: Vec<CatalogueRow> = crate::api::survey_placed(resources)
+            .into_iter()
+            .map(|placed| CatalogueRow::for_placed_action(provider, provider, placed))
+            .collect();
+        let offered = serde_json::to_vec(&rows).unwrap_or_default();
+        let revision = format!("{provider}:{}", blake3::hash(&offered).to_hex());
+        Self::from_rows(revision, rows, query)
+    }
+
     /// A page at `revision` whose cursor was read at another: the caller
     /// starts again from the first page.
     #[must_use]

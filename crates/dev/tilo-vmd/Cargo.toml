@@ -41,7 +41,6 @@ toml.workspace = true
 tilo-vm-protocol = { path = "../tilo-vm-protocol" }
 # Onboarding's controls and the walk through them, shared with the legacy stream.
 onboarding-walk = { path = "../../session/onboarding-walk" }
-console-control = { path = "../../session/console-control" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 uuid.workspace = true

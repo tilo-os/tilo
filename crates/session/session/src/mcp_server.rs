@@ -1621,7 +1621,7 @@ impl SessionServices {
                                 look,
                             )
                             .map(ui::host_operation::ResourceOperationStart::completed)
-                            .map_err(|error| crate::surfaces::refusal(&error)),
+                            .map_err(|error| ActionCallError::from_api(&error)),
                     ),
                     Err(why) => done.complete(Err(why)),
                 },

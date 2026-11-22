@@ -131,7 +131,9 @@ pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 mod execution_lease;
+mod line;
 pub use execution_lease::ExecutionLease;
+pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use readings::Readings;
 pub use resource_read::{
@@ -923,6 +925,30 @@ pub enum ActionCallError {
 }
 
 impl ActionCallError {
+    /// A refusal of the action API ([`crate::api`]) as the action wire says it: the API's own
+    /// code, so a caller tells "no such action" apart from "not now" and "not shaped like that"
+    /// without reading prose. An API that refused for a reason of its own says it in words, its
+    /// code leading them.
+    #[must_use]
+    pub fn from_api(error: &crate::ApiError) -> Self {
+        use crate::ApiError;
+        match error {
+            ApiError::Unknown(_) | ApiError::UnregisteredType(_) => Self::UnknownAction,
+            ApiError::MissingArgument(_)
+            | ApiError::UnexpectedArgument(_)
+            | ApiError::InvalidArguments(_)
+            | ApiError::ArgumentOutOfRange { .. } => Self::InvalidRequest {
+                reason: error.to_string(),
+            },
+            ApiError::ConfirmationRequired => Self::confirmation_required(),
+            ApiError::Unavailable { .. } | ApiError::Refused { .. } | ApiError::Failed(_) => {
+                Self::Refused {
+                    reason: error.to_string(),
+                }
+            }
+        }
+    }
+
     /// The refusal for want of the person's answer, for an action that
     /// reached no page departure to name.
     #[must_use]

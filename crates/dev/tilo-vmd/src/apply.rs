@@ -195,17 +195,6 @@ pub trait Apply {
     /// Run the in-VM `tilo-control` against this session.
     fn control(&mut self, session: &Session, args: &[String])
     -> Result<ControlResult, DaemonError>;
-    /// Run a secret-bearing semantic invocation without public argument values.
-    fn private_control(
-        &mut self,
-        _session: &Session,
-        _args: &[String],
-        _input: &str,
-    ) -> Result<ControlResult, DaemonError> {
-        Err(DaemonError::InvalidParams(
-            "private control is unavailable in this backend".into(),
-        ))
-    }
     /// PNG of the session's live scene.
     fn shot(&mut self, session: &Session) -> Result<Vec<u8>, DaemonError>;
     /// Capabilities and `SELinux` domain of the running session process,

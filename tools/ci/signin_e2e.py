@@ -218,9 +218,7 @@ class Cycle:
 
     def invoke(self, provider: str, action: str, args: dict | None = None,
                timeout: float = 60) -> object:
-        reply = console.request(self.console, {"op": "actions_invoke", "provider": provider,
-                                               "id": action, "args": args or {}}, timeout)
-        return console.unwrap(reply, "answer")
+        return console.invoke(self.console, provider, action, args or {}, timeout=timeout)
 
     def hotplug_shell(self) -> None:
         """The test shell's port; the guest's unit (or the live installer's loop) opens it."""
