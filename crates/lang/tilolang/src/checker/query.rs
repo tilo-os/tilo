@@ -398,17 +398,6 @@ impl Checker<'_> {
                 }
             }
         }
-        // With no order asked, the type's own.
-        if !terms.iter().any(|(k, _)| k == "sort")
-            && let Some(sort) = &info.search.sort
-        {
-            let text = if sort.order.descending() {
-                format!("-{}", sort.key)
-            } else {
-                sort.key.clone()
-            };
-            terms.push(("sort".to_owned(), Ex::str(&text)));
-        }
         let in_view = matches!(self.st.ctx, super::Ctx::View);
         if scope.is_none() && in_view {
             self.err(
