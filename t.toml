@@ -6468,7 +6468,7 @@ outputs = ["/target/e2e/{proof}/**"]
 timeout_secs = 2400
 on = ["dispatch", "idle"]
 [check.matrix]
-proof = ["tilolang", "two-people", "agent-sessions", "session-lock"]
+proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "session-lock"]
 
 # An app.s first hour, walked in each version its step file names: the Rust version (apps/) and
 # the tilolang one (apps/tl/) before the change that retires the Rust app, the tilolang one alone
