@@ -335,15 +335,28 @@ impl Host {
     /// `item` (a published id, `tl:<app>:<id>`, an item of a document by its path), that resource
     /// with its fields, each of the items it holds named by its published id.
     ///
+    /// It shows what `reads` lets the reader read ([`Self::reads_for`]): a resource they may not
+    /// read reads as one that is not there, and an item of a collection they may not read is not
+    /// listed.
+    ///
     /// # Errors
-    /// The item names nothing in this workspace.
-    pub fn read_content(&self, item: Option<&str>) -> Result<Json, String> {
+    /// The item names nothing in this workspace the reader may read.
+    pub fn read_content(
+        &self,
+        item: Option<&str>,
+        reads: &dyn Fn(&ResourceRef) -> bool,
+    ) -> Result<Json, String> {
         use crate::meta::MetaExt as _;
         use tilolang_runtime::store::Store as _;
         let Some(item) = item else {
             let records = self
                 .records()
                 .into_iter()
+                .filter(|(package, type_name, doc)| {
+                    package.meta.type_named(type_name).is_some_and(|declared| {
+                        reads(&ResourceRef::root(doc.clone(), declared.id.clone()))
+                    })
+                })
                 .map(|(package, type_name, doc)| {
                     json!({
                         "item": crate::publish::resource_id(&package.meta.app, &doc),
@@ -368,6 +381,9 @@ impl Host {
         let probe = ResourceRef::parse_id(path, String::new()).ok_or_else(unknown)?;
         let ty = self.store().type_of(&probe).map_err(|_| unknown())?;
         let at = ResourceRef::parse_id(path, ty).ok_or_else(unknown)?;
+        if !reads(&at) {
+            return Err(unknown());
+        }
         let options = tilolang_runtime::project::ProjectOptions {
             max_items: READ_ITEMS,
             max_text_chars: READ_TEXT_CHARS,
@@ -382,6 +398,13 @@ impl Host {
                 if let Ok(tilolang_runtime::Value::List(items)) = runtime.read(&at, name)
                     && shown.get("items").is_none()
                 {
+                    let items: Vec<_> = items
+                        .into_iter()
+                        .filter(|item| match item {
+                            tilolang_runtime::Value::Ref(held) => reads(&held.target),
+                            _ => true,
+                        })
+                        .collect();
                     *shown = self.listed(&items);
                 }
             }
@@ -397,6 +420,17 @@ impl Host {
             fields.insert("kind".into(), json!(package.meta.kind_of(&type_name)));
         }
         Ok(read)
+    }
+
+    /// Whether the reader `reader` may read a resource: what the workspace's grants give them, as
+    /// the runtime was handed them ([`tilolang_runtime::Runtime::set_members`]). A host given no
+    /// members has none to decide by, and the API decided what the caller reaches.
+    pub fn reads_for<'a>(
+        &'a self,
+        reader: &'a tilolang_runtime::Actor,
+    ) -> impl Fn(&ResourceRef) -> bool + 'a {
+        let known = self.runtime().knows_members();
+        move |at| !known || self.runtime().may_read(reader, at)
     }
 
     /// The resources of a collection as a read lists them: each with its type, id and label, up

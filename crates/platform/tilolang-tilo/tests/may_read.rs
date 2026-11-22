@@ -193,3 +193,43 @@ fn may_read_answers_what_the_workspace_grants() {
         "who the host named no member of reads nothing"
     );
 }
+
+#[test]
+fn a_read_refuses_what_the_reader_may_not_read() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(READS, "")]);
+    let meta = packages[0].meta.clone();
+    ada.host.root_of(APP).unwrap();
+    let note_ty = type_id(&meta, "Note");
+    let open = ada.host.runtime().create(&note_ty).unwrap();
+    let secret = ada.host.runtime().create(&note_ty).unwrap();
+    ada.commit();
+    follow(&ada, &access(&meta.kind_of("Note"), &open, &secret, true));
+    let read = |who: MemberId, note: &ResourceRef| {
+        let reader = Actor::from(who);
+        ada.host.read_content(
+            Some(&tilolang_tilo::publish::resource_id(APP, &note.id_string())),
+            &ada.host.reads_for(&reader),
+        )
+    };
+    assert!(
+        read(MemberId::person("ada"), &secret).is_ok(),
+        "the owner reads it"
+    );
+    assert!(
+        read(MemberId::person("cy"), &open).is_ok(),
+        "a viewer reads the open note"
+    );
+    let refused = read(MemberId::person("cy"), &secret).unwrap_err();
+    assert!(
+        refused.starts_with("no resource"),
+        "it reads as not there: {refused}"
+    );
+    assert!(
+        read(MemberId::agent("scout"), &secret).is_err(),
+        "no grant lets the agent read it"
+    );
+    assert!(
+        read(MemberId::person("stranger"), &open).is_err(),
+        "a stranger reads nothing"
+    );
+}

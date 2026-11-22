@@ -61,6 +61,22 @@ pub struct Caller {
     pub on_behalf_of: Option<String>,
 }
 
+impl Caller {
+    /// Whose read rights bound what the caller reads: the person an agent acts for, else the
+    /// caller.
+    #[must_use]
+    pub fn reader(&self) -> tilolang_runtime::ids::Actor {
+        self.on_behalf_of.as_deref().map_or_else(
+            || self.actor.clone(),
+            |person| {
+                tilolang_runtime::ids::Actor::Member(tilolang_runtime::ids::MemberId::person(
+                    person,
+                ))
+            },
+        )
+    }
+}
+
 impl From<&tilo_actions::ActionInvoker> for Caller {
     /// What the API admitted of `invoker`, as the runtime reads it.
     fn from(invoker: &tilo_actions::ActionInvoker) -> Self {

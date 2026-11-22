@@ -487,7 +487,10 @@ fn plain_paths(
             "agent read",
             replica
                 .host
-                .read_content(Some(&format!("tl:{APP}:{post}")))
+                .read_content(
+                    Some(&format!("tl:{APP}:{post}")),
+                    &replica.host.reads_for(replica.host.viewer()),
+                )
                 .unwrap()
                 .to_string(),
         ),

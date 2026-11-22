@@ -1398,6 +1398,13 @@ impl Runtime {
         self.core.may_read(who, at)
     }
 
+    /// Whether the host gave the workspace's members ([`Self::set_members`]): until it does, no
+    /// member is known here, and what a caller reads is what the API admitted it to.
+    #[must_use]
+    pub fn knows_members(&self) -> bool {
+        !self.core.members.borrow().list().is_empty()
+    }
+
     /// Where settled outside effects go.
     pub fn set_sink(&self, sink: impl OutsideSink + 'static) {
         *self.core.sink.borrow_mut() = Some(Box::new(sink));

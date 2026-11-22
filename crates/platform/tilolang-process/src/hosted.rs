@@ -2153,7 +2153,9 @@ impl Hosted {
     /// the other way. `None` where `edit` names no document, or `field` is not a flag of it.
     fn toggled(&self, edit: &ActionAddress, field: &str) -> Option<String> {
         let host = self.instance.host()?;
-        let read = host.read_content(Some(&edit.resource)).ok()?;
+        let read = host
+            .read_content(Some(&edit.resource), &host.reads_for(host.viewer()))
+            .ok()?;
         let package = host.package(&self.spec.app)?;
         let field = package
             .meta
@@ -2327,7 +2329,7 @@ impl Hosted {
         }
         if encoded.type_id == tilo_resource::read::TYPE {
             return self
-                .read(&encoded.payload)
+                .read(&encoded.payload, &caller.reader())
                 .map_err(|error| Refused::new("action_failed", error));
         }
         if encoded.type_id == tilo_actions::remote::APPLICATION_ACTIVATE_TYPE {
@@ -2387,9 +2389,19 @@ impl Hosted {
         Ok(tilo_actions::ActionOutput::default())
     }
 
-    /// Answer `read` (`tilo_resource::read`): what the document holds, through the runtime, now or
-    /// at a past version.
-    fn read(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
+    /// Answer `read` (`tilo_resource::read`) for `reader`: what the document holds that they may
+    /// read, through the runtime, now or at a past version.
+    fn read(
+        &self,
+        payload: &[u8],
+        reader: &tilolang_tilo::runtime::Actor,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let host = self
+            .instance
+            .host()
+            .ok_or_else(|| "the app has not started yet".to_owned())?;
+        // What the reader may read is what they may read now, of a past version too.
+        let reads = host.reads_for(reader);
         let args: serde_json::Value = if payload.is_empty() {
             serde_json::Value::Null
         } else {
@@ -2416,14 +2428,10 @@ impl Hosted {
             verbs::review::bounded(serde_json::json!({
                 "version": heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("+"),
                 "heads": heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                "content": past.read_content(item)?,
+                "content": past.read_content(item, &reads)?,
             }))?
         } else {
-            let host = self
-                .instance
-                .host()
-                .ok_or_else(|| "the app has not started yet".to_owned())?;
-            let content = host.read_content(item)?;
+            let content = host.read_content(item, &reads)?;
             // A whole resource reads a page at a time, as every app's does.
             if item.is_none() {
                 tilo_resource::read::page(
