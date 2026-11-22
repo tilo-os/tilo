@@ -439,6 +439,10 @@ export const PERSON_KEY = 'person';
  * its root signed: what travels, not the root, kept beside it. */
 const PERSON_ENVELOPE_KEY = 'person/envelope';
 const PERSON_REVOCATIONS_KEY = 'person/revocations';
+/** Whether this browser has shown the person their 24 recovery words: the
+ * words are shown once, right after they are first let in, and never again
+ * unasked. */
+export const PERSON_RECOVERY_SHOWN_KEY = 'person/recovery-shown';
 /** The colour the identity store gives a person who chose none
  * (`tilo_identity::store`'s `DEFAULT_AVATAR_COLOR`). */
 export const DEFAULT_AVATAR_COLOR = [128, 128, 128];
@@ -521,4 +525,5 @@ export async function deletePerson(storage) {
   await storage.delete(PERSON_KEY);
   await storage.delete(PERSON_ENVELOPE_KEY);
   await storage.delete(PERSON_REVOCATIONS_KEY);
+  await storage.delete(PERSON_RECOVERY_SHOWN_KEY);
 }

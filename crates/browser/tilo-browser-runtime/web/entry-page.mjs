@@ -27,10 +27,11 @@ import {connectPeer, httpsPost, identityProfile, inspectInvitation, invitedServe
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
 import {createIdentityActions, setupOrigin} from './identity-actions.mjs';
+import {showRecoveryWords} from './recovery-words.mjs';
 import {firstScreen, openSignIn, setupDone} from './first-screen.mjs';
 import {fetchPersonProfile} from './profile-photos.mjs';
 import {askOwnPairing, deviceLabel, ofThisSite, ownPairing, PAIRING_SIGNING_IN, PAIRING_WAIT, PAIRING_WHOSE, pairingFailure, pairingStatus, pairingWhere, pairingWhose, pairSecret} from './pairing.mjs';
-import {browserIdentity, browserPerson, currentIdentity, keptIdentity} from './identity.mjs';
+import {browserIdentity, browserPerson, currentIdentity, keepRecoveryWordsShown, keptIdentity, recoveryWords, recoveryWordsShown} from './identity.mjs';
 import {createReconnect, describeError, domReconnectView} from './reconnect.mjs';
 import {domFailureView, failureCause, failureDetails, failureScreen, namedOrigin, unanswered} from './failure-screen.mjs';
 import {hostUnreachable, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
@@ -386,6 +387,21 @@ function reportErrors() {
   };
 }
 
+/**
+ * Right after this browser's person is first let in anywhere: their 24 words
+ * are the only way back into Tilo if they lose every device, so they are
+ * shown once, before anything else opens, until the person confirms they kept
+ * them. The words are derived from the root here and never leave this
+ * browser. A browser that keeps no person (a tab paired to someone's, a guest)
+ * holds no root to write down, and shows none.
+ */
+async function showWordsOnce(identity) {
+  if (!identity?.recoveryWords) return;
+  if (await recoveryWordsShown().catch(() => false)) return;
+  await showRecoveryWords(recoveryWords(identity));
+  await keepRecoveryWordsShown().catch(() => {});
+}
+
 export async function startEntryPage({mode}) {
   const status = document.getElementById('status');
   const query = new URLSearchParams(location.search);
@@ -577,11 +593,14 @@ export async function startEntryPage({mode}) {
       if (!listingsRead.has(at)) listingsRead.set(at, publicListings(at));
       return listingsRead.get(at);
     },
-    onAdmitted: peer => {
+    onAdmitted: async peer => {
       admitted = peer;
       // Their own workspace opened in place of the invitation's: named as itself.
       if (ownFirst && peer?.workspace === ownFirst.id) workspaceName = ownFirst.name ?? workspaceName;
       letIn(peer);
+      // Right after they are let in: the 24 words that are the only way back
+      // to this person, shown once before the workspace opens.
+      await showWordsOnce(currentIdentity());
     },
     // The web version is the page the server renders, and the entry hands the
     // browser to it once it is a device of the workspace. It tells the page

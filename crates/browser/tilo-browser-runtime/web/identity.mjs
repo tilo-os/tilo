@@ -126,6 +126,47 @@ export async function browserPerson(options) {
   return currentIdentity() ?? browserIdentity(options);
 }
 
+/**
+ * The 24 words that restore `identity`'s root, in order, as the identity
+ * store writes them (`tilo_identity::store::recovery_words`): the root's seed
+ * in BIP39 English, so the words alone bring this person back on a device of
+ * theirs. The root never leaves this browser: the runtime derives the words
+ * here, and the page shows them to the person to keep.
+ */
+export function recoveryWords(identity = currentIdentity()) {
+  if (!identity?.recoveryWords) throw new IdentityError('locked', 'There is no identity to write down');
+  return identity.recoveryWords;
+}
+
+/**
+ * The root public key (hex) the 24 `words` restore: the words read back to a
+ * root and its public key derived again, so a person can check a copy before
+ * relying on it, or a device can be sure a phrase is one person's. Reads the
+ * same BIP39 words as `recoveryWords`.
+ */
+export async function recoveryWordsPublicKey(words) {
+  const runtime = await pageRuntime();
+  return runtime.rootWordsPublicKey(String(words));
+}
+
+/**
+ * Whether this browser has already shown its person the 24 words. They are
+ * shown once, right after it is first let in; a browser that keeps no person
+ * has shown none.
+ */
+export async function recoveryWordsShown({storage} = {}) {
+  const {idbStorage, PERSON_RECOVERY_SHOWN_KEY} = await store();
+  storage ??= idbStorage();
+  return (await storage.get(PERSON_RECOVERY_SHOWN_KEY)) != null;
+}
+
+/** Keep that this browser showed its person their 24 words. */
+export async function keepRecoveryWordsShown({storage} = {}) {
+  const {idbStorage, PERSON_RECOVERY_SHOWN_KEY} = await store();
+  storage ??= idbStorage();
+  await storage.put(PERSON_RECOVERY_SHOWN_KEY, '1');
+}
+
 /** Whether this site's storage survives the browser clearing space. */
 export async function storagePersisted(storage = globalThis.navigator?.storage) {
   return Boolean(await storage?.persisted?.().catch(() => false));

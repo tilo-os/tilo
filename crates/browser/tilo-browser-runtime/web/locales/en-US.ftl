@@ -170,3 +170,12 @@ entry-failure-refused-fallback = This link or invitation can’t be used.
 entry-failure-open-host = Open { $server }
 entry-failure-others = Or open another of your workspaces
 entry-failure-elsewhere = Or open one of these instead
+
+## The 24 recovery words, shown once right after a person is first let in
+# recovery-words.mjs: the only way back into Tilo if the person loses every
+# device. The words themselves are not translated.
+recovery-words-heading = Your 24 recovery words
+recovery-words-body = These 24 words are the only way back into Tilo if you lose every device. Write them down in order and keep them safe. Anyone who has them can be you.
+recovery-words-copy = Copy
+recovery-words-copied = Copied
+recovery-words-confirm = I’ve written them down

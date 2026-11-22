@@ -60,6 +60,10 @@ tilo-workspace-keys = { version = "0.1.0", path = "../../collab/workspace-keys" 
 tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["live_session"] }
 tilo-server-protocol = { version = "0.1.0", path = "../../server/tilo-server-protocol" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
+# The 24 words that restore a person's root: the identity store's one
+# recovery format, so the page encodes and reads the same phrase a computer
+# does.
+threshold-identity = { version = "0.1.0", path = "../../collab/threshold-identity" }
 ed25519-dalek.workspace = true
 hex.workspace = true
 # Request ids for the invitations the page asks its host to make.

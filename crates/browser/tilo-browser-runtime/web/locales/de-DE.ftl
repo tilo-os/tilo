@@ -164,3 +164,11 @@ entry-failure-refused-fallback = Dieser Link oder diese Einladung lässt sich ni
 entry-failure-open-host = { $server } öffnen
 entry-failure-others = Oder öffne einen anderen deiner Arbeitsbereiche
 entry-failure-elsewhere = Oder öffne stattdessen eines davon
+
+## Die 24 Wiederherstellungswörter, einmal gezeigt, sobald eine Person
+## hereingelassen wird; Aufbau und Regeln in en-US.ftl.
+recovery-words-heading = Deine 24 Wiederherstellungswörter
+recovery-words-body = Diese 24 Wörter sind der einzige Weg zurück in Tilo, wenn du alle Geräte verlierst. Schreib sie der Reihe nach auf und bewahre sie sicher auf. Wer sie hat, kann sich als du ausgeben.
+recovery-words-copy = Kopieren
+recovery-words-copied = Kopiert
+recovery-words-confirm = Ich habe sie aufgeschrieben

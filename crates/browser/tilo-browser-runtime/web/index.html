@@ -297,6 +297,18 @@ document.addEventListener('click',function(e){
     .tilo-entry-card label { display: grid; gap: 6px; }
     .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--e-field-edge); background: var(--e-field); color: inherit; }
     .tilo-entry-card .tilo-entry-error { margin: 0; color: var(--e-problem); }
+    /* The person's 24 recovery words, shown once right after they are first let in
+       (recovery-words.mjs): every word with its position, a way to copy them, and the press
+       that says they kept them before anything else opens. */
+    .tilo-recovery { width: min(560px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
+    .tilo-entry-card.tilo-recovery h2 { margin: 0; font-size: 20px; font-weight: 600; line-height: 1.3; color: var(--e-heading); }
+    .tilo-entry-card .tilo-recovery-lead { font-size: 14px; line-height: 1.5; color: var(--e-body); }
+    .tilo-recovery-words { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px 14px; margin: 0; padding: 14px 16px; list-style: none; border-radius: 10px; background: var(--e-well); border: 1px solid var(--e-line); }
+    .tilo-recovery-word { display: flex; align-items: baseline; gap: 6px; min-width: 0; font: 14px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--e-text); }
+    .tilo-recovery-number { flex: none; min-width: 1.5em; text-align: right; font-size: 12px; color: var(--e-quiet); font-variant-numeric: tabular-nums; }
+    .tilo-recovery-text { overflow: hidden; text-overflow: ellipsis; }
+    @media (max-width: 560px) { .tilo-recovery-words { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (max-width: 400px) { .tilo-recovery-words { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     /* An invitation, before the person joins (entry-page.mjs
        `invitationCard`): one sentence, who invited them and then the
        workspace as the heading, how many people are in it, and the role as

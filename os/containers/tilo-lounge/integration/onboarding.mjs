@@ -13,9 +13,12 @@
 //      address left on it is confirmed through the mail the entry sends;
 //   2. the operator hands an invite link over in one press, and invites that
 //      address from the workspace's own wait list, which mails the invitation;
-//   3. the stranger follows the invitation's link and joins; the workspace
-//      opens, and the setup offered inside it sets Tilo up through their
-//      agent (`tilo login`, then the agent adds Tilo's MCP server) in that workspace;
+//   3. the stranger follows the invitation's link and joins; joining founds
+//      their person, so the entry shows their 24 recovery words once — this
+//      reads them from the card and checks they restore the same person — and
+//      the workspace opens, where the setup offered inside it sets Tilo up
+//      through their agent (`tilo login`, then the agent adds Tilo's MCP
+//      server) in that workspace;
 //   3b. the same person on a browser new to the site signs in with their
 //      agent: the entry's wait list offers it, and the computer `tilo login`
 //      set up is a device of theirs, which signs the new tab in;
@@ -325,9 +328,27 @@ const firstScreenShown = `(document.documentElement.dataset.firstScreen !== unde
  * and comes back — as the operator does — instead of landing on the wait list. */
 const arrive = async (page, {expected}) => {
   const deadline = Date.now() + stepLimit(6);
+  // What the page reaches first: a decision on the entry, or — once it lets the
+  // person in — the 24 recovery words it shows them before anything opens.
+  const arrivedOrWords = `(() => {
+    const root = document.documentElement;
+    if (['done', 'stopped'].includes(root.dataset.arrival)) return 'settled';
+    return document.querySelector('[data-card="recovery-words"]') ? 'words' : '';
+  })()`;
   for (;;) {
     await page.tab.navigate(site);
-    await until(page.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${page.name} arriving`, stepLimit(6));
+    let settledBy = Date.now() + stepLimit(6);
+    for (;;) {
+      const stage = await page.tab.waitFor(arrivedOrWords, {timeout: Math.max(1000, settledBy - Date.now())}).catch(() => '');
+      if (stage === 'words') {
+        await keepRecoveryWords(page);
+        // The card is kept: the page goes on to open the workspace.
+        settledBy = Date.now() + stepLimit(6);
+        continue;
+      }
+      if (stage === 'settled') break;
+      await fail(`${page.name} arriving never happened: ${JSON.stringify(await state(page.tab))} — "${(await pageText(page.tab)).slice(0, 300)}"`);
+    }
     const seen = await state(page.tab);
     report.steps.push({step: `${page.name} arrived`, ...seen});
     if (seen.arrival === 'done' || expected === 'refused') return seen;
@@ -381,6 +402,43 @@ const commandOf = prompt => {
 /** The page's own identity module: the one it holds its person in. */
 const identityModule = `await import(new URL('identity.mjs', new URL('.', (document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]').href
   || document.querySelector('script[type="module"][src]').src))).href)`;
+
+/** The 24 recovery words, shown once right after a browser's person is first
+ * let in, and confirmed before anything else opens. The words are read from
+ * the card the person sees, checked to be 24 words, and derived again to that
+ * person's key: the same phrase has to restore the same root. Then they say
+ * they kept them, and the page goes on. */
+const keepRecoveryWords = async page => {
+  const shown = JSON.parse(await until(page.tab, `(() => {
+    const card = document.querySelector('[data-card="recovery-words"]');
+    if (!card) return '';
+    return JSON.stringify([...card.querySelectorAll('.tilo-recovery-word')]
+      .map(item => (item.querySelector('.tilo-recovery-text')?.textContent ?? '').trim()));
+  })()`, `${page.name} shown the 24 recovery words`, stepLimit(10)));
+  if (shown.length !== 24) await fail(`the recovery card shows ${shown.length} words, not 24: ${shown.join(' ')}`);
+  if (!shown.every(word => /^[a-z]+$/.test(word))) await fail(`the recovery card carries something other than words: ${shown.join(' ')}`);
+  const restored = await page.tab.evaluate(`(async () => {
+    const id = ${identityModule};
+    return id.recoveryWordsPublicKey(${JSON.stringify(shown.join(' '))});
+  })()`).catch(error => fail(`the 24 words did not read back: ${error?.message ?? error}`));
+  const person = await page.tab.evaluate(`(async () => {
+    const id = ${identityModule};
+    return (await id.browserIdentity({create: false}))?.userPublicKey ?? null;
+  })()`).catch(() => null);
+  if (!person) await fail(`${page.name} keeps no person the 24 words could restore`);
+  if (restored !== person) await fail(`the 24 words restore ${restored}, not ${page.name}'s person (${person})`);
+  // The card in both themes, while it is up, before it is confirmed away.
+  await page.tab.evaluate(`document.documentElement.dataset.look = 'light'`);
+  await dump(page.tab, `recovery-words-${page.name}-light`);
+  await page.tab.evaluate(`document.documentElement.dataset.look = 'dark'`);
+  await dump(page.tab, `recovery-words-${page.name}-dark`);
+  await page.tab.evaluate(`delete document.documentElement.dataset.look`);
+  console.log(`ok: ${page.name} was shown the 24 recovery words, which restore their person (${person.slice(0, 12)}…)`);
+  report.recovery = {...report.recovery, [page.name]: {words: shown.length, restores: person, screenshots: [`recovery-words-${page.name}-light.png`, `recovery-words-${page.name}-dark.png`]}};
+  mark(`${page.name} was shown their 24 recovery words, which restore their person`);
+  await page.tab.evaluate(`document.querySelector('[data-card="recovery-words"] button.tilo-entry-primary').click()`);
+  await until(page.tab, `!document.querySelector('[data-card="recovery-words"]')`, `${page.name}'s words card closing`, stepLimit(4));
+};
 
 try {
   // -- 0. the operator, made an owner by the stack, is let in --------------
@@ -536,6 +594,9 @@ try {
   // -- 3. the stranger follows it, joins, and sets Tilo up through an agent ---
   step('the invitation bringing the stranger into a workspace of their own');
   await stranger.tab.navigate(inviteLink);
+  // Their identity is founded on the way in: the 24 words are shown once,
+  // before the workspace opens, to write down and keep.
+  await keepRecoveryWords(stranger);
   // Someone let in off the wait list asked to get in, so the link joins them at
   // once, with no card to press: the invitation admits them to the Lounge, and
   // their page opens a workspace of their own to work in, with the Lounge one

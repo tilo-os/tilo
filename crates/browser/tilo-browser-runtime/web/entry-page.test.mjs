@@ -136,7 +136,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
       return JSON.stringify({entered: JSON.parse(list).map(entry => entry.origin === origin && entry.workspace === workspace && !entry.name ? {...entry, name} : entry), unchoose: []});
     },
   });
-  globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, prefetched: [], identity, kept, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
+  globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, prefetched: [], identity, kept, recoveryShown: true, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
     joinViaHost: join ?? joinViaHost, pair,
     findProfile: async person => (profile ? {version: 1, user_public_key: person, ...profile} : null),
     boot: async options => {
@@ -157,7 +157,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace("import {boot, grammar} from './entry.mjs';", 'const boot = globalThis.__entryPageFixture.boot, grammar = () => globalThis.__entryPageFixture.page.link;')
     .replace("import {loadRuntime} from './host.mjs';", 'const loadRuntime = async () => globalThis.__entryPageFixture.runtime;')
     .replace(/import \{([^}]*)\bstartArrival, ([^}]*)\} from '.\/arrival.mjs';/, "import {$1$2} from './arrival.mjs';\nconst startArrival = () => {};")
-    .replace("import {browserIdentity, browserPerson, currentIdentity, keptIdentity} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;')
+    .replace("import {browserIdentity, browserPerson, currentIdentity, keepRecoveryWordsShown, keptIdentity, recoveryWords, recoveryWordsShown} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;\nconst keptIdentity = async () => globalThis.__entryPageFixture.kept;\nconst recoveryWords = identity => identity.recoveryWords;\nconst recoveryWordsShown = async () => globalThis.__entryPageFixture.recoveryShown;\nconst keepRecoveryWordsShown = async () => {};')
     .replace('hostToReconnect, joinViaHost,', 'hostToReconnect,')
     .replace('identityProfile, inspectInvitation, invitedServer, joinWorkspace, openInvitation,', 'identityProfile, inspectInvitation, invitedServer, openInvitation,')
     .replace('return await pairViaHost({origin,', 'return await pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), findProfile: (...args) => globalThis.__entryPageFixture.findProfile(...args), origin,')

@@ -186,14 +186,29 @@ if (pairLink) {
 } else {
   await tab.navigate(invite ?? site);
   // Through an invitation, its card names the workspace and offers Join:
-  // pressed as the newcomer presses it, and the page goes on arriving.
-  await until(`(() => {
-    if (['done', 'stopped'].includes(document.documentElement.dataset.arrival)) return true;
+  // pressed as the newcomer presses it, and the page goes on arriving. Right
+  // after the person is founded, their 24 recovery words are shown once,
+  // before the workspace opens.
+  const stage = await until(`(() => {
+    if (document.querySelector('[data-card="recovery-words"]')) return 'words';
+    if (['done', 'stopped'].includes(document.documentElement.dataset.arrival)) return 'settled';
     const join = ${JSON.stringify(Boolean(invite))}
       && [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Join');
     if (join && !join.disabled && !join.dataset.pressed) { join.dataset.pressed = '1'; join.click(); }
-    return false;
-  })()`, invite ? 'the page arriving through the invitation' : 'the page arriving');
+    return '';
+  })()`, invite ? 'the page arriving through the invitation' : 'the page arriving', stepLimit(24));
+  if (stage === 'words') {
+    // The words are the only way back if the person loses every device: read
+    // from the card they see, proven to be 24, and kept before anything opens.
+    const words = JSON.parse(await tab.evaluate(`JSON.stringify([...document.querySelectorAll('[data-card="recovery-words"] .tilo-recovery-text')]
+      .map(word => word.textContent.trim()))`));
+    if (words.length !== 24) await finish(1, `the recovery card shows ${words.length} words, not 24: ${words.join(' ')}`);
+    report.recoveryWords = words.length;
+    await capture('recovery-words');
+    await tab.evaluate(`document.querySelector('[data-card="recovery-words"] button.tilo-entry-primary').click()`);
+    await until(`['done', 'stopped'].includes(document.documentElement.dataset.arrival)`,
+      'the page arriving once the recovery words are kept', stepLimit(12));
+  }
   if (await tab.evaluate('document.documentElement.dataset.arrival') !== 'done') {
     await finish(1, `the page stopped arriving: ${await text()}`);
   }

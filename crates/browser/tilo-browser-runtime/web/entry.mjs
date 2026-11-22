@@ -198,7 +198,10 @@ export async function boot({mode, window = globalThis, status, deps, onStep = ()
   // Nothing to mount: an embed shows its site's fallback until the visitor
   // does something (`entry-page.mjs`).
   if (idle) return null;
-  if (peer) deps.onAdmitted?.(peer);
+  // The page hears it was let in before anything is handed over; it may ask
+  // the person something first (the 24 recovery words, shown once), so its
+  // answer is awaited.
+  if (peer) await deps.onAdmitted?.(peer);
   // A sealed invitation's link admits into a workspace the page learns on the
   // way in: from here on it is in it, as a link to that workspace says.
   // So does a wait-list invitation that opened the person's own workspace in

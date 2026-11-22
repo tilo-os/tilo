@@ -14,8 +14,9 @@
 
 use std::cell::Cell;
 
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
+use threshold_identity::bip39;
 use tilo_user_identity::root_statement;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -248,6 +249,17 @@ impl Root {
         Uint8Array::from(&self.seed[..])
     }
 
+    /// The root's 24 words: its seed written as the identity store's one
+    /// recovery key format (BIP39 English, 256 bits and a checksum), so the
+    /// words alone restore this person on a device of theirs. The root stays
+    /// here; the page shows the words to the person to keep.
+    #[wasm_bindgen(getter, js_name = recoveryWords)]
+    pub fn recovery_words(&self) -> Result<String, JsValue> {
+        bip39::encode(&self.seed)
+            .map(|words| words.to_string())
+            .ok_or_else(|| error_with("malformed", "a root seed did not encode as words"))
+    }
+
     /// The Ed25519 signature of `message`, by the unlocked root.
     ///
     /// # Errors
@@ -387,4 +399,47 @@ pub fn node_session_vouched(node: &str, session: &str, signature: &str) -> bool 
             .ok()
         })
         .is_some()
+}
+
+/// `text`'s words, lowercased, with every run of anything that is not a
+/// letter separating them: the words are read as a person copies them, so list
+/// numbering and commas between them fall away (the identity store reads a
+/// phrase the same way).
+fn normalized_words(text: &str) -> String {
+    let mut phrase = String::with_capacity(text.len());
+    for word in text.split(|character: char| !character.is_alphabetic()) {
+        if word.is_empty() {
+            continue;
+        }
+        if !phrase.is_empty() {
+            phrase.push(' ');
+        }
+        phrase.push_str(&word.to_lowercase());
+    }
+    phrase
+}
+
+/// The root public key (hex) that the 24 `words` restore: the words decoded
+/// back to a root's seed and its Ed25519 public key derived from it, so a
+/// person can check a copy, or a device can be sure a phrase is the person's,
+/// without the root itself leaving any browser. The words are the identity
+/// store's one recovery format, so deriving here matches `recovery_words`
+/// elsewhere.
+///
+/// # Errors
+///
+/// `malformed` for a phrase that is not 24 BIP39 words with a matching
+/// checksum, or that does not carry a 32-byte root.
+#[wasm_bindgen(js_name = rootWordsPublicKey)]
+pub fn root_words_public_key(words: &str) -> Result<String, JsValue> {
+    let phrase = normalized_words(words);
+    let seed =
+        bip39::decode(&phrase).map_err(|error| error_with("malformed", &error.to_string()))?;
+    let seed: [u8; 32] = seed
+        .as_slice()
+        .try_into()
+        .map_err(|_| error_with("malformed", "those words do not carry a 32-byte root"))?;
+    Ok(hex::encode(
+        SigningKey::from_bytes(&seed).verifying_key().to_bytes(),
+    ))
 }
