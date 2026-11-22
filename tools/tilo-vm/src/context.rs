@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tilo_vm_protocol::{DEVICE_ACCOUNT, Owner, VM_ACCOUNT, valid_account_name};
+use tilo_device_protocol::{DEVICE_ACCOUNT, Owner, VM_ACCOUNT, valid_account_name};
 
 #[derive(Debug, Clone, Default)]
 pub struct Worktree {

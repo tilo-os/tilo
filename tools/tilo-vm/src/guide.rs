@@ -111,7 +111,7 @@ mod tests {
             for needle in [
                 "tilo-vm scenario install",
                 "tilo-control --socket",
-                "confirmation_phrase",
+                "ConfirmationRequired",
                 "org.tilo.console.0",
                 "os/dev/test-installer-cycle.sh",
             ] {
@@ -234,6 +234,8 @@ mod tests {
                     "--rebuild-base",
                     "build-dev-image.sh",
                     "os/build.sh --dev",
+                    "--grant-sudo",
+                    "tilo-vmd",
                 ] {
                     assert!(!text.contains(stale), "guide {name} still says `{stale}`");
                 }
@@ -244,16 +246,15 @@ mod tests {
             assert!(swapping.contains("dev-overrides"));
             let devices = topic("devices").unwrap();
             for needle in [
-                "tilo-vm vm add opi --ssh root@",
+                "tilo-vm vm add opi --device",
                 "tilo-vm swap --account device tilo-session --from sha:",
                 "tilo-vm rollback --account device --to 0",
                 "tilo-vm account exec --account device -- sha256sum /usr/bin/tilo-session",
                 "TILO_VM_CARGO",
                 "registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci",
                 "vm upgrade opi",
-                "tilo-vm vm add yoga --ssh me@",
-                "--grant-sudo",
-                "/etc/sudoers.d/tilo-vm-<user>",
+                "tilo-vm vm add yoga --device",
+                "tilo device add",
                 "tilo-vm seat claim",
                 "ends whoever is logged in",
                 "tilo-vm shot",

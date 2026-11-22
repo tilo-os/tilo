@@ -1685,7 +1685,7 @@ mod tests {
     async fn a_service_whose_cert_cannot_own_governs_no_workspace() {
         let state = tempfile::tempdir().expect("a state directory");
         let (key, cert) = crate::workspaces::fixtures::governor_with(
-            tilo_user_identity::DeviceCapabilities::administrator(),
+            tilo_user_identity::DeviceCapabilities::nothing(),
         );
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))

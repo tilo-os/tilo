@@ -259,8 +259,6 @@ impl CertificationPolicy {
             can_admit_devices: requested.can_admit_devices && self.ceiling.can_admit_devices,
             // Foreign is a restriction: a request or ceiling that says so keeps it.
             foreign: requested.foreign || self.ceiling.foreign,
-            can_administer_devices: requested.can_administer_devices
-                && self.ceiling.can_administer_devices,
             // An agent's grant is issued by the person approving the agent,
             // never asked for by a device being enrolled.
             agent: None,
@@ -285,10 +283,6 @@ impl CertificationPolicy {
         let within = |granted: bool, allowed: bool| !granted || allowed;
         within(granted.can_own_workspaces, ceiling.can_own_workspaces)
             && within(granted.can_admit_devices, ceiling.can_admit_devices)
-            && within(
-                granted.can_administer_devices,
-                ceiling.can_administer_devices,
-            )
             && (granted.foreign || !ceiling.foreign)
             && !granted.stand_in
             && !granted.browser_pages

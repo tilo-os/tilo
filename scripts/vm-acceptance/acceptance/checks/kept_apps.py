@@ -1,7 +1,7 @@
 """Essential 3, continued: the machine's own apps stay open while the desktop restarts in place.
 
 A desktop update restarts the compositor without logging the person out (the session wrapper's
-SIGUSR1, as tilo-vmd and a live update ask for it). Every host app runs behind an app keeper
+SIGUSR1, as the device steps and a live update ask for it). Every host app runs behind an app keeper
 (crates/session/app-keeper), which keeps its Wayland state while no desktop is there. This check
 opens a GPU-rendered app (alacritty, OpenGL), a shared-memory one (foot) and an X11 one (xterm),
 the last in a workspace of its own so the others stand in one behind it, gives each work that is saved nowhere (a running loop, typed scrollback), restarts the desktop in

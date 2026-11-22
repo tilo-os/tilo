@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tilo_vm_protocol::Provenance;
-use tilo_vm_protocol::manifest::{Component, dev_override_features};
+use tilo_device_protocol::Provenance;
+use tilo_device_protocol::manifest::{Component, dev_override_features};
 
 use crate::context::Worktree;
 use crate::error::CliError;
@@ -179,7 +179,7 @@ pub fn source_provenance(worktree: &Worktree, component: &str, builder: &str) ->
     provenance.cargo_lock_hash = std::fs::read(worktree.root.join("Cargo.lock"))
         .ok()
         .map(|b| sha256_hex(&b));
-    provenance.interfaces = tilo_vm_protocol::tree_interfaces(&worktree.root);
+    provenance.interfaces = tilo_device_protocol::tree_interfaces(&worktree.root);
     provenance
 }
 
@@ -359,7 +359,7 @@ pub fn cache_summary(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tilo_vm_protocol::manifest::Manifest;
+    use tilo_device_protocol::manifest::Manifest;
 
     use super::*;
 

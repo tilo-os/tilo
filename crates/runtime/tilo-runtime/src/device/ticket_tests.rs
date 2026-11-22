@@ -24,43 +24,6 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 use super::ticket::{Founded, RootApprover, RootSource, Tickets};
 
-#[tokio::test]
-async fn a_member_device_cannot_issue_an_admin_ticket() {
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let (key, cert) = enrol(&root, "laptop", DeviceCapabilities::member());
-    let endpoint = endpoint(&key).await;
-    let login = tilo_device_identity::login::Device {
-        site: "https://tilo.test/".into(),
-        host_origin: "https://eu1.tilo.test".into(),
-        workspace: "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b".into(),
-        workspace_name: None,
-        agent: "Claude Code".into(),
-        cert: cert.clone(),
-        server_cert: cert.clone(),
-        server_address: None,
-    };
-    let state = tempfile::tempdir().unwrap();
-    let place = tilo_device_identity::login::Place::at(
-        state.path().to_path_buf(),
-        tilo_device_identity::IdentityPaths::under(state.path().join("keys")),
-    );
-    let service = ActionService::new(key.clone(), Arc::new(NoActions));
-    let tickets = Tickets::new(
-        (key.clone(), cert),
-        endpoint,
-        Some((key, login)),
-        no_root(),
-        None,
-        None,
-        place,
-        service,
-    );
-    let refused = ask_device(&tickets, ISSUE, json!({"capability": "admin"}))
-        .await
-        .unwrap_err();
-    assert!(refused.contains("isn't an administrator"), "{refused}");
-}
-
 /// A device `root` certified, and its key.
 fn enrol(
     root: &SigningKey,
@@ -466,11 +429,7 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
     );
     let router = serve(&issuer, actions);
 
-    // Its own certificate administers no devices; the person's root approves one anyway.
-    let admin = json!({"capability": "admin", "server": true});
-    let approved = ask_device(&tickets, ISSUE, admin).await;
-    approved.expect("the person's root approves an administrator");
-    let printed = ask_device(&tickets, ISSUE, json!({"capability": "member"}))
+    let printed = ask_device(&tickets, ISSUE, json!({}))
         .await
         .expect("a device with the person's root issues a ticket without a login");
     let text = printed["ticket"].as_str().unwrap();

@@ -1,15 +1,15 @@
 //! `--builder remote`: the component builds on a remote builder of the
 //! machine's architecture and its layer streams from there through this
-//! host straight into tilo-vmd's upload ([`crate::builderlayer`]); no
+//! host into the device as content ([`crate::builderlayer`]); no
 //! binary is written to this host's disk.
 
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 
-use tilo_vm_protocol::LayerSource;
-use tilo_vm_protocol::manifest::Component;
-use tilo_vm_protocol::{AppInstall, AppInstallResult};
-use tilo_vm_protocol::{LayerImport, LayerList, LayerVerify};
+use tilo_device_protocol::LayerSource;
+use tilo_device_protocol::manifest::Component;
+use tilo_device_protocol::{AppInstall, AppInstallResult};
+use tilo_device_protocol::{LayerImport, LayerList, LayerVerify};
 
 use super::{App, Resolved};
 use crate::build;
@@ -19,7 +19,7 @@ use crate::hypervisor;
 use crate::remote::Remote;
 
 fn build_header<T>(
-    remote: &mut Remote,
+    remote: &Remote,
     device: bool,
     build: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<T, CliError> {
@@ -81,10 +81,10 @@ fn deliver_layer(
     stream: &mut impl std::io::Read,
     packed: &builderlayer::Packed,
     component: &str,
-    claim: &tilo_vm_protocol::Provenance,
+    claim: &tilo_device_protocol::Provenance,
 ) -> Result<Delivery, CliError> {
     if !packed.reused {
-        return remote.upload(stream).map(Delivery::Uploaded);
+        return remote.put_reader(stream).map(Delivery::Uploaded);
     }
     if stream
         .read(&mut [0u8; 1])
@@ -107,7 +107,7 @@ fn verified_layer(
     remote: &mut Remote,
     hash: &str,
     component: &str,
-    claim: Option<&tilo_vm_protocol::Provenance>,
+    claim: Option<&tilo_device_protocol::Provenance>,
 ) -> bool {
     remote
         .call(LayerVerify {
@@ -117,7 +117,7 @@ fn verified_layer(
             layer.hash == hash
                 && layer.provenance.component == component
                 && layer.provenance.target.as_deref()
-                    == Some(format!("{}-unknown-linux-gnu", remote.hello.arch).as_str())
+                    == Some(format!("{}-unknown-linux-gnu", remote.status.arch).as_str())
                 && claim.is_none_or(|claim| layer.provenance.interfaces == claim.interfaces)
         })
 }
@@ -190,94 +190,7 @@ fn builder_succeeded(
     Ok(())
 }
 
-/// Starts the build at `line`, checks the layer's header with `check`, and
-/// pipes the layer's tar into `sink`'s stdin.
-fn stream_layer(
-    line: &hypervisor::CommandLine,
-    root: &std::path::Path,
-    sink: &hypervisor::CommandLine,
-    check: impl FnOnce(&builderlayer::Packed) -> Result<(), CliError>,
-) -> Result<(), CliError> {
-    let mut child = AppBuilder(start_builder(line, root)?);
-    let stdout = child.0.stdout.take().ok_or_else(|| {
-        CliError::io("start the remote builder")(std::io::Error::other("no stdout"))
-    })?;
-    let mut stream = Stream::new(BufReader::with_capacity(2 << 20, stdout));
-    let packed = match stream.header(&mut std::io::stderr()) {
-        Ok(packed) => packed,
-        Err(error) => {
-            drop(stream);
-            let error = CliError::io("read the remote builder's header")(error);
-            return Err(builder_header_error(&mut child, line, &error));
-        }
-    };
-    check(&packed)?;
-    let mut unpack = Command::new(&sink.program)
-        .args(&sink.args)
-        .envs(sink.env.iter().map(|(k, v)| (k, v)))
-        .stdin(Stdio::piped())
-        .spawn()
-        .map_err(CliError::io("start unpacking the layer over SSH"))?;
-    let copied = match unpack.stdin.take() {
-        Some(mut stdin) => std::io::copy(&mut stream, &mut stdin)
-            .map(drop)
-            .map_err(CliError::io("send the layer over SSH")),
-        None => Err(CliError::io("send the layer over SSH")(
-            std::io::Error::other("no stdin"),
-        )),
-    };
-    let status = unpack
-        .wait()
-        .map_err(CliError::io("wait for the layer's unpacking"))?;
-    copied?;
-    if !status.success() {
-        return Err(CliError::CommandFailed {
-            command: sink.display(),
-            status: status.to_string(),
-            stderr: "unpacking the layer over SSH failed; its output is above".into(),
-        });
-    }
-    drop(stream);
-    builder_succeeded(&mut child, line)
-}
-
 impl App {
-    /// Builds `component` for `arch` and unpacks the layer over plain SSH
-    /// with `sink`, past the VM's daemon: what replaces a tilo-vmd that
-    /// speaks another protocol, which no upload through it reaches.
-    pub(super) fn pack_layer_over_ssh(
-        &mut self,
-        component: &Component,
-        builder: &[String],
-        arch: &str,
-        sink: &hypervisor::CommandLine,
-    ) -> Result<(), CliError> {
-        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
-        self.runner.cwd = Some(worktree.root.clone());
-        let metadata = self.cargo_metadata()?;
-        let extra = build::dev_features(&metadata, &component.packages);
-        let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
-        let inventory = inputs
-            .file
-            .path()
-            .strip_prefix(&worktree.root)
-            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
-        let line = builderlayer::remote_command(builder, component, &extra)
-            .arg("--source-inventory")
-            .arg(inventory.display().to_string());
-        if !self.json {
-            eprintln!(
-                "tilo-vm: building {} with {} and unpacking it over SSH",
-                component.name,
-                line.display()
-            );
-        }
-        stream_layer(&line, &worktree.root, sink, |packed| {
-            validate_header(packed, &component.name, &inputs.digest, arch, &[])
-        })?;
-        inputs.unchanged(&worktree.root)
-    }
-
     pub(super) fn build_layer_remote(
         &mut self,
         remote: &mut Remote,
@@ -301,7 +214,7 @@ impl App {
         component: &Component,
         builder: &[String],
         inputs: &crate::source_inputs::Snapshot,
-    ) -> Result<tilo_vm_protocol::UserspaceMember, CliError> {
+    ) -> Result<tilo_device_protocol::UserspaceMember, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         self.runner.cwd = Some(worktree.root);
         let metadata = self.cargo_metadata()?;
@@ -333,7 +246,7 @@ impl App {
         inputs: &crate::source_inputs::Snapshot,
         extra: &[String],
         reuse: bool,
-    ) -> Result<tilo_vm_protocol::UserspaceMember, CliError> {
+    ) -> Result<tilo_device_protocol::UserspaceMember, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         let mut provenance = inputs.provenance.clone();
         provenance.component.clone_from(&component.name);
@@ -391,7 +304,7 @@ impl App {
             &packed,
             &component.name,
             &inputs.digest,
-            &remote.hello.arch,
+            &remote.status.arch,
             &cached,
         )?;
         *remote = self.connect_with_wake(vm, false)?;
@@ -422,7 +335,7 @@ impl App {
         };
         let imported = self.receipt.phase("import", || {
             remote.call(LayerImport {
-                source: LayerSource::Upload(upload),
+                source: LayerSource::Content { hash: upload },
                 provenance: Box::new(provenance.clone()),
             })
         })?;
@@ -452,7 +365,7 @@ impl App {
             .strip_prefix(&worktree.root)
             .map_err(|e| CliError::InvalidInput(e.to_string()))?;
         let line = crate::builderapp::remote_command(builder, dir, inventory)?;
-        let arch = remote.hello.arch.clone();
+        let arch = remote.status.arch.clone();
         self.receipt.set("builder", "remote");
         self.receipt.set("app_source", provenance);
         let mut child = AppBuilder(start_builder(&line, &worktree.root)?);
@@ -472,7 +385,7 @@ impl App {
         *remote = self.connect(vm)?;
         let upload = self
             .receipt
-            .phase("transfer", || remote.upload(&mut stream));
+            .phase("transfer", || remote.put_reader(&mut stream));
         // Drop the pipe before waiting: a refused upload must not deadlock a
         // builder still blocked writing its remaining package bytes.
         drop(stream);
@@ -491,7 +404,7 @@ impl App {
         self.receipt.phase("install", || {
             remote.call(AppInstall {
                 account: account.into(),
-                source: LayerSource::Upload(upload),
+                source: LayerSource::Content { hash: upload },
             })
         })
     }
@@ -509,10 +422,10 @@ impl App {
 fn userspace_member(
     component: &Component,
     layer: String,
-    build: tilo_vm_protocol::Provenance,
+    build: tilo_device_protocol::Provenance,
     inputs: &crate::source_inputs::Snapshot,
-) -> tilo_vm_protocol::UserspaceMember {
-    tilo_vm_protocol::UserspaceMember {
+) -> tilo_device_protocol::UserspaceMember {
+    tilo_device_protocol::UserspaceMember {
         component: component.name.clone(),
         layer,
         build,
@@ -533,42 +446,49 @@ impl Drop for AppBuilder {
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {
-    use super::*;
+    use serde_json::json;
+    use tilo_device_protocol::{RpcError, code};
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    const CACHE_PEER: &str = r#"
-import base64,json,sys
-hash,mode,log,protocol=sys.argv[1:]
-print(json.dumps({"tilo_device_admin":{"device":"test","label":"test","route":"direct","via":"test","session":1}}),flush=True)
-received=0
-for line in sys.stdin:
- r=json.loads(line); m=r['method']
- with open(log,'a') as f: f.write(m+'\n')
- result={}; error=None
- if m=='hello': result={"protocol":int(protocol),"daemon_version":"test","root":"test","arch":"x86_64"}
- elif m=='layer.list': result=[{"hash":hash,"provenance":{"component":"shell"}}]
- elif m=='layer.verify':
-  if mode in ('missing','corrupt','old'): error={"code":-32602,"message":mode}
-  else: result={"hash":hash,"provenance":{"component":"other" if mode=='wrong-component' else 'shell',"target":"aarch64-unknown-linux-gnu" if mode=='wrong-arch' else 'x86_64-unknown-linux-gnu',"interfaces":{"runtime":17} if mode=='stale-declaration' else {}}}
- elif m=='layer.upload.binary': error={"code":-32602,"message":"unknown optional method","hint":"legacy upload"}
- elif m=='layer.upload.begin': result={"upload":"fixture"}
- elif m=='layer.upload.chunk':
-  received+=len(base64.b64decode(r['params']['data'])); result={"received":received}
- else: raise RuntimeError(m)
- print(json.dumps({"jsonrpc":"2.0","id":r['id'],"error":error} if error else {"jsonrpc":"2.0","id":r['id'],"result":result}),flush=True)
-"#;
+    use super::*;
+    use crate::remote::fixture::Device;
 
-    fn claim() -> tilo_vm_protocol::Provenance {
-        tilo_vm_protocol::Provenance::local("shell")
+    fn claim() -> tilo_device_protocol::Provenance {
+        tilo_device_protocol::Provenance::local("shell")
     }
 
-    fn cache_peer(hash: &str, mode: &str, log: &std::path::Path) -> Result<Remote, CliError> {
-        let line = hypervisor::CommandLine::new("python3", &["-c", CACHE_PEER])
-            .arg(hash)
-            .arg(mode)
-            .arg(log.display().to_string())
-            .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
-        Remote::over_peer("test", &line).map(|(remote, _)| remote)
+    /// An `x86_64` device that lists `hash` as a `shell` layer and verifies it as `mode` says:
+    /// `valid`, gone (`missing`, `corrupt`, `old`), or recorded as another component,
+    /// architecture or interface declaration.
+    fn cache_peer(hash: &str, mode: &'static str) -> Device {
+        let hash = hash.to_owned();
+        Device::of_arch("x86_64", move |action, _| match action {
+            "layer-list" => Ok(json!([{ "hash": hash, "provenance": { "component": "shell" } }])),
+            "layer-verify" if matches!(mode, "missing" | "corrupt" | "old") => Err(RpcError {
+                code: code::NOT_FOUND,
+                message: mode.into(),
+                hint: String::new(),
+                see: None,
+            }),
+            "layer-verify" => Ok(json!({ "hash": hash, "provenance": {
+                "component": if mode == "wrong-component" { "other" } else { "shell" },
+                "target": if mode == "wrong-arch" { "aarch64-unknown-linux-gnu" } else { "x86_64-unknown-linux-gnu" },
+                "interfaces": if mode == "stale-declaration" { json!({ "runtime": 17 }) } else { json!({}) },
+            } })),
+            other => panic!("a cached build asks for no {other}"),
+        })
+    }
+
+    fn connect(device: &Device) -> Remote {
+        Remote::connect("test", &device.machine, &device.route).unwrap()
+    }
+
+    fn actions(device: &Device) -> Vec<String> {
+        device
+            .asked()
+            .into_iter()
+            .map(|asked| asked.action)
+            .collect()
     }
 
     fn framed_fixture(
@@ -591,61 +511,6 @@ for line in sys.stdin:
     }
 
     tilo_test_env::scenario! {
-        fn a_layer_reaches_a_daemon_of_another_protocol_unpacked_past_it;
-
-        phase the_built_layer_is_unpacked_by_the_sink_whole;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let tree = dir.path().join("tree");
-            std::fs::create_dir_all(tree.join("usr/libexec/tilo")).unwrap();
-            std::fs::write(tree.join("usr/libexec/tilo/tilo-vmd"), b"replacement daemon").unwrap();
-            let (_, framed) = framed_fixture(&tree, &[]).unwrap();
-            let built = dir.path().join("built");
-            std::fs::write(&built, framed).unwrap();
-            // The builder prints the framed layer; the sink unpacks what reaches its stdin,
-            // as `ssh <vm> <bridge_unpack_line>` does on the VM.
-            let line = hypervisor::CommandLine::new("sh", &["-c", "cat \"$0\""])
-                .arg(built.display().to_string());
-            let unpacked = dir.path().join("vmd-bridge");
-            let sink = hypervisor::CommandLine::new(
-                "sh",
-                &["-c", "mkdir -p \"$0\" && tar -x --no-same-owner -C \"$0\""],
-            )
-            .arg(unpacked.display().to_string());
-            stream_layer(&line, dir.path(), &sink, |packed| {
-                assert_eq!(packed.component, "shell");
-                Ok(())
-            })
-            .unwrap();
-            assert_eq!(
-                std::fs::read(unpacked.join("usr/libexec/tilo/tilo-vmd")).unwrap(),
-                b"replacement daemon"
-            );
-        }
-
-        phase a_refused_header_unpacks_nothing;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let tree = dir.path().join("tree");
-            std::fs::create_dir_all(&tree).unwrap();
-            std::fs::write(tree.join("file"), b"x").unwrap();
-            let (_, framed) = framed_fixture(&tree, &[]).unwrap();
-            let built = dir.path().join("built");
-            std::fs::write(&built, framed).unwrap();
-            let line = hypervisor::CommandLine::new("sh", &["-c", "cat \"$0\""])
-                .arg(built.display().to_string());
-            let unpacked = dir.path().join("vmd-bridge");
-            let sink = hypervisor::CommandLine::new("sh", &["-c", "mkdir -p \"$0\""])
-                .arg(unpacked.display().to_string());
-            let refused = stream_layer(&line, dir.path(), &sink, |_| {
-                Err(CliError::InvalidInput("another architecture".into()))
-            });
-            assert!(matches!(refused, Err(CliError::InvalidInput(_))));
-            assert!(!unpacked.exists());
-        }
-    }
-
-    tilo_test_env::scenario! {
         fn the_remote_layer_cache_is_used_only_for_verified_identical_content;
 
         phase remote_cache_exact_content_skips_archive_and_upload;
@@ -653,12 +518,12 @@ for line in sys.stdin:
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
             std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
-            let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+            let hash = tilo_device_protocol::layer_hash::tree_hash(dir.path()).unwrap();
             let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
             assert!(packed.reused);
             assert!(!String::from_utf8_lossy(&framed).contains(builderlayer::DATA));
-            let log = dir.path().join("calls");
-            let mut remote = cache_peer(&hash, "valid", &log).unwrap();
+            let device = cache_peer(&hash, "valid");
+            let mut remote = connect(&device);
             assert_eq!(
                 verified_layers(&mut remote, "shell").unwrap(),
                 vec![hash.clone()]
@@ -677,10 +542,8 @@ for line in sys.stdin:
                 deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
                 Delivery::Reused(hash)
             );
-            assert_eq!(
-                std::fs::read_to_string(log).unwrap(),
-                "hello\nlayer.list\nlayer.verify\nlayer.verify\n"
-            );
+            assert_eq!(actions(&device), ["layer-list", "layer-verify", "layer-verify"]);
+            assert_eq!(device.content.len(), 0, "nothing was sent");
         }
 
         phase remote_cache_changed_content_streams_normally;
@@ -689,24 +552,22 @@ for line in sys.stdin:
             std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
             let file = dir.path().join("usr/bin/shell");
             std::fs::write(&file, b"old payload").unwrap();
-            let old = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+            let old = tilo_device_protocol::layer_hash::tree_hash(dir.path()).unwrap();
             std::fs::write(&file, b"new payload").unwrap();
             let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&old)).unwrap();
             assert!(!packed.reused);
             assert_ne!(packed.layer_hash.as_deref(), Some(old.as_str()));
-            let log = dir.path().join("calls");
-            let mut remote = cache_peer(&old, "valid", &log).unwrap();
+            let device = cache_peer(&old, "valid");
+            let mut remote = connect(&device);
             let mut stream = Stream::new(framed.as_slice());
             stream.header(&mut Vec::new()).unwrap();
-            assert_eq!(
-                deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
-                Delivery::Uploaded("fixture".into())
-            );
-            assert!(
-                std::fs::read_to_string(log)
-                    .unwrap()
-                    .contains("layer.upload.chunk")
-            );
+            let Delivery::Uploaded(put) =
+                deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap()
+            else {
+                panic!("changed content must be sent");
+            };
+            assert!(device.content.get(&put).is_some_and(|tar| !tar.is_empty()));
+            assert!(actions(&device).is_empty());
         }
 
         phase an_identical_layer_with_an_older_build_claim_is_sent_again;
@@ -714,10 +575,10 @@ for line in sys.stdin:
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
             std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
-            let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+            let hash = tilo_device_protocol::layer_hash::tree_hash(dir.path()).unwrap();
             let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
-            let log = dir.path().join("calls");
-            let mut remote = cache_peer(&hash, "stale-declaration", &log).unwrap();
+            let device = cache_peer(&hash, "stale-declaration");
+            let mut remote = connect(&device);
             let mut stream = Stream::new(framed.as_slice());
             stream.header(&mut Vec::new()).unwrap();
             let mut claim = claim();
@@ -734,11 +595,11 @@ for line in sys.stdin:
             let dir = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
             std::fs::write(dir.path().join("usr/bin/shell"), b"fixture payload").unwrap();
-            let hash = tilo_vm_protocol::layer_hash::tree_hash(dir.path()).unwrap();
+            let hash = tilo_device_protocol::layer_hash::tree_hash(dir.path()).unwrap();
             let (packed, framed) = framed_fixture(dir.path(), std::slice::from_ref(&hash)).unwrap();
             for mode in ["missing", "corrupt", "old", "wrong-component", "wrong-arch"] {
-                let log = dir.path().join(mode);
-                let mut remote = cache_peer(&hash, mode, &log).unwrap();
+                let device = cache_peer(&hash, mode);
+                let mut remote = connect(&device);
                 assert!(verified_layers(&mut remote, "shell").unwrap().is_empty());
                 let mut stream = Stream::new(framed.as_slice());
                 stream.header(&mut Vec::new()).unwrap();
@@ -746,11 +607,7 @@ for line in sys.stdin:
                     deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).unwrap(),
                     Delivery::Invalidated
                 );
-                assert!(
-                    !std::fs::read_to_string(log)
-                        .unwrap()
-                        .contains("layer.upload")
-                );
+                assert_eq!(device.content.len(), 0, "{mode}: nothing was sent");
             }
         }
 
@@ -782,9 +639,8 @@ for line in sys.stdin:
 
         phase remote_cache_refuses_missing_footer_and_unexpected_archive_data;
         {
-            let dir = tempfile::tempdir().unwrap();
-            let log = dir.path().join("calls");
-            let mut remote = cache_peer(&"a".repeat(64), "valid", &log).unwrap();
+            let device = cache_peer(&"a".repeat(64), "valid");
+            let mut remote = connect(&device);
             let packed = builderlayer::Packed {
                 reused: true,
                 layer_hash: Some("a".repeat(64)),
@@ -803,7 +659,8 @@ for line in sys.stdin:
             .unwrap();
             let mut stream = Stream::new(framed.as_slice());
             assert!(deliver_layer(&mut remote, &mut stream, &packed, "shell", &claim()).is_err());
-            assert_eq!(std::fs::read_to_string(log).unwrap(), "hello\n");
+            assert!(actions(&device).is_empty());
+            assert_eq!(device.content.len(), 0);
         }
     }
 

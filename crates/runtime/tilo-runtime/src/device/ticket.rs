@@ -492,16 +492,6 @@ impl Tickets {
             )
     }
 
-    /// What the issued certificate grants, as `args` names it: a member device, or one that
-    /// administers the person's others. The person who runs `tilo device add` chooses it; the
-    /// ticket the new computer brings carries no capability of its own.
-    fn capability(args: &Value) -> tilo_user_identity::DeviceCapabilities {
-        match args.get("capability").and_then(Value::as_str) {
-            Some("admin") => tilo_user_identity::DeviceCapabilities::administrator(),
-            _ => tilo_user_identity::DeviceCapabilities::member(),
-        }
-    }
-
     /// Take `request`, one of [`Self::answers`]' actions: its receipt.
     pub(crate) fn invoke(
         &self,
@@ -604,11 +594,11 @@ impl Tickets {
         // A device puts on a ticket only what it holds itself: the same rule every grant follows,
         // unless it holds the person's root, which certifies whatever the person approves. One
         // running on an operating system Tilo does not control adds computers as such.
-        let mut capability = Self::capability(args);
+        let mut capability = tilo_user_identity::DeviceCapabilities::member();
         capability.foreign |= capabilities.foreign;
         let root = (self.0.root)()?;
         if root.is_none() && !capability.grants_no_more_than(capabilities) {
-            bail!("this device isn't an administrator, so it can't add one");
+            bail!("this device holds less than the computer it would add, so it can't add one");
         }
         let root = root.ok_or_else(|| {
             anyhow!(

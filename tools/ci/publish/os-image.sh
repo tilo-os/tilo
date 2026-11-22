@@ -5,7 +5,7 @@
 # os-board-publish.sh pushes a board image from a trusted run on main.
 #
 #   os-image.sh dev ARCH IN OUT COMPILED
-#                                  the dev image (os/Containerfile.dev: tilo-vmd, sshd, the toolchain,
+#                                  the dev image (os/Containerfile.dev: the dev-VM tools, sshd, the toolchain,
 #                                  the dev-overrides components compiled in COMPILED by
 #                                  os/image/compile.sh --dev) FROM the OS image in IN (IN/oci), as
 #                                  an OCI layout in OUT/oci, its layers over the OS image's

@@ -2,7 +2,7 @@
 """Assemble the existing apps+runtime component in private final-path mounts.
 
 No OS/kernel build and no host /usr writes. The caller owns the normal native
-build admission. The result is only a staged component; tilo-vmd still owns
+build admission. The result is only a staged component; the device's steps still own
 source authority, import, activation and the slot lifecycle.
 """
 import argparse

@@ -193,7 +193,7 @@ the resume arrives and unlocks. I05-I08 are `calibrating`: their observables com
 code and have not yet been seen in a CI run, so a failure is **xfail** (with its reason) until
 the marker is removed. hwdb `KEYBOARD_KEY_` remaps need the real driver and are not covered.
 Capture a new profile from a device's `/sys/class/input/eventN/device/capabilities/*` and HID
-report descriptor (see `tools/tilo-vm-protocol/src/profile.rs`).
+report descriptor (see `crates/os/tilo-device-protocol/src/profile.rs`).
 
 Pull requests touching the input path, tilo-vm(d), the profiles or the MCP server run only
 these areas (`ci_select.py`).
@@ -378,7 +378,7 @@ store's token.
 | `idle.frames` | count | R01 | frames painted while still |
 | `idle.ram_mib` | MiB | R01 | guest `MemTotal - MemAvailable` with no app open |
 | `idle.ram_mib.{anon,shmem,kernel}` | MiB | R01 | `/proc/meminfo` AnonPages, Shmem and unreclaimable kernel memory (SUnreclaim, KernelStack, PageTables, SecPageTables, VmallocUsed, Percpu) |
-| `idle.ram_mib.harness`, `idle.ram_mib.installed` | MiB | R01 | anon + shmem + kernel of what only the dev VM runs (seat0's greeter, the dev image's sshd, tilo-device-admin and tilo-vmd units, root's ssh sessions); `idle.ram_mib` less it |
+| `idle.ram_mib.harness`, `idle.ram_mib.installed` | MiB | R01 | anon + shmem + kernel of what only the dev VM runs (seat0's greeter, the dev image's sshd, the device's step and tilo-vm units, root's ssh sessions); `idle.ram_mib` less it |
 | `memory.idle_mib.<bucket>`, `memory.idle_mib.unattributed` | MiB | R01 | anon + shmem + kernel per bucket of cgroups (`compositor`, `apps`, `session_services`, `system`, `greeter`, `harness`); the guest's that no process's cgroup is charged |
 | `idle.ram_mib.{reserve,untracked}` | MiB | R01 | what MemAvailable withholds (the zones' reserve from `/proc/zoneinfo`, and min(half, low watermarks) of the file LRU and reclaimable kernel memory); the rest, pages no meminfo counter names |
 | `memory.idle_anon_mib.<process>` | MiB | R01 | anonymous RSS of the ten largest process names, every user's |
@@ -776,13 +776,7 @@ is not its record instance. Unrelated existing pages publishing late do not
 become candidates, and missing/foreign launch associations fail without another
 Open or navigation of an existing page.
 
-When the published base disk uses a different management protocol, CI builds a
-second `tilo-vm` from that exact base commit. It creates and starts the throwaway
-VM with that client, then runs the ordinary `swap vmd --account vm --builder host`
-from the clean target checkout. The target client must read back the VM-wide
-management layer before any session is created. P01 records this explicit
-management swap even with `swap=none`; equal-protocol `swap=none` tests the base
-without a management swap. Failures abort P00 instead of relaxing the protocol
-check. For a local older fixture, pass `--bootstrap-tilo-vm <matching-client>`
-and `--bootstrap-from <clean-target-checkout>` together. This bootstrap uses
-the existing layer admission and activation path, and does not reboot.
+tilo-vm reaches the VM through the device daemon's actions and the step units
+its image ships (`tilo-device-<action>@.service`). A disk whose image has no
+such units cannot be driven by this client, and P00 fails on it; build a newer
+disk rather than bridging it with a layer swap.

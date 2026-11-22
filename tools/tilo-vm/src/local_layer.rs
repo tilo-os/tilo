@@ -6,8 +6,8 @@ use std::io::{Read, Seek, Write};
 use std::path::{Component, Path};
 
 use sha2::{Digest, Sha256};
-use tilo_vm_protocol::manifest::Manifest;
-use tilo_vm_protocol::{Provenance, layer_hash};
+use tilo_device_protocol::manifest::Manifest;
+use tilo_device_protocol::{Provenance, layer_hash};
 
 use crate::cli::LocalLayerImport;
 use crate::error::CliError;

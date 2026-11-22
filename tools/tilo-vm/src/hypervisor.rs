@@ -2,11 +2,12 @@
 //! stop, destroy, the SSH endpoint, and optional debugging for when SSH is not
 //! reachable. Adapters only build command lines; [`Runner`] executes them.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use serde::Serialize;
 
-use crate::config::VmEntry;
+use crate::config::{DirectKernel, VmEntry};
 use crate::error::CliError;
 use crate::image;
 use crate::sshkey;
@@ -251,11 +252,6 @@ pub trait Hypervisor {
     fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError>;
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
-    /// A power-button event can suspend an ARM guest rather than power it off.
-    /// Prefer an explicit guest shutdown when this adapter has that behaviour.
-    fn guest_shutdown_first(&self) -> bool {
-        false
-    }
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     fn ssh_endpoint(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Result<SshEndpoint, CliError>;
 
@@ -431,10 +427,6 @@ impl Hypervisor for Device {
         Vec::new()
     }
 
-    fn guest_shutdown_first(&self) -> bool {
-        true
-    }
-
     fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
         Vec::new()
     }
@@ -488,6 +480,39 @@ impl Libvirt {
         )
         .args_from(args)
     }
+}
+
+/// The systemd credentials a VM's device daemon reads: `tilo.port`, the UDP port it binds, which
+/// the hypervisor forwards a host port to; and, until the VM has joined, `tilo.ticket`, the
+/// `tilo device add` ticket it spends at its first boot to join this machine's person as one of
+/// their devices.
+pub fn device_credentials(ticket: Option<&str>) -> Vec<(&'static str, String)> {
+    let mut credentials = vec![("tilo.port", crate::config::DAEMON_PORT.to_string())];
+    credentials.extend(ticket.map(|ticket| ("tilo.ticket", ticket.to_owned())));
+    credentials
+}
+
+/// A credential as an SMBIOS type 11 OEM string.
+pub fn credential_smbios((name, value): &(&str, String)) -> String {
+    format!("io.systemd.credential:{name}={value}")
+}
+
+/// QEMU's arguments that pass the device credentials as SMBIOS type 11 OEM strings.
+pub fn smbios_args(ticket: Option<&str>) -> Vec<String> {
+    device_credentials(ticket)
+        .iter()
+        .flat_map(|credential| {
+            [
+                "-smbios".to_owned(),
+                format!("type=11,value={}", credential_smbios(credential)),
+            ]
+        })
+        .collect()
+}
+
+/// A credential on a kernel command line, for a VM booted from its kernel directly.
+pub fn credential_kernel((name, value): &(&str, String)) -> String {
+    format!("systemd.set_credential={name}:{value}")
 }
 
 pub fn domain_xml_path(disk: &str) -> String {
@@ -574,7 +599,7 @@ pub fn domain_xml_with_uuid(
   </os>
   <sysinfo type='smbios'>{system}
     <oemStrings>
-      <entry>{credential}</entry>
+      <entry>{credential}</entry>{device}
     </oemStrings>
   </sysinfo>
   <features>{features}</features>
@@ -589,6 +614,7 @@ pub fn domain_xml_with_uuid(
       <backend type='passt'/>
       <model type='virtio'/>
       <portForward proto='tcp'><range start='{port}' to='22'/></portForward>
+      <portForward proto='udp'><range start='{port}' to='{daemon}'/></portForward>
     </interface>
     <serial type='pty'/>
     <console type='pty'/>
@@ -626,6 +652,18 @@ pub fn domain_xml_with_uuid(
         cpus = vm.cpus(),
         arch = e(arch),
         credential = e(&sshkey::smbios_credential(root_key)),
+        device = device_credentials(vm.entry.ticket.as_deref()).iter().fold(
+            String::new(),
+            |mut entries, credential| {
+                let _ = write!(
+                    entries,
+                    "\n      <entry>{}</entry>",
+                    quick_xml::escape::escape(credential_smbios(credential))
+                );
+                entries
+            }
+        ),
+        daemon = crate::config::DAEMON_PORT,
         disk = e(vm.disk()?),
         port = vm.ssh_port(),
         video = video_model(vm.entry),
@@ -923,6 +961,9 @@ impl Hypervisor for Qemu {
                 "TILO_VM_ROOT_KEY_FILE",
                 sshkey::public_path(Path::new(key)).display().to_string(),
             );
+        }
+        if let Some(ticket) = &vm.entry.ticket {
+            command = command.env("TILO_VM_TICKET", ticket);
         }
         if vm.entry.emulated {
             command = command.env("TILO_ACCEL", "tcg");
@@ -1341,6 +1382,25 @@ impl Whpx {
         )
     }
 
+    /// A direct-kernel boot has no SMBIOS to read, so the root key and the device credentials
+    /// ride on the kernel command line.
+    fn kernel_cmdline(vm: &Vm<'_>, direct: &DirectKernel) -> String {
+        let mut cmdline = direct.cmdline.clone();
+        if let Some(public) = Self::public_key(vm) {
+            cmdline.push(' ');
+            cmdline.push_str(&sshkey::kernel_credential(&public));
+        }
+        for credential in device_credentials(vm.entry.ticket.as_deref()) {
+            cmdline.push(' ');
+            cmdline.push_str(&credential_kernel(&credential));
+        }
+        if let Some(partuuid) = &direct.loader_partuuid {
+            cmdline.push_str(" systemd.setenv=TILO_ROOT_LOADER_PARTUUID=");
+            cmdline.push_str(partuuid);
+        }
+        cmdline
+    }
+
     fn qemu_args(vm: &Vm<'_>) -> Vec<String> {
         let disk = vm.entry.disk.as_deref().unwrap_or_default();
         let code = vm.entry.firmware_code.as_deref().unwrap_or_default();
@@ -1364,22 +1424,13 @@ impl Whpx {
         ];
         args.extend(Self::uuid_args(vm));
         if let Some(direct) = &vm.entry.direct_kernel {
-            let mut cmdline = direct.cmdline.clone();
-            if let Some(public) = Self::public_key(vm) {
-                cmdline.push(' ');
-                cmdline.push_str(&sshkey::kernel_credential(&public));
-            }
-            if let Some(partuuid) = &direct.loader_partuuid {
-                cmdline.push_str(" systemd.setenv=TILO_ROOT_LOADER_PARTUUID=");
-                cmdline.push_str(partuuid);
-            }
             args.extend([
                 "-kernel".into(),
                 direct.kernel.clone(),
                 "-initrd".into(),
                 direct.initrd.clone(),
                 "-append".into(),
-                cmdline,
+                Self::kernel_cmdline(vm, direct),
             ]);
         } else {
             args.extend([
@@ -1419,7 +1470,11 @@ impl Whpx {
         }
         args.extend([
             "-netdev".into(),
-            format!("user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22", vm.ssh_port()),
+            format!(
+                "user,id=net0,hostfwd=tcp:127.0.0.1:{port}-:22,hostfwd=udp:127.0.0.1:{port}-:{}",
+                crate::config::DAEMON_PORT,
+                port = vm.ssh_port()
+            ),
             "-device".into(),
             Self::net_device(vm),
             "-serial".into(),
@@ -1501,6 +1556,9 @@ impl Hypervisor for Whpx {
                 format!("type=11,value={}", sshkey::smbios_credential(&public)),
             ]);
         }
+        if vm.entry.direct_kernel.is_none() {
+            args.extend(smbios_args(vm.entry.ticket.as_deref()));
+        }
         let args = args
             .iter()
             .map(|s| win_arg(s))
@@ -1530,10 +1588,6 @@ impl Hypervisor for Whpx {
 
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
         vec![Self::qmp(vm, "system_powerdown")]
-    }
-
-    fn guest_shutdown_first(&self) -> bool {
-        true
     }
 
     fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
@@ -1980,7 +2034,7 @@ mod tests {
                 );
                 assert!(args.windows(2).any(|p| p == [
                     "-append",
-                    "root=tilo-auto composefs=abc systemd.setenv=TILO_ROOT_LOADER_PARTUUID=fcdfc623-0563-4f91-9db8-f2b87b98b3ce"
+                    "root=tilo-auto composefs=abc systemd.set_credential=tilo.port:7703 systemd.setenv=TILO_ROOT_LOADER_PARTUUID=fcdfc623-0563-4f91-9db8-f2b87b98b3ce"
                 ]));
                 assert!(args.windows(2).any(|p| p == ["-display", "none"]));
                 assert!(

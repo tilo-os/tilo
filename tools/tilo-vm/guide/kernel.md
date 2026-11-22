@@ -62,11 +62,11 @@ CPUs, because the host usually runs other builds; `--jobs` or
 
 ## Into the VM
 
-1. The staged `usr/lib/modules/<release>/` is synced to the VM (rsync, only
-   what changed) and imported as a layer in the `vm` account: a new generation,
+1. The staged `usr/lib/modules/<release>/` goes to the VM as one layer blob
+   (sent only when the VM does not hold it) and is imported as a layer in the `vm` account: a new generation,
    like any VM-wide swap. systemd-sysext merges it, so the modules are in
    `/usr/lib/modules/<release>/`.
-2. tilo-vmd builds the initramfs in the VM with the image's own dracut,
+2. The VM's device steps build the initramfs with the image's own dracut,
    against those modules, with the arguments `os/Containerfile` builds the
    image's initramfs with, plus overlayfs loaded early (`--force-drivers
    overlay`: systemd-sysext needs it to merge the layer that carries it).
@@ -91,7 +91,7 @@ initramfs.
 ## Rolling back
 
 `tilo-vm rollback --account vm` moves the `vm` account to its previous generation.
-When that changes the kernel, tilo-vmd points the next boot at the previous
+When that changes the kernel, the device steps point the next boot at the previous
 kernel's entry (reusing its initramfs) or, back at the base generation,
 makes the image's entry the default again and removes every `tilo-vm-*`
 entry; tilo-vm reboots and confirms as above. After a direct boot, the same

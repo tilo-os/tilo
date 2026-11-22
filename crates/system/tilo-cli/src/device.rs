@@ -23,15 +23,6 @@ use tilo_user_identity::{DeviceCert, RevocationReason};
 use crate::api::{Client, Reach};
 use crate::login::{self, Device};
 
-/// What a computer added with a ticket becomes.
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub enum Adding {
-    /// An ordinary member device.
-    Member,
-    /// A device that administers the person's other devices.
-    Admin,
-}
-
 /// How long a revocation is waited for to show in the person's list.
 const REVOKED_WAIT: Duration = Duration::from_secs(20);
 
@@ -94,7 +85,6 @@ fn person_here() -> Result<(SigningKey, Device, crate::identity::Person)> {
 pub fn add(
     ticket: Option<&str>,
     json: bool,
-    adding: Adding,
     no_wait: bool,
     plan: Option<&str>,
     server: bool,
@@ -122,13 +112,8 @@ pub fn add(
             Some(device) => device.workspace.clone(),
             None => client.founded_workspace().await?,
         };
-        let capability = match adding {
-            Adding::Member => "member",
-            Adding::Admin => "admin",
-        };
         // A role the person did not ask for goes as null, which the daemon reads as none.
-        let args =
-            json!({ "capability": capability, "plan": plan, "server": server.then_some(true) });
+        let args = json!({ "plan": plan, "server": server.then_some(true) });
         let issued = client
             .act(
                 &workspace,
@@ -149,11 +134,7 @@ pub fn add(
             eprintln!("On the computer to add, run:");
             println!("tilo login {ticket}");
             eprintln!(
-                "The ticket works once, for 10 minutes. It adds the computer as {}.",
-                match adding {
-                    Adding::Member => "an ordinary device",
-                    Adding::Admin => "an administrator of your other devices",
-                }
+                "The ticket works once, for 10 minutes. It adds the computer as one of your devices."
             );
         }
         if no_wait {
@@ -358,6 +339,24 @@ fn short(cert: &DeviceCert) -> String {
 /// How a device is named in a list.
 fn named(device: &PersonalDevice) -> &str {
     device.name.as_deref().unwrap_or(&device.cert.device_label)
+}
+
+/// `tilo device key`: this computer's device key, its person and its label, from its login.
+///
+/// # Errors
+/// This computer is not logged in, or its login is damaged.
+pub fn key() -> Result<ExitCode> {
+    let here = login::load_public(&login::Place::here(crate::identity::paths())?)?
+        .ok_or_else(|| anyhow!(login::NOT_LOGGED_IN))?;
+    println!(
+        "{}",
+        json!({
+            "device": hex::encode(here.cert.device_public_key),
+            "identity": hex::encode(here.cert.user_public_key),
+            "label": here.cert.device_label,
+        })
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `tilo device ls`: the person's devices.

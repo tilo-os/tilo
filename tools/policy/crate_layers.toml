@@ -103,6 +103,10 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "a workspace one of the person's devices keeps is reached through that device's action service as a RemoteDevice provider, signed by the API key; it holds no engine state"
 
   [[rule.allow]]
+  package = "tilo-vm"
+  why = "a device's control actions are asked of that device's action service as a RemoteDevice provider, signed by this machine's login key; it holds no engine state"
+
+  [[rule.allow]]
   package = "tilo-portal"
   why = "the desktop portal answers a device's permission questions from the grants a workspace keeps, naming the DeviceGrants a person's answer holds; it holds no engine state and acts only through published actions"
 

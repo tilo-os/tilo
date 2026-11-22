@@ -604,7 +604,7 @@ def display_rects(state: dict) -> dict:
 
 # What the compositor publishes of its outputs for Settings and tools:
 # `$XDG_RUNTIME_DIR/tilo/display-state.json` (settings_store::hardware::
-# DisplayHardwareSnapshot; `tilo-vmd display-apply` lays a VM's monitors out through it).
+# DisplayHardwareSnapshot; `tilo-device-step display-apply` lays a VM's monitors out through it).
 DISPLAY_SNAPSHOT = "tilo/display-state.json"
 
 

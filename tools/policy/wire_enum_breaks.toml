@@ -363,7 +363,7 @@ file = "crates/dev/ui-graph/src/component.rs"
 enum = "Value"
 reason = "renames the Principal variant to Actor: the component catalogue is generated from the tree and read by the same build"
 [[break]]
-file = "tools/tilo-vm-protocol/src/lib.rs"
+file = "crates/os/tilo-device-protocol/src/lib.rs"
 enum = "Request"
 reason = "the account-slot variants are renamed at the same indexes; the request names are JSON-RPC between the tilo-vm CLI and its daemon, built and shipped together, so no older reader meets them"
 
@@ -699,3 +699,8 @@ reason = "the host-kept call frames go (`VoiceCall` to `VoiceShow`): being in a 
 file = "crates/browser/tilo-browser-runtime/src/peer_js_state.rs"
 enum = "JsVoiceEvent"
 reason = "the host's call events go with the host-kept calls: a page reads who is in a call from its presence. The events are JSON tagged by name, handed from the page's wasm to its own JavaScript of the same build, and kept nowhere"
+
+[[break]]
+file = "crates/os/tilo-device-protocol/src/lib.rs"
+enum = "LayerSource"
+reason = "a device-control action's argument, JSON by name, read once by the step that imports the layer and never kept. `Upload` named bytes sent in request lines to tilo-vmd, which is gone: a layer now arrives as a content blob the action names"

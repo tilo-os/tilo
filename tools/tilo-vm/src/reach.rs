@@ -4,11 +4,10 @@
 //! gone.
 
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::hypervisor::{CommandLine, Runner, SshEndpoint};
+use crate::hypervisor::{CommandLine, Runner};
 
 /// The UDP port magic packets go to (discard).
 pub const WAKE_PORT: u16 = 9;
@@ -16,8 +15,7 @@ pub const WAKE_PORT: u16 = 9;
 /// Read, as root, what reaching and waking the device needs: its hostname
 /// and, for the interface that holds `%ADDR%` (the address tilo-vm reached
 /// it at; else, as behind a forwarded port, the default route's), its MAC,
-/// subnet broadcast and magic-packet wake setting; and its route over the
-/// peer network (`tilo-device-admin id`), on a dev image that serves one.
+/// subnet broadcast and magic-packet wake setting.
 pub const NET_PROBE: &str = r#"addr=%ADDR%
 iface=$(ip -o addr show 2>/dev/null | awk -v a="$addr" '{split($4, p, "/"); if (p[1] == a) {print $2; exit}}')
 [ "$iface" != lo ] || iface=
@@ -42,9 +40,6 @@ else
   fi
 fi
 fi
-if command -v tilo-device-admin >/dev/null 2>&1; then
-  echo @@admin; tilo-device-admin id 2>/dev/null
-fi
 true"#;
 
 pub fn net_probe(host: &str) -> String {
@@ -63,7 +58,6 @@ pub struct NetFacts {
     pub hostname: Option<String>,
     pub mac: Option<String>,
     pub wake: Option<WakeInfo>,
-    pub peer: Option<crate::config::PeerRoute>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,18 +117,6 @@ impl WakeInfo {
     }
 }
 
-#[derive(Deserialize)]
-struct AdminId {
-    device: String,
-    endpoint: String,
-    #[serde(default)]
-    identity: Option<String>,
-    #[serde(default)]
-    relay: Option<String>,
-    #[serde(default)]
-    home_relay: Option<String>,
-}
-
 pub fn parse_net_probe(output: &str) -> NetFacts {
     let mut sections = output.split("@@");
     let head = sections.next().unwrap_or_default();
@@ -165,18 +147,7 @@ pub fn parse_net_probe(output: &str) -> NetFacts {
             phy: field("phy").filter(|_| wifi),
         }
     });
-    let peer = tool
-        .get("admin")
-        .and_then(|body| serde_json::from_str::<AdminId>(body.trim()).ok())
-        .map(|id| crate::config::PeerRoute {
-            device: id.device,
-            endpoint: id.endpoint,
-            identity: id.identity,
-            relay: id.relay,
-            home_relay: id.home_relay,
-        });
     NetFacts {
-        peer,
         hostname: field("hostname"),
         mac: field("mac")
             .filter(|mac| parse_mac(mac).is_some_and(|bytes| bytes != [0; 6]))
@@ -278,56 +249,6 @@ pub fn send_magic_packet(mac: [u8; 6], targets: &[Ipv4Addr]) -> std::io::Result<
     match (sent.is_empty(), last_error) {
         (true, Some(error)) => Err(error),
         _ => Ok(sent),
-    }
-}
-
-pub fn lost(detail: &str) -> bool {
-    let detail = detail.to_ascii_lowercase();
-    [
-        "no route to host",
-        "network is unreachable",
-        "host is unreachable",
-        "timed out",
-        "connection reset",
-        "broken pipe",
-    ]
-    .iter()
-    .any(|sign| detail.contains(sign))
-}
-
-/// Whether `detail` says nothing serves at the address: what a machine that took a device's
-/// recorded address answers with while the device is away.
-pub fn refused(detail: &str) -> bool {
-    detail.to_ascii_lowercase().contains("connection refused")
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Probe {
-    There,
-    Lost(String),
-    Unknown,
-}
-
-pub fn probe(
-    runner: &mut dyn Runner,
-    endpoint: &SshEndpoint,
-    key: Option<&str>,
-    timeout: Duration,
-) -> Probe {
-    let mut command = crate::remote::ssh_transport(endpoint, key, false);
-    let timeout = format!("ConnectTimeout={}", timeout.as_secs().max(1));
-    for argument in &mut command.args {
-        if argument.starts_with("ConnectTimeout=") {
-            argument.clone_from(&timeout);
-        }
-    }
-    command.args.push("true".into());
-    match runner.output(&command) {
-        Ok(output) if !output.success && lost(&output.stderr) => {
-            Probe::Lost(output.stderr.trim().to_owned())
-        }
-        Ok(_) => Probe::There,
-        Err(_) => Probe::Unknown,
     }
 }
 
@@ -471,27 +392,6 @@ mod tests {
             let line = net_probe("10.0.0.5");
             assert!(line.starts_with("addr=10.0.0.5; iface="), "{line}");
             assert!(!line.contains('\n') && !line.contains("then;"), "{line}");
-            assert!(line.contains("tilo-device-admin id"), "{line}");
-            let admin = parse_net_probe(concat!(
-                "hostname=yoga\n@@admin\n",
-                r#"{"device":"aa","endpoint":"bb","label":"Yoga","identity":"cc","relay":null,"home_relay":"https://relay.example/","serving":true}"#,
-                "\n"
-            ));
-            assert_eq!(admin.hostname.as_deref(), Some("yoga"));
-            assert_eq!(
-                admin.peer,
-                Some(crate::config::PeerRoute {
-                    device: "aa".into(),
-                    endpoint: "bb".into(),
-                    identity: Some("cc".into()),
-                    relay: None,
-                    home_relay: Some("https://relay.example/".into()),
-                })
-            );
-            assert_eq!(
-                parse_net_probe("hostname=vm\n@@admin\nnot json\n").peer,
-                None
-            );
         }
     }
 
@@ -563,132 +463,5 @@ mod tests {
             asked: Vec::new(),
         };
         assert_eq!(resolve(&mut runner, "yoga.local"), None);
-    }
-
-    struct SshProbe {
-        stderr: &'static str,
-        commands: Vec<CommandLine>,
-        interactive_called: bool,
-    }
-
-    impl Runner for SshProbe {
-        fn output(&mut self, command: &CommandLine) -> Result<Output, CliError> {
-            self.commands.push(command.clone());
-            Ok(Output {
-                success: self.stderr.is_empty(),
-                status: String::new(),
-                stdout: String::new(),
-                stderr: self.stderr.into(),
-            })
-        }
-
-        fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
-            self.interactive_called = true;
-            Err(CliError::ToolMissing {
-                tool: command.program.clone(),
-                purpose: "reachability must never request interactive authentication".into(),
-            })
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn reachability_is_authenticated_and_tells_refusal_from_loss;
-
-        phase reachability_authenticates_without_opening_an_unauthenticated_tcp_probe;
-        {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let endpoint = SshEndpoint {
-                host: "127.0.0.1".into(),
-                port: listener.local_addr().unwrap().port(),
-                user: "owner".into(),
-            };
-            let mut runner = SshProbe {
-                stderr: "",
-                commands: Vec::new(),
-                interactive_called: false,
-            };
-            for _ in 0..10 {
-                assert_eq!(
-                    probe(
-                        &mut runner,
-                        &endpoint,
-                        Some("/private/key"),
-                        Duration::from_secs(3)
-                    ),
-                    Probe::There
-                );
-            }
-            assert_eq!(runner.commands.len(), 10);
-            assert!(!runner.interactive_called);
-            for command in &runner.commands {
-                let mut expected = crate::remote::ssh_transport(&endpoint, Some("/private/key"), false);
-                for argument in &mut expected.args {
-                    if argument == "ConnectTimeout=10" {
-                        *argument = "ConnectTimeout=3".into();
-                    }
-                }
-                expected.args.push("true".into());
-                assert_eq!(command, &expected);
-                assert!(command.args.iter().any(|arg| arg == "BatchMode=yes"));
-                assert!(
-                    command
-                        .args
-                        .iter()
-                        .any(|arg| arg == "StrictHostKeyChecking=accept-new")
-                );
-                assert!(!command.args.iter().any(|arg| arg == "sudo" || arg == "-t"));
-            }
-            assert_eq!(
-                listener.accept().unwrap_err().kind(),
-                std::io::ErrorKind::WouldBlock
-            );
-        }
-
-        phase authenticated_reachability_keeps_refusals_distinct_from_network_loss;
-        {
-            let endpoint = SshEndpoint {
-                host: "device-alias".into(),
-                port: 22,
-                user: "owner".into(),
-            };
-            let mut runner = SshProbe {
-                stderr: "",
-                commands: Vec::new(),
-                interactive_called: false,
-            };
-            for detail in [
-                "Permission denied (publickey).",
-                "Host key verification failed.",
-                "ssh: connect to host x port 22: Connection refused",
-            ] {
-                runner.stderr = detail;
-                assert_eq!(
-                    probe(&mut runner, &endpoint, None, Duration::from_secs(3)),
-                    Probe::There
-                );
-            }
-            for detail in [
-                "ssh: connect to host x port 22: No route to host",
-                "ssh: connect to host x port 22: Connection timed out",
-            ] {
-                runner.stderr = detail;
-                assert_eq!(
-                    probe(&mut runner, &endpoint, None, Duration::from_secs(3)),
-                    Probe::Lost(detail.into())
-                );
-            }
-        }
-
-        phase a_lost_route_is_told_apart_from_a_refusal;
-        {
-            assert!(lost(
-                "ssh: connect to host 10.0.0.223 port 22: No route to host"
-            ));
-            assert!(lost("ssh: connect to host x port 22: Connection timed out"));
-            assert!(lost("connect to host x port 22: Network is unreachable"));
-            assert!(!lost("ssh: connect to host x port 22: Connection refused"));
-            assert!(!lost("Permission denied (publickey)."));
-        }
     }
 }

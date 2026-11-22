@@ -51,19 +51,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # The framework's own crates build the specs and trees a declaration
 # publishes: the declaration machinery and the toolkit's generated controls,
-# the session and window runtimes, the publisher, and the agent and browser
-# services that place what an app declared. Every other crate — an app, and
-# the SDK crates it builds its surfaces with — declares.
+# the session and window runtimes, the publisher, the agent and browser
+# services that place what an app declared, and the device daemon's control
+# provider, which publishes the steps its step program declares as data.
+# Every other crate — an app, and the SDK crates it builds its surfaces with —
+# declares.
 FRAMEWORK = (
     "crates/agent/agent-session",
     "crates/browser/tilo-browser-runtime",
     "crates/collab/actions",
     "crates/collab/automation",
     "crates/collab/collaboration",
-    "crates/dev/tilo-vmd",
     "crates/lang/tilolang",
     "crates/platform/tilo-app-window",
     "crates/platform/tilolang-tilo",
+    "crates/runtime/tilo-runtime/src/device/control",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-resource",
     "crates/sdk/ui-core",

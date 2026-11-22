@@ -22,7 +22,7 @@ UNIT_DIRS = (
     REPO / "os/usr/lib/systemd/system",
     REPO / "os/etc/systemd/system",
     REPO / "os/dev-image/usr/lib/systemd/system",
-    REPO / "crates/dev/tilo-vmd/data",
+    REPO / "crates/os/tilo-device-steps/data",
 )
 UNIT_SUFFIXES = (".service", ".target", ".socket", ".timer", ".path", ".mount")
 

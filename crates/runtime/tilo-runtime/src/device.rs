@@ -29,6 +29,8 @@ pub mod compute;
 #[cfg(target_os = "macos")]
 mod confirm;
 mod content;
+#[cfg(target_os = "linux")]
+pub mod control;
 mod host_runs;
 #[cfg(target_os = "linux")]
 pub mod package_runs;

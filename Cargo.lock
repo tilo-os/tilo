@@ -18975,32 +18975,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-device-admin"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "clap",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "hex",
- "iroh",
- "iroh-relay",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-clock",
- "tilo-device-identity",
- "tilo-files",
- "tilo-test-env",
- "tilo-user-identity",
- "tokio",
- "wire-frame",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
 name = "tilo-device-identity"
 version = "0.1.0"
 dependencies = [
@@ -19023,6 +18997,57 @@ dependencies = [
  "tilo-test-env",
  "tilo-user-identity",
  "tracing",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-device-protocol"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+ "toml 1.0.6+spec-1.1.0",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-device-steps"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "clap",
+ "hex",
+ "jiff",
+ "launcher",
+ "libc",
+ "onboarding-walk",
+ "os-actions",
+ "package-store",
+ "runtime-bundle",
+ "rustix 1.1.6",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-actions",
+ "tilo-advisory-lock",
+ "tilo-app-package",
+ "tilo-clock",
+ "tilo-device-identity",
+ "tilo-device-protocol",
+ "tilo-files",
+ "tilo-identity",
+ "tilo-test-env",
+ "toml 1.0.6+spec-1.1.0",
+ "uuid",
  "workspace-hack",
  "zeroize",
 ]
@@ -23083,9 +23108,13 @@ dependencies = [
 name = "tilo-vm"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
+ "blake3",
  "clap",
+ "ed25519-dalek 3.0.0",
  "hex",
+ "iroh",
  "jiff",
  "libc",
  "quick-xml 0.41.0",
@@ -23096,66 +23125,22 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
- "tilo-app-package",
- "tilo-clock",
- "tilo-files",
- "tilo-paths",
- "tilo-test-env",
- "tilo-vm-protocol",
- "toml 1.0.6+spec-1.1.0",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "tilo-vm-protocol"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.21",
- "toml 1.0.6+spec-1.1.0",
- "zeroize",
-]
-
-[[package]]
-name = "tilo-vmd"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "clap",
- "hex",
- "jiff",
- "launcher",
- "libc",
- "onboarding-walk",
- "os-actions",
- "package-store",
- "runtime-bundle",
- "rustix 1.1.6",
- "serde",
- "serde_json",
- "settings-store",
- "sha2 0.11.0",
- "tar",
- "tempfile",
- "thiserror 2.0.21",
  "tilo-actions",
- "tilo-advisory-lock",
  "tilo-app-package",
+ "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-device-identity",
+ "tilo-device-protocol",
  "tilo-files",
  "tilo-identity",
+ "tilo-paths",
+ "tilo-peer-state",
+ "tilo-rt",
+ "tilo-server-client",
  "tilo-test-env",
- "tilo-vm",
- "tilo-vm-protocol",
+ "tilo-user-identity",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
- "workspace-hack",
  "zeroize",
 ]
 
@@ -29175,8 +29160,9 @@ dependencies = [
  "tilo-desktop-policy",
  "tilo-desktop-search",
  "tilo-desktop-surface",
- "tilo-device-admin",
  "tilo-device-identity",
+ "tilo-device-protocol",
+ "tilo-device-steps",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-dictation",
@@ -29349,8 +29335,6 @@ dependencies = [
  "tilo-view-macros",
  "tilo-vision",
  "tilo-vm",
- "tilo-vm-protocol",
- "tilo-vmd",
  "tilo-wake",
  "tilo-wallpapers",
  "tilo-wasm-host",

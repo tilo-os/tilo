@@ -17,7 +17,7 @@
 #
 # The toolchain lives under /usr so it updates with the image (/usr/local is
 # /var/usrlocal on bootc, which an image update never touches), linked into
-# /usr/bin rather than behind rustup proxies: tilo-vmd runs in-VM builds with
+# /usr/bin rather than behind rustup proxies: the device's build step runs in-VM builds with
 # systemd's PATH, and without rustup nothing reinterprets rust-toolchain.toml.
 set -eu
 dev=/run/tilo-dev

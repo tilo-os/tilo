@@ -169,8 +169,8 @@ class DevImageContractTests(unittest.TestCase):
             self.assertIn("fix: remove it", errors[0])
         with self.subTest(phase='production build of a dev only bin fails'):
             root = self.fixture()
-            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-vmd ")
-            self.assertIn("bin 'tilo-vmd'", "\n".join(self.findings(root)))
+            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-vm ")
+            self.assertIn("bin 'tilo-vm'", "\n".join(self.findings(root)))
         with self.subTest(phase='production dev feature fails'):
             root = self.fixture()
             self.edit(root / "os/image/compile.sh", "--bin tilo-projector ",

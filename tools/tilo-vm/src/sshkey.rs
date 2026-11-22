@@ -96,13 +96,83 @@ pub fn kernel_credential(public: &str) -> String {
     )
 }
 
-pub fn install_command(endpoint: &SshEndpoint, public: &str) -> String {
-    format!(
-        "ssh -t -o StrictHostKeyChecking=accept-new -p {} {DEV_ACCOUNT}@{} 'sudo install -d -m 0700 /root/.ssh && echo {} | base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'",
-        endpoint.port,
-        endpoint.host,
-        encoded(public)
-    )
+/// The VM's own `known_hosts`, beside its key. Local VMs all answer on
+/// 127.0.0.1 with forwarded ports, and a recreated VM has new host keys, so
+/// one shared `~/.ssh/known_hosts` entry per port would refuse the next VM.
+pub fn known_hosts_path(key: &str) -> String {
+    format!("{key}.known_hosts")
+}
+
+pub fn ssh_args(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ServerAliveInterval=15",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    if interactive {
+        args.push("-t".into());
+    }
+    if let Some(key) = key {
+        args.extend([
+            "-o".into(),
+            format!("UserKnownHostsFile={}", known_hosts_path(key)),
+            "-i".into(),
+            key.to_owned(),
+        ]);
+    }
+    args.extend([
+        "-p".into(),
+        endpoint.port.to_string(),
+        format!("{}@{}", endpoint.user, endpoint.host),
+    ]);
+    args
+}
+
+/// `vm ssh`'s command line: the shell people open on a VM, as root. Nothing else tilo-vm
+/// does goes over SSH.
+pub fn ssh_command(
+    endpoint: &SshEndpoint,
+    key: Option<&str>,
+    remote: &[String],
+    interactive: bool,
+) -> CommandLine {
+    let mut command = ssh_transport(endpoint, key, interactive);
+    command.args.extend(as_root(endpoint, remote));
+    command
+}
+
+pub fn ssh_transport(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) -> CommandLine {
+    let program = std::env::var("TILO_VM_SSH").unwrap_or_else(|_| "ssh".into());
+    let mut command = CommandLine::new(&program, &[]);
+    command.args = ssh_args(endpoint, key, interactive);
+    command
+}
+
+/// A device usually lets only its owner's account in over SSH, so a shell there goes through
+/// `sudo`; ssh hands the remote words to the login shell joined by spaces, so the line runs as
+/// `sh -c` under sudo, and with no command it is a root login shell.
+pub fn as_root(endpoint: &SshEndpoint, remote: &[String]) -> Vec<String> {
+    if endpoint.user == "root" {
+        return remote.to_vec();
+    }
+    if remote.is_empty() {
+        return vec!["sudo".into(), "-i".into()];
+    }
+    vec![
+        "sudo".into(),
+        "-n".into(),
+        "--".into(),
+        "sh".into(),
+        "-c".into(),
+        crate::vmbuild::sh_quote(&remote.join(" ")),
+    ]
 }
 
 #[cfg(test)]
@@ -145,21 +215,6 @@ mod tests {
                 STANDARD.decode(encoded).unwrap(),
                 format!("{PUBLIC}\n").as_bytes()
             );
-        }
-
-        {
-            let endpoint = SshEndpoint {
-                user: "root".into(),
-                host: "192.168.64.5".into(),
-                port: 22,
-            };
-            let command = install_command(&endpoint, PUBLIC);
-            assert!(
-                command.starts_with("ssh -t -o StrictHostKeyChecking=accept-new -p 22 tester@192.168.64.5 'sudo install -d -m 0700 /root/.ssh && echo "),
-                "{command}"
-            );
-            assert!(command.contains(&encoded(PUBLIC)));
-            assert!(command.ends_with("| base64 -d | sudo tee -a /root/.ssh/authorized_keys >/dev/null && sudo restorecon -R /root/.ssh'"));
         }
 
         {

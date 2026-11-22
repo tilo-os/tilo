@@ -38,21 +38,20 @@ defaults to the one named after your branch. Components and their scope
 come from `os/components.toml`
 (`python3 os/scripts/install-components.py --list`).
 
-## This machine's own daemon (`--local`)
+## This machine's own device (`--local`)
 
-`--local` reaches the `tilo-vmd` of the machine it runs on as a child process,
-with no SSH and no dev-VM registry, so an installed server can apply layers at
-its first boot:
+`--local` reaches the device daemon of the machine it runs on like any other
+device: action frames to its own endpoint on loopback, signed with this
+machine's `tilo login` and admitted by the same grants. No dev-VM registry is
+involved:
 
 ```sh
-sudo tilo-vm --local import-layer server --archive server.tar \
+tilo-vm --local import-layer server --archive server.tar \
   --archive-sha256 <sha256> --provenance server.json --manifest /usr/share/tilo/components.toml
-sudo tilo-vm --local swap server --account vm --from layer:<hash>
+tilo-vm --local swap server --account vm --from layer:<hash>
 ```
 
-It needs root (`/usr/libexec/tilo/tilo-vmd`, the `vmd` component's path) and
-works with `import-layer`, `apply-incoming` and `swap --from layer:<hash>`; it
-builds nothing. `TILO_VM_LOCAL_DAEMON` names another daemon command.
+It works with `import-layer` and `swap --from layer:<hash>`; it builds nothing.
 
 ## Incoming layers
 
@@ -66,26 +65,22 @@ the machine's first boot. Each component is a pair:
   digest, target and toolchain). It stays a local, non-promotable layer.
 
 `tilo-vm layer-pack --component <name> --profile <profile> --incoming <dir>`
-writes exactly that pair. Then:
-
-```sh
-sudo tilo-vm --local apply-incoming          # --dir and --manifest default to the installed paths
-```
-
-Components apply in `os/components.toml` declaration order, each with the same
-checks `import-layer` and `swap` make: a `vm`-scope component goes into the
-`vm` account, a `session`-scope one into the `device` account, which merges it
-VM-wide. Each pair is removed once it applied, and one line per component
-(`applied <component> <layer> <account>`) is printed. A bad layer, a missing
-pair or an undeclared component stops the run and leaves what it had not
-applied in place; it never skips a layer. `tilo-vm-incoming.service`
+writes exactly that pair. At first boot `tilo-vm-incoming.service`
 (`ConditionDirectoryNotEmpty=/var/lib/tilo-vm/incoming`, ordered before
-`tilo-server.service`) runs the command on a dev image that ships it.
+`tilo-server.service`) runs the device's own step
+`tilo-device-step apply-incoming`, which needs no caller. Components
+apply in `os/components.toml` declaration order: a `vm`-scope component goes
+into the `vm` account, a `session`-scope one into the `device` account, which
+merges it VM-wide. Each pair is removed once it applied, and one line per
+component (`applied <component> <layer> <account>`) goes to the unit's log. A
+bad layer, a layer built for another machine, a missing pair or an undeclared
+component stops the run and leaves what it had not applied in place.
 
-## A daemon at another protocol
+## A device that predates a step
 
-Every operation requires the daemon's protocol to be the client's. A device
-whose daemon speaks another one is updated with its image (`tilo-vm vm upgrade`).
+A device whose image predates a step tilo-vm asks for answers that it has no
+such step; tilo-vm says so and names `tilo-vm vm upgrade`, which moves it onto
+a current image.
 
 ## Build profile
 
@@ -117,8 +112,10 @@ linker selection.
 
 `--builder vm` (default) works from every host:
 
-1. rsyncs the worktree into the VM (`/var/lib/tilo-vm/src/<worktree-id>/`),
-   honouring `.gitignore`; `.git` and `target/` stay behind;
+1. sends the worktree to the VM (`/var/lib/tilo-vm/src/<worktree-id>/`) as a
+   manifest of the tracked and untracked files `.gitignore` keeps, each named
+   by its hash, and only the files the VM does not hold yet; `.git` and
+   `target/` stay behind;
 2. runs there `cargo build --locked --profile <profile> -p <packages>
    --features <manifest features, dev_features, pkg/dev-overrides>` (see
    *Build profile* above) with the dev image's toolchain and the VM's shared
@@ -143,12 +140,12 @@ worktree, and two cargo runs filling it hand each other's binary back.
 `--builder host` builds with this host's cargo (or `TILO_VM_CARGO`, any cargo
 drop-in, such as one that builds on another machine) and uploads the layer. It
 needs a Linux host of the VM's architecture; macOS and Windows hosts use the
-VM builder. Without `--builder`, a VM image that lacks cargo, rsync or
+VM builder. Without `--builder`, a VM image that lacks cargo or
 python3 makes a Linux host build locally, with a warning before the build
 starts.
 
 `--builder remote` builds on a remote builder of the machine's architecture
-and streams the layer through this host into tilo-vmd's upload, so no binary
+and streams the layer through this host to the device as content, so no binary
 is ever written to this host's disk. The builder is any cargo drop-in whose
 `run` runs the program on a machine of that architecture, in this worktree,
 and preserves its framed base64 stdout:
@@ -157,8 +154,8 @@ and preserves its framed base64 stdout:
    tilo-vm's packer there: the same `cargo build` as above (its output
    streams here), then `os/scripts/install-components.py`, then the layer
    tar on stdout as base64 lines with its sha256;
-2. tilo-vm decodes those lines straight into the upload and checks the
-   sha256 and size before it imports. A remote `build` that brings its
+2. tilo-vm decodes those lines straight into the device's content store and
+   checks the sha256 and size before it imports. A remote `build` that brings its
    binaries back would put every one of them into `target/` instead;
 3. the layer records `builder = "remote"`, and the target and rustc read
    from the binary on the builder.
@@ -177,7 +174,7 @@ and refresh path. This avoids resetting live tasks on an exact repeat; it does
 not eliminate remote assembly time. For a small edit, swap just `tilo-session` or the
 app rather than rebuilding the whole userspace cohort.
 
-Older daemons without `layer.verify` also use that path. Cache loss during the
+Cache loss during the
 build causes one retry without reuse; a damaged existing content-addressed
 layer is refused rather than activated or silently overwritten. The first
 transfer is still required.
@@ -366,7 +363,7 @@ explicitly); otherwise it uses the `[remote_builders]` entry (`--builder remote`
 `--builder vm` is refused. The same `layer-pack` assembly runs either way, so
 the layer is identical and its provenance records `builder = host` or `remote`.
 Trust is never widened: the cohort is signed with an ephemeral key that is not
-exported, and tilo-vmd accepts it only after verifying the key pins carried in
+exported, and the device accepts it only after verifying the key pins carried in
 the layer, every signed package, the runtime ABI and the loader closure. Nothing
 is added to `/etc/tilo/runtime-bundle-trusted-publishers.txt`, and
 `launcher`/`package-service` keep ignoring `TILO_RUNTIME_BUNDLE_DIR` unless built with
@@ -385,9 +382,9 @@ components from that source before activating the cohort. These updates restart
 the selected session; a failure stops the remaining steps and is recorded in the
 normal receipt. Installed component pins must be root-owned and immutable;
 operator `/etc` trust remains effective. No OS image or kernel reboot is needed.
-Older dev images need the matching daemon once, through the normal VM component
-update (`tilo-vm swap vmd --account vm --builder remote`); a refused cohort leaves the
-existing apps/runtime active. Its receipt records any already applied session
+Older dev images need the matching device steps once, through the normal VM
+component update (`tilo-vm swap device-steps --account vm --builder
+remote`); a refused cohort leaves the existing apps/runtime active. Its receipt records any already applied session
 prerequisites.
 
 `swap app:terminal --builder remote` retains the ordinary app installer and its
@@ -429,31 +426,15 @@ packages and uploads its received binary
 and this worktree's mandatory startup companion. The account restarts through its
 normal PAM unit; no OS image rebuild, account reset or lock override is needed.
 
-### Updating the guest daemon
+### Updating the device steps
 
-`tilo-vm swap vmd --account vm --builder host --profile dev` imports the
-replacement through the existing authenticated route, then opens its RPC
-from that immutable imported layer before applying the normal generation
-transition. An already-running RPC process would keep executing its old
-mount-composition code even after its binary on disk was replaced. The
-handoff preserves its state root and configured RPC flags, checks the root
-and architecture in the new handshake, and records `daemon-handoff` and
-`applying_daemon_layer` in the receipt. A failed handoff applies no generation.
-
-When the VM's daemon speaks another protocol, no upload through it reaches
-the VM. `swap vmd` from a worktree then builds the layer for the VM's
-architecture, unpacks it over plain SSH into `vmd-bridge` under the state
-root, opens its RPC from there, and continues as above: that daemon imports
-the layer, hands off to it and applies the generation. The unpacked copy is
-removed once the imported daemon answers.
-
-This needs the existing SSH route; a peer-only connection reports a clear
-error before activation. No registered daemon command or access policy is
-changed. The update still restarts affected sessions through their normal
-units: checkpoint shared work and agree on a maintenance window first.
-Stand-in views include the candidate VM layers and their private identity
-environment before restarting; readiness still precedes committing the new
-generation, and failure uses the existing recovery path.
+`tilo-vm swap device-steps --account vm` puts a new build of
+`tilo-device-step`, which runs the device steps, in the `vm` account like any
+VM-wide component, and restarts the device's daemon so it offers the steps the
+new build declares. Each step runs as its own process
+from the image's merged `/usr`, so the next step runs the new build; nothing
+is handed off. The update still restarts affected sessions through their
+normal units: checkpoint shared work and agree on a maintenance window first.
 
 ### Repeating a host-built component swap
 
@@ -465,45 +446,16 @@ The receipt records `digest`, `layer_lookup`, `upload = "skipped"` and
 Changes to file bytes, executable bits or link targets require an upload;
 timestamps alone do not. This is whole-layer reuse, not a binary delta, so a
 wrapper-only change still uploads its newly assembled layer. Imported content
-must match the local digest before it can proceed to swap. A cache hit uses
-the existing RPC protocol and works with older compatible daemons.
+must match the local digest before it can proceed to swap.
 
 ### Layer transfer
 
-Component archives use the existing authenticated daemon connection. New clients
-on byte-transparent SSH/subprocess transports try the optional protocol-8 `layer.upload.binary` method. A ready response starts
-bounded raw chunks (at most 1 MiB each, 8 GiB total); a footer supplies the exact
-byte count and SHA-256. The final response must match the original request id
-and byte count. No per-chunk JSON, base64 or round-trip acknowledgement is needed.
-
-`layer-pack --binary` can produce binary framing for a byte-transparent caller.
-Automatic remote component builds retain base64 framing for compatibility
-with cargo drop-ins that present stdout as text. The SSH upload leg alone
-uses binary framing; binary builder output requires a byte-transparent
-transport.
-Source inventory, target, canonical content identity and signed-cohort checks are
-unchanged. Default `layer-pack` output remains the existing base64 format; its
-reader accepts either encoding. An older daemon that rejects the optional method
-before receiving archive bytes gets the existing serial base64 upload. Authority,
-version, I/O or integrity failures never trigger that fallback.
-The existing device-admin peer bridge retains serial JSON uploads and its
-per-request accounting; the client defaults to legacy framing unless a known
-byte-transparent transport explicitly enables binary uploads.
-
-A source failure sends a cancellation frame and drains the final response, so the
-same connection can continue. A partial transport failure poisons the connection;
-truncation or loss of framing closes the daemon stream. Interrupted, cancelled or
-corrupt binary uploads are removed before they can be imported. Import still
-validates and hashes the staged tree before atomically publishing it; applying or
-rolling back a generation uses the same paths.
-
-The isolated benchmark `cargo run --release -p tilo-vmd --example transport-bench -- PATH [--archive]` takes a representative
-executable path (packed once), or an existing archive with `--archive`, and measures
-legacy, production mixed and optional fully binary framing and
-actual daemon upload/import over private Unix sockets. It requires its artifact;
-missing input fails. It reports artifact identity, wire bytes, transport time and
-import time and checks equal imported content hashes. These measurements describe
-codec and daemon transport costs, not live SSH, VM or device performance.
+A layer, an app package or a worktree file goes to the device as content:
+tilo-vm first asks which hashes the device already holds, then sends each
+missing blob in bounded chunks over the same signed connection, and the
+device checks the blake3 hash of what arrived before it stores it. A step then
+names the blob by its hash. Interrupted puts leave nothing behind; import still
+validates and hashes the staged tree before atomically publishing it.
 
 Host-build receipts record `assemble`, `digest`, `layer_lookup`, `pack`,
 `transfer` and `import` separately. Use those phases to distinguish packaging,

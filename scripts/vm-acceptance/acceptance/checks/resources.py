@@ -417,9 +417,9 @@ GUEST_FIELDS = ("MemTotal", "MemAvailable", "AnonPages", "Shmem") + GUEST_KERNEL
 # and the dev image's services and the harness's own ssh sessions.
 VM_ONLY = ("greeter", "harness")
 BUCKETS = ("compositor", "apps", "session_services", "system") + VM_ONLY
-# Dev image only (os/Containerfile.dev): sshd, tilo-device-admin, tilo-vmd's units; and
+# Dev image only (os/Containerfile.dev): sshd, the device's step and tilo-vm units; and
 # root's sessions, which are the harness's ssh commands (this dump among them).
-HARNESS = re.compile(r"^/system\.slice/(sshd\.service|tilo-device-admin\.service|tilo-vm-[^/]*)(/|$)"
+HARNESS = re.compile(r"^/system\.slice/(sshd\.service|system-tilo\\x2ddevice\\x2d[^/]*|tilo-vm-[^/]*)(/|$)"
                      r"|^/user\.slice/user-0\.slice(/|$)")
 
 
@@ -723,7 +723,7 @@ def slope(values: list[float]) -> float | None:
 def guest_ram_used_mib(ctx) -> int:
     """The guest's memory in use, MemTotal less MemAvailable: what the running system
     holds and could not hand back without swapping. The dev VM's whole system: its
-    seat0 greeter, tilo-vmd and the account's session."""
+    seat0 greeter, the device's steps and the account's session."""
     out = ctx.vm.exec("awk '/^MemTotal:|^MemAvailable:/ {print $1, $2}' /proc/meminfo", check=False)
     kib = {line.split()[0].rstrip(":"): int(line.split()[1])
            for line in out.splitlines() if len(line.split()) == 2 and line.split()[1].isdigit()}

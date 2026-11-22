@@ -1,8 +1,9 @@
 //! Moving a running dev VM onto another image with bootc: this tree's dev
 //! image, built by t's `os-dev-image-<arch>` check (`vm upgrade --from local`,
 //! `image build`), a CI build (`--from ci:<tag>`) or any dev image from a
-//! registry. A built image travels as an OCI layout mirrored into the VM, so
-//! only new blobs cross; no registry and no daemon on the host.
+//! registry. A built image travels as an OCI layout whose blobs go to the
+//! device as content it does not have yet, so only new blobs cross; no
+//! registry and no daemon on the host.
 //!
 //! t is the one builder of dev images and disks: the checks that publish
 //! main's build it for this tree too, on a build server of the image's
@@ -14,17 +15,9 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::error::CliError;
-use crate::hypervisor::{CommandLine, SshEndpoint};
-use crate::vmbuild::sh_quote;
+use crate::hypervisor::CommandLine;
 
-/// The OCI layout in the VM that bootc switches to; in /var, so it survives
-/// the switch, and each upgrade only adds the blobs that changed.
-pub const VM_LAYOUT: &str = "/var/lib/tilo-vm/image";
 pub const LAYOUT_TAG: &str = "tilo-vm";
-pub fn layout_imgref() -> String {
-    format!("{VM_LAYOUT}:{LAYOUT_TAG}")
-}
-const LOCKS: &str = "/var/lib/tilo-vm/locks";
 
 /// Where `image build` and `vm upgrade --from local` leave t's outputs,
 /// relative to the worktree.
@@ -274,23 +267,6 @@ pub struct ImageFacts {
     pub base: Option<Value>,
 }
 
-/// Did bootc refuse a switch because the VM already boots that image? The
-/// same image can carry another manifest digest (compressed or not), which
-/// only bootc's composefs digest sees through.
-pub fn is_already_booted(bootc_stderr: &str) -> bool {
-    bootc_stderr.contains("same fs-verity digest as the existing Some(Booted) deployment")
-}
-
-/// Did the registry refuse bootc's pull for want of a login? A private
-/// image is then copied through this host, whose credentials never reach
-/// the VM.
-pub fn is_auth_failure(bootc_stderr: &str) -> bool {
-    let text = bootc_stderr.to_ascii_lowercase();
-    ["unauthorized", "authentication required", "denied: "]
-        .iter()
-        .any(|needle| text.contains(needle))
-}
-
 pub fn registry_export_command(
     image: &str,
     arch: &str,
@@ -321,20 +297,6 @@ pub fn registry_facts(inspect: &str) -> ImageFacts {
     facts_from_labels(value.get("Labels"))
 }
 
-/// bootc's refusal for want of space, as (free, needed) in its own units:
-/// `Insufficient free space for <image> (available: 2.3 GB required: 5.2 GB)`.
-pub fn insufficient_space(bootc_stderr: &str) -> Option<(String, String)> {
-    let (_, rest) = bootc_stderr.split_once("Insufficient free space for ")?;
-    let (_, rest) = rest.split_once("(available: ")?;
-    let (free, rest) = rest.split_once(" required: ")?;
-    let (needed, _) = rest.split_once(')')?;
-    Some((free.trim().to_owned(), needed.trim().to_owned()))
-}
-
-pub fn is_already_rollback(bootc_stderr: &str) -> bool {
-    bootc_stderr.contains("same fs-verity digest as the existing Some(Rollback) deployment")
-}
-
 pub fn is_layout(path: &Path) -> bool {
     path.join("oci-layout").is_file() && path.join("index.json").is_file()
 }
@@ -353,7 +315,7 @@ pub fn check_image(reference: &str, facts: &ImageFacts) -> Result<(), CliError> 
     if !is_dev_name(reference) {
         return Err(refused(
             reference,
-            "is not named as a dev image (localhost/tilo-vm:<tag> or registry.tilo.so/tilo/tilo-vm:<tag>); a production image is sealed and carries no sshd or tilo-vmd, and a VM must not be moved onto something that could be one",
+            "is not named as a dev image (localhost/tilo-vm:<tag> or registry.tilo.so/tilo/tilo-vm:<tag>); a production image is sealed and carries no sshd or device steps, and a VM must not be moved onto something that could be one",
             if reference.contains("/tilo:") || reference.contains("/tilo@") {
                 build.to_owned()
             } else {
@@ -421,404 +383,12 @@ pub fn check_base_age(
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Deployment {
-    pub image: String,
-    pub transport: String,
-    pub digest: String,
-    /// The composefs identity it boots (`composefs.verity`, without the
-    /// `sha512:` prefix), which is how its boot loader entry names it.
-    pub verity: Option<String>,
-}
-
-impl Deployment {
-    fn from(value: &Value) -> Option<Self> {
-        let image = value.get("image")?;
-        Some(Self {
-            image: image.pointer("/image/image")?.as_str()?.to_owned(),
-            transport: image
-                .pointer("/image/transport")
-                .and_then(Value::as_str)
-                .unwrap_or("registry")
-                .to_owned(),
-            digest: image.get("imageDigest")?.as_str()?.to_owned(),
-            verity: value
-                .pointer("/composefs/verity")
-                .and_then(Value::as_str)
-                .map(|v| v.strip_prefix("sha512:").unwrap_or(v))
-                .filter(|v| v.len() == 128 && v.bytes().all(|b| b.is_ascii_hexdigit()))
-                .map(str::to_owned),
-        })
-    }
-
-    /// `ref (sha256:0123456789ab)`.
-    pub fn describe(&self) -> String {
-        let reference = if self.transport == "registry" {
-            self.image.clone()
-        } else {
-            format!("{}:{}", self.transport, self.image)
-        };
-        format!("{reference} ({})", short_digest(&self.digest))
-    }
-}
-
-pub fn short_digest(digest: &str) -> &str {
-    digest.get(..19).unwrap_or(digest)
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BootcStatus {
-    pub spec: Option<(String, String)>,
-    pub booted: Option<Deployment>,
-    pub staged: Option<Deployment>,
-    pub rollback: Option<Deployment>,
-}
-
-pub fn parse_bootc_status(json: &str) -> Result<BootcStatus, String> {
-    let value: Value =
-        serde_json::from_str(json.trim()).map_err(|e| format!("bootc status --json: {e}"))?;
-    let spec = value.pointer("/spec/image").and_then(|image| {
-        Some((
-            image.get("image")?.as_str()?.to_owned(),
-            image
-                .get("transport")
-                .and_then(Value::as_str)
-                .unwrap_or("registry")
-                .to_owned(),
-        ))
-    });
-    let deployment = |key: &str| {
-        value
-            .pointer(&format!("/status/{key}"))
-            .filter(|v| !v.is_null())
-            .and_then(Deployment::from)
-    };
-    Ok(BootcStatus {
-        spec,
-        booted: deployment("booted"),
-        staged: deployment("staged"),
-        rollback: deployment("rollback"),
-    })
-}
-
-pub fn stage_command(status: &BootcStatus, transport: &str, imgref: &str) -> Vec<String> {
-    let follows = status
-        .spec
-        .as_ref()
-        .is_some_and(|(image, t)| image == imgref && t == transport);
-    let mut words = vec!["bootc".to_owned()];
-    if follows {
-        words.push("upgrade".into());
-    } else {
-        words.push("switch".into());
-        if transport != "registry" {
-            words.extend(["--transport".to_owned(), transport.to_owned()]);
-        }
-        words.push(imgref.to_owned());
-    }
-    words
-}
-
-/// A subshell that runs `bootc <words>` with the ESP writable. On the
-/// composefs backend bootc (1.16) mounts the ESP read-only at /boot through
-/// `systemd.mount-extra`, and then fails its own status, switch and rollback
-/// with "Mounting /dev/vda1: Device or resource busy": a second mount of a
-/// vfat superblock that is already mounted read-only cannot be read-write.
-/// So /boot is remounted read-write for the one command and read-only again
-/// after it, which leaves the VM as it was.
-pub fn bootc_line(words: &[&str]) -> String {
-    let command = words
-        .iter()
-        .map(|w| sh_quote(w))
-        .collect::<Vec<_>>()
-        .join(" ");
-    esp_writable_for(&format!("bootc {command}"))
-}
-
-fn esp_writable_for(command: &str) -> String {
-    format!(
-        "(ro=; if findmnt -n -o FSTYPE,OPTIONS /boot 2>/dev/null | grep -q '^vfat *ro,'; then ro=1; mount -o remount,rw /boot || exit 1; fi; {command}; rc=$?; [ -z \"$ro\" ] || mount -o remount,ro /boot; exit $rc)"
-    )
-}
-
-/// The device's update-channel helper: `update_command`'s first word.
-pub const UPDATE_CHANNEL: &str = "/usr/libexec/tilo-update-channel";
-
-pub fn update_command(pin: Option<&str>) -> Vec<String> {
-    let mut words = vec![UPDATE_CHANNEL.to_owned()];
-    words.extend(pin.map(str::to_owned));
-    words
-}
-
-fn update_line(pin: Option<&str>) -> String {
-    let (follow, direct) = match pin {
-        Some(image) => (
-            format!("{UPDATE_CHANNEL} pin {}", sh_quote(image)),
-            vec!["switch", image],
-        ),
-        None => (format!("{UPDATE_CHANNEL} unpin"), vec!["upgrade"]),
-    };
-    format!(
-        "if [ -x {UPDATE_CHANNEL} ]; then {follow} && {}; else {}; fi",
-        esp_writable_for("/usr/libexec/tilo-verified-update"),
-        bootc_line(&direct)
-    )
-}
-
-/// Leave the ESP writable until the next boot. bootc applies a staged
-/// composefs deployment at shutdown (`bootc-finalize-staged.service`), which
-/// mounts the ESP too and fails the same way as [`bootc_line`] describes; the
-/// VM then silently boots its old image again. The next boot mounts /boot
-/// read-only as before.
-pub const ESP_WRITABLE_UNTIL_BOOT: &str = "if findmnt -n -o FSTYPE,OPTIONS /boot 2>/dev/null | grep -q '^vfat *ro,'; then mount -o remount,rw /boot; fi";
-
-/// A remote shell line that runs `bootc <words>` under the VM lock, so no
-/// swap, gc or other upgrade runs meanwhile; exit 75 means another command
-/// holds it.
-pub fn under_vm_lock(words: &[String]) -> String {
-    let args: Vec<&str> = words.iter().map(String::as_str).skip(1).collect();
-    let line = if words.first().map(String::as_str) == Some(UPDATE_CHANNEL) {
-        update_line(args.first().copied())
-    } else {
-        bootc_line(&args)
-    };
-    format!(
-        "mkdir -p {LOCKS} && flock --nonblock --conflict-exit-code 75 {LOCKS}/vm.lock sh -c {}",
-        sh_quote(&line)
-    )
-}
-
-pub const BOOT_ENTRIES: &str = "if [ -x /usr/libexec/tilo-deployment ]; then /usr/libexec/tilo-deployment entries 2>&1; echo \"@@entries $?\"; else echo '@@entries absent'; fi";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EntriesOutcome {
-    Done,
-    /// The image's pass found no boot loader layout: an image from before
-    /// tilo-esp-generator mounts nothing at /boot or /boot/efi, so its pass
-    /// cannot see the ESP even where sd-boot started from one.
-    NoLayout,
-    Absent,
-    Failed(String),
-}
-
-pub fn parse_entries(output: &str) -> EntriesOutcome {
-    let status = output
-        .lines()
-        .rev()
-        .find_map(|line| line.trim().strip_prefix("@@entries "));
-    match status {
-        Some("absent") => EntriesOutcome::Absent,
-        Some("0") if output.contains("nothing to maintain") => EntriesOutcome::NoLayout,
-        Some("0") => EntriesOutcome::Done,
-        _ => EntriesOutcome::Failed(
-            output
-                .lines()
-                .filter(|line| !line.starts_with("@@entries"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-    }
-}
-
-/// How many tries a staged deployment gets; tilo-deployment's own default.
-pub const BOOT_TRIES: u32 = 3;
-
-/// For an image whose own pass cannot see the ESP ([`EntriesOutcome::NoLayout`]
-/// or [`EntriesOutcome::Absent`]): mount the ESP the boot loader started from
-/// (`LoaderDevicePartUUID`) in a private mount namespace and give the entry
-/// that boots `verity` its try counter, the same rename tilo-deployment does. The system
-/// holds that ESP read-only at /boot, and a second mount of it shares that read-only
-/// superblock: mount then falls back to read-only without failing, so the script makes it
-/// writable (until the next boot, as staging an image does) before renaming.
-/// The entry is found by the composefs identity it boots, never by name:
-/// bootc renumbers every entry when it stages one. Prints `@@counted N`, or
-/// `@@counter none` where no boot loader names an ESP (a VM started without
-/// systemd-boot), or `@@counter failed: WHY`.
-pub fn count_staged_entry_script(verity: &str) -> String {
-    let inner = format!(
-        r#"m=$(mktemp -d) || {{ echo '@@counter failed: no scratch directory'; exit 0; }}
-if ! mount -t vfat -o rw "/dev/disk/by-partuuid/$1" "$m" 2>/dev/null; then echo "@@counter failed: could not mount the ESP (PARTUUID $1) read-write"; exit 0; fi
-case ",$(findmnt -n -o OPTIONS "$m")," in *,ro,*) mount -o remount,rw "$m" 2>/dev/null || {{ umount "$m"; echo "@@counter failed: the ESP (PARTUUID $1) stays read-only"; exit 0; }} ;; esac
-n=0
-for f in "$m"/loader/entries.staged/bootc*.conf "$m"/loader/entries/bootc*.conf; do
-  [ -f "$f" ] || continue
-  case "${{f##*/}}" in *+*) continue ;; esac
-  u=$(sed -n 's/^uki[[:space:]]\{{1,\}}//p' "$f" | head -1)
-  if [ -n "$u" ]; then c=$(/usr/libexec/tilo-uki-cmdline show "$m/${{u#/}}" 2>/dev/null); else c=$(sed -n 's/^options[[:space:]]//p' "$f"); fi
-  printf '%s\n' "$c" | tr ' \t' '\n\n' | sed 's/^composefs=sha512:/composefs=/' | grep -qx 'composefs={verity}' || continue
-  mv "$f" "${{f%.conf}}+{BOOT_TRIES}.conf" || {{ umount "$m"; echo "@@counter failed: could not rename ${{f##*/}}"; exit 0; }}
-  n=$((n + 1))
-done
-sync
-umount "$m"; rmdir "$m"
-echo "@@counted $n""#
-    );
-    format!(
-        "p=$(tail -c +5 /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f 2>/dev/null | tr -d '\\000' | tr 'A-F' 'a-f'); \
-         case \"$p\" in ????????-????-????-????-????????????) ;; *) echo '@@counter none'; exit 0 ;; esac; \
-         unshare -m sh -c {} counter \"$p\"",
-        crate::vmbuild::sh_quote(&inner)
-    )
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Counted {
-    Entries(usize),
-    NoBootLoader,
-    Failed(String),
-}
-
-pub fn parse_counted(output: &str) -> Counted {
-    for line in output.lines().rev() {
-        let line = line.trim();
-        if let Some(n) = line.strip_prefix("@@counted ") {
-            return n
-                .parse()
-                .map_or_else(|_| Counted::Failed(line.to_owned()), Counted::Entries);
-        }
-        if line == "@@counter none" {
-            return Counted::NoBootLoader;
-        }
-        if let Some(why) = line.strip_prefix("@@counter failed: ") {
-            return Counted::Failed(why.to_owned());
-        }
-    }
-    Counted::Failed(format!("no answer: {}", output.trim()))
-}
-
-/// Printed in place of bootc's status when the VM has no bootc.
-const NO_BOOTC: &str = "@@nobootc";
-
-pub const BOOTC_PROBE: &str =
-    "if command -v bootc >/dev/null 2>&1; then echo bootc=yes; else echo bootc=no; fi";
-
-pub fn parse_bootc_probe(output: &str) -> Option<bool> {
-    output.lines().find_map(|line| match line.trim() {
-        "bootc=yes" => Some(true),
-        "bootc=no" => Some(false),
-        _ => None,
-    })
-}
-
-pub fn vm_facts_script() -> String {
-    format!(
-        "cat /proc/sys/kernel/random/boot_id; echo @@base; cat /usr/share/tilo-vm/base.json 2>/dev/null; echo; echo @@free; df -Pk /var | awk 'NR==2 {{print $4}}'; echo @@board; cat /usr/lib/tilo/hardware-profile.json 2>/dev/null; echo; echo @@bootc; if command -v bootc >/dev/null 2>&1; then {}; else echo {NO_BOOTC}; fi",
-        bootc_line(&["status", "--json"])
-    )
-}
-
-/// Why [`parse_vm_facts`] found no bootc status.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FactsError {
-    NoBootc,
-    /// bootc ran but said nothing usable, or the output is cut short.
-    Unreadable(String),
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct VmFacts {
-    pub boot_id: String,
-    pub base: Option<Value>,
-    pub free_bytes: Option<u64>,
-    /// The board the image was built for (`/usr/lib/tilo/hardware-profile.json`),
-    /// on a device running a board dev image.
-    pub board: Option<String>,
-    pub bootc: BootcStatus,
-}
-
-impl VmFacts {
-    pub fn arch(&self) -> Option<String> {
-        let target = self.base.as_ref()?.get("target")?.as_str()?;
-        target
-            .split('-')
-            .next()
-            .filter(|a| !a.is_empty())
-            .map(str::to_owned)
-    }
-}
-
-pub fn parse_vm_facts(output: &str) -> Result<VmFacts, FactsError> {
-    let cut = |what: &str| FactsError::Unreadable(what.to_owned());
-    let (boot, rest) = output
-        .split_once("@@base")
-        .ok_or_else(|| cut("no boot id"))?;
-    let (base, rest) = rest
-        .split_once("@@free")
-        .ok_or_else(|| cut("no base.json section"))?;
-    let (free, rest) = rest
-        .split_once("@@board")
-        .ok_or_else(|| cut("no free space section"))?;
-    let (board, bootc) = rest
-        .split_once("@@bootc")
-        .ok_or_else(|| cut("no hardware profile section"))?;
-    if bootc.trim() == NO_BOOTC {
-        return Err(FactsError::NoBootc);
-    }
-    Ok(VmFacts {
-        boot_id: boot.trim().to_owned(),
-        base: serde_json::from_str(base.trim()).ok(),
-        free_bytes: free
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .map(|kib| kib.saturating_mul(1024)),
-        board: serde_json::from_str::<Value>(board.trim())
-            .ok()
-            .and_then(|profile| profile.get("id")?.as_str().map(str::to_owned))
-            .filter(|id| !id.is_empty()),
-        bootc: parse_bootc_status(bootc).map_err(FactsError::Unreadable)?,
-    })
-}
-
 pub fn host_layout(vm: &str) -> PathBuf {
     tilo_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-vm")
         .join("images")
         .join(vm)
-}
-
-pub fn rsync_command(
-    layout: &Path,
-    endpoint: &SshEndpoint,
-    key: Option<&str>,
-) -> Result<CommandLine, CliError> {
-    let rsh = crate::vmbuild::rsync_rsh(endpoint, key)?;
-    let mut source = crate::vmbuild::rsync_source(layout);
-    if !source.ends_with('/') {
-        source.push('/');
-    }
-    Ok(CommandLine::new(
-        &crate::host::rsync_program().unwrap_or_else(|| "rsync".into()),
-        &["--archive", "--delete", "--whole-file", "--stats"],
-    )
-    .arg("--rsh")
-    .arg(rsh)
-    .arg("--rsync-path")
-    .arg(crate::remote::rsync_path_as_root(
-        endpoint,
-        &format!(
-            "mkdir -p {LOCKS} {VM_LAYOUT} && flock --nonblock --conflict-exit-code 75 {LOCKS}/image.lock rsync"
-        ),
-    ))
-    .arg(source)
-    .arg(format!("{}@{}:{VM_LAYOUT}/", endpoint.user, endpoint.host))
-    .env("LC_ALL", "C"))
-}
-
-pub fn rsync_sent_bytes(stats: &str) -> Option<u64> {
-    let line = stats
-        .lines()
-        .find(|l| l.trim_start().starts_with("Total transferred file size:"))?;
-    let digits: String = line
-        .split(':')
-        .nth(1)?
-        .split_whitespace()
-        .next()?
-        .chars()
-        .filter(char::is_ascii_digit)
-        .collect();
-    digits.parse().ok()
 }
 
 fn blob_path(layout: &Path, digest: &str) -> Option<PathBuf> {
@@ -929,7 +499,6 @@ pub fn layout_bytes(layout: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tilo_test_env::SpawnUnderEnvLock as _;
 
     use super::*;
 
@@ -1125,13 +694,6 @@ mod tests {
                 built_disk(out, "x86_64"),
                 Path::new("/w/target/tilo-vm/target/publish/os-dev-disk/x86_64/disk/disk.qcow2")
             );
-
-            assert!(is_already_booted(
-                "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment."
-            ));
-            assert!(!is_already_booted(
-                "error: Switching: pulling: connection refused"
-            ));
         }
 
         phase ci_upgrade_sources_resolve_to_published_dev_images;
@@ -1175,12 +737,6 @@ mod tests {
             }
 
             {
-                assert!(is_auth_failure(
-                    "error: Switching: pulling: reading manifest main-1a2b3c4-lenovo-83ed: unauthorized: authentication required"
-                ));
-                assert!(!is_auth_failure(
-                    "error: Switching: pulling: connection refused"
-                ));
                 let copy = registry_export_command(
                     "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed",
                     "aarch64",
@@ -1206,169 +762,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_guest_is_probed_and_the_image_staged_once;
+        fn built_images_are_read_and_their_layout_pruned;
 
-        phase bootcs_space_refusal_reads_as_plain_language;
+        phase a_layout_keeps_only_the_blobs_its_index_reaches;
         {
-            let stderr = "error: Switching: Composefs Switching: Performing Upgrade Operation: Insufficient free space for registry.tilo.so/tilo/tilo-vm:pr-4227-4ab5dcc-lenovo-83ed (available: 2.3 GB required: 5.2 GB)";
-            let (free, needed) = insufficient_space(stderr).unwrap();
-            assert_eq!((free.as_str(), needed.as_str()), ("2.3 GB", "5.2 GB"));
-            let error = CliError::NoSpace {
-                place: "VM yoga".into(),
-                free,
-                what: "the new OS image".into(),
-                needed,
-            };
-            assert_eq!(
-                error.to_string(),
-                "not enough space on VM yoga: the new OS image needs 5.2 GB, 2.3 GB is free"
-            );
-            assert!(error.hint().contains("reused"), "{}", error.hint());
-            assert_eq!(
-                insufficient_space("error: Switching: pulling: connection refused"),
-                None
-            );
-        }
-
-        phase guest_facts_are_probed_in_one_round_trip;
-        {
-            {
-                let status = parse_bootc_status(STATUS).unwrap();
-                assert_eq!(status.spec, Some((layout_imgref(), "oci".to_owned())));
-                assert_eq!(
-                    status.booted.as_ref().unwrap().digest,
-                    "sha256:1111111111111111111111"
-                );
-                assert_eq!(status.staged, None);
-                let rollback = status.rollback.unwrap();
-                assert_eq!(
-                    rollback.describe(),
-                    "localhost/tilo-vm:standin-a (sha256:222222222222)"
-                );
-                assert!(parse_bootc_status("not json").is_err());
-            }
-
-            {
-                let output = format!(
-                    "b00t\n@@base\n{{\"image_digest\":\"sha256:aa\",\"target\":\"aarch64-unknown-linux-gnu\"}}\n\n@@free\n1024\n@@board\n{{\"schema_version\":1,\"id\":\"lenovo-83ed\"}}\n@@bootc\n{STATUS}\n"
-                );
-                let facts = parse_vm_facts(&output).unwrap();
-                assert_eq!(facts.boot_id, "b00t");
-                assert_eq!(facts.board.as_deref(), Some("lenovo-83ed"));
-                assert_eq!(facts.arch().as_deref(), Some("aarch64"));
-                assert_eq!(facts.free_bytes, Some(1 << 20));
-                assert_eq!(text(facts.base.as_ref(), "image_digest"), Some("sha256:aa"));
-                assert!(facts.bootc.booted.is_some());
-                assert!(matches!(
-                    parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@board\n\n@@bootc\n"),
-                    Err(FactsError::Unreadable(_))
-                ));
-                assert_eq!(
-                    parse_vm_facts("b00t\n@@base\n\n@@free\n1\n@@board\n\n@@bootc\n@@nobootc\n")
-                        .unwrap_err(),
-                    FactsError::NoBootc
-                );
-            }
-
-            {
-                assert_eq!(parse_bootc_probe("bootc=yes\n"), Some(true));
-                assert_eq!(parse_bootc_probe("motd\nbootc=no\n"), Some(false));
-                assert_eq!(parse_bootc_probe(""), None);
-                assert!(BOOTC_PROBE.contains("command -v bootc"));
-            }
-        }
-
-        phase image_transfer_stages_once_and_prunes_only_unreachable_blobs;
-        {
-            {
-                let fresh = BootcStatus {
-                    spec: Some(("localhost/tilo-vm:standin-a".into(), "registry".into())),
-                    ..BootcStatus::default()
-                };
-                assert_eq!(
-                    stage_command(&fresh, "oci", &layout_imgref()).join(" "),
-                    "bootc switch --transport oci /var/lib/tilo-vm/image:tilo-vm"
-                );
-                let following = parse_bootc_status(STATUS).unwrap();
-                assert_eq!(
-                    stage_command(&following, "oci", &layout_imgref()).join(" "),
-                    "bootc upgrade"
-                );
-                assert_eq!(
-                    stage_command(&following, "registry", "registry.tilo.so/tilo/tilo-vm:x").join(" "),
-                    "bootc switch registry.tilo.so/tilo/tilo-vm:x"
-                );
-                let locked = under_vm_lock(&["bootc".into(), "upgrade".into()]);
-                assert!(
-                    locked.contains(
-                        "flock --nonblock --conflict-exit-code 75 /var/lib/tilo-vm/locks/vm.lock sh -c"
-                    ),
-                    "{locked}"
-                );
-                assert!(locked.contains("bootc upgrade; rc=$?"), "{locked}");
-                let pinned = under_vm_lock(&update_command(Some("registry.tilo.so/tilo/tilo-vm:x")));
-                assert!(
-                    pinned.contains("/usr/libexec/tilo-update-channel pin")
-                        && pinned.contains("/usr/libexec/tilo-verified-update; rc=$?")
-                        && pinned.contains("bootc switch"),
-                    "{pinned}"
-                );
-                let channel = under_vm_lock(&update_command(None));
-                assert!(
-                    channel.contains("/usr/libexec/tilo-update-channel unpin")
-                        && channel.contains("bootc upgrade"),
-                    "{channel}"
-                );
-                // bootc gets a writable ESP for the one command, and it is read-only again after.
-                let line = bootc_line(&["status", "--json"]);
-                assert!(line.contains("mount -o remount,rw /boot"), "{line}");
-                assert!(
-                    line.contains("mount -o remount,ro /boot; exit $rc)"),
-                    "{line}"
-                );
-                assert!(vm_facts_script().contains(&format!("then {line}; else echo @@nobootc; fi")));
-            }
-
-            {
-                let endpoint = SshEndpoint {
-                    user: "root".into(),
-                    host: "127.0.0.1".into(),
-                    port: 2223,
-                };
-                let rsync = rsync_command(Path::new("/c/dev"), &endpoint, Some("/k/id")).unwrap();
-                let text = rsync.display();
-                assert!(text.contains("--delete"), "{text}");
-                assert!(
-                    text.contains("/var/lib/tilo-vm/locks/image.lock rsync"),
-                    "{text}"
-                );
-                assert!(
-                    text.ends_with("/c/dev/ root@127.0.0.1:/var/lib/tilo-vm/image/"),
-                    "{text}"
-                );
-                assert_eq!(
-                    rsync_sent_bytes(
-                        "Number of files: 9\nTotal transferred file size: 12,345,678 bytes\n"
-                    ),
-                    Some(12_345_678)
-                );
-            }
-
-            #[cfg(windows)]
-            {
-                let endpoint = SshEndpoint {
-                    user: "root".into(),
-                    host: "127.0.0.1".into(),
-                    port: 2223,
-                };
-                let line =
-                    rsync_command(Path::new(r"C:\tilo-build\image-layout"), &endpoint, None).unwrap();
-                assert_eq!(
-                    line.args[line.args.len() - 2],
-                    "/c/tilo-build/image-layout/"
-                );
-            }
-
             {
                 let dir = tempfile::tempdir().unwrap();
                 let layout = dir.path();
@@ -1445,98 +842,6 @@ mod tests {
             flavour: Some("dev".into()),
             sealed: false,
             base: None,
-        }
-    }
-
-    const STATUS: &str = r#"{"apiVersion":"org.containers.bootc/v1","kind":"BootcHost",
-      "spec":{"image":{"image":"/var/lib/tilo-vm/image:tilo-vm","transport":"oci"},"bootOrder":"default"},
-      "status":{"staged":null,
-        "booted":{"image":{"image":{"image":"/var/lib/tilo-vm/image:tilo-vm","transport":"oci"},"imageDigest":"sha256:1111111111111111111111"},"pinned":false},
-        "rollback":{"image":{"image":{"image":"localhost/tilo-vm:standin-a","transport":"registry"},"imageDigest":"sha256:2222222222222222222222"}}}}"#;
-
-    tilo_test_env::scenario! {
-        fn the_staged_boot_entry_is_counted;
-
-        phase a_staged_deployment_names_the_composefs_identity_its_entry_boots;
-        {
-            let verity = "ab".repeat(64);
-            let json = format!(
-                r#"{{"status":{{"staged":{{"image":{{"image":{{"image":"registry.tilo.so/tilo/tilo-vm:x","transport":"registry"}},"imageDigest":"sha256:1"}},"composefs":{{"verity":"sha512:{verity}"}}}},"booted":{{"image":{{"image":{{"image":"a"}},"imageDigest":"sha256:0"}},"composefs":{{"verity":"short"}}}}}}}}"#
-            );
-            let status = parse_bootc_status(&json).unwrap();
-            assert_eq!(
-                status.staged.unwrap().verity.as_deref(),
-                Some(verity.as_str())
-            );
-            assert_eq!(
-                status.booted.unwrap().verity,
-                None,
-                "a malformed identity is no identity"
-            );
-        }
-
-        phase the_boot_entry_pass_says_whether_the_next_boot_is_counted;
-        {
-            assert_eq!(
-                parse_entries(
-                    "tilo-deployment: boot counter: bootc_x-1.conf gets 3 tries\n@@entries 0\n"
-                ),
-                EntriesOutcome::Done
-            );
-            assert_eq!(
-                parse_entries(
-                    "tilo-deployment: no systemd-boot layout — nothing to maintain\n@@entries 0\n"
-                ),
-                EntriesOutcome::NoLayout
-            );
-            assert_eq!(
-                parse_entries(
-                    "tilo-deployment: the ESP this machine started from (PARTUUID x) is not mounted and could not be mounted read-only; nothing to maintain\n@@entries 0\n"
-                ),
-                EntriesOutcome::NoLayout
-            );
-            assert_eq!(parse_entries("@@entries absent\n"), EntriesOutcome::Absent);
-            assert_eq!(
-                parse_entries("tilo-deployment: not a managed UKI entry: x\n@@entries 1\n"),
-                EntriesOutcome::Failed("tilo-deployment: not a managed UKI entry: x".into())
-            );
-            assert!(matches!(parse_entries(""), EntriesOutcome::Failed(_)));
-        }
-
-        phase the_staged_entry_is_counted_by_the_identity_it_boots_in_a_private_mount;
-        {
-            let verity = "cd".repeat(64);
-            let script = count_staged_entry_script(&verity);
-            assert!(script.contains("LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"));
-            assert!(script.contains("unshare -m sh -c"));
-            assert!(script.contains(&format!("composefs={verity}")));
-            assert!(script.contains("+3.conf"));
-            assert!(script.contains("entries.staged"));
-            assert!(
-                script.contains("remount,rw"),
-                "a read-only fallback mount is made writable: {script}"
-            );
-            assert_eq!(parse_counted("@@counted 1\n"), Counted::Entries(1));
-            assert_eq!(parse_counted("@@counted 0"), Counted::Entries(0));
-            assert_eq!(parse_counted("@@counter none\n"), Counted::NoBootLoader);
-            assert_eq!(
-                parse_counted("@@counter failed: could not mount the ESP (PARTUUID x) read-write\n"),
-                Counted::Failed("could not mount the ESP (PARTUUID x) read-write".into())
-            );
-            assert!(matches!(
-                parse_counted("sh: unshare: not found"),
-                Counted::Failed(_)
-            ));
-        }
-
-        phase the_counting_script_runs_in_a_shell;
-        {
-            let script = count_staged_entry_script(&"ef".repeat(64));
-            let status = std::process::Command::new("sh")
-                .args(["-n", "-c", &script])
-                .status_locked()
-                .unwrap();
-            assert!(status.success(), "{script}");
         }
     }
 }

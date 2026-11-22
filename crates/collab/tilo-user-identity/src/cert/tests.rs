@@ -76,7 +76,7 @@ tilo_test_env::scenario! {
 
     phase cert_round_trips_through_canonical;
     {
-        let (_root, cert) = fresh_cert(DeviceCapabilities::administrator());
+        let (_root, cert) = fresh_cert(DeviceCapabilities::primary());
         let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
         let back: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
         assert_eq!(cert, back);
@@ -110,7 +110,6 @@ tilo_test_env::scenario! {
                 can_own_workspaces: true,
                 can_admit_devices: false,
                 foreign: false,
-                can_administer_devices: false,
                 agent: None,
                 stand_in: false,
                 server_key: false,
@@ -160,10 +159,13 @@ tilo_test_env::scenario! {
 
         let s_primary = build(DeviceCapabilities::primary());
         let s_member = build(DeviceCapabilities::member());
-        let s_admin = build(DeviceCapabilities::administrator());
+        let s_foreign = build(DeviceCapabilities {
+            foreign: true,
+            ..DeviceCapabilities::member()
+        });
         assert_ne!(s_primary, s_member);
-        assert_ne!(s_member, s_admin);
-        assert_ne!(s_primary, s_admin);
+        assert_ne!(s_member, s_foreign);
+        assert_ne!(s_primary, s_foreign);
     }
 }
 
@@ -342,54 +344,13 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase administration_certificates_sign_their_flag;
-    // Administration round-trips in both encodings (alone and together with
-    // the foreign marker) and survives no flip of the flag.
+    phase extended_capabilities_refuse_bytes_that_need_no_extended_form_or_lack_their_scope;
     {
-        let native = golden_cert(false);
-        for foreign in [false, true] {
-            let admin = golden_cert_with(DeviceCapabilities {
-                foreign,
-                ..DeviceCapabilities::administrator()
-            });
-            verify_device_cert(&admin).unwrap();
-            assert_eq!(
-                device_cert_signing_digest(&admin).unwrap(),
-                signing_digest(DEVCERT_PREIMAGE_TAG, &admin.view()).unwrap()
-            );
-            let json = serde_json::to_string(&admin).unwrap();
-            assert!(json.contains(r#""can_administer_devices":true"#));
-            assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), admin);
-            let bytes = crate::canonical::canonical_bytes(&admin).unwrap();
-            let marker = 32 + 32 + 1 + "golden".len();
-            assert_eq!(bytes[marker], EXTENDED_BINARY_MARKER);
-            assert_eq!(
-                crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).unwrap(),
-                admin
-            );
-
-            let mut stripped = admin.clone();
-            stripped.capabilities.can_administer_devices = false;
-            assert_eq!(
-                verify_device_cert(&stripped).unwrap_err(),
-                DeviceCertError::BadSignature
-            );
-        }
-        let mut granted = native;
-        granted.capabilities.can_administer_devices = true;
-        assert_eq!(
-            verify_device_cert(&granted).unwrap_err(),
-            DeviceCertError::BadSignature
-        );
-    }
-
-    phase extended_capabilities_refuse_bytes_that_do_not_grant_administration;
-    {
-        let admin = golden_cert_with(DeviceCapabilities::administrator());
-        let bytes = crate::canonical::canonical_bytes(&admin).unwrap();
+        let stand_in = golden_cert_with(DeviceCapabilities::stand_in_approver());
+        let bytes = crate::canonical::canonical_bytes(&stand_in).unwrap();
         let marker = 32 + 32 + 1 + "golden".len();
-        assert_eq!(bytes[marker + 1], EXTENDED_ADMINISTER);
-        for extended in [0, EXTENDED_FOREIGN, 4] {
+        assert_eq!(bytes[marker + 1], EXTENDED_STAND_IN);
+        for extended in [0, EXTENDED_FOREIGN, EXTENDED_AGENT] {
             let mut changed = bytes.clone();
             changed[marker + 1] = extended;
             assert!(
@@ -397,6 +358,20 @@ tilo_test_env::scenario! {
                 "extended byte {extended}"
             );
         }
+    }
+
+    phase a_certificate_written_with_the_retired_administer_bit_reads_without_it;
+    {
+        let stand_in = golden_cert_with(DeviceCapabilities::stand_in_approver());
+        let bytes = crate::canonical::canonical_bytes(&stand_in).unwrap();
+        let marker = 32 + 32 + 1 + "golden".len();
+        let mut retired = bytes.clone();
+        retired[marker + 1] = EXTENDED_STAND_IN | 2;
+        let read = crate::canonical::from_canonical_bytes::<DeviceCert>(&retired).unwrap();
+        assert_eq!(read.capabilities, stand_in.capabilities);
+        let mut only_retired = bytes;
+        only_retired[marker + 1] = 2;
+        assert!(crate::canonical::from_canonical_bytes::<DeviceCert>(&only_retired).is_ok());
     }
 
     phase binary_capabilities_refuse_flag_bytes_other_than_zero_or_one;
@@ -773,7 +748,6 @@ tilo_test_env::scenario! {
             |c: &mut DeviceCapabilities| c.can_own_workspaces = true,
             |c: &mut DeviceCapabilities| c.can_admit_devices = true,
             |c: &mut DeviceCapabilities| c.foreign = true,
-            |c: &mut DeviceCapabilities| c.can_administer_devices = true,
             |c: &mut DeviceCapabilities| c.agent = Some(AgentScope::AllWorkspaces),
         ] {
             let mut widened = cert.clone();
@@ -952,7 +926,6 @@ fn a_stand_in_issues_nothing_beyond_its_bounds() {
     more.capabilities = DeviceCapabilities::primary();
     refused.push((more, &key));
     for caps in [
-        DeviceCapabilities::administrator(),
         DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
         DeviceCapabilities::stand_in_approver(),
     ] {
@@ -1077,7 +1050,6 @@ fn a_device_signs_a_browser_tab_in() {
     more.capabilities = DeviceCapabilities::primary();
     refused.push((more, &device_key));
     for caps in [
-        DeviceCapabilities::administrator(),
         DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
         DeviceCapabilities::stand_in_approver(),
     ] {

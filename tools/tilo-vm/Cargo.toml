@@ -14,6 +14,16 @@ name = "tilo-vm"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+ed25519-dalek.workspace = true
+iroh.workspace = true
+tilo-actions = { path = "../../crates/collab/actions" }
+tilo-device-identity = { path = "../../crates/collab/tilo-device-identity" }
+tilo-identity = { path = "../../crates/runtime/tilo-identity" }
+tilo-peer-state = { path = "../../crates/collab/tilo-peer-state" }
+tilo-rt.workspace = true
+tilo-server-client = { path = "../../crates/server/tilo-server-client" }
 quick-xml.workspace = true
 regex.workspace = true
 base64.workspace = true
@@ -30,7 +40,7 @@ tar.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
-tilo-vm-protocol = { path = "../tilo-vm-protocol" }
+tilo-device-protocol = { path = "../../crates/os/tilo-device-protocol" }
 toml.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
@@ -39,6 +49,9 @@ zeroize.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+tilo-automerge-isolate.workspace = true
+tilo-peer-state = { path = "../../crates/collab/tilo-peer-state", features = ["test-support"] }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 tilo-test-env = { path = "../test-env" }
 
 [lints]

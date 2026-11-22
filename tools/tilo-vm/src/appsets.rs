@@ -74,7 +74,7 @@ mod tests {
             assert!(!set.apps.is_empty(), "{} is empty", set.name);
             for app in &set.apps {
                 assert!(
-                    tilo_vm_protocol::valid_package_name(&app.package),
+                    tilo_device_protocol::valid_package_name(&app.package),
                     "{}",
                     app.package
                 );

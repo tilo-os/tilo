@@ -1,7 +1,7 @@
 //! Onboarding's first-login controls in the order a person goes through
 //! them, and the walk that presses them by name.
 //!
-//! Tools that need a session past its first login (tilo-vmd's
+//! Tools that need a session past its first login (tilo-device-step's
 //! `--identity device`, the legacy stream's headless shell) take the same
 //! path a person does instead of writing identity files themselves. They
 //! share this one walk, so a renamed or added onboarding control is fixed

@@ -67,29 +67,19 @@ An IP address is only a hint.
   failing on the first `No route to host`.
 - **Beyond the LAN** the peer network is the route: hole-punched QUIC with
   relay fallback and automatic reconnection, between devices that prove the
-  same identity. Typed actions already travel over it to an enrolled device as
-  signed remote-action frames. Admin traffic uses that same route as its own versioned
-  ALPN (`tilo-device-admin/1`), which carries the admin daemon's existing
-  request protocol, never a raw shell. It is accepted only from a
-  same-identity device whose certificate grants administration. A developer's
-  machine reaches devices this way by enrolling as one of the person's
-  devices, like any other.
-
-  The route is served by `tilo-device-admin.service` on dev images, a system
-  service rather than the session's endpoint, so a device at the greeter, or
-  one nobody has logged in to since boot, stays reachable. It shares the
-  device key: its endpoint id is derived from it, as tilo-server's is, since
-  one endpoint id published by two processes would take each other's relay
-  slot, and the device key proves who answers inside the handshake. Both
-  sides present their root-signed certificate and sign a challenge bound to
-  the QUIC connection's two endpoint ids. The device admits only a device of
-  its own identity whose certificate grants `can_administer_devices` and that
-  is not revoked, bridges the session to a fresh `tilo-vmd rpc`, and logs each
-  session and request to its journal. A developer's machine joins as one of
-  the person's devices with a ticket: `tilo device add --capability admin` on
-  the device that holds the identity prints it, and `tilo login` there spends
-  it, which also lists the machine among the person's devices, where Settings
-  can remove it (`tilo device vm enrol-admin`).
+  same identity. tilo-vm reaches a device the way every program does: it
+  invokes the device's actions as signed remote-action frames
+  (`tilo-actions/1`) on the device's own daemon. Each dev-VM step, from
+  `status` to `swap` and `build`, is one action on the resource
+  `devices/<device key>/vm`, and the daemon admits a call by the ordinary
+  grant check on that resource in the person's own workspace, like any other
+  action. The daemon runs each step as a templated systemd unit, so a device
+  at the greeter, or one nobody has logged in to since boot, stays reachable,
+  and its journal records each step. Layers and worktrees travel as content
+  on the same connection. A developer's machine joins as one of the person's
+  devices with a ticket: `tilo device add` on a device of theirs prints it,
+  and `tilo login` there spends it, which also lists the machine among the
+  person's devices, where Settings can remove it.
 
 ## Updating what it runs
 
@@ -205,8 +195,8 @@ runs the same enrolment (`tilo-auth sibling enrol --replace-networks`, or
 the slot, its certificate and the siblings, and seals the new networks the way
 the old ones were.
 
-The owner can enroll an already-open encrypted root over the existing
-authenticated device-admin route, using its declared semantic resource:
+The owner can enroll an already-open encrypted root through the device's
+actions, using its declared semantic resource:
 
 ```bash
 tilo device vm actions --device yoga list "disk unlock"
@@ -214,7 +204,7 @@ tilo device vm actions --device yoga invoke device-unlock enroll@device-unlock -
 ```
 
 The adapter carries the same action frames as the desktop's control socket.
-VMD publishes `ActionSpec`s and uses the shared catalogue and admission code;
+The device publishes `ActionSpec`s and uses the shared catalogue and admission code;
 it has no additional control socket. The invoke command reads a JSON object on
 private stdin, containing `passphrase` and optional saved `networks`. Obtain that input from a private producer;
 never put the disk passphrase in command arguments or shell history. The
@@ -222,7 +212,7 @@ passphrase is a `Secret` parameter and is absent from the encoded operation,
 resource catalogue, state and results.
 
 This operation requires the device owner's current signed-in session and the
-normal administrator certificate/transport admission. It derives the current
+ordinary grant check on the device's resource. It derives the current
 LUKS2 root and account from the host; callers cannot select a device path, key
 file, account, slot key or boot identity. The fixed enrollment helper receives
 the passphrase through a sealed anonymous descriptor. TPM sealing is required
@@ -231,7 +221,7 @@ network material. The chosen sealing mode is pinned before a slot is added;
 TPM failure does not fall back to cleartext. Failed registration still removes
 the new slot through the normal helper rollback path.
 
-The device must contain both the typed VMD action and the matching
+The device must contain both the typed device action and the matching
 `tilo-auth sibling enrol --require-tpm` helper. Enrollment needs an existing disk
 passphrase or recovery key; a login password does not acquire that authority.
 This does not enroll a locked disk or replace the existing early-boot approval

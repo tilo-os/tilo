@@ -1,0 +1,881 @@
+//! Accounts and their numbered generations under `<root>/accounts/<name>/`: `account.json`
+//! holds the owner, kind, current generation and seat, and `generations/<n>.json`
+//! the ordered layers and component map. Generation 0 is the implicit base.
+//! Generation files are immutable once written, and switching is one atomic rewrite
+//! of `account.json` done only after the new generation was applied, so a failed apply
+//! leaves the account on its previous generation and a retry does the whole transition
+//! again.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tilo_device_protocol::display::format_outputs;
+use tilo_device_protocol::{
+    AccountKind, ComponentInfo, DEVICE_ACCOUNT, Lease, OutputSpec, Owner, VM_ACCOUNT,
+    valid_account_name,
+};
+
+use crate::error::DaemonError;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountEntry {
+    pub name: String,
+    pub kind: AccountKind,
+    #[serde(default)]
+    pub owner: Owner,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub current: u64,
+    /// The vkms seat of a headful account, once allocated.
+    #[serde(default)]
+    pub seat: Option<String>,
+    /// Set while this account's session runs on seat0 instead of greetd.
+    #[serde(default)]
+    pub seat0: Option<Lease>,
+    /// Headful: the outputs its vkms card has, left to right; empty means one output at the
+    /// compositor's defaults.
+    #[serde(default)]
+    pub outputs: Vec<OutputSpec>,
+    /// The `device` account only: the machine's own session, as found when
+    /// the account was last loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceSession>,
+    /// Its user is this VM's person (`account create --identity device`): the session runs on the
+    /// machine's own identity tree, with no private root.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub device_identity: bool,
+}
+
+/// The machine's own session, which the `device` account swaps into: a board image's session for its
+/// account without a greeter, or on a laptop the owner's Tilo login through greetd on seat0.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSession {
+    /// The unit that runs it: the board session's system unit, the login's `session-<id>.scope`, or
+    /// `greetd.service` while the owner is logged out.
+    pub unit: String,
+    pub account: String,
+    /// Units `unit` starts for the session's own processes; they get the account's layers too.
+    #[serde(default)]
+    pub units: Vec<String>,
+    /// The compositor's control socket (`TILO_TEST_CONTROL`).
+    pub control_socket: PathBuf,
+    /// Set for a greetd login: its layers merge system-wide with `systemd-sysext`, and a swap
+    /// restarts its desktop in place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<Login>,
+}
+
+/// The owner's greetd login a laptop's `device` account is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Login {
+    /// The logind session; `None` while the owner is logged out.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// The session's `tilo-session`, which restarts the compositor on SIGUSR1; `None` while the
+    /// owner is logged out.
+    #[serde(default)]
+    pub wrapper: Option<u32>,
+}
+
+impl DeviceSession {
+    /// This login as it is while the owner is logged out: the layers still apply, and reach the
+    /// next login.
+    #[must_use]
+    pub fn logged_out(mut self) -> Self {
+        if self.login.is_some() {
+            self.unit = crate::apply::GREETER_UNIT.into();
+            self.login = Some(Login::default());
+        }
+        self
+    }
+}
+
+impl AccountEntry {
+    /// vkms connectors on this account's card.
+    pub fn connectors(&self) -> u32 {
+        u32::try_from(self.outputs.len()).unwrap_or(u32::MAX).max(1)
+    }
+}
+
+impl AccountEntry {
+    /// The user the account's session runs as: `tds-<account>`, the device session's account, or none for
+    /// the `vm` account.
+    pub fn user(&self) -> Option<String> {
+        match self.kind {
+            AccountKind::Vm => None,
+            AccountKind::Device => self.device.as_ref().map(|d| d.account.clone()),
+            AccountKind::Headful | AccountKind::Headless => Some(format!("tds-{}", self.name)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Entry {
+    pub layer: String,
+    pub info: ComponentInfo,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Generation {
+    pub number: u64,
+    /// Stacking order, bottom first: the last `ExtensionDirectories=` entry wins.
+    pub layers: Vec<String>,
+    pub components: BTreeMap<String, Entry>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+pub struct AccountStore {
+    dir: PathBuf,
+}
+
+pub fn now() -> String {
+    format!("{:.0}", jiff::Timestamp::now())
+}
+
+impl AccountStore {
+    pub fn new(root: &Path) -> Self {
+        Self {
+            dir: root.join("accounts"),
+        }
+    }
+
+    fn record_path(&self, name: &str) -> PathBuf {
+        self.dir.join(name).join("account.json")
+    }
+
+    fn generation_path(&self, name: &str, number: u64) -> PathBuf {
+        self.dir
+            .join(name)
+            .join("generations")
+            .join(format!("{number}.json"))
+    }
+
+    fn check_name(name: &str) -> Result<(), DaemonError> {
+        if name == VM_ACCOUNT || valid_account_name(name) {
+            Ok(())
+        } else {
+            Err(DaemonError::InvalidName(name.to_owned()))
+        }
+    }
+
+    /// Create an account, or return the existing one when it matches.
+    pub fn create(
+        &self,
+        name: &str,
+        kind: AccountKind,
+        owner: Owner,
+        outputs: &[OutputSpec],
+    ) -> Result<(AccountEntry, bool), DaemonError> {
+        if name == VM_ACCOUNT || kind == AccountKind::Vm {
+            return Err(DaemonError::ReservedName(name.to_owned()));
+        }
+        if name == DEVICE_ACCOUNT || kind == AccountKind::Device {
+            return Err(DaemonError::DeviceAccount("created".into()));
+        }
+        Self::check_name(name)?;
+        if !outputs.is_empty() {
+            if kind != AccountKind::Headful {
+                return Err(DaemonError::OutputsNeedHeadful(name.to_owned()));
+            }
+            tilo_device_protocol::display::validate_outputs(outputs)
+                .map_err(DaemonError::BadOutputs)?;
+        }
+        if let Some(existing) = self.try_load(name)? {
+            if existing.kind != kind {
+                return Err(DaemonError::AccountKindConflict {
+                    name: name.to_owned(),
+                    kind: existing.kind.as_str().into(),
+                });
+            }
+            if existing.outputs != outputs {
+                return Err(DaemonError::AccountOutputsConflict {
+                    name: name.to_owned(),
+                    outputs: if existing.outputs.is_empty() {
+                        "one default output".into()
+                    } else {
+                        format_outputs(&existing.outputs)
+                    },
+                });
+            }
+            return Ok((existing, false));
+        }
+        let record = AccountEntry {
+            name: name.to_owned(),
+            kind,
+            owner,
+            created_at: now(),
+            current: 0,
+            seat: None,
+            seat0: None,
+            outputs: outputs.to_vec(),
+            device: None,
+            device_identity: false,
+        };
+        self.save(&record)?;
+        Ok((record, true))
+    }
+
+    /// Load an account; the `vm` pseudo-account always exists, and the `device` pseudo-account exists
+    /// wherever the machine's own session is given, recorded in it.
+    ///
+    /// # Errors
+    ///
+    /// [`DaemonError::AccountNotFound`], [`DaemonError::NoDeviceSession`] and I/O failures.
+    pub fn load_with(
+        &self,
+        name: &str,
+        device: Option<DeviceSession>,
+    ) -> Result<AccountEntry, DaemonError> {
+        Self::check_name(name)?;
+        if name == DEVICE_ACCOUNT {
+            let stored = self.try_load(name)?;
+            // A laptop's account outlives the owner's login, so a swap that broke the desktop can
+            // still be rolled back from the greeter.
+            let device = device
+                .or_else(|| {
+                    let device = stored.as_ref()?.device.clone()?;
+                    device.login.is_some().then(|| device.logged_out())
+                })
+                .ok_or(DaemonError::NoDeviceSession)?;
+            let mut record = stored.unwrap_or_else(|| AccountEntry {
+                name: DEVICE_ACCOUNT.into(),
+                kind: AccountKind::Device,
+                owner: Owner::default(),
+                created_at: now(),
+                current: 0,
+                seat: None,
+                seat0: None,
+                outputs: Vec::new(),
+                device: None,
+                device_identity: false,
+            });
+            record.device = Some(device);
+            return Ok(record);
+        }
+        if let Some(record) = self.try_load(name)? {
+            return Ok(record);
+        }
+        if name == VM_ACCOUNT {
+            return Ok(AccountEntry {
+                name: VM_ACCOUNT.into(),
+                kind: AccountKind::Vm,
+                owner: Owner::default(),
+                created_at: now(),
+                current: 0,
+                seat: None,
+                seat0: None,
+                outputs: Vec::new(),
+                device: None,
+                device_identity: false,
+            });
+        }
+        Err(DaemonError::AccountNotFound(name.to_owned()))
+    }
+
+    /// [`Self::load_with`] for a machine without a session of its own.
+    ///
+    /// # Errors
+    /// As [`Self::load_with`].
+    pub fn load(&self, name: &str) -> Result<AccountEntry, DaemonError> {
+        self.load_with(name, None)
+    }
+
+    /// The account as recorded on disk, if it is.
+    pub fn stored(&self, name: &str) -> Result<Option<AccountEntry>, DaemonError> {
+        self.try_load(name)
+    }
+
+    fn try_load(&self, name: &str) -> Result<Option<AccountEntry>, DaemonError> {
+        match fs::read(self.record_path(name)) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| DaemonError::Io {
+                    context: format!("parse account {name}"),
+                    source: std::io::Error::other(e),
+                }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(DaemonError::io(format!("read account {name}"))(e)),
+        }
+    }
+
+    /// # Errors
+    /// I/O failures.
+    pub fn save(&self, record: &AccountEntry) -> Result<(), DaemonError> {
+        let bytes = serde_json::to_vec_pretty(record)
+            .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+        let path = self.record_path(&record.name);
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+            .map_err(DaemonError::io(format!("write {}", path.display())))
+    }
+
+    /// Every account on disk, sorted by name.
+    pub fn list(&self) -> Result<Vec<AccountEntry>, DaemonError> {
+        let mut out = Vec::new();
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return Ok(out);
+        };
+        for entry in entries {
+            let name = entry
+                .map_err(DaemonError::io("list accounts"))?
+                .file_name()
+                .to_string_lossy()
+                .into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            if let Some(record) = self.try_load(&name)? {
+                out.push(record);
+            }
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    /// Remove an account's state; `false` when it did not exist.
+    pub fn remove(&self, name: &str) -> Result<bool, DaemonError> {
+        let dir = self.dir.join(name);
+        if !dir.exists() {
+            return Ok(false);
+        }
+        // Rename first, so a half-finished removal is never mistaken for an account.
+        let doomed = self
+            .dir
+            .join(format!(".rm-{name}-{}", uuid::Uuid::new_v4().simple()));
+        fs::rename(&dir, &doomed).map_err(DaemonError::io(format!("remove account {name}")))?;
+        fs::remove_dir_all(&doomed).map_err(DaemonError::io(format!("remove account {name}")))?;
+        Ok(true)
+    }
+
+    /// Generation `number`, 0 being the empty base.
+    /// # Errors
+    /// [`DaemonError::GenerationNotFound`] and I/O failures.
+    pub fn generation(&self, name: &str, number: u64) -> Result<Generation, DaemonError> {
+        if number == 0 {
+            return Ok(Generation::default());
+        }
+        match fs::read(self.generation_path(name, number)) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| DaemonError::Io {
+                context: format!("parse generation {number} of {name}"),
+                source: std::io::Error::other(e),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(DaemonError::GenerationNotFound {
+                    account: name.to_owned(),
+                    generation: number,
+                })
+            }
+            Err(e) => Err(DaemonError::io(format!(
+                "read generation {number} of {name}"
+            ))(e)),
+        }
+    }
+
+    /// Recorded generation numbers, ascending.
+    pub fn generations(&self, name: &str) -> Vec<u64> {
+        let mut numbers: Vec<u64> = fs::read_dir(self.dir.join(name).join("generations"))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let file = entry.ok()?.file_name().to_string_lossy().into_owned();
+                file.strip_suffix(".json")?.parse().ok()
+            })
+            .collect();
+        numbers.sort_unstable();
+        numbers
+    }
+
+    /// Write the generation that results from putting `layer` in place of `component`'s current
+    /// layer; `None` when that is already current. The account keeps its current generation until
+    /// [`Self::set_current`].
+    pub fn prepare_swap(
+        &self,
+        record: &AccountEntry,
+        component: &str,
+        layer: &str,
+        info: ComponentInfo,
+    ) -> Result<Option<(Generation, Generation)>, DaemonError> {
+        let from = self.generation(&record.name, record.current)?;
+        let mut to = from.clone();
+        let entry = Entry {
+            layer: layer.to_owned(),
+            info,
+        };
+        match to.components.insert(component.to_owned(), entry.clone()) {
+            Some(previous) if previous == entry => return Ok(None),
+            Some(previous) => {
+                for account in &mut to.layers {
+                    if *account == previous.layer {
+                        layer.clone_into(account);
+                    }
+                }
+            }
+            None => to.layers.push(layer.to_owned()),
+        }
+        to.layers.dedup();
+        to.number = self
+            .generations(&record.name)
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        to.created_at = now();
+        to.reason = format!("swap {component} {layer}");
+        let bytes = serde_json::to_vec_pretty(&to)
+            .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+        let path = self.generation_path(&record.name, to.number);
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+            .map_err(DaemonError::io(format!("write {}", path.display())))?;
+        Ok(Some((from, to)))
+    }
+
+    /// Prepare all admitted members as one generation. This is called while
+    /// holding the account lock, after every import and scope was verified.
+    pub(crate) fn prepare_userspace(
+        &self,
+        record: &AccountEntry,
+        members: &[(String, Entry)],
+    ) -> Result<(Generation, Generation), DaemonError> {
+        self.userspace_generation(record, members, true)
+    }
+
+    pub(crate) fn userspace_preview(
+        &self,
+        record: &AccountEntry,
+        members: &[(String, Entry)],
+    ) -> Result<Generation, DaemonError> {
+        self.userspace_generation(record, members, false)
+            .map(|(_, to)| to)
+    }
+
+    fn userspace_generation(
+        &self,
+        record: &AccountEntry,
+        members: &[(String, Entry)],
+        publish: bool,
+    ) -> Result<(Generation, Generation), DaemonError> {
+        let from = self.generation(&record.name, record.current)?;
+        let mut to = from.clone();
+        if let Some(retained) = to.components.remove("runtime-retention") {
+            to.layers.retain(|hash| hash != &retained.layer);
+        }
+        for (name, entry) in members {
+            match to.components.insert(name.clone(), entry.clone()) {
+                Some(previous) => {
+                    for layer in &mut to.layers {
+                        if *layer == previous.layer {
+                            layer.clone_from(&entry.layer);
+                        }
+                    }
+                }
+                None => to.layers.push(entry.layer.clone()),
+            }
+        }
+        to.layers.dedup();
+        to.number = self
+            .generations(&record.name)
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| DaemonError::InvalidParams("generation exhausted".into()))?;
+        to.created_at = now();
+        to.reason = "matched userspace cohort".into();
+        let bytes = serde_json::to_vec_pretty(&to)
+            .map_err(|error| DaemonError::InvalidParams(error.to_string()))?;
+        if publish {
+            let path = self.generation_path(&record.name, to.number);
+            tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+                .map_err(DaemonError::io(format!("write {}", path.display())))?;
+        }
+        Ok((from, to))
+    }
+
+    /// The transition a rollback makes: to `to`, or the newest generation older than the current
+    /// one, the base when none is recorded.
+    pub fn rollback_target(
+        &self,
+        record: &AccountEntry,
+        to: Option<u64>,
+    ) -> Result<(Generation, Generation), DaemonError> {
+        let from = self.generation(&record.name, record.current)?;
+        let target = match to {
+            Some(number) => number,
+            None if record.current == 0 => {
+                return Err(DaemonError::NoEarlierGeneration(record.name.clone()));
+            }
+            None => self
+                .generations(&record.name)
+                .into_iter()
+                .rev()
+                .find(|n| *n < record.current)
+                .unwrap_or(0),
+        };
+        Ok((from, self.generation(&record.name, target)?))
+    }
+
+    /// # Errors
+    /// I/O failures.
+    pub fn set_current(&self, record: &mut AccountEntry, number: u64) -> Result<(), DaemonError> {
+        record.current = number;
+        self.save(record)?;
+        self.clear_pending(&record.name)
+    }
+
+    fn pending_path(&self, name: &str) -> PathBuf {
+        self.dir.join(name).join("pending")
+    }
+
+    /// Record that a transition to `number` is being applied; [`Self::set_current`] clears it, and
+    /// one still present afterwards means the transition was cut short.
+    pub fn mark_pending(&self, name: &str, number: u64) -> Result<(), DaemonError> {
+        let path = self.pending_path(name);
+        tilo_files::native::atomic::write_creating_parent(&path, number.to_string().as_bytes())
+            .map_err(DaemonError::io(format!("write {}", path.display())))
+    }
+
+    /// # Errors
+    /// I/O failures.
+    pub fn clear_pending(&self, name: &str) -> Result<(), DaemonError> {
+        match fs::remove_file(self.pending_path(name)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(DaemonError::io("clear pending")(e))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The generation an interrupted transition was heading for.
+    pub fn pending(&self, name: &str) -> Option<u64> {
+        fs::read_to_string(self.pending_path(name))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    /// Delete generations older than the newest `keep`, always keeping the current one, an
+    /// interrupted transition's and `also_keep`; returns the survivors' layers plus what was
+    /// deleted.
+    pub fn prune(
+        &self,
+        record: &AccountEntry,
+        keep: u32,
+        also_keep: &std::collections::BTreeSet<u64>,
+        dry_run: bool,
+    ) -> Result<(Vec<String>, Vec<u64>), DaemonError> {
+        let numbers = self.generations(&record.name);
+        let keep = usize::try_from(keep).unwrap_or(usize::MAX);
+        let cutoff = numbers.len().saturating_sub(keep);
+        let mut referenced = Vec::new();
+        let mut removed = Vec::new();
+        for (index, number) in numbers.into_iter().enumerate() {
+            let pending = self.pending(&record.name) == Some(number);
+            if index >= cutoff || number == record.current || pending || also_keep.contains(&number)
+            {
+                referenced.extend(self.generation(&record.name, number)?.layers);
+            } else {
+                if !dry_run {
+                    fs::remove_file(self.generation_path(&record.name, number)).map_err(
+                        DaemonError::io(format!("prune generation {number} of {}", record.name)),
+                    )?;
+                }
+                removed.push(number);
+            }
+        }
+        Ok((referenced, removed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_device_protocol::Scope;
+
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn the_account_store_keeps_outputs_generations_and_the_device_account;
+
+        phase outputs_are_fixed_at_creation_and_need_a_headful_account;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = AccountStore::new(root.path());
+            let two = tilo_device_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap();
+            let (record, created) = store
+                .create("a", AccountKind::Headful, Owner::default(), &two)
+                .unwrap();
+            assert!(created);
+            assert_eq!(record.connectors(), 2);
+            assert_eq!(store.load("a").unwrap().outputs, two);
+            let (_, created) = store
+                .create("a", AccountKind::Headful, Owner::default(), &two)
+                .unwrap();
+            assert!(!created);
+            let Err(DaemonError::AccountOutputsConflict { outputs, .. }) =
+                store.create("a", AccountKind::Headful, Owner::default(), &[])
+            else {
+                panic!("a different output list must conflict");
+            };
+            assert_eq!(outputs, "2560x1600@2,1920x1080@1");
+            assert!(matches!(
+                store.create("b", AccountKind::Headless, Owner::default(), &two),
+                Err(DaemonError::OutputsNeedHeadful(_))
+            ));
+            let (plain, _) = store
+                .create("c", AccountKind::Headful, Owner::default(), &[])
+                .unwrap();
+            assert_eq!(plain.connectors(), 1);
+        }
+
+        phase frame_cpu_trace_changes_generation_for_the_same_layer;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = AccountStore::new(root.path());
+            let (mut record, _) = store
+                .create("cpu", AccountKind::Headless, Owner::default(), &[])
+                .unwrap();
+            assert_eq!(swap(&store, &mut record, "shell", "h1"), Some(1));
+            let mut info = session();
+            info.frame_cpu_trace = true;
+            let (from, to) = store
+                .prepare_swap(&record, "shell", "h1", info.clone())
+                .unwrap()
+                .unwrap();
+            assert!(!from.components["shell"].info.frame_cpu_trace);
+            assert!(to.components["shell"].info.frame_cpu_trace);
+            assert_eq!(to.number, 2);
+            store.set_current(&mut record, to.number).unwrap();
+            assert!(
+                store
+                    .prepare_swap(&record, "shell", "h1", info)
+                    .unwrap()
+                    .is_none()
+            );
+            let (_, disabled) = store
+                .prepare_swap(&record, "shell", "h1", session())
+                .unwrap()
+                .unwrap();
+            assert!(!disabled.components["shell"].info.frame_cpu_trace);
+        }
+
+        phase a_logins_device_account_stays_while_the_owner_is_logged_out;
+        // A laptop's device account outlives the owner's login, so a swap that
+        // broke the desktop is rolled back from the login screen; a board's
+        // account exists only while its session does.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = AccountStore::new(root.path());
+            let login = DeviceSession {
+                unit: "session-3.scope".into(),
+                account: "tester".into(),
+                units: Vec::new(),
+                control_socket: PathBuf::from("/run/user/1000/tilo-session/test-control.sock"),
+                login: Some(Login {
+                    session: Some("3".into()),
+                    wrapper: Some(4242),
+                }),
+            };
+            assert!(matches!(
+                store.load_with(DEVICE_ACCOUNT, None),
+                Err(DaemonError::NoDeviceSession)
+            ));
+            let record = store.load_with(DEVICE_ACCOUNT, Some(login.clone())).unwrap();
+            store.save(&record).unwrap();
+            let out = store.load_with(DEVICE_ACCOUNT, None).unwrap();
+            let device = out.device.unwrap();
+            assert_eq!(device.unit, crate::apply::GREETER_UNIT);
+            assert_eq!(device.login, Some(Login::default()));
+            assert_eq!(device.account, "tester");
+
+            let board = DeviceSession {
+                login: None,
+                unit: "tilo-board-headless-session@tester.service".into(),
+                ..login
+            };
+            let record = store.load_with(DEVICE_ACCOUNT, Some(board)).unwrap();
+            store.save(&record).unwrap();
+            assert!(matches!(
+                store.load_with(DEVICE_ACCOUNT, None),
+                Err(DaemonError::NoDeviceSession)
+            ));
+        }
+
+        phase account_pruning_and_removal_keep_what_is_current;
+        {
+            {
+                let root = tempfile::tempdir().unwrap();
+                let store = AccountStore::new(root.path());
+                let (mut record, _) = store
+                    .create("a", AccountKind::Headless, Owner::default(), &[])
+                    .unwrap();
+                for layer in ["h1", "h2", "h3", "h4"] {
+                    swap(&store, &mut record, "shell", layer);
+                }
+                store.set_current(&mut record, 1).unwrap();
+                let (referenced, removed) = store
+                    .prune(&record, 2, &std::collections::BTreeSet::new(), true)
+                    .unwrap();
+                assert_eq!(removed, [2]);
+                assert_eq!(
+                    store.generations("a"),
+                    [1, 2, 3, 4],
+                    "dry run deletes nothing"
+                );
+                let (_, removed) = store
+                    .prune(&record, 2, &std::collections::BTreeSet::new(), false)
+                    .unwrap();
+                assert_eq!(removed, [2]);
+                assert_eq!(store.generations("a"), [1, 3, 4]);
+                assert!(
+                    referenced.contains(&"h1".to_string()) && !referenced.contains(&"h2".to_string())
+                );
+            }
+            {
+                let root = tempfile::tempdir().unwrap();
+                let store = AccountStore::new(root.path());
+                store
+                    .create("a", AccountKind::Headful, Owner::default(), &[])
+                    .unwrap();
+                assert!(store.remove("a").unwrap());
+                assert!(!store.remove("a").unwrap());
+                assert!(store.list().unwrap().is_empty());
+            }
+        }
+    }
+
+    fn session() -> ComponentInfo {
+        ComponentInfo::new(Scope::Session, vec![])
+    }
+
+    fn swap(
+        store: &AccountStore,
+        record: &mut AccountEntry,
+        component: &str,
+        layer: &str,
+    ) -> Option<u64> {
+        let (_, to) = store
+            .prepare_swap(record, component, layer, session())
+            .unwrap()?;
+        store.set_current(record, to.number).unwrap();
+        Some(to.number)
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn account_generations_swap_roll_back_and_mark_interruptions() {
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = AccountStore::new(root.path());
+            let (_, created) = store
+                .create("a", AccountKind::Headless, Owner::default(), &[])
+                .unwrap();
+            assert!(created);
+            let (_, created) = store
+                .create("a", AccountKind::Headless, Owner::default(), &[])
+                .unwrap();
+            assert!(!created);
+            assert!(matches!(
+                store.create("a", AccountKind::Headful, Owner::default(), &[]),
+                Err(DaemonError::AccountKindConflict { .. })
+            ));
+            assert!(matches!(
+                store.create("vm", AccountKind::Headless, Owner::default(), &[]),
+                Err(DaemonError::ReservedName(_))
+            ));
+            assert!(matches!(
+                store.create("Bad", AccountKind::Headless, Owner::default(), &[]),
+                Err(DaemonError::InvalidName(_))
+            ));
+            assert!(matches!(
+                store.load("nope"),
+                Err(DaemonError::AccountNotFound(_))
+            ));
+            assert_eq!(store.load("vm").unwrap().kind, AccountKind::Vm);
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = AccountStore::new(root.path());
+            let (mut record, _) = store
+                .create("a", AccountKind::Headless, Owner::default(), &[])
+                .unwrap();
+            assert_eq!(swap(&store, &mut record, "shell", "h1"), Some(1));
+            assert_eq!(swap(&store, &mut record, "launcher", "h2"), Some(2));
+            // Same layer again: no new generation.
+            assert_eq!(swap(&store, &mut record, "shell", "h1"), None);
+            assert_eq!(swap(&store, &mut record, "shell", "h3"), Some(3));
+            let current = store.generation("a", 3).unwrap();
+            assert_eq!(current.layers, ["h3", "h2"]);
+            assert_eq!(current.components["shell"].layer, "h3");
+            assert_eq!(store.generations("a"), [1, 2, 3]);
+            assert_eq!(store.load("a").unwrap().current, 3);
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = AccountStore::new(root.path());
+            let (record, _) = store
+                .create("a", AccountKind::Headless, Owner::default(), &[])
+                .unwrap();
+            let (from, to) = store
+                .prepare_swap(&record, "shell", "h1", session())
+                .unwrap()
+                .unwrap();
+            assert_eq!(from.number, 0);
+            assert_eq!(to.number, 1);
+            assert_eq!(store.load("a").unwrap().current, 0);
+            // A retry sees the same transition again rather than "unchanged".
+            assert!(
+                store
+                    .prepare_swap(&record, "shell", "h1", session())
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = AccountStore::new(root.path());
+            let (mut record, _) = store
+                .create("a", AccountKind::Headless, Owner::default(), &[])
+                .unwrap();
+            swap(&store, &mut record, "shell", "h1");
+            swap(&store, &mut record, "shell", "h2");
+            let (from, to) = store.rollback_target(&record, None).unwrap();
+            assert_eq!((from.number, to.number), (2, 1));
+            store.set_current(&mut record, to.number).unwrap();
+            // A swap after a rollback gets a fresh number; history is never rewritten.
+            assert_eq!(swap(&store, &mut record, "shell", "h4"), Some(3));
+            assert_eq!(store.generation("a", 3).unwrap().layers, ["h4"]);
+            let (_, to) = store.rollback_target(&record, None).unwrap();
+            assert_eq!(to.number, 2);
+            let (_, base) = store.rollback_target(&record, Some(0)).unwrap();
+            assert!(base.layers.is_empty());
+            store.set_current(&mut record, 0).unwrap();
+            assert!(matches!(
+                store.rollback_target(&record, None),
+                Err(DaemonError::NoEarlierGeneration(_))
+            ));
+            assert!(matches!(
+                store.rollback_target(&record, Some(9)),
+                Err(DaemonError::GenerationNotFound { .. })
+            ));
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = AccountStore::new(root.path());
+            let (mut record, _) = store
+                .create("a", AccountKind::Headless, Owner::default(), &[])
+                .unwrap();
+            store.mark_pending("a", 1).unwrap();
+            assert_eq!(store.pending("a"), Some(1));
+            store.set_current(&mut record, 0).unwrap();
+            assert_eq!(store.pending("a"), None);
+        }
+    }
+}

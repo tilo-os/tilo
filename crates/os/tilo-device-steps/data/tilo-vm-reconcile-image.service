@@ -1,0 +1,19 @@
+[Unit]
+Description=Record the booted OS image for tilo-vm
+# Records the booted image and names the accounts that keep layers built on the
+# image before, for tilo-vm status. It never changes an account or deletes a layer:
+# those are the person's deployed work, rolled back or forward deliberately.
+# Nothing here may order this after systemd-tmpfiles-setup (sysext precedes
+# it): no PrivateTmp, no other sandboxing that pulls in tmpfiles.
+DefaultDependencies=no
+After=local-fs.target
+Before=systemd-sysext.service sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo/tilo-device-step reconcile-image
+
+[Install]
+WantedBy=sysinit.target

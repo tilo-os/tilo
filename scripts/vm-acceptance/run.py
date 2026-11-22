@@ -34,7 +34,6 @@ from acceptance.checks import (agent, agents_e2e, apps, basics, clock,  # noqa: 
                                daily_apps, input_devices, kept_apps, provenance, resources, search, secrets, startup, ui,
                                window, ws_branch_e2e)
 from acceptance.context import Context  # noqa: E402
-from management import start_management  # noqa: E402
 from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402
 from acceptance.vm import TiloVm, VmError, first_json  # noqa: E402
 
@@ -270,7 +269,7 @@ def session_environment(vm: TiloVm) -> str:
 
 
 def keep_account_logs(vm: TiloVm, out: Path) -> Path | None:
-    """What the account's compositor and tilo-vmd said, for a run that could not set up its
+    """What the account's compositor and the device steps said, for a run that could not set up its
     session: `tilo-vm logs <account>`, which the throwaway VM takes with it when it goes."""
     try:
         text = vm.run("logs", vm.account, "-n", "20000", timeout=120, check=False, account=False)
@@ -457,8 +456,6 @@ def main() -> int:
     ap.add_argument("--gl", action="store_true", help="create the VM with virgl (--disk only)")
     ap.add_argument("--keep", action="store_true", help="leave the VM running (and a created VM registered)")
     ap.add_argument("--tilo-vm")
-    ap.add_argument("--bootstrap-tilo-vm", help="fixture-matching CLI for a canonical management upgrade")
-    ap.add_argument("--bootstrap-from", type=Path, help="exact target source for the management upgrade")
     ap.add_argument("--swap", help="comma-separated components (os/components.toml) or app:<dir> to build "
                     "from this worktree on the host and swap in before the checks; the disk is then the base")
     ap.add_argument("--swap-from", type=Path, help="the worktree --swap builds from (default: this one)")
@@ -492,8 +489,6 @@ def main() -> int:
             records.write(args.records, [])
         return 0
 
-    if bool(args.bootstrap_tilo_vm) != bool(args.bootstrap_from):
-        ap.error("--bootstrap-tilo-vm and --bootstrap-from must be supplied together")
     binary = find_tilo_vm(args.tilo_vm)
     swaps = [c.strip() for c in (args.swap or "").split(",") if c.strip()]
     swap_from = (args.swap_from or REPO).resolve()
@@ -538,9 +533,6 @@ def main() -> int:
             sys.exit(f"--artifact-tilo-vm {args.artifact_tilo_vm} is not an executable file")
         artifact["consumer"] = TiloVm(args.artifact_tilo_vm, vm_name, args.account, out / "tilo-vm.log")
 
-    startup_vm = (TiloVm(find_tilo_vm(args.bootstrap_tilo_vm), vm_name, args.account, out / "tilo-vm.log")
-                  if args.bootstrap_tilo_vm else vm)
-
     others = [n for n in running_vms() if n != vm_name]
     if others:
         sys.exit(f"other VMs are running ({others}); this laptop runs one VM at a time")
@@ -575,13 +567,11 @@ def main() -> int:
                        "--resolution", outputs[0].split("@")[0], "--memory-mb", str(args.memory_mb),
                        "--cpus", str(args.cpus)] + (["--gl"] if args.gl else [])
                 created = True
-        management = start_management(vm, startup_vm,
-                                      args.bootstrap_from.resolve() if args.bootstrap_from else None,
-                                      swap_ref, cmd)
+        if cmd:
+            vm.vm_cmd(*cmd, timeout=900)
+        vm.vm_cmd("start", vm.vm, timeout=600)
         meta["vm_up"] = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
         facts = {"provenance": provenance_of(vm, disk, want_commit)}
-        if management:
-            facts["provenance"]["swap"] = management
         meta["provenance"] = facts["provenance"]
         meta["session_environment"] = session_environment(vm)
         try:
@@ -609,11 +599,6 @@ def main() -> int:
                 else:
                     os.environ["TILO_RUNTIME_BUNDLE_DIR"] = bundles
                 shutil.rmtree(engines, ignore_errors=True)
-            if management:
-                if swapped["commit"] != management["commit"]:
-                    raise VmError("management and session swaps have different source commits")
-                swapped["components"] = management["components"] + swapped["components"]
-                swapped["account_layers"].update(management["account_layers"])
             facts["provenance"]["swap"] = swapped
         vm.wait_catalogue()
         facts["renderer"], facts["display"] = renderer(vm, without_3d=created and not args.gl)

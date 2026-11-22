@@ -1,0 +1,19 @@
+[package]
+name = "tilo-device-protocol"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The typed device actions and component manifest shared by tilo-vm and the device steps"
+
+[dependencies]
+hex.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

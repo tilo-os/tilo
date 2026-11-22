@@ -1,6 +1,6 @@
 # Concepts
 
-**VM.** A Tilo dev image (production image plus `tilo-vmd`, sshd, toolchain)
+**VM.** A Tilo dev image (production image plus its device steps, sshd, toolchain)
 running under the host's native hypervisor. Humans watch it in UTM, Hyper-V
 Manager or virt-manager (libvirt's QEMU/KVM user session). One VM is shared
 by several agents.

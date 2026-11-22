@@ -1214,8 +1214,9 @@ doc = false
 "tilo-desktop-policy" = { path = "../../crates/session/desktop-policy", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../crates/session/desktop-search", default-features = false, features = ["catalogue", "indexes", "settings"] }
 "tilo-desktop-surface" = { path = "../../crates/session/desktop-surface", default-features = false, features = ["default", "peer-view"] }
-"tilo-device-admin" = { path = "../../crates/dev/tilo-device-admin", default-features = false, features = [] }
 "tilo-device-identity" = { path = "../../crates/collab/tilo-device-identity", default-features = false, features = [] }
+"tilo-device-protocol" = { path = "../../crates/os/tilo-device-protocol", default-features = false, features = [] }
+"tilo-device-steps" = { path = "../../crates/os/tilo-device-steps", default-features = false, features = [] }
 "tilo-device-vpn" = { path = "../../crates/system/device-vpn", default-features = false, features = ["default", "service", "session", "test-support", "tunnel"] }
 "tilo-dialogs" = { path = "../../crates/platform/tilo-dialogs", default-features = false, features = ["test-support"] }
 "tilo-dictation" = { path = "../../crates/session/dictation", default-features = false, features = [] }
@@ -1385,8 +1386,6 @@ doc = false
 "tilo-view" = { path = "../../crates/platform/tilo-view", default-features = false, features = [] }
 "tilo-vision" = { path = "../../crates/media/vision", default-features = false, features = [] }
 "tilo-vm" = { path = "../tilo-vm", default-features = false, features = [] }
-"tilo-vm-protocol" = { path = "../tilo-vm-protocol", default-features = false, features = [] }
-"tilo-vmd" = { path = "../../crates/dev/tilo-vmd", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
 "tilo-wasm-host" = { path = "../../crates/runtime/tilo-wasm-host", default-features = false, features = ["wasmtime"] }
@@ -3869,8 +3868,9 @@ doc = false
 "tilo-desktop-policy" = { path = "../../crates/session/desktop-policy", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../crates/session/desktop-search", default-features = false, features = ["catalogue", "indexes", "settings"] }
 "tilo-desktop-surface" = { path = "../../crates/session/desktop-surface", default-features = false, features = ["default", "peer-view"] }
-"tilo-device-admin" = { path = "../../crates/dev/tilo-device-admin", default-features = false, features = [] }
 "tilo-device-identity" = { path = "../../crates/collab/tilo-device-identity", default-features = false, features = [] }
+"tilo-device-protocol" = { path = "../../crates/os/tilo-device-protocol", default-features = false, features = [] }
+"tilo-device-steps" = { path = "../../crates/os/tilo-device-steps", default-features = false, features = [] }
 "tilo-device-vpn" = { path = "../../crates/system/device-vpn", default-features = false, features = ["default", "service", "session", "test-support", "tunnel"] }
 "tilo-dialogs" = { path = "../../crates/platform/tilo-dialogs", default-features = false, features = ["test-support"] }
 "tilo-dictation" = { path = "../../crates/session/dictation", default-features = false, features = [] }
@@ -4040,8 +4040,6 @@ doc = false
 "tilo-view" = { path = "../../crates/platform/tilo-view", default-features = false, features = [] }
 "tilo-vision" = { path = "../../crates/media/vision", default-features = false, features = [] }
 "tilo-vm" = { path = "../tilo-vm", default-features = false, features = [] }
-"tilo-vm-protocol" = { path = "../tilo-vm-protocol", default-features = false, features = [] }
-"tilo-vmd" = { path = "../../crates/dev/tilo-vmd", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
 "tilo-wasm-host" = { path = "../../crates/runtime/tilo-wasm-host", default-features = false, features = ["wasmtime"] }

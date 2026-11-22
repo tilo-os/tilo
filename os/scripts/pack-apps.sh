@@ -72,7 +72,7 @@
 #
 # The store keeps each package once, as its installed tree and signed record
 # (pkgs/<root>.pkg/). Whoever needs the archive itself rebuilds it from those
-# (the dev VM daemon, crates/dev/tilo-vmd/src/cohort.rs): the same signed root
+# (the dev VM daemon, crates/os/tilo-device-steps/src/cohort.rs): the same signed root
 # and the same bytes, without a second copy of every app in the image.
 #
 # STORE is written at its *final* path on purpose: `tilo-install` records

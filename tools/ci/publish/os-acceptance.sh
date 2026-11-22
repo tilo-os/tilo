@@ -12,8 +12,7 @@
 #
 #   devices  a joined device signs in (os/dev/test-joined-device-startup.sh); nearby pairing,
 #            a third device through one without the identity key, sibling unlock and, on
-#            x86_64, wake (os/dev/test-nearby-pairing.sh); device-admin reach through a server
-#            (os/dev/test-device-admin-reach.sh)
+#            x86_64, wake (os/dev/test-nearby-pairing.sh)
 #   desktop  the installed desktop from the sign-in screen on (os/dev/test-installed-desktop.sh),
 #            whose guest-side checks are os/tests/boot_units_check.sh,
 #            os/tests/projection-boot-check.sh, os/tests/h264-boot-check.py,
@@ -70,7 +69,6 @@ devices() {
   local rc=0
   bash os/dev/test-joined-device-startup.sh "$disk" --out "$out/joined-device" || rc=1
   bash os/dev/test-nearby-pairing.sh "$disk" --out "$out/nearby-pairing" --unlock "${wake[@]}" || rc=1
-  bash os/dev/test-device-admin-reach.sh "$disk" --out "$out/device-admin-reach" || rc=1
   return "$rc"
 }
 desktop() {

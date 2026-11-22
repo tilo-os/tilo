@@ -96,7 +96,7 @@ whose session is `tilo-session` cannot be given an identity this way yet, and
 name, which no session serves. The identity is
 named "Throwaway test identity" and marked as one beside its record, and the
 op never replaces or adopts a real identity. A newly minted identity comes
-with fresh desktop state: tilo-vmd stops the session, removes the user's
+with fresh desktop state: the device stops the session, removes the user's
 `~/.config/tilo/state.json` and the files beside it that belong to it
 (`state.automerge`, its `.log` and `.meta`, `state.json.invocations`), and starts it
 again, since a workspace made before the identity belongs to the Unix user
@@ -122,7 +122,7 @@ tilo-vm account create me --headful --identity device
 ```
 
 Its session gets no `TILO_IDENTITY_ROOT`, so it shows the first-login
-onboarding a device shows, and tilo-vmd presses through it by name (begin,
+onboarding a device shows, and the device presses through it by name (begin,
 the acknowledgements, create, skip the backup and tour, enter) the way a
 person's clicks would. Onboarding creates the identity and certifies the
 machine's device key, exactly as on a device; that certificate starts
@@ -160,9 +160,9 @@ tilo-vm input --account dual click left --at 1500 400   # on the second monitor
 Each `--outputs` entry is one vkms connector (`Virtual-1`, `Virtual-2`, ...)
 with its own CRTC, laid out left to right, top-aligned, the first one
 primary. vkms offers the standard VESA (DMT) 60 Hz modes, like a monitor
-without an EDID. The mode and scale are not injected: tilo-vmd stages them
+without an EDID. The mode and scale are not injected: the device stages them
 as a display change in the account user's settings, the compositor applies it,
-and tilo-vmd confirms it, exactly as the Settings app does, so the
+and the device confirms it, exactly as the Settings app does, so the
 compositor remembers the layout for that set of monitors. Outputs are fixed
 when the account is created; running the same `account create` again re-applies
 the layout, and a different list needs `tilo-vm account rm` first.
@@ -185,7 +185,7 @@ tilo-vm input type xterm
 tilo-vm input key Return                      # then type try commands into xterm
 ```
 
-tilo-vmd runs the VM's own install line (`dnf install --transient` on the
+The device runs the VM's own install line (`dnf install --transient` on the
 dev image), so the packages sit in a transient overlay on `/usr` until the
 next VM reboot, and restarts your account's session so it sees them. Other
 accounts see them after their next restart. The sets are data:

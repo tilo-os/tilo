@@ -221,7 +221,7 @@ COPY tools/perf/tapp-size-budget /build/tools/perf/tapp-size-budget
 #
 # Each app is in the image once, as its installed tree and signed record. The
 # dev VM daemon, the one reader of a complete archive, rebuilds it from those
-# (crates/dev/tilo-vmd/src/cohort.rs); a second copy of every app as a `.tapp`
+# (crates/os/tilo-device-steps/src/cohort.rs); a second copy of every app as a `.tapp`
 # was half of the app bytes in every update.
 RUN --mount=type=secret,id=publisher_identity \
     --mount=type=bind,source=os/scripts/signed-records.py,target=/usr/local/libexec/tilo-signed-records.py,ro \

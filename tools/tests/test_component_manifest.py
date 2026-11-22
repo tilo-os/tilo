@@ -424,15 +424,16 @@ class InstallerTests(unittest.TestCase):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             production = {c.name for c in installer.select_components(manifest, [], True)}
             dev = {c.name for c in installer.select_components(manifest, [], False, True)}
-            self.assertIn("vmd", dev)
+            self.assertIn("vm-cli", dev)
             self.assertIn("native-runtime-host", dev)
             # The control CLI is a plain client every image ships.
             self.assertIn("control", production)
             self.assertNotIn("control", dev)
-            self.assertNotIn("vmd", production)
+            self.assertNotIn("vm-cli", production)
             self.assertNotIn("test-registry", production)
             self.assertIn("tilo-session", production)
             self.assertIn("native-runtime-host", production)
+            self.assertIn("device-steps", production)
         with self.subTest(phase='developer CLI installs globally through its VM component'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             component = manifest.component("vm-cli")
@@ -458,7 +459,7 @@ class InstallerTests(unittest.TestCase):
             packages, bins, features = installer.cargo_plan(dev, True)
             self.assertIn("tilo-runtime/dev-overrides", features)
             self.assertIn("tilo-session/dev-overrides", features)
-            self.assertEqual(set(bins), {"tilo-runtime", "tilo-vmd", "tilo-device-admin", "tilo-vm",
+            self.assertEqual(set(bins), {"tilo-runtime", "tilo-vm",
                                          "tilo-test-registry", "tilo-session", "tilo-window-menu",
                                          "tilo-lock-screen", "osk", "tilo-quick-settings",
                                          "tilo-secret-service", "tilolang-process"})

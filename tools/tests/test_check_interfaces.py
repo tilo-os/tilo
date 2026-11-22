@@ -388,7 +388,6 @@ class RepositoryTests(unittest.TestCase):
                 "peer",
                 "runtime",
                 "shell-ui",
-                "vm",
             ],
         )
 

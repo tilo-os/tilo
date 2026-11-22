@@ -461,6 +461,16 @@ impl Daemon {
         if let Some(replicas) = &replicas {
             let _ = replica_slot.set(Arc::downgrade(replicas));
         }
+        // Device control is this device's own resource: its steps run as the units the image
+        // ships, so a person's grant on `devices/<this>/vm` reaches them from boot. A device
+        // without the step program offers none.
+        #[cfg(target_os = "linux")]
+        match super::control::device_control(identity.cert.device_public_key) {
+            Ok(control) => workspaces
+                .copies()
+                .provide(super::control::PROVIDER, control),
+            Err(why) => tracing::info!(%why, "this device offers no device control"),
+        }
         Ok(Self {
             policy_origin,
             broker,

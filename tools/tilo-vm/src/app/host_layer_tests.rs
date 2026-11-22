@@ -1,26 +1,19 @@
 use super::*;
+use crate::remote::fixture::Device;
 
-const PEER: &str = r#"
-import base64,json,sys
-hash,component,returned,log,protocol=sys.argv[1:]
-print(json.dumps({"tilo_device_admin":{"device":"test","label":"test","route":"direct","via":"test","session":1}}),flush=True)
-received=0
-for line in sys.stdin:
- request=json.loads(line)
- method=request['method']
- with open(log,'a') as file: file.write(method+'\n')
- if method=='hello': result={"protocol":int(protocol),"daemon_version":"test","root":"test","arch":"x86_64"}
- elif method=='layer.list': result=[{"hash":hash,"provenance":{"component":component}}]
- elif method=='layer.upload.begin': result={"upload":"test"}
- elif method=='layer.upload.chunk':
-  received+=len(base64.b64decode(request['params']['data']))
-  result={"received":received}
- elif method=='layer.import': result={"hash":returned,"existed":False}
- else: raise RuntimeError(method)
- print(json.dumps({"jsonrpc":"2.0","id":request['id'],"result":result}),flush=True)
-"#;
+fn connect(device: &Device) -> Remote {
+    Remote::connect("test", &device.machine, &device.route).unwrap()
+}
 
-fn import_case(cached: bool, component: &str, corrupt: bool) {
+fn actions(device: &Device) -> Vec<String> {
+    device
+        .asked()
+        .into_iter()
+        .map(|asked| asked.action)
+        .collect()
+}
+
+fn import_case(cached: bool, component: &'static str, corrupt: bool) {
     let dir = tempfile::tempdir().unwrap();
     let staging = build::Staging::new(&Worktree {
         root: dir.path().into(),
@@ -29,13 +22,13 @@ fn import_case(cached: bool, component: &str, corrupt: bool) {
     .unwrap();
     std::fs::create_dir_all(staging.tree().join("usr/bin")).unwrap();
     std::fs::write(staging.tree().join("usr/bin/shell"), b"actual binary bytes").unwrap();
-    let expected = tilo_vm_protocol::layer_hash::tree_hash(&staging.tree()).unwrap();
+    let expected = tilo_device_protocol::layer_hash::tree_hash(&staging.tree()).unwrap();
     let listed = if cached {
         expected.clone()
     } else {
         {
             std::fs::write(staging.tree().join("usr/bin/shell"), b"older binary bytes").unwrap();
-            let previous = tilo_vm_protocol::layer_hash::tree_hash(&staging.tree()).unwrap();
+            let previous = tilo_device_protocol::layer_hash::tree_hash(&staging.tree()).unwrap();
             std::fs::write(staging.tree().join("usr/bin/shell"), b"actual binary bytes").unwrap();
             previous
         }
@@ -45,14 +38,12 @@ fn import_case(cached: bool, component: &str, corrupt: bool) {
     } else {
         expected.clone()
     };
-    let log = dir.path().join("calls");
-    let line = CommandLine::new("python3", &["-c", PEER])
-        .arg(listed)
-        .arg(component)
-        .arg(returned)
-        .arg(log.display().to_string())
-        .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
-    let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
+    let device = Device::serving(move |action, _| match action {
+        "layer-list" => Ok(json!([{ "hash": listed, "provenance": { "component": component } }])),
+        "layer-import" => Ok(json!({ "hash": returned, "existed": false })),
+        other => panic!("a host layer import asks for no {other}"),
+    });
+    let mut remote = connect(&device);
     let mut app = App {
         json: true,
         local: false,
@@ -62,25 +53,28 @@ fn import_case(cached: bool, component: &str, corrupt: bool) {
         runner: SystemRunner { cwd: None },
         receipt: Receipt::new(dir.path(), vec![]),
         warnings: Vec::new(),
-        peer: None,
+        machine: None,
     };
     let result = app.import_host_layer(
         &mut remote,
         &staging,
-        tilo_vm_protocol::Provenance::local("shell"),
+        tilo_device_protocol::Provenance::local("shell"),
     );
     let reused = cached && component == "shell";
-    let calls = std::fs::read_to_string(log).unwrap();
     if reused {
         assert_eq!(result.unwrap(), expected);
-        assert_eq!(calls, "hello\nlayer.list\n");
+        assert_eq!(actions(&device), ["layer-list"]);
+        assert_eq!(device.content.len(), 0);
         assert!(
             !staging.archive().exists(),
             "a cache hit never packs the layer"
         );
     } else {
-        assert!(calls.contains("layer.upload.chunk\n"));
-        assert!(calls.ends_with("layer.import\n"));
+        assert_eq!(device.content.len(), 1, "the packed layer was sent");
+        assert_eq!(
+            actions(&device).last().map(String::as_str),
+            Some("layer-import")
+        );
         assert!(staging.archive().exists());
         if corrupt {
             assert!(result.is_err(), "a mismatched import cannot reach swap");
@@ -101,7 +95,7 @@ tilo_test_env::scenario! {
         import_case(false, "shell", true);
     }
 
-    phase host_app_build_disconnect_reconnects_before_upload_and_preserves_refusal;
+    phase host_app_build_reconnects_before_upload_and_preserves_refusal;
     {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App {
@@ -113,36 +107,33 @@ tilo_test_env::scenario! {
             runner: SystemRunner { cwd: None },
             receipt: Receipt::new(dir.path(), vec![]),
             warnings: Vec::new(),
-            peer: None,
+            machine: None,
         };
-        let mut remote = app_peer(dir.path(), "1");
+        let before = refusing_device();
+        let after = refusing_device();
+        let mut remote = connect(&before);
         let result = app.install_host_app_package(
             &mut remote,
             "fixture-refused",
             |_runner| {
-                std::fs::write(dir.path().join("build-start"), b"").unwrap();
-                tilo_test_env::wait_until("the peer to disconnect", || {
-                    dir.path().join("disconnected").exists()
-                });
                 let package = dir.path().join("app.tapp");
                 std::fs::write(&package, b"owned package transport fixture").unwrap();
                 Ok(package)
             },
-            |_app| Ok(app_peer(dir.path(), "2")),
+            |_app| Ok(connect(&after)),
         );
         let error = result.expect_err("daemon refusal must not become installation success");
         assert!(
             error.to_string().contains("fixture account refused"),
             "{error}"
         );
+        assert!(before.asked().is_empty() && before.content.len() == 0);
+        let package = blake3::hash(b"owned package transport fixture").to_hex().to_string();
+        assert!(after.content.get(&package).is_some());
+        assert_eq!(actions(&after), ["app-install"]);
         assert_eq!(
-            std::fs::read(dir.path().join("uploaded")).unwrap(),
-            b"owned package transport fixture"
-        );
-        let calls = std::fs::read_to_string(dir.path().join("calls")).unwrap();
-        assert_eq!(
-            calls,
-            "1:hello\n2:hello\n2:layer.upload.begin\n2:layer.upload.chunk\n2:app.install\n"
+            after.asked()[0].argument,
+            json!({ "account": "fixture-refused", "source": { "content": { "hash": package } } })
         );
         let receipt_path = app
             .receipt
@@ -172,9 +163,10 @@ tilo_test_env::scenario! {
                 runner: SystemRunner { cwd: None },
                 receipt: Receipt::new(dir.path(), vec![]),
                 warnings: Vec::new(),
-                peer: None,
+                machine: None,
             };
-            let mut remote = app_peer(dir.path(), "1");
+            let device = refusing_device();
+            let mut remote = connect(&device);
             let result = app.install_host_app_package(
                 &mut remote,
                 "fixture-refused",
@@ -197,11 +189,8 @@ tilo_test_env::scenario! {
             } else {
                 "connection refused"
             }));
-            assert_eq!(
-                std::fs::read_to_string(dir.path().join("calls")).unwrap(),
-                "1:hello\n"
-            );
-            assert!(!dir.path().join("uploaded").exists());
+            assert!(device.asked().is_empty());
+            assert_eq!(device.content.len(), 0);
             assert!(!app.receipt.summary().contains("transfer"));
             assert!(!app.receipt.summary().contains("install"));
         }
@@ -215,14 +204,8 @@ tilo_test_env::scenario! {
             "this is not a Cargo manifest",
         )
         .unwrap();
-        let log = dir.path().join("metadata-calls");
-        let line = CommandLine::new("python3", &["-c", PEER])
-            .arg("unused")
-            .arg("shell")
-            .arg("unused")
-            .arg(log.display().to_string())
-            .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
-        let (mut remote, _) = Remote::over_peer("test", &line).unwrap();
+        let device = refusing_device();
+        let mut remote = connect(&device);
         let worktree = Worktree {
             root: dir.path().into(),
             branch: None,
@@ -236,7 +219,7 @@ tilo_test_env::scenario! {
             runner: SystemRunner { cwd: None },
             receipt: Receipt::new(dir.path(), vec![]),
             warnings: Vec::new(),
-            peer: None,
+            machine: None,
         };
         let vm = Resolved {
             name: "test".into(),
@@ -270,7 +253,7 @@ tilo_test_env::scenario! {
                 "cargo metadata --locked --no-deps --format-version 1"
             );
             assert!(stderr.contains("Cargo.toml"), "{stderr}");
-            assert_eq!(std::fs::read_to_string(&log).unwrap(), "hello\n");
+            assert!(device.asked().is_empty());
             let phases = app.receipt.summary();
             assert_eq!(phases.split(", ").count(), attempt + 1);
             assert!(
@@ -287,40 +270,14 @@ tilo_test_env::scenario! {
     }
 }
 
-const APP_PEER: &str = r"
-import base64,json,os,sys,threading,time
-root,session,protocol=sys.argv[1:]
-def record(value):
- with open(root+'/calls','a') as file: file.write(session+':'+value+'\n')
-def disconnect():
- while not os.path.exists(root+'/build-start'):
-  time.sleep(.01)
- os.close(0); os.close(1)
- open(root+'/disconnected','w').close()
- os._exit(0)
-print(json.dumps({'tilo_device_admin':{'device':'test','label':'test','route':'direct','via':'test','session':int(session)}}),flush=True)
-if session=='1': threading.Thread(target=disconnect,daemon=True).start()
-received=bytearray()
-for line in sys.stdin:
- request=json.loads(line); method=request['method']; record(method)
- if method=='hello': result={'protocol':int(protocol),'daemon_version':'test','root':'test','arch':'x86_64'}
- elif method=='layer.upload.begin': result={'upload':'owned-upload'}
- elif method=='layer.upload.chunk':
-  received.extend(base64.b64decode(request['params']['data'])); result={'received':len(received)}
- elif method=='app.install':
-  assert bytes(received)==b'owned package transport fixture'
-  assert request['params']['account']=='fixture-refused'
-  with open(root+'/uploaded','wb') as file: file.write(received)
-  print(json.dumps({'jsonrpc':'2.0','id':request['id'],'error':{'code':2,'message':'fixture account refused','hint':'no install occurred'}}),flush=True)
-  continue
- else: raise RuntimeError(method)
- print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':result}),flush=True)
-";
-
-fn app_peer(root: &Path, session: &str) -> Remote {
-    let command = CommandLine::new("python3", &["-c", APP_PEER])
-        .arg(root.display().to_string())
-        .arg(session)
-        .arg(tilo_vm_protocol::PROTOCOL_VERSION.to_string());
-    Remote::over_peer("test", &command).unwrap().0
+/// A device that refuses whatever it is asked to install.
+fn refusing_device() -> Device {
+    Device::serving(|_, _| {
+        Err(tilo_device_protocol::RpcError {
+            code: tilo_device_protocol::code::NOT_FOUND,
+            message: "fixture account refused".into(),
+            hint: "no install occurred".into(),
+            see: None,
+        })
+    })
 }

@@ -1,43 +1,72 @@
-use super::*;
-use crate::hypervisor::CommandLine;
+use std::sync::{Arc, Mutex};
+
+use serde_json::{Value, json};
+use tilo_device_protocol::{RpcError, code};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-const PEER: &str = r"
-import base64,json,sys
-case,log=sys.argv[1:3]
-print(json.dumps({'tilo_device_admin':{'device':'test','label':'test','route':'direct','via':'test','session':1}}),flush=True)
-hash=''; provenance={}; installed={}; received=0
-for line in sys.stdin:
- request=json.loads(line); method=request['method']; params=request.get('params',{})
- with open(log,'a') as file: file.write(method+'\n')
- error=None
- if method=='hello': result={'protocol':PROTOCOL,'daemon_version':'test','root':'test','arch':'x86_64'}
- elif method=='layer.upload.begin': result={'upload':'test'}; received=0
- elif method=='layer.upload.chunk':
-  received+=len(base64.b64decode(params['data'])); result={'received':received}
- elif method=='layer.import':
-  provenance=params['provenance']; hash=sys.argv[3]; result={'hash':hash if case!='import-hash' else 'f'*64,'existed':False}
- elif method=='layer.verify':
-  result={'hash':hash,'provenance':dict(provenance)}
-  if case=='provenance': result['provenance']['source_commit']='e'*40
- elif method=='swap':
-  if case in ['signature','publisher','runtime','incomplete','activation']:
-   error={'code':4,'message':'cohort verification: '+case,'hint':'supply a valid cohort'}
-  else:
-   installed[params['component']]=params['layer'] if case!='account-layer' else 'f'*64
-   result={'account':params['account'],'generation':1,'changed':False,'policy':'no_restart','actions':[]}
- elif method=='account.show':
-  result={'account':{'name':params['name'],'kind':'headless','owner':{'branch':'test'},'user':'test','generation':1,'generations':[0,1],'components':installed,'session':'active','seat':None},'files':[]}
- else: raise RuntimeError(method)
- response={'jsonrpc':'2.0','id':request['id']}
- response['error' if error else 'result']=error if error else result
- print(json.dumps(response),flush=True)
-";
+use super::*;
+use crate::remote::fixture::Device;
 
-/// The fake daemon speaks the client's protocol, so a version bump does not leave this
-/// fixture behind at an old number.
-fn peer() -> String {
-    PEER.replace("PROTOCOL", &tilo_vm_protocol::PROTOCOL_VERSION.to_string())
+/// An `x86_64` device that imports and verifies what it is given and installs what it swaps,
+/// with `case` breaking one of those steps.
+fn device(case: &'static str, layer_hash: &str) -> Device {
+    let layer_hash = layer_hash.to_owned();
+    let provenance = Arc::new(Mutex::new(Value::Null));
+    let installed = Arc::new(Mutex::new(serde_json::Map::new()));
+    Device::of_arch("x86_64", move |action, params| match action {
+        "layer-import" => {
+            *provenance.lock().unwrap() = params["provenance"].clone();
+            let hash = if case == "import-hash" {
+                "f".repeat(64)
+            } else {
+                layer_hash.clone()
+            };
+            Ok(json!({ "hash": hash, "existed": false }))
+        }
+        "layer-verify" => {
+            let mut provenance = provenance.lock().unwrap().clone();
+            if case == "provenance" {
+                provenance["source_commit"] = json!("e".repeat(40));
+            }
+            Ok(json!({ "hash": layer_hash, "provenance": provenance }))
+        }
+        "swap"
+            if matches!(
+                case,
+                "signature" | "publisher" | "runtime" | "incomplete" | "activation"
+            ) =>
+        {
+            Err(RpcError {
+                code: code::INVALID,
+                message: format!("cohort verification: {case}"),
+                hint: "supply a valid cohort".into(),
+                see: None,
+            })
+        }
+        "swap" => {
+            let layer = if case == "account-layer" {
+                json!("f".repeat(64))
+            } else {
+                params["layer"].clone()
+            };
+            installed
+                .lock()
+                .unwrap()
+                .insert(params["component"].as_str().unwrap().to_owned(), layer);
+            Ok(
+                json!({ "account": params["account"], "generation": 1, "changed": false, "policy": "no_restart", "actions": [] }),
+            )
+        }
+        "account-show" => Ok(json!({
+            "account": {
+                "name": params["name"], "kind": "headless", "owner": { "branch": "test" },
+                "user": "test", "generation": 1, "generations": [0, 1],
+                "components": installed.lock().unwrap().clone(), "session": "active", "seat": null,
+            },
+            "files": [],
+        })),
+        other => panic!("an artifact swap asks for no {other}"),
+    })
 }
 
 #[test]
@@ -53,23 +82,20 @@ fn imported_cohort_uses_verified_import_and_addressed_account_readback() {
         "activation",
         "account-layer",
     ] {
-        let (dir, request) = crate::artifact::tests::fixture(false);
+        let (_dir, request) = crate::artifact::tests::fixture();
         let mut prepared = prepare(&request).unwrap();
         let layer = prepared
             .layers
             .iter_mut()
             .find(|l| l.receipt.component == "apps+runtime")
             .unwrap();
-        let log = dir.path().join("rpc.log");
-        let line = CommandLine::new("python3", &["-c", &peer()])
-            .arg(case)
-            .arg(log.display().to_string())
-            .arg(&layer.receipt.layer_hash);
-        let (mut remote, _) = Remote::over_peer("artifact-test", &line).unwrap();
+        let device = device(case, &layer.receipt.layer_hash);
+        let mut remote = Remote::connect("artifact-test", &device.machine, &device.route).unwrap();
+        let calls = || -> Vec<String> { device.asked().into_iter().map(|a| a.action).collect() };
         let imported = import(&mut remote, layer);
         if matches!(case, "import-hash" | "provenance") {
             assert!(imported.is_err());
-            assert!(!std::fs::read_to_string(&log).unwrap().contains("swap\n"));
+            assert!(!calls().contains(&"swap".to_owned()));
             continue;
         }
         assert_eq!(imported.unwrap(), layer.receipt.layer_hash);
@@ -79,18 +105,15 @@ fn imported_cohort_uses_verified_import_and_addressed_account_readback() {
         } else {
             assert!(activated.is_err(), "{case} was acknowledged as activated");
         }
-        let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.contains("layer.upload.chunk\nlayer.import\nlayer.verify\nswap\n"));
+        let calls = calls();
+        assert_eq!(calls[..3], ["layer-import", "layer-verify", "swap"]);
         if matches!(
             case,
             "signature" | "publisher" | "runtime" | "incomplete" | "activation"
         ) {
-            assert!(
-                !calls.contains("account.show\n"),
-                "failed apply must stop immediately"
-            );
+            assert_eq!(calls.len(), 3, "failed apply must stop immediately");
         } else {
-            assert!(calls.ends_with("account.show\n"));
+            assert_eq!(calls.last().map(String::as_str), Some("account-show"));
         }
     }
 }

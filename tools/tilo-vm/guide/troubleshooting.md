@@ -9,19 +9,18 @@ Start with `tilo-vm doctor`: it checks each prerequisite and prints the fix.
 | shut off | the hypervisor reports the VM is not running | `tilo-vm vm start <name>` |
 | suspended | the hypervisor reports the VM is asleep | `tilo-vm vm wake <name>` |
 | asleep or gone | a device answers neither at its address nor as `<hostname>.local`, for a minute | `tilo-vm vm wake <name>`, or wake it at the machine (`tilo-vm guide devices`) |
-| not on this network, and over the peer network it did not answer | a device with a recorded route is off this network and does not answer through a relay either | wake it at the machine; `tilo-vm guide devices` ("Beyond the LAN") |
-| not on this network, and over the peer network it refused this machine | the device does not admit this machine: not enrolled, another identity, or removed by the owner | `tilo-vm vm enrol-admin --via <device>` |
-| running, but SSH does not answer | still booting, or stuck | `tilo-vm vm serial <name>`, `tilo-vm vm shot <name>`, `tilo-vm doctor`; last resort `tilo-vm vm reset` |
-| SSH answers but refuses the root key | the key was never installed | the printed install command (`tilo-vm guide platforms`) |
-| reachable over SSH, but no tilo-vmd | not a Tilo dev image | see "No tilo-vmd" below |
-| its tilo-vmd speaks protocol N, this tilo-vm speaks M | an incompatible daemon | see "Protocol mismatch" below |
+| not known as a device yet | a VM that has not joined this computer's person yet | `tilo-vm vm start <name>`; a real machine: `tilo-vm vm add <name> --device <key>` |
+| this computer has no Tilo login | nothing to sign requests with | on a device of yours `tilo device add`, then here `tilo login <ticket>` |
+| running, but it does not let this machine act on it | your workspace has no grant on `devices/<key>/vm` for this computer | `tilo grant devices/<key>/vm <this computer's key>` (`tilo-vm doctor` names it) |
+| running, but its image predates a step | its device steps are older than this tilo-vm | `tilo-vm vm upgrade <name>` |
+| running, but its device does not answer | still booting, stuck, or not a Tilo dev image | `tilo-vm vm serial <name>`, `tilo-vm vm shot <name>`, `tilo-vm doctor`; last resort `tilo-vm vm reset` |
 
-With `--json` the report carries `vm.state` (`ready`, `off`, `asleep`, `no-ssh`,
-`key-refused`, `peer-refused`, `no-daemon`, `incompatible`) and, when it is not ready, the
-same top-level `error`, `hint` and `see` as any failed command; the exit
-status is then non-zero.
+With `--json` the report carries `vm.state` (`ready`, `off`, `asleep`,
+`not-joined`, `no-login`, `not-granted`, `outdated`, `no-answer`) and, when it
+is not ready, the same top-level `error`, `hint` and `see` as any failed
+command; the exit status is then non-zero.
 
-**It went to sleep mid-command.** tilo-vmd holds every machine it serves
+**It went to sleep mid-command.** The device steps hold every machine
 awake until 30 minutes after the last request (`tilo-vm-awake.service`, a
 logind `sleep` lock), so idle-suspend does not cut a deploy off. A job that
 runs longer without tilo-vm requests needs `tilo-vm vm awake <name> --for 2h`
@@ -36,11 +35,13 @@ minute and looks the device up by name; when it says `asleep or gone`,
 `tilo-vm guide devices` ("Asleep, awake, and on another address") has the
 next steps.
 
-**`reached over the peer network` and a command that needs SSH fails.**
-Beyond the LAN only tilo-vmd's requests travel (`tilo-vm guide devices`,
-"Beyond the LAN"); `account exec`, builds on the device and `vm ssh` wait until
-it is on this network. `tilo-device-admin is not installed`: build it beside
-tilo-vm (`cargo build --release -p tilo-device-admin`).
+**No device daemon.** The VM runs a production image (or any non-Tilo
+image), which serves no device steps: `vm status` says its device does not
+answer, and `vm ssh` still works where SSH does. If it has bootc, move it to
+a dev image: `tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:<tag>`,
+or one built here: `tilo-vm vm upgrade --from local` (`tilo-vm guide images`).
+`vm upgrade` is itself a step, so a VM with no device daemon at all is created
+afresh from a dev image (`tilo-vm vm create <name>`).
 
 **The VM refuses its root SSH key.** SSH answers but says `Permission
 denied (publickey)`. On UTM and Hyper-V the key is installed once
@@ -50,36 +51,9 @@ public key as an SMBIOS credential on each boot, like libvirt; use a dev image
 that consumes that credential. The error prints the exact command;
 `tilo-vm guide platforms` explains it.
 
-**Protocol mismatch.** The VM's tilo-vmd and your `tilo-vm` disagree; both
-protocol numbers are in the message. A dev disk keeps the tilo-vmd it was
-built with, so a VM from another commit cannot be driven by this checkout's
-tilo-vm, and the image ships the client that matches it. Use the command you
-meant with that client, which `vm client` copies out once:
-
-```sh
-tilo-vm vm client dev -- swap tilo-session
-tilo-vm vm client dev -- vm status
-tilo-vm vm client dev          # fetch it and print the image, protocol and path
-```
-
-When the VM's tilo-vmd is the older one, this tilo-vm can also give it its
-own: `tilo-vm --target dev swap vmd --account vm` builds the daemon for the
-VM, unpacks it over plain SSH (no protocol involved), and lets it import and
-apply its own layer, as any daemon update does. Every later command then
-speaks this checkout's protocol.
-
-The alternative is to change one side: `tilo-vm vm upgrade` moves a VM that
-boots a bootc dev image onto a current one; a tiny VM can be created fresh
-(`tilo-vm vm create <name>`). A checkout older than the VM rebuilds with
-`cargo build -p tilo-vm` and uses `target/debug/tilo-vm`. The hint checks
-which side is older.
-
-**No tilo-vmd / no tilo-control.** The VM runs a production image (or any
-non-Tilo image). SSH still works: `vm start` returns as soon as SSH answers,
-`vm status` says "reachable over SSH, but no tilo-vmd", and `vm ssh` works.
-If it has bootc, move it to a dev image:
-`tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:<tag>`, or this
-worktree's, built on t: `tilo-vm vm upgrade --from local` (`tilo-vm guide images`).
+**This tilo-vm is older than the device.** A step whose arguments changed
+since this checkout refuses what it sends. Rebuild from a current checkout
+with `cargo build -p tilo-vm` and use `target/debug/tilo-vm`.
 
 **"Not running a bootc dev image".** `vm upgrade` and `vm rollback-image`
 check for bootc before anything else. Without it they cannot move the VM:
@@ -92,7 +66,7 @@ refuses only writes behind tilo-vm's back: copies, moves, `tee`, `dd` or
 redirections into `/usr`, `/etc`, `/boot` or tilo-vm's state
 (`/var/lib/tilo-vm`, `/var/lib/extensions`), package installs,
 `systemctl enable|start|restart|stop` of tilo units, `systemd-sysext`
-merges, `bootc switch|usr-overlay` and `tilo-vmd` subcommands. Change
+merges, `bootc switch|usr-overlay` and `tilo-device-step` runs. Change
 components with `tilo-vm swap`, the image with `tilo-vm vm upgrade`.
 `--raw` is the documented escape hatch for the rare change by hand; it
 leaves a receipt.
@@ -108,8 +82,8 @@ or `tilo-vm account restart` to re-apply the recorded generation.
 production login: no ambient or effective capabilities, and the same SELinux
 user domain. `tilo-vm doctor` shows the difference. The session unit drops
 the ambient capability pam_systemd grants; if the check still fails, the dev
-image's unit template or the expected domain (`tilo-vmd rpc --expect-domain`)
-is out of date: `tilo-vm vm upgrade`.
+image's unit template or the SELinux domain it expects is out of date:
+`tilo-vm vm upgrade`.
 
 **Which credential does what.** Only dev disk downloads need one:
 
@@ -143,16 +117,15 @@ fails, doctor quotes virsh's error: it means libvirt's QEMU driver
 (`virtqemud`, or `libvirtd`) does not start for your user. Libvirt's storage
 driver is never needed.
 
-**The VM cannot build.** Its image lacks cargo, rsync or python3 (`tilo-vm
+**The VM cannot build.** Its image lacks cargo or python3 (`tilo-vm
 status` shows where builds run). `tilo-vm vm upgrade` to a current dev image;
-on a Linux host `--builder host` works meanwhile. A sync that fails with
-exit 1 from flock means another build of the same worktree is running.
+on a Linux host `--builder host` works meanwhile.
 
 **Busy.** Another command holds the VM or your account. VM-wide swaps, `gc`,
 upgrades and `vm stop` take the whole VM; wait and retry.
 
 **A VM that needs a fresh boot.** `tilo-vm vm restart` shuts it down under
-the VM lock, waits until it is off, starts it and waits for tilo-vmd.
+the VM lock, waits until it is off, starts it and waits for its device to answer.
 
 **Receipts.** Every command that changes something or runs long leaves
 `target/dev-runs/<id>/run.json` (status, doctor, guide, lists, logs,

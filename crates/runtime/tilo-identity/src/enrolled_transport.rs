@@ -117,7 +117,6 @@ impl Payload {
             || self.certificate.user_public_key != root
             || caps.can_admit_devices
             || caps.foreign
-            || caps.can_administer_devices
             || self.public_record.len() as u64 > MAX_BYTES
         {
             return Err(invalid());

@@ -80,8 +80,8 @@ WGPU_ADAPTER_NAME = "llvmpipe"
 # `python3 -I tools/ci/package_sets.py per-arch` disagree.
 #
 # app-catalogue app-cli browser compat-service env-tools fs-native install launcher launcher-macos
-# local-model-service runtime-bundle store tilo-agent-session tilo-app-cli
-# tilo-environment tilo-liveness tilo-oci-images tilo-sandbox tilo-sandbox-core tilo-vmd
+# local-model-service runtime-bundle store tilo-agent-session tilo-app-cli tilo-device-steps
+# tilo-environment tilo-liveness tilo-oci-images tilo-sandbox tilo-sandbox-core
 # tilolang-cli tilolang-tilo ush windows-vm
 
 # Tests, one check per package: `test/<package>`. The driver runs nextest once over the whole
@@ -110,7 +110,7 @@ exclude = [
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
     "music", "pdf-viewer", "runtime-bundle", "store", "tilo-agent-session",
     "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
-    "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
+    "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
 ]
 # The tests that start sandboxes of their own need nested namespaces, which a job's sandbox does
@@ -118,7 +118,7 @@ exclude = [
 # the launcher's sandbox, built with bubblewrap in a user namespace of its own. The packages are
 # tools/ci/nested-sandboxes.toml's, an edit there moving this list with it
 # (tools/tests/test_nested_sandboxes.py fails while the two disagree).
-isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session", "tilo-net"] }
+isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-device-steps", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session", "tilo-net"] }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
 # setup in .config/nextest.toml names them for both packages, and for the session the four the
 # chat-siblings and tasks-siblings setups name (Chat, the launcher that starts it beside the
@@ -161,10 +161,10 @@ packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "install",
     "launcher", "launcher-macos", "local-model-service", "runtime-bundle", "store",
     "tilo-agent-session", "tilo-app-cli", "tilo-environment", "tilo-liveness",
-    "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli",
+    "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli",
     "tilolang-tilo", "ush", "windows-vm",
 ]
-isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-vmd", "ush"] }
+isolation = { nested = ["launcher", "runtime-bundle", "tilo-sandbox-core", "tilo-device-steps", "ush"] }
 # The programs of other packages these tests find beside their own build: the installer the app
 # CLI's install tests run, the render helper an agent's host renders video in, and the tilolang
 # host a task's programs run in. Each shard is handed them as the test family's are; a job handed
@@ -224,7 +224,7 @@ packages = [
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
     "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
-    "tilo-paint-stream", "tilo-pdf", "tilo-server", "tilo-staging-reclaim", "tilo-ui", "tilo-vmd",
+    "tilo-paint-stream", "tilo-pdf", "tilo-server", "tilo-staging-reclaim", "tilo-ui", "tilo-device-steps",
     "tilo-web-search", "tilo-wet-media", "tilolang-app", "tilolang-process", "tilolang-tilo",
     "typst-editor", "ui-examples", "ush", "windows-vm", "word-processor",
 ]
@@ -291,7 +291,7 @@ exclude = [
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
     "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
-    "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
+    "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
 ]
 
@@ -327,7 +327,7 @@ packages = [
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
     "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
-    "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
+    "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
 ]
 matrix = { arch = ["x86_64", "aarch64"] }
 
@@ -390,7 +390,7 @@ exclude = [
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
     "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
-    "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
+    "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
 ]
 default = false
@@ -7553,12 +7553,12 @@ outputs = ["/target/source-date/host"]
 default = false
 
 # The development server image's date: the same stages as the server image's, built on the same
-# base, with os/Containerfile.host-dev's additions (the dev-VM daemon and CLI, tilo-vmd's units,
-# base.json), which host-build.sh --dev appends. It names every one of those files, so the image's
+# base, with os/Containerfile.host-dev's additions (the device steps' runtime and the dev-VM CLI,
+# their units, base.json), which host-build.sh --dev appends. It names every one of those files, so the image's
 # date moves when any changes, and an unchanged set of them is the same image again.
 [[check]]
 name = "source-date-host-dev"
-run = "bash tools/ci/publish/source-date.sh /target/source-date/host-dev os/Containerfile.host os/image/boot.Containerfile os/Containerfile.host-dev os/components.toml os/scripts/install-components.py os/scripts/finalize-dev-image.py Cargo.lock crates/dev/tilo-vmd/data os/containers/tilo-vm-host/hosted-jail.json os/etc/containers os/etc/modules-load.d/tilo-hosted.conf os/usr/libexec os/usr/lib/bootc os/usr/lib/systemd/system os/usr/lib/systemd/system-generators os/usr/lib/dracut/modules.d os/usr/lib/sysusers.d os/usr/lib/tmpfiles.d os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py keys/cosign.pub keys/release keys/tpm2-pcr-signing.public.pem docs/recovery.md docs/app-model/environments.md tools/ci/publish/host-build.sh tools/ci/publish/lib.sh"
+run = "bash tools/ci/publish/source-date.sh /target/source-date/host-dev os/Containerfile.host os/image/boot.Containerfile os/Containerfile.host-dev os/components.toml os/scripts/install-components.py os/scripts/finalize-dev-image.py Cargo.lock crates/os/tilo-device-steps/data os/containers/tilo-vm-host/hosted-jail.json os/etc/containers os/etc/modules-load.d/tilo-hosted.conf os/etc/polkit-1/rules.d/49-tilo-device-steps.rules os/usr/libexec os/usr/lib/bootc os/usr/lib/systemd/system os/usr/lib/systemd/system-generators os/usr/lib/dracut/modules.d os/usr/lib/sysusers.d os/usr/lib/tmpfiles.d os/scripts/build-initramfs.sh os/scripts/verify-board-initramfs.py keys/cosign.pub keys/release keys/tpm2-pcr-signing.public.pem docs/recovery.md docs/app-model/environments.md tools/ci/publish/host-build.sh tools/ci/publish/lib.sh"
 git = true
 outputs = ["/target/source-date/host-dev"]
 default = false
@@ -7676,8 +7676,8 @@ timeout_secs = 3600
 default = false
 
 # The development server image, never a release (os/Containerfile.host-dev): the server image's
-# own stages, built on the base as image-host builds them, then the dev-VM daemon and CLI,
-# tilo-vmd's boot units, a base.json naming how the programs were built, and systemd-sysext
+# own stages, built on the base as image-host builds them, then the device steps' runtime and the
+# dev-VM CLI, their boot units, a base.json naming how the programs were built, and systemd-sysext
 # merging layers at boot, sealed as the server image is. An installed one takes a rebuilt
 # component as a layer, which a retry of the install proof swaps in instead of rebuilding the
 # image and its medium.

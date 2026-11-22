@@ -157,7 +157,7 @@ connections); move it onto the published image with `bootc switch` first.
    cross), and bootc imports only the layers its store lacks.
 4. **Switch and reboot**: `bootc switch --transport oci
    /var/lib/tilo-vm/image:tilo-vm` (then `bootc upgrade` on later runs) under
-   the VM lock, a reboot, and a wait for a new boot, SSH and tilo-vmd. The
+   the VM lock, a reboot, and a wait for a new boot and its device steps. The
    report names the booted digest, the image kept for rollback and each phase's
    time.
 
@@ -193,7 +193,8 @@ is safe: the next upgrade sends the whole image once.
 
 - **not named as a dev image** or **not a dev image**: a production image
   (`registry.tilo.so/tilo/tilo:*`, or `os-image-<arch>`'s layout) is sealed
-  and has no sshd or tilo-vmd. Build the dev image FROM it: `--from local`.
+  and has no sshd or device
+  steps. Build the dev image FROM it: `--from local`.
 - **is sealed**: the image carries a UKI (a board image); only
   `os/Containerfile.dev` output (which unseals its base) can go into a dev VM.
 - **older base**: this worktree's commit predates the VM's base. Rebase,

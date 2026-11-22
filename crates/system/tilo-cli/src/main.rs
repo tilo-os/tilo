@@ -515,10 +515,6 @@ enum DeviceCmd {
         /// The ticket a browser's sign-in prompt carried: sign that browser in as you, instead
         /// of printing a ticket for a computer.
         ticket: Option<String>,
-        /// What the new computer is: an ordinary member device, or one that administers your
-        /// other devices.
-        #[arg(long, value_enum, default_value_t = device::Adding::Member)]
-        capability: device::Adding,
         /// Print the ticket and the device's certificate as JSON lines.
         #[arg(long)]
         json: bool,
@@ -541,6 +537,10 @@ enum DeviceCmd {
         #[arg(long)]
         json: bool,
     },
+    /// This computer's device key, the person it is certified for and its label, as one JSON
+    /// line, read from its login without reaching any host.
+    #[command(hide = true)]
+    Key,
     /// End the login of one of your devices, everywhere it reaches.
     Revoke {
         /// The device, by its key (a prefix of it) or its name.
@@ -1026,6 +1026,7 @@ fn run_system_command(cmd: DeviceCmd) -> Result<ExitCode> {
             | DeviceCmd::Clean { .. }
             | DeviceCmd::Add { .. }
             | DeviceCmd::Ls { .. }
+            | DeviceCmd::Key
             | DeviceCmd::Revoke { .. }
             | DeviceCmd::LocalPerson { .. }
             | DeviceCmd::PublicKey
@@ -1617,20 +1618,13 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
         DeviceCmd::Health { gpu: _, json } => health::run_gpu(json),
         DeviceCmd::Add {
             ticket,
-            capability,
             json,
             no_wait,
             plan,
             server,
-        } => device::add(
-            ticket.as_deref(),
-            json,
-            capability,
-            no_wait,
-            plan.as_deref(),
-            server,
-        ),
+        } => device::add(ticket.as_deref(), json, no_wait, plan.as_deref(), server),
         DeviceCmd::Ls { json } => device::list(json),
+        DeviceCmd::Key => device::key(),
         DeviceCmd::Revoke {
             device: which,
             reason,

@@ -12,6 +12,6 @@ packages = [
   "tilo-runtime",
   "tilo-sandbox-core",
   "tilo-session",
-  "tilo-vmd",
+  "tilo-device-steps",
   "ush",
 ]

@@ -251,7 +251,6 @@ mod tests {
                 can_own_workspaces: false,
                 can_admit_devices: false,
                 foreign: false,
-                can_administer_devices: false,
                 agent: Some(scope),
                 stand_in: false,
                 server_key,

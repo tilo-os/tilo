@@ -155,7 +155,7 @@ workspace-members = [
     "tilo-crypto",
     # tilo-vm Windows CLI
     "tilo-vm",
-    "tilo-vm-protocol",
+    "tilo-device-protocol",
     # also built by the isolated tools/imager-profile workspace
     "install-profile-model",
     # builder sccache canary

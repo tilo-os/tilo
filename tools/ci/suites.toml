@@ -378,11 +378,11 @@ inputs = [
   "sdk/python/native", "sdk/typescript/native",
   "docs/developers/tasks/", "tools/perf/tapp-size-budget/",
   "crates/packaging/tilo-app-package/max-app-bytes",
-  "crates/dev/tilo-vmd/data/72-vkms-seat.rules", "crates/dev/tilo-vmd/data/73-uinput-seat.rules",
-  "crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service",
-  "crates/dev/tilo-vmd/data/tilo-vm-incoming.service",
-  "crates/dev/tilo-vmd/data/tilo-vm-restore.service", "crates/dev/tilo-vmd/data/tilo-vm-session@.service",
-  "crates/dev/tilo-vmd/data/tilo-vm-vkms.conf", "crates/dev/tilo-vmd/data/tilo-vm-community.toml",
+  "crates/os/tilo-device-steps/data/72-vkms-seat.rules", "crates/os/tilo-device-steps/data/73-uinput-seat.rules",
+  "crates/os/tilo-device-steps/data/tilo-vm-reconcile-image.service",
+  "crates/os/tilo-device-steps/data/tilo-vm-incoming.service",
+  "crates/os/tilo-device-steps/data/tilo-vm-restore.service", "crates/os/tilo-device-steps/data/tilo-vm-session@.service",
+  "crates/os/tilo-device-steps/data/tilo-vm-vkms.conf", "crates/os/tilo-device-steps/data/tilo-vm-community.toml",
   "crates/session/install-profile-model/locales.txt",
   "docs/recovery.md", "docs/app-model/", "docs/security/boot-chain.md", "docs/security/repair-mode.md",
   "docs/security/rollback.md", "docs/windows-presentation.md", "docs/windows-vm.md",
@@ -1185,12 +1185,12 @@ inputs = [
 readers = ["tools/tilo-vm/src/build.rs", "tools/tilo-vm/src/app/branch_tests.rs"]
 
 [[cargo]]
-package = "tilo-vm-protocol"
+package = "tilo-device-protocol"
 inputs = ["os/components.toml", "os/hardware/profiles/lenovo-83ed/input/*.json"]
-readers = ["tools/tilo-vm-protocol/src/manifest.rs", "tools/tilo-vm-protocol/src/profile.rs"]
+readers = ["crates/os/tilo-device-protocol/src/manifest.rs", "crates/os/tilo-device-protocol/src/profile.rs"]
 
 [[cargo]]
-package = "tilo-vmd"
+package = "tilo-device-steps"
 # The device session's names are checked against the board layer that installs it.
 inputs = [
   "os/components.toml", "os/scripts/install-components.py",
@@ -1202,8 +1202,8 @@ inputs = [
   "os/usr/share/wayland-sessions/tilo-session.desktop",
 ]
 readers = [
-  "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
-  "crates/dev/tilo-vmd/src/daemon/userspace.rs",
+  "crates/os/tilo-device-steps/tests/jobs.rs", "crates/os/tilo-device-steps/src/systemd.rs",
+  "crates/os/tilo-device-steps/src/daemon/userspace.rs",
 ]
 
 [[cargo]]
