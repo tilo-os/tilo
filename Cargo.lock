@@ -23733,6 +23733,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-workspace-agent",
  "tilo-workspace-keys",
+ "tilolang-tilo",
  "tokio",
  "tokio-rustls",
  "tracing",

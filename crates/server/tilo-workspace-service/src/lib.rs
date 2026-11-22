@@ -108,6 +108,12 @@ pub mod workspace_documents;
 pub mod workspace_io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod workspaces;
+/// Which device takes a turn several devices could take.
+pub mod work;
+#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
+pub mod tl_records;
+#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
+pub mod asks;
 /// Whether the endpoint a server serves its workspaces on names where it is
 /// reached, which says whether opening it waits for that name.
 #[cfg(not(target_arch = "wasm32"))]
