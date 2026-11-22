@@ -90,9 +90,8 @@ open before anything is installed.
 - **Opening one** is `app.so.tilo.linux#open` naming the app's desktop file
   (`linux#open app=org.gnome.TextEditor`), from a window or an agent's key.
   The server places it as it places Browser: the open makes the workspace's
-  `so.tilo.linux` record, the server asks the placer for the workspace's VM
-  host and that host's member device to start the app
-  (`tilo_actions::remote::linux_apps`), and the member asks its hosted-VM
+  `so.tilo.linux` record, and the device that takes the workspace's Linux turn
+  starts the app (`tilo_actions::remote::linux_apps`), asking its hosted-VM
   service (`Request::OpenApp`).
 - **The apps session.** The first app starts a second headless Tilo session
   in the VM, `/usr/libexec/tilo/apps-session`, beside Browser's and never the
@@ -195,17 +194,17 @@ command.
 
 ## Placement and routing
 
-The server places a workspace's Browser where its shells run
-([`placed_shells.rs`](../crates/server/tilo-server/src/placed_shells.rs)):
+A workspace's Browser runs where its shells run: on the device that takes the
+workspace's Linux turn
+([`linux_devices.rs`](../crates/server/tilo-server/src/linux_devices.rs)):
 
 1. Someone opens Browser: a person in their window, or an agent with a scoped
    key calling `app.so.tilo.browser#open`. The workspace lists Browser among
    its apps like any other, and the host opens the workspace's Browser record
-   for it. The server asks the placer for the host of the workspace's VM;
-   while every host is full the open waits and says so once.
-2. The server asks that host's member device, over the action service, to open
-   Browser, handing it the material below. The member asks its hosted-VM
-   service, which wakes the VM and starts the session.
+   for it. The server asks the workspace's devices to take the turn; while
+   none that runs Linux takes it, the open waits and says so once.
+2. The device that takes it opens Browser with the material below, asking its
+   hosted-VM service, which wakes the VM and starts the session.
 3. The session joins the workspace and opens the window; opening Browser
    again attaches to it.
 

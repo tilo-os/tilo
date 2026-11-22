@@ -352,15 +352,14 @@ that workspace environment's own, never in a guest sharing the host's kernel
   as the guest touches them, and a suspend writes only the pages written
   since the last one. The crate docs have the measurements behind the choice.
 - **More than one host:** a VM stays on the host that first woke it, where
-  its disk is. A placer (`tilo-linux-vm hosted place`) says which host runs a
-  workspace's VM: the one holding it, else the first host with room for one
-  more VM, the always-up one first. Each host reports the memory its awake VMs
-  really take — what the kernel measures each Firecracker process at, not the
-  size the VM may grow into — and what waiting wakes ask for. The placer
-  starts another machine once the awake VMs pass three quarters of the hosts'
-  memory, or a VM waits, and never takes one away itself. A wake with no room
-  waits, a person's and an agent's alike, after one line ("Starting another
-  machine for it, about 3 minutes."); it is never refused for room.
+  its disk is. A workspace's Linux work is a turn its devices take
+  (`work::takes_turn`): the host keeping the workspace's VM takes it, else one
+  with room for one more VM, room being the memory its awake VMs really take —
+  what the kernel measures each Firecracker process at, not the size the VM
+  may grow into. While no device takes it, the work waits and says so
+  ("Waiting for a device that runs Linux."); a wake on a full host waits too
+  ("The machine is full until one of its VMs goes idle."). Neither is ever
+  refused for room.
 - **Eviction:** a host the cloud takes back at short notice (an Azure Spot
   VM, about 30 seconds) is told by a file appearing (`--evict-notice`, written
   by whatever watches the cloud's notice). It then wakes no more VMs, saying
@@ -372,7 +371,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
 - **Moving a VM:** a machine told to drain — the same entry the eviction notice
   uses, asked for by an action, so a rolling update calls it — takes no more
   wakes and suspends every awake VM onto its state directory, then moves each
-  VM, its disk, its snapshot and its meter, to the machine the placer names. The
+  VM, its disk, its snapshot and its meter, to the machine it names. The
   bytes go over the connection the two machines already keep, a block at a time: a
   transfer cut short carries on from its last whole block, a disk's holes arrive
   as holes, and the machine taking a file uses it only once every block and the
