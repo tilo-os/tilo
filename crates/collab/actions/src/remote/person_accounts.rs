@@ -13,12 +13,9 @@
 //! ([`SEND_PIECE`]) — a page holds no MIME builder, so the host writes the
 //! message — and [`SEND`] hands it to its server; [`MARK`] tells a server
 //! what the reader changed about a message. The host opens each session with
-//! the secret its vault keeps, so nothing in this vocabulary carries one.
-//!
-//! One answer carries a secret back, to its person's own device alone:
-//! [`SIGN_IN`] hands an account's password to the app that signs in to it on
-//! a member's device that does not hold the workspace's vault, once the
-//! workspace's rules let it, the host asking the person first where they ask.
+//! the secret its vault keeps, so nothing in this vocabulary carries one: a
+//! member's device that may not read the vault reads and sends the
+//! workspace's mail here, and is never handed a password.
 //!
 //! The same actions answer a device that keeps its own accounts, so the page
 //! and the device read and change accounts through one vocabulary.
@@ -98,12 +95,6 @@ pub const SAVE_DRAFT: &str = "save-draft";
 /// from the first time it is asked, the host watches the person's inboxes
 /// for as long as it runs, with no window open anywhere.
 pub const ARRIVED: &str = "arrived";
-
-/// The password of the vault entry an account of the workspace signs in with
-/// ([`SignIn`]), for an app on the caller's own device, answered as
-/// [`SignedIn`]. Where the workspace's rules ask first, the host asks the
-/// caller's person and answers once they said yes.
-pub const SIGN_IN: &str = "sign-in";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -364,26 +355,6 @@ pub struct CancelSignIn {
 pub struct SetServices {
     pub account: String,
     pub services: Services,
-}
-
-/// The sign-in of the vault entry `item` (`vault.item:<id>`) an account names,
-/// for `app` ([`SIGN_IN`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SignIn {
-    pub item: String,
-    pub app: String,
-}
-
-/// The secret a [`SignIn`] was released.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SignedIn {
-    pub secret: String,
-}
-
-impl std::fmt::Debug for SignedIn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SignedIn").finish_non_exhaustive()
-    }
 }
 
 /// A mail account to add. The password travels here and nowhere back: the

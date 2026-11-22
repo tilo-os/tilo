@@ -13,8 +13,8 @@
 //! entry it names changes), the session answers with the new accounts and their passwords are
 //! asked for again. An account the session refused is asked for again at every answer, so a
 //! refusal made before this device caught up with the workspace is not kept. Where the
-//! workspace's rules ask the person first, the session's answer waits while the workspace's
-//! host asks them. A password released stays in this process's memory.
+//! workspace's rules ask the person first, the session refuses: no password leaves the vault on
+//! a question. A password released stays in this process's memory.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};

@@ -653,12 +653,12 @@ reason = "a frame on a live action stream, never kept; the removed `Offer` was i
 [[break]]
 file = "crates/system/accounts/src/sign_ins.rs"
 enum = "Ask"
-reason = "the account sign-ins socket: newline-delimited JSON, by name, between the session and the processes it serves on this device, and no line of it is kept. The session, the cloud service and the connectors the session starts ship in one image. `Hurry` let a connector's ask for accounts go after its person said yes on its window; the workspace's host asks the person now"
+reason = "the account sign-ins socket: newline-delimited JSON, by name, between the session and the processes it serves on this device, and no line of it is kept. The session, the cloud service and the connectors the session starts ship in one image. `Hurry` let a connector's ask for accounts go after its person said yes on its window, and no connector asks its person for a sign-in now"
 
 [[break]]
 file = "crates/system/accounts/src/sign_ins.rs"
 enum = "Answer"
-reason = "the session's half of the same socket: newline-delimited JSON over a local connection, never kept. `Asks` told a connector to ask its person; the session asks the workspace's host instead and answers a sign-in or a refusal"
+reason = "the session's half of the same socket: newline-delimited JSON over a local connection, never kept. `Asks` told a connector to ask its person; the session answers a sign-in or a refusal"
 
 [[break]]
 file = "crates/platform/tilolang-mail/src/wire.rs"
