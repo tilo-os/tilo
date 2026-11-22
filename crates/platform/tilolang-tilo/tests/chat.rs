@@ -143,6 +143,10 @@ fn post(r: &mut Replica, view: &ViewInstance, text: &str) {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the test walks a whole conversation: a category, a channel, a reply and a thread"
+)]
 fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     let (mut ada, loaded) = Replica::new(
         "ada",
