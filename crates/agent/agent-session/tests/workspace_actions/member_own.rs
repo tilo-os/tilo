@@ -117,7 +117,10 @@ async fn a_member_links_their_discord_account_through_the_host() {
                 let mut bot = ui::tilo_resource::Replica::<discord::guild::Guild>::from_doc(
                     std::mem::take(doc),
                 )
-                .as_bot_for("bridge-install", &hex::encode(host.cert.user_public_key));
+                .as_bot_for("bridge-install", &hex::encode(host.cert.user_public_key))
+                // The bot writes as Discord's: the record's store takes only what its own app
+                // publishes.
+                .in_app("so.tilo.discord", "Discord");
                 let applied = bot
                     .apply(discord::guild::Guild::SET_SIGN_IN.with(page.to_owned()))
                     .map(drop)
