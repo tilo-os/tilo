@@ -151,10 +151,10 @@ TILO_TARGET_IMGREF="$(/usr/libexec/tilo-board-successor \
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
 STAGING_HANDOFF=/usr/libexec/tilo-staging-handoff
-# The planned static network's keyfile writer, and the enrollment a planned
-# server spends its token on while this installer holds the network.
+# The planned static network's keyfile writer, and the login a planned server
+# makes while this installer holds the network.
 PLAN_NETWORK="${TILO_PLAN_NETWORK:-/usr/libexec/tilo-plan-network}"
-ENROLL_BIN="${TILO_TILO_ENROLL:-/usr/libexec/tilo/tilo-enroll}"
+TILO_BIN="${TILO_TILO_BIN:-/usr/bin/tilo}"
 NMCLI="${TILO_NMCLI:-nmcli}"
 NM_KEYFILES=/etc/NetworkManager/system-connections
 # The store volume the storage daemon's native backend serves from.
@@ -2447,52 +2447,45 @@ apply_plan_network() {
   log "  the plan's static address is up on $iface and kept for the installed system"
 }
 
-# The enrollment a planned machine spends its token on now rather than at first
-# boot: the sibling unlock can only be enrolled by an enrolled machine that
-# holds the person's device store, and the first boot must open its disk before
-# any service can start.
+# The login a planned machine makes now rather than at first boot: the sibling unlock can only be
+# enrolled by a joined machine that holds the person's device store, and the first boot must open
+# its disk before any service can start.
 enrol_planned_server() {
-  local var identity relay relative
+  local var identity state relative
   mapfile -t PLAN_IDENTITY_TARGET_VARS < <(find_installed_var "$MNT")
   [ "${#PLAN_IDENTITY_TARGET_VARS[@]}" -eq 1 ] \
-    || die "could not locate exactly one installed /var for the enrollment"
+    || die "could not locate exactly one installed /var for the login"
   var="${PLAN_IDENTITY_TARGET_VARS[0]}"
   identity="$var/lib/tilo"
+  state="$identity/state"
   install -d -m 0755 "$identity" || die "could not create the installed identity root"
-  [ -x "$ENROLL_BIN" ] || die "the enrollment program $ENROLL_BIN is missing"
-  relay=""
-  if [ -r "$DEPLOY_ETC/tilo/server.toml" ]; then
-    relay="$(sed -n 's/^[[:space:]]*relay[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-      "$DEPLOY_ETC/tilo/server.toml" | head -n 1)"
-  fi
-  step "Enrolling this machine with one of your devices"
-  local enrol=("$ENROLL_BIN" enroll --identity-root "$identity"
-    --token-file /etc/tilo/enrollment-token.txt
-    --label "$HOSTNAME_VAL" --timeout 270)
-  [ -z "${PLAN_RECOVERY_KEY_FILE:-}" ] || enrol+=(--recovery-key-file "$PLAN_RECOVERY_KEY_FILE")
-  [ -z "$relay" ] || enrol+=(--relay "$relay")
-  "${enrol[@]}" 2>&1 \
-    || die "this machine did not enroll; its disk would need the recovery key at every boot"
-  # The enrollment wrote into the installed /var as root from this live
-  # medium; label every file with the policy path it will have there, so the
-  # server's own account and session can read it.
+  [ -x "$TILO_BIN" ] || die "the tilo command $TILO_BIN is missing"
+  step "Joining this machine to one of your devices"
+  TILO_IDENTITY_ROOT="$identity" XDG_STATE_HOME="$state" HOME="$state" \
+    "$TILO_BIN" login "$(tr -d '[:space:]' < "${TILO_TICKET:-/etc/tilo/ticket}")" \
+    --label "$HOSTNAME_VAL" 2>&1 \
+    || die "this machine did not join your devices; its disk would need the recovery key at every boot"
+  # The login wrote into the installed /var as root from this live medium; label every file with
+  # the policy path it will have there, so the server's own account and session can read it.
   while IFS= read -r -d '' written; do
     relative="${written#"$var"/}"
     label_installed_tilo_path "$written" "/var/$relative"
   done < <(find "$identity" -mindepth 1 -print0)
-  # The installed system's first boot would have created these trees with
-  # tmpfiles' group, and the server's own account reads its device key through
-  # it (0640). A file written before that boot would stay root-only, so give
-  # the enrolled tree the group and the setgid flag it has there.
+  # The installed system's first boot would have created these trees with tmpfiles' group, and
+  # the server's own account reads its device key through it (0640). A file written before that
+  # boot would stay root-only, so give the identity tree the group and the setgid flag it has
+  # there, and the state — the login — to the server's account.
   label_installed_tilo_path "$identity" /var/lib/tilo
   getent group tilo-identity >/dev/null 2>&1 \
     || die "the installed image declares no tilo-identity group"
   find "$identity" -mindepth 1 -exec chown root:tilo-identity {} + \
-    || die "could not give the enrolled identity to the tilo-identity group"
+    || die "could not give the joined identity to the tilo-identity group"
   find "$identity" -mindepth 1 -type d -exec chmod g+s {} + \
-    || die "could not make the enrolled identity's directories group-inheriting"
+    || die "could not make the joined identity's directories group-inheriting"
+  chown -R tilo-server:tilo-server "$state/tilo" \
+    || die "could not give the login to the server's account"
   PLAN_ENROLLED_IDENTITY="$identity"
-  log "  the machine is enrolled; its identity is at $identity"
+  log "  the machine joined your devices; its identity is at $identity"
 }
 
 # The unlock another of the person's devices releases, enrolled while the
@@ -2522,8 +2515,8 @@ enrol_planned_sibling() {
 }
 
 if [ "$INSTALL_PLAN" -eq 1 ]; then
-  [ -f /etc/tilo/enrollment-token.txt ] \
-    || die "the staged plan carried no enrollment token"
+  [ -s "${TILO_TICKET:-/etc/tilo/ticket}" ] \
+    || die "the staged plan carried no ticket"
   [ -n "$DEPLOY_ETC" ] && [ -d "$DEPLOY_ETC/tilo" ] \
     || die "the installed system's /etc was not found for the enrollment token"
   phase plan-network
@@ -2532,7 +2525,7 @@ if [ "$INSTALL_PLAN" -eq 1 ]; then
   enrol_planned_server
   phase sibling
   enrol_planned_sibling
-  rm -f /etc/tilo/enrollment-token.txt
+  rm -f "${TILO_TICKET:-/etc/tilo/ticket}"
   # The key reached the person's devices with the enrollment: this machine
   # keeps none, and its disk opens with their consent.
   [ -z "${PLAN_RECOVERY_KEY_FILE:-}" ] \

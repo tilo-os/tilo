@@ -6,7 +6,7 @@
 # updates that stage and roll back on this machine's own health verdict.
 # ============================================================================
 # No compositor, no greetd, no session. Users reach the machine through their
-# own workspaces once the enrollment token in /etc/tilo/enrollment-token.txt is
+# own workspaces once the ticket in /etc/tilo/ticket is
 # consumed on first boot; an operator reaches it at the serial console, whose
 # pairing token is the first boot's.
 #
@@ -269,15 +269,10 @@ RUN install -d -m 0755 /usr/lib/tilo && echo server > /usr/lib/tilo/image-flavou
 RUN printf '# Tilo Server: the token made for this machine, or the short code it\n# shows for a device of yours to approve.\ntoken\ncode\n' \
         > /usr/lib/tilo/enrollment-methods
 
-# The first-boot script runs the one enrollment every image runs:
-# `tilo-enroll enroll` spends the token in /etc/tilo/enrollment-token.txt (a
-# base32-Crockford token minted on the operator's primary device by the imager
-# app) and persists a device cert, or shows a code a device of theirs approves
-# when no token was put there. Baked into the ISO by `tilo-installer` — the
-# sample stub here is overwritten at install time.
-RUN mkdir -p /etc/tilo \
-    && echo "# Replace with a base32-Crockford enrollment token minted by your primary device." \
-        > /etc/tilo/enrollment-token.txt
+# The first-boot script logs this machine in with the ticket provisioned on its volume: `tilo login`
+# with the ticket in /etc/tilo/ticket, which the installer writes. A machine with no ticket says
+# how to make one and stops.
+RUN mkdir -p /etc/tilo && : > /etc/tilo/ticket
 
 # Default server config; `tilo-server init` inside the first-boot
 # service writes the configuration under `/etc/tilo/server.toml` once the

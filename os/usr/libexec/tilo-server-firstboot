@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Complete this machine's enrollment with one of the person's devices, its
+# Complete this machine's join with one of the person's devices, its
 # provisioning, and — where the install planned it — the sibling unlock of its
 # root.
 #
@@ -7,27 +7,29 @@
 # encrypted root (tilo-disk-encrypt finish --unlock owner-device): it enrols a
 # LUKS2 slot another of the person's devices releases at boot, then removes
 # that install slot and shreds the key. It can only run once this machine is
-# enrolled and holds the person's device store, which is what the enrollment
-# above hands it. A failure leaves both in place and tries again on the next
+# joined and holds the person's device store, which is what the login above
+# hands it. A failure leaves both in place and tries again on the next
 # boot; the installed system's status names the slot pending until then.
 #
-# Paths and commands are overridable so the enrolment logic runs against fakes
+# Paths and commands are overridable so the logic runs against fakes
 # (os/tests/server_firstboot_sibling.sh); a boot passes none of them.
 set -euo pipefail
 
 identity_root="${TILO_SERVER_IDENTITY_ROOT:-/var/lib/tilo}"
-token="${TILO_SERVER_ENROLLMENT_TOKEN:-/etc/tilo/enrollment-token.txt}"
+# The account's state lives on the same volume, so the login and the identity outlive a boot and
+# the server reads them at the path it serves from.
+state_home="${TILO_SERVER_STATE_HOME:-$identity_root/state}"
+login_file="$state_home/tilo/device/login.json"
+# The one secret an empty volume joins with, written by whoever provisioned the machine.
+ticket="${TILO_SERVER_TICKET:-/etc/tilo/ticket}"
 cert="$identity_root/device/cert.bin"
 decommissioned="${TILO_SERVER_DECOMMISSIONED:-/var/lib/tilo-server/decommissioned}"
 state_root="${TILO_SERVER_STATE_ROOT:-/var/lib/tilo-server}"
-# The plan this machine installs from is named by the token nonce, kept here
-# when it enrolled: the server reads it and finishes installing what it says.
-install_plan="${TILO_SERVER_INSTALL_PLAN:-$state_root/install-plan.nonce}"
 sibling_dir="${TILO_SERVER_SIBLING_DIR:-/var/lib/tilo/sibling-enrol}"
 sibling_conf="$sibling_dir/enrol.conf"
 sibling_key="$sibling_dir/luks.key"
 pending_marker="$state_root/sibling-unlock-pending"
-enroll_bin="${TILO_TILO_ENROLL:-/usr/libexec/tilo/tilo-enroll}"
+tilo_bin="${TILO_TILO_BIN:-/usr/bin/tilo}"
 disk_encrypt="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
 auth_bin="${TILO_TILO_AUTH:-/usr/libexec/tilo/tilo-auth}"
 cryptsetup_bin="${TILO_CRYPTSETUP:-cryptsetup}"
@@ -128,51 +130,48 @@ if [[ -e "$cert" || -L "$cert" ]] && ! valid_device_certificate; then
     exit 1
 fi
 
-if valid_device_certificate; then
+if valid_device_certificate && [ -s "$login_file" ]; then
     sibling_enrol
     exit 0
 fi
 # The name this machine is offered under. `hostnamectl --static` succeeds with
 # nothing to say when the image carries no /etc/hostname, which a bootc image
-# may not, and an empty label is refused by the enrollment: fall back on the
-# running name and then on a fixed one, so a machine with its own idea of its
-# name still pairs.
+# may not, and an empty label is refused by the login: fall back on the
+# running name and then on a fixed one.
 label="$(hostnamectl --static 2>/dev/null || true)"
 [[ -n "$label" ]] || label="$(hostname 2>/dev/null || true)"
 [[ -n "$label" ]] || label='Home server'
 
-# What this machine was handed is root's to read: a token another account
+no_identity='no identity on this volume: make a ticket with `tilo device add` and pass it as TILO_TICKET'
+# What this machine was handed is root's to read: a ticket another account
 # could have swapped in is not one.
-if [[ -e "$token" || -L "$token" ]]; then
-    [[ "$(stat -c '%u' -- "$token" 2>/dev/null || echo unknown)" = 0 ]] \
-        || { echo "tilo-server-firstboot: refusing an enrollment token not owned by root" >&2; exit 1; }
+if [[ -e "$ticket" || -L "$ticket" ]]; then
+    [[ "$(stat -c '%u' -- "$ticket" 2>/dev/null || echo unknown)" = 0 ]] \
+        || { echo "tilo-server-firstboot: refusing a ticket not owned by root" >&2; exit 1; }
+fi
+if [[ ! -s "$ticket" ]]; then
+    echo "$no_identity" >&2
+    exit 1
 fi
 
-# The one enrollment every Tilo image uses. It takes the token in
-# /etc/tilo/enrollment-token.txt when the deployment put a real one there,
-# and otherwise shows a code a device of the person's approves; the methods it
-# may use are the ones this image declares in
-# /usr/lib/tilo/enrollment-methods. It burns the token it spends.
-#
-# The relay its configuration names is where it shows that code: a server
-# behind a network address translation is reached only through it.
-relay=""
-if [[ -r /etc/tilo/server.toml ]]; then
-    relay="$(sed -n 's/^[[:space:]]*relay[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
-        /etc/tilo/server.toml | head -n 1)"
-fi
-enroll_args=(--identity-root "$identity_root"
-    --label "$label" --timeout 270
-    --nonce-output "$install_plan")
-[[ -n "$relay" ]] && enroll_args+=(--relay "$relay")
-"$enroll_bin" enroll "${enroll_args[@]}"
+# This machine joins the person's devices the way any computer does: one ticket, spent once, and
+# the identity and login it leaves on the volume from then on.
+install -d -m 0700 "$state_home"
+TILO_IDENTITY_ROOT="$identity_root" XDG_STATE_HOME="$state_home" HOME="$state_home" \
+    "$tilo_bin" login "$(tr -d '[:space:]' < "$ticket")" --label "$label" \
+    || { echo "$no_identity" >&2; exit 1; }
 valid_device_certificate \
-    || { echo "tilo-server-firstboot: enrollment produced an unsafe device certificate" >&2; exit 1; }
-# The server reads the plan it must finish installing from this file: it is
-# the server account's to read, and nobody else's.
-if [[ -e "$install_plan" || -L "$install_plan" ]]; then
-    chown --no-dereference tilo-server:tilo-server "$install_plan"
-    chmod 0600 "$install_plan"
-fi
+    || { echo "tilo-server-firstboot: the login left an unsafe device certificate" >&2; exit 1; }
+rm -f "$ticket"
+# The server's own account reads its device key through the identity group, and the login as
+# itself: what a join from the installer left is given the same group and setgid flag, and the
+# state is the server account's.
+getent group tilo-identity >/dev/null 2>&1 \
+    || { echo "tilo-server-firstboot: the image declares no tilo-identity group" >&2; exit 1; }
+find "$identity_root" -mindepth 1 -exec chown root:tilo-identity {} + \
+    || { echo "tilo-server-firstboot: could not give the identity to the tilo-identity group" >&2; exit 1; }
+find "$identity_root" -mindepth 1 -type d -exec chmod g+s {} + \
+    || { echo "tilo-server-firstboot: could not make the identity's directories group-inheriting" >&2; exit 1; }
+chown -R tilo-server:tilo-server "$state_home/tilo"
 sibling_enrol
-echo "tilo-server-firstboot: enrollment and full-sync setup complete"
+echo "tilo-server-firstboot: login and full-sync setup complete"
