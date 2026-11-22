@@ -463,16 +463,9 @@ impl Worker {
         }
     }
 
-    /// The app of this catalogue `name` names: its id, or the last part of it
-    /// (`notes` for `so.tilo.notes`).
-    fn page_app(&self, name: &str) -> Option<&'static ui::application::ApplicationDefinition> {
-        self.catalogue.get(name).or_else(|| {
-            self.catalogue.iter().find(|app| {
-                app.app_id()
-                    .rsplit_once('.')
-                    .is_some_and(|(_, last)| last == name)
-            })
-        })
+    /// The app of this catalogue whose id is `id`.
+    fn page_app(&self, id: &str) -> Option<&'static ui::application::ApplicationDefinition> {
+        self.catalogue.get(id)
     }
 
     fn open_page(
@@ -596,7 +589,7 @@ impl Worker {
             .iter()
             .filter(|app| app.keeps_workspace_resource())
         {
-            let name = page_app_name(app.app_id());
+            let name = app.app_id();
             if hosted.iter().any(|(hosted, _)| hosted == app.app_id()) {
                 continue;
             }
@@ -761,12 +754,7 @@ impl Worker {
                     || app.title().to_lowercase().contains(&query)
                     || app.app_id().to_lowercase().contains(&query)
             })
-            .map(|app| {
-                (
-                    app.title().to_owned(),
-                    page_app_name(app.app_id()).to_owned(),
-                )
-            })
+            .map(|app| (app.title().to_owned(), app.app_id().to_owned()))
             .collect();
         apps.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (title, name) in apps {
@@ -799,7 +787,7 @@ impl Worker {
                     }
                     let href = format!(
                         "/w/{workspace_id}/{}/{sub}",
-                        page_app_name(app.app_id()),
+                        app.app_id(),
                         sub = encode_part(&found.resource),
                     );
                     if rows
@@ -1459,11 +1447,6 @@ fn asking_html(label: &str, fields: &[RowField], values: &[String]) -> String {
 /// The id of the search row after `rows`.
 fn next_row(rows: &[SearchRow]) -> u32 {
     SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default())
-}
-
-/// An app's page name: the last part of its id (`notes` for `so.tilo.notes`).
-fn page_app_name(app_id: &str) -> &str {
-    app_id.rsplit_once('.').map_or(app_id, |(_, last)| last)
 }
 
 /// The rows of the search page as HTML, grouped: the apps, then what the
