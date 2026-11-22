@@ -179,6 +179,7 @@ fn a_held_ask_is_answered_once_the_workspace_keeps_a_file_account() {
         other => panic!("the accounts, not {other:?}"),
     }
     until_waiting(&served, 0);
+    drop(served);
 }
 
 #[test]
@@ -196,6 +197,7 @@ fn an_asker_that_goes_away_is_no_longer_waited_for() {
 
     drop(asker);
     until_waiting(&served, 0);
+    drop(served);
 }
 
 /// An origin connector of Mail in the workspace is told that workspace's accounts, its email

@@ -645,6 +645,7 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
     desktops.attach(&engine, &reads, &writes);
     // The workspace's keys, as the key service hands them to this device.
     service.hand_keys(&engine, workspace, service.keys_of(workspace));
+    drop(service);
     let layout = (workspace, Route::layout());
     // The write's signature waits for the test: it is under way, so nothing of it can have been
     // taken in here.
@@ -848,6 +849,7 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
         "and so is the layout"
     );
     service.hand_keys(&engine, workspace, service.keys_of(workspace));
+    drop(service);
     let mut shown = layout.clone();
     next.follow(&engine, "", &mut shown);
     next.capture(&engine, &shown);
@@ -1009,6 +1011,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     let (wake, _heard) = woken();
     let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
     attach_through_service(&next, &engine, &service);
+    drop(service);
     let mut reopened = Layout {
         workspaces: vec![Workspace::new(workspace, "Home")],
         active: workspace,
@@ -1111,6 +1114,7 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
         Some(state.path()),
     );
     attach_through_service(&desktops, &engine, &service);
+    drop(service);
     let mut shown = layout.clone();
     desktops.follow(&engine, "", &mut shown);
     let view_key = (workspace, Route::view(&person));
@@ -1270,6 +1274,7 @@ fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
         Some(state.path()),
     );
     attach_through_service(&next, &engine, &service);
+    drop(service);
     assert!(
         !next.held(&layout_key, |held| held.pending_steps.is_empty()),
         "the layout is back"
@@ -1496,6 +1501,7 @@ fn a_window_of_the_persons_own_moved_before_a_session_ends_comes_back_there() {
     let (wake, _heard) = woken();
     let next = Layouts::new(notes_seen, wake, person.clone(), Some(state.path()));
     attach_through_service(&next, &engine, &service);
+    drop(service);
     let mut reopened = Layout {
         workspaces: vec![
             Workspace::new(home, "Home"),
@@ -1676,6 +1682,7 @@ fn a_layout_whose_keys_arrive_late_is_waited_for_and_never_written_over() {
 
     // The keys arrive, and the next look lays the saved window out.
     service.hand_keys(&engine, workspace, keys);
+    drop(service);
     after.follow(&engine, "", &mut login);
     assert_eq!(
         windows_of(&login.workspaces[0]),

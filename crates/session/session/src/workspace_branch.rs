@@ -1232,6 +1232,7 @@ mod tests {
                 &device.record(TO, CHAT, &emoji).expect("the branch holds the emoji"),
             )
             .unwrap();
+            drop(device);
             for app in [CHAT, TERMINAL] {
                 let path = kept(TO, app, CHAT, &emoji);
                 assert!(path.exists(), "{app}'s copy of the emoji came along");
@@ -1301,6 +1302,7 @@ mod tests {
                 &device.record(TO, CHAT, &emoji).expect("the branch holds the emoji"),
             )
             .unwrap();
+            drop(device);
             let mut met = opened(TO).read(AutoCommit::clone).unwrap();
             met.merge_incoming(&mut engines).unwrap();
             assert_eq!(
@@ -1410,6 +1412,7 @@ mod tests {
                     8 << 20
                 );
             }
+            drop(device);
         }
 
         phase a_branch_holds_the_sources_records_but_its_chat_and_only_the_person;
@@ -1499,6 +1502,7 @@ mod tests {
             );
             assert_eq!(engine.owner_of(TO), Ok(person));
             assert_eq!(device.documents(TO).len(), 2);
+            drop(device);
         }
     }
 

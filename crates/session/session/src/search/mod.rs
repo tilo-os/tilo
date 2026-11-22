@@ -2043,6 +2043,7 @@ mod tests {
             device.names("so.tilo.notes", HERE).is_empty(),
             "nothing is named here"
         );
+        drop(device);
     }
 
     tilo_test_env::scenario! {
@@ -2077,6 +2078,7 @@ mod tests {
                     .as_ref()
                     .is_some_and(|records| records.holds(FORM))
             });
+            drop(device);
             let feed = search.feed(HERE, &Scope::Workspace);
             let hit = feed
                 .sources
@@ -2253,6 +2255,7 @@ mod tests {
                 "the document is opened by its path, not by the record id's `file:/…`"
             );
             device.until(|| device.names("so.tilo.notes", HERE) == [record.as_str()]);
+            drop(device);
 
             // The file going away leaves the record held and says what is gone.
             std::fs::remove_file(&file).expect("the file goes");

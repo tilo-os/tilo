@@ -601,6 +601,7 @@ mod tests {
             "no one wrote the app's own document yet"
         );
         device.name(NOTES, KITCHEN, &[(NOTE, "document", Some("Groceries"))]);
+        drop(device);
         assert!(
             matches!(
                 reads.read(KITCHEN, NOTES, "", None),
