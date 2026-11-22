@@ -474,7 +474,7 @@ def check_windows(session: Session, processes: dict, session_pid: int, out: Path
         return len([line for line in log_lines(session, "tilolang instance handed over")
                     if line.get("package_id") == tasks])
     before_handed = handed()
-    search_beside(session, say("apps/tl/tasks", "d-so-tilo-lang-tasks"))
+    search_beside(session, say("apps/tl/tasks", "d-so-tilo-tasks"))
     windows = until(f"a second window of {tasks}", lambda: (lambda shown: shown if len(shown) == 2
                     else None)([w for w in session.windows() if w.get("app_id") == tasks]), 30)
     until("the second window's instance handed to the host", lambda: handed() > before_handed, 30)
@@ -561,7 +561,7 @@ def check_titles(session: Session, out: Path) -> dict:
         time.sleep(1.0)
         session.control_cmd("snapshot", str(out / f"titles-window-{index}.png"))
     return {"titles": {str(tab): title for tab, title in titles.items()},
-            "page": today, "app_name": say("apps/tl/tasks", "d-so-tilo-lang-tasks")}
+            "page": today, "app_name": say("apps/tl/tasks", "d-so-tilo-tasks")}
 
 
 def press_in(session: Session, window: dict, name: str) -> None:

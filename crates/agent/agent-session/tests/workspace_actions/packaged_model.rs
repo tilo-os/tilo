@@ -29,17 +29,17 @@ use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use ui::tilo_resource::Resource as _;
 
 /// The app the test installs, which the server does not have compiled in.
-const TASKS: &str = "so.tilo.tasks";
+const REMOTE: &str = "so.tilo.remote";
 /// The resource the app keeps per workspace.
-const TRACKER: &str = "tasks.tracker";
-/// The signed surface the Tasks app ships: its verbs, and how each is decided.
-const TASKS_SURFACE: &[u8] = include_bytes!("../../../../../apps/tasks/surface.toml");
+const CONNECTIONS: &str = "remote.connection-list";
+/// The signed surface the Remote app ships: its verbs, and how each is decided.
+const REMOTE_SURFACE: &[u8] = include_bytes!("../../../../../apps/remote/surface.toml");
 
-/// The Tasks model module the `app-models` check built from the guest crate
-/// beside the app (`apps/tasks-model-wasm`), under the target directory or
+/// The Remote model module the `app-models` check built from the guest crate
+/// beside the app, under the target directory or
 /// `TILO_APP_MODELS` (`t outputs app-models`): the app's own code, which the
 /// engine links after the model runtime beside it.
-fn tasks_model() -> Vec<u8> {
+fn remote_model_module() -> Vec<u8> {
     let directory = std::env::var_os("TILO_APP_MODELS").map_or_else(
         || {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -48,7 +48,9 @@ fn tasks_model() -> Vec<u8> {
         },
         std::path::PathBuf::from,
     );
-    let module = directory.join("tasks").join(tilo_app_package::MODEL_MODULE);
+    let module = directory
+        .join("remote")
+        .join(tilo_app_package::MODEL_MODULE);
     let asked = format!(
         "reading {}; build it with `t outputs app-models`",
         module.display()
@@ -62,7 +64,7 @@ pub(super) fn package(app: &str, model: &[u8], surface: &[u8]) -> Vec<u8> {
     let scratch = tempfile::tempdir().unwrap();
     let payload = scratch.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::write(payload.join("bin/tasks"), b"the app's window").unwrap();
+    std::fs::write(payload.join("bin/remote"), b"the app's window").unwrap();
     std::fs::write(payload.join(tilo_app_package::MODEL_MODULE), model).unwrap();
     std::fs::write(payload.join("surface.toml"), surface).unwrap();
     let identity = SigningIdentity::generate();
@@ -86,7 +88,7 @@ landlock = "strict"
 mode = "off"
 
 [entrypoint]
-bin = "bin/tasks"
+bin = "bin/remote"
 type = "gui"
 "#,
         hex::encode(identity.public_key_bytes())
@@ -97,10 +99,12 @@ type = "gui"
     tapp::to_bytes(&packed.meta, Some(source)).unwrap()
 }
 
-/// `name` as the action API binds it.
-fn create_area(name: &str) -> serde_json::Map<String, serde_json::Value> {
+/// A connection named `name`, as the action API binds `add-connection`'s arguments.
+fn add_connection(name: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();
     arguments.insert("name".into(), serde_json::Value::String(name.into()));
+    arguments.insert("host".into(), "build.example".into());
+    arguments.insert("kind".into(), "ssh".into());
     arguments
 }
 
@@ -296,8 +300,8 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     // against, kept under its state.
     tilo_server::surfaces::decide_receipt(&state.path().join("surfaces"));
     let created = workspaces.create("Packaged Tasks").await.unwrap();
-    let model = tasks_model();
-    let package = package(TASKS, &model, TASKS_SURFACE);
+    let model = remote_model_module();
+    let package = package(REMOTE, &model, REMOTE_SURFACE);
     // The workspace's server keeps the package file its governance names, as
     // an upload would leave it.
     let file = blake3::hash(&package).to_hex().to_string();
@@ -313,10 +317,10 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
             &server_device.cert,
             [7; 32],
             WorkspaceMembershipCommand::InstallApp(AppRelease {
-                app: TASKS.into(),
+                app: REMOTE.into(),
                 version: "1.0.0".into(),
                 surface: blake3::hash(
-                    collab_types::surface::SurfaceFile::kept(TASKS_SURFACE)
+                    collab_types::surface::SurfaceFile::kept(REMOTE_SURFACE)
                         .expect("the app's surface parses")
                         .1
                         .as_bytes(),
@@ -336,8 +340,8 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
             .prepare_packaged_application(
                 &created.workspace,
                 &server_device.cert,
-                TASKS,
-                TRACKER,
+                REMOTE,
+                CONNECTIONS,
                 "",
                 &package,
             )
@@ -346,7 +350,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         "the server makes the app's resource from its package"
     );
     let before = workspaces
-        .resource_document(&created.workspace, TASKS, "")
+        .resource_document(&created.workspace, REMOTE, "")
         .await
         .unwrap()
         .expect("the workspace holds the resource the module made");
@@ -362,7 +366,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     .in_workspace(&created.workspace)
     .in_new_execution();
     let route = DocumentRoute {
-        app_id: TASKS.into(),
+        app_id: REMOTE.into(),
         cluster_id: created.workspace.clone(),
         document: String::new(),
     };
@@ -389,20 +393,18 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
             })
             .unwrap_or_else(|| panic!("the catalogue lists {action}: {listed:?}"))
     };
-    let create = row("create-area");
-    assert_eq!(create.app_id, TASKS);
-    assert_eq!(create.resource.kind, TRACKER);
-    assert_eq!(create.resource.label, "Tasks");
+    let create = row("add-connection");
+    assert_eq!(create.app_id, REMOTE);
+    assert_eq!(create.resource.kind, CONNECTIONS);
     let descriptor = create.action.as_ref().unwrap();
-    assert_eq!(descriptor.address.resource, TRACKER);
+    assert_eq!(descriptor.address.resource, CONNECTIONS);
     assert_eq!(descriptor.contract.kind, ActionKind::Undoable);
     assert_eq!(descriptor.params[0].name, "name");
     assert!(descriptor.params[0].required);
     // A destructive verb is listed as the destructive risk its surface
     // declares, so a caller knows it asks before it is invoked.
-    let delete = row("delete-area").action.as_ref().unwrap();
+    let delete = row("delete-connection").action.as_ref().unwrap();
     assert_eq!(delete.contract.risk, RiskLevel::Destructive);
-    assert_eq!(delete.contract.confirmation, ConfirmationPolicy::None);
     // A listing that names no provider offers the app's provider too.
     let all = catalogue(
         &actions,
@@ -422,8 +424,8 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
 
     let request = request(
         &provider(&route),
-        ActionAddress::new(TRACKER, "create-area"),
-        InvokeArgument::Json(create_area("Ship it")),
+        ActionAddress::new(CONNECTIONS, "add-connection"),
+        InvokeArgument::Json(add_connection("Ship it")),
     );
     let acting = caller.acting().clone();
     let status = settled(&actions, created.workspace_id, &caller, &request);
@@ -433,18 +435,18 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     );
 
     let after = workspaces
-        .resource_document(&created.workspace, TASKS, "")
+        .resource_document(&created.workspace, REMOTE, "")
         .await
         .unwrap()
         .expect("the document still exists");
     let mut document = automerge::AutoCommit::load(&after).unwrap();
-    let tracker = tasks_model::Tracker::read(&document).unwrap();
+    let remote = remote_model::Remote::read(&document).unwrap();
     assert!(
-        tracker
-            .areas
+        remote
+            .connections
             .iter()
-            .any(|(_, area)| area.name.as_str() == "Ship it"),
-        "the tracker holds the area the agent made"
+            .any(|(_, connection)| connection.name.as_str() == "Ship it"),
+        "the list holds the connection the agent made"
     );
     // History names the agent, and the person whose device handed it the
     // action, never the governor's person as the actor.
@@ -465,31 +467,31 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
             .await
             .unwrap()
             .publication()
-            .is_sealed_document(TASKS, ""),
+            .is_sealed_document(REMOTE, ""),
         "the packaged resource is sealed"
     );
 
     // Another holder of the resource replays the invocation with the same
     // module, as the same actor and at the same origin clock: the change it
     // writes is the change the server published.
-    let surface = collab_types::surface::SurfaceFile::parse(TASKS_SURFACE).unwrap();
+    let surface = collab_types::surface::SurfaceFile::parse(REMOTE_SURFACE).unwrap();
     let verb = surface
         .resources
         .iter()
         .flat_map(|resource| resource.verbs.iter())
-        .find(|verb| verb.id == "create-area")
+        .find(|verb| verb.id == "add-connection")
         .unwrap();
     let replayed = tilo_model_engine::Model::compile(&model)
         .unwrap()
         .apply(tilo_model_engine::Invocation {
-            app: TASKS,
-            kind: TRACKER,
+            app: REMOTE,
+            kind: CONNECTIONS,
             verb,
             id: "",
             document: &before,
             member: &tilo_actions::MemberId::of_actor_bytes(b"agent:assistant").unwrap(),
             acting: &acting,
-            arguments: create_area("Ship it"),
+            arguments: add_connection("Ship it"),
             now: i64::try_from(now_ms).unwrap(),
         })
         .unwrap();
@@ -506,13 +508,12 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     // person.
     let entry = recorded_entry(&after);
     assert!(
-        entry
-            .action
-            .as_ref()
-            .is_some_and(|action| String::from_utf8_lossy(&action.payload).contains("create-area")),
+        entry.action.as_ref().is_some_and(
+            |action| String::from_utf8_lossy(&action.payload).contains("add-connection")
+        ),
         "the entry names the action applied: {entry:?}"
     );
-    assert_eq!(entry.app.as_ref().map(|app| app.id.as_str()), Some(TASKS));
+    assert_eq!(entry.app.as_ref().map(|app| app.id.as_str()), Some(REMOTE));
     assert_eq!(
         entry
             .invoker
@@ -531,8 +532,8 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     .in_new_execution();
     let clicked = super::request(
         &provider(&route),
-        ActionAddress::new(TRACKER, "create-area"),
-        InvokeArgument::Json(create_area("From the window")),
+        ActionAddress::new(CONNECTIONS, "add-connection"),
+        InvokeArgument::Json(add_connection("From the window")),
     );
     let status = settled(&actions, created.workspace_id, &window, &clicked);
     assert!(
@@ -540,17 +541,17 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         "the person's action is applied from the package: {status:?}"
     );
     let clicked_after = workspaces
-        .resource_document(&created.workspace, TASKS, "")
+        .resource_document(&created.workspace, REMOTE, "")
         .await
         .unwrap()
         .expect("the document still exists");
     assert!(
-        tasks_model::Tracker::read(&automerge::AutoCommit::load(&clicked_after).unwrap())
+        remote_model::Remote::read(&automerge::AutoCommit::load(&clicked_after).unwrap())
             .unwrap()
-            .areas
+            .connections
             .iter()
-            .any(|(_, area)| area.name.as_str() == "From the window"),
-        "the tracker holds the area the person made"
+            .any(|(_, connection)| connection.name.as_str() == "From the window"),
+        "the list holds the connection the person made"
     );
     let entry = recorded_entry(&clicked_after);
     let invoker = entry.invoker.as_ref().expect("the entry names who acted");
@@ -585,8 +586,8 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     );
     let refused = super::request(
         &provider(&route),
-        ActionAddress::new(TRACKER, "create-area"),
-        InvokeArgument::Json(create_area("Denied")),
+        ActionAddress::new(CONNECTIONS, "add-connection"),
+        InvokeArgument::Json(add_connection("Denied")),
     );
     let status = settled(&actions, created.workspace_id, &denied, &refused);
     assert!(
@@ -595,7 +596,7 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     );
     assert_eq!(
         workspaces
-            .resource_document(&created.workspace, TASKS, "")
+            .resource_document(&created.workspace, REMOTE, "")
             .await
             .unwrap()
             .expect("the document still exists"),
@@ -607,12 +608,12 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
     // as an app compiled in would be: the agent's turn is bound to asking for
     // undoable changes, the question reaches the person's own device, and the
     // answer applies the action.
-    let area = tracker
-        .areas
+    let connection = remote
+        .connections
         .iter()
-        .find(|(_, area)| area.name.as_str() == "Ship it")
+        .find(|(_, connection)| connection.name.as_str() == "Ship it")
         .map(|(id, _)| id.to_string())
-        .expect("the tracker holds the area the agent made");
+        .expect("the list holds the connection the agent made");
     let asking = Caller::authenticated(
         root.verifying_key().to_bytes(),
         server_device.cert.device_public_key,
@@ -630,10 +631,13 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         )],
     );
     let mut delete = serde_json::Map::new();
-    delete.insert("area".into(), serde_json::Value::String(area.clone()));
+    delete.insert(
+        "connection".into(),
+        serde_json::Value::String(connection.clone()),
+    );
     let asking_request = super::request(
         &provider(&route),
-        ActionAddress::new(TRACKER, "delete-area"),
+        ActionAddress::new(CONNECTIONS, "delete-connection"),
         InvokeArgument::Json(delete),
     );
     let seen = Seen::default();
@@ -679,16 +683,19 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
         .cloned()
         .expect("the person's device was asked");
     assert_eq!(question.risk, "destructive");
-    assert_eq!(question.action_label, "delete-area");
+    assert_eq!(question.action_label, "delete-connection");
     let done = workspaces
-        .resource_document(&created.workspace, TASKS, "")
+        .resource_document(&created.workspace, REMOTE, "")
         .await
         .unwrap()
         .expect("the document still exists");
-    let tracker = tasks_model::Tracker::read(&automerge::AutoCommit::load(&done).unwrap()).unwrap();
+    let remote = remote_model::Remote::read(&automerge::AutoCommit::load(&done).unwrap()).unwrap();
     assert!(
-        !tracker.areas.iter().any(|(id, _)| id.as_str() == area),
-        "the approved action deleted the area"
+        !remote
+            .connections
+            .iter()
+            .any(|(id, _)| id.as_str() == connection),
+        "the approved action deleted the connection"
     );
     server.shutdown().await;
 }

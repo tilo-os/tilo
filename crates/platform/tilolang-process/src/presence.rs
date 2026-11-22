@@ -306,7 +306,7 @@ mod tests {
             permissions: Vec::new(),
             apps: Vec::new(),
         });
-        for (app, resource) in [(APP, "channel-1"), ("so.tilo.lang.tasks", "task-1")] {
+        for (app, resource) in [(APP, "channel-1"), ("so.tilo.tasks", "task-1")] {
             let (key, payload) = step(app, resource, "TextChannel");
             assert!(presence.take(&CollabEvent::RemotePresenceUpdate {
                 member: MemberId::agent("scout"),

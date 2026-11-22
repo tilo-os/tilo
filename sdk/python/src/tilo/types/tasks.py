@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Tracker` is the app's `tasks.tracker` at `tasks/<resource>`, read with
+`Task` is the app's `tl.so.tilo.tasks.Task` at `tasks/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,922 +20,638 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "Kind",
-    "Person",
-    "TrackerArea",
-    "Area",
-    "Attachment",
-    "BudgetBy",
-    "Issue",
-    "Link",
-    "ListedIssue",
-    "Message",
-    "MessageKind",
-    "NewIssue",
-    "Origin",
     "Priority",
-    "Resumed",
-    "Status",
-    "Stopped",
-    "StoppedWhy",
-    "WaitFor",
-    "WaitKind",
-    "Work",
-    "Tracker",
-    "Issues",
-    "CreateAreaArgs",
-    "RenameAreaArgs",
-    "SetKindArgs",
-    "InvolveArgs",
-    "RemovePersonArgs",
-    "DeleteAreaArgs",
-    "CreateArgs",
-    "StartArgs",
-    "CreateManyArgs",
-    "RenameArgs",
-    "MoveUnderArgs",
-    "AssignArgs",
-    "SetProjectArgs",
-    "AttachArgs",
-    "DetachArgs",
-    "AddLabelArgs",
-    "PlaceArgs",
-    "CommentArgs",
-    "LinkArgs",
-    "LinkNoteArgs",
-    "DeleteArgs",
-    "PlanArgs",
-    "SetPlaceArgs",
+    "Task",
+    "Project",
+    "Section",
+    "Tasks",
+    "TiloTasks",
+    "CheckArgs",
+    "DueTodayArgs",
+    "DueTomorrowArgs",
+    "DueNextWeekArgs",
+    "ScheduleArgs",
+    "SetTimeArgs",
+    "DueClearArgs",
+    "RemindAtArgs",
+    "RemindClearArgs",
+    "RemindArgs",
+    "SetPriorityNoneArgs",
+    "SetPriorityLowArgs",
+    "SetPriorityMediumArgs",
+    "SetPriorityHighArgs",
+    "SetPriorityUrgentArgs",
     "WaitArgs",
     "ResumeArgs",
-    "SetBudgetArgs",
-    "SetPiecesAtOnceArgs",
-    "SessionBeganArgs",
-    "SessionEndedArgs",
-    "StopArgs",
+    "LabelArgs",
+    "UnlabelArgs",
+    "FileArgs",
+    "UnfileArgs",
+    "AssignArgs",
+    "IndentArgs",
+    "OutdentArgs",
+    "PlaceArgs",
+    "RenameArgs",
+    "RenameSectionArgs",
+    "RemoveSectionArgs",
+    "MoveToArgs",
+    "RemoveProjectArgs",
 ]
 
-Kind = Literal["project", "area"]
+Priority = Literal["none", "low", "medium", "high", "urgent"]
+"""How much a task matters, most urgent last."""
 
-class Person(TypedDict):
-    name: str
-    role: str
-
-class TrackerArea(TypedDict):
-    id: str
-    name: str
-    kind: Kind
-    people: list[Entry[Person]]
-
-class Area(TypedDict):
-    resource: str
-    app: str
-    kind: str
-    label: str
-
-class Attachment(TypedDict):
-    name: str
-    media_type: str | None
-    bytes: Any
-    author: str | None
-    author_name: str
-    at_ms: int
-
-BudgetBy = Literal["person", "agent"]
-
-class Issue(TypedDict):
-    number: int
-    rank: str
-    title: str
-    body: str
-    status: Status
-    assignee: str | None
-    assigned_by: str | None
-    assigned_ms: int
-    labels: list[str]
-    parent: str | None
-    links: list[Entry[Link]]
-    area: Area | None
-    due_ms: int | None
-    priority: int | None
-    estimate: int | None
-    attachments: list[Entry[Attachment]]
-    comments: list[Entry[Message]]
-    author: str | None
-    author_name: str
-    created_ms: int
-    origin: Origin | None
-    url: str | None
-    work: Work | None
-
-class Link(TypedDict):
-    label: str
-    app: str
-    kind: str
-    resource: str
-    record: str | None
-
-class ListedIssue(TypedDict):
-    key: str | None
-    under: str | None
-    title: str
-    parent: str | None
-    body: str | None
-    status: Status | None
-    assignee: str | None
-    url: str | None
-    project: str | None
-    priority: Priority | None
-    estimate: int | None
-    due_ms: int | None
-    labels: list[str] | None
-    origin: Origin | None
-    rank: str | None
-    goal: Area | None
-
-class Message(TypedDict):
-    author: str | None
-    author_name: str
-    by_agent: bool
-    at_ms: int
-    origin: Origin | None
-    text: str
-    kind: MessageKind
-    run: int
-    lookup: str
-    step: str
-    incorporated: bool
-
-MessageKind = Literal["Comment", "ToRun", "FromRun", "Lookup", "Step", "Answer"]
-
-class NewIssue(TypedDict):
-    title: str
-    parent: str | None
-    body: str | None
-    status: Status | None
-    assignee: str | None
-    url: str | None
-    project: str | None
-    priority: Priority | None
-    estimate: int | None
-    due_ms: int | None
-    labels: list[str] | None
-    origin: Origin | None
-    rank: str | None
-    goal: Area | None
-
-class Origin(TypedDict):
-    author: str
-    handle: str | None
-    source: str
-    url: str | None
-    reference: str | None
-    created_ms: int | None
-    updated_ms: int | None
-
-Priority = Literal["none", "urgent", "high", "medium", "low"]
-
-class Resumed(TypedDict):
-    cause: str
-    at_ms: int
-
-Status = Literal["backlog", "todo", "in-progress", "in-review", "done", "cancelled"]
-
-class Stopped(TypedDict):
-    why: StoppedWhy
-    words: str
-    at_ms: int
-
-StoppedWhy = Literal["failed", "budget", "time", "lost-worker", "person"]
-
-class WaitFor(TypedDict):
-    kind: WaitKind
-    what: str
-    on: str | None
-    event: str | None
-
-WaitKind = Literal["time", "reply", "change", "answer", "people", "pieces"]
-
-class Work(TypedDict):
-    folder: str
-    note: str
-    waits: list[WaitFor]
-    until_ms: int | None
-    since_ms: int | None
-    budget_micros: int | None
-    budget_ms: int | None
-    budget_by: BudgetBy
-    spent_micros: int
-    worked_ms: int
-    sessions: int
-    session_since_ms: int | None
-    lost: int
-    stopped: Stopped | None
-    resumed: Resumed | None
-    pieces_at_once: int | None
-
-CreateAreaArgs = TypedDict("CreateAreaArgs", {
-    "name": "str",
-    "kind": NotRequired["Kind | None"],
+CheckArgs = TypedDict("CheckArgs", {
+    "done": NotRequired["bool | None"],
 })
-"""The arguments of `create-area`."""
+"""The arguments of `check`."""
 
-RenameAreaArgs = TypedDict("RenameAreaArgs", {
-    "area": "str",
-    "name": "str",
+DueTodayArgs = TypedDict("DueTodayArgs", {
 })
-"""The arguments of `rename-area`."""
+"""The arguments of `due_today`."""
 
-SetKindArgs = TypedDict("SetKindArgs", {
-    "area": "str",
-    "kind": "Kind",
+DueTomorrowArgs = TypedDict("DueTomorrowArgs", {
 })
-"""The arguments of `set-kind`."""
+"""The arguments of `due_tomorrow`."""
 
-InvolveArgs = TypedDict("InvolveArgs", {
-    "area": "str",
-    "name": "str",
-    "role": NotRequired["str | None"],
+DueNextWeekArgs = TypedDict("DueNextWeekArgs", {
 })
-"""The arguments of `involve`."""
+"""The arguments of `due_next_week`."""
 
-RemovePersonArgs = TypedDict("RemovePersonArgs", {
-    "area": "str",
-    "person": "str",
+ScheduleArgs = TypedDict("ScheduleArgs", {
+    "due": NotRequired["str | None"],
 })
-"""The arguments of `remove-person`."""
+"""The arguments of `schedule`."""
 
-DeleteAreaArgs = TypedDict("DeleteAreaArgs", {
-    "area": "str",
+SetTimeArgs = TypedDict("SetTimeArgs", {
+    "at": NotRequired["str | None"],
 })
-"""The arguments of `delete-area`."""
+"""The arguments of `set_time`."""
 
-CreateArgs = TypedDict("CreateArgs", {
-    "title": "str",
-    "parent": NotRequired["str | None"],
-    "body": NotRequired["str | None"],
-    "status": NotRequired["Status | None"],
-    "assignee": NotRequired["str | None"],
-    "url": NotRequired["str | None"],
-    "project": NotRequired["str | None"],
-    "priority": NotRequired["Priority | None"],
-    "estimate": NotRequired["int | None"],
-    "due_ms": NotRequired["int | None"],
-    "labels": NotRequired["list[str] | None"],
-    "origin": NotRequired["Origin | None"],
-    "rank": NotRequired["str | None"],
-    "goal": NotRequired["Area | None"],
+DueClearArgs = TypedDict("DueClearArgs", {
 })
-"""The arguments of `create`."""
+"""The arguments of `due_clear`."""
 
-StartArgs = TypedDict("StartArgs", {
-    "before": "int",
+RemindAtArgs = TypedDict("RemindAtArgs", {
+    "when": "str",
 })
-"""The arguments of `start`."""
+"""The arguments of `remind_at`."""
 
-CreateManyArgs = TypedDict("CreateManyArgs", {
-    "issues": "list[ListedIssue]",
+RemindClearArgs = TypedDict("RemindClearArgs", {
 })
-"""The arguments of `create-many`."""
+"""The arguments of `remind_clear`."""
 
-RenameArgs = TypedDict("RenameArgs", {
-    "issue": "str",
-    "title": "str",
+RemindArgs = TypedDict("RemindArgs", {
 })
-"""The arguments of `rename`."""
+"""The arguments of `remind`."""
 
-MoveUnderArgs = TypedDict("MoveUnderArgs", {
-    "issue": "str",
-    "parent": NotRequired["str | None"],
+SetPriorityNoneArgs = TypedDict("SetPriorityNoneArgs", {
 })
-"""The arguments of `move-under`."""
+"""The arguments of `set_priority_none`."""
 
-AssignArgs = TypedDict("AssignArgs", {
-    "issue": "str",
-    "assignee": NotRequired["str | None"],
+SetPriorityLowArgs = TypedDict("SetPriorityLowArgs", {
 })
-"""The arguments of `assign`."""
+"""The arguments of `set_priority_low`."""
 
-SetProjectArgs = TypedDict("SetProjectArgs", {
-    "issue": "str",
-    "project": NotRequired["str | None"],
-    "goal": NotRequired["Area | None"],
+SetPriorityMediumArgs = TypedDict("SetPriorityMediumArgs", {
 })
-"""The arguments of `set-project`."""
+"""The arguments of `set_priority_medium`."""
 
-AttachArgs = TypedDict("AttachArgs", {
-    "issue": "str",
-    "name": "str",
-    "bytes": "Any",
-    "media_type": NotRequired["str | None"],
+SetPriorityHighArgs = TypedDict("SetPriorityHighArgs", {
 })
-"""The arguments of `attach`."""
+"""The arguments of `set_priority_high`."""
 
-DetachArgs = TypedDict("DetachArgs", {
-    "issue": "str",
-    "attachment": "str",
+SetPriorityUrgentArgs = TypedDict("SetPriorityUrgentArgs", {
 })
-"""The arguments of `detach`."""
-
-AddLabelArgs = TypedDict("AddLabelArgs", {
-    "issue": "str",
-    "label": "str",
-})
-"""The arguments of `add-label`."""
-
-PlaceArgs = TypedDict("PlaceArgs", {
-    "issue": "str",
-    "status": "Status",
-    "before": NotRequired["str | None"],
-    "rank": NotRequired["str | None"],
-})
-"""The arguments of `place`."""
-
-CommentArgs = TypedDict("CommentArgs", {
-    "issue": "str",
-    "text": "str",
-    "origin": NotRequired["Origin | None"],
-})
-"""The arguments of `comment`."""
-
-LinkArgs = TypedDict("LinkArgs", {
-    "issue": "str",
-    "app": "str",
-    "kind": "str",
-    "resource": "str",
-    "label": "str",
-    "record": NotRequired["str | None"],
-})
-"""The arguments of `link`."""
-
-LinkNoteArgs = TypedDict("LinkNoteArgs", {
-    "issue": "str",
-    "note": "Any",
-})
-"""The arguments of `link-note`."""
-
-DeleteArgs = TypedDict("DeleteArgs", {
-    "issue": "str",
-})
-"""The arguments of `delete`."""
-
-PlanArgs = TypedDict("PlanArgs", {
-    "issue": "str",
-    "area": NotRequired["Area | None"],
-    "priority": NotRequired["Priority | None"],
-    "estimate": NotRequired["int | None"],
-    "due_ms": NotRequired["int | None"],
-})
-"""The arguments of `plan`."""
-
-SetPlaceArgs = TypedDict("SetPlaceArgs", {
-    "issue": "str",
-    "folder": "str",
-    "note": NotRequired["str | None"],
-})
-"""The arguments of `set-place`."""
+"""The arguments of `set_priority_urgent`."""
 
 WaitArgs = TypedDict("WaitArgs", {
-    "issue": "str",
-    "waits": "list[WaitFor]",
-    "until_ms": "int",
+    "what": "str",
+    "until": "str",
+    "on": NotRequired["str | None"],
 })
 """The arguments of `wait`."""
 
 ResumeArgs = TypedDict("ResumeArgs", {
-    "issue": "str",
-    "cause": "str",
 })
 """The arguments of `resume`."""
 
-SetBudgetArgs = TypedDict("SetBudgetArgs", {
-    "issue": "str",
-    "money_micros": NotRequired["int | None"],
-    "time_ms": NotRequired["int | None"],
+LabelArgs = TypedDict("LabelArgs", {
+    "name": "str",
 })
-"""The arguments of `set-budget`."""
+"""The arguments of `label`."""
 
-SetPiecesAtOnceArgs = TypedDict("SetPiecesAtOnceArgs", {
-    "issue": "str",
-    "at_once": NotRequired["int | None"],
+UnlabelArgs = TypedDict("UnlabelArgs", {
+    "name": "str",
 })
-"""The arguments of `set-pieces-at-once`."""
+"""The arguments of `unlabel`."""
 
-SessionBeganArgs = TypedDict("SessionBeganArgs", {
-    "issue": "str",
+FileArgs = TypedDict("FileArgs", {
+    "p": "Project",
 })
-"""The arguments of `session-began`."""
+"""The arguments of `file`."""
 
-SessionEndedArgs = TypedDict("SessionEndedArgs", {
-    "issue": "str",
-    "cost_micros": "int",
-    "worked_ms": "int",
+UnfileArgs = TypedDict("UnfileArgs", {
 })
-"""The arguments of `session-ended`."""
+"""The arguments of `unfile`."""
 
-StopArgs = TypedDict("StopArgs", {
-    "issue": "str",
-    "why": "StoppedWhy",
-    "words": "str",
+AssignArgs = TypedDict("AssignArgs", {
+    "who": NotRequired["str | None"],
 })
-"""The arguments of `stop`."""
+"""The arguments of `assign`."""
 
-class Tracker(Resource):
-    """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@391032ee45f13e15"
-    areas: list[Entry[TrackerArea]]
+IndentArgs = TypedDict("IndentArgs", {
+    "above": NotRequired["Task | None"],
+})
+"""The arguments of `indent`."""
 
-    def create_area(self,
-        *,
-        name: str,
-        kind: Kind | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["name"] = name
-        if kind is not None:
-            args["kind"] = kind
-        return self.action("create-area", **args)
+OutdentArgs = TypedDict("OutdentArgs", {
+})
+"""The arguments of `outdent`."""
 
-    def create_area_many(self, items: list[CreateAreaArgs]) -> list[dict[str, Any]]:
-        """Runs `create-area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("create-area", items)
+PlaceArgs = TypedDict("PlaceArgs", {
+    "s": NotRequired["Section | None"],
+    "at": "int",
+})
+"""The arguments of `place`."""
 
-    def rename_area(self,
-        *,
-        area: str,
-        name: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("rename-area", area=area, name=name)
+RenameArgs = TypedDict("RenameArgs", {
+    "name": "str",
+})
+"""The arguments of `rename`."""
 
-    def rename_area_many(self, items: list[RenameAreaArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("rename-area", items)
+RenameSectionArgs = TypedDict("RenameSectionArgs", {
+    "name": "str",
+})
+"""The arguments of `rename_section`."""
 
-    def set_kind(self,
-        *,
-        area: str,
-        kind: Kind,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("set-kind", area=area, kind=kind)
+RemoveSectionArgs = TypedDict("RemoveSectionArgs", {
+})
+"""The arguments of `remove_section`."""
 
-    def set_kind_many(self, items: list[SetKindArgs]) -> list[dict[str, Any]]:
-        """Runs `set-kind` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-kind", items)
+MoveToArgs = TypedDict("MoveToArgs", {
+    "moved": "Task",
+    "parent": NotRequired["Task | None"],
+    "before": NotRequired["Task | None"],
+})
+"""The arguments of `move_to`."""
 
-    def involve(self,
-        *,
-        area: str,
-        name: str,
-        role: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["area"] = area
-        args["name"] = name
-        if role is not None:
-            args["role"] = role
-        return self.action("involve", **args)
+RemoveProjectArgs = TypedDict("RemoveProjectArgs", {
+    "p": "Project",
+})
+"""The arguments of `remove_project`."""
 
-    def involve_many(self, items: list[InvolveArgs]) -> list[dict[str, Any]]:
-        """Runs `involve` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("involve", items)
-
-    def remove_person(self,
-        *,
-        area: str,
-        person: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("remove-person", area=area, person=person)
-
-    def remove_person_many(self, items: list[RemovePersonArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remove-person", items)
-
-    def delete_area(self, *, area: str) -> None:
-        """Runs the app's action."""
-        return self.action("delete-area", area=area)
-
-    def delete_area_many(self, items: list[DeleteAreaArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete-area", items)
-
-    def new_project(self) -> None:
-        """Runs the app's action."""
-        return self.action("new-project")
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"create_area", "create_area_many", "rename_area", "rename_area_many", "set_kind", "set_kind_many", "involve", "involve_many", "remove_person", "remove_person_many", "delete_area", "delete_area_many", "new_project"})
-
-
-class Issues(Resource):
-    """Issues — `tasks.issues`."""
-    __surface__ = "so.tilo.tasks@391032ee45f13e15"
-    issues: list[Entry[Issue]]
+class Task(Resource):
+    """Task — `tl.so.tilo.tasks.Task`."""
+    __surface__ = "so.tilo.tasks@fa1a7f43a5d12b11"
+    oidkt4g5: str  # title
+    fgvmlm5n: bool  # done
+    g6kykjp2: str | None  # due
+    qadph346: str | None  # at
+    aeilucpg: str | None  # remind
+    ftjnco6i: str  # notes
     @property
-    def before(self) -> int:
-        """Read only."""
-        return self.fields["before"]
+    def _2eyau2d6(self) -> str | None:
+        """assignee (`2eyau2d6` on the wire)."""
+        return self.fields["2eyau2d6"]
+
+    @_2eyau2d6.setter
+    def _2eyau2d6(self, value: str | None) -> None:
+        self.edit("2eyau2d6", value=value)
+    fbioszhs: Project | None  # project
+    v56iknh2: Section | None  # section
     @property
-    def numbers(self) -> int:
-        """Read only."""
-        return self.fields["numbers"]
+    def _4sriymst(self) -> Priority:
+        """priority (`4sriymst` on the wire)."""
+        return self.fields["4sriymst"]
 
-    def create(self,
+    @_4sriymst.setter
+    def _4sriymst(self, value: Priority) -> None:
+        self.edit("4sriymst", value=value)
+    @property
+    def _3pf74ifm(self) -> Task | None:
+        """parent (`3pf74ifm` on the wire)."""
+        return self.fields["3pf74ifm"]
+
+    @_3pf74ifm.setter
+    def _3pf74ifm(self, value: Task | None) -> None:
+        self.edit("3pf74ifm", value=value)
+    hieqyjbd: list[str]  # labels
+    dx56rteo: str  # waiting_for
+    ijyumxsp: str | None  # waiting_until
+    @property
+    def _5ctcihsn(self) -> str:
+        """waiting_on (`5ctcihsn` on the wire)."""
+        return self.fields["5ctcihsn"]
+
+    @_5ctcihsn.setter
+    def _5ctcihsn(self, value: str) -> None:
+        self.edit("5ctcihsn", value=value)
+
+    def check(self,
         *,
-        title: str,
-        parent: str | None = None,
-        body: str | None = None,
-        status: Status | None = None,
-        assignee: str | None = None,
-        url: str | None = None,
-        project: str | None = None,
-        priority: Priority | None = None,
-        estimate: int | None = None,
-        due_ms: int | None = None,
-        labels: list[str] | None = None,
-        origin: Origin | None = None,
-        rank: str | None = None,
-        goal: Area | None = None,
+        done: bool | None = None,
     ) -> None:
-        """Runs the app's action."""
+        """Checks a task off with every task under it, or opens it again with the tasks it is under."""
         args: dict[str, Any] = {}
-        args["title"] = title
-        if parent is not None:
-            args["parent"] = parent
-        if body is not None:
-            args["body"] = body
-        if status is not None:
-            args["status"] = status
-        if assignee is not None:
-            args["assignee"] = assignee
-        if url is not None:
-            args["url"] = url
-        if project is not None:
-            args["project"] = project
-        if priority is not None:
-            args["priority"] = priority
-        if estimate is not None:
-            args["estimate"] = estimate
-        if due_ms is not None:
-            args["due_ms"] = due_ms
-        if labels is not None:
-            args["labels"] = labels
-        if origin is not None:
-            args["origin"] = origin
-        if rank is not None:
-            args["rank"] = rank
-        if goal is not None:
-            args["goal"] = goal
-        return self.action("create", **args)
+        if done is not None:
+            args["done"] = done
+        return self.action("check", **args)
 
-    def create_many(self, items: list[CreateArgs]) -> list[dict[str, Any]]:
-        """Runs `create` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("create", items)
+    def check_many(self, items: list[CheckArgs]) -> list[dict[str, Any]]:
+        """Runs `check` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("check", items)
 
-    def start(self, *, before: int) -> None:
-        """Runs the app's action."""
-        return self.action("start", before=before)
+    def due_today(self) -> None:
+        """Sets the day a task is due by, from the presets or a day the person picks."""
+        return self.action("due_today")
 
-    def start_many(self, items: list[StartArgs]) -> list[dict[str, Any]]:
-        """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("start", items)
+    def due_today_many(self, items: list[DueTodayArgs]) -> list[dict[str, Any]]:
+        """Runs `due_today` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("due_today", items)
 
-    # the app's `create-many` action is named as a field of this kind: run it with
-    # `action("create-many")`.
-    def rename(self,
+    def due_tomorrow(self) -> None:
+        """Makes a task due tomorrow."""
+        return self.action("due_tomorrow")
+
+    def due_tomorrow_many(self, items: list[DueTomorrowArgs]) -> list[dict[str, Any]]:
+        """Runs `due_tomorrow` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("due_tomorrow", items)
+
+    def due_next_week(self) -> None:
+        """Makes a task due at the start of next week."""
+        return self.action("due_next_week")
+
+    def due_next_week_many(self, items: list[DueNextWeekArgs]) -> list[dict[str, Any]]:
+        """Runs `due_next_week` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("due_next_week", items)
+
+    def schedule(self,
         *,
-        issue: str,
-        title: str,
+        due: str | None = None,
     ) -> None:
-        """Runs the app's action."""
-        return self.action("rename", issue=issue, title=title)
-
-    def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
-        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("rename", items)
-
-    def move_under(self,
-        *,
-        issue: str,
-        parent: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
+        """Makes a task due on a day the person picks. Its moment and its reminder move with it, at the same time of day: a task due Wednesday at six, reminded at six, moved to Friday is due Friday at six and reminded then."""
         args: dict[str, Any] = {}
-        args["issue"] = issue
-        if parent is not None:
-            args["parent"] = parent
-        return self.action("move-under", **args)
+        if due is not None:
+            args["due"] = due
+        return self.action("schedule", **args)
 
-    def move_under_many(self, items: list[MoveUnderArgs]) -> list[dict[str, Any]]:
-        """Runs `move-under` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("move-under", items)
+    def schedule_many(self, items: list[ScheduleArgs]) -> list[dict[str, Any]]:
+        """Runs `schedule` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("schedule", items)
+
+    def set_time(self,
+        *,
+        at: str | None = None,
+    ) -> None:
+        """Sets the time of day a task is due at: the day it is on stays, and a task with no day is due on the day the moment names. A reminder that was set for the old moment moves with it, as a day moved by `schedule` keeps its time of day: a task due Wednesday at six, reminded at six, made seven is due at seven and reminded then."""
+        args: dict[str, Any] = {}
+        if at is not None:
+            args["at"] = at
+        return self.action("set_time", **args)
+
+    def set_time_many(self, items: list[SetTimeArgs]) -> list[dict[str, Any]]:
+        """Runs `set_time` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_time", items)
+
+    def due_clear(self) -> None:
+        """Clears the day a task is due by: it waits in the inbox, undated."""
+        return self.action("due_clear")
+
+    def due_clear_many(self, items: list[DueClearArgs]) -> list[dict[str, Any]]:
+        """Runs `due_clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("due_clear", items)
+
+    def remind_at(self, *, when: str) -> None:
+        """Sets the moment whoever is doing a task is reminded of it. A reminder on a day after the task is due moves the task to that day, its moment with it: being told of a task once its day has gone is no reminder, so 'move the reminder to Friday' moves both."""
+        return self.action("remind_at", when=when)
+
+    def remind_at_many(self, items: list[RemindAtArgs]) -> list[dict[str, Any]]:
+        """Runs `remind_at` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remind_at", items)
+
+    def remind_clear(self) -> None:
+        """Clears a task's reminder: it is not told of again."""
+        return self.action("remind_clear")
+
+    def remind_clear_many(self, items: list[RemindClearArgs]) -> list[dict[str, Any]]:
+        """Runs `remind_clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remind_clear", items)
+
+    def remind(self) -> None:
+        """Tells whoever is doing a task, or the one who made it, what it is and when it is due: once, and not of a task already done. Choosing the notice opens the task."""
+        return self.action("remind")
+
+    def remind_many(self, items: list[RemindArgs]) -> list[dict[str, Any]]:
+        """Runs `remind` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remind", items)
+
+    def set_priority_none(self) -> None:
+        """Sets how much a task matters."""
+        return self.action("set_priority_none")
+
+    def set_priority_none_many(self, items: list[SetPriorityNoneArgs]) -> list[dict[str, Any]]:
+        """Runs `set_priority_none` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_priority_none", items)
+
+    def set_priority_low(self) -> None:
+        """Marks a task as low priority."""
+        return self.action("set_priority_low")
+
+    def set_priority_low_many(self, items: list[SetPriorityLowArgs]) -> list[dict[str, Any]]:
+        """Runs `set_priority_low` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_priority_low", items)
+
+    def set_priority_medium(self) -> None:
+        """Marks a task as medium priority."""
+        return self.action("set_priority_medium")
+
+    def set_priority_medium_many(self, items: list[SetPriorityMediumArgs]) -> list[dict[str, Any]]:
+        """Runs `set_priority_medium` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_priority_medium", items)
+
+    def set_priority_high(self) -> None:
+        """Marks a task as high priority."""
+        return self.action("set_priority_high")
+
+    def set_priority_high_many(self, items: list[SetPriorityHighArgs]) -> list[dict[str, Any]]:
+        """Runs `set_priority_high` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_priority_high", items)
+
+    def set_priority_urgent(self) -> None:
+        """Marks a task as urgent."""
+        return self.action("set_priority_urgent")
+
+    def set_priority_urgent_many(self, items: list[SetPriorityUrgentArgs]) -> list[dict[str, Any]]:
+        """Runs `set_priority_urgent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_priority_urgent", items)
+
+    def wait(self,
+        *,
+        what: str,
+        until: str,
+        on: str | None = None,
+    ) -> None:
+        """Puts a task on hold until what it waits for comes, or until `until` at the latest: whoever is doing it goes on with it then, a person or an agent alike. `on` names the automation that ends the wait early when it runs."""
+        args: dict[str, Any] = {}
+        args["what"] = what
+        args["until"] = until
+        if on is not None:
+            args["on"] = on
+        return self.action("wait", **args)
+
+    def wait_many(self, items: list[WaitArgs]) -> list[dict[str, Any]]:
+        """Runs `wait` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("wait", items)
+
+    def resume(self) -> None:
+        """Ends a task's wait: what it waited for came, and whoever is doing it goes on with it."""
+        return self.action("resume")
+
+    def resume_many(self, items: list[ResumeArgs]) -> list[dict[str, Any]]:
+        """Runs `resume` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("resume", items)
+
+    def label(self, *, name: str) -> None:
+        """Gives a task a label."""
+        return self.action("label", name=name)
+
+    def label_many(self, items: list[LabelArgs]) -> list[dict[str, Any]]:
+        """Runs `label` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("label", items)
+
+    def unlabel(self, *, name: str) -> None:
+        """Takes a label off a task."""
+        return self.action("unlabel", name=name)
+
+    def unlabel_many(self, items: list[UnlabelArgs]) -> list[dict[str, Any]]:
+        """Runs `unlabel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("unlabel", items)
+
+    def file(self, *, p: Project) -> None:
+        """Files a task under a project the person picks."""
+        return self.action("file", p=p)
+
+    def file_many(self, items: list[FileArgs]) -> list[dict[str, Any]]:
+        """Runs `file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("file", items)
+
+    def unfile(self) -> None:
+        """Takes a task out of its project, back to the inbox."""
+        return self.action("unfile")
+
+    def unfile_many(self, items: list[UnfileArgs]) -> list[dict[str, Any]]:
+        """Runs `unfile` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("unfile", items)
 
     def assign(self,
         *,
-        issue: str,
-        assignee: str | None = None,
+        who: str | None = None,
     ) -> None:
-        """Runs the app's action."""
+        """Gives a task to someone, or to nobody."""
         args: dict[str, Any] = {}
-        args["issue"] = issue
-        if assignee is not None:
-            args["assignee"] = assignee
+        if who is not None:
+            args["who"] = who
         return self.action("assign", **args)
 
     def assign_many(self, items: list[AssignArgs]) -> list[dict[str, Any]]:
         """Runs `assign` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("assign", items)
 
-    def set_project(self,
+    def indent(self,
         *,
-        issue: str,
-        project: str | None = None,
-        goal: Area | None = None,
+        above: Task | None = None,
     ) -> None:
-        """Runs the app's action."""
+        """Moves a task under the task the view shows just over it in its group, as `Ctrl+]` does; with none named, under the task above it in the list."""
         args: dict[str, Any] = {}
-        args["issue"] = issue
-        if project is not None:
-            args["project"] = project
-        if goal is not None:
-            args["goal"] = goal
-        return self.action("set-project", **args)
+        if above is not None:
+            args["above"] = above
+        return self.action("indent", **args)
 
-    def set_project_many(self, items: list[SetProjectArgs]) -> list[dict[str, Any]]:
-        """Runs `set-project` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-project", items)
+    def indent_many(self, items: list[IndentArgs]) -> list[dict[str, Any]]:
+        """Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("indent", items)
 
-    def attach(self,
-        *,
-        issue: str,
-        name: str,
-        bytes: Any,
-        media_type: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["issue"] = issue
-        args["name"] = name
-        args["bytes"] = bytes
-        if media_type is not None:
-            args["media_type"] = media_type
-        return self.action("attach", **args)
+    def outdent(self) -> None:
+        """Moves a task out from under its parent, just after it, as `Ctrl+[` does in an outline."""
+        return self.action("outdent")
 
-    def attach_many(self, items: list[AttachArgs]) -> list[dict[str, Any]]:
-        """Runs `attach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("attach", items)
-
-    def detach(self,
-        *,
-        issue: str,
-        attachment: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("detach", issue=issue, attachment=attachment)
-
-    def detach_many(self, items: list[DetachArgs]) -> list[dict[str, Any]]:
-        """Runs `detach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("detach", items)
-
-    def add_label(self,
-        *,
-        issue: str,
-        label: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("add-label", issue=issue, label=label)
-
-    def add_label_many(self, items: list[AddLabelArgs]) -> list[dict[str, Any]]:
-        """Runs `add-label` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("add-label", items)
+    def outdent_many(self, items: list[OutdentArgs]) -> list[dict[str, Any]]:
+        """Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("outdent", items)
 
     def place(self,
         *,
-        issue: str,
-        status: Status,
-        before: str | None = None,
-        rank: str | None = None,
+        at: int,
+        s: Section | None = None,
     ) -> None:
-        """Runs the app's action."""
+        """Puts a task into the list `s` of its project's board (none for the first) at the place `at` among the tasks already there: what a card's drag names."""
         args: dict[str, Any] = {}
-        args["issue"] = issue
-        args["status"] = status
-        if before is not None:
-            args["before"] = before
-        if rank is not None:
-            args["rank"] = rank
+        if s is not None:
+            args["s"] = s
+        args["at"] = at
         return self.action("place", **args)
 
     def place_many(self, items: list[PlaceArgs]) -> list[dict[str, Any]]:
         """Runs `place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("place", items)
 
-    def comment(self,
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"check", "check_many", "due_today", "due_today_many", "due_tomorrow", "due_tomorrow_many", "due_next_week", "due_next_week_many", "schedule", "schedule_many", "set_time", "set_time_many", "due_clear", "due_clear_many", "remind_at", "remind_at_many", "remind_clear", "remind_clear_many", "remind", "remind_many", "set_priority_none", "set_priority_none_many", "set_priority_low", "set_priority_low_many", "set_priority_medium", "set_priority_medium_many", "set_priority_high", "set_priority_high_many", "set_priority_urgent", "set_priority_urgent_many", "wait", "wait_many", "resume", "resume_many", "label", "label_many", "unlabel", "unlabel_many", "file", "file_many", "unfile", "unfile_many", "assign", "assign_many", "indent", "indent_many", "outdent", "outdent_many", "place", "place_many"})
+
+
+class Project(Resource):
+    """Project — `tl.so.tilo.tasks.Project`."""
+    __surface__ = "so.tilo.tasks@fa1a7f43a5d12b11"
+    sgnau7vd: str  # name
+    c5pgzhqt: str  # notes
+
+    def new_section(self) -> Section:
+        """Adds a section at the end of a project's board."""
+        return self.action("new_section")
+
+    def add_to(self,
         *,
-        issue: str,
-        text: str,
-        origin: Origin | None = None,
-    ) -> None:
-        """Runs the app's action."""
+        title: str,
+        s: Section | None = None,
+    ) -> Task:
+        """Adds a task to a project, at the end of the list `s` of its board (none for the first). It is the project's primary action, so its key brings the person to the entry that adds there."""
         args: dict[str, Any] = {}
-        args["issue"] = issue
-        args["text"] = text
-        if origin is not None:
-            args["origin"] = origin
-        return self.action("comment", **args)
+        args["title"] = title
+        if s is not None:
+            args["s"] = s
+        return self.action("add_to", **args)
 
-    def comment_many(self, items: list[CommentArgs]) -> list[dict[str, Any]]:
-        """Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("comment", items)
+    def rename(self, *, name: str) -> None:
+        """Renames a project."""
+        return self.action("rename", name=name)
 
-    def link(self,
-        *,
-        issue: str,
-        app: str,
-        kind: str,
-        resource: str,
-        label: str,
-        record: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["issue"] = issue
-        args["app"] = app
-        args["kind"] = kind
-        args["resource"] = resource
-        args["label"] = label
-        if record is not None:
-            args["record"] = record
-        return self.action("link", **args)
-
-    def link_many(self, items: list[LinkArgs]) -> list[dict[str, Any]]:
-        """Runs `link` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("link", items)
-
-    def link_note(self,
-        *,
-        issue: str,
-        note: Any,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("link-note", issue=issue, note=note)
-
-    def link_note_many(self, items: list[LinkNoteArgs]) -> list[dict[str, Any]]:
-        """Runs `link-note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("link-note", items)
-
-    def delete(self, *, issue: str) -> None:
-        """Runs the app's action."""
-        return self.action("delete", issue=issue)
-
-    def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
-        """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete", items)
-
-    def plan(self,
-        *,
-        issue: str,
-        area: Area | None = None,
-        priority: Priority | None = None,
-        estimate: int | None = None,
-        due_ms: int | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["issue"] = issue
-        if area is not None:
-            args["area"] = area
-        if priority is not None:
-            args["priority"] = priority
-        if estimate is not None:
-            args["estimate"] = estimate
-        if due_ms is not None:
-            args["due_ms"] = due_ms
-        return self.action("plan", **args)
-
-    def plan_many(self, items: list[PlanArgs]) -> list[dict[str, Any]]:
-        """Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("plan", items)
-
-    def set_place(self,
-        *,
-        issue: str,
-        folder: str,
-        note: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["issue"] = issue
-        args["folder"] = folder
-        if note is not None:
-            args["note"] = note
-        return self.action("set-place", **args)
-
-    def set_place_many(self, items: list[SetPlaceArgs]) -> list[dict[str, Any]]:
-        """Runs `set-place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-place", items)
-
-    def wait(self,
-        *,
-        issue: str,
-        waits: list[WaitFor],
-        until_ms: int,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("wait", issue=issue, waits=waits, until_ms=until_ms)
-
-    def wait_many(self, items: list[WaitArgs]) -> list[dict[str, Any]]:
-        """Runs `wait` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("wait", items)
-
-    def resume(self,
-        *,
-        issue: str,
-        cause: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("resume", issue=issue, cause=cause)
-
-    def resume_many(self, items: list[ResumeArgs]) -> list[dict[str, Any]]:
-        """Runs `resume` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("resume", items)
-
-    def set_budget(self,
-        *,
-        issue: str,
-        money_micros: int | None = None,
-        time_ms: int | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["issue"] = issue
-        if money_micros is not None:
-            args["money_micros"] = money_micros
-        if time_ms is not None:
-            args["time_ms"] = time_ms
-        return self.action("set-budget", **args)
-
-    def set_budget_many(self, items: list[SetBudgetArgs]) -> list[dict[str, Any]]:
-        """Runs `set-budget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-budget", items)
-
-    def set_pieces_at_once(self,
-        *,
-        issue: str,
-        at_once: int | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["issue"] = issue
-        if at_once is not None:
-            args["at_once"] = at_once
-        return self.action("set-pieces-at-once", **args)
-
-    def set_pieces_at_once_many(self, items: list[SetPiecesAtOnceArgs]) -> list[dict[str, Any]]:
-        """Runs `set-pieces-at-once` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-pieces-at-once", items)
-
-    def session_began(self, *, issue: str) -> None:
-        """Runs the app's action."""
-        return self.action("session-began", issue=issue)
-
-    def session_began_many(self, items: list[SessionBeganArgs]) -> list[dict[str, Any]]:
-        """Runs `session-began` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("session-began", items)
-
-    def session_ended(self,
-        *,
-        issue: str,
-        cost_micros: int,
-        worked_ms: int,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("session-ended", issue=issue, cost_micros=cost_micros, worked_ms=worked_ms)
-
-    def session_ended_many(self, items: list[SessionEndedArgs]) -> list[dict[str, Any]]:
-        """Runs `session-ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("session-ended", items)
-
-    def stop(self,
-        *,
-        issue: str,
-        why: StoppedWhy,
-        words: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("stop", issue=issue, why=why, words=words)
-
-    def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
-        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("stop", items)
+    def rename_many(self, items: list[RenameArgs]) -> list[dict[str, Any]]:
+        """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create", "create_many", "start", "start_many", "rename", "rename_many", "move_under", "move_under_many", "assign", "assign_many", "set_project", "set_project_many", "attach", "attach_many", "detach", "detach_many", "add_label", "add_label_many", "place", "place_many", "comment", "comment_many", "link", "link_many", "link_note", "link_note_many", "delete", "delete_many", "plan", "plan_many", "set_place", "set_place_many", "wait", "wait_many", "resume", "resume_many", "set_budget", "set_budget_many", "set_pieces_at_once", "set_pieces_at_once_many", "session_began", "session_began_many", "session_ended", "session_ended_many", "stop", "stop_many"})
+    __actions__ = frozenset({"new_section", "add_to", "rename", "rename_many"})
 
+
+class Section(Resource):
+    """Section — `tl.so.tilo.tasks.Section`."""
+    __surface__ = "so.tilo.tasks@fa1a7f43a5d12b11"
+    yfd266wj: str  # name
+    ohbjjsu7: Project  # project
+
+    def rename_section(self, *, name: str) -> None:
+        """Renames a section."""
+        return self.action("rename_section", name=name)
+
+    def rename_section_many(self, items: list[RenameSectionArgs]) -> list[dict[str, Any]]:
+        """Runs `rename_section` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename_section", items)
+
+    def remove_section(self) -> None:
+        """Deletes a section; its tasks go to the project's first list."""
+        return self.action("remove_section")
+
+    def remove_section_many(self, items: list[RemoveSectionArgs]) -> list[dict[str, Any]]:
+        """Runs `remove_section` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove_section", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"rename_section", "rename_section_many", "remove_section", "remove_section_many"})
+
+
+class Tasks(Resource):
+    """Tasks — `tl.so.tilo.tasks.Tasks`."""
+    __surface__ = "so.tilo.tasks@fa1a7f43a5d12b11"
+    lg5gedbh: list[Entry[Task]]  # items
+    mdhllpbo: list[Entry[Project]]  # projects
+    nk5542m7: list[Entry[Section]]  # sections
+
+    def new_task(self,
+        *,
+        p: Project | None = None,
+        s: Section | None = None,
+        due: str | None = None,
+        at: str | None = None,
+        assignee: str | None = None,
+        title: str | None = None,
+        remind: str | None = None,
+    ) -> Task:
+        """Adds a task to the inbox or to `p`, in the list `s` of its board: the entry at a list's end fills `title` with the words nothing else there takes, and the day, moment and person they name, so 'Call the landlord fri 10am @Bo' is a task due Friday at ten, for Bo."""
+        args: dict[str, Any] = {}
+        if p is not None:
+            args["p"] = p
+        if s is not None:
+            args["s"] = s
+        if due is not None:
+            args["due"] = due
+        if at is not None:
+            args["at"] = at
+        if assignee is not None:
+            args["assignee"] = assignee
+        if title is not None:
+            args["title"] = title
+        if remind is not None:
+            args["remind"] = remind
+        return self.action("new_task", **args)
+
+    def new_project(self) -> Project:
+        """Starts a project."""
+        return self.action("new_project")
+
+    def add_subtask(self,
+        *,
+        t: Task,
+        title: str,
+    ) -> Task:
+        """Adds a subtask under a task, in its project and section, and opens a done one: there is work under it now."""
+        return self.action("add_subtask", t=t, title=title)
+
+    def move_to(self,
+        *,
+        moved: Task,
+        parent: Task | None = None,
+        before: Task | None = None,
+    ) -> None:
+        """Moves a task to a place in the outline: at the end of `parent`'s subtasks (the top level for none), or where `before` stands. What is put under a done task opens it."""
+        args: dict[str, Any] = {}
+        args["moved"] = moved
+        if parent is not None:
+            args["parent"] = parent
+        if before is not None:
+            args["before"] = before
+        return self.action("move_to", **args)
+
+    def move_to_many(self, items: list[MoveToArgs]) -> list[dict[str, Any]]:
+        """Runs `move_to` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_to", items)
+
+    def duplicate(self, *, t: Task) -> Task:
+        """Copies a task, with every task under it, just after the one it copies."""
+        return self.action("duplicate", t=t)
+
+    # the app's `remove` action is the SDK's own: run it with `action("remove")`.
+    def clear_done(self) -> int:
+        """Deletes every finished task and answers how many went: a finished branch goes whole, and a done task with a step still open under it stays. What was done is the list a person reads back, so this is no command of the bar."""
+        return self.action("clear_done")
+
+    def remove_project(self, *, p: Project) -> None:
+        """Deletes a project and its sections; its tasks go back to the inbox."""
+        return self.action("remove_project", p=p)
+
+    def remove_project_many(self, items: list[RemoveProjectArgs]) -> list[dict[str, Any]]:
+        """Runs `remove_project` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("remove_project", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_task", "new_project", "add_subtask", "move_to", "move_to_many", "duplicate", "clear_done", "remove_project", "remove_project_many"})
+
+
+class TiloTasks(Resource):
+    """Tasks — `tl.so.tilo.tasks`."""
+    __surface__ = "so.tilo.tasks@fa1a7f43a5d12b11"
 

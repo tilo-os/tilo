@@ -1585,7 +1585,7 @@ mod tests {
         // stands everywhere: the shell offers what a person can open, never a window of an app that is
         // not here.
         {
-            let only = ["so.tilo.lang.tasks"];
+            let only = ["so.tilo.tasks"];
             let installed = |app: &str| only.contains(&app);
             assert_eq!(
                 LaunchpadAction::ALL

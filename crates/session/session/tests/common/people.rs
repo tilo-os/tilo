@@ -1850,12 +1850,6 @@ impl Device {
         answer
     }
 
-    /// Install Tasks in this device's store, as a device with the app installed has it: the app this
-    /// run built, with the tracker's surface its package ships.
-    pub fn install_tasks(&self) {
-        self.install("so.tilo.tasks", tasks_install());
-    }
-
     /// Install the Files app in this device's store as a desktop that carries it has it: the surface
     /// its package ships, under a signed root. A session reads the records of the person's that an
     /// installed app keeps from its store, before the app ever runs, and the daemon that serves this
@@ -2445,17 +2439,6 @@ fn model_providers_install() -> &'static (PathBuf, String) {
                 tilo_test_env::sibling_binary("model-providers", "model-providers"),
                 "model-providers",
             )],
-        )
-    })
-}
-
-/// The payload Tasks is installed from here ([`stage`]), with the digest of its signed root.
-fn tasks_install() -> &'static (PathBuf, String) {
-    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
-    INSTALL.get_or_init(|| {
-        stage(
-            "tasks",
-            &[(tilo_test_env::sibling_binary("tasks", "tasks"), "tasks")],
         )
     })
 }

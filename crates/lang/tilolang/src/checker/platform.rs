@@ -217,6 +217,33 @@ impl Checker<'_> {
         )
     }
 
+    /// `member(key)`: the member of the workspace an earlier build of the app named by `key` in
+    /// what it kept (a person's root key, `agent:<id>`), or none for a key that names no member.
+    /// An actor otherwise comes only from `invoker` or a stored field: only a migration, which
+    /// carries what that build kept, reads one from words.
+    pub(super) fn builtin_member(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if !self.migrating {
+            self.err(
+                "E022",
+                span,
+                "`member(key)` reads a member an earlier build of the app named, which only a `migration action` carries over",
+            );
+        }
+        let [ast::Arg { name: None, value }] = args else {
+            self.err(
+                "E022",
+                span,
+                "`member` takes the key an earlier build named the member by: `member(issue.texts.get(\"assignee\") ?? \"\")`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        let key = self.expr_as(value, &Ty::Text);
+        Ex::host(Imp::MemberOf, vec![key], Ty::Option(Box::new(Ty::Actor)))
+    }
+
     /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text; empty when nothing
     /// waits.
     pub(super) fn builtin_proposal_note(&mut self, args: &[ast::Arg], span: Span) -> Ex {

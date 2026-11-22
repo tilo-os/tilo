@@ -10,7 +10,8 @@
 //! fields at the document's root, and each collection a map of item ids, each item an order key
 //! (`k`) and its fields (`v`). A field reads as what it holds, generically: words and numbers as
 //! text, rich text as rich text, a set or a map as its keys (and a map of words as what each key
-//! holds too), and a map of bytes (a native app's
+//! holds too, a record's words each under `<field>.<key>`), a collection an item holds as items of
+//! their own, and a map of bytes (a native app's
 //! pictures, by their digest) as the files they are. A field that holds a record of its own (a
 //! draft's sender, its account and address) reads as that record's fields too, each under the
 //! field's name and its own (`sender.email`); one at a document's root (the draft a composer
@@ -41,7 +42,8 @@ pub struct EarlierItem {
     /// The id it was kept under: the item's id in its collection, or the document's id for the
     /// document's own fields.
     pub id: String,
-    /// The collection that kept it (`pages`); empty for a document's own fields.
+    /// The collection that kept it (`pages`, or `issues/<id>/comments` for one an item holds);
+    /// empty for a document's own fields.
     pub of: String,
     /// Its order key in that collection: the items of a collection read in the order of their
     /// keys. Empty for a document's own fields.
@@ -268,6 +270,7 @@ fn collection(
         return None;
     }
     let mut out = Vec::with_capacity(ids.len());
+    let mut held = Vec::new();
     for id in ids {
         let (AmValue::Object(ObjType::Map), entry) = doc.get(obj, id.as_str()).ok()?? else {
             return None;
@@ -283,17 +286,27 @@ fn collection(
             version,
             ..EarlierItem::default()
         };
+        let mut nested = Vec::new();
         for name in doc.keys(&fields) {
             if internal(&name) {
                 continue;
             }
             if let Ok(Some((value, at))) = doc.get(&fields, name.as_str()) {
-                read_field(doc, &mut item, &name, &value, &at);
+                // A collection an item holds (an issue's thread) is read as items of their own,
+                // named by where they are kept: `issues/<issue>/comments`.
+                let within = format!("{key}/{}/{name}", item.id);
+                if let Some(mut items) = collection(doc, &within, &value, &at, version) {
+                    nested.append(&mut items);
+                } else {
+                    read_field(doc, &mut item, &name, &value, &at);
+                }
             }
         }
         out.push(item);
+        held.append(&mut nested);
     }
     out.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
+    out.append(&mut held);
     Some(out)
 }
 

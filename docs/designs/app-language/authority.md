@@ -57,7 +57,7 @@ who proposed it. Dismissing records the refusal and changes nothing.
   A migration upgrades only what an earlier version wrote: a resource this version makes is
   recorded as already migrated in the change that makes it, and what it starts with is its
   type's `initial action`, never a migration.
-- An app renamed keeps what it had: `app so.tilo.lang.tasks "Tasks" (previously:
+- An app renamed keeps what it had: `app so.tilo.tasks "Tasks" (previously:
   so.tilo.lang.todo)` reads the resources under the old id as its own, where they are. The old id
   is signed into the app, and only the same publisher's app can take it over. The renamed app
   keeps opening the workspace document of its earliest id

@@ -1,9 +1,9 @@
-app so.tilo.lang.tasks "Tasks" (
+app so.tilo.tasks "Tasks" (
     icon: .list_checks,
     category: .office,
     tagline: "Issues of the workspace, on a list and a board",
     keywords: ["tasks", "issues", "issue tracker", "kanban", "board", "to-do", "todo", "tickets", "projects", "agent tasks"],
-    previously: so.tilo.lang.todo,
+    previously: [so.tilo.lang.todo, so.tilo.lang.tasks],
 )
 
 use so.tilo.lang.discussion as discussion
@@ -43,6 +43,16 @@ type Task {
     priority: Priority = .none
     /// The task it is a subtask of, to any depth; none for a task of its own.
     parent: Option<Task> = .none
+    /// The words people sort it by across projects, such as "bug" or "errand".
+    labels: Set<Text>
+    /// What it waits for before anyone goes on with it, in a few words ("the landlord's reply");
+    /// empty while it waits for nothing.
+    waiting_for: Text = ""
+    /// The latest moment its wait ends, whether or not what it waits for came.
+    waiting_until: Option<Time> = .none
+    /// The automation that ends its wait early when it runs, by its id: what an agent doing it
+    /// waits on. Empty for a wait only its moment or a person ends.
+    waiting_on: Text = ""
 
     search {
         filter "Inbox" = project == .none and due == .none and not done (icon: .inbox)
@@ -52,12 +62,16 @@ type Task {
         filter "Upcoming" = due > today and not done (icon: .calendar)
         filter "Done" = done (icon: .circle_check)
         filter "Assigned to me" = assignee == workspace.me and not done (icon: .user)
+        filter "Waiting" = waiting_for != "" and not done (icon: .hourglass)
         filter due
         filter project
         filter priority
         filter parent
+        filter labels
         hide at
         hide section
+        hide waiting_until
+        hide waiting_on
     }
 }
 
@@ -122,6 +136,165 @@ primary action new_task(
             section: s,
         ),
     )
+}
+
+/// The tracker the native Tasks app kept before this app took its id over, carried into this one
+/// once. Each of its projects and areas is a project, and each issue a task with the id it had:
+/// its title, its description, its priority, the day and moment it was due, who had it, its
+/// labels, the project it worked towards, and the issue it stood under, in the tracker's order.
+/// A finished or cancelled issue is a done task, and one in progress or in review stands in a
+/// list of its project's board named so. What was said in an issue's thread is written under its
+/// description, each comment with who said it and when. A sub-issue whose parent is gone stands
+/// at the top level, as the native app showed it. The native app's own documents are left as
+/// they are.
+migration action carry_native_tracker(tasks: Tasks) uses time {
+    let earlier = earlier(tasks)
+    let projects: Map<Project> = Map<Project>()
+    for area in earlier.filter(e -> e.of == "areas") {
+        projects.put(
+            area.id,
+            tasks.projects.insert(Project(name: area.texts.get("name") ?? ""), id: area.id),
+        )
+    }
+    // The tracker's order is each issue's rank, the same rank by id.
+    let issues = earlier
+        .filter(e -> e.of == "issues")
+        .sort_by(e -> e.id)
+        .sort_by(e -> e.texts.get("rank") ?? "")
+    let held: Map<Text> = Map<Text>()
+    for i in issues {
+        held.put(i.id, i.id)
+    }
+    let parents: Map<Text> = Map<Text>()
+    for i in issues {
+        let p = i.texts.get("parent") ?? ""
+        parents.put(i.id, if held.get(p) == .none { "" } else { p })
+    }
+    let steps = issues.len() + 1
+    let ordered = [
+        native_issues(issues, parents, ""),
+        issues.filter(e -> issue_chain_end(parents, e.id, steps) == "circle"),
+    ]
+        .flat_map(x -> x)
+    let lists: Map<Section> = Map<Section>()
+    let carried: Map<Task> = Map<Task>()
+    for i in ordered {
+        let status = i.texts.get("status") ?? ""
+        let area = i.texts.get("area.resource") ?? ""
+        let project = projects.get(area)
+        let list_name = if status == "in-progress" {
+            "In progress"
+        } else if status == "in-review" { "In review" } else { "" }
+        let section: Option<Section> = if let p = project {
+            if list_name == "" {
+                .none
+            } else if let s = lists.get("{area}/{status}") {
+                s
+            } else {
+                let s = tasks.sections.insert(Section(name: list_name, project: p))
+                lists.put("{area}/{status}", s)
+                s
+            }
+        }
+        let due: Option<Time> = if let ms = (i.texts.get("due_ms") ?? "").to_int() {
+            Time("1970-01-01T00:00:00Z") + Duration(ms / 1000)
+        }
+        let at: Option<Time> = if let d = due { if d.time_of_day().seconds() > 0 { d } }
+        // An issue whose parents run in a circle stands at the top, as the native list showed it.
+        let parent = if issue_chain_end(parents, i.id, steps) == "circle" {
+            ""
+        } else { parents.get(i.id) ?? "" }
+        let said = earlier
+            .filter(e -> e.of == "issues/{i.id}/comments")
+            .sort_by(c -> (c.texts.get("at_ms") ?? "").to_int() ?? 0)
+            .map(c -> comment_by(c, member(member_key(c.texts))))
+        let made = tasks.items.insert(
+            Task(
+                title: i.texts.get("title") ?? "",
+                done: status == "done" or status == "cancelled",
+                due: due?.day(),
+                at: at,
+                notes: issue_notes(i, said),
+                assignee: member(i.texts.get("assignee") ?? ""),
+                project: project,
+                section: section,
+                priority: native_priority(i.texts.get("priority") ?? ""),
+                parent: if parent == "" { .none } else { carried.get(parent) },
+            ),
+            id: i.id,
+        )
+        for l in i.lists.get("labels") ?? [] {
+            made.labels.add(l)
+        }
+        carried.put(i.id, made)
+    }
+}
+
+/// What a native issue says under its title: its description, and under it what was said in its
+/// thread, oldest first, each comment as [`comment_by`] reads it.
+fn issue_notes(issue: host.Earlier, said: List<Text>) -> RichText {
+    let body = issue.rich.get("body") ?? RichText("")
+    if said.is_empty() {
+        body
+    } else {
+        RichText.from_markdown(
+            [[body.markdown, "", "**Said in its thread**"], said].flat_map(x -> x).join("\n\n"),
+        )
+    }
+}
+
+/// The key of the member a native comment names as its author, as `member` reads one: kept as
+/// `{"person": "<key>"}` or `{"agent": "<id>"}`. Empty when it names no person or agent.
+fn member_key(fields: Map<Text>) -> Text {
+    if let p = fields.get("author.person") {
+        p
+    } else if let a = fields.get("author.agent") { "agent:{a}" } else { "" }
+}
+
+/// A line of a native comment's thread: who said it, and on which day, then what they said.
+/// `who` is the member the comment named, when the workspace has them.
+fn comment_by(c: host.Earlier, who: Option<Actor>) -> Text {
+    let said_by = c.texts.get("author_name") ?? ""
+    let name = if said_by == "" {
+        if let m = who { m.name() } else { "Someone" }
+    } else { said_by }
+    let said = c.texts.get("text") ?? ""
+    if let ms = (c.texts.get("at_ms") ?? "").to_int() {
+        "{name}, {(Time("1970-01-01T00:00:00Z") + Duration(ms / 1000)).day()}: {said}"
+    } else { "{name}: {said}" }
+}
+
+/// The priority a native issue kept as its level: 1 urgent to 4 low.
+fn native_priority(level: Text) -> Priority {
+    if level == "1" {
+        .urgent
+    } else if level == "2" {
+        .high
+    } else if level == "3" { .medium } else if level == "4" { .low } else { .none }
+}
+
+/// The native issues under `parent` (`""` for the top), each followed by the issues under it.
+fn native_issues(
+    issues: List<host.Earlier>,
+    parents: Map<Text>,
+    parent: Text,
+) -> List<host.Earlier> {
+    issues
+        .filter(e -> (parents.get(e.id) ?? "") == parent)
+        .flat_map(e -> [[e], native_issues(issues, parents, e.id)].flat_map(x -> x))
+}
+
+/// Where the chain of parents above the issue `id` ends, within `left` more steps: at the top
+/// (`top`), or nowhere, going round (`circle`).
+fn issue_chain_end(parents: Map<Text>, id: Text, left: Int) -> Text {
+    let parent = parents.get(id) ?? ""
+    if parent == "" {
+        "top"
+    } else if left <= 0 {
+        "circle"
+    } else {
+        issue_chain_end(parents, parent, left - 1)
+    }
 }
 
 /// Starts a project.
@@ -314,6 +487,46 @@ action set_priority_urgent(t: Task) (label: "Urgent", icon: .triangle_alert, gro
     t.priority = .urgent
 }
 
+/// Puts a task on hold until what it waits for comes, or until `until` at the latest: whoever
+/// is doing it goes on with it then, a person or an agent alike. `on` names the automation that
+/// ends the wait early when it runs.
+action wait(t: Task, what: Text, until: Time, on: Text = "") uses time (
+    label: "Wait for…",
+    icon: .hourglass,
+    did: "put on hold",
+    group: "Plan",
+) {
+    require not t.done "It is done already"
+    require not what.trim().is_empty() "Say what it waits for"
+    require until > now "The wait ends in the past"
+    t.waiting_for = what.trim()
+    t.waiting_until = until
+    t.waiting_on = on
+}
+
+/// Ends a task's wait: what it waited for came, and whoever is doing it goes on with it.
+action resume(t: Task) (label: "Stop waiting", icon: .play, did: "went on with", group: "Plan") {
+    applies t.waiting_for != "" "It waits for nothing"
+    t.waiting_for = ""
+    t.waiting_until = .none
+    t.waiting_on = ""
+}
+
+/// Ends a task's wait when its moment comes, once for the whole workspace, window or not.
+trigger wait_ends(t: Task) at t.waiting_until: resume(t)
+
+/// Gives a task a label.
+action label(t: Task, name: Text) (icon: .tag, label: "Label…", group: "Labels") {
+    require not name.trim().is_empty() "Name the label"
+    t.labels.add(name.trim())
+}
+
+/// Takes a label off a task.
+action unlabel(t: Task, name: Text) (label: "Remove label", group: "Labels") {
+    require t.labels.contains(name) "It has no such label"
+    t.labels.remove(name)
+}
+
 /// Files a task under a project the person picks.
 action file(t: Task, p: Project) (
     label: "Project",
@@ -377,6 +590,9 @@ action duplicate(tasks: Tasks, t: Task) -> Task (
 ) {
     let under = tasks.items.descendants(t, .parent)
     let copy = tasks.items.insert(copied(t, t.parent))
+    for l in t.labels {
+        copy.labels.add(l)
+    }
     if let last = last_below(tasks.items, t) {
         tasks.items.move(copy, after: last)
     } else { tasks.items.move(copy, after: t) }
@@ -386,6 +602,9 @@ action duplicate(tasks: Tasks, t: Task) -> Task (
         let at = tasks.items.descendants(copy, .parent).at(under_copy) ?? copy
         let below = last_below(tasks.items, at) ?? at
         let made = tasks.items.insert(copied(x, at))
+        for l in x.labels {
+            made.labels.add(l)
+        }
         tasks.items.move(made, after: below)
     }
     copy
@@ -482,7 +701,8 @@ fn within(items: List<Task>, place: Option<Task>, top: Task) -> Bool {
     } else { false }
 }
 
-/// `t` as a task of its own under `parent`: what a copy of it says, without the tasks under it.
+/// `t` as a task of its own under `parent`: what a copy of it says, without the tasks under it
+/// and its labels, which the copy is given once it is made.
 fn copied(t: Task, parent: Option<Task>) -> Task {
     Task(
         title: t.title,
@@ -740,6 +960,9 @@ view task_item(
             check(primary: true),
             schedule(group: "Plan"),
             assign,
+            label(group: "Plan"),
+            wait(group: "Plan"),
+            resume(group: "Plan"),
             indent(group: "Move"),
             outdent(group: "Move"),
             remove,
@@ -900,6 +1123,29 @@ template view task_body(t: Task) {
                     on check: check(t)
                 }
                 ui.TextInput(bind: t.title, placeholder: "What to do", title: true, fill: 1.0)
+            }
+            if t.waiting_for != "" {
+                row(gap: .related, align: .center) {
+                    ui.Icon(.hourglass, size: .small)
+                    ui.Text(
+                        if let u = t.waiting_until {
+                            "Waiting for {t.waiting_for}, until {u}"
+                        } else { "Waiting for {t.waiting_for}" },
+                        secondary: true,
+                    )
+                    ui.Button("Stop waiting", icon: .play) {
+                        on press: resume(t)
+                    }
+                }
+            }
+            if not t.labels.is_empty() {
+                row(gap: .related, wrap: true) {
+                    for l in t.labels {
+                        ui.Chip(l) {
+                            on remove: unlabel(t, l)
+                        }
+                    }
+                }
             }
             stack(lead: 1) {
                 std.origin(t)

@@ -30,7 +30,7 @@ use tilo_resource::Resource as _;
 use super::fixtures::{governor, test_host};
 use super::packaged_model::PackagedAction;
 use super::packaged_model_tests::{
-    NOW_MS, TASKS, TRACKER, create_area, model_module, models_dir, package_on,
+    CONNECTIONS, NOW_MS, REMOTE, add_connection, model_module, models_dir, package_on,
 };
 
 /// The release the registry's runtime bundle is built for.
@@ -320,7 +320,7 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
     assert_ne!(hash, ours.hash());
     let missing = Runtime::find(&hash).expect_err("the server lacks the other release's runtime");
     assert!(missing.to_string().contains(&hash), "{missing}");
-    let module = relinked(&model_module("tasks"), &hash);
+    let module = relinked(&model_module("remote"), &hash);
 
     // The registry offers that release's runtime bundle as a thin package,
     // its files as payload blobs, signed by a runtime publisher the server trusts.
@@ -393,10 +393,17 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
     let server = test_host(&root.join("server-state"), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("Another release").await.unwrap();
-    let package = package_on(TASKS, Some(&module), Some(&provides));
+    let package = package_on(REMOTE, Some(&module), Some(&provides));
     assert!(
         workspaces
-            .prepare_packaged_application(&created.workspace, &cert, TASKS, TRACKER, "", &package)
+            .prepare_packaged_application(
+                &created.workspace,
+                &cert,
+                REMOTE,
+                CONNECTIONS,
+                "",
+                &package
+            )
             .await
             .unwrap(),
         "the server makes the app's resource with the runtime it fetched"
@@ -427,12 +434,12 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
                     &workspace,
                     &cert,
                     PackagedAction {
-                        app: TASKS,
-                        kind: TRACKER,
+                        app: REMOTE,
+                        kind: CONNECTIONS,
                         document: "",
                         package: &package,
-                        action: "create-area",
-                        arguments: create_area("Ship it"),
+                        action: "add-connection",
+                        arguments: add_connection("Ship it"),
                         member: member.clone(),
                         acting: tilo_actions::Acting::member(member),
                         now_ms: NOW_MS,
@@ -447,17 +454,16 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
         "an action of a runtime fetched before asks the registry nothing"
     );
     let after = workspaces
-        .resource_document(&created.workspace, TASKS, "")
+        .resource_document(&created.workspace, REMOTE, "")
         .await
         .unwrap()
         .expect("the document exists");
-    let tracker =
-        tasks_model::Tracker::read(&automerge::AutoCommit::load(&after).unwrap()).unwrap();
+    let remote = remote_model::Remote::read(&automerge::AutoCommit::load(&after).unwrap()).unwrap();
     assert!(
-        tracker
-            .areas
+        remote
+            .connections
             .iter()
-            .any(|(_, area)| area.name.as_str() == "Ship it"),
+            .any(|(_, connection)| connection.name.as_str() == "Ship it"),
         "the app's code, linked after the fetched runtime, applied the action"
     );
 
@@ -465,7 +471,7 @@ async fn a_server_fetches_the_model_runtime_another_releases_package_names() {
     // refused, naming the runtime it wants and the one the bundle holds.
     let wanted = "0".repeat(64);
     let refused = apply(package_on(
-        TASKS,
+        REMOTE,
         Some(&relinked(&module, &wanted)),
         Some(&provides),
     ))

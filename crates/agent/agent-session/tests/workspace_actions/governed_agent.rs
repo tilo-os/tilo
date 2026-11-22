@@ -186,7 +186,7 @@ fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner() {
 
 async fn a_hosted_roster_turn() {
     use super::hosted_agent_turns::{
-        TASKS, answered_to, does_then_answers, file_issue, make_agent,
+        CHAT, answered_to, does_then_answers, make_agent, write_to_agent,
     };
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
     use tilo_server::workspace_agents::ServerAgents;
@@ -239,7 +239,7 @@ async fn a_hosted_roster_turn() {
             json(&serde_json::json!({
                 "agentId": agent,
                 "workspaces": [workspace.workspace],
-                "apps": [SHEETS, TASKS, STORE_FIXTURE],
+                "apps": [SHEETS, CHAT, STORE_FIXTURE],
                 "expiresInSecs": 3600,
             })),
         )
@@ -433,15 +433,14 @@ async fn a_hosted_roster_turn() {
 
     let roster = &hosted.roster;
     let workbook = page.create(SHEETS);
-    let tracker = page.create("so.tilo.tasks");
     // A letter in Writer, which the agent's grant does not name.
     let letter = page.create("so.tilo.word-processor");
-    file_issue(
+    write_to_agent(
         &roster.actions,
         &workspaces,
         &workspace.workspace,
-        &owner,
-        (&node, &page_device),
+        (&owner, &page_device),
+        "Work on the roster sheet.",
     )
     .await;
     let read = |route: &DocumentRoute| {
@@ -455,13 +454,9 @@ async fn a_hosted_roster_turn() {
         }
     };
     let deadline = tilo_test_env::hang_deadline();
-    let (workbook_before, tracker_before, letter_before) = loop {
-        if let (Some(sheets), Some(tasks), Some(letter)) = (
-            read(&workbook).await,
-            read(&tracker).await,
-            read(&letter).await,
-        ) {
-            break (sheets, tasks, letter);
+    let (workbook_before, letter_before) = loop {
+        if let (Some(sheets), Some(letter)) = (read(&workbook).await, read(&letter).await) {
+            break (sheets, letter);
         }
         assert!(
             Instant::now() < deadline,
@@ -527,7 +522,6 @@ async fn a_hosted_roster_turn() {
     }
     ended.unwrap();
     assert_ne!(read(&workbook).await.unwrap(), workbook_before);
-    assert_eq!(read(&tracker).await.unwrap(), tracker_before);
     assert_eq!(
         read(&letter).await.unwrap(),
         letter_before,
@@ -589,7 +583,7 @@ async fn a_hosted_roster_turn() {
     sessions
         .sign_as(&device, workspace.workspace_id, &mut late)
         .unwrap();
-    let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &tracker, device).await;
+    let (count, _) = retained_sealed(&hosted, workspace.workspace_id, &letter, device).await;
     assert_eq!(count, 0);
     let mut store_events = 0;
     while let Ok(write) = store_writes.try_recv() {
@@ -774,11 +768,11 @@ async fn a_hosted_roster_turn() {
             .server
             .workspaces()
             .unwrap()
-            .resource_document(&workspace.workspace, &tracker.app_id, &tracker.document)
+            .resource_document(&workspace.workspace, &letter.app_id, &letter.document)
             .await
             .unwrap()
             .unwrap(),
-        tracker_before,
+        letter_before,
         "the denied action left no persisted document change",
     );
     let book = reopened
