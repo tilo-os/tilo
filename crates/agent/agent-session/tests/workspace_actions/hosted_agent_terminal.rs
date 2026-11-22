@@ -42,8 +42,12 @@ struct OnTheirServer {
     agents: ServerAgents,
     model: Arc<ScriptedProvider>,
     address: tilo_server_client::ServerAddress,
+    /// The server's own device, as the workspace's documents hold it.
+    server_device: [u8; 32],
     _state: tempfile::TempDir,
     _shells: tempfile::TempDir,
+    /// The VM host the workspace's programs run on, when the server sells it one.
+    vms: Option<ush::hosted_vm::test_host::TestHost>,
 }
 
 impl OnTheirServer {
@@ -54,12 +58,44 @@ impl OnTheirServer {
     /// [`Self::start`], with the server's own model answering her assistant where one is
     /// given: she then links no model of her own.
     async fn start_with(servers_model: Option<tilo_server::workspace_agents::Model>) -> Self {
+        Self::start_on(servers_model, false).await
+    }
+
+    /// [`Self::start`], whose workspace runs its programs in a VM, as a workspace hosted by a
+    /// server that sells them does: the VM host keeps what each program it started was given.
+    async fn start_with_vm() -> Self {
+        Self::start_on(None, true).await
+    }
+
+    async fn start_on(
+        servers_model: Option<tilo_server::workspace_agents::Model>,
+        in_vm: bool,
+    ) -> Self {
         let (operator, _) = tilo_user_identity::UserIdentity::generate("Server operator", 1);
         let holder = enrol(&operator, "tilo-sh", DeviceCapabilities::member());
         let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
         let browser = enrol(&ada, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
         let shells = tempfile::tempdir().unwrap();
+        let vms = in_vm.then(|| {
+            let vms = ush::hosted_vm::test_host::TestHost::start(state.path());
+            vms.add_card("acct-1");
+            vms
+        });
+        let shell = match &vms {
+            Some(vms) => Arc::new(tilo_server::agents::HostShells::at(
+                tilo_server::agents::ShellsAt::Here(
+                    ush::environment_terminals::EnvironmentTerminals::new(Arc::new(
+                        ush::workspace_shell::WorkspaceShells::new(
+                            shells.path().join("shells"),
+                            Some(vms.target("acct-1")),
+                        ),
+                    )),
+                    Arc::new(tilo_server::machine_agents::MachineAgentsServer::new(None)),
+                ),
+            )),
+            None => tilo_server::agents::host_shells(shells.path().join("shells")).unwrap(),
+        };
         let (server, actions) = tilo_server::agents::start_serving_documents(
             crate::harness::hosted::on_this_machine(state.path()),
             tilo_server::daemon::ServerIdentity {
@@ -70,7 +106,7 @@ impl OnTheirServer {
             },
             Some(Arc::new(crate::common::catalogue)),
             None,
-            Some(tilo_server::agents::host_shells(shells.path().join("shells")).unwrap()),
+            Some(shell),
             None,
         )
         .await
@@ -125,8 +161,10 @@ impl OnTheirServer {
             agents,
             model,
             address,
+            server_device: holder.cert.device_public_key,
             _state: state,
             _shells: shells,
+            vms,
         }
     }
 
@@ -709,4 +747,179 @@ async fn servers_model_failed_turn_then_next_message() {
     let answered = reply_ended(&hosted, &second).await;
     assert_eq!(answered.text, "I went on, and it is built.");
     looking.abort();
+}
+
+/// What the VM a command ran in was given of the actor who asked for it.
+fn launched_env<'a>(
+    launched: &'a [ush::hosted_vm::test_host::Launched],
+    program: &str,
+) -> Option<&'a ush::hosted_vm::test_host::Launched> {
+    launched
+        .iter()
+        .find(|(argv, _)| argv.first().is_some_and(|first| first == program))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_commands_git_identity_is_the_agent_that_asked_as_the_workspace_names_it() {
+    Box::pin(identity_in_the_vm()).await;
+}
+
+async fn identity_in_the_vm() {
+    let hosted = OnTheirServer::start_with_vm().await;
+    let approver = MemberApprover::new(hosted.address.clone());
+    let (answers, mut answered) = mpsc::unbounded_channel();
+    let person = Person {
+        asked: Arc::default(),
+        answers,
+    };
+    let mut sheet = Sheet {
+        asked: Arc::clone(&person.asked),
+    };
+    let mut questions = MemberQuestions {
+        server: &approver,
+        root: &hosted.ada,
+        device: None,
+    };
+    let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
+        tokio::time::sleep(Duration::from_millis(50))
+    });
+    tokio::pin!(page);
+
+    beside(
+        &mut page,
+        Box::pin(hosted.turn(
+            "Commit in the shell",
+            vec![
+                executes(
+                    "commit",
+                    "sh -c 'echo \"$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>\"'",
+                ),
+                Reply::text("I asked you first."),
+            ],
+        )),
+    )
+    .await;
+    let asked_in_conversation = beside(&mut page, hosted.questions()).await;
+    let (question, _) = asked_in_conversation
+        .into_iter()
+        .next()
+        .expect("the command is asked before it runs");
+
+    hosted.model.then(Reply::text("It ran."));
+    beside(&mut page, hosted.answers(&question, "allow")).await;
+    let settled = beside(&mut page, hosted.settled(&question)).await;
+    assert_eq!(
+        settled
+            .outcome
+            .as_ref()
+            .map(|outcome| outcome.outcome.0.as_str()),
+        Some(chat::question::DONE),
+        "the command ran: {settled:?}; the model was shown:\n{}",
+        hosted.shown()
+    );
+
+    let deadline = tilo_test_env::hang_deadline();
+    let vms = hosted
+        .vms
+        .as_ref()
+        .expect("the server sells its workspace a VM");
+    loop {
+        let launched = vms.launched();
+        if let Some((argv, env)) = launched_env(&launched, "sh") {
+            let git = |name: &str| -> Vec<String> {
+                env.iter()
+                    .filter(|(key, _)| key == name)
+                    .map(|(_, value)| value.clone())
+                    .collect()
+            };
+            for name in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
+                assert_eq!(
+                    git(name),
+                    vec!["Scout".to_owned()],
+                    "the agent's own name signs its work, not its key: {argv:?} {env:?}"
+                );
+            }
+            for name in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
+                assert_eq!(
+                    git(name),
+                    vec!["scout@team.tilo".to_owned()],
+                    "its address is the workspace's, never the machine's loopback: {argv:?} {env:?}"
+                );
+            }
+            // The person herself, from the device she signed in on: the same VM run, and what
+            // it makes signs as her, at her workspace's address.
+            let actions = tilo_session_actions::SessionActions::new(
+                &hosted.page.peer,
+                hosted.page.workspace,
+                hosted.server_device,
+            );
+            let mcp = tilo_mcp::McpServer::new(
+                actions,
+                hosted.page.workspace.to_string(),
+                hex::encode(hosted.ada.verifying_key().to_bytes()),
+            );
+            let asked_before = person.questions();
+            let (text, failed) = beside(
+                &mut page,
+                Box::pin(super::agent_mcp::tool(
+                    &mcp,
+                    "tilo_do",
+                    serde_json::json!({
+                        "path": "terminal#run",
+                        "args": {"command": "sh -c 'echo \"$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>\"'"},
+                    }),
+                )),
+            )
+            .await;
+            assert!(!failed, "her command is taken: {text}");
+            let mut allowed = false;
+            loop {
+                if !allowed && person.questions() > asked_before {
+                    person.answer(tilo_server_protocol::certify::ConfirmationAnswer::AllowOnce);
+                    allowed = true;
+                }
+                let launched = vms.launched();
+                let mut hers = launched
+                    .iter()
+                    .filter(|(argv, _)| argv.first().is_some_and(|program| program == "sh"));
+                if let Some((argv, env)) = hers.next_back() {
+                    let git = |name: &str| -> Vec<String> {
+                        env.iter()
+                            .filter(|(key, _)| key == name)
+                            .map(|(_, value)| value.clone())
+                            .collect()
+                    };
+                    if git("GIT_AUTHOR_NAME") == ["Ada".to_owned()] {
+                        for name in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
+                            assert_eq!(
+                                git(name),
+                                vec!["Ada".to_owned()],
+                                "her own name signs her work: {argv:?} {env:?}"
+                            );
+                        }
+                        for name in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
+                            assert_eq!(
+                                git(name),
+                                vec!["ada@team.tilo".to_owned()],
+                                "her address is her workspace's: {argv:?} {env:?}"
+                            );
+                        }
+                        return;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "her command never reached the workspace's VM: {launched:?}"
+                );
+                beside(&mut page, tokio::time::sleep(Duration::from_millis(50))).await;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the command never reached the workspace's VM ({} wakes): {launched:?}; the model was shown:\n{}",
+            vms.wakes_asked(),
+            hosted.shown()
+        );
+        beside(&mut page, tokio::time::sleep(Duration::from_millis(50))).await;
+    }
 }

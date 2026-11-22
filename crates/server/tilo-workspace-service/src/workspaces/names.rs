@@ -54,6 +54,18 @@ impl Workspaces {
         });
     }
 
+    /// The name `person` (their root) gave themselves, as this host keeps it in their profile:
+    /// the one every workspace names them by, and what someone outside a member list they hold a
+    /// row in is still called. `None` before they gave one.
+    #[must_use]
+    pub fn person_profile_name(&self, person: &[u8; 32]) -> Option<String> {
+        let names = self.inner.person_names.read_recover();
+        names
+            .as_ref()?
+            .name_of(person)
+            .filter(|name| !name.trim().is_empty())
+    }
+
     /// Keep `name` as `person`'s, then name them by it in every workspace governed here that they
     /// hold a part in. Whether any workspace changed.
     ///

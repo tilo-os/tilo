@@ -112,23 +112,26 @@ pub struct Person {
 }
 
 impl Person {
-    /// The actor `key`, called `name` in the workspace whose host is `host`:
-    /// their address there is what their name makes at the host,
-    /// `<name>@<host>`. An actor the workspace has not named is named by the
-    /// start of their key, and a host with no name of its own is `tilo`, so a
-    /// program that signs its work is never refused an identity.
+    /// The actor called `name` in the workspace whose host is `host`: their
+    /// address there is what their name makes at the host, `<name>@<host>`.
+    /// An actor the workspace has not named is a Tilo member, and a host with
+    /// no name of its own is `tilo`, so a program that signs its work is never
+    /// refused an identity and never signs it with a key.
     #[must_use]
-    pub fn of(name: &str, key: &str, host: &str) -> Self {
-        let address = slug(name, &['.', '_']);
-        let address = if address.is_empty() {
-            let start: String = slug(key, &[]).chars().take(12).collect();
-            if start.is_empty() {
-                "tilo".to_owned()
-            } else {
-                start
-            }
+    pub fn of(name: &str, host: &str) -> Self {
+        let name = name.trim();
+        let name = if name.is_empty() {
+            UNNAMED_ACTOR.to_owned()
         } else {
-            address
+            name.to_owned()
+        };
+        // A name written in a script that makes no address leaves a plain
+        // local part: the address is for reading, not for finding anyone.
+        let local = slug(&name, &['.', '_']);
+        let local = if local.is_empty() {
+            "member".to_owned()
+        } else {
+            local
         };
         let host = slug(host_name(host), &['.']);
         let host = if host.is_empty() {
@@ -136,18 +139,16 @@ impl Person {
         } else {
             host
         };
-        let name = name.trim().to_owned();
-        let name = if name.is_empty() {
-            address.clone()
-        } else {
-            name
-        };
         Self {
             name,
-            address: format!("{address}@{host}"),
+            address: format!("{local}@{host}"),
         }
     }
 }
+
+/// What someone the workspace has not named signs as: a person's word, never a
+/// key, since what a program records of its author is read by people.
+const UNNAMED_ACTOR: &str = "Tilo member";
 
 /// The host part of `host`, which may be written as a URL (`https://eu1.tilo.sh/`,
 /// `http://eu1.tilo.sh:8080`).
@@ -254,18 +255,22 @@ mod tests {
 
     #[test]
     fn a_person_is_addressed_by_their_name_at_their_workspaces_host() {
-        let ada = Person::of("Ada Lovelace", "c0ffee", "https://eu1.tilo.sh/");
+        let ada = Person::of("Ada Lovelace", "https://eu1.tilo.sh/");
         assert_eq!(ada.name, "Ada Lovelace");
         assert_eq!(ada.address, "ada-lovelace@eu1.tilo.sh");
-        let with_port = Person::of("Ada", "c0ffee", "http://eu1.tilo.sh:8080");
+        let with_port = Person::of("Ada", "http://eu1.tilo.sh:8080");
         assert_eq!(with_port.address, "ada@eu1.tilo.sh");
-        // A person the workspace has not named is named by their key, and a
-        // host with no name is the default one: a program is never without an
-        // identity to sign its work with.
-        let unnamed = Person::of("  ", "0123456789abcdef0123", "");
-        assert_eq!(unnamed.name, "0123456789ab");
-        assert_eq!(unnamed.address, "0123456789ab@tilo");
-        let odd = Person::of("Ada  O'Neil!!", "x", "Ada's server");
+        // A person the workspace has not named signs as a member, never as a
+        // key, and a host with no name is the default one: a program is never
+        // without an identity to sign its work with.
+        let unnamed = Person::of("  ", "");
+        assert_eq!(unnamed.name, "Tilo member");
+        assert_eq!(unnamed.address, "tilo-member@tilo");
+        let odd = Person::of("Ada  O'Neil!!", "Ada's server");
         assert_eq!(odd.address, "ada-o-neil@ada-s-server");
+        // A name in a script that spells nothing of an address still signs.
+        let written = Person::of("Мария", "team.tilo");
+        assert_eq!(written.name, "Мария");
+        assert_eq!(written.address, "member@team.tilo");
     }
 }

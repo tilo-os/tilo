@@ -83,9 +83,11 @@ itself on the server's build.
 `git` in the VM commits as whoever asked for the command, a person or an
 agent: the programs a command line runs record them as their author and
 committer, by the name the workspace names them by and their address in it,
-`<name>@<host>` (`ada@eu1.tilo.sh` for a workspace on `eu1.tilo.sh`). Two
+`<name>@<host>` (`ada@eu1.tilo.sh` for a workspace on `eu1.tilo.sh`, or
+`ada@team.tilo` for one whose host publishes no site of its own). Two
 people sharing the workspace's machine and its shell commit as themselves,
-and an agent's own commits name the agent.
+and an agent's own commits name the agent. Someone the workspace has not named
+signs as a Tilo member, never as a key.
 
 Cloning or pushing over https needs a token. git takes it from the
 environment (`os/hosted-guest/git-credential-tilo`, set system-wide in

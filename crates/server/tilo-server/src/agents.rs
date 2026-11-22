@@ -844,6 +844,32 @@ impl ServerRecordsLink {
         }
         Some((self.workspaces.as_ref()?, *caller.user_public_key()?))
     }
+
+    /// The host an actor's address in `workspace` is at: the origin this host publishes its pages
+    /// at, else the name its device gives itself, when either names a network; else the
+    /// workspace's own (`team.tilo`). A machine's loopback names nobody's work.
+    fn address_host(&self, workspaces: &crate::workspaces::Workspaces, workspace: &str) -> String {
+        if let Some(origin) = self
+            .browser_origin
+            .read()
+            .ok()
+            .and_then(|held| held.as_ref().cloned())
+            && names_a_network(&origin)
+        {
+            return (*origin).clone();
+        }
+        let label = workspaces.serving_certificate().device_label.trim();
+        if names_a_network(label) {
+            return label.to_owned();
+        }
+        let name = self
+            .host_device
+            .runtime
+            .block_on(workspaces.summary(workspace))
+            .map(|summary| summary.name)
+            .unwrap_or_default();
+        format!("{}.tilo", address_slug(&name))
+    }
 }
 
 impl WorkspaceDocumentsLink for ServerRecordsLink {
@@ -1130,7 +1156,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             }
             let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
             if let Ok(Some(bytes)) = workspaces
-                .resource_document(workspace, "so.tilo.chat", &list)
+                .resource_document(workspace, tilo_workspace_agent::OWNER, &list)
                 .await
                 && let Ok(mut doc) = automerge::AutoCommit::load(&bytes)
                 && let Ok(agents) =
@@ -1154,25 +1180,37 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
     }
 
     /// Who `caller` runs commands as in `workspace`: an agent by its own name, else the person it
-    /// acts for, as the workspace's member list names them, at the address the workspace is
-    /// reached by (`eu1.tilo.sh`, the origin the host published for its Browser). A commit made
-    /// in the workspace's VM names whoever asked for it as the workspace does.
+    /// acts for, as the workspace's member list or their own profile names them, at the address
+    /// the workspace is reached by (`eu1.tilo.sh`, the origin the host published for its Browser;
+    /// the workspace's own `team.tilo` where the host names no site of its own). A commit made
+    /// in the workspace's VM names whoever asked for it as the workspace does, never by a key.
     fn person(
         &self,
         workspace: &str,
         caller: &tilo_actions::remote::Caller,
     ) -> Option<tilo_actions::remote::environment_commands::Person> {
         let workspaces = self.workspaces.as_ref()?;
-        let origin = self
-            .browser_origin
-            .read()
-            .ok()
-            .and_then(|held| held.as_ref().cloned());
-        let host = origin.map_or_else(
-            || workspaces.serving_certificate().device_label.clone(),
-            |origin| (*origin).clone(),
-        );
-        tilo_agent_session::workspace_actions::person_of(caller, &self.members(workspace), &host)
+        let mut names = self.members(workspace);
+        // A person's own name is theirs, kept in their profile: it names them where the
+        // workspace's member list has no row for them or keeps one with no word in it.
+        let acting = caller.acting();
+        if let Some(person) = acting
+            .person_id()
+            .filter(|id| !id.is_empty())
+            .or_else(|| acting.acted_for_person())
+            && !names
+                .iter()
+                .any(|(member, name)| member.person_id() == Some(person) && !name.trim().is_empty())
+            && let Some(root) = hex::decode(person)
+                .ok()
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            && let Some(name) = workspaces.person_profile_name(&root)
+            && let Some(member) = tilo_actions::MemberId::parsed_person(person)
+        {
+            names.push((member, name));
+        }
+        let host = self.address_host(workspaces, workspace);
+        tilo_agent_session::workspace_actions::person_of(caller, &names, &host)
     }
 
     fn view_document(
@@ -1596,4 +1634,100 @@ async fn start_app_server(
         }
     }
     Ok((server, action_server))
+}
+
+/// Whether `host` names something on a network (`eu1.tilo.sh`, `tilo.sh`): a host a person reads
+/// in an address, not the loopback a machine bound to (`127.0.0.1`, `[::1]:8080`, `localhost`).
+fn names_a_network(host: &str) -> bool {
+    let name = host.trim();
+    let name = name.split_once("://").map_or(name, |(_, rest)| rest);
+    let name = name.split(['/', '?', '#']).next().unwrap_or(name);
+    let without_port = match name.rsplit_once(':') {
+        Some((head, port))
+            if !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            head
+        }
+        _ => name,
+    };
+    let unbound = |text: &str| {
+        text.trim_start_matches('[')
+            .trim_end_matches(']')
+            .trim_end_matches('.')
+            .to_owned()
+    };
+    [unbound(name), unbound(without_port)]
+        .iter()
+        .all(|candidate| {
+            candidate.contains('.')
+                && !candidate.eq_ignore_ascii_case("localhost")
+                && candidate.parse::<std::net::IpAddr>().is_err()
+        })
+}
+
+/// `name` as the host part of an address: lowercased, its words joined by `-`, only letters and
+/// digits left, up to 63 of them. `workspace` when the name is empty or has no such words.
+fn address_slug(name: &str) -> String {
+    let mut slug = String::new();
+    for c in name.trim().chars().flat_map(char::to_lowercase) {
+        if slug.len() >= 63 {
+            break;
+        }
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        "workspace".to_owned()
+    } else {
+        slug.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::{address_slug, names_a_network};
+
+    #[test]
+    fn an_address_host_names_a_network_and_never_a_loopback() {
+        for host in [
+            "eu1.tilo.sh",
+            "https://eu1.tilo.sh/app/",
+            "tilo.sh",
+            "team.tilo",
+            "http://tilo.sh:8443",
+        ] {
+            assert!(names_a_network(host), "{host} names a network");
+        }
+        for host in [
+            "",
+            "   ",
+            "tilo-sh",
+            "server",
+            "127.0.0.1",
+            "127.0.0.1:8080",
+            "http://127.0.0.1:8080/",
+            "localhost",
+            "LOCALHOST:3000",
+            "[::1]:8080",
+            "::1",
+        ] {
+            assert!(!names_a_network(host), "{host} names no network");
+        }
+    }
+
+    #[test]
+    fn a_workspace_names_an_address_and_one_without_words_is_a_workspace() {
+        assert_eq!(address_slug("Team"), "team");
+        assert_eq!(address_slug("Applicant: Jane Doe"), "applicant-jane-doe");
+        assert_eq!(address_slug("  "), "workspace");
+        assert_eq!(address_slug("Мария"), "workspace");
+        assert_eq!(
+            address_slug("A very long workspace name that runs on far past sixty-three characters"),
+            "a-very-long-workspace-name-that-runs-on-far-past-sixty-three-ch"
+        );
+    }
 }

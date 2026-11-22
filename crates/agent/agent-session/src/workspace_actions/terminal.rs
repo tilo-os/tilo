@@ -151,34 +151,38 @@ pub trait WorkspaceShell: Send + Sync {
 /// person it acts for, as `names` (the workspace's member list) calls them. `host` is the
 /// address the workspace is reached by, which their address is at (`<name>@<host>`). `None`
 /// when the caller is neither a person nor an agent the workspace names.
+///
+/// Someone the list does not name, or names with no word, still signs: as a Tilo actor, never
+/// as a key, since what a commit records of its author is read by people.
 #[must_use]
 pub fn person_of(
     caller: &Caller,
     names: &[(tilo_actions::MemberId, String)],
     host: &str,
 ) -> Option<Person> {
+    /// The word `names` calls the member `id`, when it calls it one.
+    fn named<'a>(names: &'a [(tilo_actions::MemberId, String)], id: &str) -> Option<&'a str> {
+        names
+            .iter()
+            .find(|(member, name)| member.id() == id && !name.trim().is_empty())
+            .map(|(_, name)| name.as_str())
+    }
     let acting = caller.acting();
     if let Some(agent) = acting
         .member_id()
         .and_then(tilo_actions::MemberId::agent_id)
     {
-        let name = names
-            .iter()
-            .find(|(member, _)| member.agent_id() == Some(agent))
-            .map(|(_, name)| name.as_str())
-            .or_else(|| caller.agent_name())
-            .unwrap_or(agent);
-        return Some(Person::of(name, agent, host));
+        let name = named(names, agent)
+            .or_else(|| caller.agent_name().filter(|name| !name.trim().is_empty()))
+            .unwrap_or("Tilo agent");
+        return Some(Person::of(name, host));
     }
     let person = acting
         .person_id()
         .filter(|id| !id.is_empty())
         .or_else(|| acting.acted_for_person())?;
-    let name = names
-        .iter()
-        .find(|(member, _)| member.person_id() == Some(person))
-        .map_or("", |(_, name)| name.as_str());
-    Some(Person::of(name, person, host))
+    let name = named(names, person).unwrap_or("Tilo member");
+    Some(Person::of(name, host))
 }
 
 /// A Terminal session's shell to open on a terminal, for one device.
@@ -1260,7 +1264,7 @@ mod tests {
                 address: "scout@eu1.tilo.sh".into(),
             })
         );
-        // An agent the workspace has not called anything is named by the key its person made it.
+        // An agent the workspace has not called anything goes by the name its session was given.
         let unnamed = Caller::local_agent("reviewer-1").named("Review Bot");
         assert_eq!(
             person_of(&unnamed, &[], "eu1.tilo.sh"),
@@ -1269,14 +1273,30 @@ mod tests {
                 address: "review-bot@eu1.tilo.sh".into(),
             })
         );
-        // A person the workspace has not named is still someone to sign as.
+        // An agent nothing names signs as an agent, never as the key it is known by.
+        let stranger_agent = Caller::local_agent("e3301bbb8b64");
+        assert_eq!(
+            person_of(&stranger_agent, &[], "team.tilo"),
+            Some(Person {
+                name: "Tilo agent".into(),
+                address: "tilo-agent@team.tilo".into(),
+            })
+        );
+        // A person the workspace has not named is still someone to sign as, and the
+        // commits they make carry a name and an address they can read.
         let stranger = Caller::local_person("cd34");
         assert_eq!(
-            person_of(&stranger, &[], "eu1.tilo.sh"),
+            person_of(&stranger, &[], "team.tilo"),
             Some(Person {
-                name: "cd34".into(),
-                address: "cd34@eu1.tilo.sh".into(),
+                name: "Tilo member".into(),
+                address: "tilo-member@team.tilo".into(),
             })
+        );
+        // A row the list keeps with no word of a name names nobody either.
+        let blank = vec![(MemberId::person("cd34"), "  ".to_owned())];
+        assert_eq!(
+            person_of(&stranger, &blank, "team.tilo").map(|person| person.name),
+            Some("Tilo member".into())
         );
         // Software acting by itself runs as nobody.
         assert_eq!(
