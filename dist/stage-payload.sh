@@ -38,7 +38,7 @@ install -pm 0755 "$bin_dir/tilo"              "$stage/bin/tilo"
 # The program a task's tilolang programs run in, which `tilo` and the session start beside
 # themselves.
 install -pm 0755 "$bin_dir/tilolang-process"     "$stage/bin/tilolang-process"
-# This computer's one daemon (`tilo-runtime --hold`), which `tilo login` and `tilo mcp` start
+# This computer's one daemon (`tilo-runtime`), which `tilo login` and `tilo mcp` start
 # beside `tilo`: without it a login holds no workspace here.
 install -pm 0755 "$bin_dir/tilo-runtime"         "$stage/bin/tilo-runtime"
 if (( primary_files )); then

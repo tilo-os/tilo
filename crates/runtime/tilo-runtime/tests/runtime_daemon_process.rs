@@ -318,7 +318,7 @@ fn live_profile_lock_fails_without_unlinking_owners_socket() -> Result<()> {
     let profile = DaemonProfile::new()?;
     app_starts(profile.path(), "dev.tilo.first")?;
     let before = daemon(profile.path())?;
-    let competing = host(profile.path()).arg("--daemon").output_locked()?;
+    let competing = host(profile.path()).output_locked()?;
     ensure!(
         !competing.status.success(),
         "a second daemon took a profile that is in use"

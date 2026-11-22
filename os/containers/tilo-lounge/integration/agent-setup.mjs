@@ -50,7 +50,7 @@ const finish = async (code, message) => {
   // must not keep the run from saying why it failed.
   if (message) console.error(`FAIL: ${message}`);
   if (message) console.error(`the machine as it failed: ${machine().text}`);
-  // What the computer's peer (`tilo mcp --hold`) said, which serves the agents' calls.
+  // What the computer's peer (`tilo-runtime`) said, which serves the agents' calls.
   if (message) {
     try {
       const dir = join(computer, 'state', 'tilo', 'device');

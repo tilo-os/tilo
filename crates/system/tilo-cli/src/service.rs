@@ -2,7 +2,7 @@
 //! `~/Tilo` while this account is logged in, started again at the next login.
 //!
 //! A systemd user unit on Linux, a launchd agent on macOS, each running the device's one daemon
-//! (`tilo-runtime --hold`). On macOS, Tilo.app's own agent (`so.tilo.runtime`) runs that daemon
+//! (`tilo-runtime`). On macOS, Tilo.app's own agent (`so.tilo.runtime`) runs that daemon
 //! where it is installed, and no second agent is installed beside it. Where no service manager
 //! answers (a container, a session without a user manager) the daemon runs as a process of its
 //! own instead, until the computer restarts.
@@ -350,7 +350,7 @@ fn carried() -> Vec<(&'static str, String)> {
 fn unit(exe: &Path, environment: &[(&str, String)]) -> String {
     let mut unit = format!(
         "[Unit]\nDescription=Tilo: your workspaces' files at ~/Tilo, kept in sync\n\
-         After=network-online.target\n\n[Service]\nExecStart=\"{}\" --hold\n\
+         After=network-online.target\n\n[Service]\nExecStart=\"{}\"\n\
          Restart=on-failure\nRestartSec=5\nTimeoutStopSec={}\nEnvironment=\"{SERVICE_ENV}=1\"\n",
         exe.display(),
         STOP_TIMEOUT.as_secs()
@@ -388,7 +388,7 @@ fn agent(exe: &Path, environment: &[(&str, String)]) -> String {
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
          <plist version=\"1.0\"><dict>\n\
          <key>Label</key><string>{LABEL}</string>\n\
-         <key>ProgramArguments</key><array><string>{}</string><string>--hold</string></array>\n\
+         <key>ProgramArguments</key><array><string>{}</string></array>\n\
          <key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n\
          <key>EnvironmentVariables</key><dict>\n{variables}</dict>\n\
          </dict></plist>\n",
@@ -698,7 +698,7 @@ mod tests {
             )],
         );
         assert!(
-            unit.contains("ExecStart=\"/home/ada/.local/bin/tilo-runtime\" --hold\n"),
+            unit.contains("ExecStart=\"/home/ada/.local/bin/tilo-runtime\"\n"),
             "{unit}"
         );
         assert!(
@@ -721,10 +721,7 @@ mod tests {
             Path::new("/Users/you&co/tilo-runtime"),
             &[("XDG_STATE_HOME", "/s<t>".to_owned())],
         );
-        assert!(
-            agent
-                .contains("<string>/Users/you&amp;co/tilo-runtime</string><string>--hold</string>")
-        );
+        assert!(agent.contains("<string>/Users/you&amp;co/tilo-runtime</string></array>"));
         assert!(agent.contains("<key>XDG_STATE_HOME</key><string>/s&lt;t&gt;</string>"));
         assert!(agent.contains("<key>TILO_PEER_SERVICE</key><string>1</string>"));
     }
@@ -758,7 +755,7 @@ mod tests {
         install(Path::new("/opt/tilo-runtime")).unwrap();
         let written = std::fs::read_to_string(unit_path().unwrap()).unwrap();
         assert!(
-            written.contains("ExecStart=\"/opt/tilo-runtime\" --hold\n"),
+            written.contains("ExecStart=\"/opt/tilo-runtime\"\n"),
             "{written}"
         );
 

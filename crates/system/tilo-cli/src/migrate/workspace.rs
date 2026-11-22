@@ -4,7 +4,7 @@
 //! A migration is the agent on this computer acting for the person, so it goes the agent's way
 //! in: a connection to this computer's peer, the service `tilo login` leaves running, which
 //! holds the device's one session with the workspace for every `tilo mcp` and `tilo` command
-//! of this computer (`tilo-runtime --hold`, [`crate::service`]), or, for a hosted workspace, the
+//! of this computer (`tilo-runtime`, [`crate::service`]), or, for a hosted workspace, the
 //! API with the key this computer holds ([`crate::api`]). Either way it asks the workspace's apps
 //! to do their own ordinary actions. Every action of one run names that run, so History shows the
 //! run as one entry under the agent's name, the person sees each record arrive in their tab, and

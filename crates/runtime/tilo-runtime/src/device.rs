@@ -1,5 +1,5 @@
 //! This computer as one of the person's devices, without the Tilo desktop: the one daemon
-//! (`tilo-runtime --hold`) that the CLI, a server and tilo.sh all run.
+//! (`tilo-runtime`) that the CLI, a server and tilo.sh all run.
 //!
 //! It holds the person's workspaces in the device's own workspace service
 //! ([`workspaces::ServiceWorkspaces`]), each a copy synced with the device that serves it, the

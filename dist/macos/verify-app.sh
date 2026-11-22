@@ -85,7 +85,7 @@ fi
 # goes to the login Keychain, which a redirected HOME turns into a blocking
 # "keychain not found" prompt.
 mkdir -m 0700 "$work/profile"
-"$contents/MacOS/tilo-runtime" --daemon --profile "$work/profile" \
+"$contents/MacOS/tilo-runtime" --profile "$work/profile" \
   </dev/null >"$work/daemon.log" 2>&1 &
 daemon=$!
 status=

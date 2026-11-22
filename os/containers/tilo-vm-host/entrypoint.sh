@@ -28,7 +28,7 @@
 #      member/profile/state. A host that already holds them ignores the ticket.
 #      A host given no ticket fails, unless TILO_VM_FOUND=1: then it founds its
 #      own identity, as a machine with no owner before it does.
-#   4. the member: `tilo-runtime --daemon`, as the service, under the member
+#   4. the member: `tilo-runtime`, as the service, under the member
 #      identity, an ordinary device of the workspaces it serves that takes their
 #      Linux turns when it has room or keeps their VM (the login names the
 #      server), restarted if it stops;
@@ -148,7 +148,7 @@ mountpoint -q "$home" || mount --bind "$member/home" "$home" \
       TILO_RUNTIME_PROFILE=$profile TILO_HOSTED_VM_SOCKET=$run/hosted.sock \
       TILO_HOSTED_PLANS=${TILO_VM_PLANS:-} \
       setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all -- \
-      tilo-runtime --daemon --profile "$profile" || say "the member stopped ($?); starting it again"
+      tilo-runtime --profile "$profile" || say "the member stopped ($?); starting it again"
     sleep 5
   done
 ) &

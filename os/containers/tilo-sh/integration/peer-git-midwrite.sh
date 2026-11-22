@@ -44,7 +44,7 @@ finish() {
   local status=$?
   set +e
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
-  pkill -9 -f 'tilo-runtime --hold' 2>/dev/null || true
+  pkill -9 -x tilo-runtime 2>/dev/null || true
   unmount_scratch
   if [[ $status != 0 ]]; then
     for log in "$logs"/*.log; do echo "== $log" >&2; tail -n 20 "$log" >&2 || true; done
@@ -344,7 +344,7 @@ end_by_newer_program() {
   local holder
   holder=$(holder_pid)
   say "a holder of a newer program asks the holder $holder to step down mid-checkout"
-  as_computer "$scratch/newer-install/tilo-runtime" --hold >>"$logs/newer-holder.log" 2>&1 &
+  as_computer "$scratch/newer-install/tilo-runtime" >>"$logs/newer-holder.log" 2>&1 &
   pids+=("$!")
   echo "$holder" >"$scratch/asked-holder"
 }
@@ -360,7 +360,7 @@ say "once the folder is quiet, the newer program's holder takes over"
 took_over() { [[ -n $(holder_pid) && $(holder_pid) != $(cat "$scratch/asked-holder") ]] && shown; }
 taken=0
 for _ in 1 2 3 4 5 6; do
-  as_computer "$scratch/newer-install/tilo-runtime" --hold >>"$logs/newer-holder.log" 2>&1 &
+  as_computer "$scratch/newer-install/tilo-runtime" >>"$logs/newer-holder.log" 2>&1 &
   pids+=("$!")
   if wait_for 40 "the newer program's holder holds the device" took_over; then taken=1; break; fi
 done

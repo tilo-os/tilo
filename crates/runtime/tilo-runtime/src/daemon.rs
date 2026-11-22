@@ -26,12 +26,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// This computer's daemon over the profile `--profile` names, in an environment kept inside
-    /// it: a VM host's, a test's.
+    /// This computer's daemon, which plain `tilo-runtime` runs: in the person's own environment
+    /// over the default profile, or, over a profile named apart (`--profile`,
+    /// `TILO_RUNTIME_PROFILE`), in an environment kept inside it: a VM host's, a test's.
     Daemon,
-    /// This computer's daemon as the person's login runs it: in their own environment, over the
-    /// default profile.
-    Hold,
     Connect,
     RunApp {
         app_id: String,
@@ -45,8 +43,7 @@ pub enum Mode {
 pub struct Args {
     pub profile: PathBuf,
     pub mode: Mode,
-    /// `--dev`, for `--daemon` and `--hold` only: serve builds under development, which
-    /// are not installed.
+    /// `--dev`, for the daemon only: serve builds under development, which are not installed.
     pub dev: bool,
     /// The client chose a standalone profile itself (`--standalone`,
     /// `--profile` or `TILO_RUNTIME_PROFILE`), so `--connect` attaches to
@@ -117,8 +114,6 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
                         .ok_or_else(|| invalid("--profile requires a path"))?,
                 ));
             }
-            Some("--daemon") if mode.is_none() => mode = Some(Mode::Daemon),
-            Some("--hold") if mode.is_none() => mode = Some(Mode::Hold),
             Some("--connect") if mode.is_none() => mode = Some(Mode::Connect),
             Some("--run-app") if mode.is_none() => {
                 mode = Some(parse_run_app(&mut arguments)?);
@@ -140,15 +135,10 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> io::Result<A
     if !profile.is_absolute() {
         return Err(invalid("runtime profile must be absolute"));
     }
-    let mode = mode.ok_or_else(|| invalid("choose --hold, --daemon, --connect [--standalone] [--device NAME] [--workspace ID], or --run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE"))?;
-    if dev && !matches!(mode, Mode::Daemon | Mode::Hold) {
+    let mode = mode.unwrap_or(Mode::Daemon);
+    if dev && mode != Mode::Daemon {
         return Err(invalid(
-            "--dev starts a daemon: use it with --hold or --daemon",
-        ));
-    }
-    if mode == Mode::Hold && explicit_profile {
-        return Err(invalid(
-            "--hold runs in the login's own environment: use --daemon with --profile",
+            "--dev starts the daemon: use it without --connect or --run-app",
         ));
     }
     if standalone && mode != Mode::Connect {
@@ -718,10 +708,8 @@ fn ensure_running(profile: &Path) -> io::Result<Status> {
     let mut command = Command::new(std::env::current_exe()?);
     // The person's own daemon runs in their environment, as the user service runs it; one of a
     // profile named apart keeps its environment inside that profile.
-    if std::env::var_os("TILO_RUNTIME_PROFILE").is_none() && default_profile()? == profile {
-        command.arg("--hold");
-    } else {
-        command.arg("--profile").arg(profile).arg("--daemon");
+    if std::env::var_os("TILO_RUNTIME_PROFILE").is_some() || default_profile()? != profile {
+        command.arg("--profile").arg(profile);
     }
     command
         .stdin(Stdio::null())

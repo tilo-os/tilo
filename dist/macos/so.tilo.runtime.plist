@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- This computer's one daemon (`tilo-runtime --hold`) as a launchd agent, shipped at
+<!-- This computer's one daemon (`tilo-runtime`) as a launchd agent, shipped at
      Tilo.app/Contents/Library/LaunchAgents/so.tilo.runtime.plist.
 
      SMAppService.agent(plistName: "so.tilo.runtime.plist") (macOS 13+) runs
@@ -18,7 +18,6 @@
   <key>ProgramArguments</key>
   <array>
     <string>/Applications/Tilo.app/Contents/MacOS/tilo-runtime</string>
-    <string>--hold</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict><key>TILO_PEER_SERVICE</key><string>1</string></dict>

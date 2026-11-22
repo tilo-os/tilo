@@ -2500,7 +2500,7 @@ down() {
   fi
 }
 
-# The daemons (`tilo-runtime --hold`) the stack's people started with a home under its state, as
+# The daemons (`tilo-runtime`) the stack's people started with a home under its state, as
 # their tilo does once it logs in, stopped, and the workspace folders they mounted there let go:
 # they outlive the stack otherwise, and a wipe cannot remove a folder still mounted. A holder
 # that read its person's root hides its environment, so it is known by the lock it holds on

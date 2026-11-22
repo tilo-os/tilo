@@ -61,14 +61,15 @@ fn run() -> io::Result<()> {
         return tilo_dialogs::confined::run_consent_helper();
     }
     let args = daemon::parse_args(arguments)?;
-    match args.mode {
-        daemon::Mode::Daemon => {
+    if args.mode == daemon::Mode::Daemon {
+        if args.standalone {
+            // A profile named apart keeps the daemon's environment inside it.
             daemon::validate_profile(&args.profile)?;
             configure_profile(&args.profile)?;
+        } else {
+            // The person's own profile, made on the first start.
+            crate::unix::private_directory(&args.profile)?;
         }
-        // The person's own profile, made on the first start.
-        daemon::Mode::Hold => crate::unix::private_directory(&args.profile)?,
-        _ => {}
     }
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -78,7 +79,7 @@ fn run() -> io::Result<()> {
         .with_writer(std::io::stderr)
         .try_init();
     match args.mode {
-        daemon::Mode::Daemon | daemon::Mode::Hold => daemon::serve(&args.profile, args.dev),
+        daemon::Mode::Daemon => daemon::serve(&args.profile, args.dev),
         daemon::Mode::Connect => daemon::connect(
             &args.profile,
             args.standalone,

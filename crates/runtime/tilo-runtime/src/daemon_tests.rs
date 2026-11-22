@@ -805,18 +805,15 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase dev_mode_is_an_explicit_daemon_flag;
+    phase the_daemon_is_plain_tilo_runtime;
     {
         let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
-        let dev = args(&["--profile", "/tmp/profile", "--daemon", "--dev"]).unwrap();
+        let dev = args(&["--profile", "/tmp/profile", "--dev"]).unwrap();
         assert_eq!((dev.mode, dev.dev), (Mode::Daemon, true));
-        assert!(
-            !args(&["--profile", "/tmp/profile", "--daemon"])
-                .unwrap()
-                .dev
-        );
+        assert!(!args(&["--profile", "/tmp/profile"]).unwrap().dev);
+        assert_eq!(args(&[]).unwrap().mode, Mode::Daemon, "plain tilo-runtime");
         assert!(args(&["--profile", "/tmp/profile", "--connect", "--dev"]).is_err());
-        assert!(args(&["--profile", "/tmp/profile", "--daemon", "--dev", "--dev"]).is_err());
+        assert!(args(&["--profile", "/tmp/profile", "--dev", "--dev"]).is_err());
     }
 
     phase a_device_and_its_workspace_choose_where_connect_goes;
@@ -861,7 +858,7 @@ tilo_test_env::scenario! {
             None
         );
         for refused in [
-            &["--profile", "/tmp/p", "--daemon", "--device", "b"][..],
+            &["--profile", "/tmp/p", "--device", "b"][..],
             &["--profile", "/tmp/p", "--connect", "--workspace", workspace],
             &[
                 "--profile",
@@ -926,7 +923,6 @@ tilo_test_env::scenario! {
             vec![
                 "--profile",
                 "/tmp/profile",
-                "--daemon",
                 "--workspace",
                 workspace,
             ],
@@ -948,7 +944,7 @@ fn standalone_is_the_clients_own_explicit_choice_for_connect() {
             .standalone,
         "a named profile is a standalone runtime's"
     );
-    assert!(args(&["--profile", "/tmp/profile", "--daemon", "--standalone"]).is_err());
+    assert!(args(&["--profile", "/tmp/profile", "--standalone"]).is_err());
     assert!(args(&["--connect", "--standalone", "--standalone"]).is_err());
 }
 

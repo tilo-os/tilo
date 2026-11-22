@@ -819,7 +819,7 @@ iroh relay, the web entry, and bots in `workspace_bots` (15,464)), with the
 `tilo-server-admin`, `tilo-enroll`, `tilo-approve` and
 `tilo-home-peer-control` binaries beside it. `tilo-api` (21,745) is the MCP
 and OAuth endpoint with its own grant and token store. A device without a
-desktop runs one daemon, `tilo-runtime --hold`, which serves its apps, `tilo
+desktop runs one daemon, `tilo-runtime`, which serves its apps, `tilo
 mcp` and the CLI's workspace commands over the device's one session. Both open
 the same `tilo-workspace-service` through `own_device`, but each has its own
 wrapper around it.

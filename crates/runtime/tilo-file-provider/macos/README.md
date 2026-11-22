@@ -41,7 +41,7 @@ app=target/tilo-file-provider/Tilo.app
 pluginkit -a "$app/Contents/PlugIns/TiloFiles.appex"
 "$app/Contents/MacOS/tilo-files" add          # prints ~/Library/CloudStorage/Tilo-Tilo
 # System Settings › General › Login Items & Extensions › File Providers: enable Tilo
-tilo-runtime --hold &                         # this branch's runtime, this computer's daemon
+tilo-runtime &                                # this branch's runtime, this computer's daemon
 ls ~/Library/CloudStorage/Tilo-Tilo           # enumerates; `cat` a file to hydrate it
 "$app/Contents/MacOS/tilo-files" remove
 ```
