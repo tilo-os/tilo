@@ -2548,7 +2548,7 @@ impl Workspaces {
                     .transpose()
                     .map_err(|_| invalid("`role` is `key_holder` or `store`"))?
                     .unwrap_or(tilo_peer_state::CopyRole::KeyHolder);
-                self.add_server(workspace, args.required_text("origin")?, role)
+                self.add_server(workspace, args.required_text("host")?, role)
                     .await
                     .map_err(|error| refused(&error))?;
                 None
@@ -2562,7 +2562,7 @@ impl Workspaces {
                 self.move_server(
                     workspace,
                     args.required_text("server")?,
-                    args.required_text("origin")?,
+                    args.required_text("host")?,
                 )
                 .await
                 .map_err(|error| refused(&error))?,

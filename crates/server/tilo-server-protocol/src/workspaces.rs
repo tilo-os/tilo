@@ -412,21 +412,23 @@ pub enum WorkspacesRequest {
     Servers {
         workspace: String,
     },
-    /// Have the server whose site is `origin` keep `workspace` as well:
+    /// Have the server whose own line is `host` keep `workspace` as well:
     /// answered with [`WorkspacesReply::Servers`] after it took it, or
     /// refused in its own words. Only the workspace's owners choose its
     /// servers, and the other server takes it only for an owner it let in.
     AddServer {
         workspace: String,
-        /// The other server's site, like `https://tilo.sh`.
-        origin: String,
+        /// The other server's own `web-host.json` line, which its operator
+        /// hands over: its certificate and where it is dialled.
+        host: String,
     },
-    /// Have a server keep `workspace` no more, named by its site or by its
-    /// device key: answered with [`WorkspacesReply::Servers`]. Only the
-    /// workspace's owners choose its servers.
+    /// Have a server keep `workspace` no more, named by the name the server
+    /// list shows or by its device key: answered with
+    /// [`WorkspacesReply::Servers`]. Only the workspace's owners choose its
+    /// servers.
     RemoveServer {
         workspace: String,
-        /// The server's site, or its device key.
+        /// The server's name in the list, or its device key.
         server: String,
     },
     /// Delete `workspace`, with everything this server keeps of it: final,

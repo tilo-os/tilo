@@ -602,8 +602,8 @@ impl Workspaces {
             ));
         }
         match request {
-            WorkspacesRequest::AddServer { origin, .. } => {
-                self.add_server(&workspace, &origin, tilo_peer_state::CopyRole::KeyHolder)
+            WorkspacesRequest::AddServer { host, .. } => {
+                self.add_server(&workspace, &host, tilo_peer_state::CopyRole::KeyHolder)
                     .await
                     .map_err(CollaborationError::new)?;
             }

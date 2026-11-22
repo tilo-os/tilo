@@ -316,8 +316,8 @@ tilo_test_env::scenario! {
         let (mut app, state) = mounted("general");
         app.harness()
             .perform_named(
-                "ws-general-server-origin",
-                &A11yAction::SetValue("https://tilo.sh".to_owned()),
+                "ws-general-server-host",
+                &A11yAction::SetValue("{\"origin\":\"https://tilo.sh\"}".to_owned()),
             )
             .unwrap();
         app.settle();
@@ -325,26 +325,26 @@ tilo_test_env::scenario! {
         assert_eq!(
             state.take_asked(),
             [WorkspaceSettingsEffect::AddServer {
-                origin: "https://tilo.sh".to_owned()
+                host: "{\"origin\":\"https://tilo.sh\"}".to_owned()
             }]
         );
 
         app.harness()
             .perform_named(
-                "ws-general-server-origin",
-                &A11yAction::SetValue("https://eu1.tilo.sh".to_owned()),
+                "ws-general-server-host",
+                &A11yAction::SetValue("{\"origin\":\"https://eu1.tilo.sh\"}".to_owned()),
             )
             .unwrap();
         app.settle();
         app.harness()
-            .perform_named("ws-general-server-origin", &A11yAction::Focus)
+            .perform_named("ws-general-server-host", &A11yAction::Focus)
             .unwrap();
         app.harness().key("Enter");
         app.settle();
         assert_eq!(
             state.take_asked(),
             [WorkspaceSettingsEffect::AddServer {
-                origin: "https://eu1.tilo.sh".to_owned()
+                host: "{\"origin\":\"https://eu1.tilo.sh\"}".to_owned()
             }]
         );
     }

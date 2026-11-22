@@ -87,12 +87,12 @@ pub enum WorkspaceSettingsEffect {
         #[param("-1 for earlier, 1 for later")]
         step: i32,
     },
-    /// Have another server keep the workspace as well, by its site
+    /// Have another server keep the workspace as well
     #[effect(kind = "outside")]
     #[effect(attended)]
     AddServer {
-        #[param("The other server's site, like https://tilo.sh")]
-        origin: String,
+        #[param("The other server's own web-host.json line, which its operator gives you")]
+        host: String,
     },
     /// Have a server keep the workspace no more
     #[effect(kind = "outside")]
@@ -559,7 +559,7 @@ impl ResourceApp for WorkspaceSettingsApp {
         let role_name = cx.local(String::new());
         let new_model = cx.local(String::new());
         let limit = cx.local(String::new());
-        let server_origin = cx.local(String::new());
+        let server_host = cx.local(String::new());
         let shown = cx.local(initial);
         let staged = cx.fixture::<Local>().map(|local| (*local).clone());
         let local = cx.local(staged.unwrap_or_default());
@@ -585,7 +585,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             role_name,
             new_model,
             limit,
-            server_origin,
+            server_host,
             local: local.clone(),
             state,
         };
@@ -831,7 +831,7 @@ struct Parts {
     /// What an agent may spend a day, as typed.
     limit: LocalState<String>,
     /// The site another server is added by, as typed.
-    server_origin: LocalState<String>,
+    server_host: LocalState<String>,
     /// What the sheet keeps to itself while it is up.
     local: LocalState<Local>,
     state: Option<WorkspaceSettingsState>,
@@ -895,19 +895,19 @@ impl Parts {
         self.limit.set(String::new());
     }
 
-    /// Ask for the site another server is added by to have it keep the
+    /// Ask for the host line another server is added by to have it keep the
     /// workspace too, as pressing Add or Enter takes it: empty asks nothing,
     /// leaving the field as it was.
-    fn ask_server_origin(&self) {
-        let origin = self.server_origin.get();
-        let origin = origin.trim();
-        if origin.is_empty() {
+    fn ask_server_host(&self) {
+        let host = self.server_host.get();
+        let host = host.trim();
+        if host.is_empty() {
             return;
         }
         self.ask(WorkspaceSettingsEffect::AddServer {
-            origin: origin.to_owned(),
+            host: host.to_owned(),
         });
-        self.server_origin.set(String::new());
+        self.server_host.set(String::new());
     }
 
     fn show_tab(&self, tab: Tab) {

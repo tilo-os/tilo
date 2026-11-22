@@ -72,20 +72,24 @@ A workspace you made on one server can be kept by another as well: make it on yo
 keep it too, say. Both keep the whole workspace, a change on either reaches the other, and you and its
 other members reach it at either, also while the first one is off.
 
+A server names itself to you with its own `web-host.json` line, which its operator hands over: its
+certificate and where it is dialled. No site of the server's is asked who it is, so what you hold is
+what names it.
+
 ```sh
-tilo workspace servers add https://tilo.sh -w Tilo      # tilo.sh keeps it as well
-tilo workspace servers ls -w Tilo                       # the servers keeping it, the one asked first
-tilo workspace servers remove https://tilo.sh -w Tilo   # tilo.sh lets it go
-tilo workspace servers move https://old.example.com https://tilo.sh -w Tilo
-                                                        # tilo.sh keeps it, then the old one lets it go
-tilo workspace servers content -w Tilo                  # how much content is still only on members' devices
+tilo workspace servers add "$(cat web-host.json)" -w Tilo  # the server keeps it as well
+tilo workspace servers ls -w Tilo                          # the servers keeping it, the one asked first
+tilo workspace servers remove tilo.sh -w Tilo              # it lets the workspace go
+tilo workspace servers move old.example.com "$(cat web-host.json)" -w Tilo
+                                                           # it keeps the workspace, then the old one lets it go
+tilo workspace servers content -w Tilo                     # how much content is still only on members' devices
 ```
 
 A server fetches the files and attachments the workspace's records name from its members' devices while
 they are on. Before you switch off the last device that holds a copy (a laptop you moved the workspace
 from, say), `tilo workspace servers content` says whether the server keeps all of it.
 
-The same is `workspace/servers#add {origin}`, `#list`, `#remove {server}`, `#move {server, origin}` and
+The same is `workspace/servers#add {host}`, `#list`, `#remove {server}`, `#move {server, host}` and
 `#content` for an agent over MCP, and
 `POST /v1/workspaces/{workspace}/resources/workspace/servers/actions/{action}` over HTTP, as every action of the workspace's published tree. Only the workspace's owners choose its
 servers, from a device of theirs or a key they created reaching all their workspaces. A move that the new

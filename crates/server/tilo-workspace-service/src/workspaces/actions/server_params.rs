@@ -5,10 +5,11 @@ use tilo_actions::{ActionParam, ParamType};
 pub(super) fn add_server_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required(
-            "origin",
+            "host",
             ParamType::Text,
-            "The other server's site, like https://tilo.sh. You must be let in there, and it may \
-             refuse by its own rules.",
+            "The other server's own web-host.json line, which its operator hands over: its \
+             certificate and where it is dialled. You must be let in there, and it may refuse by \
+             its own rules.",
         ),
         ActionParam::optional(
             "role",
@@ -44,8 +45,7 @@ pub(super) fn remove_server_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
         "server",
         ParamType::Text,
-        "The server's site, like https://tilo.sh, or its device key (64 hex characters) as the \
-         server list names it.",
+        "The server's name as the server list shows it, or its device key (64 hex characters).",
     )]
 }
 
@@ -54,14 +54,15 @@ pub(super) fn move_server_params() -> Vec<ActionParam> {
         ActionParam::required(
             "server",
             ParamType::Text,
-            "The server it moves from: its site, like https://tilo.sh, or its device key (64 hex \
-             characters) as the server list names it.",
+            "The server it moves from: its name as the server list shows it, or its device key \
+             (64 hex characters).",
         ),
         ActionParam::required(
-            "origin",
+            "host",
             ParamType::Text,
-            "The site of the server it moves to, like https://tilo.sh. You must be let in there, \
-             and it may refuse by its own rules; the workspace then stays where it was.",
+            "The moving-to server's own web-host.json line, which its operator hands over. You \
+             must be let in there, and it may refuse by its own rules; the workspace then stays \
+             where it was.",
         ),
     ]
 }

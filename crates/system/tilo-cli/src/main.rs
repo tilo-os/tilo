@@ -2836,20 +2836,21 @@ mod tests {
                 Cli::try_parse_from(["tilo", "workspace", "branch", "Research"]).is_err(),
                 "a branch is named"
             );
+            let server_line = r#"{"origin":"https://tilo.sh"}"#;
             let servers = Cli::try_parse_from([
-                "tilo", "workspace", "servers", "add", "https://tilo.sh", "-w", "Tilo",
+                "tilo", "workspace", "servers", "add", server_line, "-w", "Tilo",
             ])
             .expect("workspace servers add parses");
             assert!(matches!(
                 servers.cmd,
                 Cmd::Workspace {
                     cmd: hosted::WorkspaceCmd::Servers {
-                        cmd: hosted::ServersCmd::Add { ref origin }
+                        cmd: hosted::ServersCmd::Add { ref host }
                     }
-                } if origin == "https://tilo.sh"
+                } if host == server_line
             ));
             let moved = Cli::try_parse_from([
-                "tilo", "workspace", "servers", "move", "https://old.test", "https://tilo.sh",
+                "tilo", "workspace", "servers", "move", "old.example.com", server_line,
                 "-w", "Tilo",
             ])
             .expect("workspace servers move parses");
@@ -2859,7 +2860,7 @@ mod tests {
                     cmd: hosted::WorkspaceCmd::Servers {
                         cmd: hosted::ServersCmd::Move { ref from, ref to }
                     }
-                } if from == "https://old.test" && to == "https://tilo.sh"
+                } if from == "old.example.com" && to == server_line
             ));
             let list = Cli::try_parse_from(["tilo", "action", "list", "volume"]).expect("action list parses");
             assert!(matches!(

@@ -1795,14 +1795,14 @@ async fn a_page_lists_and_chooses_the_servers_keeping_the_workspace() {
         "{refused:?}"
     );
 
-    // A site that names no server, and a server that does not keep it, are refused in their
-    // own words.
+    // A host line that names no host, and a server that does not keep it, are refused in
+    // their own words.
     let refused = workspaces
         .page_workspaces(
             &owner,
             WorkspacesRequest::AddServer {
                 workspace: workspace.clone(),
-                origin: "not a site".into(),
+                host: "not a host line".into(),
             },
         )
         .await;
