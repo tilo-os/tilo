@@ -370,7 +370,7 @@ struct Burst {
     field: String,
     by: Option<Actor>,
     invocation: String,
-    at: std::time::Instant,
+    at: tilo_clock::time::Instant,
     /// The shape of the rich text the last keystroke left: its blocks' kinds and attributes.
     shape: Option<Json>,
     /// The words the last keystroke left.
@@ -885,7 +885,7 @@ impl ResourceStore {
             return None;
         };
         let mut burst = self.inner.burst.borrow_mut();
-        let now = std::time::Instant::now();
+        let now = tilo_clock::now();
         let shape = note.args.get(1).and_then(shape_of);
         let text = note.args.get(1).map(words_of).unwrap_or_default();
         // A keystroke that reshapes the text is a step of its own, which the letters after it

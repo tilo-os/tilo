@@ -158,9 +158,9 @@ struct StoredClaim {
 }
 
 /// Whether a stored start is the epoch, which a claim of this build never is.
-#[expect(
+#[allow(
     clippy::trivially_copy_pass_by_ref,
-    reason = "serde hands the field by reference"
+    reason = "serde hands the field by reference, and the lint does not see it in every build"
 )]
 const fn is_zero(value: &u64) -> bool {
     *value == 0
