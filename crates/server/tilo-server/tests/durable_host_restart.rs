@@ -17,7 +17,6 @@
 //! genuine Automerge document, so "converge" means identical heads,
 //! not byte-equality of an opaque blob.
 
-
 use std::time::Duration;
 use tilo_automerge::ApplyIncoming;
 use tilo_automerge::ReadTyped as _;

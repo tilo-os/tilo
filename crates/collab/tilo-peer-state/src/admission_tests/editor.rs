@@ -24,8 +24,14 @@ pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert,
 }
 
 /// Include the same member's second certified device in the initial workspace.
-pub(crate) fn seeded_editor_with_second_device()
--> (StatePeer, SigningKey, SigningKey, DeviceCert, DeviceCert, SystemTime) {
+pub(crate) fn seeded_editor_with_second_device() -> (
+    StatePeer,
+    SigningKey,
+    SigningKey,
+    DeviceCert,
+    DeviceCert,
+    SystemTime,
+) {
     let (_, other_device, _, _, _) = fixtures();
     let (peer, owner, signer, device, now) = editor_with_devices(Some(other_device.clone()));
     (peer, owner, signer, device, other_device, now)
@@ -58,14 +64,8 @@ fn editor_with_devices(
         .into_iter()
         .map(|change| change.raw_bytes().to_vec())
         .collect();
-    let mut native = StatePeer::new(
-        workspace,
-        owner,
-        certificates,
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
+    let mut native =
+        StatePeer::new(workspace, owner, certificates, RevocationList::new(), now).unwrap();
     native
         .install_seed(
             SeedState {

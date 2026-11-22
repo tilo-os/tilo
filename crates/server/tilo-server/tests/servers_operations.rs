@@ -19,7 +19,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_server::WorkspaceId;
-use tilo_server::servers::{self, person_workspace_id, applied};
+use tilo_server::servers::{self, applied, person_workspace_id};
 use tilo_server::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION, ServerAnswer};
 use tilo_server::workspaces::Workspaces;
 use tilo_server_protocol::WorkSetting;

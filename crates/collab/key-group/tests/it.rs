@@ -3,7 +3,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 // One test binary instead of one per file; #[path] keeps the files in place.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

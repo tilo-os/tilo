@@ -5,7 +5,6 @@
 //! tampering of an *encoded* envelope makes signature verification
 //! fail — this is the property that makes signed ops trustworthy.
 
-
 use std::time::{Duration, SystemTime};
 
 use collab_types::canonical::from_canonical_bytes;

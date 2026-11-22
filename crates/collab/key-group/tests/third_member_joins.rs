@@ -6,7 +6,6 @@
 //! [`KeyGroup::add_member_with_commit`] /
 //! [`KeyGroup::process_commit`] pair.
 
-
 use collab_types::WorkspaceId;
 use key_group::{KeyGroup, MemberKey};
 

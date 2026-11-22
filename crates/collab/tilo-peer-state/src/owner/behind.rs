@@ -1,6 +1,6 @@
 //! A compaction this device's replica refuses, decided once more with the keys the device holds.
-use crate::owner::{NativeCommittedView, NativeWorkspaceOwner};
 use crate::TransportOrigin;
+use crate::owner::{NativeCommittedView, NativeWorkspaceOwner};
 use collab_types::{OpKind, SignedOp};
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;

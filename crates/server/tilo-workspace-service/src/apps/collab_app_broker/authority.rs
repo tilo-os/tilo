@@ -514,15 +514,17 @@ impl AppBrokerState {
                     collab_types::ChangeAuthor::answer(access, invoker, node, kind, &cx)
                         == Answer::Allow
                 };
-                Ok::<_, BrokerError>(collab_types::decide_op(
-                    envelope,
-                    &record,
-                    None,
-                    None,
-                    &collab_types::Surfaces::process(),
-                    &allows,
+                Ok::<_, BrokerError>(
+                    collab_types::decide_op(
+                        envelope,
+                        &record,
+                        None,
+                        None,
+                        &collab_types::Surfaces::process(),
+                        &allows,
+                    )
+                    .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit),
                 )
-                .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit))
             })
             .map_err(BrokerError::failed)??;
         if !allowed {

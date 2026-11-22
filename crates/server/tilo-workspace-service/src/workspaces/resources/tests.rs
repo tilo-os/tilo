@@ -1102,9 +1102,10 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
         }
     })
     .await;
-    tilo_test_env::within("the copy tells its followers the record it restored", async {
-        while woke.recv().await.is_ok_and(|write| write.app != APP) {}
-    })
+    tilo_test_env::within(
+        "the copy tells its followers the record it restored",
+        async { while woke.recv().await.is_ok_and(|write| write.app != APP) {} },
+    )
     .await;
     // Written long before the apps here could see it, the issue reaches them as history, which
     // no clock window applies to, never as a write made just now.

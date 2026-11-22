@@ -6,7 +6,6 @@
 //! Validator-level concerns (replay, role lookup, etc.) live in
 //! `validator.rs`.
 
-
 use std::time::{Duration, SystemTime};
 
 use collab_types::crypto::VerifyError;

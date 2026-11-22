@@ -532,7 +532,10 @@ async fn a_file_accounts_password_signs_in_by_its_entry_on_a_members_device() {
         }
     })
     .await;
-    assert_eq!(listed, item, "the member lists the account with the entry the owner kept");
+    assert_eq!(
+        listed, item,
+        "the member lists the account with the entry the owner kept"
+    );
     let signed_in =
         tilo_test_env::within("the member's copy of the vault keeps the entry", async {
             loop {

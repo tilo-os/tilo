@@ -5,7 +5,6 @@
 //! [`InboundState::scrollback_for`]. Live in `tests/` (not unit tests)
 //! because they cover the validator's *public* API.
 
-
 use std::time::SystemTime;
 
 use collab_types::{

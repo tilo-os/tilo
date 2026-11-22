@@ -32,7 +32,9 @@ const ENTERING: Duration = Duration::from_secs(30);
 
 /// A workspace as the account lists it: what `/v1` answers, and what an MCP
 /// client and the desktop read of the person's workspaces.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct Workspace {
     /// What every route names it by.
     pub id: String,

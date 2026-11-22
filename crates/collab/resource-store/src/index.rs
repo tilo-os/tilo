@@ -514,12 +514,15 @@ impl Table {
             })
         };
         // A filter on a field no resource holds names none.
-        by_value.or_else(by_any).or_else(by_range).map(|ids: Option<Vec<&str>>| {
-            let mut ids = ids.unwrap_or_default();
-            ids.sort_unstable();
-            ids.dedup();
-            ids
-        })
+        by_value
+            .or_else(by_any)
+            .or_else(by_range)
+            .map(|ids: Option<Vec<&str>>| {
+                let mut ids = ids.unwrap_or_default();
+                ids.sort_unstable();
+                ids.dedup();
+                ids
+            })
     }
 
     /// The entries of `entries` from `from` on (after it), in `descending` order or not, that
@@ -1395,9 +1398,7 @@ impl Index {
         for table in tables {
             let taken = table.with_kept(query, |listing| {
                 let from = match (&after, at) {
-                    (Some(after), _) => {
-                        listing.keys.partition_point(|key| key <= after)
-                    }
+                    (Some(after), _) => listing.keys.partition_point(|key| key <= after),
                     (None, Some(at)) => at,
                     (None, None) => 0,
                 };

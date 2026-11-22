@@ -4,7 +4,6 @@
 //! signature that verifies through `collab_types::verify_event` — the
 //! canonical first-enrolment flow.
 
-
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,

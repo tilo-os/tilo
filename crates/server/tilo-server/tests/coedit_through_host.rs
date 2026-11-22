@@ -16,7 +16,6 @@
 //! `Server`/`ServerCoeditSession` path — no mocks of the host or the
 //! bridge.
 
-
 use std::time::Duration;
 use tilo_automerge::ApplyIncoming;
 

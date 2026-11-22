@@ -629,7 +629,9 @@ async fn a_device_asks_its_introducer_into_its_persons_workspace() {
     let desktop = alice.enrol("desktop", DeviceCapabilities::member());
     let laptop_host = own_host(&alice, &laptop).await;
     let asking = own_host(&alice, &desktop).await;
-    servers::founded(laptop_host.host.workspaces()).await.unwrap();
+    servers::founded(laptop_host.host.workspaces())
+        .await
+        .unwrap();
     servers::apply(
         laptop_host.host.workspaces(),
         Servers::ENROLL_SERVER.with((

@@ -207,7 +207,8 @@ impl Workspaces {
         let person = caller.user_public_key()?;
         if certificate.user_public_key != *person
             || caller.device_public_key() != Some(&certificate.device_public_key)
-            || workspace_id.to_string() != tilo_server_protocol::servers::person_workspace_id(person)
+            || workspace_id.to_string()
+                != tilo_server_protocol::servers::person_workspace_id(person)
             || !(caller.acting().is_person() || caller.is_session_delegated())
         {
             return None;

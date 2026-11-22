@@ -26,7 +26,7 @@ use tilo_resource::{Collection, Id, Invoke, Model, Refusal, Replica, resource};
 use tilo_rollback::approval::{self, Approval};
 use tilo_seal::Label;
 
-use super::{Servers, UPDATES, person_workspace_id, device_id};
+use super::{Servers, UPDATES, device_id, person_workspace_id};
 use crate::workspaces::Workspaces;
 
 /// The admin workspace's resource of the floor key and the floor requests.

@@ -12,7 +12,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;

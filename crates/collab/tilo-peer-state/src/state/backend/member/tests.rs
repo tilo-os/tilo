@@ -479,7 +479,8 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
         .unwrap()
         .group();
     let mut first_group =
-        key_group::KeyGroup::create(group, key_group::MemberKey::generate(device).unwrap()).unwrap();
+        key_group::KeyGroup::create(group, key_group::MemberKey::generate(device).unwrap())
+            .unwrap();
     let second_key = key_group::MemberKey::generate(second.device_public_key).unwrap();
     let welcome = first_group
         .add_member(second_key.fresh_key_package().unwrap())
@@ -494,7 +495,10 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
     let mut watched = automerge::AutoCommit::new();
     watched.put(ROOT, "video", "lecture").unwrap();
     let frame = DocumentMutation::Snapshot(watched.save()).encode().unwrap();
-    assert!(peer.draft_write(route, None, &frame, None, device, 0, now).is_err());
+    assert!(
+        peer.draft_write(route, None, &frame, None, device, 0, now)
+            .is_err()
+    );
     let artifact = collab_types::document_artifact_id(APP, peer.workspace_id(), &history);
     let write = |key: &SigningKey| {
         let mut seal = |plaintext: &[u8]| {
@@ -518,8 +522,12 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
     // The workspace owner cannot found another person's record.
     let wrong = write(&owner_key);
     let own = write(&member_key);
-    assert!(peer.admit_new_local_document(APP, &history, wrong, now).is_err());
-    peer.admit_new_local_document(APP, &history, own, now).unwrap();
+    assert!(
+        peer.admit_new_local_document(APP, &history, wrong, now)
+            .is_err()
+    );
+    peer.admit_new_local_document(APP, &history, own, now)
+        .unwrap();
 
     let second_keys = second_group.content_keys().unwrap();
     let mut unseal = |op: &collab_types::SignedOp| {
@@ -534,7 +542,14 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
         Err(PeerDocumentReadError::Denied)
     ));
     let own_history = peer
-        .open_document(second.device_public_key, route, now, usize::MAX, Some(&mut unseal), &mut held)
+        .open_document(
+            second.device_public_key,
+            route,
+            now,
+            usize::MAX,
+            Some(&mut unseal),
+            &mut held,
+        )
         .expect("the other Viewer device reads what their first device kept");
     assert_eq!(
         own_history
@@ -545,10 +560,15 @@ fn a_viewers_watch_history_is_signed_and_sealed_for_their_devices() {
         Some("lecture")
     );
 
-    sign_as_owner(&mut peer, tilo_action_policy::Change::RemoveMember { person });
+    sign_as_owner(
+        &mut peer,
+        tilo_action_policy::Change::RemoveMember { person },
+    );
     assert!(peer.check_document_read(owner, APP, &history, now).is_err());
     assert!(
-        peer.document_key_holders(APP, &history, now).unwrap().is_empty(),
+        peer.document_key_holders(APP, &history, now)
+            .unwrap()
+            .is_empty(),
         "retained ownership cannot fall back to shared readership after removal"
     );
 }

@@ -23,7 +23,7 @@ use tilo_workspace_service::workspaces::servers::machine::{self, Step};
 use tilo_workspace_service::workspaces::servers::{Servers, device, device_id};
 use tilo_workspace_service::workspaces::{ResourceWrite, Workspaces};
 
-use super::{SERVERS, person_workspace_id, apply, read};
+use super::{SERVERS, apply, person_workspace_id, read};
 
 /// Where the token's nonce is kept for this machine: written by
 /// `tilo-enroll enroll` when it enrolled with a plan's token, and read here

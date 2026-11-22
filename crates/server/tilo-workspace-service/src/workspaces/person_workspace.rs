@@ -25,8 +25,11 @@ use super::Workspaces;
 /// # Errors
 /// The resource's initializer fails, which is a bug in it.
 pub fn genesis<R: Resource>(workspace: &str) -> Result<automerge::AutoCommit, String> {
-    let mut doc = automerge::AutoCommit::new()
-        .with_actor(tilo_resource::genesis::actor("", R::KIND, workspace));
+    let mut doc = automerge::AutoCommit::new().with_actor(tilo_resource::genesis::actor(
+        "",
+        R::KIND,
+        workspace,
+    ));
     R::initialize(&mut doc).map_err(|error| error.to_string())?;
     doc.commit_with(
         automerge::transaction::CommitOptions::default()

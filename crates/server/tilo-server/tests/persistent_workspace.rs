@@ -755,12 +755,7 @@ async fn assert_page_reads_the_chat(
                                 )
                             })
                             .map(|holder| {
-                                holder.read(
-                                    &route.cluster_id,
-                                    &route.app_id,
-                                    &route.document,
-                                    None,
-                                )
+                                holder.read(&route.cluster_id, &route.app_id, &route.document, None)
                             });
                         if let Some(Ok(DocumentRead::Whole { bytes, .. })) = read {
                             doc = automerge::AutoCommit::load(&bytes).unwrap();

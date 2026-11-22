@@ -17,7 +17,6 @@
 //! applies them and converges — asserted on Automerge documents (B holds
 //! A's heads) through the `Server` / `ServerClient` path.
 
-
 use std::time::Duration;
 use tilo_automerge::ReadTyped as _;
 

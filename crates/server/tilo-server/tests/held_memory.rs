@@ -8,7 +8,6 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
-
 use tilo_automerge::heap::{self, ThreadCounting};
 
 #[global_allocator]

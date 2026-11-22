@@ -85,8 +85,6 @@ pub mod daemon;
 pub mod entry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_jobs;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod server_apps;
 #[cfg(feature = "agents")]
 pub mod hosted_browser;
 #[cfg(not(target_arch = "wasm32"))]
@@ -107,6 +105,8 @@ pub mod placed_shells;
 pub mod placed_terminals;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod public_avatars;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod server_apps;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod servers;
 #[cfg(not(target_arch = "wasm32"))]

@@ -9,7 +9,7 @@
 )]
 
 use tilo_resource::Id;
-use tilo_server::servers::{self, Servers, person_workspace_id, applied};
+use tilo_server::servers::{self, Servers, applied, person_workspace_id};
 use tilo_server::workspaces::Offer;
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
@@ -450,7 +450,9 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
                     let named = servers::read(asking.host.workspaces())
                         .await
                         .map_or(0, |servers| servers.servers.len());
-                    if servers::holds_person_workspace(asking.host.workspaces()).await && named == enrolled {
+                    if servers::holds_person_workspace(asking.host.workspaces()).await
+                        && named == enrolled
+                    {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;

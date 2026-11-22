@@ -13,7 +13,8 @@ use super::super::Workspaces;
 use super::super::tests::governor_with;
 use super::fixtures::{SealingMember, governor_published, member_device};
 use super::*;
-use crate::workspaces::fixtures::test_host_taking_part;use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
+use crate::workspaces::fixtures::test_host_taking_part;
+use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_server_protocol::WorkspaceId;
@@ -126,10 +127,13 @@ async fn lounge_reading(capacity: usize) -> Lounge {
 
 /// [`lounge`] whose host keeps `keys`: a device whose keys arrive after it opened, or that keeps
 /// them across a restart.
-pub(super) async fn lounge_holding(keys: std::sync::Arc<crate::workspaces::fixtures::TestGroupKeys>) -> Lounge {
+pub(super) async fn lounge_holding(
+    keys: std::sync::Arc<crate::workspaces::fixtures::TestGroupKeys>,
+) -> Lounge {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
-    let server = crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
+    let server =
+        crate::workspaces::fixtures::test_host_holding(dir.path(), &key, &cert, keys).await;
     lounge_on(dir, server, key, cert, 0).await
 }
 

@@ -6,7 +6,6 @@
 //! Fixture: one Note artifact in the default workspace, one author, the role
 //! presets; individual tests mutate it to trip the check they name.
 
-
 use std::time::{Duration, SystemTime};
 
 use collab_types::{

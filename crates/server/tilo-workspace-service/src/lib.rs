@@ -52,9 +52,6 @@ pub mod content;
 pub mod content_queue;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod content_work;
-/// A workspace's file tree, held in the device's own service.
-#[cfg(all(feature = "files", not(target_arch = "wasm32")))]
-pub mod files;
 /// A device's own documents, as its workspace service holds them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod device_documents;
@@ -64,6 +61,9 @@ pub mod documents;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod environment;
+/// A workspace's file tree, held in the device's own service.
+#[cfg(all(feature = "files", not(target_arch = "wasm32")))]
+pub mod files;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod handshake;
