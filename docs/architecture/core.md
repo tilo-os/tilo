@@ -150,6 +150,13 @@ claims the ask with an ordinary change, the earliest claim wins, and a claim
 that writes nothing for a minute may be taken over. Everything a turn writes
 is a member write for the agent, signed by the device that runs it.
 
+An agent is a reader in its own right. Its member key is in the reader set
+of every record it is in: a direct conversation between Ada and her agent
+is sealed for Ada and the agent, never for Ada alone. A device that runs the
+agent, the tilo.sh server included, holds the agent's keys and so opens
+exactly the records the agent reads, and no others. A device that cannot
+open the record an ask is about is not eligible to take its turn.
+
 An agent sandbox on tilo.sh is one workspace. Whether that workspace also
 has a machine for terminal commands, Browser tabs, or Linux and Windows apps
 is what the customer pays for.
@@ -588,8 +595,8 @@ workspace vault, despite their names.
   Other crates use it and do not redefine it.
 - **Membership is a resource.** The signed governance log in
   `tilo-peer-state` is the one membership record. Its operations are signed
-  and checked against the membership as their author saw it, so every key
-  holder reaches the same answer without a coordinator.
+  and checked against the membership as their author saw it, so every
+  member's device reaches the same answer without a coordinator.
 - **One authority**: `action-policy` `Role` and `Grant`, read from that log,
   for people and agents alike. Keys follow membership through `key-group`.
 - **No governor.** No device administers a workspace by being the device
