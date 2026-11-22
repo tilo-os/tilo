@@ -79,6 +79,8 @@ mod own_workspaces;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod history_move;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]

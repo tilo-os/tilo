@@ -1341,6 +1341,11 @@ impl Workspaces {
         );
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
+        // What a host from before the device store kept in its own store of
+        // changes moves into this one, once, before any workspace is served.
+        if let Some(state_root) = dir.parent() {
+            crate::history_move::move_into_store(state_root, &store)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let models = Arc::new(person_model::Models::new());
         let this = Self {
