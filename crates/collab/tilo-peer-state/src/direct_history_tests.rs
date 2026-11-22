@@ -4,13 +4,12 @@
 //! than they do or never arrives at all.
 
 use super::{DIRECT_ALPN, DirectSync, Replica};
+use crate::loopback::{addr, endpoint};
 use crate::owner::testing::{APP, WORKSPACE, finalize, governed_fixture_at, member_key};
 use crate::owner::{NativeWorkspaceOwner, open_file};
 use crate::store::{Appetite, Store};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
-use ed25519_dalek::SigningKey;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use std::sync::Arc;
 use tilo_desktop_model::WorkspaceId;
 
@@ -20,25 +19,6 @@ const PART_TEXT: usize = 1536 * 1024;
 
 /// The changes each part takes after it started: an item each.
 const CHANGES_EACH: usize = 6;
-
-/// A localhost endpoint of its own whose identity is the device `key`.
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
-}
 
 const ALPHABET: &[u8; 64] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .";
 

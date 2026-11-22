@@ -550,39 +550,23 @@ mod tests {
     #[tokio::test]
     async fn typed_exchange_binds_request_to_authenticated_remote_endpoint() {
         let service = Capture::default();
-        let server = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .bind()
-            .await
-            .unwrap();
+        let server =
+            crate::loopback::endpoint(&ed25519_dalek::SigningKey::from_bytes(&[1; 32])).await;
         let router = iroh::protocol::Router::builder(server.clone())
             .accept(
                 WORKSPACE_JOIN_ALPN,
                 WorkspaceJoinProtocol::new(service.clone()),
             )
             .spawn();
-        let client_endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-            .unwrap()
-            .bind()
-            .await
-            .unwrap();
+        let client_endpoint =
+            crate::loopback::endpoint(&ed25519_dalek::SigningKey::from_bytes(&[2; 32])).await;
         let client = WorkspaceJoinClient::new(client_endpoint.clone());
         let request = JoinTransportRequest::Inspect {
             signed_invitation: vec![3, 1, 4, 1, 5],
         };
 
         let response = client
-            .request(
-                iroh::EndpointAddr::new(server.id()).with_ip_addr(std::net::SocketAddr::from((
-                    std::net::Ipv4Addr::LOCALHOST,
-                    server.bound_sockets().first().unwrap().port(),
-                ))),
-                request.clone(),
-            )
+            .request(crate::loopback::addr(&server), request.clone())
             .await
             .unwrap();
         assert_eq!(

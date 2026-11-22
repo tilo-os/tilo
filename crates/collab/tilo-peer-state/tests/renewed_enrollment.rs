@@ -15,7 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::common::endpoint;
+use crate::common::localhost_endpoint;
 use tilo_peer_state::join::WorkspaceId;
 
 use std::time::Duration;
@@ -126,7 +126,7 @@ impl Admitted {
         let owner =
             tilo_peer_state::owner::open_file(&directory.path().join("joined-workspaces.json"))
                 .unwrap();
-        let client = WorkspaceJoinClient::new(endpoint(&device_key).await);
+        let client = WorkspaceJoinClient::new(localhost_endpoint(&device_key).await);
         let unanswered = tilo_peer_state::owner::enroll::prepare_and_complete(
             client.clone(),
             ownership(&held, &device_key),
