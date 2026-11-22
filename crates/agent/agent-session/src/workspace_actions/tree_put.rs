@@ -21,7 +21,7 @@ use fs_protocol::tree;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_fs::namespace::Namespace;
-use tilo_fs::tree_document::{FILES_APP, document_id as tree_document};
+use fs_protocol::tree::{FILES_APP, document_id as tree_document};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 use ui::permissions::policy::{ActionKind, Answer};

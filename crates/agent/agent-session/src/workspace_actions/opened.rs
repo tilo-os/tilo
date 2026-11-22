@@ -251,8 +251,8 @@ impl Worker {
         // wrote yet is founded by the put.
         if puts_into_the_tree(request) {
             return Keys::Record {
-                app_id: tilo_fs::tree_document::FILES_APP.to_owned(),
-                record: tilo_fs::tree_document::document_id(),
+                app_id: fs_protocol::tree::FILES_APP.to_owned(),
+                record: fs_protocol::tree::document_id(),
                 act: false,
             };
         }
@@ -409,7 +409,7 @@ fn puts_into_the_tree(request: &InvokeRequest) -> bool {
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
-            == Some(tilo_fs::tree_document::FILES_APP)
+            == Some(fs_protocol::tree::FILES_APP)
         && (arguments.contains_key("files")
             || super::opened_file::OpenedFile::named(&arguments).is_ok_and(|file| file.is_some()))
 }

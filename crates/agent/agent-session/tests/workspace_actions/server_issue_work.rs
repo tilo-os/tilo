@@ -199,7 +199,7 @@ impl Given {
                 .resource_document(
                     &self.workspace,
                     FILES_APP,
-                    &tilo_fs::tree_document::document_id(),
+                    &fs_protocol::tree::document_id(),
                 )
                 .await
                 .unwrap()

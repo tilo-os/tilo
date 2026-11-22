@@ -12,15 +12,43 @@ use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, WorkspaceId
 use fs_content::{ChunkRef, SealedChunks};
 use iroh_blobs::Hash;
 use key_group::ContentKeys;
-use tilo_identity_client::{BrokerSigningIdentity, wire::KeyAccess};
+use tilo_identity_client::BrokerSigningIdentity;
+use tilo_identity_client::wire::{
+    HANDSHAKE_FRAMING, Handshake, KeyAccess, PRESENTATION_VERSION, PresentationHandshake,
+};
 use tilo_lock::MutexRecover as _;
 use tokio::io::AsyncReadExt as _;
 
 use crate::acl::{Access, AclHandle, IdentityKey};
 use crate::content::{self, Manifest};
-use crate::tree_document::{FILES_APP, connect_identity, document_id};
+use fs_protocol::tree::{FILES_APP, document_id};
 
 use super::Hydrator;
+
+/// This device's connection to the session's identity service as the Files endpoint of
+/// `workspace`: the app and workspace the keys of the tree and its files are handed for.
+fn connect_identity(identity: &Path, workspace: &str) -> Result<BrokerSigningIdentity> {
+    use std::io::Write as _;
+    let mut stream = tilo_files::native::socket::connect(identity)
+        .with_context(|| format!("connect to the identity service at {}", identity.display()))?;
+    let handshake = PresentationHandshake {
+        handshake: Handshake {
+            workspace_id: workspace.to_owned(),
+            app_id: FILES_APP.to_owned(),
+            surface: None,
+        },
+        presentation_version: PRESENTATION_VERSION,
+    };
+    let bytes = serde_json::to_vec(&handshake).context("this connection's handshake is JSON")?;
+    HANDSHAKE_FRAMING
+        .write(&mut stream, &bytes)
+        .context("name this device's app and workspace on the identity connection")?;
+    stream
+        .flush()
+        .context("the identity service reads this connection's handshake")?;
+    BrokerSigningIdentity::from_connected_io(stream)
+        .context("the identity service answers this device")
+}
 
 type ReadKeys = dyn Fn() -> Result<ContentKeys> + Send + Sync;
 

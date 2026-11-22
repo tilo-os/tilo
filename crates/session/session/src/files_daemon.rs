@@ -1,11 +1,11 @@
 //! The files daemon as the Files app's windowless endpoint.
 //!
-//! The daemon that mounts the person's own workspace publishes that tree on
-//! the record route as the Files app ([`fs::tree_record`]). The login starts
-//! it beside the session, so this session records its process in the launch
-//! record as it starts and lets the daemon's own connections be attested
-//! against it — the same launch record an app the session starts gets, with
-//! no window.
+//! The daemon that mounts the person's workspaces syncs each tree through this
+//! device's workspace service, which the session serves the trees of
+//! (`tilo_workspace_service::files::socket`). The login starts it beside the
+//! session, so this session records its process in the launch record as it
+//! starts and lets the daemon's own connections be attested against it — the
+//! same launch record an app the session starts gets, with no window.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,7 +25,7 @@ const WAIT: Duration = Duration::from_secs(30);
 const STEP: Duration = Duration::from_millis(200);
 
 /// Record the files daemon's launch on `cluster`, the person's own workspace,
-/// when the login runs it. A session in another desktop's window serves no
+/// when the login runs it: it is admitted for each workspace it names. A session in another desktop's window serves no
 /// files daemon of its own, so it records none.
 pub fn record(launches: Arc<Launches>, cluster: Option<String>) {
     let Some(cluster) = cluster else {

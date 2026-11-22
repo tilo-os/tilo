@@ -1516,6 +1516,8 @@ pub(crate) struct AppWire {
     /// The person's own store open to their other devices, held so its links
     /// and the writes it keeps end with the session.
     pub(crate) _personal: Option<tilo_workspace_service::apps::personal::Links>,
+    /// The workspaces' trees served to the files daemon that mounts them, until the session ends.
+    pub(crate) _files_tree: Option<tilo_workspace_service::files::socket::Serving>,
     /// The hosts of the workspaces this device takes part in but does not host: where the
     /// person's actions on them go, and where their workspace list is kept and read.
     pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,

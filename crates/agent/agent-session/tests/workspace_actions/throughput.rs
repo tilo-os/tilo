@@ -393,7 +393,7 @@ async fn second_device(
             app_id: fs_protocol::tree::FILES_APP.to_owned(),
             cluster_id: id.to_owned(),
             document: if chunk == 0 {
-                tilo_fs::tree_document::document_id()
+                fs_protocol::tree::document_id()
             } else {
                 fs_protocol::tree::chunk_document_id(chunk)
             },

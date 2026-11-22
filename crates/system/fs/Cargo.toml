@@ -21,7 +21,7 @@ path = "src/lib.rs"
 # The content store is portable. Filesystem projection, mounting and service
 # protocols remain enabled by default for the OS; app-only consumers opt out.
 [features]
-default = ["filesystem"]
+default = ["filesystem", "tree-sync"]
 # External licensed simulator; never enabled by ordinary filesystem tests.
 rystic-tests = ["filesystem"]
 # The document-media capability over the content store, without the mount.
@@ -80,7 +80,7 @@ filesystem = [
 [[bin]]
 name = "fs"
 path = "src/main.rs"
-required-features = ["filesystem"]
+required-features = ["filesystem", "tree-sync"]
 
 # The content store's integration tests: one binary, its files included as
 # modules by `tests/it.rs` (a file per binary linked the whole crate once

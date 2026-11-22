@@ -378,7 +378,7 @@ The copies:
 | Resource index | `resource-store` (7,475, used only by the workspace service); `tilolang-tilo` `index/` on redb (10,614); `collaboration::resource::store`; `tilolang-tilo` `TiloStore` |
 | Brokers | `collaboration` `broker*.rs` (13,813); `collab_app_broker` (65,255) |
 | Settings | `settings-store` (19,419), two Automerge documents behind its own `settings.sock`; the host's `person_settings` |
-| File tree | `fs` `tree_document.rs` (1,046, the fs daemon) and `tree_sync.rs` (2,027, the workspace service and the standalone runtime): the same tree written twice, with two `tree_put`s |
+| File tree | `fs` `tree_sync.rs` (the workspace service, the standalone runtime, and the fs daemon through the session's `files-tree` socket), with two `tree_put`s |
 | File bytes and keys | `fs` `FileArea` with iroh-blobs and its own ALPNs (`tilo-fs/session-link/1`, `tilo-fs/file-keys/1`, `tilo/fs/certify/1`, `tilo-fs-workspace-authority/1`); `tilo-content` (4,004) with `content-device` (706); `runtime-fs` blobs |
 | File presentation | FUSE in `fs/src/fs/fuse.rs`; native Btrfs and fanotify in `fs-native` (10,340); the mirror folder `sync_folder`; `runtime-fs` (14,011) with its own FUSE in `runtime-fs-fuse` (1,771) |
 
@@ -423,7 +423,7 @@ and screen share only, never documents, and stays as it is.
 | The tilolang redb index and the `TiloStore` mirror, keeping the pager | ~15,000 |
 | The overlap in `collab_app_broker` | ~30,000 |
 | `settings-store`'s document layer and socket, keeping the typed readers | ~8,000 |
-| `fs` `tree_document.rs`, `tilo_fs::sync` and the fs ALPNs, the second `tree_put` | ~3,000 |
+| `tilo_fs::sync` and the fs ALPNs, the second `tree_put` | ~2,000 |
 | `fs` `kept_documents`, `runtime-fs` blobs, `content-device` | ~3,000 |
 | `app-state` `FsStore` once every document is a replica scope | ~10,000 |
 

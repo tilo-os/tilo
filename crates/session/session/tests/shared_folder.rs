@@ -12,7 +12,7 @@
               lives until the mounts it serves are done"
 )]
 
-use crate::common::files::{Mounted, contents, mount_on, namespace};
+use crate::common::files::{Mounted, contents, mount_on};
 use fs::namespace::ROOT_INO;
 use tilo_lock::MutexRecover as _;
 
@@ -29,11 +29,11 @@ fn a_folder_shared_through_the_shell_is_edited_then_taken_back() {
         .expect("a runtime for the mounts");
     let _in_runtime = runtime.enter();
 
-    let here = namespace("ada-laptop");
+    let ada_mount = mount_on(&ada_laptop, &cluster);
+    let here = ada_mount.namespace();
     here.lock_recover()
         .create_dir(ROOT_INO, "Notes", 1_000)
         .expect("a folder");
-    let _ada_mount = mount_on(&ada_laptop, &here, &cluster);
     let held = wait_until(&site, &[&ada_laptop], &here, &["Notes"]);
     assert_eq!(
         held,
@@ -48,8 +48,8 @@ fn a_folder_shared_through_the_shell_is_edited_then_taken_back() {
     bob_laptop.wait_holding(&site.workspace);
     site.wait_for_member(bob.public);
 
-    let there = namespace("bob-laptop");
-    let _bob_mount = mount_on(&bob_laptop, &there, &cluster);
+    let bob_mount = mount_on(&bob_laptop, &cluster);
+    let there = bob_mount.namespace();
     let held = wait_until(&site, &[&ada_laptop, &bob_laptop], &there, &["Notes"]);
     assert_eq!(
         held,

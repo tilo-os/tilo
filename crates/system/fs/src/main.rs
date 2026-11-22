@@ -1411,27 +1411,17 @@ async fn serve(
         }
     }
     let fresh = np.as_ref().is_none_or(|dir| !namespace_kept(dir));
-    // This mount's tree, as the Files app's person record of the workspace that holds it: this
-    // daemon is the app's windowless endpoint, so what changes here reaches the person's other
-    // devices and the members of a shared workspace. A workspace that seals its records hands
-    // this endpoint the record's keys through the identity service.
-    let holder = remote_ticket.as_ref().map_or_else(
-        || collab_types::personal_cluster(&credentials.user_public_key()).to_string(),
+    // This mount's tree, as the Files resources of the workspace it is: the person's own
+    // workspace, or the one a registered NAS ticket names. This daemon is the app's endpoint, so
+    // what changes here reaches the person's other devices and the members of a shared
+    // workspace. A tree kept here before the person's own workspace had it goes into it as this
+    // device's write the first time the sync runs, signed as every other change of it is.
+    let workspace = remote_ticket.as_ref().map_or_else(
+        || tilo_server_protocol::servers::person_workspace_id(&credentials.user_public_key()),
         |ticket| ticket.workspace_id().to_string(),
     );
-    let (ns_value, kept) = open_namespace(
-        MountAuthor::person(author.clone(), member(credentials.user_public_key()))
-            .in_workspace(holder.clone()),
-        np.as_deref(),
-    )?;
-    let namespace = Arc::new(Mutex::new(ns_value));
-    let _tree_document = fs::tree_document::spawn(
-        Arc::clone(&namespace),
-        holder,
-        credentials.clone(),
-        tilo_paths::xdg::service_socket("collab"),
-        tilo_paths::xdg::service_socket("identity"),
-    );
+    let (tree, namespace, kept) =
+        open_tree(np.as_deref(), workspace, &credentials, author.clone(), &store).await?;
 
     if fresh {
         if let Some(seed) = seed {
@@ -1587,6 +1577,9 @@ async fn serve(
     trace("the mount returned; syncing content");
     let _ = store.sync_pending();
     trace("content synced; flushing the tree");
+    if let Some(tree) = tree {
+        tree.stop(TREE_STOPS_WITHIN).await;
+    }
     final_flush(keeper, &namespace, kept.as_ref()).await;
     trace("tree flushed");
     if let Some(task) = authority_socket_task {
@@ -1659,21 +1652,16 @@ async fn mount(
         hydrator.add_peer(peer.clone());
     }
 
-    let (namespace, kept) = open_namespace(
-        MountAuthor::person(author, member(credentials.user_public_key()))
-            .in_workspace(ticket.workspace_id().to_string()),
+    // The shared workspace's Files resources keep this tree for every member: a mount that has
+    // none yet is given it whole.
+    let (tree, namespace, kept) = open_tree(
         np.as_deref(),
-    )?;
-    let namespace = Arc::new(Mutex::new(namespace));
-    // The shared workspace's Files record holds this tree for every member: a mount that has none
-    // yet is given it whole.
-    let _tree_document = fs::tree_document::spawn(
-        Arc::clone(&namespace),
         ticket.workspace_id().to_string(),
-        credentials.clone(),
-        tilo_paths::xdg::service_socket("collab"),
-        tilo_paths::xdg::service_socket("identity"),
-    );
+        &credentials,
+        author,
+        &store,
+    )
+    .await?;
 
     let workspace_id = ticket.workspace_id();
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
@@ -1756,9 +1744,51 @@ async fn mount(
     )
     .await?;
     let _ = store.sync_pending();
+    if let Some(tree) = tree {
+        tree.stop(TREE_STOPS_WITHIN).await;
+    }
     final_flush(keeper, &namespace, kept.as_ref()).await;
     drop(workspace);
     Ok(())
+}
+
+/// How long an unmount waits for the tree's sync to keep what it has.
+const TREE_STOPS_WITHIN: Duration = Duration::from_secs(10);
+
+/// A mount's tree of `workspace`: kept at `dir` and synced through this device's workspace
+/// service, which the session serves the trees of; with no `dir`, an empty tree in memory for
+/// this run alone, synced with nothing.
+async fn open_tree(
+    dir: Option<&Path>,
+    workspace: String,
+    credentials: &fs::identity::PeerCredentials,
+    author: String,
+    store: &Arc<ContentStore>,
+) -> Result<(
+    Option<fs::tree_sync::TreeSync>,
+    Arc<Mutex<Namespace>>,
+    Option<Arc<KeptTree>>,
+)> {
+    let Some(dir) = dir else {
+        let mount = MountAuthor::person(author, member(credentials.user_public_key()))
+            .in_workspace(workspace);
+        return Ok((None, Arc::new(Mutex::new(Namespace::new(mount)?)), None));
+    };
+    set_aside_older_namespace_file(dir)?;
+    let tree = fs::tree_sync::remote::start(
+        tilo_paths::xdg::service_socket(fs::tree_sync::remote::SOCKET),
+        workspace,
+        (
+            credentials.device_public_key(),
+            credentials.user_public_key(),
+        ),
+        dir.to_path_buf(),
+        Arc::clone(store),
+    )
+    .await
+    .with_context(|| format!("open the kept workspace tree at {}", dir.display()))?;
+    let (namespace, kept) = (Arc::clone(&tree.namespace), tree.kept());
+    Ok((Some(tree), namespace, Some(kept)))
 }
 
 /// The directory the mount keeps its tree's documents in, each with the journal of the changes
@@ -1901,20 +1931,10 @@ fn member(key: [u8; 32]) -> tilo_actions::MemberId {
     tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(key))
 }
 
-/// A mount's namespace: the documents kept at `dir`, each with its journal of later changes, or
-/// an empty tree the workspace's Files record fills. Every change is journaled before the request
-/// that made it is answered, so a process killed at any instant starts again holding every change
-/// it answered for.
-fn open_namespace(
-    mount: MountAuthor,
-    dir: Option<&Path>,
-) -> Result<(Namespace, Option<Arc<KeptTree>>)> {
-    let Some(dir) = dir else {
-        return Ok((Namespace::new(mount)?, None));
-    };
-    // The build before this kept the whole tree in `namespace.bin` beside the kept documents;
-    // nothing reads it now, so it is set aside with the generations it kept rather than left
-    // looking like state this mount keeps.
+/// The build before this kept the whole tree in `namespace.bin` beside the tree's parts kept
+/// at `dir`; nothing reads it now, so it is set aside with the generations it kept rather than left
+/// looking like state this mount keeps.
+fn set_aside_older_namespace_file(dir: &Path) -> Result<()> {
     let legacy = dir.with_file_name("namespace.bin");
     if legacy.exists() {
         let kept = set_aside_older_namespace(&legacy)?;
@@ -1926,6 +1946,21 @@ fn open_namespace(
             dir.display()
         );
     }
+    Ok(())
+}
+
+/// A mount's namespace: the documents kept at `dir`, each with its journal of later changes, or
+/// an empty tree the workspace's Files record fills. Every change is journaled before the request
+/// that made it is answered, so a process killed at any instant starts again holding every change
+/// it answered for.
+fn open_namespace(
+    mount: MountAuthor,
+    dir: Option<&Path>,
+) -> Result<(Namespace, Option<Arc<KeptTree>>)> {
+    let Some(dir) = dir else {
+        return Ok((Namespace::new(mount)?, None));
+    };
+    set_aside_older_namespace_file(dir)?;
     let (kept, documents) = KeptTree::open(dir)
         .with_context(|| format!("open the kept workspace tree at {}", dir.display()))?;
     let (mut namespace, read) = if documents.is_empty() {

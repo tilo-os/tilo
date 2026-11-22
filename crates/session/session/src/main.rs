@@ -706,16 +706,15 @@ fn start(
         hosted_browser,
         ..device_options(machine, config)
     };
-    // The person's files: the files daemon serves them as the Files app's windowless endpoint,
-    // so the session records its process before the daemon's connections to the broker arrive.
+    // The person's files: the files daemon mounts them as the Files app's endpoint, so the
+    // session records its process before the daemon's connections arrive.
     // The login runs the daemon on a machine this session owns; a session anywhere else serves
     // one only when its run names the process that does — the session then attests that process
     // and nothing beside it.
     if machine.is_owned() || tilo_session::files_daemon::named_endpoint().is_some() {
         tilo_session::files_daemon::record(
             Arc::clone(&options.launches),
-            collab_types::personal_cluster_of(&tilo_session::identity::own_person(&options))
-                .map(|cluster| cluster.to_string()),
+            person_workspace(&tilo_session::identity::own_person(&options)),
         );
     }
     // A headless session has no input device: nothing the person does can ever reset its idle
@@ -1357,3 +1356,11 @@ fn search_options(
 
 #[cfg(not(target_os = "linux"))]
 fn main() {}
+
+/// The person's own workspace, from their root key in hex; `None` before there is one.
+#[cfg(target_os = "linux")]
+fn person_workspace(person: &str) -> Option<String> {
+    let mut root = [0_u8; 32];
+    hex::decode_to_slice(person, &mut root).ok()?;
+    Some(tilo_server_protocol::servers::person_workspace_id(&root))
+}

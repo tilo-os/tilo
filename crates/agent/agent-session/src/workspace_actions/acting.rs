@@ -395,7 +395,7 @@ impl Worker {
                     || target.address.action == APPLICATION_START_ACTION
             })
             // Files is the workspace's own folder, not an app this host runs.
-            .filter(|app| self.catalogue.has(app) || *app == tilo_fs::tree_document::FILES_APP)
+            .filter(|app| self.catalogue.has(app) || *app == fs_protocol::tree::FILES_APP)
             .map(str::to_owned)
     }
 

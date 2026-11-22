@@ -87,18 +87,6 @@ impl Personal {
         }
     }
 
-    /// Another of the person's devices, certified under their root:
-    /// [`Other::new`], and recorded in this machine's fleet as the device the
-    /// person admitted, so this machine's session answers it as one of theirs.
-    pub fn second(&self, label: &str) -> Other {
-        let other = Other::new(&self.person, label);
-        tilo_identity::device_fleet::DeviceFleetStore::from_env()
-            .expect("this machine's device fleet")
-            .remember_certificate(&hex::encode(other.cert.user_public_key), other.cert.clone())
-            .expect("the person's other device is enrolled on this machine");
-        other
-    }
-
     /// The cluster the person's own records route on, which their store
     /// carries.
     pub fn cluster(&self) -> String {
@@ -108,36 +96,6 @@ impl Personal {
     /// The socket this machine's session serves its app wire on.
     pub fn socket(&self) -> &Path {
         &self.socket
-    }
-}
-
-/// Another of the person's devices, certified under their root: its own keys,
-/// its own certificate, and nothing of this machine's.
-pub struct Other {
-    /// Where the device's key and certificate live.
-    pub paths: IdentityPaths,
-    /// The device's key.
-    pub device: SigningKey,
-    /// The device's certificate, signed by the person's root.
-    pub cert: DeviceCert,
-    _root: tempfile::TempDir,
-}
-
-impl Other {
-    /// Certify a device key drawn for `label` under `person`'s root, as the
-    /// person admits a device of theirs.
-    pub fn new(person: &Person, label: &str) -> Self {
-        let root = tempfile::tempdir().expect("a directory for the device's identity");
-        let paths = IdentityPaths::under(root.path());
-        let cert = person.certify(&paths, label);
-        let device =
-            tilo_device_identity::persist::load_device_key(&paths).expect("the device's key");
-        Self {
-            paths,
-            device,
-            cert,
-            _root: root,
-        }
     }
 }
 

@@ -39,6 +39,8 @@ use tilo_server_protocol::DocumentAnswer;
 use crate::kept_documents::KeptDocuments;
 use crate::namespace::{MountAuthor, Namespace, ResourceWrite};
 
+pub mod remote;
+
 /// The app whose record a workspace's tree is.
 pub const FILES_APP: &str = fs_protocol::tree::FILES_APP;
 
@@ -88,7 +90,7 @@ type FileBytes = (Option<iroh_blobs::Hash>, u64);
 /// What a record of the tree read as, for [`Records`]. The shape of a device's own
 /// `DeviceDocuments` read, without what a folder sync does not use: its revision names a
 /// document, and the heads here already do.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Reading {
     /// The record whole, saved, at the heads it stands at.
     Whole {
@@ -188,7 +190,7 @@ pub trait TreeWriter {
 }
 
 /// What woke the sync: something the peer did, or said.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum Wake {
     /// The record `chunk` of the tree was written: read it.
     Wrote(TreeChunk),
@@ -444,6 +446,13 @@ impl TreeSync {
     pub fn journal(&self) -> crate::fs::ChangeJournal {
         let kept = Arc::clone(&self.kept);
         Arc::new(move |namespace: &mut Namespace| kept.journal(namespace))
+    }
+
+    /// Where the tree's parts are kept on disk, for a mount that saves them on its own
+    /// schedule as well (on unmount, say).
+    #[must_use]
+    pub fn kept(&self) -> Arc<KeptDocuments> {
+        Arc::clone(&self.kept)
     }
 
     /// What makes the journals [`Self::journal`] adds to durable, for the mount's barrier: it

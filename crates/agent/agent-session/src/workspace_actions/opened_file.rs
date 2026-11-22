@@ -192,7 +192,7 @@ impl Worker {
                 let app = self.asked_app(target).ok_or_else(super::unknown_action)?;
                 // A workspace has one folder, and Files is it: a file opened
                 // in it is written into the tree, not into an app's record.
-                if app == tilo_fs::tree_document::FILES_APP {
+                if app == fs_protocol::tree::FILES_APP {
                     return self.put_in_workspace(workspace_id, caller, request, named);
                 }
                 Some(self.landing_of(workspace_id, &app, file)?)

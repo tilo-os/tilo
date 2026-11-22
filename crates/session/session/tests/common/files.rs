@@ -3,18 +3,13 @@
 use std::sync::{Arc, Mutex};
 
 use fs::namespace::Namespace;
+
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{ROOT_ID, Tree, TreeChunks, chunk_document_id};
 use tilo_lock::MutexRecover as _;
 
 /// A tree document this device mounts, as the daemon serving the mount holds it.
 pub type Mounted = Arc<Mutex<Namespace>>;
-
-/// A tree document nothing has mounted yet, as a device mounts a workspace it
-/// holds no tree of.
-pub fn namespace(author: &str) -> Mounted {
-    Arc::new(Mutex::new(Namespace::new(author).expect("a tree document")))
-}
 
 /// Every path `namespace`'s tree holds as the records read it — the projection
 /// the Files app renders — sorted, each folder's contents by its folder's path.
@@ -53,13 +48,22 @@ pub fn contents(namespace: &Mounted) -> Vec<String> {
     found
 }
 
-/// Publish `namespace` on `cluster` as `device`'s mount does: the daemon of
-/// that device, on the collaboration socket its session serves.
-pub fn mount_on(
-    device: &crate::common::people::Device,
-    namespace: &Mounted,
-    cluster: &str,
-) -> tokio::task::JoinHandle<()> {
+/// A workspace's tree as `device`'s files daemon mounts it, synced while this value lives.
+pub struct Mount {
+    tree: fs::tree_sync::TreeSync,
+    _kept: tempfile::TempDir,
+}
+
+impl Mount {
+    /// The tree the mount holds, as the daemon's mount reads and changes it.
+    pub fn namespace(&self) -> Mounted {
+        Arc::clone(&self.tree.namespace)
+    }
+}
+
+/// Mount `workspace`'s tree as `device`'s files daemon does: synced through the device's own
+/// workspace service, on the socket its session serves the trees on.
+pub fn mount_on(device: &crate::common::people::Device, workspace: &str) -> Mount {
     let now_ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("the clock reads after the epoch")
@@ -71,17 +75,30 @@ pub fn mount_on(
     .expect("this device's certificate is valid")
     .into_parts()
     .1;
-    fs::tree_document::spawn(
-        Arc::clone(namespace),
-        cluster.to_owned(),
-        credentials,
-        device
-            .directory()
-            .join("runtime")
-            .join("tilo/services/collab.sock"),
-        device
-            .directory()
-            .join("runtime")
-            .join("tilo/services/identity.sock"),
-    )
+    let kept = tempfile::tempdir().expect("a directory for the mount's tree");
+    let socket = device
+        .directory()
+        .join("runtime")
+        .join("tilo/services")
+        .join(format!("{}.sock", fs::tree_sync::remote::SOCKET));
+    let tree = tokio::runtime::Handle::current().block_on(async {
+        let content = Arc::new(
+            fs::ContentStore::open(kept.path().join("content"))
+                .await
+                .expect("a content store for the mount"),
+        );
+        fs::tree_sync::remote::start(
+            socket,
+            workspace.to_owned(),
+            (
+                credentials.device_public_key(),
+                credentials.user_public_key(),
+            ),
+            kept.path().join("namespace"),
+            content,
+        )
+        .await
+        .expect("the mount's tree opens")
+    });
+    Mount { tree, _kept: kept }
 }

@@ -14,7 +14,7 @@ use super::hosted_documents::{content_in, put, tool};
 use super::*;
 use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, TreeChunks, chunk_document_id};
 use serde_json::json;
-use tilo_fs::tree_document::document_id as tree_document;
+use fs_protocol::tree::document_id as tree_document;
 use tilo_mcp::McpServer;
 use tilo_session_actions::SessionActions;
 use ui::permissions::MemberId;

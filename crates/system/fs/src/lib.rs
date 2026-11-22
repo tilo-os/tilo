@@ -85,10 +85,7 @@ pub mod sync_folder;
 pub mod thumbs;
 #[cfg(feature = "filesystem")]
 pub mod transport_switch;
-/// The workspace tree as the Files app's person record.
-#[cfg(feature = "filesystem")]
-pub mod tree_document;
-/// Putting a file into that tree from a host or a page that holds the record
+/// Putting a file into a workspace's tree from a host or a page that has the tree
 /// and no folder of its own.
 #[cfg(feature = "filesystem")]
 pub mod tree_put;

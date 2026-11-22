@@ -1269,7 +1269,7 @@ async fn a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed(
             .resource_document(
                 &workspace,
                 fs_protocol::tree::FILES_APP,
-                &tilo_fs::tree_document::document_id(),
+                &fs_protocol::tree::document_id(),
             )
             .await
             .ok()

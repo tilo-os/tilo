@@ -39,6 +39,8 @@ use crate::content::{ContentScope, ContentShelf, ContentState, CrdtRoute, RouteC
 use crate::device_documents::{ServiceDocuments, ServiceWrites};
 use crate::workspaces::Workspaces;
 
+pub mod socket;
+
 /// How long the serving device's word that it holds a write is waited for. It answers only the
 /// writes it decides on: one it keeps while it waits for something it lacks gets no word, so a
 /// wait that ends unanswered sends the record's changes again (a change it holds already merges
@@ -71,40 +73,61 @@ pub async fn start(
     store: Arc<tilo_fs::ContentStore>,
     content: Arc<RouteContent>,
 ) -> std::io::Result<TreeSync> {
-    let copy = Arc::new(Copy {
-        workspaces: workspaces.clone(),
-        documents: ServiceDocuments::of(workspaces.clone()),
-        writes: ServiceWrites::of(workspaces.clone()),
-        workspace,
-        name: workspace.to_string(),
-        answers: Mutex::new(BTreeMap::new()),
-        unserved: Arc::new(AtomicUsize::new(0)),
-        content,
-        asked: tokio::sync::Notify::new(),
-    });
-    let (wakes, wake_events) = tokio::sync::mpsc::unbounded_channel();
-    // Follow the copy's news before the sync reads a record, so a write the serving device sends
-    // meanwhile is heard; what it tells waits in the channel until the sync takes it.
-    tokio::spawn(follow(
-        Arc::clone(&copy),
-        workspaces.document_writes(),
-        wakes.clone(),
-    ));
+    let backend = Backend::of(workspaces, workspace, content);
     TreeSync::start(tilo_fs::tree_sync::Config {
-        workspace: copy.name.clone(),
+        workspace: backend.copy.name.clone(),
         device,
         person,
         kept_at: kept_at.to_path_buf(),
-        documents: Arc::new(Records(Arc::clone(&copy))),
-        writer: Box::new(Writer {
-            copy: Arc::clone(&copy),
-            wakes,
-        }),
-        peer: copy,
+        documents: Arc::new(backend.reads),
+        writer: Box::new(backend.writer),
+        peer: backend.copy,
         content: store,
-        wakes: wake_events,
+        wakes: backend.wakes,
     })
     .await
+}
+
+/// What a tree's sync reads, writes and hears of one workspace in this device's service.
+struct Backend {
+    copy: Arc<Copy>,
+    reads: Records,
+    writer: Writer,
+    wakes: tokio::sync::mpsc::UnboundedReceiver<Wake>,
+}
+
+impl Backend {
+    /// `workspace`'s copy in `workspaces`, followed until the wakes are no longer taken.
+    fn of(workspaces: &Workspaces, workspace: WorkspaceId, content: Arc<RouteContent>) -> Self {
+        let copy = Arc::new(Copy {
+            workspaces: workspaces.clone(),
+            documents: ServiceDocuments::of(workspaces.clone()),
+            writes: ServiceWrites::of(workspaces.clone()),
+            workspace,
+            name: workspace.to_string(),
+            answers: Mutex::new(BTreeMap::new()),
+            unserved: Arc::new(AtomicUsize::new(0)),
+            content,
+            asked: tokio::sync::Notify::new(),
+        });
+        let (wakes, wake_events) = tokio::sync::mpsc::unbounded_channel();
+        // Follow the copy's news before the sync reads a resource, so a write the serving device
+        // sends meanwhile is heard; what it tells waits in the channel until the sync takes it.
+        tokio::spawn(follow(
+            Arc::clone(&copy),
+            workspaces.document_writes(),
+            wakes.clone(),
+        ));
+        Self {
+            reads: Records(Arc::clone(&copy)),
+            writer: Writer {
+                copy: Arc::clone(&copy),
+                wakes,
+            },
+            copy,
+            wakes: wake_events,
+        }
+    }
 }
 
 /// The member copy of one workspace, as its tree's sync reads and writes it.
@@ -265,26 +288,32 @@ impl tilo_fs::tree_sync::TreeWriter for Writer {
     }
 
     fn served(&self, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Served> {
-        let documents: Vec<String> = chunks
-            .iter()
-            .map(|chunk| tilo_fs::tree_sync::document_for(*chunk))
-            .collect();
-        let named: Vec<(&str, &str)> = documents
-            .iter()
-            .map(|document| (FILES_APP, document.as_str()))
-            .collect();
-        let served = self.copy.writes.served(&self.copy.name, &named)?;
-        Some(Box::pin(async move {
-            tokio::time::timeout(SERVED_WITHIN, served)
-                .await
-                .unwrap_or_else(|_| {
-                    Err(format!(
-                        "the workspace's server did not say within {}s that it holds the change",
-                        SERVED_WITHIN.as_secs()
-                    ))
-                })
-        }))
+        served(&self.copy, chunks)
     }
+}
+
+/// Resolves once the serving device holds every earlier write of this device's to `chunks` in
+/// `copy`, or with why not; `None` when the copy's own store kept them.
+fn served(copy: &Copy, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Served> {
+    let documents: Vec<String> = chunks
+        .iter()
+        .map(|chunk| tilo_fs::tree_sync::document_for(*chunk))
+        .collect();
+    let named: Vec<(&str, &str)> = documents
+        .iter()
+        .map(|document| (FILES_APP, document.as_str()))
+        .collect();
+    let served = copy.writes.served(&copy.name, &named)?;
+    Some(Box::pin(async move {
+        tokio::time::timeout(SERVED_WITHIN, served)
+            .await
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "the workspace's server did not say within {}s that it holds the change",
+                    SERVED_WITHIN.as_secs()
+                ))
+            })
+    }))
 }
 
 /// Write `changes` to record `chunk` of the tree in `copy` as this device: its founding write

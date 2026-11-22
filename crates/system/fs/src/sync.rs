@@ -1,7 +1,7 @@
 //! The content store: a mount's blobs served to the peers that hydrate from it, and the signed
 //! workspace ACL a joiner reads.
 //!
-//! A workspace's tree travels as the workspace's Files record ([`crate::tree_document`]); only file
+//! A workspace's tree travels as the workspace's Files resources ([`crate::tree_sync`]); only file
 //! bytes and the ACL come over this backend, and every connection is authenticated as a certified
 //! device of a person before it is served.
 use std::collections::HashMap;

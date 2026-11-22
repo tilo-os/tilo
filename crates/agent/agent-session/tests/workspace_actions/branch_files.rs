@@ -12,7 +12,7 @@ use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree, TreeEntry};
 use serde_json::json;
 use std::sync::Arc;
-use tilo_fs::tree_document::document_id as tree_document;
+use fs_protocol::tree::document_id as tree_document;
 
 /// The tree of `workspace`'s Files as its host keeps it, its own record and every chunk it
 /// lists; empty while it keeps none.

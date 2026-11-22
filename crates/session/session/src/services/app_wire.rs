@@ -302,14 +302,14 @@ pub(crate) fn start_app_wire(
             agent_sessions: services.agent_sessions,
             sealed,
             own_device,
-            document_content: content,
+            document_content: content.clone(),
             action_offload,
             // What the broker writes a workspace's people through, and where it keeps what it
             // admits: this session's own workspaces, else the ones its peer network holds.
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
             documents,
             resources,
-            service,
+            service: service.clone(),
             endpoint: sync.map(|sync| sync.endpoint_handle()),
             answering: sync.map(crate::sync::Client::answering),
             journal_root: match options.state.as_deref() {
@@ -360,6 +360,7 @@ pub(crate) fn start_app_wire(
         actions.install(broker.device_host());
         attach_remote_use(&actions, options);
     }
+    let files_tree = serve_files_tree(&path, service, content.as_deref(), options)?;
     Ok(Some(AppWire {
         link,
         path,
@@ -370,9 +371,36 @@ pub(crate) fn start_app_wire(
         carets: crate::carets::Carets::new(fanout, options.wake.handle()),
         file_clipboard,
         _personal: personal,
+        _files_tree: files_tree,
         item_lending,
         hosting,
     }))
+}
+
+/// The trees of the workspaces this device's service holds, served beside the app wire at
+/// `wire` to the files daemon this session recorded as the Files endpoint: the daemon's mounts
+/// sync through this device's one service. A session that keeps no resource content has no
+/// workspaces, and serves none.
+fn serve_files_tree(
+    wire: &std::path::Path,
+    service: tilo_workspace_service::service::ServiceSlot,
+    content: Option<&crate::content::ContentService>,
+    options: &Options,
+) -> Result<Option<tilo_workspace_service::files::socket::Serving>, Error> {
+    use tilo_workspace_service::apps::services::LauncherServices as _;
+    let Some(content) = content else {
+        return Ok(None);
+    };
+    let launches = std::sync::Arc::clone(&options.launches);
+    let socket = wire.with_file_name(format!("{}.sock", fs::tree_sync::remote::SOCKET));
+    Ok(Some(tilo_workspace_service::files::socket::serve(
+        &socket,
+        service,
+        content.route(),
+        std::sync::Arc::new(move |pid, workspace| {
+            launches.attest_process(pid, ui::apps::FILE_EXPLORER, workspace)
+        }),
+    )?))
 }
 
 /// What the broker decides against, from this pass on: the shell as it is
