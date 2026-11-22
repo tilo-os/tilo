@@ -1224,11 +1224,11 @@ fn release_download_is_local_visible_and_cancellable() {
             control: crate::release::DownloadControl::default(),
         });
 
-        let release_names = app
-            .releases
-            .iter()
-            .map(|release| release.display_name())
-            .collect::<Vec<_>>();
+        let release_names = [
+            "Tilo 1.0, Preparing",
+            "Tilo 1.1-rc2, Generic x86-64, testing channel, downloads first",
+        ]
+        .map(String::from);
         let mut view = harness(app, AutoCommit::new(), (1180, 820));
         let release_nodes = view
             .controls()

@@ -188,10 +188,12 @@ mod tests {
             let node = row(&target, true)
                 .accessibility()
                 .expect("disk selection semantics");
-            assert_eq!(node.name.as_deref(), Some("QEMU Fast Storage"));
+            assert_eq!(
+                node.name.as_deref(),
+                Some("QEMU Fast Storage, /dev/vdb, Empty disk")
+            );
             let value = node.value.as_deref().unwrap_or_default();
             assert!(value.contains("40 GiB"), "{value}");
-            assert!(value.contains("/dev/vdb, Empty disk"), "{value}");
             assert_eq!(node.state.checked, Some(true));
             assert!(!node.state.disabled);
             assert!(!value.contains("secret-wwn") && !value.contains("252:16"));
@@ -200,7 +202,10 @@ mod tests {
             let node = row(&disk(), false)
                 .accessibility()
                 .expect("disk selection semantics");
-            assert_eq!(node.name.as_deref(), Some("40 GiB storage device"));
+            assert_eq!(
+                node.name.as_deref(),
+                Some("40 GiB storage device, /dev/vdb, Empty disk")
+            );
             assert_eq!(node.state.checked, Some(false));
         }
         {
@@ -212,12 +217,12 @@ mod tests {
             let mut row = disk_row(&target, &control, false);
 
             let node = row.accessibility().expect("disabled disk semantics");
-            let value = node.value.as_deref().expect("disabled reason");
+            let name = node.name.as_deref().expect("disabled reason");
             assert!(node.state.disabled);
             assert!(!row.is_focusable());
-            assert!(value.contains("live system is running from"));
-            assert!(value.contains("disk is read-only"));
-            assert!(value.contains("could not verify which physical disk"));
+            assert!(name.contains("live system is running from"));
+            assert!(name.contains("disk is read-only"));
+            assert!(name.contains("could not verify which physical disk"));
 
             let mut doc = AutoCommit::new();
             assert!(!row.perform_action(
@@ -245,9 +250,9 @@ mod tests {
             let node = row.accessibility().expect("staged disk semantics");
             assert!(!node.state.disabled);
             assert!(row.is_focusable());
-            let value = node.value.as_deref().expect("staged description");
-            assert!(value.contains("also holds the running installer"));
-            assert!(!value.contains("Unavailable"));
+            let name = node.name.as_deref().expect("staged description");
+            assert!(name.contains("also holds the running installer"));
+            assert!(!name.contains("Unavailable"));
         }
     }
 }
