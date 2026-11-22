@@ -64,7 +64,7 @@ trait Themed {
 
 impl<S: SheetState> Themed for Sheet<S> {
     fn set_theme(&mut self, theme: ui::Theme) {
-        self.host.app_mut().set_theme(theme);
+        self.host.set_theme(theme);
     }
 }
 

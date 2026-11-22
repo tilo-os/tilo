@@ -576,6 +576,9 @@ pub struct Session {
     /// The readout itself, so a theme the person changed reaches it.
     #[cfg(target_os = "linux")]
     pub(crate) readout: Rc<RefCell<crate::panels::Readout>>,
+    /// Banners hosted separately from the shell's own views, drawn in the same live theme.
+    #[cfg(target_os = "linux")]
+    pub(crate) banner_surface: Option<Rc<RefCell<crate::panels::Banners>>>,
     /// When the on-screen keyboard runs, as the person chose: never, over a
     /// field they touch, or always.
     #[cfg(target_os = "linux")]

@@ -164,6 +164,10 @@ impl Banners {
         }
     }
 
+    pub(crate) fn set_theme(&mut self, theme: ui::Theme) {
+        self.host.set_theme(theme);
+    }
+
     /// Say where the stack stands, so the floating layer's cards keep clear of it while a banner
     /// shows.
     fn publish_stack(&self) {

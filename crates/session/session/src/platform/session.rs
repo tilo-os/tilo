@@ -1044,7 +1044,7 @@ impl Session {
             (&readout_place, &handle, &overlays),
             &options,
         );
-        mount_banners(
+        let banner_surface = mount_banners(
             &mut compositor,
             &mut published,
             &notices,
@@ -1932,6 +1932,7 @@ impl Session {
             displays_service,
             readout_place,
             readout,
+            banner_surface,
             numbers,
             published_displays,
             confirmation: crate::display_confirm::Confirmation::default(),

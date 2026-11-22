@@ -195,6 +195,13 @@ impl AppProcess {
         &mut self.app
     }
 
+    /// Repaint this surface when the person's theme changes, even while its app is idle.
+    pub fn set_theme(&mut self, theme: ui::Theme) {
+        self.app.set_theme(theme);
+        self.wants = true;
+        self.full = true;
+    }
+
     /// Where the app is shown.
     pub const fn placement(&self) -> Placement {
         self.placement

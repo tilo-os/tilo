@@ -91,10 +91,10 @@ pub(crate) fn mount_banners(
     options: &crate::Options,
     stack: crate::panels::Reserved,
     banners: Link,
-) {
+) -> Option<Rc<RefCell<crate::panels::Banners>>> {
     if options.shell {
         notices.show_banners_elsewhere();
-        return;
+        return None;
     }
     match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
         .and_then(|component| ui::App::from_component(component, (options.presentation)()))
@@ -109,10 +109,14 @@ pub(crate) fn mount_banners(
                 stack,
             )));
             compositor.add_surface(surface.clone());
-            surfaces.add(surface);
+            surfaces.add(surface.clone());
             notices.show_banners_elsewhere();
+            Some(surface)
         }
-        Err(error) => tracing::warn!(%error, "notification banners not mounted"),
+        Err(error) => {
+            tracing::warn!(%error, "notification banners not mounted");
+            None
+        }
     }
 }
 
