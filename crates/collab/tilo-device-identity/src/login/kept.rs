@@ -110,6 +110,13 @@ impl Device {
     pub fn user(&self) -> String {
         hex::encode(self.cert.user_public_key)
     }
+
+    /// Whether the login names a server to enter through. One that names none, as logins
+    /// older builds kept do, has ended: nothing this computer runs reaches its workspace again.
+    #[must_use]
+    pub const fn reaches_a_server(&self) -> bool {
+        self.server_address.is_some()
+    }
 }
 
 /// A login as [`LOGIN_FILE`] keeps it: the certificate is kept with the device key, and found by

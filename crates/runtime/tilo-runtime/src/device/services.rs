@@ -51,9 +51,10 @@ const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
 /// The broker's durable invocation journal: a retried invocation id never
 /// starts twice, across restarts too.
 pub(super) const INVOCATION_JOURNAL: &str = "invocations";
-/// Where a computer with no login keeps the id of the workspace founded on it, in the device's
-/// directory.
-const FOUNDED: &str = "workspace";
+/// Where a computer with no login keeps the id of the workspace founded on it for a person, in
+/// the device's directory: this, then the person's key in hex. A root that comes to this computer
+/// later founds a workspace of its own, never enters one another person founded here.
+const FOUNDED: &str = "workspace-of-";
 /// Where the device's workspace service and key service keep their state, in the device's
 /// directory.
 const OWN: &str = "own";
@@ -134,7 +135,18 @@ impl Identity {
     fn here() -> io::Result<Self> {
         let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys())
             .map_err(io::Error::other)?;
-        let login = tilo_device_identity::login::load(&place).map_err(io::Error::other)?;
+        // A login that ended, on a computer that holds its person's root, is no login: the
+        // computer is that person's own device, serves itself and adds their others.
+        let login = tilo_device_identity::login::load(&place)
+            .map_err(io::Error::other)?
+            .filter(|(_, device)| {
+                let ended = !device.reaches_a_server()
+                    && super::person::holds_root_of(&device.cert.user_public_key);
+                if ended {
+                    tracing::info!("this computer's login has ended and it holds the person's root: it serves as their own device");
+                }
+                !ended
+            });
         let (key, cert) = if let Some((key, device)) = &login {
             adopt_login(&place, device);
             (key.clone(), device.cert.clone())
@@ -277,7 +289,7 @@ impl Daemon {
         let (workspace_id, founded) = if let Some((_, device)) = &identity.login {
             (device.workspace.clone(), None)
         } else {
-            let founded = founded_workspace(identity.place.dir())?;
+            let founded = founded_workspace(identity.place.dir(), &identity.cert.user_public_key)?;
             (founded.to_string(), Some(founded))
         };
         let apps = Arc::new(apps::Apps::from_env(root, &workspace_id));
@@ -323,7 +335,7 @@ impl Daemon {
         // this member takes from its server when it takes any, else its workspaces'. A ticket's
         // certify call is admitted on it while a computer asks.
         let actions = take_work.as_ref().map_or_else(
-            || workspaces.copies().action_service(),
+            || super::ticket::device_actions(&identity.key, &workspaces),
             take_work::TakesWork::actions,
         );
         // The device actions the daemon answers itself.
@@ -446,10 +458,10 @@ impl Daemon {
     }
 }
 
-/// The workspace founded on this computer, which has no login: the one an earlier start
-/// founded, kept in the device's directory `dir`, or a new one.
-fn founded_workspace(dir: &Path) -> io::Result<WorkspaceId> {
-    let path = dir.join(FOUNDED);
+/// The workspace founded on this computer for `person`, as it has no login: the one an earlier
+/// start founded for them, kept in the device's directory `dir`, or a new one.
+fn founded_workspace(dir: &Path, person: &[u8; 32]) -> io::Result<WorkspaceId> {
+    let path = dir.join(format!("{FOUNDED}{}", hex::encode(person)));
     match std::fs::read_to_string(&path) {
         Ok(kept) => WorkspaceId::parse(kept.trim()).ok_or_else(|| {
             io::Error::new(

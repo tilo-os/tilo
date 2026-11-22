@@ -31,7 +31,7 @@ use tilo_device_identity::login::{
 };
 use tilo_enrollment::root::PersonSigner;
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::actions::ActionService;
+use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_peer_state::new_device::ServedTicket;
 use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::{DeviceCert, RevocationList, StatementSigner};
@@ -129,6 +129,18 @@ pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
         ],
         query,
     )
+}
+
+/// The action service a daemon with no server's work answers the device actions on, as `key`:
+/// a request names the device it asks by its endpoint's key, so the workspaces' shared service
+/// serves only when it signs as that key, and a service of the device's own serves otherwise.
+pub(crate) fn device_actions(key: &SigningKey, workspaces: &ServiceWorkspaces) -> ActionService {
+    let shared = workspaces.copies().action_service();
+    if shared.device() == key.verifying_key().to_bytes() {
+        return shared;
+    }
+    let _entered = tilo_rt::app().handle().enter();
+    ActionService::new(key.clone(), Arc::new(NoActions))
 }
 
 /// `page`, the workspace's apps, with the daemon's own `tilo.device` provider beside them: listed
@@ -718,10 +730,14 @@ impl Tickets {
         let serde_json::Value::Object(argument) = serde_json::to_value(&input)? else {
             bail!("the certify input is an object");
         };
+        // Asked as this computer's own key, the one the certificate is for: the daemon's shared
+        // action service may sign as its workspace service instead.
         let device = Arc::new(
-            self.0
-                .service
-                .remote(&self.0.endpoint, &dialed.addr(), SCOPE),
+            ActionService::new(self.0.key.clone(), Arc::new(NoActions)).remote(
+                &self.0.endpoint,
+                &dialed.addr(),
+                SCOPE,
+            ),
         );
         let request = InvokeRequest {
             on_behalf_of: None,

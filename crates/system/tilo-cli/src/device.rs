@@ -96,7 +96,9 @@ pub fn add(
     login::trust_test_certificates()?;
     crate::identity::convert_earlier()?;
     let login_place = login::Place::here(crate::identity::paths())?;
-    let here = login::load_public(&login_place)?;
+    // A login that ended names a workspace no daemon here holds: the daemon serves this
+    // computer as the person's own device instead, in the workspace it founded.
+    let here = login::load_public(&login_place)?.filter(Device::reaches_a_server);
     let place = DaemonPlace::of(login_place.dir(), &login::this_device_public_key()?)
         .map_err(anyhow::Error::msg)?;
     login::ensure_daemon(&place)?;
@@ -168,7 +170,9 @@ pub fn add(
         // The person's other devices list it as soon as the host keeps it there. A computer with
         // no login has no session of its own to enter with: the host lists it as it enters.
         // The daemon calls are done, so this process may read the private key now.
-        if let Some((key, here)) = login::load(&login_place)? {
+        if here.is_some()
+            && let Some((key, here)) = login::load(&login_place)?
+        {
             match login::connect(&key, &here, None).await {
                 Ok(entered) => {
                     let kept = keep_in_list(&entered, &cert).await;
