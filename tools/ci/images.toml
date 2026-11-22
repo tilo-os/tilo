@@ -1,12 +1,12 @@
-# Container images CI runs in, pinned by digest.
+# Container images CI runs in.
 #
-# A workflow's `container.image` cannot read this file, so each workflow
-# repeats the full reference. tools/tests/test_ci_images.py asserts that every
-# reference under `host/namespace` in .forgejo/workflows uses the digest below.
-# To move a pin, change it here and in the workflows together.
+# tools/ci/resolve_builder.py reads the registry from here. `pins` is for a
+# workflow's `container.image`, which cannot read this file and so repeats the
+# full reference; tools/tests/test_ci_images.py asserts every reference under
+# `host/namespace` in .forgejo/workflows uses that digest. t's checks name their
+# images in t.toml, so no workflow pins one today.
 #
-# tools/ci/resolve_builder.py reads the registry from here. A fork that
-# publishes its own images can override it per run without editing this file:
+# A fork that publishes its own images can override it per run without editing this file:
 #   TILO_CI_REGISTRY              registry host
 #   TILO_CI_BUILDER_REPOSITORY    builder repository on that host
 #   TILO_CI_REGISTRY_TOKEN_REALM  anonymous pull-token endpoint
@@ -19,8 +19,4 @@ token_realm = "https://registry.tilo.so/token"
 builder = "tilo-builder"
 
 # Repository name under host/namespace -> pinned digest.
-# ci-fast: lint, planning and other quick jobs (os/Containerfile.ci-fast).
-# tilo-release-tools: release signing and publication tools.
 [pins]
-ci-fast = "sha256:c7be92bd00fa759dc586916e7bccbb93179fe7b358c6a05a12bc31d8ea48ab6f"
-tilo-release-tools = "sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa"
