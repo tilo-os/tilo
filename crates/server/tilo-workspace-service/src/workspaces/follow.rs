@@ -601,11 +601,20 @@ impl Workspaces {
     /// and its channels' governance at the host's store, and take in what its
     /// members send there.
     pub(super) fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
+        let workspace_id = workspace.workspace_id();
+        let workspaces = WeakWorkspaces(Arc::downgrade(&self.inner));
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
             self.inner.host.key.clone(),
         )
-        .with_store(Arc::clone(&self.inner.store));
+        .with_store(Arc::clone(&self.inner.store))
+        .with_record_sink(move |_author, message| {
+            // A session that opened the record the frame writes reads it too,
+            // from the one point the frame is kept and carried.
+            if let Some(workspaces) = workspaces.upgrade() {
+                workspaces.deliver_record_write(workspace_id, message);
+            }
+        });
         #[cfg(test)]
         let link = match self
             .inner

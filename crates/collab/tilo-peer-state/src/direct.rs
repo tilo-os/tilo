@@ -558,11 +558,19 @@ struct Inner {
     /// The other device's store, for a device that keeps none: where a reader
     /// that fell behind takes the frames it missed ([`Reader`]).
     other_store: Arc<std::sync::Mutex<Option<OtherStore>>>,
+    /// Told each record frame this device takes in and keeps, and each it
+    /// carries, with its author: a session following the same record reads it
+    /// from here ([`DirectSync::with_record_sink`]).
+    record_sink: Option<RecordSink>,
     /// Answers a test loses, as a link that ended before they came
     /// ([`DirectSync::lose_answers`]).
     #[cfg(feature = "test-support")]
     lost_answers: Arc<std::sync::atomic::AtomicUsize>,
 }
+
+/// Told each record frame a link takes in and keeps, and each it carries, with
+/// its author ([`DirectSync::with_record_sink`]).
+type RecordSink = Arc<dyn Fn([u8; 32], &NeighbourMsg) + Send + Sync>;
 
 /// The geneses of a workspace's group its host carries, each with its
 /// author: what it answers a member's access request with
@@ -626,6 +634,7 @@ impl DirectSync {
             fan_out: std::sync::atomic::AtomicBool::new(false),
             geneses: Geneses::default(),
             other_store: Arc::default(),
+            record_sink: None,
             #[cfg(feature = "test-support")]
             lost_answers: Arc::default(),
         }))
@@ -649,6 +658,7 @@ impl DirectSync {
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             geneses: Arc::clone(&self.0.geneses),
             other_store: Arc::clone(&self.0.other_store),
+            record_sink: self.0.record_sink.clone(),
             #[cfg(feature = "test-support")]
             lost_answers: Arc::clone(&self.0.lost_answers),
         }
@@ -661,6 +671,21 @@ impl DirectSync {
     pub fn with_store(&self, store: Arc<Store>) -> Self {
         Self(Arc::new(Inner {
             store: Some(store),
+            ..self.copied()
+        }))
+    }
+
+    /// Tell `sink` each record frame this link takes in and keeps, and each it
+    /// carries, with its author: the one point a record's write is in this
+    /// device's store and on its way to the devices linked to it, from which a
+    /// session that opened the same record is sent it too.
+    #[must_use]
+    pub fn with_record_sink(
+        &self,
+        sink: impl Fn([u8; 32], &NeighbourMsg) + Send + Sync + 'static,
+    ) -> Self {
+        Self(Arc::new(Inner {
+            record_sink: Some(Arc::new(sink)),
             ..self.copied()
         }))
     }
@@ -919,6 +944,9 @@ impl DirectSync {
             message: message.clone(),
             published: false,
         });
+        if let Some(sink) = &self.0.record_sink {
+            sink(from, message);
+        }
         Ok(true)
     }
 
@@ -1623,6 +1651,40 @@ impl DirectSync {
         self.read(store::cursors)
     }
 
+    /// Every frame of the record on `channel` this device's store keeps, in the
+    /// order a device that opens the record is sent them, and `None` when this
+    /// device keeps no store. Read once, whole: a record that outgrows one
+    /// round's budget is read on from where the last round ended.
+    ///
+    /// # Errors
+    ///
+    /// A kept frame could not be read back.
+    pub fn kept_record(&self, channel: [u8; 32]) -> Result<Option<Vec<NeighbourMsg>>, String> {
+        let Some(store) = &self.0.store else {
+            return Ok(None);
+        };
+        let workspace = self.workspace()?;
+        let mut frames = Vec::new();
+        let mut cursors = Vec::new();
+        loop {
+            let replay = store
+                .replay_record(workspace, channel, &cursors, Budget::default())
+                .map_err(|error| error.to_string())?;
+            store::advance(&mut cursors, &replay.frames);
+            frames.extend(replay.frames);
+            if !replay.more {
+                return Ok(Some(frames));
+            }
+        }
+    }
+
+    /// Whether `device` may read `message`, judged as this device judges each
+    /// frame before its link sends it another: the record's readers name it,
+    /// and the workspace's policy lets it read the record.
+    pub fn reads_of(&self, device: [u8; 32]) -> impl Fn(&NeighbourMsg) -> bool + use<> {
+        self.reach_of(device)
+    }
+
     /// Whether the workspace removed `device`'s person: it reads nothing the
     /// workspace says from then on, and what it sends is no longer taken.
     fn removed(&self, device: [u8; 32]) -> bool {
@@ -2255,6 +2317,15 @@ impl DirectSync {
                 message: heard.message.clone(),
                 published: false,
             });
+        }
+        // A session that opened the record reads the write too, from the same
+        // point: the frame is in this device's store now, and on its way to the
+        // devices linked to it.
+        if heard.report.is_ok()
+            && heard.fresh
+            && let Some(sink) = &self.0.record_sink
+        {
+            sink(heard.author, &heard.message);
         }
         self.tell(heard);
         (lacks_history, kept)

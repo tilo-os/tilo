@@ -833,6 +833,37 @@ impl Store {
         cursors: &[Cursor],
         budget: Budget,
     ) -> Result<Replay, StoreError> {
+        self.read(workspace, None, cursors, budget)
+    }
+
+    /// The frames of the record `channel` in `workspace` after `cursors`, at
+    /// most `budget` of them, as [`Self::replay`] serves a workspace's: each of
+    /// the record's lines in the order it was written, a checkpoint before the
+    /// changes it bases. A device that opens a record holds none of it and
+    /// names no cursors; one sent part of it already continues from what it was
+    /// sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored frame cannot be read back.
+    pub fn replay_record(
+        &self,
+        workspace: WorkspaceId,
+        channel: [u8; 32],
+        cursors: &[Cursor],
+        budget: Budget,
+    ) -> Result<Replay, StoreError> {
+        self.read(workspace, Some(channel), cursors, budget)
+    }
+
+    /// [`Self::replay`], of one record's lines alone when `only` names it.
+    fn read(
+        &self,
+        workspace: WorkspaceId,
+        only: Option<[u8; 32]>,
+        cursors: &[Cursor],
+        budget: Budget,
+    ) -> Result<Replay, StoreError> {
         let held = self.held.lock_recover();
         let mut replay = Replay::default();
         let Some(stored) = held.workspaces.get(&workspace) else {
@@ -841,6 +872,9 @@ impl Store {
         // Each author line's frames after its cursor, in the line's order.
         let mut pending: Vec<(Lineage, &[Entry])> = Vec::new();
         for (lineage, entries) in &stored.lineages {
+            if only.is_some_and(|channel| lineage.record != channel) {
+                continue;
+            }
             let after = cursors
                 .iter()
                 .filter(|cursor| cursor.lineage == *lineage)
@@ -2282,9 +2316,9 @@ mod tests {
         UNIX_EPOCH + Duration::from_nanos(ns)
     }
 
-    /// A sealed document frame by `key`, with whatever ciphertext a store
-    /// never opens.
-    fn frame(key: &SigningKey, seq: u64, retention: ContentRetention) -> Frame {
+    /// A sealed document frame by `key` on `record`, with whatever ciphertext a
+    /// store never opens.
+    fn frame_of(key: &SigningKey, record: &str, seq: u64, retention: ContentRetention) -> Frame {
         let mut op = SignedOp::new_unsigned(
             vec![seq as u8; 64],
             ArtifactId::new(),
@@ -2300,11 +2334,16 @@ mod tests {
             peer: peer_handle(&key.verifying_key().to_bytes()),
             app_id: APP.into(),
             cluster_id: CLUSTER.into(),
-            document_id: RECORD.into(),
+            document_id: record.into(),
             envelope: Box::new(op),
             readers: None,
         };
         Frame::of(&message).unwrap()
+    }
+
+    /// A sealed document frame by `key` on [`RECORD`].
+    fn frame(key: &SigningKey, seq: u64, retention: ContentRetention) -> Frame {
+        frame_of(key, RECORD, seq, retention)
     }
 
     /// A sealed compaction by `key` at `seq` that names `superseded`, with a
@@ -2398,6 +2437,64 @@ mod tests {
                     .frames
                     .is_empty()
             );
+        }
+
+        phase replay_record_serves_the_one_records_frames;
+        // A device that opens a record is sent that record and no other, whatever else the
+        // workspace keeps, and one whose round was cut short continues from what it was sent.
+        {
+            let (_dir, store) = open();
+            let (founder, editor) = (device(2), device(3));
+            let baseline = frame_of(&founder, RECORD, 1, ContentRetention::Checkpoint);
+            let edit = frame_of(&editor, RECORD, 2, ContentRetention::Delta);
+            let elsewhere = frame_of(&editor, "tab:other", 1, ContentRetention::Delta);
+            store.retain(workspace(), &elsewhere).unwrap();
+            store.retain(workspace(), &edit).unwrap();
+            store.retain(workspace(), &baseline).unwrap();
+
+            let channel = neighbour_wire::app_document_group(APP, RECORD);
+            let replay = store
+                .replay_record(workspace(), channel, &[], Budget::default())
+                .unwrap();
+            assert_eq!(
+                replay.frames,
+                vec![baseline.message.clone(), edit.message.clone()],
+                "the record's own baseline before its changes, and nothing of another record"
+            );
+            assert!(
+                store
+                    .replay_record(
+                        workspace(),
+                        neighbour_wire::app_document_group(APP, "tab:unkept"),
+                        &[],
+                        Budget::default(),
+                    )
+                    .unwrap()
+                    .frames
+                    .is_empty(),
+                "a record the store keeps nothing of is empty"
+            );
+
+            let cut = store
+                .replay_record(
+                    workspace(),
+                    channel,
+                    &[],
+                    Budget {
+                        max_frames: 1,
+                        ..Budget::default()
+                    },
+                )
+                .unwrap();
+            assert!(cut.more, "the record holds more than the round carried");
+            assert_eq!(cut.frames, vec![baseline.message]);
+            let mut cursors = Vec::new();
+            advance(&mut cursors, &cut.frames);
+            let rest = store
+                .replay_record(workspace(), channel, &cursors, Budget::default())
+                .unwrap();
+            assert_eq!(rest.frames, vec![edit.message]);
+            assert!(!rest.more);
         }
 
         phase replay_sends_a_records_baseline_before_its_changes;

@@ -3,9 +3,9 @@
 
 use super::{
     AuthenticatedPeer, Envelope, PeerError, RemoteActionRoute, SessionCtx, handle_agent_session,
-    handle_content_want, handle_host_action, handle_host_said, handle_live_join, handle_presence,
-    handle_remote_action, handle_subscribe, handle_unsubscribe, handle_voice, handle_workspaces,
-    route_document_content,
+    handle_content_want, handle_host_action, handle_host_said, handle_live_join,
+    handle_open_document, handle_presence, handle_remote_action, handle_subscribe,
+    handle_unsubscribe, handle_voice, handle_workspaces, route_document_content,
 };
 use tilo_server_protocol::WorkspaceId;
 
@@ -130,11 +130,12 @@ pub(super) async fn handle_envelope(
         env @ (Envelope::Delta { .. } | Envelope::Commit { .. }) => {
             handle_session_write(peer, session, env).await
         }
+        env @ Envelope::OpenDocument { .. } => {
+            handle_open_document(peer, session, subscribed, env).await
+        }
         env @ (Envelope::SubscribeFrom { .. }
         | Envelope::CompactVolunteer { .. }
         | Envelope::Compacted { .. }
-        | Envelope::SyncRequest { .. }
-        | Envelope::OpenDocument { .. }
         | Envelope::PeerServerHello { .. }) => Err(not_on_a_session(env.kind())),
         env @ Envelope::Presence { .. } => {
             handle_presence(peer, session, subscribed, env).await
@@ -189,8 +190,11 @@ pub(super) async fn handle_envelope(
         // A device that only follows its channel groups said so to a host
         // that replayed it records; it is no different from any other here.
         Envelope::KeyFollower
-        // Envelopes the server only *sends*, never receives; ignore
-        // silently so a peer bug doesn't wedge the connection.
+        // Envelopes the server only *sends*, never receives, and an ask for a
+        // workspace's state on a session, which reaches a device over its link
+        // to the workspace instead: ignore silently so a peer bug doesn't wedge
+        // the connection, and a client still asking reads on.
+        | Envelope::SyncRequest { .. }
         | Envelope::CompactRequest { .. }
         | Envelope::Ready { .. }
         | Envelope::NotAuthorised { .. }

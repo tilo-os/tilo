@@ -790,7 +790,7 @@ impl Task {
                 ..
             } => {
                 if *documents_when_opened {
-                    self.documents_when_opened(*workspace_id);
+                    self.documents_when_opened(*workspace_id, Some(client));
                 }
                 self.announce(client, *workspace_id)
             }
@@ -1032,6 +1032,7 @@ impl Task {
                 *ready = false;
             }
         });
+        sent_ok &= self.reopen_records(client);
         sent_ok
     }
 
@@ -1754,8 +1755,7 @@ impl Task {
                 }
             }
             Command::Client(Cmd::OpenDocumentAt(workspace_id, route)) => {
-                self.open_resource(workspace_id, route);
-                true
+                self.open_resource(workspace_id, route, client)
             }
             #[cfg(not(target_arch = "wasm32"))]
             Command::LiveSessionJoined(workspace_id, joined) => {
@@ -1807,13 +1807,14 @@ impl Task {
             }
             Command::Client(Cmd::OpenRoute(route)) => {
                 self.open_channel(&route);
-                if let Ok(workspace_id) = route.workspace_id()
-                    && self.when_opened.contains(&workspace_id)
-                {
-                    self.open_record_once(workspace_id, &route);
-                }
+                let asked = match route.workspace_id() {
+                    Ok(workspace_id) if self.when_opened.contains(&workspace_id) => {
+                        self.open_record_once(workspace_id, &route, client)
+                    }
+                    _ => true,
+                };
                 self.opened_routes.insert(route);
-                true
+                asked
             }
             // Its mutation is held already ([`crate::Link`]): draft and publish what waits.
             Command::Client(Cmd::Write(route)) => {
@@ -2040,6 +2041,7 @@ impl Task {
         }
         // The agent this session runs, said after the workspaces it enters, as it was said first.
         sent_ok &= self.declare_agent_run_again(client);
+        sent_ok &= self.reopen_records(client);
         // What this page recorded while it was away is owed again, oldest
         // first: as much as the transport takes now, the rest as the host's
         // answers make room ([`Self::send_ownership`]).

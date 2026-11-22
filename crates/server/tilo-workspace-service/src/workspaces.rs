@@ -76,6 +76,7 @@ pub(crate) use clock::system_time;
 mod delegated_work;
 mod listing;
 mod memberships;
+mod opened_records;
 mod own;
 mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1037,6 +1038,9 @@ struct WorkspacesInner {
     person_names: std::sync::RwLock<Option<Arc<dyn PersonNames>>>,
     /// Each record write of a member the governor's copy took in.
     document_writes: tokio::sync::broadcast::Sender<ResourceWrite>,
+    /// The records sessions opened, and where a write of one goes
+    /// ([`opened_records`]).
+    opened_records: opened_records::OpenedRecords,
     /// Moves whenever a person's own settings kept here — their mail
     /// accounts — changed, so a window following them reads them again
     /// ([`person_settings`]).
@@ -1368,6 +1372,7 @@ impl Workspaces {
                 machines: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
+                opened_records: opened_records::OpenedRecords::default(),
                 person_settings_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(not(target_arch = "wasm32"))]
                 models: Arc::clone(&models),

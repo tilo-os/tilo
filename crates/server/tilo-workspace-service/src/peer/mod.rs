@@ -17,6 +17,7 @@ mod delivery;
 mod dispatch;
 mod fetch;
 mod live;
+pub(crate) mod records;
 mod session;
 mod subscribe;
 
@@ -36,6 +37,7 @@ use live::{
     handle_content_want, handle_host_said, handle_live_join, handle_presence, handle_voice,
     route_document_content,
 };
+use records::handle_open_document;
 use subscribe::{handle_subscribe, handle_unsubscribe};
 
 use access_audit::AccessAudit;
