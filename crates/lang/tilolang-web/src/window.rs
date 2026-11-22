@@ -71,7 +71,7 @@ impl AppPage {
         let (app_end, window_end) = pair();
         let names = Rc::new(tilolang_tilo::names::Told::new(
             ME.into(),
-            Rc::new(tilolang_tilo::names::Unnamed),
+            Rc::new(tilolang_tilo::names::Installed),
         ));
         names.tell(MY_NAME.to_owned(), Vec::new(), Vec::new());
         let mut instance = Instance::new(

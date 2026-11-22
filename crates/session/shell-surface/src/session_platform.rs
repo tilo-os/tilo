@@ -4,7 +4,6 @@
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::Platform;
-use tilolang_tilo::runtime::{Actor, NameHost};
 
 /// How a package the session runs is put into its host.
 pub(crate) trait Loads {
@@ -72,17 +71,6 @@ impl<L: Loads> Platform for OnSession<L> {
 
     fn waker(&self) -> Waker {
         std::sync::Arc::clone(&self.waker)
-    }
-}
-
-/// How the session names the actors its views show.
-pub(crate) struct Person;
-
-impl NameHost for Person {
-    fn name(&self, who: &Actor) -> String {
-        // Named by what the actor is: an app by its own name in the person's language, an agent
-        // by its name, a person by theirs. Never an id.
-        tilolang_tilo::names::installed(who)
     }
 }
 

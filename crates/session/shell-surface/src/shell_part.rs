@@ -37,7 +37,7 @@ use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 use tilolang_tilo::tilolang::Compiled;
 
-use crate::session_platform::{Loads, OnSession, Person};
+use crate::session_platform::{Loads, OnSession};
 use crate::{Placement, WidgetSurface};
 
 /// What a shell reads of the session and the names the session publishes it by: every host's,
@@ -983,7 +983,7 @@ impl ShellPart {
                 },
                 waker,
             }),
-            Rc::new(Person),
+            Rc::new(tilolang_tilo::names::Installed),
             Box::new(app_end),
         );
         instance.set_access(Rc::new(shell_access(app, person)));

@@ -2669,14 +2669,14 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
         module_path!(),
         "a_hosted_window_names_another_app_as_the_names_it_was_sent",
         || {
-            use tilolang_tilo::names::Unnamed;
+            use tilolang_tilo::names::Installed;
             use tilolang_tilo::runtime::{Actor, NameHost as _};
 
             let today = Actor::App("so.tilo.lang.today".into());
             let (mut host, mut window, _sent, inbox, _route) = running("ada");
             settle(&mut host, &mut window);
             assert_eq!(
-                Unnamed.name(&today),
+                Installed.name(&today),
                 "Today",
                 "the words its id makes, before the session named it"
             );
@@ -2694,12 +2694,12 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
             });
             settle(&mut host, &mut window);
             assert_eq!(
-                Unnamed.name(&today),
+                Installed.name(&today),
                 "Heute",
                 "the app's own name in the window's language"
             );
             assert_eq!(
-                Unnamed.name(&Actor::App("org.example.Editor".into())),
+                Installed.name(&Actor::App("org.example.Editor".into())),
                 "Editor",
                 "an app installed nowhere near this device reads as the words its id makes"
             );

@@ -1518,7 +1518,7 @@ impl tilolang_tilo::runtime::NameHost for Named {
         match who.id() {
             "ada" => "Ada Lovelace".to_owned(),
             "bo" => "Bo".to_owned(),
-            _ => tilolang_tilo::names::unnamed(who),
+            _ => tilolang_tilo::names::installed(who),
         }
     }
 }

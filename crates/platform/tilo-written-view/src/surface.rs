@@ -111,7 +111,7 @@ impl Surface {
                 wake,
                 failed: Rc::clone(&failed),
             }),
-            Rc::new(tilolang_tilo::names::Unnamed),
+            Rc::new(tilolang_tilo::names::Installed),
             Box::new(app_end),
         );
         // The package shows another's state and has no root of its own to open.

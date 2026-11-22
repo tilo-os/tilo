@@ -18,16 +18,6 @@ use crate::runtime::ids::MemberId;
 use crate::runtime::{Actor, NameHost};
 use tilo_action_policy::PersonId;
 
-/// The name of `who` when nobody named them, by what they are: a sample person a scenario named
-/// (`person("Mia")`, whose id is that name rather than a root key) by that name, an app by its own name, an agent by its name. A person the
-/// reader has no name for is
-/// [`UNKNOWN_AUTHOR_NAME`](collaboration::history_source::authors::UNKNOWN_AUTHOR_NAME), never
-/// their key.
-#[must_use]
-pub fn unnamed(who: &Actor) -> String {
-    named(who, &Unnamed)
-}
-
 /// The name of `who` to a reader who calls people, apps and agents as `names` does: a sample
 /// person or agent a scenario named by that name, an app acting by itself (one of its triggers,
 /// or an update to a later build) as the app, and anyone else as `names` calls them.
@@ -53,26 +43,25 @@ pub fn named(who: &Actor, names: &dyn MemberNames) -> String {
 /// What the id of a sample agent a scenario named starts with.
 const SCENARIO: &str = "scenario:";
 
-/// The name of `who` as the session's catalogue says it: an app by its installed name, an agent
-/// by its name, a person nobody named as unknown.
+/// The name of `who` as the session's catalogue says it, by what they are: an app by its
+/// installed name, an agent by its name, a sample person a scenario named (`person("Mia")`, whose
+/// id is that name rather than a root key) by that name, and a person nobody named as
+/// [`UNKNOWN_AUTHOR_NAME`](collaboration::history_source::authors::UNKNOWN_AUTHOR_NAME), never
+/// their key.
 #[must_use]
 pub fn installed(who: &Actor) -> String {
     named(who, &Installed)
 }
 
-/// The names the session's catalogue gives, and no roster of its own.
-struct Installed;
+/// The names the session's catalogue gives, and no roster of its own: what a member reads as
+/// before the workspace's member list named them, or when it never does.
+pub struct Installed;
 
 impl MemberNames for Installed {}
 
-/// What a member reads as when the reader's own process knows no name for them.
-pub struct Unnamed;
-
-impl MemberNames for Unnamed {}
-
-impl NameHost for Unnamed {
+impl NameHost for Installed {
     fn name(&self, who: &Actor) -> String {
-        unnamed(who)
+        installed(who)
     }
 }
 
@@ -180,7 +169,7 @@ mod tests {
     /// of a key.
     #[test]
     fn a_member_nobody_named_is_named_by_what_they_are_never_by_part_of_their_id() {
-        let told = Told::new("me-id".into(), Rc::new(Unnamed));
+        let told = Told::new("me-id".into(), Rc::new(Installed));
         let rows: &[(Actor, &str, &str)] = &[
             (agent("planner"), "Planner", "an agent by its name"),
             (
@@ -240,7 +229,7 @@ mod tests {
     #[test]
     fn a_member_is_named_as_the_window_said_and_by_what_they_are_when_nobody_did() {
         let id = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
-        let told = Told::new(id.into(), Rc::new(Unnamed));
+        let told = Told::new(id.into(), Rc::new(Installed));
         assert_eq!(
             told.name(&person(id)),
             "Unknown member",
@@ -270,7 +259,7 @@ mod tests {
     /// them to the window; one the list said nothing of is left to the window's rule.
     #[test]
     fn a_member_wears_the_colour_the_member_list_paints_them_in() {
-        let told = Told::new("ada-id".into(), Rc::new(Unnamed));
+        let told = Told::new("ada-id".into(), Rc::new(Installed));
         assert_eq!(told.hue(&person("ben-id")), None, "nothing said yet");
         assert!(told.tell(
             "Ada".to_owned(),

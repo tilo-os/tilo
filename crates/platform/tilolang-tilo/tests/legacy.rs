@@ -470,9 +470,9 @@ tilo_test_env::scenario! {
             "the package's own change"
         );
         assert!(
-            tilolang_tilo::names::unnamed(&committed[0].action.invoker()) == "Board",
+            tilolang_tilo::names::installed(&committed[0].action.invoker()) == "Board",
             "history names Board, the app whose build made the change: {}",
-            tilolang_tilo::names::unnamed(&committed[0].action.invoker())
+            tilolang_tilo::names::installed(&committed[0].action.invoker())
         );
         for done in &committed {
             replica.apply(&done.action);
