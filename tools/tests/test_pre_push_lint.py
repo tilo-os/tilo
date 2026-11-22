@@ -1,11 +1,12 @@
 import json
 import os
+import platform
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
+import tomllib
 import unittest
 from hang import HANG_BOUND
 
@@ -14,7 +15,6 @@ ROOT = Path(__file__).resolve().parents[2]
 HOOK_SOURCES = [
     ".githooks/pre-push",
     "tools/ci/pre_push_lint.py",
-    "tools/ci/lint_inputs.py",
     "tools/ci/package_features.py",
     "tools/ci/package_sets.py",
     "tools/ci/wasm_clippy_conf.py",
@@ -22,6 +22,8 @@ HOOK_SOURCES = [
     "tools/ci/suites.py",
     "tools/ci/suites.toml",
     "tools/ci/check-changed-rustfmt.sh",
+    "tools/ci/check-rustfmt-pin.sh",
+    "rust-toolchain.toml",
     "tools/ci/comparison_range.py",
 ]
 WORKSPACE = """[workspace]
@@ -97,31 +99,59 @@ DROP_IN_STUB = (CARGO_STUB.replace("printf 'start ", "printf 'dropin ")
                 .replace('''  fmt) printf 'fmt %s\\n' "$*" >> "$HOOK_LOG"; [ "$2" = "--version" ] && exit 0; exit "${STUB_FMT_STATUS:-0}" ;;''',
                          '''  fmt) printf 'dropin-fmt %s\\n' "$*" >> "$HOOK_LOG"; exit 2 ;;'''))
 assert "dropin-fmt" in DROP_IN_STUB, "the drop-in stub must refuse to format"
-# t on a machine with no cargo of its own: `t cargo` reads the workspace's
-# metadata and lints on t's nodes. With STUB_T_WITHOUT_METADATA it is a t whose
-# `t cargo` refuses `metadata`: `t exec` then reads it on a node into the file
-# it fetches, with the paths the job sees.
+# t: `t cargo metadata` reads the workspace's metadata for a machine with no cargo of its own, and
+# `t test` answers each check it is asked for as a streamed result line, then the whole run's
+# document spread over lines, as `--json` prints them. STUB_T_OUTCOME and STUB_T_CACHED (the run a
+# cached answer came from) say what it answers; with STUB_T_ERROR it cannot run them at all.
 T_STUB = """#!/bin/sh
 case "$1 $2" in
-  "cargo metadata")
-    if [ -n "$STUB_T_WITHOUT_METADATA" ]; then
-      printf 't: `cargo metadata` does not run through t: run it here, on your machine.\\n' >&2
+  "cargo metadata") printf '%s\\n' "$STUB_METADATA"; exit 0 ;;
+esac
+case "$1" in
+  test)
+    shift
+    printf 'start %s t test %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
+    if [ -n "$STUB_T_ERROR" ]; then
+      printf '{"hint":null,"message":"%s","type":"error"}\\n' "$STUB_T_ERROR"
       exit 2
     fi
-    printf '%s\\n' "$STUB_METADATA"; exit 0 ;;
-  "exec --no-build")
-    printf 'exec %s\\n' "$*" >> "$HOOK_LOG"
-    mkdir -p "$(dirname "$4")"
-    printf '%s\\n' "$STUB_JOB_METADATA" > "$4"
-    printf 'build: b-1 of state 2 chosen\\n'
-    exit 0 ;;
-  cargo\\ *)
-    shift
-    printf 'start %s %s\\n' "$(date +%s%N)" "$*" >> "$HOOK_LOG"
-    exit "${STUB_STATUS:-0}" ;;
+    for check in "$@"; do
+      case "$check" in --*) continue ;; esac
+      printf '{"seq":2,"body":{"finished":{"check":"%s","outcome":"%s","cached":%s,"log":"5eed","excerpt":"%s","duration_ms":61000}}}\\n' \\
+        "$check" "${STUB_T_OUTCOME:-pass}" "${STUB_T_CACHED:-null}" "${STUB_T_EXCERPT:-}"
+    done
+    printf '{\\n  "results": [],\\n  "run": "r1"\\n}\\n'
+    [ "${STUB_T_OUTCOME:-pass}" = pass ]; exit $? ;;
 esac
 exit 2
 """
+# t's families as t.toml declares them: the workspace's clippy over every member but the page
+# crate, which a per-architecture family lints, and the page's own wasm32 lint, which builds without
+# workspace-unify's features and is no lint a push gets.
+T_TOML = """[[cargo]]
+name = "clippy"
+tool = "clippy"
+unify = "workspace-unify"
+exclude = ["fixture-web", "wasm-bindgen"]
+
+[[cargo]]
+name = "clippy-{arch}"
+tool = "clippy"
+unify = "workspace-unify"
+packages = ["fixture-web"]
+matrix = { arch = ["x86_64", "aarch64"] }
+
+[[cargo]]
+name = "clippy-page"
+tool = "clippy"
+packages = ["fixture-web"]
+
+[[cargo]]
+name = "test"
+tool = "nextest"
+unify = "workspace-unify"
+"""
+ARCH = {"amd64": "x86_64", "arm64": "aarch64"}.get(platform.machine().lower(), platform.machine().lower())
 # The toolchain's installed targets, which say whether the page build can be linted here.
 RUSTFMT_STUB = """#!/bin/sh
 printf 'rustfmt %s\\n' "$*" >> "$HOOK_LOG"
@@ -180,6 +210,13 @@ class PrePushLintTests(unittest.TestCase):
         self.stub("cargo", CARGO_STUB)
         self.stub("rustup", RUSTUP_STUB)
         self.stub("rustfmt", RUSTFMT_STUB)
+        # The rustfmt on PATH is the one the pinned toolchain installs, as check-rustfmt-pin.sh
+        # requires of it.
+        self.home = self.temporary / "home"
+        channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
+        toolchain = self.home / f".rustup/toolchains/{channel}-x86_64-unknown-linux-gnu/bin"
+        toolchain.mkdir(parents=True)
+        (toolchain / "rustfmt").symlink_to(self.bin / "rustfmt")
         self.stub("drop-in", DROP_IN_STUB)
         self.log = self.temporary / "hook.log"
         # Whether the fixture has a page entry that compiles the host crate, and
@@ -235,7 +272,7 @@ class PrePushLintTests(unittest.TestCase):
         return json.dumps({"packages": packages})
 
     def environment(self, page=True, status=0, sleep=0, drop_in=False, unformatted=False,
-                    agent=False, t_without_metadata=False) -> dict:
+                    agent=False, t_outcome="pass", t_cached=None, t_excerpt="", t_error="") -> dict:
         """The hook's environment: only the stubs, never this machine's toolchain.
 
         `agent` pushes as a coding agent does, whose shell says so in its environment.
@@ -250,15 +287,13 @@ class PrePushLintTests(unittest.TestCase):
             [str(self.bin), *(entry for entry in env["PATH"].split(os.pathsep)
                                if not any(os.access(Path(entry) / tool, os.X_OK)
                                           for tool in ("cargo", "rustup", "t")))])
-        env.update(HOOK_LOG=str(self.log), STUB_STATUS=str(status), STUB_SLEEP=str(sleep),
+        env.update(HOME=str(self.home), HOOK_LOG=str(self.log), STUB_STATUS=str(status), STUB_SLEEP=str(sleep),
                    STUB_METADATA=self.metadata(), STUB_FMT_STATUS="1" if unformatted else "0",
                    STUB_TARGETS=WITH_PAGE if page else HOST_ONLY)
         if drop_in:
             env["CARGO"] = str(self.bin / "drop-in")
-        if t_without_metadata:
-            env["STUB_T_WITHOUT_METADATA"] = "1"
-        root = str(getattr(self, "checkout", self.root))
-        env["STUB_JOB_METADATA"] = self.metadata().replace(root, "/src")
+        env.update(STUB_T_OUTCOME=t_outcome, STUB_T_CACHED=json.dumps(t_cached),
+                   STUB_T_EXCERPT=t_excerpt, STUB_T_ERROR=t_error)
         return env
 
     def push(self, head=None, remote_oid=None, ref="refs/heads/main", cwd=None,
@@ -427,39 +462,87 @@ class PrePushLintTests(unittest.TestCase):
                          [NATIVE_CLIPPY.replace("native", "web")])
         self.assertEqual(self.calls(), [], "the local cargo must not compile at all")
 
-    def without_cargo(self):
-        """This machine as a build server is: no cargo, and t, which builds on its nodes."""
-        (self.bin / "cargo").unlink()
+    def with_t(self, cargo=True):
+        """This machine with t installed, and t.toml's families committed; without `cargo`, as a
+        build server is, with no cargo of its own."""
+        if not cargo:
+            (self.bin / "cargo").unlink()
         self.stub("t", T_STUB)
+        self.write("t.toml", T_TOML)
+        self.base = self.commit("ci: t's families")
 
-    def test_without_a_cargo_t_names_the_packages_and_lints_them(self):
-        self.without_cargo()
-        self.write("web/src/lib.rs", LIB.format(answer=16))
-        self.commit("feat: answer 16 in the page")
+    def test_with_t_the_lint_is_ts_checks_of_the_changed_packages(self):
+        # t keys each per-package check by what that package's build reads, dependencies
+        # included, and answers a key it has seen from its cache: the lint asks t, not cargo.
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=20))
+        self.write("web/src/lib.rs", LIB.format(answer=21))
+        self.commit("feat: answers 20 and 21")
         result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY.replace("native", "web")])
-        self.assertNotIn("exec ", self.log.read_text(), "t reads the metadata itself")
-        self.assertIn("clippy and rustfmt for 1 package", result.stderr)
+        self.assertEqual(self.calls(), [
+            f"t test clippy/fixture-native clippy-{ARCH}/fixture-web --json"])
+        self.assertIn("pre-push: clippy/fixture-native passed in 61s", result.stderr)
+        self.assertIn("clippy and rustfmt for 2 packages", result.stderr)
 
-    def test_without_a_cargo_a_t_that_reads_no_metadata_reads_it_on_a_node(self):
-        self.without_cargo()
-        self.write("native/src/lib.rs", LIB.format(answer=17))
-        self.commit("feat: answer 17")
-        result = self.push(t_without_metadata=True)
+    def test_without_a_cargo_t_names_the_packages_and_lints_them(self):
+        self.with_t(cargo=False)
+        self.write("native/src/lib.rs", LIB.format(answer=16))
+        self.commit("feat: answer 16")
+        result = self.push()
         self.assertEqual(result.returncode, 0, result.stderr)
-        # The job's paths are this checkout's, so the change is named as fixture-native's.
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
-        self.assertIn("exec --no-build --fetch target/pre-push-metadata.json", self.log.read_text())
-        self.assertFalse((self.root / "target/pre-push-metadata.json").exists(), "the fetched file is removed")
+        self.assertEqual(self.calls(), ["t test clippy/fixture-native --json"])
 
-    def test_without_a_cargo_a_lint_failure_names_the_t_cargo_rerun(self):
-        self.without_cargo()
+    def test_a_check_t_answered_before_is_answered_from_its_cache(self):
+        # After a rebase onto commits that reach nothing the package's build reads, t's key is
+        # the one it already answered: the push says so and waits on nothing.
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=22))
+        self.commit("feat: answer 22")
+        result = self.push(t_cached="r0ld")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pre-push: clippy/fixture-native passed on these inputs before (t's run r0ld)",
+                      result.stderr)
+
+    def test_a_failed_t_check_refuses_the_push_with_its_diagnostics(self):
+        self.with_t()
         self.write("native/src/lib.rs", LIB.format(answer=18))
         self.commit("feat: answer 18")
-        result = self.push(status=101)
+        result = self.push(t_outcome="fail", t_excerpt="error: this let-binding has unit value")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("pre-push: clippy (native) failed - rerun: t cargo " + NATIVE_CLIPPY, result.stderr)
+        self.assertIn("pre-push: clippy (t) failed - rerun: t test clippy/fixture-native\n",
+                      result.stderr)
+        self.assertIn("clippy/fixture-native: fail - whole log: t log 5eed", result.stderr)
+        self.assertIn("error: this let-binding has unit value", result.stderr)
+        self.assertNotIn('"results"', result.stderr, "t's run document is no diagnostic")
+        self.assertIn("refusing the push", result.stderr)
+
+    def test_a_t_that_cannot_run_the_checks_refuses_the_push(self):
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=19))
+        self.commit("feat: answer 19")
+        result = self.push(t_error="cannot reach the server")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("t: cannot reach the server", result.stderr)
+        self.assertIn("refusing the push", result.stderr)
+
+    def test_a_package_no_family_lints_is_named_and_not_linted(self):
+        self.with_t()
+        self.write("fake-binding/src/lib.rs", "pub fn bind() {}\npub fn more() {}\n")
+        self.commit("feat: the binding binds more")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no clippy family of t's lints wasm-bindgen", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_cargo_named_in_cargo_lints_instead_of_t(self):
+        self.with_t()
+        self.write("native/src/lib.rs", LIB.format(answer=23))
+        self.commit("feat: answer 23")
+        result = self.push(drop_in=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls("dropin"), [NATIVE_CLIPPY])
+        self.assertEqual(self.calls(), [], "t must not be asked")
 
     def test_formatting_is_checked_here_when_the_drop_in_only_builds(self):
         self.write("web/src/lib.rs", LIB.format(answer=14))
@@ -511,156 +594,13 @@ class PrePushLintTests(unittest.TestCase):
         self.git("cherry-pick", mine)
         return main
 
-    def outlive_the_rebase_window(self):
-        """Make every pass of pushed commits older than the window a rebased push reuses it in."""
-        long_ago = time.time() - 24 * 3600
-        for entry in (self.root / ".git/pre-push-lint").glob("change-*"):
-            os.utime(entry, (long_ago, long_ago))
-
-    def test_a_retry_after_rebasing_onto_unrelated_commits_lints_nothing_again(self):
+    def test_with_a_cargo_every_push_lints_again(self):
+        # A cargo of one's own keeps its build warm; what passed is not remembered beside it.
         self.write("native/src/lib.rs", LIB.format(answer=50))
         self.commit("feat: answer 50")
-        first = self.push()
-        self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
-        self.outlive_the_rebase_window()
-        main = self.rebase({"web/src/lib.rs": LIB.format(answer=51), "docs/notes.md": "words\n"})
-        retry = self.push(remote_oid=main)
-        self.assertEqual(retry.returncode, 0, retry.stderr)
-        self.assertEqual(self.calls(), [], "nothing the lint reads changed")
-        self.assertNotIn("fmt --check", self.log.read_text() if self.log.exists() else "")
-        self.assertIn("clippy (native) passed before on the same inputs", retry.stderr)
-
-    def test_a_retry_after_a_dependency_changed_lints_again(self):
-        self.write("web/src/lib.rs", LIB.format(answer=52))
-        self.commit("feat: answer 52 in the page")
         self.assertEqual(self.push().returncode, 0)
-        self.outlive_the_rebase_window()
-        main = self.rebase({"fake-binding/src/lib.rs": "pub fn bind() {}\npub fn more() {}\n"})
-        retry = self.push(remote_oid=main)
-        self.assertEqual(retry.returncode, 0, retry.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY.replace("native", "web")])
-        # Formatting reads only the pushed package, which is as it was.
-        self.assertNotIn("fmt --check", self.log.read_text())
-
-    def test_a_rebase_onto_commits_that_do_not_reach_the_package_reuses_its_pass(self):
-        # Main takes an app and a dependency of another member, which the pushed
-        # package never reads: the push is the one that passed. Relinting it
-        # here takes minutes, and main gains a commit every minute or two.
-        self.write("Cargo.lock", LOCKED_SERDE)
-        self.write("web/Cargo.toml", PAGE_WITH_SERDE)
-        self.commit("chore: the page crate reads serde")
-        self.base = self.head()
-        self.write("native/src/lib.rs", LIB.format(answer=70))
-        self.commit("feat: answer 70")
-        first = self.push()
-        self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
-        self.outlive_the_rebase_window()
-        main = self.rebase({
-            "Cargo.toml": WORKSPACE.replace(
-                'members = ["native", "web", "fake-binding"]',
-                'members = ["native", "web", "fake-binding", "extra"]'),
-            "Cargo.lock": LOCKED_SERDE.replace('name = "serde"\nversion = "1.0.0"',
-                                               'name = "serde"\nversion = "1.0.1"'),
-            "extra/Cargo.toml": CRATE.format(name="extra"),
-            "extra/src/lib.rs": "pub fn extra() {}\n",
-        })
-        retry = self.push(remote_oid=main)
-        self.assertEqual(retry.returncode, 0, retry.stderr)
-        self.assertEqual(self.calls(), [], "nothing the native crate builds changed")
-        self.assertIn("passed before on the same inputs", retry.stderr)
-
-    def test_a_retry_after_a_dependency_the_package_uses_changed_lints_again(self):
-        # A resolved dependency of the pushed package moved: the code it
-        # compiles against is not the code the earlier pass built.
-        self.write("Cargo.lock", LOCKED_SERDE)
-        self.write("web/Cargo.toml", PAGE_WITH_SERDE)
-        self.commit("chore: the page crate reads serde")
-        self.base = self.head()
-        self.write("web/src/lib.rs", LIB.format(answer=72))
-        self.commit("feat: answer 72 in the page")
-        self.assertEqual(self.push().returncode, 0)
-        self.outlive_the_rebase_window()
-        main = self.rebase({"Cargo.lock": LOCKED_SERDE.replace(
-            'name = "serde"\nversion = "1.0.0"', 'name = "serde"\nversion = "1.0.1"')})
-        retry = self.push(remote_oid=main)
-        self.assertEqual(retry.returncode, 0, retry.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY.replace("native", "web")])
-
-    def test_a_retry_after_a_file_the_build_includes_changed_lints_again(self):
-        self.write("docs/answer.txt", "42\n")
-        self.commit("docs: the answer")
-        self.base = self.head()
-        self.write("native/src/lib.rs", 'pub const ANSWER: &str = include_str!("../../docs/answer.txt");\n')
-        self.commit("feat: answer from the docs")
-        self.assertEqual(self.push().returncode, 0)
-        self.outlive_the_rebase_window()
-        main = self.rebase({"docs/answer.txt": "43\n"})
-        retry = self.push(remote_oid=main)
-        self.assertEqual(retry.returncode, 0, retry.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
-
-    def test_commits_that_passed_are_pushed_again_unlinted_after_a_rebase_that_left_them_as_they_were(self):
-        # Main gained a change to a file the lint reads, so the inputs are not the ones that
-        # passed; the commits are. A relint here takes minutes, and main moves again meanwhile.
-        self.write("docs/answer.txt", "42\n")
-        self.commit("docs: the answer")
-        self.base = self.head()
-        self.write("native/src/lib.rs", 'pub const ANSWER: &str = include_str!("../../docs/answer.txt");\n')
-        self.commit("feat: answer from the docs")
-        self.assertEqual(self.push().returncode, 0)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
-        main = self.rebase({"docs/answer.txt": "43\n"})
-        retry = self.push(remote_oid=main)
-        self.assertEqual(retry.returncode, 0, retry.stderr)
-        self.assertEqual(self.calls(), [], retry.stderr)
-        self.assertIn("passed the lint 0 min ago and are pushed as they were", retry.stderr)
-        # A second rebase is the same push again, and so is every later one inside the window.
-        self.base = main
-        again = self.push(remote_oid=self.rebase({"docs/answer.txt": "44\n"}))
-        self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertEqual(self.calls(), [])
-
-    def test_commits_changed_since_they_passed_are_linted_again(self):
-        self.write("native/src/lib.rs", LIB.format(answer=60))
-        self.commit("feat: answer 60")
-        self.assertEqual(self.push().returncode, 0)
-        # Amended, as resolving a rebase conflict does: no longer the commit that passed.
-        self.write("native/src/lib.rs", LIB.format(answer=61))
-        self.git("commit", "-qa", "--amend", "--no-edit")
-        retry = self.push()
-        self.assertEqual(retry.returncode, 0, retry.stderr)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
-        # One more commit on top is another push too.
-        self.write("native/src/more.rs", "pub fn more() {}\n")
-        self.commit("feat: more")
-        self.assertEqual(self.push().returncode, 0)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
-
-    def test_commits_that_failed_are_linted_again_however_soon(self):
-        self.write("native/src/lib.rs", LIB.format(answer=62))
-        self.commit("feat: answer 62")
-        self.assertEqual(self.push(status=1).returncode, 1)
         main = self.rebase({"docs/notes.md": "words\n"})
-        retry = self.push(remote_oid=main, status=1)
-        self.assertEqual(retry.returncode, 1)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
-
-    def test_a_failed_lint_is_not_remembered(self):
-        self.write("native/src/lib.rs", LIB.format(answer=53))
-        self.commit("feat: answer 53")
-        self.assertEqual(self.push(status=1).returncode, 1)
-        retry = self.push(status=1)
-        self.assertEqual(retry.returncode, 1)
-        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
-
-    def test_uncommitted_changes_are_linted_again(self):
-        self.write("native/src/lib.rs", LIB.format(answer=54))
-        self.commit("feat: answer 54")
-        self.assertEqual(self.push().returncode, 0)
-        self.write("native/src/extra.rs", "pub fn extra() {}\n")
-        retry = self.push()
+        retry = self.push(remote_oid=main)
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(self.calls(), [NATIVE_CLIPPY])
 
@@ -674,7 +614,7 @@ class PrePushLintTests(unittest.TestCase):
             capture_output=True, text=True, env=self.environment(), timeout=HANG_BOUND,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        native = (kept / "1-clippy-native.log").read_text()
+        native = (kept / "2-clippy-native.log").read_text()
         self.assertRegex(native, r"^\$ cargo clippy --locked -p fixture-native .*\n# exit 0 after \d+s\n")
         self.assertIn("unreachable value in a page build", native)
 

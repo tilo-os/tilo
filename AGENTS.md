@@ -141,10 +141,10 @@ ask whether the larger thing could be done a better way; if it could, say so bef
 - Commit small and push straight to `main` (`git pull --rebase origin main`,
   then `git push origin HEAD:main`). There is no merge queue and no
   integration branch. The pre-commit hook is fast and reads only what the
-  commit stages; the pre-push hook lints the packages the push changes, through
-  the `cargo` on your PATH or `$CARGO` (any cargo drop-in, one that builds on
-  another machine included). Neither covers the policy suite or a package's
-  tests: those are t's, above.
+  commit stages; the pre-push hook lints the packages the push changes through
+  t's per-package clippy checks, answered from t's cache when a rebase changed
+  nothing they read (or `$CARGO`, any cargo drop-in, when set). Neither covers
+  the policy suite or a package's tests: those are t's, above.
 - No tests while iterating. Run the focused tests once, when the work is done,
   then push.
 - A red `main` is fixed by the next commit, never by a revert or a hold.
