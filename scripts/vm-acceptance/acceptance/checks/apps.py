@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError, wait_until
+from ..vm import VmError, opens, wait_until
 
 AREA = "apps"
 
@@ -139,7 +139,7 @@ def _procs(ctx) -> dict[int, Proc]:
     return parse_procs(ctx.vm.exec(_PROC_SCRIPT))
 
 
-def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign: bool,
+def _lifecycle(ctx, res, app_id: str, label: str, expect_foreign: bool,
                match=None):
     """Open, verify first frame / placement / focus, close, verify exit."""
     ctx.reset()
@@ -147,7 +147,7 @@ def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign:
     focused_display = core.focused_display(st0)
     before = _procs(ctx)
     ctx.facts[f"groups_before:{label}"] = {g["id"] for g in core.all_groups(st0)}
-    group, t_group = ctx.open_app(app_id, provider)
+    group, t_group = ctx.open_app(app_id)
     gid = group["id"]
     res.metrics["seconds_to_window"] = t_group
     started = time.monotonic()
@@ -236,7 +236,7 @@ def close_group(ctx, gid, before_close=None) -> None:
     if core.group_by_id(st, gid) is None:
         return
     try:
-        ctx.vm.invoke(core.SESSION, core.CHROME_CLOSE_WINDOW, {"group": str(gid)})
+        ctx.vm.invoke(core.SESSION, *core.CHROME_CLOSE_WINDOW, {"group": str(gid)})
     except VmError as exc:
         if "unknown_action" not in str(exc) or core.group_by_id(ctx.state(), gid) is not None:
             raise
@@ -320,7 +320,7 @@ def _close(ctx, res, label, gid, app_procs):
 
 def _app_check(app_id, label, foreign=True):
     def body(ctx, res):
-        gid, procs = _lifecycle(ctx, res, app_id, "applications", label, foreign)
+        gid, procs = _lifecycle(ctx, res, app_id, label, foreign)
         if foreign:
             expect(procs, f"no process of {label} observed while its window was open")
         _close(ctx, res, label, gid, procs)
@@ -333,7 +333,7 @@ SHELL_READY_S = core.TERMINAL_SHELL_S
 @check("A01", AREA, "Terminal opens with a live shell and closes cleanly")
 def terminal(ctx, res):
     shells = core.terminal_shells(ctx)
-    gid, procs = _lifecycle(ctx, res, "so.tilo.terminal", "applications", "A01-terminal", False)
+    gid, procs = _lifecycle(ctx, res, "so.tilo.terminal", "A01-terminal", False)
     ready = core.wait_new_terminal_shell(ctx, shells, SHELL_READY_S)
     res.metrics["seconds_to_shell"] = ready
     if ready is None:
@@ -375,10 +375,10 @@ check("A05", AREA, "Store opens, draws its first frame, and exits on close")(
 
 @check("A06", AREA, "A host Wayland app (foot) opens in a window and exits on close")
 def host_wayland(ctx, res):
-    ids = [a["id"] for a in ctx.vm.actions("foot") if a["provider"] == "applications"]
+    ids = [a["app_id"] for a in ctx.vm.actions("foot") if opens(a, a["app_id"])]
     if "host:foot" not in ids:
         raise Unobservable(f"no machine Wayland app to open: `foot` is not in applications ({ids})")
-    gid, procs = _lifecycle(ctx, res, "host:foot", "applications", "A06-foot", True,
+    gid, procs = _lifecycle(ctx, res, "host:foot", "A06-foot", True,
                                      match=lambda f: "foot" in (f.get("app_id") or ""))
     expect(any("foot" in c.cmd for c in procs.values()),
            f"no foot process observed ({[c.cmd for c in procs.values()][:4]})")
@@ -388,8 +388,8 @@ def host_wayland(ctx, res):
 @check("A07", AREA, "An X11 app opens through Xwayland and exits on close")
 def x11(ctx, res):
     def x11_clients():
-        return {a["id"]: a for a in ctx.vm.actions("xterm") + ctx.vm.actions("xeyes")
-                if a["provider"] == "applications"}
+        return {a["app_id"]: a for a in ctx.vm.actions("xterm") + ctx.vm.actions("xeyes")
+                if opens(a, a["app_id"])}
 
     cands = x11_clients()
     if not cands and not ctx.facts.get("apps_installed"):
@@ -405,14 +405,14 @@ def x11(ctx, res):
     app = next((i for i in ("host:xterm", "host:org.xfce.xterm", "host:xeyes") if i in cands),
                None) or next(iter(cands), None)
     if app is None:
-        wine = [a["id"] for a in ctx.vm.actions("Wine File") if a["provider"] == "applications"]
+        wine = [a["app_id"] for a in ctx.vm.actions("Wine File") if opens(a, a["app_id"])]
         app = wine[0] if wine else None
     if app is None:
         raise Unobservable("no X11 app available: xterm/xeyes not installable and no Wine File entry")
     res.metrics["x11_app"] = app
     key = app.removeprefix("host:").split("-")[-1].lower()
     try:
-        gid, procs = _lifecycle(ctx, res, app, "applications", "A07-x11", True,
+        gid, procs = _lifecycle(ctx, res, app, "A07-x11", True,
                                          match=lambda f: key in (f.get("app_id") or "").lower()
                                          or "x11" in (f.get("app_id") or "").lower()
                                          or f.get("app_id") not in (None, "", "so.tilo.settings"))

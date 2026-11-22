@@ -254,7 +254,7 @@ def stuck_modifiers(ctx, res):
             for modifier in ("shift", "ctrl", "alt", "super"):
                 ctx.vm.input("hold", modifier)
                 held.append(modifier)
-                ctx.vm.invoke(core.SESSION, core.SESSION_LOCK)
+                ctx.vm.invoke(core.SESSION, *core.SESSION_LOCK)
                 ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, f"locked with {modifier} down")
                 # The key comes up behind the lock: the release reaches the compositor before
                 # the passcode typed on the same keyboard.

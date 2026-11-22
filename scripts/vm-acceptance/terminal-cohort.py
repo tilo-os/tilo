@@ -9,33 +9,34 @@ import time
 import uuid
 from pathlib import Path
 
-from acceptance.vm import TiloVm, first_json, wait_until
-from acceptance.action_jobs import require, succeeded, invoke
+from acceptance.vm import TiloVm, address, first_json, opens, wait_until
+from acceptance.action_jobs import require, invoke
 
 APP = "so.tilo.terminal"
 
 
 def identity(row):
-    return tuple(row.get(k) for k in ("application", "workspace", "record", "resource"))
+    """What an app's row belongs to: its app, and the resource the action is on."""
+    return row.get("app_id"), row["resource"]["id"]
 
 
 def terminal_actions(vm):
-    # App action contracts are machine discovery, not human palette suggestions.
-    return vm.actions(APP, programmatic=True)
+    return vm.actions(APP)
 
 
 def terminal_rows(rows):
-    return [r for r in rows if r.get("application") == APP
-            and r.get("semantic_identity") == {"kind": "terminal.session", "key": "terminal.session"}]
+    return [r for r in rows if r.get("app_id") == APP
+            and r["action"].get("semantic_identity") == {"kind": "terminal.session", "key": "terminal.session"}]
 
 
 def select(rows, operation, bound=None):
-    found = [r for r in terminal_rows(rows) if r.get("operation") == operation
+    found = [r for r in terminal_rows(rows) if address(r)[1] == operation
              and (bound is None or identity(r) == bound)]
     require(len(found) == 1, f"expected one bound Terminal {operation}, got {len(found)}")
     row = found[0]
-    require(row["provider"] == "app-actions" and all(identity(row)), "incomplete public binding")
-    require(row.get("contract", {}).get("availability", {}).get("state") == "available",
+    require(row["provider"].startswith(("application:", "launch:")) and all(identity(row)),
+            "incomplete public binding")
+    require((row["action"].get("contract") or {}).get("availability", {}).get("state") == "available",
             f"Terminal {operation} unavailable")
     return row
 
@@ -85,9 +86,8 @@ def run(args):
     require(not before["processes"], "Terminal already open; close its own declared tab before fresh proof")
     rows = terminal_actions(vm)
     require(not terminal_rows(rows), "stale Terminal binding present before fresh launch")
-    opens = [r for r in vm.actions(APP) if r["provider"] == "applications" and r["id"] == APP]
-    require(len(opens) == 1, "normal Terminal Open unavailable")
-    vm.invoke("applications", APP)
+    require(len([r for r in vm.actions(APP) if opens(r, APP)]) == 1, "normal Terminal Open unavailable")
+    vm.open(APP)
     rows = wait_until(lambda: (r if terminal_rows(r := terminal_actions(vm)) else None), 45, interval=0.5)
     require(rows is not None, "Terminal resource not published")
     inspect = select(rows, "inspect-session")
@@ -101,7 +101,7 @@ def run(args):
     marker = "TILO_TERMINAL_COHORT_" + uuid.uuid4().hex.upper()
     command = "printf '" + marker + "\\n'"
     run_row = select(terminal_actions(vm), "run", bound)
-    require(run_row["contract"]["confirmation"]["mode"] == "confirm", "Run confirmation contract changed")
+    require(run_row["action"]["contract"]["confirmation"]["mode"] == "confirm", "Run confirmation contract changed")
     invoke(vm, run_row, {"command": command, "confirm": True}, out, "run")
     deadline = time.monotonic() + 30
     while True:

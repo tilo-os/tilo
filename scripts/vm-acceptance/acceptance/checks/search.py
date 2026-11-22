@@ -9,7 +9,7 @@ import time
 
 from .. import core
 from ..core import CheckFailed, check, expect
-from ..vm import VmError, wait_until
+from ..vm import VmError, address, label, opens, wait_until
 
 AREA = "search"
 
@@ -30,10 +30,10 @@ def _open_palette(ctx):
 
 
 def _app_title(ctx, query, app):
-    """The title the desktop gives `app`, read from its applications row."""
+    """The title the desktop gives `app`, read from the workspace's open row for it."""
     rows = ctx.vm.actions(query)
-    row = next((a for a in rows if a["provider"] == "applications" and a["id"] == app), None)
-    return row and row["title"], [(a["provider"], a["id"]) for a in rows[:5]]
+    row = next((a for a in rows if opens(a, app)), None)
+    return row and row["resource"]["label"], [(a["provider"], *address(a)) for a in rows[:5]]
 
 
 def _palette_rows(ctx, query, timeout: float = 6.0):
@@ -140,15 +140,13 @@ def windows(ctx, res):
 
     def window_rows():
         got["results"] = ctx.vm.actions("Terminal")
-        return [a for a in got["results"]
-                if a["provider"] == core.SESSION and a.get("kind") == "Actions"
-                and str(a["id"]).startswith("desktop:tab:")
-                and str(a["id"]).endswith("\x1ffocus")]
+        return [a for a in got["results"] if a["provider"] == core.SESSION
+                and address(a)[0].startswith("desktop:tab:") and address(a)[1] == "focus"]
 
     wins = wait_until(window_rows, 5, 0.3) or []
     results = got["results"]
-    res.metrics["window_results"] = [(a["provider"], a["id"], a["title"]) for a in wins[:5]]
-    res.metrics["all"] = [(a["provider"], a["id"]) for a in results[:10]]
+    res.metrics["window_results"] = [(a["provider"], *address(a), label(a)) for a in wins[:5]]
+    res.metrics["all"] = [(a["provider"], *address(a)) for a in results[:10]]
     expect(wins, "search for 'Terminal' offers only close actions for the open window, "
                  "no result that switches to it")
 
@@ -156,9 +154,9 @@ def windows(ctx, res):
 @check("S06", AREA, "Actions are findable ('overview' finds Show workspace overview)")
 def actions(ctx, res):
     results = ctx.vm.actions("overview")
-    head = [(a["provider"], a["id"]) for a in results[:3]]
+    head = [(a["provider"], *address(a)) for a in results[:3]]
     res.metrics["top"] = head
-    expect((core.SESSION, core.CHROME_OVERVIEW) in head,
+    expect((core.SESSION, *core.CHROME_OVERVIEW) in head,
            f"the overview action is not in the top 3: {head}")
 
 
@@ -170,13 +168,13 @@ def files(ctx, res):
 
     def hit():
         for a in ctx.vm.actions(needle):
-            if needle in (a["title"] + a["id"] + str(a.get("subtitle", ""))):
+            if needle in label(a) + "#".join(address(a)) + str(a["resource"].get("label")):
                 return a
         return None
 
     found = wait_until(hit, 45, 3)
     res.metrics["seconds_to_indexed"] = round(time.monotonic() - started, 1) if found else None
-    res.metrics["hit"] = found and (found["provider"], found["id"], found["title"])
+    res.metrics["hit"] = found and (found["provider"], *address(found), label(found))
     ctx.vm.exec(f'rm -f "$HOME/Documents/{needle}.txt"', check=False)
     expect(found, f"'{needle}.txt' in ~/Documents not found by search within 45 s")
 
@@ -187,7 +185,7 @@ def activity(ctx, res):
     st = ctx.state()
     before = {g["id"] for g in core.all_groups(st)}
     workspace = str(core.active_workspace(st)["id"])
-    ctx.vm.invoke(core.SESSION, core.CHROME_ACTIVITY, {"workspace": workspace, "view": "catch-up"})
+    ctx.vm.invoke(core.SESSION, *core.CHROME_ACTIVITY, {"workspace": workspace, "view": "catch-up"})
     st = ctx.wait_state(lambda s: any(g["id"] not in before for g in core.all_groups(s)), 10,
                         "the activity window open")
     tile = next(g for g in core.all_groups(st) if g["id"] not in before)
@@ -212,7 +210,7 @@ def activity(ctx, res):
     res.metrics["center_pixels"] = stats
     expect(stats["stddev"] > 0.03, f"the activity view's centre is blank (stddev {stats['stddev']})")
     try:
-        ctx.vm.invoke(core.SESSION, core.CHROME_CLOSE_ACTIVITY, {"workspace": workspace})
+        ctx.vm.invoke(core.SESSION, *core.CHROME_CLOSE_ACTIVITY, {"workspace": workspace})
     except VmError as exc:
         raise CheckFailed(f"the activity window cannot be closed: {exc.reason()}") from exc
     ctx.wait_state(lambda s: core.group_by_id(s, tile["id"]) is None, 5, "activity window closed")

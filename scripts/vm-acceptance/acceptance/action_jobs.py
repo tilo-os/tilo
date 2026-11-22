@@ -1,5 +1,5 @@
 """Tracked semantic jobs through the existing tilo-vm control transport."""
-from .vm import VmError, wait_until
+from .vm import Invoked, VmError, completed, ended, wait_until
 import json
 
 def require(ok, message):
@@ -7,35 +7,25 @@ def require(ok, message):
         raise VmError(message)
 
 
-def succeeded(reply):
-    update = reply.get("receipt", {}).get("update", {})
-    require(update.get("state") == "succeeded", "action did not succeed")
-    return update.get("output", {}).get("value")
+def succeeded(status):
+    """The value an invocation that completed answered with; any other status raises."""
+    return completed(status).get("value")
 
 
 class PendingJob:
     """One admitted invocation; permits a portal conversation before terminal polling."""
-    def __init__(self, vm, receipt, out, name):
-        self.vm, self.receipt, self.out, self.name = vm, receipt, out, name
-        self.invocation = receipt.get("receipt", {}).get("invocation")
+    def __init__(self, vm, invoked: Invoked, out, name):
+        self.vm, self.invocation, self.out, self.name = vm, invoked.invocation, out, name
         require(bool(self.invocation), "missing invocation identity")
 
-    def poll(self):
-        update = self.vm.observe(self.invocation)
-        reply = {"receipt": {"invocation": self.invocation, "update": update}}
-        require(update.get("invocation") == self.invocation, "action status changed invocation identity")
-        require(update.get("state") in ("accepted", "running", "succeeded", "failed", "cancelled"),
-                "unobservable action status")
-        return reply
-
     def pending(self):
-        require(self.poll()["receipt"]["update"]["state"] in ("accepted", "running"),
+        require(not ended(self.vm.observe(self.invocation)),
                 "original action ended before chooser completion")
 
     def finish(self, timeout=45):
         def probe():
-            reply = self.poll()
-            return reply if reply["receipt"]["update"]["state"] in ("succeeded", "failed", "cancelled") else None
+            status = self.vm.observe(self.invocation)
+            return status if ended(status) else None
         final = wait_until(probe, timeout, interval=0.5)
         require(final is not None, "action did not reach authoritative terminal status")
         (self.out / f"{self.name}-status.json").write_text(json.dumps(final, indent=2))
@@ -43,16 +33,16 @@ class PendingJob:
 
 
 def begin(vm, row, args, out, name):
-    receipt = vm.invoke(row["provider"], row["id"], args)
-    (out / f"{name}-invoke.json").write_text(json.dumps(receipt, indent=2))
-    return PendingJob(vm, receipt, out, name)
+    invoked = vm.invoke_row(row, args)
+    (out / f"{name}-invoke.json").write_text(json.dumps(invoked._asdict(), indent=2))
+    return PendingJob(vm, invoked, out, name)
 
 
 def invoke(vm, row, args, out, name, timeout=45, require_job=True):
     if require_job:
         return begin(vm, row, args, out, name).finish(timeout)
-    receipt = vm.invoke(row["provider"], row["id"], args)
-    (out / f"{name}-invoke.json").write_text(json.dumps(receipt, indent=2))
-    if receipt["receipt"]["update"]["state"] != "accepted":
-        return succeeded(receipt)
-    return PendingJob(vm, receipt, out, name).finish(timeout)
+    invoked = vm.invoke_row(row, args)
+    (out / f"{name}-invoke.json").write_text(json.dumps(invoked._asdict(), indent=2))
+    if ended(invoked.status):
+        return succeeded(invoked.status)
+    return PendingJob(vm, invoked, out, name).finish(timeout)

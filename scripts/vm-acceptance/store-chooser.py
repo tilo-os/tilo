@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 
 from acceptance.action_jobs import begin, invoke, require
-from acceptance.vm import TiloVm, VmError, first_json, wait_until
+from acceptance.vm import TiloVm, VmError, address, first_json, wait_until
 
 spec = importlib.util.spec_from_file_location("app_cohort", Path(__file__).with_name("app-cohort.py"))
 app = importlib.util.module_from_spec(spec)
@@ -43,8 +43,8 @@ def picker_rows(vm):
 def request(rows):
     ids = set()
     for row in rows:
-        operation, separator, identity = row.get("id", "").partition("@")
-        require(separator and operation in ("inspect", "select", "navigate", "up", "confirm", "cancel",
+        identity, operation = address(row)
+        require(operation in ("inspect", "select", "navigate", "up", "confirm", "cancel",
                 "filename", "replace", "keep-existing", "next-filter"), "invalid chooser action identity")
         try:
             require(str(uuid.UUID(identity)) == identity, "noncanonical chooser request identity")
@@ -71,7 +71,7 @@ class Chooser:
         workspace(self.vm, self.workspace_id)
         rows = picker_rows(self.vm)
         require(request(rows) == self.identity, "chooser request replaced")
-        found = [r for r in rows if r["id"] == f"{operation}@{self.identity}"]
+        found = [r for r in rows if address(r) == (self.identity, operation)]
         require(len(found) == 1, "declared chooser operation unavailable or ambiguous")
         self.sequence += 1
         value = invoke(self.vm, found[0], args or {}, self.out, f"picker-{self.sequence}-{operation}")
@@ -154,8 +154,8 @@ def opened_subject(vm, window):
             return None
         tab = candidates[0]
         rows = [r for r in app.catalog(vm, window["package_id"])
-                if r.get("workspace") == tab[0] and r.get("record")]
-        records = {r["record"] for r in rows}
+                if app.binding(r)[1] == tab[0] and not r.get("parent_resource")]
+        records = {r["resource"]["id"] for r in rows}
         require(len(records) <= 1, "adopted application published ambiguous records")
         return (tab, next(iter(records))) if records else None
 

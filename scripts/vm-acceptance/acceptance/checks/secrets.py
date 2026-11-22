@@ -35,7 +35,7 @@ import re
 import shlex
 
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError, first_json, invoked, listed, wait_until
+from ..vm import VmError, address, first_json, invoked, listed, wait_until
 from .resources import SIGN_OUT, dev_account, sign_in
 
 AREA = "secrets"
@@ -49,10 +49,12 @@ OWNERSHIP_WARNINGS = (MLS_UNAVAILABLE, "channel encryption unavailable", "MLS ke
 SESSION_LOG = ".local/state/tilo/session-logs/latest.log"
 SECRET_LEN = 32
 
-# As root: the uid's compositor, and what a process of that user sees of its executable.
+# As root: the uid's compositor, the process running the session binary (the login wrapper
+# that starts it bears the same name), and what a process of that user sees of its executable.
 # The exit status of `ls` is what matters: 0 would mean the kernel shows the link.
 DUMPABLE = r"""
-pid=$(pgrep -u __UID__ -x tilo-session | head -1)
+pid=$(for p in $(pgrep -u __UID__ -x tilo-session); do
+  [ "$(readlink "/proc/$p/exe")" = /usr/bin/tilo-session ] && echo "$p"; done | head -1)
 [ -n "$pid" ] || { echo "NO-COMPOSITOR"; exit 0; }
 echo "PID=$pid"
 out=$(runuser -u "$(id -nu __UID__)" -- ls -l "/proc/$pid/exe" 2>&1); echo "LS-EXIT=$?"
@@ -350,7 +352,7 @@ def onboarding_rows(ctx, user: str, why: dict | None = None) -> list[dict] | Non
         if why is not None:
             why["last"] = f"{type(exc).__name__}: {str(exc)[:400]}"
         return None
-    return [a for a in rows if a.get("application") == SETUP]
+    return [a for a in rows if a["app_id"] == SETUP]
 
 
 def next_first_use_step(offered: set[str], acknowledged: set[str]):
@@ -376,7 +378,7 @@ def go_through_first_use(ctx, user: str) -> list[str]:
                             else None, 30, interval=1.0)
         if listed is None:
             raise Unobservable(f"{user}'s control socket does not list actions: {why.get('last')}")
-        rows = {r.get("operation"): r for r in listed[0] if r.get("operation")}
+        rows = {address(r)[1]: r for r in listed[0]}
         if not rows:
             return done
         step, args = next_first_use_step(set(rows), acknowledged)
@@ -384,8 +386,8 @@ def go_through_first_use(ctx, user: str) -> list[str]:
             raise CheckFailed(f"first use offers nothing this check knows how to go forward with: "
                               f"{sorted(rows)} (after {done})")
         row = rows[step]
-        out = invoked(asking(ctx, user), row["provider"], row["id"], args or None)
-        ctx.write(f"C02-first-use-{len(done):02}-{step}.txt", json.dumps(out, indent=2))
+        out = invoked(asking(ctx, user), row["provider"], *address(row), args or None)
+        ctx.write(f"C02-first-use-{len(done):02}-{step}.txt", json.dumps(out._asdict(), indent=2))
         if step in ACKNOWLEDGE:
             acknowledged.add(step)
         done.append(step)

@@ -33,7 +33,7 @@ from .. import core
 from ..action_jobs import PendingJob
 from ..core import CheckFailed, Unobservable, check, expect
 from ..sheets import ALLOW_ALWAYS, ALLOW_ONCE, SHEET_S, answer_sheet, no_sheet, portal_dialog
-from ..vm import VmError, wait_until
+from ..vm import VmError, address, completed, ended, wait_until
 
 AREA = "agents-e2e"
 TERMINAL = "so.tilo.terminal"
@@ -53,28 +53,23 @@ SHELL_S = 120
 REPLY_S = 45
 # The guest's files root and the trees in it (tilo_paths::workspace_tree).
 GUEST_TREES = "/var/workspace/.workspaces"
-# The shell's own actions: an action's id is `resource\x1faction`.
-SESSION = "so.tilo.session"
-NEW_WORKSPACE = "desktop:chrome\x1fnew-workspace"
-SWITCH_WORKSPACE = "desktop:chrome\x1fswitch-workspace"
 
 
-def invoke(ctx, provider: str, action_id: str, args: dict | None = None, *, confirmed: bool = False,
-           name: str = "invoke", timeout: float = 60):
-    """Invoke an action as the person does, `confirmed` when they confirm it as they ask, and
-    follow it to its end: its output's value."""
+def invoke(ctx, provider: str, resource: str, action: str, args: dict | None = None, *,
+           confirmed: bool = False, name: str = "invoke", timeout: float = 60):
+    """Invoke `resource`'s `action` as the person does, `confirmed` when they confirm it as they
+    ask, and follow it to its end: its output's value."""
     (ctx.out / "data").mkdir(parents=True, exist_ok=True)
     try:
-        answer = ctx.vm.invoke(provider, action_id, args or {}, confirmed=confirmed)
+        invoked = ctx.vm.invoke(provider, resource, action, args or {}, confirmed=confirmed)
     except VmError as exc:
-        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} was refused: {exc}") from exc
-    update = answer["receipt"]["update"]
-    if update["state"] == "succeeded":
-        return (update.get("output") or {}).get("value")
-    if update["state"] != "accepted":
-        raise CheckFailed(f"{name}: {action_id.split(chr(31))[-1]} ended {update['state']}: "
-                          f"{str(update)[:300]}")
-    return PendingJob(ctx.vm, answer, ctx.out / "data", name).finish(timeout)
+        raise CheckFailed(f"{name}: {action} was refused: {exc}") from exc
+    if ended(invoked.status):
+        if "Completed" not in invoked.status:
+            raise CheckFailed(f"{name}: {action} ended {next(iter(invoked.status))}: "
+                              f"{str(invoked.status)[:300]}")
+        return completed(invoked.status).get("value")
+    return PendingJob(ctx.vm, invoked, ctx.out / "data", name).finish(timeout)
 
 
 # -- the shell ---------------------------------------------------------------------------
@@ -90,7 +85,8 @@ def held_here(state: dict, workspace_id) -> bool:
 
 def create_workspace(ctx, name: str) -> dict:
     before = {w["id"] for w in workspaces(ctx)}
-    invoke(ctx, SESSION, NEW_WORKSPACE, {"name": name}, name=f"new-workspace-{name.split()[0].lower()}")
+    invoke(ctx, core.SESSION, *core.CHROME_NEW_WORKSPACE, {"name": name},
+           name=f"new-workspace-{name.split()[0].lower()}")
     st = ctx.wait_state(lambda s: [w for w in s["workspace_tree"]["workspaces"] if w["id"] not in before],
                         15, f"the workspace {name}")
     made = next(w for w in st["workspace_tree"]["workspaces"] if w["id"] not in before)
@@ -103,7 +99,8 @@ def select_workspace(ctx, workspace: dict) -> None:
     core.keep_awake(ctx)
     if ctx.state()["workspace_tree"]["active"] == workspace["id"]:
         return
-    invoke(ctx, SESSION, SWITCH_WORKSPACE, {"workspace": str(workspace["id"])}, name="switch-workspace")
+    invoke(ctx, core.SESSION, *core.CHROME_SWITCH_WORKSPACE, {"workspace": str(workspace["id"])},
+           name="switch-workspace")
     ctx.wait_state(lambda s: s["workspace_tree"]["active"] == workspace["id"], 10,
                    f"workspace {workspace.get('name', workspace['id'])} in front")
 
@@ -112,13 +109,20 @@ def select_workspace(ctx, workspace: dict) -> None:
 
 
 def identity(row: dict) -> tuple:
-    return tuple(row.get(k) for k in ("application", "workspace", "record", "resource"))
+    """What an app's row belongs to: its app, and the resource the action is on."""
+    return row.get("app_id"), row["resource"]["id"]
+
+
+def listing_row(row: dict) -> dict:
+    """What a listed row names, for a failure to say: its provider, app, resource and action."""
+    return {"provider": row["provider"], "app_id": row.get("app_id"), "resource": row["resource"],
+            "action": address(row), "parent_resource": row.get("parent_resource")}
 
 
 def terminal_rows(ctx) -> list[dict]:
-    return [r for r in ctx.vm.actions(TERMINAL, programmatic=True)
-            if r.get("application") == TERMINAL
-            and (r.get("semantic_identity") or {}).get("kind") == "terminal.session"]
+    return [r for r in ctx.vm.actions(TERMINAL)
+            if r.get("app_id") == TERMINAL
+            and (r["action"].get("semantic_identity") or {}).get("kind") == "terminal.session"]
 
 
 class Terminal:
@@ -133,13 +137,13 @@ class Terminal:
         resource's generic `read` beside its own `read-screen`, and the first named is meant."""
         rows = [r for r in terminal_rows(self.ctx) if identity(r) == self.bound]
         for operation in operations:
-            found = [r for r in rows if r.get("operation") == operation]
+            found = [r for r in rows if address(r)[1] == operation]
             if len(found) > 1:
                 raise CheckFailed(f"{self.name}: expected one Terminal {operation} action, got {len(found)}")
             if found:
                 return found[0]
         raise CheckFailed(f"{self.name}: expected a Terminal {'/'.join(operations)} action, got none of "
-                          f"{sorted({str(r.get('operation')) for r in rows})}")
+                          f"{sorted({address(r)[1] for r in rows})}")
 
     def call(self, operations, args: dict | None = None, timeout: float = 60):
         operations = (operations,) if isinstance(operations, str) else operations
@@ -150,7 +154,7 @@ class Terminal:
         args = dict(args or {})
         confirmed = bool(args.pop("confirm", False))
         row = self.row(*operations)
-        return invoke(self.ctx, row["provider"], row["id"], args, confirmed=confirmed, name=name,
+        return invoke(self.ctx, row["provider"], *address(row), args, confirmed=confirmed, name=name,
                       timeout=timeout)
 
     def inspect(self) -> dict:
@@ -627,19 +631,20 @@ def person_note(ctx, env: dict, title: str) -> None:
 
     # The shell lists the apps of the workspace in front: its Notes is the one Notes listed.
     def offered():
-        rows = [r for r in ctx.vm.actions(NOTES, programmatic=True)
-                if r.get("application") == NOTES and r.get("operation") == "new-note"]
+        rows = [r for r in ctx.vm.actions(NOTES)
+                if r.get("app_id") == NOTES and address(r)[1] == "new-note"]
         return rows if len(rows) == 1 else None
 
     rows = wait_until(offered, 30, interval=1.0)
     if not rows:
         raise Unobservable(f"{env['name']}: its Notes offers no single new-note in front")
     try:
-        invoke(ctx, rows[0]["provider"], rows[0]["id"], {"title": title}, name=f"{env['name']}-person-note")
+        invoke(ctx, rows[0]["provider"], *address(rows[0]), {"title": title},
+               name=f"{env['name']}-person-note")
     except CheckFailed as exc:
         if "action_confirmation_required" not in str(exc):
             raise
-        invoke(ctx, rows[0]["provider"], rows[0]["id"], {"title": title}, confirmed=True,
+        invoke(ctx, rows[0]["provider"], *address(rows[0]), {"title": title}, confirmed=True,
                name=f"{env['name']}-person-note")
 
 
@@ -768,9 +773,8 @@ def own_change(ctx, res):
         if is_error(e["opened"]) is not False or not text_of(e["opened"]).startswith("ok"):
             # Where the box says the app's instances publish, by workspace.
             print(f"--- {e['opened_app']} rows ---", flush=True)
-            for row in ctx.vm.actions(e["opened_app"], programmatic=True)[:40]:
-                print(json.dumps({k: row.get(k) for k in ("application", "workspace", "provider", "record",
-                                                          "resource", "operation")}), flush=True)
+            for row in ctx.vm.actions(e["opened_app"])[:40]:
+                print(json.dumps(listing_row(row)), flush=True)
             problems.append(f"{e['name']}: {e['opened_app']}#open did not answer ok: "
                             f"{text_of(e['opened'])[:300]} (journal: {journal(ctx, e['opened_app'])})")
         if is_error(e["new_note"]) is not False:
@@ -827,9 +831,7 @@ def asked_change(ctx, res):
                 print(f"--- one Terminal row whole ---\n{json.dumps(rows[0])[:3000]}", flush=True)
             print(f"--- {e['name']}: the person's Terminal rows ---", flush=True)
             for row in terminal_rows(ctx)[:20]:
-                print(json.dumps({k: row.get(k) for k in ("application", "workspace", "provider", "record",
-                                                          "resource", "parent_resource", "operation")}),
-                      flush=True)
+                print(json.dumps(listing_row(row)), flush=True)
             journal(ctx, "MCP server")
             problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]} "
                             f"(tilo_ls terminal: {seen[:500]!r})")
@@ -899,8 +901,8 @@ def stop_one(ctx, res):
     scene = _scene(ctx)
     agents = _need(scene, "agents", "E02")
     one, two = scene["envs"]
-    provider, action, args = _shell_stop(ctx, two["agent_id"])
-    invoke(ctx, provider, action, args, name="stop-agent")
+    row, args = _shell_stop(ctx, two["agent_id"])
+    invoke(ctx, row["provider"], *address(row), args, name="stop-agent")
     stopped = agents[two["name"]]
     ended = wait_until(lambda: any(l.get("e2e") == "eof" for l in stopped.lines()), 20, interval=0.5)
     keys = session_keys(ctx)
@@ -917,13 +919,13 @@ def stop_one(ctx, res):
     expect(is_error(reply) is False, f"{one['name']}'s agent stopped working too: {str(reply)[:300]}")
 
 
-def _shell_stop(ctx, agent_id: str) -> tuple[str, str, dict]:
+def _shell_stop(ctx, agent_id: str) -> tuple[dict, dict]:
     """The person's Stop on the agent `agent_id` at their shell (`session:agents` stop-agent)."""
-    rows = [r for r in ctx.vm.actions("stop") if str(r.get("id", "")).endswith("\x1fstop-agent")]
+    rows = [r for r in ctx.vm.actions("stop") if address(r)[1] == "stop-agent"]
     ctx.write("E06-stop-rows.json", json.dumps(rows, indent=1))
     if not rows:
         raise Unobservable("the shell offers no Stop for an agent (stop-agent)")
-    return rows[0]["provider"], rows[0]["id"], {"agent": agent_id}
+    return rows[0], {"agent": agent_id}
 
 
 # The host probe: a program of the login, outside every environment, connecting to an

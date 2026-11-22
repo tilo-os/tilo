@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError, wait_until
+from ..vm import VmError, address, ended, wait_until
 
 AREA = "basics"
 
@@ -17,10 +17,14 @@ def _hw(ctx) -> dict:
     return {k: int(v) for k, _, v in (l.partition("=") for l in out.splitlines()) if v.strip().isdigit()}
 
 
-def _named(action_id: str, names) -> bool:
-    """Whether an action's address ends in one of `names` (an app's action
-    address is its provider, resource and action joined by \\x1f)."""
-    return action_id.rsplit("\x1f", 1)[-1] in names
+def _named(action: dict, names) -> bool:
+    """Whether a listed row's action is named one of `names`."""
+    return address(action)[1] in names
+
+
+def _id(action: dict) -> str:
+    """A listed row's provider, resource and action, as the report names it."""
+    return "#".join((action["provider"], *address(action)))
 
 
 # What a listed action without a contract is taken to be: it declares no availability, so
@@ -31,31 +35,31 @@ UNDECLARED = {"state": "available", "reason": "listed without a contract: no ava
 def _availability(action: dict) -> dict:
     """An action row's declared availability. The listing carries rows without a contract
     (`contract: null`), and those never say they are unavailable."""
-    return (action.get("contract") or {}).get("availability") or UNDECLARED
+    return (action["action"].get("contract") or {}).get("availability") or UNDECLARED
 
 
 def _shows_only(action: dict) -> bool:
     """Whether a row only changes what is shown, so it is no toggle of the hardware: a view
-    or navigation (`operation_kind` View), or an action whose contract only reads."""
-    if str(action.get("operation_kind", "")).lower() == "view":
+    or navigation (its kind is View), or an action whose contract only reads."""
+    if str(action["action"].get("kind", "")).lower() == "view":
         return True
-    return (action.get("contract") or {}).get("kind") == "read"
+    return (action["action"].get("contract") or {}).get("kind") == "read"
 
 
 def _offered(ctx, names) -> list:
     """Every published action named one of `names`, with its availability."""
-    return [(a["id"], _availability(a)) for a in ctx.vm.actions() if _named(a["id"], names)]
+    return [(_id(a), _availability(a)) for a in ctx.vm.actions() if _named(a, names)]
 
 
 def _action(ctx, query, action):
     """The listed action named `action`: a Quick Settings effect (`set-wifi`), which this
     device's catalogue of private windows lists by its window, record and name."""
-    return next((a for a in ctx.vm.actions(query) if _named(a["id"], (action,))), None)
+    return next((a for a in ctx.vm.actions(query) if _named(a, (action,))), None)
 
 
 def _qs_targets(ctx, words):
     ctx.close_overlays()
-    ctx.vm.invoke(core.SESSION, core.CHROME_QUICK_SETTINGS, {})
+    ctx.vm.invoke(core.SESSION, *core.CHROME_QUICK_SETTINGS, {})
     ctx.wait_state(lambda s: core.overlays(s).get("quick-settings") is True, 5, "quick settings open")
     ctx.wait_still()
     names = [t["name"] for t in ctx.vm.targets()]
@@ -71,12 +75,11 @@ def _no_hardware_control(ctx, res, kind, query, action, args, words):
     a = _action(ctx, query, action)
     res.metrics["action_availability"] = a and _availability(a)
     if a and _availability(a).get("state") == "available":
-        action_id = a["id"]
+        action_id = _id(a)
         try:
-            out = ctx.vm.invoke(a.get("provider", core.SESSION), action_id, args)
-            state = out.get("receipt", {}).get("update", {}).get("state")
-            res.metrics["invoke_result"] = out.get("receipt")
-            if state == "succeeded":
+            status = ctx.vm.invoke_row(a, args).status
+            res.metrics["invoke_result"] = status
+            if ended(status) and "Completed" in status:
                 problems.append(f"`{action_id}` is offered as available and reports success with no {kind} device")
         except VmError as exc:
             res.metrics["invoke_refusal"] = str(exc)[:300]
@@ -122,10 +125,10 @@ def bluetooth(ctx, res):
     # Settings' radio effects by name (`set-discovering` does not say
     # "bluetooth"), and every other Bluetooth action but the pairing prompts.
     # Rows that only show something (the Bluetooth settings page) are no toggle.
-    actions = [(a["id"], _availability(a)) for a in ctx.vm.actions()
+    actions = [(_id(a), _availability(a)) for a in ctx.vm.actions()
                if not _shows_only(a)
-               and (("bluetooth" in a["id"] and "pairing" not in a["id"])
-                    or _named(a["id"], ("set-bluetooth", "set-discovering", "refresh-bluetooth")))]
+               and (("bluetooth" in _id(a) and "pairing" not in _id(a))
+                    or _named(a, ("set-bluetooth", "set-discovering", "refresh-bluetooth")))]
     res.metrics["actions"] = actions
     targets = _qs_targets(ctx, ("bluetooth",))
     res.metrics["quick_settings_targets"] = targets
@@ -141,7 +144,7 @@ LAYOUTS = core.action(OUTPUT, "set-layouts")
 
 def set_layouts(ctx, layouts: list[str], active: str) -> None:
     """Type with `layouts`, switching between them in that order, `active` in use."""
-    ctx.vm.invoke(core.SESSION, LAYOUTS, {"layouts": layouts, "active": active})
+    ctx.vm.invoke(core.SESSION, *LAYOUTS, {"layouts": layouts, "active": active})
 
 
 def search_query(ctx) -> str:
@@ -190,14 +193,14 @@ def display_modes(ctx, res):
     st = ctx.state()
     before = core.display_rects(st)
     expect(len(before) >= 2, "needs two outputs")
-    ctx.vm.invoke(core.SESSION, core.DISPLAYS_SET_MODE, {"mode": "mirror"})
+    ctx.vm.invoke(core.SESSION, *core.DISPLAYS_SET_MODE, {"mode": "mirror"})
     try:
         st = ctx.wait_state(lambda s: len({r[:2] for r in core.display_rects(s).values()}) == 1, 10,
                             "both outputs at the same origin (mirrored)")
     finally:
         ctx.shot("B05-mirror")
     res.metrics["mirrored"] = core.display_rects(st)
-    ctx.vm.invoke(core.SESSION, core.DISPLAYS_SET_MODE, {"mode": "extend"})
+    ctx.vm.invoke(core.SESSION, *core.DISPLAYS_SET_MODE, {"mode": "extend"})
     st = ctx.wait_state(lambda s: core.display_rects(s) == before, 10,
                         "the extended layout restored")
     res.metrics["restored"] = core.display_rects(st)

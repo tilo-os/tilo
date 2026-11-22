@@ -9,7 +9,7 @@ import time
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError, wait_until
+from ..vm import VmError, address, label, wait_until
 
 AREA = "window"
 
@@ -139,7 +139,7 @@ def tabs(ctx, res):
     ctx.reset()
     g = ctx.new_terminal_window()["id"]
     active = (core.group_by_id(ctx.state(), g) or {}).get("active_tab")
-    ctx.vm.invoke(core.SESSION, core.CHROME_OPEN_APP,
+    ctx.vm.invoke(core.SESSION, *core.CHROME_OPEN_APP,
                   {"app": "so.tilo.terminal", "beside": str(active)})
     st = ctx.wait_state(lambda s: len((core.group_by_id(s, g) or {}).get("tabs", [])) == 2, 8,
                         "a second tab in the window")
@@ -159,8 +159,9 @@ def tabs(ctx, res):
 def strips(ctx, res):
     ctx.reset()
     g = ctx.new_terminal_window()["id"]
-    routes = [a for a in ctx.vm.actions("strip") if "strip" in (a["id"] + a["title"]).lower()]
-    res.metrics["strip_actions"] = [a["id"] for a in routes]
+    routes = [a for a in ctx.vm.actions("strip")
+              if "strip" in ("#".join(address(a)) + label(a)).lower()]
+    res.metrics["strip_actions"] = ["#".join(address(a)) for a in routes]
     ws0 = core.active_workspace(ctx.state())
     n_strips = len(ws0["strips"])
     # The documented chords only move focus between existing strips; try them.
@@ -244,9 +245,9 @@ def overview(ctx, res):
     ctx.shot("W12-overview")
     ctx.vm.key("Escape")
     ctx.wait_state(lambda s: not core.overlays(s)["overview"], 5, "overview closed after Escape")
-    ctx.vm.invoke(core.SESSION, core.CHROME_OVERVIEW, {"open": True})
+    ctx.vm.invoke(core.SESSION, *core.CHROME_OVERVIEW, {"open": True})
     ctx.wait_state(lambda s: core.overlays(s)["overview"], 5, "overview open after its action")
-    ctx.vm.invoke(core.SESSION, core.CHROME_OVERVIEW, {"open": False})
+    ctx.vm.invoke(core.SESSION, *core.CHROME_OVERVIEW, {"open": False})
     ctx.wait_state(lambda s: not core.overlays(s)["overview"], 5, "overview closed after its action")
 
 
@@ -812,7 +813,7 @@ def animations(ctx, res):
     overview = lambda s: core.overlays(s)["overview"]  # noqa: E731
     # The overview's fade runs when it is opened through its action (or the pointer);
     # from the keyboard it arrives at once by design, judged separately below.
-    toggle = lambda: ctx.vm.invoke(core.SESSION, core.CHROME_OVERVIEW, {})  # noqa: E731
+    toggle = lambda: ctx.vm.invoke(core.SESSION, *core.CHROME_OVERVIEW, {})  # noqa: E731
     _transition(ctx, res, "overview_open", toggle, overview)
     _transition(ctx, res, "overview_close", toggle, lambda s: not overview(s))
     _transition(ctx, res, "overview_key_open", lambda: ctx.vm.key("super+Tab"), overview)

@@ -76,7 +76,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "vm-acceptance"))
 
-from acceptance.vm import TiloVm, VmError, first_json, wait_until  # noqa: E402
+from acceptance.vm import (Invoked, TiloVm, VmError, address, completed, first_json,  # noqa: E402
+                           wait_until)
 
 GUEST_AGENT = HERE / "guest" / "agent.py"
 GUEST_DIR = ".cache/e2e-remote"
@@ -445,7 +446,7 @@ class Run:
 
     def find_row(self, box: Box, action: str, query: str = "") -> dict | None:
         for row in self.rows(box, query):
-            if str(row.get("id", "")).split("\x1f")[-1] == action:
+            if address(row)[1] == action:
                 return row
         return None
 
@@ -463,18 +464,18 @@ class Run:
             box.vm.raw({"op": "click_named", "name": name})
             time.sleep(0.5)
 
-    def set_accept(self, box: Box, on: bool) -> dict:
+    def set_accept(self, box: Box, on: bool) -> Invoked:
         return self.set_mcp_server(box, "set-accept-own-devices", on)
 
-    def set_unasked(self, box: Box, on: bool) -> dict:
+    def set_unasked(self, box: Box, on: bool) -> Invoked:
         """B's second MCP server setting, "Let them act without asking"."""
         return self.set_mcp_server(box, "set-act-without-asking", on)
 
-    def set_mcp_server(self, box: Box, verb: str, on: bool) -> dict:
+    def set_mcp_server(self, box: Box, verb: str, on: bool) -> Invoked:
         row = self.find_row(box, verb, "agents") or self.find_row(box, verb)
         if row is None:
             raise Failed(f"{box.name} lists no {verb} action")
-        return box.vm.invoke(row["provider"], row["id"], {"on": on})
+        return box.vm.invoke_row(row, {"on": on})
 
     def allow_step_once(self, box: Box, res: Result) -> None:
         """The person at `box` allows the step a run asks about once: the run's sheet has its
@@ -491,10 +492,11 @@ class Run:
             res.facts.setdefault("step_sheet_gone", []).append(str(exc)[:200])
         time.sleep(0.5)
 
-    def stop_agent(self, box: Box, agent: str) -> dict:
+    def stop_agent(self, box: Box, agent: str) -> Invoked:
         row = self.find_row(box, "stop-agent", "stop")
-        provider, rid = (row["provider"], row["id"]) if row else ("session", "session:agents\x1fstop-agent")
-        return box.vm.invoke(provider, rid, {"agent": agent})
+        if row:
+            return box.vm.invoke_row(row, {"agent": agent})
+        return box.vm.invoke("session", "session:agents", "stop-agent", {"agent": agent})
 
     # -- the run ----------------------------------------------------------------------
 
@@ -994,17 +996,15 @@ class Run:
         status ends on."""
         row = None
         for query in ("page", ""):
-            row = next((r for r in box.vm.actions(query, programmatic=True)
-                        if str(r.get("id", "")).split("\x1f")[-1] == action), None)
+            row = next((r for r in self.rows(box, query) if address(r)[1] == action), None)
             if row is not None:
                 break
         if row is None:
             raise Failed(f"{box.name} lists no {action} action")
-        reply = box.vm.invoke(row["provider"], row["id"], {}, wait_ms=90_000)
-        if reply["receipt"]["update"]["state"] != "succeeded":
-            raise Failed(f"{action} did not answer {box.name}'s person: "
-                         f"{json.dumps(reply, ensure_ascii=False)[:1200]}")
-        return reply
+        try:
+            return completed(box.vm.invoke_row(row, {}, wait_ms=90_000).status)
+        except VmError as exc:
+            raise Failed(f"{action} did not answer {box.name}'s person: {str(exc)[:1200]}") from exc
 
     def serve_form(self, b: Box) -> None:
         """The form, on B's own loopback: the boxes' network has no way out. A command run in a
@@ -1270,7 +1270,7 @@ class Run:
         deadline = time.monotonic() + 45
         while True:
             try:
-                res.facts["person_opened"] = b.vm.invoke("applications", BROWSER)
+                res.facts["person_opened"] = b.vm.open(BROWSER)
                 break
             except VmError as exc:
                 if "unknown_action" not in str(exc) or time.monotonic() >= deadline:
@@ -1386,27 +1386,23 @@ class Run:
             return None, None
 
         def listed(box: Box, query: str) -> list:
-            """The rows `box`'s shell lists for `query`, as a person's menu lists them and as
-            the desktop lists them for scripts. A shell with a page open lists thousands of
-            rows, and they change while they are paged: a listing that cannot be read whole is
-            left out and said, never taken for an empty one."""
-            rows = []
-            for read in (lambda: self.rows(box, query),
-                         lambda: box.vm.actions(query, programmatic=True)):
-                try:
-                    rows += read()
-                except VmError as exc:
-                    unread = res.facts.setdefault("listings_unread", [])
-                    if len(unread) < 6:
-                        unread.append(f"{box.letter} {query!r}: {str(exc)[:120]}")
-            return rows
+            """The rows `box`'s shell lists for `query`. A shell with a page open lists thousands
+            of rows, and they change while they are paged: a listing that cannot be read whole
+            is left out and said, never taken for an empty one."""
+            try:
+                return self.rows(box, query)
+            except VmError as exc:
+                unread = res.facts.setdefault("listings_unread", [])
+                if len(unread) < 6:
+                    unread.append(f"{box.letter} {query!r}: {str(exc)[:120]}")
+                return []
 
         def row_of(box: Box, action: str, within: str) -> dict | None:
             # The narrow listings first: by what provides it, by its name, then everything.
             for query in (within, action, ""):
                 for row in listed(box, query):
-                    rid = str(row.get("id", ""))
-                    if rid.split("\x1f")[-1] == action and within in rid + str(row.get("provider", "")):
+                    resource, named = address(row)
+                    if named == action and within in resource + named + str(row.get("provider", "")):
                         return row
             return None
 
@@ -1427,18 +1423,18 @@ class Run:
             as picking the window from the shell's list does: no pointer moves. The action is
             asked of whoever the shell lists it under, and of the session where it lists none.
             What the shell answered, for the step's facts."""
-            focus = "desktop:shell\x1ffocus"
-            row = next((row for query in ("desktop:shell", "focus") for row in listed(box, query)
-                        if str(row.get("id", "")) == focus), None)
+            focus = ("desktop:shell", "focus")
+            row = next((row for query in focus for row in listed(box, query)
+                        if address(row) == focus), None)
             providers = ([str(row.get("provider"))] if row else []) + ["so.tilo.session", "session"]
             refused = []
             for provider in dict.fromkeys(providers):
                 try:
-                    answer = box.vm.invoke(provider, focus, {"tab": str(shown)})
+                    answer = box.vm.invoke(provider, *focus, {"tab": str(shown)})
                 except VmError as exc:
                     refused.append(f"{provider}: {str(exc)[:120]}")
                     continue
-                return json.dumps(answer, ensure_ascii=False)[:300]
+                return json.dumps(answer._asdict(), ensure_ascii=False)[:300]
             return "not brought into view: " + "; ".join(refused)
 
         def live_session(state: dict) -> dict | None:
@@ -1540,16 +1536,16 @@ class Run:
         share = row_of(b, "share", "session:window-share")
         stop = row_of(b, "stop", "session:window-share")
         if share is None or stop is None:
-            res.facts["share_rows"] = [str(row.get("id")) for row in listed(b, "share")
-                                       if "share" in str(row.get("id"))][:40]
+            res.facts["share_rows"] = ["#".join(address(row)) for row in listed(b, "share")
+                                       if "share" in "#".join(address(row))][:40]
             raise Failed("B's session lists no action to share a window with the workspace, or none "
                          "to stop sharing it")
-        res.facts["shared"] = b.vm.invoke(share["provider"], share["id"], {"tab": str(tab)})
+        res.facts["shared"] = b.vm.invoke_row(share, {"tab": str(tab)})
         try:
             def held_on_a() -> list:
                 for query in ("peer-surface", "Browser", ""):
                     rows = [row for row in listed(a, query)
-                            if "desktop.peer-surface" in str(row.get("id")) + str(row.get("provider"))]
+                            if "desktop.peer-surface" in address(row)[0] + str(row.get("provider"))]
                     if rows:
                         return rows
                 return []
@@ -1835,13 +1831,14 @@ class Run:
                 if fill is None:
                     raise Failed("B's shell lists no action that answers the form on its "
                                  "Browser's page, so nothing could be changed there")
-                reply = b.vm.invoke(fill["provider"], fill["id"],
-                                    {"form": "form1", "answers": {"Given names": changed}},
-                                    wait_ms=90_000)
-                res.facts["changed_on_b"] = json.dumps(reply, ensure_ascii=False)[:600]
-                if reply["receipt"]["update"]["state"] != "succeeded":
+                reply = b.vm.invoke_row(fill, {"form": "form1", "answers": {"Given names": changed}},
+                                        wait_ms=90_000)
+                res.facts["changed_on_b"] = json.dumps(reply._asdict(), ensure_ascii=False)[:600]
+                try:
+                    completed(reply.status)
+                except VmError as exc:
                     raise Failed("B's person could not answer the form again on B's own page, "
-                                 f"so no change was there to carry: {res.facts['changed_on_b']}")
+                                 f"so no change was there to carry: {res.facts['changed_on_b']}") from exc
                 arrived = wait_until(lambda: screen_on_a(changed)["also"], 60, 2.0)
                 res.facts["screen_on_a_changed"] = json.dumps(screen_on_a(changed),
                                                               ensure_ascii=False)[:900]
@@ -1853,7 +1850,7 @@ class Run:
         finally:
             # The share ends with the step: what follows finds B as it was.
             try:
-                b.vm.invoke(stop["provider"], stop["id"], {"tab": str(tab)})
+                b.vm.invoke_row(stop, {"tab": str(tab)})
             except VmError as exc:
                 res.facts["unshared"] = str(exc)[:200]
         # The share is over and the window is not: B still shows its own live window in the tab,
@@ -1931,24 +1928,21 @@ class Run:
                     and window.get("window") is not None]
 
         def rows_of(box: Box, query: str) -> list:
-            """The rows `box`'s shell lists for `query`, for a person and for scripts. A listing
-            that cannot be read whole is left out and said, never taken for an empty one."""
-            found = []
-            for read in (lambda: self.rows(box, query),
-                         lambda: box.vm.actions(query, programmatic=True)):
-                try:
-                    found += read()
-                except VmError as exc:
-                    unread = res.facts.setdefault("listings_unread", [])
-                    if len(unread) < 6:
-                        unread.append(f"{box.letter} {query!r}: {str(exc)[:120]}")
-            return found
+            """The rows `box`'s shell lists for `query`. A listing that cannot be read whole is
+            left out and said, never taken for an empty one."""
+            try:
+                return self.rows(box, query)
+            except VmError as exc:
+                unread = res.facts.setdefault("listings_unread", [])
+                if len(unread) < 6:
+                    unread.append(f"{box.letter} {query!r}: {str(exc)[:120]}")
+                return []
 
         def action_row(box: Box, action: str, within: str) -> dict | None:
             for query in (within, action, ""):
                 for row in rows_of(box, query):
-                    rid = str(row.get("id", ""))
-                    if rid.split("\x1f")[-1] == action and within in rid + str(row.get("provider", "")):
+                    resource, named = address(row)
+                    if named == action and within in resource + named + str(row.get("provider", "")):
                         return row
             return None
 
@@ -1976,18 +1970,18 @@ class Run:
         def bring_to_front(box: Box, shown) -> str:
             """Bring the tab `shown` to the front of `box`'s shell with the shell's own `focus`:
             no pointer moves. What the shell answered, for the step's facts."""
-            focus = "desktop:shell\x1ffocus"
-            row = next((row for query in ("desktop:shell", "focus") for row in rows_of(box, query)
-                        if str(row.get("id", "")) == focus), None)
+            focus = ("desktop:shell", "focus")
+            row = next((row for query in focus for row in rows_of(box, query)
+                        if address(row) == focus), None)
             providers = ([str(row.get("provider"))] if row else []) + ["so.tilo.session", "session"]
             refused = []
             for provider in dict.fromkeys(providers):
                 try:
-                    answer = box.vm.invoke(provider, focus, {"tab": str(shown)})
+                    answer = box.vm.invoke(provider, *focus, {"tab": str(shown)})
                 except VmError as exc:
                     refused.append(f"{provider}: {str(exc)[:120]}")
                     continue
-                return json.dumps(answer, ensure_ascii=False)[:300]
+                return json.dumps(answer._asdict(), ensure_ascii=False)[:300]
             return "not brought into view: " + "; ".join(refused)
 
         # The form, on A's own loopback: a Browser on A does not reach B's.
@@ -2001,7 +1995,7 @@ class Run:
             deadline = time.monotonic() + 45
             while True:
                 try:
-                    res.facts["person_opened"] = a.vm.invoke("applications", BROWSER)
+                    res.facts["person_opened"] = a.vm.open(BROWSER)
                     break
                 except VmError as exc:
                     if "unknown_action" not in str(exc) or time.monotonic() >= deadline:
@@ -2026,9 +2020,9 @@ class Run:
         # and reads the form there before sharing anything.
         navigate = action_row(a, "navigate", "browser") or action_row(a, "navigate", "")
         if navigate is None:
-            res.facts["page_rows"] = [str(row.get("id")) for row in rows_of(a, "page")][:40]
+            res.facts["page_rows"] = ["#".join(address(row)) for row in rows_of(a, "page")][:40]
             raise Failed("A's shell lists no action that sends its Browser's page to an address")
-        res.facts["navigated"] = a.vm.invoke(navigate["provider"], navigate["id"], {"url": SITE_URL})
+        res.facts["navigated"] = a.vm.invoke_row(navigate, {"url": SITE_URL})
 
         def form_on_a() -> bool:
             try:
@@ -2057,11 +2051,11 @@ class Run:
         share = action_row(a, "share", "session:window-share")
         stop = action_row(a, "stop", "session:window-share")
         if share is None or stop is None:
-            res.facts["share_rows"] = [str(row.get("id")) for row in rows_of(a, "share")
-                                       if "share" in str(row.get("id"))][:40]
+            res.facts["share_rows"] = ["#".join(address(row)) for row in rows_of(a, "share")
+                                       if "share" in "#".join(address(row))][:40]
             raise Failed("A's session lists no action to share a window with the workspace, or none "
                          "to stop sharing it")
-        res.facts["shared"] = a.vm.invoke(share["provider"], share["id"], {"tab": str(tab)})
+        res.facts["shared"] = a.vm.invoke_row(share, {"tab": str(tab)})
         try:
             def hosted_on_b(state: dict) -> dict | None:
                 """The tab of B's shell that holds A's window as one running on another device:
@@ -2242,7 +2236,7 @@ class Run:
         finally:
             # The share ends with the step: what follows finds A as it was.
             try:
-                a.vm.invoke(stop["provider"], stop["id"], {"tab": str(tab)})
+                a.vm.invoke_row(stop, {"tab": str(tab)})
             except VmError as exc:
                 res.facts["unshared"] = str(exc)[:200]
         # The share is over and the window is not: A still shows its own live window in the tab,

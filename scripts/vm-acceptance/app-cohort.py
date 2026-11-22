@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from acceptance import core
 from acceptance.action_jobs import invoke, require
-from acceptance.vm import TiloVm, first_json, wait_until
+from acceptance.vm import TiloVm, address, first_json, opens, wait_until
 
 STORE = "so.tilo.store"
 BROWSER = "so.tilo.browser"
@@ -22,34 +22,39 @@ CALCULATOR = "org.gnome.Calculator"
 
 
 def binding(row):
-    return tuple(row.get(k) for k in ("application", "workspace", "record", "resource"))
+    """The app instance a row belongs to: its app, its workspace (its provider names it) and
+    the resource the action is on."""
+    parts = row["provider"].split(":")
+    workspace = parts[1] if len(parts) > 2 and parts[0] == "application" else ""
+    return row.get("app_id"), workspace, row["resource"]["id"]
 
 
 def catalog(vm, app):
-    return [r for r in vm.actions(app) if r.get("application") == app]
+    return [r for r in vm.actions(app) if r.get("app_id") == app]
 
 
 def choose(rows, app, kind, operation, args, bound=None):
     found = []
     for row in rows:
-        if (row.get("provider") != "app-actions" or row.get("application") != app
-                or (row.get("semantic_identity") or {}).get("kind") != kind
-                or row.get("operation") != operation
+        action = row["action"]
+        if (not row["provider"].startswith(("application:", "launch:")) or row.get("app_id") != app
+                or (action.get("semantic_identity") or {}).get("kind") != kind
+                or address(row)[1] != operation
                 or (bound is not None and binding(row) != bound)):
             continue
-        params = row.get("params")
+        params = action.get("params")
         if not isinstance(params, list):
             continue
         names = {p["name"] for p in params}
         required = {p["name"] for p in params if p.get("required")}
-        confirmation = row.get("contract", {}).get("confirmation", {}).get("mode")
+        confirmation = (action.get("contract") or {}).get("confirmation", {}).get("mode")
         supplied = set(args) | ({"confirm"} if confirmation == "confirm" else set())
         if required <= supplied <= names:
             found.append(row)
     require(len(found) == 1, f"expected one exact {app}/{operation} binding, got {len(found)}")
     row = found[0]
-    require(all(binding(row)) and bool(row.get("id")), "incomplete application binding")
-    require(row.get("contract", {}).get("availability", {}).get("state") == "available",
+    require(all(binding(row)), "incomplete application binding")
+    require((row["action"].get("contract") or {}).get("availability", {}).get("state") == "available",
             f"{app}/{operation} unavailable")
     return row
 
@@ -62,7 +67,7 @@ class AppApi:
     def call(self, operation, args=None, timeout=120):
         args = dict(args or {})
         row = choose(catalog(self.vm, self.app), self.app, self.kind, operation, args, self.bound)
-        if row.get("contract", {}).get("confirmation", {}).get("mode") == "confirm":
+        if (row["action"].get("contract") or {}).get("confirmation", {}).get("mode") == "confirm":
             args["confirm"] = True
         self.sequence += 1
         (self.out / f"{self.app}-{self.sequence}-contract.json").write_text(json.dumps(row, indent=2))
@@ -153,12 +158,12 @@ def mapped(vm, comm, installed, uid, out, *, executable=None, selected=None):
 def store(vm, out):
     rows = catalog(vm, STORE)
     if not rows:
-        opens = [r for r in vm.actions(STORE) if r.get("provider") == "applications" and r.get("id") == STORE]
-        require(len(opens) == 1, "normal Store Open unavailable")
-        invoke(vm, opens[0], {}, out, "open-store", require_job=False)
+        found = [r for r in vm.actions(STORE) if opens(r, STORE)]
+        require(len(found) == 1, "normal Store Open unavailable")
+        invoke(vm, found[0], {}, out, "open-store", require_job=False)
         rows = wait_until(lambda: catalog(vm, STORE), 60)
         require(rows, "Store resource never appeared")
-    require(not any(r.get("operation") == "use-flathub-for-account" for r in rows), "obsolete Flathub opt-in remains")
+    require(not any(address(r)[1] == "use-flathub-for-account" for r in rows), "obsolete Flathub opt-in remains")
     row = choose(rows, STORE, "store.catalog", "inspect-catalogue", {})
     return AppApi(vm, STORE, "store.catalog", binding(row), out)
 
@@ -228,9 +233,9 @@ def fresh_browser(vm, out):
     before it."""
     before_tabs = windows(vm.state(), BROWSER)
     old = {binding(r) for r in catalog(vm, BROWSER)}
-    opens = [r for r in vm.actions("open") if core.is_action(r, core.CHROME_OPEN_APP)]
-    require(len(opens) == 1, "the shell publishes no open-app action")
-    invoke(vm, opens[0], {"app": BROWSER}, out, "new-browser-tab", require_job=False)
+    opened_rows = [r for r in vm.actions("open") if core.is_action(r, core.CHROME_OPEN_APP)]
+    require(len(opened_rows) == 1, "the shell publishes no open-app action")
+    invoke(vm, opened_rows[0], {"app": BROWSER}, out, "new-browser-tab", require_job=False)
 
     def probe():
         state = vm.state()
@@ -242,8 +247,8 @@ def fresh_browser(vm, out):
             return None
         tab = next(iter(fresh))
         rows = [r for r in catalog(vm, BROWSER)
-                if (r.get("semantic_identity") or {}).get("kind") == "browser.page"
-                and r.get("workspace") == tab[0] and binding(r) not in old]
+                if (r["action"].get("semantic_identity") or {}).get("kind") == "browser.page"
+                and binding(r) not in old]
         bound = {binding(r) for r in rows}
         require(len(bound) <= 1, "new tab published ambiguous page bindings")
         return (next(iter(bound)), tab) if bound else None

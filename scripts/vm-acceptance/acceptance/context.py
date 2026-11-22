@@ -120,7 +120,7 @@ class Context:
                 raise core.CheckFailed("windows still open after closing every group")
             for gid in gids:
                 try:
-                    self.vm.invoke(core.SESSION, core.CHROME_CLOSE_WINDOW, {"group": gid})
+                    self.vm.invoke(core.SESSION, *core.CHROME_CLOSE_WINDOW, {"group": gid})
                 except VmError as exc:
                     if "action_failed" in str(exc):
                         stuck[gid] = True
@@ -139,20 +139,21 @@ class Context:
 
     # -- opening things ---------------------------------------------------------
 
-    def open_app(self, app_id: str, provider: str = "applications", timeout: float = 25):
-        """Open an app through its search action; return (group, seconds to its group)."""
+    def open_app(self, app_id: str, timeout: float = 25):
+        """Open an app through the workspace's open row for it; return (group, seconds to its
+        group)."""
         before = {g["id"] for g in core.all_groups(self.vm.state())}
         started = time.monotonic()
         # A fresh session publishes its app catalogue a few seconds after it starts.
         while True:
             try:
-                self.vm.invoke(provider, app_id)
+                self.vm.open(app_id)
                 break
             except VmError as exc:
                 if "unknown_action" not in str(exc):
                     raise
                 if time.monotonic() - started > 45:
-                    raise core.CheckFailed(f"{app_id} is not in the {provider} catalogue "
+                    raise core.CheckFailed(f"{app_id} is not in the applications catalogue "
                                            "45 s after asking for it") from exc
                 # The invocation is the probe: it succeeds once the catalogue lists the app.
                 time.sleep(0.5)
@@ -164,7 +165,7 @@ class Context:
 
     def new_terminal_window(self):
         before = {g["id"] for g in core.all_groups(self.vm.state())}
-        self.vm.invoke(core.SESSION, core.CHROME_OPEN_APP, {"app": "so.tilo.terminal"})
+        self.vm.invoke(core.SESSION, *core.CHROME_OPEN_APP, {"app": "so.tilo.terminal"})
         st = self.wait_state(lambda s: [g for g in core.all_groups(s) if g["id"] not in before],
                              10, "a new Terminal window")
         return [g for g in core.all_groups(st) if g["id"] not in before][0]

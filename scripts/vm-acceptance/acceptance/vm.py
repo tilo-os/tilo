@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 # The action model's frames, built as the headless harness builds them.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "headless-examples"))
@@ -23,11 +24,6 @@ import real_apps  # noqa: E402
 
 # How often a listing that changed under its cursor is read again from its start.
 LISTING_ATTEMPTS = 6
-# How the checks name the workspace's open of an app, and an app's own action, as providers.
-APPLICATIONS = "applications"
-APP_ACTIONS = "app-actions"
-# Between an action's resource and its name in the ids the checks read.
-ID_SEP = "\x1f"
 # Base64 characters per write_home_file command: a multiple of 4, so each piece decodes alone.
 WRITE_CHUNK = 64 * 1024
 
@@ -47,66 +43,36 @@ class VmError(RuntimeError):
         return (lines[-1] if lines else str(self).splitlines()[0])[:400]
 
 
-# The kinds the checks group rows by: the workspace's open of an app, and any other action.
-KIND_APPS = "Apps"
-KIND_ACTIONS = "Actions"
-# The fields of a row a query of several words is matched over, as the checks read them.
-MATCHED = ("id", "title", "subtitle", "kind", "application", "operation", "resource")
-# The states an invocation ends in, as the checks read them.
-ENDED = ("succeeded", "failed", "cancelled")
+def address(row: dict) -> tuple[str, str]:
+    """The resource and the action a listed row invokes."""
+    found = row["action"]["address"]
+    return found["resource"], found["action"]
 
 
-def param_of(param: dict) -> dict:
-    """One parameter as the checks read it: its `name`, `type`, whether it is `required`, its
-    `description`, `choices` and whether it is `nullable`."""
-    return {"name": param.get("name"), "type": param.get("ty"),
-            "required": bool(param.get("required")), "description": param.get("description", ""),
-            "choices": param.get("choices") or [], "nullable": bool(param.get("nullable"))}
+def label(row: dict) -> str:
+    """What a listed row's action is called where a person picks it."""
+    return row["action"].get("action_label") or ""
 
 
-def row_of(row: dict) -> dict | None:
-    """A catalogue row as the checks read it, or None for a row of a resource alone. `provider`
-    and `id` name it: the workspace's open of an app is `applications` and the app's id, of kind
-    `Apps`; an app's own action `app-actions` and `provider␟resource␟action`; any other
-    `resource␟action` of its provider, of kind `Actions`. Beside them `application`, `resource`
-    (the row's), `operation`, `title`, `subtitle`, `params`, `contract`, `semantic_identity`
-    and `target`, what it invokes."""
-    action = row.get("action")
-    if not action:
-        return None
-    at = action["address"]
-    resource = row.get("resource") or {}
-    provider = row["provider"]
-    described = {
-        "provider": provider, "id": f"{at['resource']}{ID_SEP}{at['action']}", "kind": KIND_ACTIONS,
-        "operation_kind": action.get("kind"), "title": action.get("action_label"),
-        "subtitle": resource.get("label"),
-        "params": [param_of(param) for param in action.get("params") or []],
-        "contract": action.get("contract"), "application": row.get("app_id"), "record": "",
-        "resource": resource.get("id"), "parent_resource": row.get("parent_resource"),
-        "semantic_identity": action.get("semantic_identity"), "operation": at["action"],
-        "target": {"provider": provider, "address": at},
-    }
-    if (at["action"] == "open" and at["resource"].startswith("app.")
-            and provider.startswith("workspace:")):
-        described.update(provider=APPLICATIONS, id=row.get("app_id"), kind=KIND_APPS,
-                         title=resource.get("label"))
-    elif provider.startswith(("application:", "launch:")):
-        described.update(provider=APP_ACTIONS,
-                         id=f"{provider}{ID_SEP}{at['resource']}{ID_SEP}{at['action']}")
-    return described
+def opens(row: dict, app: str) -> bool:
+    """Whether `row` is the workspace's open of the installed app `app`."""
+    return row["provider"].startswith("workspace:") and address(row) == (f"app.{app}", "open")
 
 
 def mentions(row: dict, words: list[str]) -> bool:
-    """Whether `row` mentions every one of `words` in what the checks read of it."""
-    said = [str(row.get(key) or "").lower() for key in MATCHED]
+    """Whether `row` mentions every one of `words`: its app, its resource or its action."""
+    action, resource = row["action"], row.get("resource") or {}
+    said = [str(text).lower() for text in (
+        row.get("app_id"), resource.get("id"), resource.get("label"), resource.get("kind"),
+        action["address"]["resource"], action["address"]["action"], action.get("action_label"),
+        *(action.get("keywords") or []))]
     return all(any(word in text for text in said) for word in words)
 
 
 def listed(ask, query: str = "") -> list[dict]:
-    """Every action row the session lists for `query`, read as `row_of` reads it. The session
-    narrows to the query's first word, and its other words narrow what it answered. `ask` sends
-    one action frame to the session's control socket and answers the frame that came back. A
+    """Every catalogue row with an action the session lists for `query`. The session narrows
+    to the query's first word, and its other words narrow what it answered. `ask` sends one
+    action frame to the session's control socket and answers the frame that came back. A
     listing that changed while it was paged is read again from its start."""
     words = query.lower().split()
     for _ in range(LISTING_ATTEMPTS):
@@ -116,38 +82,33 @@ def listed(ask, query: str = "") -> list[dict]:
             if exc.code != "stale_revision":
                 raise VmError(f"the action listing was refused: {exc}") from exc
             continue
-        return [described for row in rows
-                if (described := row_of(row)) is not None and mentions(described, words[1:])]
+        return [row for row in rows if row.get("action") and mentions(row, words[1:])]
     raise VmError(f"the action listing changed on each of {LISTING_ATTEMPTS} reads while it was paged")
 
 
-def update_of(invocation: str, status) -> dict:
-    """An invocation's receipt status as the update the checks read: `state`, and the `output`
-    or `error` it ended with."""
-    if status == "Accepted":
-        return {"state": "accepted", "invocation": invocation}
-    (name, body), = status.items()
-    state = {"Completed": "succeeded", "Failed": "failed", "Cancelled": "cancelled"}[name]
-    return {"state": state, "invocation": invocation, **(body or {})}
+def ended(status) -> bool:
+    """Whether an invocation's status can no longer change: `Completed`, `Failed` or
+    `Cancelled`, each a map; `"Accepted"` is still going."""
+    return isinstance(status, dict)
 
 
-def invoked(ask, provider: str, action_id: str, args: dict | None = None, *,
-            confirmed: bool = False, wait_ms: int = 0) -> dict:
-    """Invoke the action the checks name `provider` and `action_id` (see `row_of`), answered
-    once it is admitted, or, with `wait_ms`, once it ended within that long:
-    `{"receipt": {"invocation", "update"}}`. A refusal raises, with its code. An app opens
-    by its id in the workspace its open row names, or its close row while it has a window."""
-    if provider == APPLICATIONS:
-        resource, action = f"app.{action_id}", "open"
-        provider = next((row["target"]["provider"] for row in listed(ask, action_id)
-                         if row["target"]["address"]["resource"] == resource
-                         and row["target"]["provider"].startswith("workspace:")), None)
-        if provider is None:
-            raise VmError(f"unknown_action: the session offers no app {action_id}")
-    elif provider == APP_ACTIONS:
-        provider, resource, action = action_id.split(ID_SEP, 2)
-    else:
-        resource, _, action = action_id.rpartition(ID_SEP)
+def completed(status) -> dict:
+    """The output of an invocation that completed; any other status raises, naming it."""
+    if not (isinstance(status, dict) and "Completed" in status):
+        raise VmError(f"the action did not complete: {status!r}")
+    return status["Completed"]["output"]
+
+
+class Invoked(NamedTuple):
+    """An admitted invocation: its id, and where it stood when last asked."""
+    invocation: str
+    status: object
+
+
+def invoked(ask, provider: str, resource: str, action: str, args: dict | None = None, *,
+            confirmed: bool = False, wait_ms: int = 0) -> Invoked:
+    """Invoke `resource`'s `action` of `provider`, answered once it is admitted, or, with
+    `wait_ms`, once it ended within that long. A refusal raises, with its code."""
     frame = real_apps.invocation(provider, resource, action, args, wait_ms=wait_ms or None,
                                  confirmed=confirmed)
     try:
@@ -155,18 +116,16 @@ def invoked(ask, provider: str, action_id: str, args: dict | None = None, *,
     except real_apps.Refused as exc:
         raise VmError(f"{exc.code}: {provider} {resource}#{action} was refused: {exc.message}") from exc
     invocation = frame["message"]["Invoke"]["invocation"]
-    update = update_of(invocation, status)
     deadline = time.monotonic() + wait_ms / 1000
-    while wait_ms and update["state"] not in ENDED and time.monotonic() < deadline:
-        left = max(1, int((deadline - time.monotonic()) * 1000))
-        update = observed(ask, invocation, left)
-    return {"receipt": {"invocation": invocation, "update": update}}
+    while wait_ms and not ended(status) and time.monotonic() < deadline:
+        status = observed(ask, invocation, max(1, int((deadline - time.monotonic()) * 1000)))
+    return Invoked(invocation, status)
 
 
-def observed(ask, invocation: str, wait_ms: int = 0) -> dict:
-    """Where `invocation` stands now, as `update_of` reads it; `wait_ms` holds the answer until
-    it moves on. A read that answered is `succeeded`, its answer its output's value; one still
-    going, or an operation partway, is `running`."""
+def observed(ask, invocation: str, wait_ms: int = 0):
+    """Where `invocation` stands now, as a receipt's status; `wait_ms` holds the answer until
+    it moves on. A followed read that answered has completed with its answer as its value; one
+    still going, or an operation partway, is `"Accepted"`."""
     message = {"correlation": 1, "invocation": invocation}
     if wait_ms:
         message["wait_ms"] = wait_ms
@@ -175,12 +134,16 @@ def observed(ask, invocation: str, wait_ms: int = 0) -> dict:
     if state is None:
         raise VmError(f"unknown_invocation: the session follows no invocation {invocation}")
     update = state["update"]
-    if update.get("state") == "item" and state.get("read_answered"):
-        return {"state": "succeeded", "invocation": update.get("invocation"),
-                "output": {"value": update.get("value")}}
-    if update.get("state") in ("item", "progress"):
-        return {**update, "state": "running"}
-    return update
+    kind = update["state"]
+    if kind == "item" and state.get("read_answered"):
+        return real_apps.Status({"Completed": {"output": {"value": update.get("value")}}})
+    if kind == "succeeded":
+        return real_apps.Status({"Completed": {"output": update["output"]}})
+    if kind == "failed":
+        return real_apps.Status({"Failed": {"error": update["error"]}})
+    if kind == "cancelled":
+        return real_apps.Status({"Cancelled": {"message": update.get("message")}})
+    return "Accepted"
 
 
 def first_json(text: str):
@@ -297,20 +260,33 @@ class TiloVm:
         and facts) and whether it still waits for sources (`searching`)."""
         return self.raw({"op": "search_rows"})["answer"]
 
-    def actions(self, query: str = "", *, programmatic: bool = False) -> list[dict]:
-        """Every action row the desktop lists for `query`, page after page (see `row_of`): an
-        open app's own actions can push the window closers past one page, and a caller reading
-        one page saw a window with no close action and left it open (A15). The listing is the
-        one agents read, so `programmatic` rows are always in it."""
-        del programmatic
+    def actions(self, query: str = "") -> list[dict]:
+        """Every catalogue row with an action the desktop lists for `query`, page after page
+        (see `listed`): an open app's own actions can push the window closers past one page,
+        and a caller reading one page saw a window with no close action and left it open."""
         return listed(self.raw, query)
 
-    def invoke(self, provider: str, action_id: str, args: dict | None = None, *,
-               confirmed: bool = False, wait_ms: int = 0) -> dict:
-        """Invoke an action the listing names (see `invoked`)."""
-        return invoked(self.raw, provider, action_id, args, confirmed=confirmed, wait_ms=wait_ms)
+    def invoke(self, provider: str, resource: str, action: str, args: dict | None = None, *,
+               confirmed: bool = False, wait_ms: int = 0) -> Invoked:
+        """Invoke `resource`'s `action` of `provider` (see `invoked`)."""
+        return invoked(self.raw, provider, resource, action, args, confirmed=confirmed,
+                       wait_ms=wait_ms)
 
-    def observe(self, invocation: str, wait_ms: int = 0) -> dict:
+    def invoke_row(self, row: dict, args: dict | None = None, *, confirmed: bool = False,
+                   wait_ms: int = 0) -> Invoked:
+        """Invoke what the listed `row` offers (see `invoked`)."""
+        return self.invoke(row["provider"], *address(row), args, confirmed=confirmed,
+                           wait_ms=wait_ms)
+
+    def open(self, app: str) -> Invoked:
+        """Open the installed app `app` through the workspace's open row for it; an app the
+        session does not list yet raises `unknown_action`."""
+        row = next((row for row in self.actions(app) if opens(row, app)), None)
+        if row is None:
+            raise VmError(f"unknown_action: the session offers no app {app}")
+        return self.invoke_row(row)
+
+    def observe(self, invocation: str, wait_ms: int = 0):
         """Where an invocation this desktop admitted stands (see `observed`)."""
         return observed(self.raw, invocation, wait_ms)
 
@@ -397,8 +373,7 @@ class TiloVm:
 
         def listed():
             try:
-                return any(a["provider"] == "applications" and a["id"] == "so.tilo.terminal"
-                           for a in self.actions("Terminal"))
+                return any(opens(row, "so.tilo.terminal") for row in self.actions("Terminal"))
             except VmError:
                 return False
 

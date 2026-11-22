@@ -538,13 +538,13 @@ def overlays(state: dict) -> dict:
     return state["chrome"]["overlays"]
 
 
-# The provider the session publishes its own resources under, each action addressed as
-# `<resource>\x1f<action>`.
+# The provider the session publishes its own resources under, each action addressed by its
+# resource and its name: `ctx.vm.invoke(SESSION, *CHROME_OPEN_APP, args)`.
 SESSION = "so.tilo.session"
 
 
-def action(resource: str, name: str) -> str:
-    return f"{resource}\x1f{name}"
+def action(resource: str, name: str) -> tuple[str, str]:
+    return resource, name
 
 
 # The shell's chrome: the shells over the windows, the workspaces and their strips.
@@ -566,9 +566,10 @@ DISPLAYS = "session:displays"
 DISPLAYS_SET_MODE = action(DISPLAYS, "set-mode")
 
 
-def is_action(row: dict, resource_action: str) -> bool:
+def is_action(row: dict, resource_action: tuple[str, str]) -> bool:
     """Whether a listed row is `resource_action`, published by the session."""
-    return row.get("provider") == SESSION and row.get("id") == resource_action
+    at = row["action"]["address"]
+    return row["provider"] == SESSION and (at["resource"], at["action"]) == resource_action
 
 
 def display_of_group(state: dict, gid):
