@@ -802,6 +802,90 @@ async fn a_serving_devices_write_reaches_a_member_copys_followers() {
     member.shutdown().await;
 }
 
+/// When a device's keys arrive, its copy takes in again every write it kept, and on a large
+/// workspace that is minutes of work on the thread that also runs the device's endpoint. The
+/// device's other work runs between two kept writes, not after the last: a follower hears of
+/// the first while the rest are still being taken in. Otherwise the device answers nothing
+/// meanwhile, and its own dials of its server time out as if the server were gone.
+#[tokio::test]
+async fn a_copy_taking_in_its_kept_writes_lets_the_devices_other_work_run_meanwhile() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) = shared(serving_state.path(), "Kept", 46).await;
+    let workspace = created.workspace.clone();
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let records = ["first", "second", "third"];
+    for record in records {
+        serving_writes(
+            &serving,
+            &workspace,
+            ("test.app", record),
+            ("value", record),
+        )
+        .await;
+    }
+    tilo_test_env::within("the copy keeps the serving device's writes", async {
+        loop {
+            let kept = copies
+                .inner
+                .host
+                .records
+                .retained(workspace_id)
+                .await
+                .expect("the copy's kept writes read")
+                .iter()
+                .filter(|frame| {
+                    matches!(
+                        neighbour_wire::NeighbourMsg::decode(&frame.body),
+                        Ok(neighbour_wire::NeighbourMsg::AppDocument { app_id, .. }) if app_id == "test.app"
+                    )
+                })
+                .count();
+            if kept >= records.len() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    let mut writes = copies.document_writes();
+    let taken_in = Arc::new(AtomicBool::new(false));
+    let follower = {
+        let taken_in = Arc::clone(&taken_in);
+        let workspace = workspace.clone();
+        tokio::spawn(async move {
+            loop {
+                match writes.recv().await {
+                    Ok(write) if write.workspace == workspace && write.app == "test.app" => {
+                        return taken_in.load(Ordering::SeqCst);
+                    }
+                    Ok(_) => {}
+                    Err(error) => panic!("the copy stopped telling its followers: {error}"),
+                }
+            }
+        })
+    };
+    copies.take_in_what_keys_open(&workspace).await;
+    taken_in.store(true, Ordering::SeqCst);
+    let heard_after_the_last = follower.await.expect("the follower runs");
+    assert!(
+        !heard_after_the_last,
+        "a follower on the device's runtime heard of a kept write only once all of them were in"
+    );
+    drop(copies);
+    member.shutdown().await;
+    serving.shutdown().await;
+}
+
 /// The front `workspace`'s layout stands on, as its member copy reads it now.
 #[cfg(feature = "apps")]
 async fn front(copies: &super::Workspaces, workspace: &str) -> Option<String> {

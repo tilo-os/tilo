@@ -1852,6 +1852,11 @@ impl Workspaces {
         };
         let mut took = false;
         for frame in retained {
+            // A copy keeps every write it was sent, and taking each in again is work for this
+            // thread alone, none of it waiting: a copy of a large workspace takes minutes. The
+            // device's other work runs between two of them, its endpoint among it, so its server
+            // still hears from it and a dial it makes is answered rather than timing out.
+            tokio::task::yield_now().await;
             let Ok(message) = NeighbourMsg::decode(&frame.body) else {
                 continue;
             };
