@@ -205,9 +205,10 @@ view output is drawn as native widgets and as semantic HTML on the web page.
 - Test once, at the end. The change is finished first (old code gone,
   callers moved, `t cargo check` clean); then clippy and the focused tests
   run once, and it is pushed. No test or cost runs on a half-done change.
-- The words-that-go check fails only when a specific word's count rises.
-  Generic words (record, item, kind, document, surface, instance, held) are
-  counted and printed, and a count that falls never fails.
+- The words-that-go check fails only when a new name carrying a specific
+  word appears. More uses of a name that already exists are printed, not
+  failed. Generic words (record, item, kind, document, surface, instance,
+  held) are only counted, and nothing that falls ever fails.
 
 ---
 
