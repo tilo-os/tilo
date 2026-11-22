@@ -28,7 +28,7 @@ required = ["network.http"]
 optional = ["app-files", "files.paths", "location", "threads"]
 
 [resources]
-kinds = ["maps.workspace"]
+kinds = ["maps.workspace", "maps.offline-areas"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
