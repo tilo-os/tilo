@@ -301,13 +301,15 @@ pub(super) async fn server_entry(
             .map(drop)
             .map_err(|error| format!("{error}"));
     }
-    if !servers::holds_person_workspace(workspaces).await {
+    if !tilo_workspace_service::workspaces::person_workspace::holds_person_workspace(workspaces)
+        .await
+    {
         if !founds {
             return Err(
                 "this computer does not hold the person's Servers workspace yet".to_owned(),
             );
         }
-        servers::founded(workspaces).await?;
+        tilo_workspace_service::workspaces::person_workspace::found(workspaces).await?;
     }
     servers::admit(workspaces, cert, &endpoint).await
 }

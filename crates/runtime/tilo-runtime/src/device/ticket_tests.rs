@@ -544,7 +544,7 @@ async fn servers_host(root: &SigningKey) -> ServersHost {
         .workspaces()
         .expect("the server holds workspaces")
         .clone();
-    let admin = tilo_workspace_service::workspaces::servers::founded(&hosted)
+    let admin = tilo_workspace_service::workspaces::person_workspace::found(&hosted)
         .await
         .expect("the person's Servers workspace is founded");
     hosted
