@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@7781c8bc046cc857";
+export const SURFACE = "so.tilo.file-explorer@3561502507e2cdf8";
 
 export interface Bookmark {
   place: string;
@@ -39,14 +39,6 @@ export interface Receipt {
   cut: boolean;
   restore: boolean;
   error: string | null;
-}
-
-export interface PersonAccount {
-  type_id: string;
-  display_name: string;
-  config: unknown;
-  enabled: boolean;
-  tint: number;
 }
 
 /** The arguments of `add-bookmark`. */
@@ -101,28 +93,6 @@ export interface RestoreArgs {
 /** The arguments of `list-chunk`. */
 export interface ListChunkArgs {
   chunk: unknown;
-}
-
-/** The arguments of `publish-browser-identity`. */
-export interface PublishBrowserIdentityArgs {
-  root: string;
-  origin: string;
-  display_name: string;
-}
-
-/** The arguments of `save-account`. */
-export interface SaveAccountArgs {
-  id: string;
-  type_id: string;
-  display_name: string;
-  config: unknown;
-  enabled: boolean;
-  tint: number;
-}
-
-/** The arguments of `remove-account`. */
-export interface RemoveAccountArgs {
-  account: string;
 }
 
 /** Folder — `files.folder`. */
@@ -275,42 +245,6 @@ export const TREE_ACTIONS = ["newFolder", "newFolderMany", "newFile", "newFileMa
 /** The `files.tree` kind at `path`. */
 export function tree(ws: tilo.Workspace, path: string): Tree {
   return resourceProxy(ws, path, SURFACE, TREE_ACTIONS) as unknown as Tree;
-}
-
-/** Accounts — `tilo.accounts`. */
-export interface Accounts extends tilo.Resource {
-  accounts: Array<tilo.Entry<PersonAccount>>;
-  publishBrowserIdentity(args: {
-    root: string;
-    origin: string;
-    display_name: string;
-  }): Promise<void>;
-  /** Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  publishBrowserIdentityMany(items: PublishBrowserIdentityArgs[]): Promise<tilo.ActionAnswer[]>;
-  saveAccount(args: {
-    id: string;
-    type_id: string;
-    display_name: string;
-    config: unknown;
-    enabled: boolean;
-    tint: number;
-  }): Promise<void>;
-  /** Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  saveAccountMany(items: SaveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
-  removeAccount(args: {
-    account: string;
-  }): Promise<void>;
-  /** Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  removeAccountMany(items: RemoveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `Accounts` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const ACCOUNTS_ACTIONS = ["publishBrowserIdentity", "publishBrowserIdentityMany", "saveAccount", "saveAccountMany", "removeAccount", "removeAccountMany"] as const;
-
-/** The `tilo.accounts` kind at `path`. */
-export function accounts(ws: tilo.Workspace, path: string): Accounts {
-  return resourceProxy(ws, path, SURFACE, ACCOUNTS_ACTIONS) as unknown as Accounts;
 }
 
 /** Files window — `files.workspace`. */

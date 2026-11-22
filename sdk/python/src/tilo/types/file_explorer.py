@@ -23,10 +23,8 @@ __all__ = [
     "Bookmark",
     "FileTask",
     "Receipt",
-    "PersonAccount",
     "Folder",
     "Tree",
-    "Accounts",
     "Workspace",
     "AddBookmarkArgs",
     "RemoveBookmarkArgs",
@@ -37,9 +35,6 @@ __all__ = [
     "TrashArgs",
     "RestoreArgs",
     "ListChunkArgs",
-    "PublishBrowserIdentityArgs",
-    "SaveAccountArgs",
-    "RemoveAccountArgs",
 ]
 
 class Bookmark(TypedDict):
@@ -55,13 +50,6 @@ class Receipt(TypedDict):
     cut: bool
     restore: bool
     error: str | None
-
-class PersonAccount(TypedDict):
-    type_id: str
-    display_name: str
-    config: Any
-    enabled: bool
-    tint: int
 
 AddBookmarkArgs = TypedDict("AddBookmarkArgs", {
     "place": "str",
@@ -117,31 +105,9 @@ ListChunkArgs = TypedDict("ListChunkArgs", {
 })
 """The arguments of `list-chunk`."""
 
-PublishBrowserIdentityArgs = TypedDict("PublishBrowserIdentityArgs", {
-    "root": "str",
-    "origin": "str",
-    "display_name": "str",
-})
-"""The arguments of `publish-browser-identity`."""
-
-SaveAccountArgs = TypedDict("SaveAccountArgs", {
-    "id": "str",
-    "type_id": "str",
-    "display_name": "str",
-    "config": "Any",
-    "enabled": "bool",
-    "tint": "int",
-})
-"""The arguments of `save-account`."""
-
-RemoveAccountArgs = TypedDict("RemoveAccountArgs", {
-    "account": "str",
-})
-"""The arguments of `remove-account`."""
-
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@7781c8bc046cc857"
+    __surface__ = "so.tilo.file-explorer@3561502507e2cdf8"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -339,7 +305,7 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@7781c8bc046cc857"
+    __surface__ = "so.tilo.file-explorer@3561502507e2cdf8"
     def new_folder(self,
         *,
         parent: Any,
@@ -431,56 +397,9 @@ class Tree(Resource):
     __actions__ = frozenset({"new_folder", "new_folder_many", "new_file", "new_file_many", "move", "move_many", "write", "write_many", "trash", "trash_many", "restore", "restore_many", "list_chunk", "list_chunk_many"})
 
 
-class Accounts(Resource):
-    """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.file-explorer@7781c8bc046cc857"
-    accounts: list[Entry[PersonAccount]]
-
-    def publish_browser_identity(self,
-        *,
-        root: str,
-        origin: str,
-        display_name: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("publish-browser-identity", root=root, origin=origin, display_name=display_name)
-
-    def publish_browser_identity_many(self, items: list[PublishBrowserIdentityArgs]) -> list[dict[str, Any]]:
-        """Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("publish-browser-identity", items)
-
-    def save_account(self,
-        *,
-        id: str,
-        type_id: str,
-        display_name: str,
-        config: Any,
-        enabled: bool,
-        tint: int,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("save-account", id=id, type_id=type_id, display_name=display_name, config=config, enabled=enabled, tint=tint)
-
-    def save_account_many(self, items: list[SaveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("save-account", items)
-
-    def remove_account(self, *, account: str) -> None:
-        """Runs the app's action."""
-        return self.action("remove-account", account=account)
-
-    def remove_account_many(self, items: list[RemoveAccountArgs]) -> list[dict[str, Any]]:
-        """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("remove-account", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many"})
-
-
 class Workspace(Resource):
     """Files window — `files.workspace`."""
-    __surface__ = "so.tilo.file-explorer@7781c8bc046cc857"
+    __surface__ = "so.tilo.file-explorer@3561502507e2cdf8"
     def up(self) -> None:
         """Runs the app's action."""
         return self.action("up")
