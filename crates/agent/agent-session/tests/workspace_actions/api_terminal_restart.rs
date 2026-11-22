@@ -64,7 +64,8 @@ async fn runs_after_a_restart() {
         let page = answer_questions(&mut questions, &mut sheet, &mut answered, || {
             tokio::time::sleep(Duration::from_millis(50))
         });
-        tokio::pin!(page);
+        let mut questions_page = Box::pin(page);
+        let mut page = questions_page.as_mut();
         let (status, asking) = beside(&mut page, agent.unattended(&ws, true)).await;
         let run = waiting(status, &asking).unwrap_or_else(|| panic!("pending: {status} {asking}"));
         asked(&mut page, &person, 1).await;
@@ -76,6 +77,9 @@ async fn runs_after_a_restart() {
             printed(status, &ran, "before-restart"),
             "ran before the restart: {status} {ran}"
         );
+        // The page stops asking before it lets go of the server: one left
+        // paused mid-ask holds the approver's link, and closing waits on it.
+        drop(questions_page);
         host.close().await;
     }
 
