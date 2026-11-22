@@ -28,8 +28,8 @@
 //! What stays behind is what is tied to other people: every conversation in Chat ([`stays`]), each
 //! person's own place in the workspace's tilolang apps, the session's record (the branch's session is
 //! written from its own windows), other people's windows, who is here, the membership and its
-//! invitations. A record this device cannot read is not branched; the person who branches is
-//! someone who reads the whole workspace ([`Engine::reads_whole`]).
+//! invitations. A member can branch what their device is allowed to read, including their own
+//! private records, which keep their owner and are sealed under the branch's keys.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -253,15 +253,16 @@ pub(crate) async fn copy(
     // Read off the session runtime: a task holding the workspace's lock may need that runtime
     // to finish its write before the read can proceed.
     let copied = tilo_rt::io::run(move || {
+        let permits = |app: &str, document_id: &str| {
+            !stays(app, document_id)
+                && can_read
+                    .as_ref()
+                    .is_none_or(|check| check(app, document_id))
+        };
         let sources = if reads_sources {
-            read_resources(&reads, from, &mut branched)
+            read_resources(reads.as_ref(), from, &mut branched, &permits)
         } else {
             Sources::new()
-        };
-        let permits = |app: &str, document_id: &str| {
-            can_read
-                .as_ref()
-                .is_none_or(|check| check(app, document_id))
         };
         let documents = make_copies(&places, from, to, sources, &mut branched, &permits);
         Ok((branched, documents))
@@ -361,9 +362,10 @@ fn make_copies(
 
 /// Every record of `from` this device reads, but those that stay behind.
 fn read_resources(
-    reads: &std::sync::Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,
+    reads: &dyn tilo_peer_state::workspace_documents::DeviceDocuments,
     from: WorkspaceId,
     branched: &mut Branched,
+    permits: &dyn Fn(&str, &str) -> bool,
 ) -> Sources {
     let mut sources = Sources::new();
     let routes = match reads.listing(&from.to_string()) {
@@ -374,7 +376,7 @@ fn read_resources(
         }
     };
     for (app, record) in routes {
-        if stays(&app, &record) {
+        if !permits(&app, &record) {
             branched.left = branched.left.saturating_add(1);
             continue;
         }
@@ -1502,11 +1504,25 @@ mod tests {
 
     /// A record document as an app keeps it on this device.
     fn record(workspace: &str, body: &str) -> AutoCommit {
+        record_of(
+            workspace,
+            &ui::resource::DocumentId::minted(),
+            "notes.page",
+            body,
+        )
+    }
+
+    fn record_of(
+        workspace: &str,
+        id: &ui::resource::DocumentId,
+        kind: &str,
+        body: &str,
+    ) -> AutoCommit {
         let mut doc = AutoCommit::new();
         assert!(ui::resource::init_scoped(
             &mut doc,
-            &ui::resource::DocumentId::minted(),
-            &ui::resource::ResourceType::new("notes.page"),
+            id,
+            &ui::resource::ResourceType::new(kind),
             workspace,
             Some(workspace),
         ));
@@ -1520,6 +1536,225 @@ mod tests {
         match doc.get(automerge::ROOT, "body").unwrap() {
             Some((automerge::Value::Scalar(value), _)) => value.as_str().unwrap().to_owned(),
             other => panic!("no body: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_owner_and_a_member_each_branch_only_their_own_private_records() {
+        use tilo_action_policy::roles::WORKSPACE_TUBE_HISTORY_DOCUMENT;
+        use tilo_peer_state::join::Role;
+
+        let (from, to) = ids();
+        let owner = identity();
+        let member = certified_identity(0x32);
+        let member_cert = &member.device_cert;
+        let now = tilo_clock::wall();
+        let mut peer = seeded_branch_peer(FROM, &owner, now);
+        let signer = owner.signer.as_ref();
+        peer.governance_mut()
+            .declare_member(
+                member_cert.user_public_key,
+                Role::Viewer,
+                false,
+                None,
+                signer,
+                now,
+            )
+            .unwrap();
+        peer.governance_mut()
+            .admit_member_device(member_cert, signer, now)
+            .unwrap();
+
+        let app = "so.tilo.tube";
+        let kind = "tube.watch-history";
+        let owned = |device: &tilo_identity::identity_store::DeviceIdentity| {
+            collab_types::OwnResource::new(kind, device.device_cert.user_public_key).unwrap()
+        };
+        let owner_record = owned(&owner);
+        let member_record = owned(&member);
+        for own in [&owner_record, &member_record] {
+            peer.keep_own_document(app, own);
+        }
+        let owner_route = owner_record.document_id();
+        let member_route = member_record.document_id();
+        let history = |route: &str, body| {
+            record_of(
+                FROM,
+                &ui::resource::DocumentId::parse(route).unwrap(),
+                kind,
+                body,
+            )
+            .save()
+        };
+        let records = RetainedRecords(BTreeMap::from([
+            (
+                (app.into(), owner_route.clone()),
+                history(&owner_route, "owner's history"),
+            ),
+            (
+                (app.into(), member_route.clone()),
+                history(&member_route, "member's history"),
+            ),
+            (
+                (app.into(), WORKSPACE_TUBE_HISTORY_DOCUMENT.into()),
+                history(WORKSPACE_TUBE_HISTORY_DOCUMENT, "old history"),
+            ),
+            (
+                ("so.tilo.notes".into(), "uuid-plan".into()),
+                record(FROM, "shared plan").save(),
+            ),
+        ]));
+
+        for (device, route, private) in [
+            (&owner, &owner_route, "owner's history"),
+            (&member, &member_route, "member's history"),
+        ] {
+            let can_read = |app: &str, record: &str| {
+                peer.check_document_read(device.device_public_key(), app, record, now)
+                    .is_ok()
+            };
+            assert!(!can_read(app, WORKSPACE_TUBE_HISTORY_DOCUMENT));
+            let permits = |app: &str, record: &str| !stays(app, record) && can_read(app, record);
+            let mut result = Branched::default();
+            let sources = read_resources(&records, from, &mut result, &permits);
+            let copies = make_copies(&Places::default(), from, to, sources, &mut result, &permits);
+            assert!(result.missing.is_empty(), "{:?}", result.missing);
+            assert_eq!(result.left, 2);
+            let mut contents = BTreeMap::new();
+            for ((app, copied_route), bytes) in copies {
+                let doc = AutoCommit::load(&bytes).unwrap();
+                assert_eq!(ui::resource::workspace_scope(&doc).as_deref(), Some(TO));
+                if &copied_route == route {
+                    let written = admit_private_branch_record(device, (&app, route), &bytes, now);
+                    assert_eq!(written.own, Some(owned(device)));
+                }
+                contents.insert((app, copied_route), body(&doc));
+            }
+            assert_eq!(
+                contents,
+                BTreeMap::from([
+                    ((app.to_owned(), route.clone()), private.to_owned()),
+                    (
+                        ("so.tilo.notes".into(), "uuid-plan".into()),
+                        "shared plan".to_owned()
+                    ),
+                ])
+            );
+        }
+    }
+
+    fn seeded_branch_peer(
+        workspace: &str,
+        device: &tilo_identity::identity_store::DeviceIdentity,
+        now: std::time::SystemTime,
+    ) -> tilo_peer_state::StatePeer {
+        let cert = &device.device_cert;
+        let roster = [cert.clone()];
+        let mut peer = tilo_peer_state::StatePeer::new(
+            workspace,
+            cert.clone(),
+            roster.to_vec(),
+            tilo_user_identity::RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        peer.install_seed(
+            tilo_peer_state::SeedState {
+                workspace_changes: tilo_peer_state::seed_workspace(workspace, cert, &roster)
+                    .unwrap(),
+                documents: Vec::new(),
+            },
+            device.signer.as_ref(),
+            now,
+        )
+        .unwrap();
+        peer.select_exact_admissions().unwrap();
+        peer
+    }
+
+    fn admit_private_branch_record(
+        device: &tilo_identity::identity_store::DeviceIdentity,
+        (app, document): (&str, &str),
+        changes: &[u8],
+        now: std::time::SystemTime,
+    ) -> tilo_peer_state::owner::AppWrite {
+        use tilo_peer_state::workspace_documents::{DeviceWrites as _, DocumentWriting};
+        let holder = tilo_workspace_service::documents::HeldDocuments::new(
+            TO,
+            seeded_branch_peer(TO, device, now),
+            Arc::clone(&device.signer),
+            None,
+        );
+        let group = tilo_peer_state::document_frame::DocumentRoute {
+            app_id: app.into(),
+            cluster_id: TO.into(),
+            document: document.into(),
+        }
+        .key_scope()
+        .unwrap()
+        .group();
+        let keys = key_group::KeyGroup::create(
+            group,
+            key_group::MemberKey::generate("branch fixture").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        let written = pollster::block_on(holder.write(
+            TO,
+            changes,
+            DocumentWriting {
+                app,
+                document,
+                readers: None,
+                founding: true,
+                snapshot: true,
+                sealed: Some(&keys),
+            },
+        ))
+        .unwrap();
+        assert!(
+            holder
+                .replica()
+                .read(|peer| peer.publication().is_sealed_document(app, document))
+        );
+        written
+    }
+
+    // Include an old record that live admission would refuse today. Branching
+    // reads from a service's route listing even when some routes cannot open.
+    struct RetainedRecords(BTreeMap<(String, String), Vec<u8>>);
+
+    impl tilo_peer_state::workspace_documents::DeviceDocuments for RetainedRecords {
+        fn read(
+            &self,
+            _: &str,
+            app: &str,
+            document: &str,
+            _: Option<&[[u8; 32]]>,
+        ) -> Result<tilo_peer_state::workspace_documents::DocumentRead, String> {
+            use tilo_peer_state::workspace_documents::DocumentRead;
+            Ok(DocumentRead::Whole {
+                revision: [0; 32],
+                heads: Vec::new(),
+                bytes: self.0[&(app.to_owned(), document.to_owned())].clone(),
+            })
+        }
+
+        fn listing(&self, _: &str) -> Result<Vec<(String, String)>, String> {
+            Ok(self.0.keys().cloned().collect())
+        }
+
+        fn own_records(&self, _: &str) -> BTreeMap<(String, String), [u8; 32]> {
+            BTreeMap::new()
+        }
+
+        fn holds(&self, _: &str, app: &str, document: &str) -> bool {
+            self.0.contains_key(&(app.to_owned(), document.to_owned()))
+        }
+
+        fn workspaces(&self) -> Vec<String> {
+            vec![FROM.to_owned()]
         }
     }
 
@@ -1683,7 +1918,11 @@ mod tests {
     }
 
     fn identity() -> tilo_identity::identity_store::DeviceIdentity {
-        let person = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
+        certified_identity(0x31)
+    }
+
+    fn certified_identity(root: u8) -> tilo_identity::identity_store::DeviceIdentity {
+        let person = ed25519_dalek::SigningKey::from_bytes(&[root; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
         let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: person.verifying_key().to_bytes(),

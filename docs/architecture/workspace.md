@@ -792,11 +792,14 @@ what it holds is there, so no app opens in it before its documents are and found
 an empty document of its own. The person is told when it is ready, and what did
 not come along if anything did not.
 
-**Who may branch.** Whoever reads the whole workspace: this device holds it and
-its governance names the person as its owner or as a member not removed
+**Who may branch.** An owner or current member can branch the workspace from a
+device that holds it
 (a workspace the device holds no governance of is the shell's own, and the
-person's unless it names someone else). A document sealed to readers that exclude
-this device is one it cannot read, so it is not branched. An agent may branch
+person's unless it names someone else). The branch copies what that device may
+read. This includes the person's own drafts and watch history, still readable
+only by them. Retained records without a verified owner stay unreadable in the
+source. A branch made by a host leaves members' private records with their
+devices. An agent may branch
 only the workspace it works in, and only as the person's grants let it take
 the shell's actions; a branch of another workspace is refused at the MCP server.
 

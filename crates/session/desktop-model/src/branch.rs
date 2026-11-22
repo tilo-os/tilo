@@ -13,6 +13,10 @@ pub const PERSONAL_PLACES: (&str, &str) = ("tilo.host", "tilolang.personal");
 /// to other people, and what the branch makes of its own.
 #[must_use]
 pub fn stays(app: &str, record: &str) -> bool {
+    let root = collab_types::document_access_target(app, record).unwrap_or(record);
+    if tilo_action_policy::roles::lacks_private_record_owner(app, root) {
+        return true;
+    }
     match app {
         // Every conversation, and each person's drafts and read marks. The workspace's own emoji
         // and agents are Chat's to keep but the workspace's, so they come along.

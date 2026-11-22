@@ -12,9 +12,9 @@
 //! 1. Every record of the source is read whole, with its history, but what stays
 //!    behind ([`tilo_desktop_model::branch::stays`]: the conversations in Chat,
 //!    each person's place in the tilolang apps, Terminal's environments, the
-//!    desktop's layout of everyone's) and a person's own records sealed for their
-//!    devices alone, which are not the host's to read. A record that does not
-//!    read whole stops the branch before anything is made.
+//!    desktop's layout of everyone's), records whose owner is unknown, and
+//!    records that belong to a member. A remaining record that does not read
+//!    whole stops the branch before anything is made.
 //! 2. The branch is made as any workspace of the person's own is: governed here,
 //!    its governance new, the person its only member and its administrator, its
 //!    channels with keys of their own the first time a record of it is sealed.
@@ -246,7 +246,10 @@ mod copy {
                 .plaintext_routes()
                 .into_iter()
                 .chain(peer.sealed_routes())
-                .filter(|(app, record)| !tilo_desktop_model::branch::stays(app, record))
+                .filter(|(app, record)| {
+                    !tilo_desktop_model::branch::stays(app, record)
+                        && peer.own_resource(app, record).is_none()
+                })
                 .collect();
             drop(peer);
             let read = self
