@@ -15,8 +15,7 @@ use std::collections::BTreeSet;
 
 use fuser::FileType;
 
-use super::plain;
-use crate::namespace::{Namespace, ROOT_ID, ROOT_INO, ResourceWrite};
+use super::{Namespace, ROOT_ID, ROOT_INO, ResourceWrite, hash_from_hex, join, plain};
 
 mod read;
 mod write;
@@ -59,15 +58,6 @@ struct Named {
     ino: u64,
     folder: bool,
     path: String,
-}
-
-/// `name` in `folder`, as a path in the workspace; either may be empty.
-fn join(folder: &str, name: &str) -> String {
-    match (folder.is_empty(), name.is_empty()) {
-        (true, _) => name.to_owned(),
-        (_, true) => folder.to_owned(),
-        _ => format!("{folder}/{name}"),
-    }
 }
 
 /// The folder `path` is in: the workspace's own, as the empty path, for a name alone.
@@ -563,6 +553,163 @@ impl Namespace {
     }
 }
 
+/// A file [`Namespace::put_files`] puts into the tree.
+pub struct FileToPut<'a> {
+    /// The folder it goes into, `""` for the tree's root.
+    pub to: &'a str,
+    /// The name it takes there.
+    pub name: &'a str,
+    /// The hash of its content, one the tree names files by.
+    pub hash: &'a str,
+    /// Its length in bytes.
+    pub size: u64,
+    /// When it was written, as the tree keeps times.
+    pub mtime: u64,
+}
+
+/// One file [`Namespace::put_files`] put.
+pub struct PlacedFile {
+    /// Where it is, as a path from the tree's root (`docs/2026/plan.md`).
+    pub path: String,
+    /// Whether a file of that name was there and took the new content, rather than a node being
+    /// made for it.
+    pub replaced: bool,
+}
+
+fn refused(why: impl Into<String>) -> String {
+    why.into()
+}
+
+impl Namespace {
+    /// Put `files` into the tree as one change: every write a record takes is made once for the
+    /// whole set, not once for each file, so a folder of them costs its chunks rather than its
+    /// files.
+    ///
+    /// Every file is checked before any of them is put: a set with one the tree refuses leaves
+    /// the tree as it was.
+    ///
+    /// # Errors
+    /// A name no file may have, a file named as a folder on the way, a folder where a file
+    /// goes, content that is not a hash, or a file that could not be put.
+    pub fn put_files(&mut self, files: &[FileToPut<'_>]) -> Result<Vec<PlacedFile>, String> {
+        self.check_put(files)?;
+        let mut placed = Vec::with_capacity(files.len());
+        for file in files {
+            placed.push(self.place(file)?);
+        }
+        Ok(placed)
+    }
+
+    /// Whether every one of `files` can be put, without putting any: the names, the hashes, the
+    /// folders on the way (taking the folders and files this same set makes into account), and
+    /// the folders where the files go.
+    fn check_put(&mut self, files: &[FileToPut<'_>]) -> Result<(), String> {
+        let mut made_folders = std::collections::BTreeSet::new();
+        let mut made_files = std::collections::BTreeSet::new();
+        for file in files {
+            let FileToPut { to, name, hash, .. } = *file;
+            if !plain(name) {
+                return Err(refused(format!("{name:?} is no file's name")));
+            }
+            if hash_from_hex(hash).is_none() {
+                return Err(refused("the content's hash is not one"));
+            }
+            let mut walked = String::new();
+            // The folder's node, while every folder on the way is there already.
+            let mut parent = Some(ROOT_INO);
+            for folder in to.split('/').filter(|folder| !folder.is_empty()) {
+                if !plain(folder) {
+                    return Err(refused(format!("{folder:?} is no folder's name")));
+                }
+                walked = join(&walked, folder);
+                if made_files.contains(&walked) {
+                    return Err(refused(format!(
+                        "{folder} is a file, not a folder to put {name} in"
+                    )));
+                }
+                if made_folders.contains(&walked) {
+                    parent = None;
+                    continue;
+                }
+                parent = match parent {
+                    Some(at) => match self.lookup(at, folder) {
+                        Some(attr) if attr.kind == FileType::Directory => Some(attr.ino.into()),
+                        Some(_) => {
+                            return Err(refused(format!(
+                                "{folder} is a file, not a folder to put {name} in"
+                            )));
+                        }
+                        None => {
+                            made_folders.insert(walked.clone());
+                            None
+                        }
+                    },
+                    None => None,
+                };
+            }
+            let path = join(&walked, name);
+            if made_folders.contains(&path) {
+                return Err(refused(format!("a folder named {name} is already there")));
+            }
+            if let Some(at) = parent
+                && let Some(attr) = self.lookup(at, name)
+                && attr.kind == FileType::Directory
+            {
+                return Err(refused(format!("a folder named {name} is already there")));
+            }
+            made_files.insert(path);
+        }
+        Ok(())
+    }
+
+    /// Put one file into the tree, without the changes: [`Self::put_files`] takes them once for
+    /// all of them.
+    fn place(&mut self, file: &FileToPut<'_>) -> Result<PlacedFile, String> {
+        let FileToPut {
+            to,
+            name,
+            hash,
+            size,
+            mtime,
+        } = *file;
+        let hash = hash_from_hex(hash).ok_or_else(|| refused("the content's hash is not one"))?;
+        let mut parent = ROOT_INO;
+        for folder in to.split('/').filter(|folder| !folder.is_empty()) {
+            parent = match self.lookup(parent, folder) {
+                Some(attr) if attr.kind == FileType::Directory => attr.ino.into(),
+                Some(_) => {
+                    return Err(refused(format!(
+                        "{folder} is a file, not a folder to put {name} in"
+                    )));
+                }
+                None => self
+                    .create_dir(parent, folder, mtime)
+                    .ok_or_else(|| refused(format!("the folder {folder} could not be made")))?,
+            };
+        }
+        let replaced = match self.lookup(parent, name) {
+            Some(attr) if attr.kind == FileType::Directory => {
+                return Err(refused(format!("a folder named {name} is already there")));
+            }
+            Some(attr) => {
+                if !self.set_content(attr.ino.into(), Some(&hash), size, mtime) {
+                    return Err(refused(format!("{name} could not take the file")));
+                }
+                true
+            }
+            None => {
+                self.create_file(parent, name, Some(&hash), size, mtime)
+                    .ok_or_else(|| refused(format!("{name} could not be put in the tree")))?;
+                false
+            }
+        };
+        Ok(PlacedFile {
+            path: join(to, name),
+            replaced,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -575,6 +722,18 @@ mod tests {
 
     fn listed(entries: &[&str]) -> Vec<String> {
         entries.iter().map(|entry| (*entry).to_owned()).collect()
+    }
+
+    /// Put one file into `tree`, as a mount copying it in does.
+    fn put(tree: &mut Namespace, to: &str, name: &str, hash: &str, size: u64, mtime: u64) {
+        tree.put_files(&[FileToPut {
+            to,
+            name,
+            hash,
+            size,
+            mtime,
+        }])
+        .unwrap();
     }
 
     /// The content the file at `path` names, `None` where no file is.
@@ -603,8 +762,8 @@ mod tests {
         assert!(again.entries.is_empty() && again.made.is_empty());
         assert!(again.writes.iter().all(|write| write.changes.is_empty()));
 
-        tree.put_file("", "brief.md", &hash(1), 10, 6).unwrap();
-        tree.put_file("", "budget.csv", &hash(2), 20, 6).unwrap();
+        put(&mut tree, "", "brief.md", &hash(1), 10, 6);
+        put(&mut tree, "", "budget.csv", &hash(2), 20, 6);
         let moved = tree
             .move_entries(
                 "",
@@ -684,8 +843,7 @@ mod tests {
     #[test]
     fn the_trash_gives_back_what_it_took_to_where_it_was() {
         let mut tree = Namespace::new("server").unwrap();
-        tree.put_file("Tasks/7", "notes.md", &hash(3), 4, 1)
-            .unwrap();
+        put(&mut tree, "Tasks/7", "notes.md", &hash(3), 4, 1);
         let gone = tree.trash_entries("Tasks", &listed(&["7"])).unwrap();
         let taken = gone.entries.first().unwrap().clone();
         assert_eq!(taken.from.as_deref(), Some("Tasks/7"));
@@ -716,8 +874,7 @@ mod tests {
         // A name taken again meanwhile is not written over.
         tree.trash_entries("Tasks/7", &listed(&["notes.md"]))
             .unwrap();
-        tree.put_file("Tasks/7", "notes.md", &hash(4), 4, 2)
-            .unwrap();
+        put(&mut tree, "Tasks/7", "notes.md", &hash(4), 4, 2);
         assert!(tree.restore_entries(&listed(&["notes.md"])).is_err());
         assert_eq!(
             content_at(&tree, "Tasks/7/notes.md"),
@@ -729,8 +886,8 @@ mod tests {
     #[test]
     fn a_path_stays_in_the_workspace_and_a_refused_verb_changes_nothing() {
         let mut tree = Namespace::new("server").unwrap();
-        tree.put_file("a", "one.txt", &hash(5), 1, 1).unwrap();
-        tree.put_file("b", "one.txt", &hash(6), 1, 1).unwrap();
+        put(&mut tree, "a", "one.txt", &hash(5), 1, 1);
+        put(&mut tree, "b", "one.txt", &hash(6), 1, 1);
         for outside in ["/a", "a/../b", "./a", "a/..", ".."] {
             assert!(tree.make_folder(outside, "x", 2).is_err(), "{outside:?}");
             assert!(

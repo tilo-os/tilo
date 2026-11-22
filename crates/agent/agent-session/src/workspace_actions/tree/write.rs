@@ -1,4 +1,4 @@
-//! Files' `write-file` on the folder of a workspace whose tree is kept here:
+//! Files' `write-file` on the folder of a workspace, written where its tree is:
 //! `app.so.tilo.file-explorer#write-file`, naming a path in the workspace.
 //!
 //! On a device `write-file` names the device and writes text to its disk. A caller with no
@@ -8,17 +8,15 @@
 //! PDF, a workbook) becomes a file in a task's folder. It writes over nothing unless `replace`
 //! says so, and answers the one call that takes it back, as the verbs by a path do.
 
-use std::collections::BTreeMap;
-
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::{ActionCallError, ActorPlace, Caller, InvokeRequest};
 use tilo_content::ContentStore;
-use tilo_fs::tree_put::Written;
+use tilo_fs::namespace::Written;
 use tilo_server_protocol::WorkspaceId;
 
 use super::{manifest_bytes, manifest_of, refused, sealed::FileSealing, size_of};
-use crate::workspace_actions::{Outcome, Worker, commit_failed, invoke_arguments};
+use crate::workspace_actions::{Outcome, Worker, invoke_arguments};
 
 /// The most text one `write-file` takes, as Files on a device does: a longer file is put into
 /// the workspace and named by its `content`.
@@ -182,11 +180,11 @@ impl Worker {
         reason = "the outcome becomes the receipt the holder keeps"
     )]
     pub(in crate::workspace_actions) fn write_tree_file(
-        &mut self,
+        &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        named: &str,
+        _named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         use fs_protocol::file_action::verbs;
         if !self.may_on_tree(
@@ -196,7 +194,6 @@ impl Worker {
         ) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        let _acting = super::acting_for(caller, request);
         let arguments = invoke_arguments(&request.argument);
         if arguments.contains_key("device") {
             return Err(refused(
@@ -221,23 +218,6 @@ impl Worker {
             }
             Source::Content(hash) => kept(&store, hash, sealing.as_ref()).map_err(refused)?,
         };
-        let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
-        let now = tilo_clock::unix_now_ns() / 1_000_000;
-        let written = tree
-            .write_file(
-                &asked.folder,
-                &asked.name,
-                (&content, size),
-                asked.replace,
-                now,
-            )
-            .map_err(refused)?;
-        let value = answer(&written, size, request.invocation);
-        let writes = match &held {
-            Some(_) => written.changed.writes,
-            // A tree founded now: every document of it from nothing.
-            None => tree.document_writes(&BTreeMap::new()),
-        };
         self.check_file_keys(workspace_id, sealing.as_ref())
             .map_err(refused)?;
         if !self.may_on_tree(
@@ -247,9 +227,30 @@ impl Worker {
         ) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        self.write_tree(workspace_id, named, held.as_ref(), &writes)
-            .map_err(|reason| commit_failed(reason, true))?;
-        self.keep_tree(workspace_id, named, tree);
+        let link = self
+            .shared
+            .link
+            .get()
+            .cloned()
+            .ok_or_else(|| refused("this host keeps no workspace's tree"))?;
+        let now = tilo_clock::unix_now_ns() / 1_000_000;
+        let invocation = request.invocation;
+        let value = link
+            .change_tree(
+                workspace_id,
+                Some(super::acting_context(caller, request)),
+                &mut |tree| {
+                    let written = tree.write_file(
+                        &asked.folder,
+                        &asked.name,
+                        (&content, size),
+                        asked.replace,
+                        now,
+                    )?;
+                    Ok(answer(&written, size, invocation))
+                },
+            )
+            .map_err(refused)?;
         Ok((
             ActionOutput {
                 value: Some(value),

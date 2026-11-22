@@ -1,7 +1,7 @@
 //! Opening an app on a file the workspace holds: `app.<app>#open` given the
 //! file's `content` (and its `name`), as a desktop opens a file in the app
 //! that opens its type. Opened in Files, the same call writes the file into
-//! the workspace's own folder instead ([`super::tree_put`]).
+//! the workspace's own folder instead ([`super::tree`]).
 //!
 //! An app that keeps one document per record (PDF Viewer, Writer, Slides,
 //! Sheets) opens a record of its own for the file, so a folder of PDFs is a
@@ -170,7 +170,7 @@ impl Worker {
         let target = &request.target;
         // Files' verbs on the workspace's own folder change its tree, and its reads answer
         // what that tree holds, each by a path in it.
-        if super::tree_put::acts_on_tree(target) {
+        if super::tree::acts_on_tree(target) {
             return self.in_tree(workspace_id, caller, request, named);
         }
         // Many files at once (`files`) go into the workspace's folder, which

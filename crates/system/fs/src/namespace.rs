@@ -45,12 +45,17 @@ mod kernel_changes;
 mod leases;
 mod posix;
 mod trash;
+mod verbs;
 pub use changesets::ChangesetMark;
 use chunks::Chunks;
 pub(crate) use chunks::Obj;
 pub use kernel_changes::KernelChanges;
 pub use leases::{LeaseRequest, VersionFence, WriteLease};
 pub use posix::{DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, PosixAttrs};
+pub use verbs::{
+    Changed, FileAt, FileToPut, MOST_COPIED, MOST_LISTED, Page, PlacedFile, Row, Touched, Trashed,
+    Written,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LiveDocumentBlobRoots {
@@ -481,6 +486,24 @@ pub(crate) fn hash_from_hex(s: &str) -> Option<Hash> {
     let bytes = hex::decode(s).ok()?;
     let arr: [u8; 32] = bytes.try_into().ok()?;
     Some(Hash::from(arr))
+}
+
+fn hash_of(hex: &str) -> Option<Hash> {
+    hash_from_hex(hex)
+}
+
+/// A name no file or folder may have: empty, `.`, `..`, or with a `/`.
+pub(crate) fn plain(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\0'])
+}
+
+/// `name` in `folder`, as a path from the tree's root; either may be empty.
+pub(crate) fn join(folder: &str, name: &str) -> String {
+    match (folder.trim_matches('/'), name) {
+        ("", name) => name.to_owned(),
+        (folder, "") => folder.to_owned(),
+        (folder, name) => format!("{folder}/{name}"),
+    }
 }
 
 /// A bounded, valid sibling name for a record that lost a name to a smaller stable record

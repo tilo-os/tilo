@@ -1,4 +1,4 @@
-//! Files' reads of the folder of a workspace whose tree is kept here:
+//! Files' reads of the folder of a workspace, answered where its tree is:
 //! `app.so.tilo.file-explorer#list` and `#read-text`, each by a path in the workspace
 //! (`Tasks/12 Plan/notes.md`).
 //!
@@ -15,10 +15,11 @@ use serde_json::{Map, Value, json};
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::{ActionCallError, ActorPlace, Caller, InvokeRequest};
 use tilo_fs::namespace::Namespace;
-use tilo_fs::tree_put::{FileAt, MOST_LISTED};
+use tilo_fs::namespace::{FileAt, MOST_LISTED};
 use tilo_server_protocol::WorkspaceId;
 
 use super::refused;
+use super::sealed::FileSealing;
 use crate::workspace_actions::{Outcome, Worker, invoke_arguments};
 
 /// The most of one file a text read takes, as a search of the files reads one for its words.
@@ -215,7 +216,12 @@ fn listing(tree: &mut Namespace, arguments: &Map<String, Value>) -> Result<Value
 impl Worker {
     /// The bytes of `file`: put together from the content the workspace's store keeps of it
     /// here.
-    fn bytes_at(&self, workspace_id: WorkspaceId, file: &FileAt) -> Result<Vec<u8>, String> {
+    fn bytes_at(
+        &self,
+        workspace_id: WorkspaceId,
+        sealing: Option<&FileSealing>,
+        file: &FileAt,
+    ) -> Result<Vec<u8>, String> {
         let Some(content) = &file.content else {
             return Ok(Vec::new());
         };
@@ -237,19 +243,19 @@ impl Worker {
             )
         };
         let manifest = store.read(content).ok_or_else(missing)?;
-        let sealing = if fs_content::Manifest::decode(&manifest)
+        let sealed = fs_content::Manifest::decode(&manifest)
             .ok()
-            .is_some_and(|manifest| manifest.sealed().is_some())
-        {
-            self.file_sealing(workspace_id, false)?
-        } else {
-            None
-        };
+            .is_some_and(|manifest| manifest.sealed().is_some());
+        if sealed && sealing.is_none() {
+            return Err(
+                "this workspace's files are sealed, and their keys are not here".to_owned(),
+            );
+        }
         fs_content::whole_with(
             manifest,
             MOST_TEXT_BYTES,
             |chunk| store.read(&hex::encode(chunk)),
-            |cipher, bytes| sealing.as_ref()?.open(cipher, bytes),
+            |cipher, bytes| sealing?.open(cipher, bytes),
         )
         .ok_or_else(missing)
     }
@@ -259,6 +265,7 @@ impl Worker {
     fn text_at(
         &self,
         workspace_id: WorkspaceId,
+        sealing: Option<&FileSealing>,
         tree: &mut Namespace,
         arguments: &Map<String, Value>,
     ) -> Result<Value, String> {
@@ -270,7 +277,7 @@ impl Worker {
             .ok_or("`file` names the file by its path in the workspace")?;
         let from = place(arguments, "from")?.unwrap_or(0);
         let file = tree.file_at(named)?;
-        let text = String::from_utf8(self.bytes_at(workspace_id, &file)?)
+        let text = String::from_utf8(self.bytes_at(workspace_id, sealing, &file)?)
             .map_err(|_| format!("{:?} is not text: {}", file.path, read_by(&file.path)))?;
         let (part, from, next, total) = page(&text, from);
         Ok(json!({
@@ -350,11 +357,11 @@ impl Worker {
         reason = "the outcome becomes the receipt the holder keeps"
     )]
     pub(in crate::workspace_actions) fn read_tree(
-        &mut self,
+        &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        named: &str,
+        _named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         if !self.may_on_tree(workspace_id, caller, &[]) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
@@ -398,17 +405,31 @@ impl Worker {
                 None,
             ));
         }
-        let (mut tree, _) = self.tree_in_workspace(workspace_id, named)?;
-        let action = request.target.address.action.as_str();
-        let value = if action == fs_protocol::tree::LIST {
-            listing(&mut tree, &arguments)
-        } else if action == fs_protocol::tree::HISTORY {
-            history(&mut tree, &arguments)
+        let link = self
+            .shared
+            .link
+            .get()
+            .cloned()
+            .ok_or_else(|| refused("this host keeps no workspace's tree"))?;
+        let action = request.target.address.action.clone();
+        // The tree's content keys are asked of the host before the tree is read: the read runs
+        // on the tree's own thread, where the host is not asked again.
+        let sealing = if action == fs_protocol::tree::READ_TEXT {
+            self.file_sealing(workspace_id, false).map_err(refused)?
         } else {
-            self.text_at(workspace_id, &mut tree, &arguments)
-        }
-        .map_err(refused)?;
-        self.keep_tree(workspace_id, named, tree);
+            None
+        };
+        let value = link
+            .read_tree(workspace_id, &mut |tree| {
+                if action == fs_protocol::tree::LIST {
+                    listing(tree, &arguments)
+                } else if action == fs_protocol::tree::HISTORY {
+                    history(tree, &arguments)
+                } else {
+                    self.text_at(workspace_id, sealing.as_ref(), tree, &arguments)
+                }
+            })
+            .map_err(refused)?;
         Ok((
             ActionOutput {
                 value: Some(value),

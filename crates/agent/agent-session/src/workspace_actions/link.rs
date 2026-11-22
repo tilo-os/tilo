@@ -303,6 +303,31 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn workspace_content(&self, _workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
         None
     }
+    /// Change `workspace`'s tree where this host keeps it: `change` makes the change in the tree
+    /// the tree's sync holds, as `acting`, and this answers what it answered once the
+    /// workspace's records carry it ([`tilo_fs::tree_sync::TreeSync::change`]). Absence refuses
+    /// the change.
+    fn change_tree(
+        &self,
+        _workspace: WorkspaceId,
+        _acting: Option<tilo_actions::ActionContext>,
+        _change: &mut dyn FnMut(
+            &mut tilo_fs::namespace::Namespace,
+        ) -> Result<serde_json::Value, String>,
+    ) -> Result<serde_json::Value, String> {
+        Err("this host changes no workspace's tree".to_owned())
+    }
+    /// What `read` answers of `workspace`'s tree where this host keeps it, as the workspace has
+    /// it now ([`tilo_fs::tree_sync::TreeSync::read`]). Absence refuses the read.
+    fn read_tree(
+        &self,
+        _workspace: WorkspaceId,
+        _read: &mut dyn FnMut(
+            &mut tilo_fs::namespace::Namespace,
+        ) -> Result<serde_json::Value, String>,
+    ) -> Result<serde_json::Value, String> {
+        Err("this host reads no workspace's tree".to_owned())
+    }
     /// A link the host's web origin serves `link`'s files at, out of
     /// `store` (`workspace`'s), for a little while
     /// ([`tilo_actions::remote::ContentLink`]): the caller was found to read

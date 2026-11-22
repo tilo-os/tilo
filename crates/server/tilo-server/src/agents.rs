@@ -31,6 +31,17 @@ use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{ActionCallError, Caller, Pending};
 
 mod roster;
+
+/// Run `future` to its answer on `runtime`. Called from one of the runtime's own workers, the
+/// worker steps aside first: a worker that blocks on its own runtime would stop the tasks it
+/// drives, and the runtime refuses to be entered twice.
+fn settled<F: std::future::Future>(runtime: &tokio::runtime::Handle, future: F) -> F::Output {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::block_in_place(|| runtime.block_on(future))
+    } else {
+        runtime.block_on(future)
+    }
+}
 use roster::RosterProvisioning;
 use tilo_agent_session::workspace_actions::{
     HostDevice, Opened, Opening, PackagedCall, Recorder, ShellRan, Watching, WorkspaceShell,
@@ -1025,11 +1036,48 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
     }
 
     fn workspace_content(&self, workspace: WorkspaceId) -> Option<tilo_content::ContentStore> {
-        let identity = self
-            .host_device
-            .runtime
-            .block_on(self.workspaces.as_ref()?.workspace_identity(workspace))?;
+        let identity = settled(
+            &self.host_device.runtime,
+            self.workspaces.as_ref()?.workspace_identity(workspace),
+        )?;
         self.stores.get(&identity).ok()
+    }
+
+    /// The workspace's tree changed where this host keeps it, by the tree's own sync.
+    fn change_tree(
+        &self,
+        workspace: WorkspaceId,
+        acting: Option<tilo_actions::ActionContext>,
+        change: &mut dyn FnMut(
+            &mut tilo_fs::namespace::Namespace,
+        ) -> Result<serde_json::Value, String>,
+    ) -> Result<serde_json::Value, String> {
+        let workspaces = self
+            .workspaces
+            .as_ref()
+            .ok_or_else(|| "this host holds no workspaces".to_owned())?;
+        settled(
+            &self.host_device.runtime,
+            workspaces.puts().change(workspace, acting, change),
+        )
+    }
+
+    /// What the workspace's tree holds, read where this host keeps it.
+    fn read_tree(
+        &self,
+        workspace: WorkspaceId,
+        read: &mut dyn FnMut(
+            &mut tilo_fs::namespace::Namespace,
+        ) -> Result<serde_json::Value, String>,
+    ) -> Result<serde_json::Value, String> {
+        let workspaces = self
+            .workspaces
+            .as_ref()
+            .ok_or_else(|| "this host holds no workspaces".to_owned())?;
+        settled(
+            &self.host_device.runtime,
+            workspaces.puts().read(workspace, read),
+        )
     }
 
     fn content_link(
@@ -1275,16 +1323,15 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         route: &tilo_peer_state::document_frame::DocumentRoute,
         create: bool,
     ) -> Option<Result<key_group::ContentKeys, String>> {
-        self.host_device
-            .runtime
-            .block_on(self.workspaces.as_ref()?.own_route_keys(route, create))
+        settled(
+            &self.host_device.runtime,
+            self.workspaces.as_ref()?.own_route_keys(route, create),
+        )
     }
 
     fn records(&self, channel: &str) -> Option<Vec<(String, String)>> {
         let workspaces = self.workspaces.as_ref()?;
-        self.host_device
-            .runtime
-            .block_on(workspaces.records(channel))
+        settled(&self.host_device.runtime, workspaces.records(channel))
     }
 
     fn installed_package(&self, workspace: WorkspaceId, app: &str) -> Option<Vec<u8>> {

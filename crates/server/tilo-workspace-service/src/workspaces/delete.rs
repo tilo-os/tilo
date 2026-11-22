@@ -298,6 +298,7 @@ pub(super) fn remove_files(dir: &Path, workspace: &str) {
         tilo_server_protocol::WorkspaceId::parse(workspace),
     ) {
         paths.push(state.join("workspaces").join(workspace_id.to_string()));
+        paths.push(state.join("files-puts").join(workspace_id.to_string()));
         paths.push(
             state
                 .join("store")

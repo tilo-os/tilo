@@ -1,4 +1,4 @@
-//! Files' verbs on the folder of a workspace whose tree is kept here:
+//! Files' verbs on the folder of a workspace, made where its tree is:
 //! `app.so.tilo.file-explorer#new-folder`, `#rename`, `#move`, `#copy-into`, `#trash` and
 //! `#restore`, each naming paths in the workspace (`Tasks/12 Plan/notes.md`).
 //!
@@ -11,21 +11,19 @@
 //! made there.
 //!
 //! One call is one change of the tree, checked whole before anything is written
-//! ([`tilo_fs::tree_put`]), named in History as the caller's and answered with its
+//! ([`tilo_fs::namespace`]), named in History as the caller's and answered with its
 //! invocation, which `#undo` takes back as History takes back any step.
-
-use std::collections::BTreeMap;
 
 use fs_protocol::tree;
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::{ActionCallError, ActorPlace, Caller, InvokeRequest};
+use tilo_fs::namespace::Changed;
 use tilo_fs::namespace::Namespace;
-use tilo_fs::tree_put::Changed;
 use tilo_server_protocol::WorkspaceId;
 
 use super::refused;
-use crate::workspace_actions::{Outcome, Worker, commit_failed, invoke_arguments};
+use crate::workspace_actions::{Outcome, Worker, invoke_arguments};
 
 /// The folder `name` names as a path in the workspace; the workspace's own when it names none.
 fn folder(arguments: &Map<String, Value>, name: &str) -> Result<String, String> {
@@ -276,17 +274,16 @@ impl Worker {
         reason = "the outcome becomes the receipt the holder keeps"
     )]
     pub(in crate::workspace_actions) fn change_tree(
-        &mut self,
+        &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        named: &str,
+        _named: &str,
     ) -> Result<(ActionOutput, Option<ActorPlace>), Outcome> {
         let verb = request.target.address.action.as_str();
         if !self.may_on_tree(workspace_id, caller, file_actions_of(verb)) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        let _acting = super::acting_for(caller, request);
         let arguments = invoke_arguments(&request.argument);
         if arguments.contains_key("device") {
             return Err(refused(
@@ -294,43 +291,39 @@ impl Worker {
                  Files on that device",
             ));
         }
-        // The tree of a governed workspace is sealed: its keys are what reading it and
-        // writing to it need.
-        let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
-        let (value, writes) = if verb == tree::UNDO {
-            let before = tree.before_change();
-            let context = super::acting_context(caller, request);
-            let taken = match arguments.get("step").and_then(Value::as_str) {
-                Some(step) => undo_step(&mut tree, step.trim(), &context),
-                None => word(&arguments, "invocation")
-                    .and_then(|id| {
-                        uuid::Uuid::parse_str(&id)
-                            .map(tilo_actions::InvocationId)
-                            .map_err(|_| format!("`{id}` names no call"))
-                    })
-                    .and_then(|invocation| undo_call(&mut tree, invocation, &context)),
-            }
+        let link = self
+            .shared
+            .link
+            .get()
+            .cloned()
+            .ok_or_else(|| refused("this host keeps no workspace's tree"))?;
+        let context = super::acting_context(caller, request);
+        let invocation = request.invocation;
+        let value = link
+            .change_tree(workspace_id, Some(context.clone()), &mut |tree| {
+                if verb == tree::UNDO {
+                    let taken = match arguments.get("step").and_then(Value::as_str) {
+                        Some(step) => undo_step(tree, step.trim(), &context),
+                        None => word(&arguments, "invocation")
+                            .and_then(|id| {
+                                uuid::Uuid::parse_str(&id)
+                                    .map(tilo_actions::InvocationId)
+                                    .map_err(|_| format!("`{id}` names no call"))
+                            })
+                            .and_then(|invocation| undo_call(tree, invocation, &context)),
+                    }?;
+                    Ok(json!({
+                        "action": verb,
+                        "taken": taken,
+                        "invocation": invocation.0.to_string(),
+                    }))
+                } else {
+                    let now = tilo_clock::unix_now_ns() / 1_000_000;
+                    let changed = carry_out(tree, verb, &arguments, now)?;
+                    Ok(answer(verb, &changed, invocation))
+                }
+            })
             .map_err(refused)?;
-            let value = json!({
-                "action": verb,
-                "taken": taken,
-                "invocation": request.invocation.0.to_string(),
-            });
-            (value, tree.document_writes(&before))
-        } else {
-            let now = tilo_clock::unix_now_ns() / 1_000_000;
-            let changed = carry_out(&mut tree, verb, &arguments, now).map_err(refused)?;
-            let value = answer(verb, &changed, request.invocation);
-            let writes = match &held {
-                Some(_) => changed.writes,
-                // A tree founded now: every document of it from nothing.
-                None => tree.document_writes(&BTreeMap::new()),
-            };
-            (value, writes)
-        };
-        self.write_tree(workspace_id, named, held.as_ref(), &writes)
-            .map_err(|reason| commit_failed(reason, true))?;
-        self.keep_tree(workspace_id, named, tree);
         Ok((
             ActionOutput {
                 value: Some(value),

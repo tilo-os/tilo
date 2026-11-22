@@ -691,8 +691,8 @@ async fn a_folder_waits_for_a_workspace_this_device_does_not_hold_yet() {
         workspace_id,
         &kept.path().join("tree"),
         (member_cert.device_public_key, member_cert.user_public_key),
-        store,
-        crate::content::tests::hosts(false, false).a,
+        Some(store),
+        Some(crate::content::tests::hosts(false, false).a),
     )
     .await
     .expect("the folder opens");

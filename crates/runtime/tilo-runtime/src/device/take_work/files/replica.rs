@@ -143,7 +143,12 @@ impl ReplicaFiles {
             let (store, content) = (Arc::clone(&parts.store), Arc::clone(&parts.content));
             async move {
                 tilo_workspace_service::files::start(
-                    &copies, workspace, &kept_at, parts.keys, store, content,
+                    &copies,
+                    workspace,
+                    &kept_at,
+                    parts.keys,
+                    Some(store),
+                    Some(content),
                 )
                 .await
             }

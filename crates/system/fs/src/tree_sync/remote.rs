@@ -173,7 +173,7 @@ pub async fn start(
         documents: Arc::new(Remote(Arc::clone(&link))),
         writer: Box::new(Remote(Arc::clone(&link))),
         peer: Arc::new(Remote(Arc::clone(&link))),
-        content,
+        content: Some(content),
         wakes: wake_events,
     })
     .await?;

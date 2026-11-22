@@ -45,9 +45,7 @@ impl WorkspaceActions {
                     InvocationState::new(invocation, entry.update.clone())
                         .left_at(entry.left_at.clone())
                         .linked(entry.link.clone())
-                        .with_untrusted(super::tree_put::answers_from_outside(
-                            &entry.request.target,
-                        ))
+                        .with_untrusted(super::tree::answers_from_outside(&entry.request.target))
                 })
         };
         let Some(wait) = wait_ms
@@ -78,7 +76,7 @@ impl WorkspaceActions {
                                 InvocationState::new(invocation, entry.update.clone())
                                     .left_at(entry.left_at.clone())
                                     .linked(entry.link.clone())
-                                    .with_untrusted(super::tree_put::answers_from_outside(
+                                    .with_untrusted(super::tree::answers_from_outside(
                                         &entry.request.target,
                                     ))
                             }),

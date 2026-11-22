@@ -37,9 +37,11 @@ use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::DocumentAnswer;
 
 use crate::kept_documents::KeptDocuments;
-use crate::namespace::{MountAuthor, Namespace, ResourceWrite};
+use crate::namespace::{MountAuthor, Namespace};
 
+mod change;
 pub mod remote;
+pub use change::{FileToPut, PlacedFile};
 
 /// The app whose record a workspace's tree is.
 pub const FILES_APP: &str = fs_protocol::tree::FILES_APP;
@@ -72,6 +74,10 @@ const BATCH: Duration = Duration::from_millis(200);
 /// How often changes whose batch is due, but that wait for the workspace, are looked at again
 /// when nothing woke the task sooner.
 const WAITING_LOOK: Duration = Duration::from_millis(50);
+/// How long a state of the tree that says its changes went out waits to be read again, before it
+/// is taken for one written after the last change: longer than a pass that finds the batch not
+/// due yet.
+const SETTLED_AGAIN: Duration = Duration::from_millis(60);
 
 /// How many bytes of changes one write of a record carries at most: well under the most a
 /// document write may carry, so changes made while a record could not go out go out over
@@ -373,8 +379,9 @@ pub struct Config {
     pub writer: Box<dyn TreeWriter + Send>,
     /// What the peer says of the records beside their contents.
     pub peer: Arc<dyn TreePeer>,
-    /// Where this workspace's file bytes are kept.
-    pub content: Arc<crate::ContentStore>,
+    /// Where this workspace's file bytes are kept; `None` for a tree kept for its records
+    /// alone, which counts none of them as here.
+    pub content: Option<Arc<crate::ContentStore>>,
     /// The wakes the peer sends, from [`TreeSync::wake`]'s waits.
     pub wakes: tokio::sync::mpsc::UnboundedReceiver<Wake>,
 }
@@ -422,6 +429,11 @@ pub struct TreeSync {
     /// Waited on by whatever notices the peer changed ([`Self::wake`]), and poked by
     /// [`Self::stop`] and [`Self::set_paused`].
     wake: Arc<tokio::sync::Notify>,
+    /// How many passes the sync made, counted as each ends: what a read waits for a pass of.
+    passes: Arc<std::sync::atomic::AtomicU64>,
+    /// Set by a read that needs the tree as the workspace has it now: the next pass reads every
+    /// record again.
+    refresh: Arc<AtomicBool>,
     /// The task syncing this tree, until a stop waits for it.
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -519,6 +531,8 @@ impl TreeSync {
         let paused = Arc::new(AtomicBool::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
         let wake = Arc::new(tokio::sync::Notify::new());
+        let passes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let refresh = Arc::new(AtomicBool::new(false));
         let sync = Sync {
             workspace,
             read,
@@ -529,6 +543,8 @@ impl TreeSync {
             paused: Arc::clone(&paused),
             stopping: Arc::clone(&stopping),
             wake: Arc::clone(&wake),
+            passes: Arc::clone(&passes),
+            refresh: Arc::clone(&refresh),
             namespace: Arc::clone(&namespace),
             // Each record as the workspace held it when this device last merged it: the pass
             // asks only what changed since, and writes out only what the workspace lacks.
@@ -572,6 +588,8 @@ impl TreeSync {
             paused,
             stopping,
             wake,
+            passes,
+            refresh,
             task: Some(task),
         })
     }
@@ -628,6 +646,37 @@ impl TreeSync {
         self.status.changed.subscribe()
     }
 
+    /// Wait until every change this tree holds was handed to the peer, at most `within`: what a
+    /// put into the tree answers once the workspace's records carry it.
+    ///
+    /// The state is read twice, a look apart, so a state written before the last change of this
+    /// namespace was read again: the sync's own pass has seen the change by then.
+    ///
+    /// # Errors
+    /// The changes did not all go out within `within`.
+    pub async fn wait_sent(&self, within: Duration) -> Result<(), String> {
+        let started = Instant::now();
+        let mut seen = 0_u8;
+        loop {
+            if self.status.lock_recover().sent {
+                seen = seen.saturating_add(1);
+                if seen >= 2 {
+                    return Ok(());
+                }
+                tokio::time::sleep(SETTLED_AGAIN).await;
+            } else {
+                seen = 0;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            if started.elapsed() >= within {
+                return Err(format!(
+                    "the workspace's tree has not taken the change within {}s",
+                    within.as_secs()
+                ));
+            }
+        }
+    }
+
     /// Stop syncing (changes made here wait to go out, and none come in), or start again.
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
@@ -668,68 +717,6 @@ fn unheld_chunks(
 /// chunks `unheld`: those chunks go out first and alone, since any other document may name them.
 fn may_go_out(chunk: TreeChunk, unheld: &BTreeSet<TreeChunk>) -> bool {
     unheld.is_empty() || unheld.contains(&chunk)
-}
-
-/// One record of the tree written by a caller whose writes are answered where they are made
-/// ([`write_tree`]): a host putting files into a folder names the change and the workspace
-/// takes it, with nothing for the caller to wait on.
-pub trait RecordWrite {
-    /// Write `changes` to record `chunk`: its founding write when `founding`, a change of it
-    /// otherwise; the whole record when `snapshot`, its changes otherwise.
-    fn write_record(
-        &mut self,
-        chunk: TreeChunk,
-        changes: &[u8],
-        founding: bool,
-        snapshot: bool,
-    ) -> Result<(), String>;
-}
-
-/// Write `records` to a workspace's tree through `writer`, each record once, in the order the
-/// tree may go out: the chunks the workspace does not hold first, the tree's own record (`0`),
-/// which names every chunk, last. A record the workspace holds none of is founded first with the
-/// empty genesis every writer makes alike.
-///
-/// A write that fails stops the rest: the tree's own record never goes out naming a chunk the
-/// workspace does not hold.
-///
-/// # Errors
-/// The writer refused or failed a write.
-pub fn write_tree<W: RecordWrite + ?Sized>(
-    records: &[ResourceWrite],
-    held: Option<&BTreeSet<TreeChunk>>,
-    writer: &mut W,
-) -> Result<(), String> {
-    for write in write_order(records, held) {
-        if write.changes.is_empty() {
-            continue;
-        }
-        if !holds(held, write.chunk) {
-            // A record founded now: the empty genesis every writer makes alike, then what was
-            // written there.
-            let genesis = automerge::AutoCommit::new().save();
-            writer.write_record(write.chunk, &genesis, true, true)?;
-        }
-        writer.write_record(write.chunk, &write.changes, false, false)?;
-    }
-    Ok(())
-}
-
-/// Whether the workspace holds record `chunk` of the tree, as the set of the records it holds
-/// says.
-fn holds(held: Option<&BTreeSet<TreeChunk>>, chunk: TreeChunk) -> bool {
-    held.is_some_and(|held| held.contains(&chunk))
-}
-
-/// `writes` in the order the tree may go out ([`write_tree`]): chunks the workspace does not
-/// hold first, the tree's own record (`0`) last, which names every chunk of the tree.
-fn write_order<'a>(
-    writes: &'a [ResourceWrite],
-    held: Option<&BTreeSet<TreeChunk>>,
-) -> Vec<&'a ResourceWrite> {
-    let mut writes: Vec<&ResourceWrite> = writes.iter().collect();
-    writes.sort_by_key(|write| (write.chunk == 0, holds(held, write.chunk), write.chunk));
-    writes
 }
 
 /// Read each document `due`: what the peer holds of it past the heads this namespace merged.
@@ -888,11 +875,13 @@ struct Sync {
     read: Arc<dyn Records>,
     writer: Box<dyn TreeWriter + Send>,
     peer: Arc<dyn TreePeer>,
-    content: Arc<crate::ContentStore>,
+    content: Option<Arc<crate::ContentStore>>,
     wakes: tokio::sync::mpsc::UnboundedReceiver<Wake>,
     paused: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     wake: Arc<tokio::sync::Notify>,
+    passes: Arc<std::sync::atomic::AtomicU64>,
+    refresh: Arc<AtomicBool>,
     namespace: Arc<Mutex<Namespace>>,
     /// Every record of the tree this device opened, by chunk: the tree's own (0) first.
     documents: BTreeMap<TreeChunk, Held>,
@@ -961,6 +950,18 @@ impl Sync {
                 // carrying on into a peer that is going.
                 break;
             }
+            // A reader asked for the tree as the workspace has it now: every record the tree
+            // lists is asked of the workspace again, which answers each that did not change in
+            // a word.
+            if self.refresh.swap(false, Ordering::Relaxed) {
+                session_moved = true;
+                let listed = self
+                    .namespace_now()
+                    .map(|namespace| namespace.listed_chunks());
+                for chunk in listed.unwrap_or_default() {
+                    self.unread.insert(chunk);
+                }
+            }
             if !self.paused.load(Ordering::Relaxed) {
                 if session_moved || !self.unread.is_empty() {
                     self.pull_all().await;
@@ -979,6 +980,7 @@ impl Sync {
             // now and then: every pass takes the namespace, which every request of the mount
             // waits for. Nothing here reads a record on a clock: a write that changed one wakes
             // this task with the record it changed.
+            self.passes.fetch_add(1, Ordering::Relaxed);
             let wait = self.dirty_since.map(|since| {
                 let held = self.held_until.map_or(Duration::ZERO, |until| {
                     until.saturating_duration_since(Instant::now())
@@ -1638,13 +1640,13 @@ impl Sync {
             // are asked of the content store a file at a time: off the runtime's workers, like a
             // merge and a keep, so a client's status is answered meanwhile.
             let namespace = Arc::clone(&self.namespace);
-            let store = Arc::clone(&self.content);
+            let store = self.content.clone();
             let started = Instant::now();
             match tokio::task::spawn_blocking(move || {
                 let namespace = namespace.lock_recover();
                 let named = files_of(&namespace);
                 drop(namespace);
-                let local = local_bytes(&store, &named);
+                let local = local_bytes(store.as_deref(), &named);
                 (Arc::new(named), local)
             })
             .await
@@ -1703,8 +1705,8 @@ impl Sync {
         {
             return None;
         }
-        let (store, files) = (Arc::clone(&self.content), Arc::clone(&self.files));
-        let local = tokio::task::spawn_blocking(move || local_bytes(&store, &files))
+        let (store, files) = (self.content.clone(), Arc::clone(&self.files));
+        let local = tokio::task::spawn_blocking(move || local_bytes(store.as_deref(), &files))
             .await
             .ok()?;
         self.local_counted = Some(Instant::now());
@@ -1755,10 +1757,10 @@ fn files_of(namespace: &Namespace) -> Vec<FileBytes> {
 
 /// The bytes of `files` the content store holds: a text document the tree holds itself is here
 /// whenever the tree is.
-fn local_bytes(store: &crate::ContentStore, files: &[FileBytes]) -> u64 {
+fn local_bytes(store: Option<&crate::ContentStore>, files: &[FileBytes]) -> u64 {
     files
         .iter()
-        .filter(|(hash, _)| hash.is_none_or(|hash| store.holds(hash)))
+        .filter(|(hash, _)| hash.is_none_or(|hash| store.is_some_and(|store| store.holds(hash))))
         .fold(0_u64, |bytes, (_, size)| bytes.saturating_add(*size))
 }
 
@@ -1787,6 +1789,7 @@ mod tests {
     use tilo_server_protocol::DocumentAnswer;
 
     use super::*;
+    use crate::tree_sync::FileToPut;
 
     /// A document of the tree that does not read here is asked of the workspace again after a
     /// short wait, then less and less often, but never less often than every few minutes: a
@@ -2065,6 +2068,76 @@ mod tests {
         }
     }
 
+    /// A peer that never answers an open: the workspace's tree never reads here.
+    struct Silent;
+
+    impl Records for Silent {
+        fn read(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&[[u8; 32]]>,
+        ) -> Result<Reading, String> {
+            Ok(Reading::Pending)
+        }
+    }
+
+    impl TreePeer for Silent {
+        fn open(&self, _: TreeChunk) {}
+        fn answer(&self, _: TreeChunk) -> Option<DocumentAnswer> {
+            None
+        }
+        fn holds(&self, _: TreeChunk) -> bool {
+            false
+        }
+        fn holding(&self, _: TreeChunk) -> bool {
+            false
+        }
+        fn pending(&self) -> usize {
+            0
+        }
+        fn reask_content(&self) {}
+    }
+
+    /// A put waits for the workspace's tree to be read here, and changes nothing until it is: a
+    /// change made first would land on a tree founded here beside the workspace's own.
+    #[tokio::test(start_paused = true)]
+    async fn a_put_waits_for_the_workspace_tree_and_changes_nothing_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_tell, wakes) = tokio::sync::mpsc::unbounded_channel();
+        let workspace = Arc::new(Silent);
+        let sync = TreeSync::start(Config {
+            workspace: "studio".to_owned(),
+            device: [1; 32],
+            person: [2; 32],
+            kept_at: dir.path().join("tree"),
+            documents: Arc::clone(&workspace) as Arc<dyn Records>,
+            writer: Box::new(Unanswered(Arc::new(std::sync::atomic::AtomicUsize::new(0)))),
+            peer: workspace,
+            content: None,
+            wakes,
+        })
+        .await
+        .unwrap();
+        let hash = hex::encode([3; 32]);
+        let files = [FileToPut {
+            to: "",
+            name: "a.txt",
+            hash: &hash,
+            size: 1,
+            mtime: 1,
+        }];
+        let Err(said) = sync.change(None, |tree| tree.put_files(&files)).await else {
+            panic!("the put was made before the workspace's tree was read");
+        };
+        assert!(said.contains("has not been read here"), "{said}");
+        assert!(
+            sync.namespace.lock_recover().entry_at("a.txt").is_none(),
+            "nothing was changed before the workspace's tree was read"
+        );
+    }
+
     /// A write that never ends holds the folder no longer than its bound: it counts as refused,
     /// and the change goes again after the refusal's wait and is taken.
     #[tokio::test(start_paused = true)]
@@ -2081,11 +2154,11 @@ mod tests {
             documents: Arc::clone(&workspace) as Arc<dyn Records>,
             writer: Box::new(Unanswered(Arc::clone(&writes))),
             peer: workspace,
-            content: Arc::new(
+            content: Some(Arc::new(
                 crate::ContentStore::open(dir.path().join("blobs"))
                     .await
                     .unwrap(),
-            ),
+            )),
             wakes,
         })
         .await
@@ -2259,112 +2332,5 @@ mod tests {
             .create_dir(crate::namespace::ROOT_INO, "folder", 1)
             .unwrap();
         assert_eq!(files_of(&namespace), vec![(None, 7)]);
-    }
-
-    /// What a [`TreeWriter`] was asked to write, in order: a record's number, whether it was
-    /// the founding write, and its changes.
-    #[derive(Default)]
-    struct Wrote(Vec<(TreeChunk, bool, Vec<u8>)>);
-
-    impl RecordWrite for Wrote {
-        fn write_record(
-            &mut self,
-            chunk: TreeChunk,
-            changes: &[u8],
-            founding: bool,
-            _snapshot: bool,
-        ) -> Result<(), String> {
-            self.0.push((chunk, founding, changes.to_vec()));
-            Ok(())
-        }
-    }
-
-    /// A writer that refuses one chunk's changes, as a host that would not take them does.
-    struct Refusing {
-        refuses: TreeChunk,
-        wrote: Vec<TreeChunk>,
-    }
-
-    impl RecordWrite for Refusing {
-        fn write_record(
-            &mut self,
-            chunk: TreeChunk,
-            _changes: &[u8],
-            _founding: bool,
-            _snapshot: bool,
-        ) -> Result<(), String> {
-            self.wrote.push(chunk);
-            if chunk == self.refuses {
-                Err("the workspace refused it".to_owned())
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    /// The tree's own record never goes out naming a chunk the serving side does not hold: a
-    /// chunk this device starts is founded and written before the record that names it, and a
-    /// chunk the serving side refuses keeps the record from going out at all.
-    #[test]
-    fn a_chunk_goes_out_before_the_index_that_names_it() {
-        let mut namespace = Namespace::new("laptop").unwrap();
-        for n in 0..3_000 {
-            namespace
-                .create_file(
-                    crate::namespace::ROOT_INO,
-                    format!("object-{n}"),
-                    None,
-                    1,
-                    1,
-                )
-                .unwrap();
-        }
-        let writes = namespace.document_writes(&BTreeMap::new());
-        let chunks: BTreeSet<TreeChunk> = writes
-            .iter()
-            .map(|write| write.chunk)
-            .filter(|chunk| *chunk != 0)
-            .collect();
-        assert!(chunks.len() > 1, "the files filled several chunks");
-        // The writes come in record order, the tree's own record (0) first: the order they
-        // would go out in without the sync's ordering.
-        assert!(writes.iter().any(|write| write.chunk == 0));
-
-        let mut wrote = Wrote::default();
-        write_tree(&writes, None, &mut wrote).unwrap();
-        let order: Vec<TreeChunk> = wrote.0.iter().map(|(chunk, _, _)| *chunk).collect();
-        assert_eq!(
-            order.last(),
-            Some(&0),
-            "the tree's own record goes out last: {order:?}"
-        );
-        for chunk in &chunks {
-            assert!(
-                order.iter().position(|wrote| wrote == chunk) < order.iter().position(|w| *w == 0),
-                "chunk {chunk} goes out before the record that names it"
-            );
-            assert!(
-                wrote
-                    .0
-                    .iter()
-                    .any(|(wrote, founding, _)| wrote == chunk && *founding),
-                "chunk {chunk} is founded before what it holds is written"
-            );
-        }
-
-        // The serving side refuses one chunk: the record naming it never goes out.
-        let refused = *chunks.iter().next().unwrap();
-        let mut refusing = Refusing {
-            refuses: refused,
-            wrote: Vec::new(),
-        };
-        let answer = write_tree(&writes, None, &mut refusing);
-        assert!(answer.is_err(), "the refusal is answered");
-        assert!(
-            !refusing.wrote.contains(&0),
-            "the record naming a refused chunk did not go out: {:?}",
-            refusing.wrote
-        );
-        assert!(refusing.wrote.contains(&refused));
     }
 }

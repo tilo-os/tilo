@@ -1,32 +1,28 @@
-//! Putting a file into a workspace's file tree: `app.so.tilo.file-explorer#open`
-//! given a file's `content`, and the folder (`dir`) and name it goes under, or
-//! many files at once as `files` — a list of those, or a `tilo.content:`
-//! reference to one kept in the workspace — in one change of the tree.
+//! The files of a workspace's own folder, as the host answers them: its verbs and its reads by
+//! a path in the workspace, and `app.so.tilo.file-explorer#open` given a file's `content` and
+//! the folder (`dir`) and name it goes under, or many files at once as `files` — a list of
+//! those, or a `tilo.content:` reference to one kept in the workspace.
 //!
-//! A workspace has one folder — its Files app record, the tree its members
-//! mount — and a file gets into it by being written there. A caller that has
-//! the bytes but no mount (the `tilo` command on a machine holding only a key,
-//! an agent over MCP) puts the bytes in the workspace's store and opens them
-//! in Files; this host writes the node where the filesystem writes one it
-//! creates ([`tilo_fs::namespace`]), so every member's folder shows the file
-//! as if it had been copied in there. No app's record is made: what opens the
-//! file afterwards is the person's choice, from the file itself.
+//! A workspace has one folder — its Files app record, the tree its members mount — and those
+//! files are its tree. Every change here — a put, a file manager's verb, a file written from
+//! text — is made where the tree is, by the host that holds it
+//! ([`super::WorkspaceDocumentsLink::change_tree`]), which hands it to the workspace as an
+//! ordinary change of the tree; what a read answers is the tree as the workspace has it now
+//! ([`super::WorkspaceDocumentsLink::read_tree`]). No app's record is made of a file: what opens
+//! it afterwards is the person's choice, from the file itself.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use automerge::AutoCommit;
-use collab_types::DocumentMutation;
 use fs_protocol::files::TreeChunk;
 use fs_protocol::tree;
 use fs_protocol::tree::{FILES_APP, document_id as tree_document};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
-use tilo_fs::namespace::Namespace;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 use ui::permissions::policy::{ActionKind, Answer};
 
-use super::{Outcome, Worker, commit_failed, invoke_arguments};
+use super::{Outcome, Worker, invoke_arguments};
 
 mod by_path;
 mod read;
@@ -36,7 +32,7 @@ mod write;
 /// Whether `target` is one of Files' verbs on the workspace's own folder, by a path in the
 /// workspace ([`by_path`]), which change its tree where it is kept; its `write-file` there
 /// ([`write`]), which writes a file into it; or one of its reads of that folder ([`read`]),
-/// which answer what the tree kept here holds: by a path, on a folder of it, or on a file a
+/// which answer what the tree holds: by a path, on a folder of it, or on a file a
 /// listing offered ([`tree::file_resource`]).
 pub(super) fn acts_on_tree(target: &tilo_actions::remote::RemoteActionTarget) -> bool {
     let action = target.address.action.as_str();
@@ -72,41 +68,6 @@ pub(super) fn answers_from_outside(target: &tilo_actions::remote::RemoteActionTa
     acts_on_tree(target) && (tree::is_tree_read(action) || action == RESTORE)
 }
 
-/// The records of a workspace's tree as the host holds them: each with the
-/// number of its chunk, the tree's own record first, and the chunks the host
-/// holds at all, each with the heads it stands at.
-type HeldTree = (Vec<(TreeChunk, Vec<u8>)>, HeldChunks);
-
-/// The chunks of a workspace's tree the host holds, each with the heads it stands at.
-pub(super) type HeldChunks = BTreeMap<TreeChunk, Vec<[u8; 32]>>;
-
-/// A workspace's tree as a request read it, kept for the next: the heads of
-/// each of its documents it took in, and the tree itself once the request that read it
-/// handed it back ([`Worker::keep_tree`]). A request holds the tree while it
-/// is served, so one that fails leaves none, and the next reads it whole.
-pub(super) struct KeptTree {
-    tree: Option<Namespace>,
-    heads: HeldChunks,
-}
-
-impl KeptTree {
-    /// A tree just read at `heads`, held by the request that read it.
-    fn read(heads: HeldChunks) -> Self {
-        Self { tree: None, heads }
-    }
-}
-
-/// What a document of a workspace's tree did since a request read it.
-enum Since {
-    /// The workspace holds no such document.
-    Missing,
-    /// It is where it was read.
-    Unchanged,
-    /// The changes after what was read (the document whole where nothing
-    /// was), with the heads it is at now.
-    Changed(Vec<u8>, Vec<[u8; 32]>),
-}
-
 /// What a `files` open names of the file it puts into the workspace.
 pub(super) struct Putting {
     /// Its `tilo.content:<hash>` reference.
@@ -117,14 +78,6 @@ pub(super) struct Putting {
     pub(super) dir: String,
     /// The name it takes in that folder.
     pub(super) name: String,
-}
-
-/// Write the tree's file actions as `caller` in the call `request`, as the host admitted them,
-/// until dropped: each change the call makes then names who made it, in which run and under
-/// which invocation, which History shows and Undo takes back as one step of theirs, in every
-/// document of the tree it touched ([`tilo_fs::namespace::acting_as`]).
-pub(super) fn acting_for(caller: &Caller, request: &InvokeRequest) -> tilo_fs::namespace::ActingAs {
-    tilo_fs::namespace::acting_as(Some(acting_context(caller, request)))
 }
 
 /// What the tree's changes of the call `request` by `caller` are part of: who made them, in
@@ -339,6 +292,24 @@ impl Worker {
     /// there, or one of its reads of that folder ([`acts_on_tree`]).
     ///
     /// # Errors
+    /// The record of `workspace`'s files: the tree's own (chunk 0), which names the chunks that
+    /// hold its nodes.
+    pub(super) fn tree_route(workspace: &str) -> DocumentRoute {
+        DocumentRoute {
+            app_id: FILES_APP.to_owned(),
+            cluster_id: workspace.to_owned(),
+            document: tree_document(),
+        }
+    }
+
+    /// The record of chunk `chunk` of `workspace`'s files.
+    pub(super) fn tree_chunk_route(workspace: &str, chunk: TreeChunk) -> DocumentRoute {
+        DocumentRoute {
+            document: tree::chunk_document_id(chunk),
+            ..Self::tree_route(workspace)
+        }
+    }
+
     /// What the verb ([`Self::change_tree`]), the write ([`Self::write_tree_file`]) or the
     /// read ([`Self::read_tree`]) refuses.
     #[allow(
@@ -346,7 +317,7 @@ impl Worker {
         reason = "the outcome becomes the receipt the holder keeps"
     )]
     pub(super) fn in_tree(
-        &mut self,
+        &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
@@ -368,258 +339,64 @@ impl Worker {
         self.change_tree(workspace_id, caller, request, named)
     }
 
-    /// The record of `workspace`'s files: the tree's own (chunk 0), which names
-    /// the chunks that hold its nodes.
-    pub(super) fn tree_route(workspace: &str) -> DocumentRoute {
-        DocumentRoute {
-            app_id: FILES_APP.to_owned(),
-            cluster_id: workspace.to_owned(),
-            document: tree_document(),
+    /// Each file of `puttings` with the manifest the tree names its content by and its length:
+    /// what the workspace does not hold of a manifest is kept, a folder of them together. Every
+    /// file is named before the tree is touched, so one the workspace holds no content for
+    /// refuses the whole open, nothing half put.
+    fn named_for_the_tree(
+        store: &tilo_content::ContentStore,
+        sealing: Option<&sealed::FileSealing>,
+        puttings: Vec<Putting>,
+    ) -> Result<Vec<(Putting, String, u64)>, String> {
+        let mut kept: BTreeMap<String, (u64, String)> = BTreeMap::new();
+        let mut pending: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut pending_bytes = 0_usize;
+        let mut files = Vec::with_capacity(puttings.len());
+        for putting in puttings {
+            let (size, manifest) = if let Some(named) = kept.get(&putting.hash).cloned() {
+                named
+            } else {
+                let size = size_of(store, &putting.hash)
+                    .ok_or_else(|| format!("this workspace holds no {}", putting.content))?;
+                // A file of the tree is named by its content manifest, as a mounted computer
+                // names one, so every member reads it the same way; files of the same content
+                // are named once, and a folder's manifests are kept together.
+                let (manifest, added) =
+                    manifest_into(store, &putting.hash, size, &mut pending, sealing)?;
+                pending_bytes = pending_bytes.saturating_add(added);
+                let named = (size, manifest);
+                kept.insert(putting.hash.clone(), named.clone());
+                named
+            };
+            files.push((putting, manifest, size));
+            if pending_bytes >= MANIFEST_FLUSH_BYTES {
+                keep_pending(store, &mut pending)?;
+                pending_bytes = 0;
+            }
         }
+        keep_pending(store, &mut pending)?;
+        Ok(files)
     }
 
-    /// The record of chunk `chunk` of `workspace`'s files.
-    pub(super) fn tree_chunk_route(workspace: &str, chunk: TreeChunk) -> DocumentRoute {
-        DocumentRoute {
-            document: tree::chunk_document_id(chunk),
-            ..Self::tree_route(workspace)
-        }
-    }
-
-    /// The tree of `workspace`, as the records this host holds of it read, with
-    /// which records those are; `None` for a tree nobody wrote yet, which the
-    /// put founds.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
-    )]
-    pub(super) fn tree_in_workspace(
-        &mut self,
-        workspace_id: WorkspaceId,
-        workspace: &str,
-    ) -> Result<(Namespace, Option<BTreeSet<TreeChunk>>), Outcome> {
-        let (tree, held) = self.tree_with_heads(workspace_id, workspace)?;
-        Ok((tree, held.map(|held| held.into_keys().collect())))
-    }
-
-    /// [`Self::tree_in_workspace`], with the heads each held record stands at.
+    /// Answer a Files open naming a file: put it into the workspace's tree at the folder and
+    /// under the name it asks for, and answer where it now is.
     ///
-    /// The tree a request on this workspace kept ([`Self::keep_tree`]) takes
-    /// in only what changed of each of its documents since it was read, so a request
-    /// costs what changed, not the whole tree; a tree nobody kept is read
-    /// whole.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
-    )]
-    pub(super) fn tree_with_heads(
-        &mut self,
-        workspace_id: WorkspaceId,
-        workspace: &str,
-    ) -> Result<(Namespace, Option<HeldChunks>), Outcome> {
-        let key = (workspace_id, workspace.to_owned());
-        if let Some(kept) = self.trees.get_mut(&key)
-            && let Some(tree) = kept.tree.take()
-        {
-            let heads = kept.heads.clone();
-            if let Some((tree, held)) = self.caught_up(workspace_id, workspace, tree, heads)? {
-                if let Some(kept) = self.trees.get_mut(&key) {
-                    kept.heads.clone_from(&held);
-                }
-                return Ok((tree, Some(held)));
-            }
-        }
-        let author = hex::encode(self.own_device.key.verifying_key().to_bytes());
-        // Every document the tree is kept as names itself as Files' document of this workspace,
-        // as a page's Files window names the one it founds: a tree a call wrote is then one every
-        // page opens, not one whose identity it refuses.
-        let mount = tilo_fs::namespace::MountAuthor::device(author).in_workspace(workspace);
-        let Some((records, held)) = self.tree_records(workspace_id, workspace)? else {
-            let tree = Namespace::new(mount)
-                .map_err(|error| refused(format!("a tree could not be founded: {error}")))?;
-            self.trees.insert(key, KeptTree::read(BTreeMap::new()));
-            return Ok((tree, None));
-        };
-        let tree = Namespace::from_records(mount, records)
-            .map_err(|error| refused(format!("the workspace's tree does not read: {error}")))?;
-        self.trees.insert(key, KeptTree::read(held.clone()));
-        Ok((tree, Some(held)))
-    }
-
-    /// Keep `tree`, which a request read with [`Self::tree_with_heads`] and
-    /// whose writes the workspace took, for the next request on it. A request
-    /// whose writes failed keeps nothing: the next reads the tree whole.
-    pub(super) fn keep_tree(
-        &mut self,
-        workspace_id: WorkspaceId,
-        workspace: &str,
-        tree: Namespace,
-    ) {
-        if let Some(kept) = self.trees.get_mut(&(workspace_id, workspace.to_owned())) {
-            kept.tree = Some(tree);
-        }
-    }
-
-    /// `tree`, read when its documents were at `heads`, with what changed of
-    /// them since taken in, and the heads they are at now; `None` when the
-    /// workspace holds none of the tree's own document, which a whole read
-    /// settles.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome is what the request is answered with"
-    )]
-    fn caught_up(
-        &mut self,
-        workspace_id: WorkspaceId,
-        workspace: &str,
-        mut tree: Namespace,
-        mut heads: HeldChunks,
-    ) -> Result<Option<(Namespace, HeldChunks)>, Outcome> {
-        let unreadable = |error: automerge::AutomergeError| {
-            refused(format!("the workspace's tree does not read: {error}"))
-        };
-        let index = Self::tree_route(workspace);
-        match self.since(workspace_id, &index, true, heads.get(&0))? {
-            Since::Missing => return Ok(None),
-            Since::Unchanged => {}
-            Since::Changed(bytes, at) => {
-                tree.take_documents(vec![(0, bytes)]).map_err(unreadable)?;
-                heads.insert(0, at);
-            }
-        }
-        let mut taken = Vec::new();
-        for chunk in tree.listed_chunks() {
-            let route = Self::tree_chunk_route(workspace, chunk);
-            if let Since::Changed(bytes, at) =
-                self.since(workspace_id, &route, false, heads.get(&chunk))?
-            {
-                taken.push((chunk, bytes));
-                heads.insert(chunk, at);
-            }
-        }
-        if !taken.is_empty() {
-            tree.take_documents(taken).map_err(unreadable)?;
-        }
-        Ok(Some((tree, heads)))
-    }
-
-    /// What changed of the document at `route` since the heads `since`.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome is what the request is answered with"
-    )]
-    fn since(
-        &mut self,
-        workspace_id: WorkspaceId,
-        route: &DocumentRoute,
-        act: bool,
-        since: Option<&Vec<[u8; 32]>>,
-    ) -> Result<Since, Outcome> {
-        let held = self.refreshed_for(workspace_id, route, act)?;
-        match held.update(route, since.map(Vec::as_slice)) {
-            Ok(Some((
-                DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes),
-                at,
-            ))) => Ok(Since::Changed(bytes, at)),
-            Ok(None) if since.is_some() => Ok(Since::Unchanged),
-            Ok(None) | Err(_) if !self.held_or_owed(workspace_id, route)? => Ok(Since::Missing),
-            // Held, and not readable yet (its keys, or the rest of its history, on their way):
-            // read as unchanged with nothing taken, a put founded it again over the
-            // workspace's own, which the workspace refused as one it holds already.
-            Ok(None) => Err(Outcome::Rejected(ActionCallError::NotReady)),
-            Err(why) => Err(Outcome::Rejected(ActionCallError::Unavailable {
-                reason: why,
-            })),
-        }
-    }
-
-    /// The records of `workspace`'s tree that this host holds, the tree's own
-    /// first, with which of them it holds; `None` for a tree nobody wrote yet. A
-    /// chunk the tree's own record lists that the host holds none of is read as
-    /// an empty one: the write founds it, and what other members write there
-    /// merges with it.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
-    )]
-    fn tree_records(
-        &mut self,
-        workspace_id: WorkspaceId,
-        workspace: &str,
-    ) -> Result<Option<HeldTree>, Outcome> {
-        let Some((index, heads)) =
-            self.saved_here(workspace_id, &Self::tree_route(workspace), true)?
-        else {
-            return Ok(None);
-        };
-        let mut doc = AutoCommit::load(&index)
-            .map_err(|error| refused(format!("the workspace's tree does not read: {error}")))?;
-        if doc.get_heads().is_empty() {
-            // A document a writer founded and holds no change of yet: the tree nobody wrote,
-            // which the write founds with the identity every founder derives.
-            return Ok(None);
-        }
-        let mut records = vec![(0, index)];
-        let mut held = BTreeMap::from([(0, heads)]);
-        for chunk in tree::listed_chunks(&doc) {
-            match self.saved_here(
-                workspace_id,
-                &Self::tree_chunk_route(workspace, chunk),
-                false,
-            )? {
-                Some((bytes, heads)) => {
-                    held.insert(chunk, heads);
-                    records.push((chunk, bytes));
-                }
-                None => records.push((chunk, AutoCommit::new().save())),
-            }
-        }
-        Ok(Some((records, held)))
-    }
-
-    /// Write `writes` to `workspace`'s tree, one record each, in the order the tree may go out
-    /// ([`tilo_fs::tree_sync::write_tree`]): the chunks the workspace does not hold first, the
-    /// tree's own record that names them last, so the tree never names a chunk it lacks.
+    /// The tree's one writer is the host that holds it ([`WorkspaceDocumentsLink::change_tree`]);
+    /// this answers the content and where it goes, never a second way into the tree.
     ///
     /// # Errors
-    /// The tree's records could not be read to name their write, or a write was refused.
-    pub(super) fn write_tree(
-        &mut self,
-        workspace_id: WorkspaceId,
-        named: &str,
-        held: Option<&BTreeSet<TreeChunk>>,
-        records: &[tilo_fs::namespace::ResourceWrite],
-    ) -> Result<(), String> {
-        let mut writer = TreeWrites {
-            worker: self,
-            workspace_id,
-            named,
-            held,
-            refreshed: false,
-        };
-        // A record write is answered where it is made: the service keeps it, or the agent's own
-        // session takes it, and the one-shot takes the answer at once.
-        tilo_fs::tree_sync::write_tree(records, held, &mut writer)
-    }
-
-    /// Answer a Files open naming a file: put it into `named`'s tree at the
-    /// folder and under the name it asks for, founding the tree's records when
-    /// the workspace holds none, and answer where it now is.
-    ///
-    /// # Errors
-    /// A caller who may not change the workspace's records, content the
-    /// workspace does not hold, a tree the host cannot read yet, or a change
-    /// the workspace did not take.
+    /// A caller who may not change the workspace's records, content the workspace does not hold,
+    /// or a put the tree refuses.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
     pub(super) fn put_in_workspace(
-        &mut self,
+        &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
         request: &InvokeRequest,
-        named: &str,
+        _named: &str,
     ) -> Result<
         (
             tilo_actions::ActionOutput,
@@ -636,74 +413,17 @@ impl Worker {
         ) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        let _acting = acting_for(caller, request);
         let arguments = invoke_arguments(&request.argument);
         let many = arguments.contains_key("files");
         let store = self
             .workspace_content(workspace_id)
             .ok_or_else(|| refused("this workspace keeps no files on its host"))?;
         let puttings = Putting::all(&arguments, &store)?;
-        // Every file is named before the tree is touched: one the workspace
-        // holds no content for refuses the whole open, nothing half put. What
-        // the store does not hold yet — each file's manifest — is kept
-        // together, one write for all.
-        let mut kept: std::collections::BTreeMap<String, (u64, String)> =
-            std::collections::BTreeMap::new();
-        let mut pending: std::collections::BTreeMap<String, Vec<u8>> =
-            std::collections::BTreeMap::new();
-        let mut pending_bytes = 0_usize;
+        // The tree of a governed workspace is sealed: its keys are what reading it and writing
+        // to it need.
         let sealing = self.file_sealing(workspace_id, true).map_err(refused)?;
-        let mut files = Vec::with_capacity(puttings.len());
-        for putting in puttings {
-            let known = kept.get(&putting.hash).cloned();
-            let (size, manifest) = if let Some(named) = known {
-                named
-            } else {
-                let size = size_of(&store, &putting.hash).ok_or_else(|| {
-                    refused(format!("this workspace holds no {}", putting.content))
-                })?;
-                // A file of the tree is named by its content manifest, as a
-                // mounted computer names one, so every member reads it the
-                // same way; files of the same content are named once, and a
-                // folder's manifests are kept together.
-                let (manifest, added) =
-                    manifest_into(&store, &putting.hash, size, &mut pending, sealing.as_ref())
-                        .map_err(refused)?;
-                pending_bytes = pending_bytes.saturating_add(added);
-                let named = (size, manifest);
-                kept.insert(putting.hash.clone(), named.clone());
-                named
-            };
-            files.push((putting, manifest, size));
-            if pending_bytes >= MANIFEST_FLUSH_BYTES {
-                keep_pending(&store, &mut pending).map_err(refused)?;
-                pending_bytes = 0;
-            }
-        }
-        keep_pending(&store, &mut pending).map_err(refused)?;
-        // The tree of a governed workspace is sealed: its keys are what
-        // reading it and writing to it need.
-        let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
-        let mtime = tilo_clock::unix_now_ns() / 1_000_000;
-        // Every file goes in before anything is written: one write per record
-        // of the tree that changed, however many files went into it.
-        let to_put: Vec<tilo_fs::tree_put::FileToPut<'_>> = files
-            .iter()
-            .map(|(putting, manifest, size)| tilo_fs::tree_put::FileToPut {
-                to: &putting.dir,
-                name: &putting.name,
-                hash: manifest,
-                size: *size,
-                mtime,
-            })
-            .collect();
-        let put = tree.put_files(&to_put).map_err(refused)?;
-        let writes = match &held {
-            Some(_) => put.writes,
-            // A tree founded now: every record of it from nothing, the root id
-            // the tree's own record carries included.
-            None => tree.document_writes(&std::collections::BTreeMap::new()),
-        };
+        let files =
+            Worker::named_for_the_tree(&store, sealing.as_ref(), puttings).map_err(refused)?;
         self.check_file_keys(workspace_id, sealing.as_ref())
             .map_err(refused)?;
         if !self.may_on_tree(
@@ -713,27 +433,52 @@ impl Worker {
         ) {
             return Err(Outcome::Rejected(ActionCallError::NotPermitted));
         }
-        self.write_tree(workspace_id, named, held.as_ref(), &writes)
-            .map_err(|reason| commit_failed(reason, true))?;
-        self.keep_tree(workspace_id, named, tree);
-        // A folder's answer names how many files it put, not each: the caller
-        // sent the list and knows where each file is, and the answer to a
-        // folder of twenty thousand stays one bounded message.
-        let value = if many {
-            json!({"count": put.files.len()})
-        } else {
-            files.iter().zip(put.files.iter()).next().map_or_else(
-                Value::default,
-                |((putting, _, size), file)| {
-                    json!({
-                        "path": file.path,
-                        "content": putting.content,
-                        "size": size,
-                        "replaced": file.replaced,
+        let mtime = tilo_clock::unix_now_ns() / 1_000_000;
+        // Every file goes in as one change of the tree: one write per record
+        // it touched, however many files went into it.
+        let to_put: Vec<tilo_fs::tree_sync::FileToPut<'_>> = files
+            .iter()
+            .map(|(putting, manifest, size)| tilo_fs::tree_sync::FileToPut {
+                to: &putting.dir,
+                name: &putting.name,
+                hash: manifest,
+                size: *size,
+                mtime,
+            })
+            .collect();
+        let link = self
+            .shared
+            .link
+            .get()
+            .cloned()
+            .ok_or_else(|| refused("this host keeps no workspace's tree"))?;
+        let value = link
+            .change_tree(
+                workspace_id,
+                Some(acting_context(caller, request)),
+                &mut |tree| {
+                    let placed = tree.put_files(&to_put)?;
+                    // A folder's answer names how many files it put, not each: the caller sent
+                    // the list and knows where each file is, and the answer to a folder of
+                    // twenty thousand stays one bounded message.
+                    Ok(if many {
+                        json!({"count": placed.len()})
+                    } else {
+                        files.iter().zip(placed.iter()).next().map_or_else(
+                            Value::default,
+                            |((putting, _, size), file)| {
+                                json!({
+                                    "path": file.path,
+                                    "content": putting.content,
+                                    "size": size,
+                                    "replaced": file.replaced,
+                                })
+                            },
+                        )
                     })
                 },
             )
-        };
+            .map_err(refused)?;
         Ok((
             ActionOutput {
                 value: Some(value),
@@ -741,47 +486,6 @@ impl Worker {
             },
             None,
         ))
-    }
-}
-
-/// The workspace's tree written as this host, one record at a time
-/// ([`tilo_fs::tree_sync::write_tree`]).
-struct TreeWrites<'a> {
-    worker: &'a mut Worker,
-    workspace_id: WorkspaceId,
-    named: &'a str,
-    /// The record chunks the workspace holds: a write of one is a change, not a founding.
-    held: Option<&'a BTreeSet<TreeChunk>>,
-    /// Whether the held records were read for their write already: the identity goes onto what
-    /// the tree's document stands at, so the change it makes follows the document's own.
-    refreshed: bool,
-}
-
-impl tilo_fs::tree_sync::RecordWrite for TreeWrites<'_> {
-    fn write_record(
-        &mut self,
-        chunk: TreeChunk,
-        changes: &[u8],
-        _founding: bool,
-        snapshot: bool,
-    ) -> Result<(), String> {
-        let route = Worker::tree_chunk_route(self.named, chunk);
-        if !snapshot && !self.refreshed && self.held.is_some_and(|held| held.contains(&chunk)) {
-            self.refreshed = true;
-            if self
-                .worker
-                .refreshed_for(self.workspace_id, &route, true)
-                .is_err()
-            {
-                return Err("the workspace's tree could not be read to name it".to_owned());
-            }
-        }
-        let mutation = if snapshot {
-            DocumentMutation::Snapshot(changes.to_vec())
-        } else {
-            DocumentMutation::Incremental(changes.to_vec())
-        };
-        self.worker.commit(self.workspace_id, &route, &mutation)
     }
 }
 

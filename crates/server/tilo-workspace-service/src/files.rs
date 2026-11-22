@@ -43,9 +43,11 @@ use tilo_peer_state::owner::WriteRefusal;
 
 pub mod access;
 mod folders;
+mod puts;
 pub mod socket;
 
 pub use folders::{Folder, Folders};
+pub use puts::Puts;
 
 /// How long the serving device's word that it holds a write is waited for. It answers only the
 /// writes it decides on: one it keeps while it waits for something it lacks gets no word, so a
@@ -70,7 +72,7 @@ fn route(
 
 /// Hold `workspace`'s tree in `workspaces`, this device's own service, kept in `kept_at` between
 /// runs, as the device whose key is `device`; its file bytes are kept in `store` and asked of
-/// the workspace through `content`.
+/// the workspace through `content`, where this device keeps and asks for them.
 ///
 /// # Errors
 /// The kept namespace cannot be read.
@@ -79,8 +81,8 @@ pub async fn start(
     workspace: WorkspaceId,
     kept_at: &Path,
     (device, person): ([u8; 32], [u8; 32]),
-    store: Arc<tilo_fs::ContentStore>,
-    content: Arc<RouteContent>,
+    store: Option<Arc<tilo_fs::ContentStore>>,
+    content: Option<Arc<RouteContent>>,
 ) -> std::io::Result<TreeSync> {
     // A workspace this device governs has no device serving it: its copy here is the workspace.
     let governed = workspaces.governed_copy(workspace).await.is_some();
@@ -112,7 +114,7 @@ impl Backend {
     fn of(
         workspaces: &Workspaces,
         workspace: WorkspaceId,
-        content: Arc<RouteContent>,
+        content: Option<Arc<RouteContent>>,
         governed: bool,
     ) -> Self {
         let copy = Arc::new(Copy {
@@ -164,7 +166,7 @@ struct Copy {
     answers: Mutex<BTreeMap<TreeChunk, Option<DocumentAnswer>>>,
     /// This device's writes the serving device has not said it holds yet.
     unserved: Arc<AtomicUsize>,
-    content: Arc<RouteContent>,
+    content: Option<Arc<RouteContent>>,
     /// Poked when the sync opens a record, so its answer comes now rather than at the next look.
     asked: tokio::sync::Notify,
     /// What the workspace's holders lack of its content, as [`Copy::read_host_lacks`] last read
@@ -299,7 +301,9 @@ impl tilo_fs::tree_sync::TreePeer for Copy {
     }
 
     fn reask_content(&self) {
-        self.content.retry(tilo_clock::unix_now_ms());
+        if let Some(content) = &self.content {
+            content.retry(tilo_clock::unix_now_ms());
+        }
     }
 
     fn host_lacks(&self) -> Option<u32> {

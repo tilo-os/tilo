@@ -215,14 +215,24 @@ mod tests {
             .collect()
     }
 
+    /// Put one file into `tree`, as a mount copying it in does.
+    fn put(tree: &mut Namespace, to: &str, name: &str, hash: &str, size: u64, mtime: u64) {
+        tree.put_files(&[super::super::FileToPut {
+            to,
+            name,
+            hash,
+            size,
+            mtime,
+        }])
+        .unwrap();
+    }
+
     #[test]
     fn a_folder_lists_a_page_at_a_time_and_a_file_is_found_by_its_path() {
         let mut tree = Namespace::new("server").unwrap();
         tree.make_folder("Tasks/12 Plan", "sources", 3).unwrap();
-        tree.put_file("Tasks/12 Plan", "notes.md", &hash(1), 11, 4)
-            .unwrap();
-        tree.put_file("Tasks/12 Plan", "budget.csv", &hash(2), 22, 5)
-            .unwrap();
+        put(&mut tree, "Tasks/12 Plan", "notes.md", &hash(1), 11, 4);
+        put(&mut tree, "Tasks/12 Plan", "budget.csv", &hash(2), 22, 5);
 
         // By name, two at a time, and the second page says there is no third.
         let first = tree.list_folder("Tasks/12 Plan", 0, 2).unwrap();
@@ -269,9 +279,8 @@ mod tests {
     #[test]
     fn the_trash_lists_what_it_holds_with_the_key_that_brings_it_back() {
         let mut tree = Namespace::new("server").unwrap();
-        tree.put_file("Tasks/7", "notes.md", &hash(3), 4, 1)
-            .unwrap();
-        tree.put_file("Tasks/7", "plan.md", &hash(4), 4, 1).unwrap();
+        put(&mut tree, "Tasks/7", "notes.md", &hash(3), 4, 1);
+        put(&mut tree, "Tasks/7", "plan.md", &hash(4), 4, 1);
         assert_eq!(tree.list_trash(0, 10).total, 0);
         let gone = tree
             .trash_entries("Tasks/7", &["notes.md".to_owned()])

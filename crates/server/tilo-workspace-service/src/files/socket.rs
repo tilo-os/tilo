@@ -157,7 +157,7 @@ async fn serve_one(
         reads,
         writer,
         wakes,
-    } = Backend::of(&workspaces, workspace, content, governed);
+    } = Backend::of(&workspaces, workspace, Some(content), governed);
     let lender = Arc::new(Lender {
         tell: tell.clone(),
         lent: Mutex::new(BTreeMap::new()),
