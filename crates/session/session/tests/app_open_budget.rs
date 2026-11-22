@@ -44,8 +44,7 @@ use crate::common::people::{Device, Person};
 /// The installed apps this test opens: the apps of other packages that the run builds for
 /// `tilo-session` (t.toml's `starts`) and whose harness installs a real package and starts it in
 /// a session.
-const APPS: [&str; 4] = [
-    "so.tilo.tasks",
+const APPS: [&str; 3] = [
     "so.tilo.chat",
     "so.tilo.passwords",
     "so.tilo.model-providers",
@@ -55,7 +54,6 @@ const APPS: [&str; 4] = [
 /// does.
 fn install(device: &Device, app: &str) {
     match app {
-        "so.tilo.tasks" => device.install_tasks(),
         "so.tilo.chat" => device.install_chat(),
         "so.tilo.passwords" => device.install_passwords(),
         "so.tilo.model-providers" => device.install_model_providers(),

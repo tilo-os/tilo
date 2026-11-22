@@ -751,7 +751,10 @@ fn a_calendar_invitation_is_a_draft_that_goes_out_with_its_calendar_part() {
                 "body": "You're invited.", "calendar_ics": ics}),
     );
     assert_eq!(session.text(&draft, "to"), "grace@hopper.example");
-    assert!(!session.flag(&draft, "sent"), "nothing is sent until the person sends it");
+    assert!(
+        !session.flag(&draft, "sent"),
+        "nothing is sent until the person sends it"
+    );
     assert!(servers.smtp.sent().is_empty());
 
     session.call("send", &draft, &json!({}));
@@ -759,7 +762,10 @@ fn a_calendar_invitation_is_a_draft_that_goes_out_with_its_calendar_part() {
         servers.smtp.sent().len() == 1
     });
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
-    assert!(sent.contains("Subject: Invitation: Launch review"), "{sent}");
+    assert!(
+        sent.contains("Subject: Invitation: Launch review"),
+        "{sent}"
+    );
     assert!(sent.contains("text/calendar; method=REQUEST"), "{sent}");
     assert!(sent.contains("invitation.ics"), "{sent}");
 }
@@ -805,10 +811,15 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     };
     assert_eq!(session.text(thread, "subject"), "Engine notes");
     assert!(
-        session.text(thread, "snippet").starts_with("The notes are attached."),
+        session
+            .text(thread, "snippet")
+            .starts_with("The notes are attached."),
         "a conversation reads as its first message"
     );
-    assert!(session.flag(thread, "unread"), "the unread reply leaves it unread");
+    assert!(
+        session.flag(thread, "unread"),
+        "the unread reply leaves it unread"
+    );
     let messages = session.refs(thread, "messages");
     assert_eq!(messages.len(), 2, "each message once");
     let notes = &messages[0];
@@ -819,7 +830,10 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     assert_eq!(session.text(notes, "attachments"), "notes.pdf");
     assert!(session.text(notes, "parts").contains("tilo.content:def"));
     assert!(!session.flag(notes, "unread"));
-    assert_eq!(session.text(notes, "body"), "The notes are attached.\r\nAda");
+    assert_eq!(
+        session.text(notes, "body"),
+        "The notes are attached.\r\nAda"
+    );
     assert!(
         session
             .try_call("deliver_message", &root, &json!({"subject": "Nobody"}))

@@ -796,7 +796,6 @@ inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
   "apps/chat/",
-  "apps/tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/session/session/device-surface.json",
   "apps/settings/surface.toml",
@@ -875,7 +874,6 @@ inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
   "apps/chat/",
-  "apps/tasks/",
   "crates/platform/tilo-app-window/locales/",
   "crates/platform/tilolang-tilo/tests/legacy/rust_notes.hex",
   "crates/sdk/ui-core/locales/",
@@ -1453,7 +1451,6 @@ package = "tilo-agent-session"
 # start, from its source.
 inputs = [
   "apps/pdf-viewer/surface.toml",
-  "apps/tasks/surface.toml",
   "crates/server/tilo-workspace-service/src/workspaces/person_settings/calendars/fake_caldav.rs",
   "crates/sdk/ui-core/assets/fonts/",
   "crates/session/client/tests/support/",
@@ -1481,10 +1478,10 @@ readers = ["apps/themes/src/studio.rs"]
 
 [[cargo]]
 package = "tilo-workspace-service"
-# The packaged-model tests bind actions against the surface the Tasks app
+# The packaged-model tests bind actions against the surface the Remote app
 # ships, read from the tree; the module its package carries comes from the
 # app-models check.
-inputs = ["apps/tasks/surface.toml"]
+inputs = ["apps/remote/surface.toml"]
 readers = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs"]
 
 [[cargo]]
@@ -1580,7 +1577,7 @@ package = "tilo-session-client"
 # script the CI setup uses, so that script and the build it runs are read too.
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/tasks/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/remote/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
 readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 

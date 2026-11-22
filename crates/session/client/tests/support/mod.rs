@@ -707,9 +707,8 @@ pub fn holder(
     }) {
         return Some(Arc::clone(holder));
     }
-    let holder = Arc::new(tilo_workspace_service::documents::session_page::page_holder(
-        engine, id,
-    )?);
+    let holder =
+        Arc::new(tilo_workspace_service::documents::session_page::page_holder(engine, id)?);
     holders.push((Arc::downgrade(engine), Arc::clone(&holder)));
     Some(holder)
 }

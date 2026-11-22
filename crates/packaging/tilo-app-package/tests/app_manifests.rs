@@ -3,7 +3,6 @@
 //! Every app needs a valid `tilo-app.toml` to be
 //! packable, installable, and launchable at all.
 
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -144,12 +143,12 @@ tilo_test_env::scenario! {
     // entrypoint, and one that says nothing has windows that are views of records. A kind of window
     // no build knows is refused, never taken for a view.
     {
-            let tasks = repo_root().join("apps/tasks");
+            let remote = repo_root().join("apps/remote");
             assert!(
-                !load(&tasks).window_runs_on_its_device(),
-                "a Tasks window is a view of a record"
+                !load(&remote).window_runs_on_its_device(),
+                "a Remote window is a view of a record"
             );
-            let src = std::fs::read_to_string(manifest_path(&tasks)).expect("Tasks' manifest");
+            let src = std::fs::read_to_string(manifest_path(&remote)).expect("Remote's manifest");
             let said = src.replacen("[entrypoint]", "[entrypoint]\nwindow = \"device\"", 1);
             assert_ne!(said, src, "the manifest has an entrypoint to say it in");
             let manifest = Manifest::from_toml_str(&said).expect("the manifest decodes");

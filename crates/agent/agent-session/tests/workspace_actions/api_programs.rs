@@ -175,10 +175,7 @@ async fn the_repl_works_in_a_workspace_as_its_person() {
 
     // A `let` holds for the entries after it.
     said(repl.entry("let title = \"Groceries\"").await);
-    let made = said(
-        repl.entry("tasks.create(tasks.issues, title: title)")
-            .await,
-    );
+    let made = said(repl.entry("tasks.create(tasks.issues, title: title)").await);
     assert!(!made.contains("error"), "{made}");
 
     // A change to many waits for `confirm`, and is then one step.

@@ -257,7 +257,7 @@ mod tests {
         // An id the app was published under before names it.
         assert_eq!(
             metadata("so.tilo.lang.todo").map(|app| app.id),
-            Some("so.tilo.lang.tasks")
+            Some("so.tilo.tasks")
         );
         // The tilolang package's surface is generated from the same metadata, so a program a
         // server compiles for a workspace with no app installed reads Notes' records there.

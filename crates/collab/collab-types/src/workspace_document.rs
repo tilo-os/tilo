@@ -140,7 +140,7 @@ mod tests {
             Some("tilolang.personal")
         );
         assert!(
-            workspace_document("so.tilo.lang.tasks", &personal).is_none(),
+            workspace_document("so.tilo.tasks", &personal).is_none(),
             "one document for every package of the language, not one per package"
         );
     }

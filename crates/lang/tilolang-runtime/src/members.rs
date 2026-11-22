@@ -152,7 +152,7 @@ impl Core {
         self.members.borrow().list.clone()
     }
 
-    fn member(&self, who: &Actor) -> Option<Member> {
+    pub(crate) fn member(&self, who: &Actor) -> Option<Member> {
         self.members
             .borrow()
             .list
@@ -247,6 +247,18 @@ impl Core {
                 let max = usize::try_from(a.long(1)?).unwrap_or(0);
                 self.ret_h(Value::List(self.said_by(a.h(0)?, max)?))
             }
+            // The member an earlier build of an app named by a key in what it kept, or none for
+            // a key that names no member here (`member(key)`, which only a migration reads).
+            // Only a member of this workspace carries: a key naming someone who left, or was
+            // never here, carries no actor, so a task keeps no assignee it could not show.
+            Imp::MemberOf => {
+                let key = self.text(a.h(0)?)?;
+                let _ = self.read_members();
+                let who = member_named_by(&key)
+                    .filter(|id| self.member(&Actor::Member(id.clone())).is_some())
+                    .map(|id| Box::new(Value::Actor(Actor::Member(id))));
+                self.ret_h(Value::Opt(who))
+            }
             Imp::ActorKind => {
                 let who = self.actor_arg(a.h(0)?)?;
                 crate::core::ret_i64(kind_case(&who))
@@ -272,4 +284,15 @@ fn member_reads(reads: Option<&Reads>, member: &Member, target: &ResourceRef) ->
 
 pub(crate) fn actors<'a>(members: impl Iterator<Item = &'a Member>) -> Value {
     Value::List(members.map(|member| Value::Actor(member.who())).collect())
+}
+
+/// The member an earlier build of an app named by `key` in what it kept: a person by their bare
+/// root key, an agent as `agent:<id>`. None for words that name no member, such as someone
+/// outside the workspace an issue was given to by name.
+pub(crate) fn member_named_by(key: &str) -> Option<MemberId> {
+    let key = key.trim();
+    if let Some(agent) = key.strip_prefix("agent:") {
+        return (!agent.is_empty()).then(|| MemberId::agent(agent));
+    }
+    MemberId::parsed_person(key)
 }

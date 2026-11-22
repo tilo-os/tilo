@@ -4,7 +4,6 @@
 //! of them, minutes for a tracker of thousands. The page answered while the others are still
 //! being taken in is the page the tracker lists once they are all in.
 
-
 use super::api_on_server::{api_on_server, approved_key};
 use super::tracker_listing::{V1, every_page};
 use super::*;

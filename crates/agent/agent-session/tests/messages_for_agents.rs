@@ -5,7 +5,6 @@
 //! written steps name them, none of them asking its person first. Nothing
 //! is sent from the worker.
 
-
 use crate::common::catalogue;
 use collab_types::DocumentMutation;
 use serde_json::{Value, json};

@@ -2,7 +2,6 @@
 //! the changes each takes and the other applies, with no transport between
 //! them.
 
-
 use crate::common::catalogue;
 use chat::projection::ChatProjection as _;
 use collab_types::DocumentMutation;

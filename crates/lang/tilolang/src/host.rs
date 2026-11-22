@@ -260,7 +260,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "of",
                 "Text",
-                "The collection that kept it (`pages`); empty for a document's own fields.",
+                "The collection that kept it (`pages`, or `issues/<id>/comments` for one an item holds); empty for a document's own fields.",
             ),
             (
                 "order",

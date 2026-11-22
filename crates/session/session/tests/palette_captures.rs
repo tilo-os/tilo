@@ -36,7 +36,7 @@ use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, presentati
 use tilo_user_identity::DeviceCert;
 
 /// The app whose capture this is.
-const TASKS: &str = "so.tilo.lang.tasks";
+const TASKS: &str = "so.tilo.tasks";
 /// The line a person writes into the palette.
 const LINE: &str = "Call the landlord fri 10am";
 
@@ -103,7 +103,7 @@ fn capture() -> Vec<ResourceSpec> {
         LINE,
         tilo_actions::ExecutionLocus::ClientLocal,
         |text| tilo_actions::EncodedAction {
-            type_id: "so.tilo.lang.tasks.quick_add".into(),
+            type_id: "so.tilo.tasks.quick_add".into(),
             payload: text.as_bytes().to_vec(),
         },
     );

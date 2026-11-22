@@ -198,6 +198,18 @@ change = "left-own"
 conversion = "crates/sdk/tilo-app/src/framework/chain/waiting.rs:apply_pending"
 
 [[change]]
+kind = "tasks.issues"
+app = "tasks"
+change = "removed"
+conversion = "apps/tl/tasks/app.tl:carry_native_tracker"
+
+[[change]]
+kind = "tasks.tracker"
+app = "tasks"
+change = "removed"
+conversion = "apps/tl/tasks/app.tl:carry_native_tracker"
+
+[[change]]
 kind = "terminal.history"
 app = "terminal"
 change = "left-own"

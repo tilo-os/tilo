@@ -3,7 +3,6 @@
 //! publishes, found without app-specific knowledge. An app whose record no
 //! published operation changes is a coverage gap and fails here by name.
 
-
 use std::fmt::Write as _;
 
 use crate::common::{Driveable, LOCAL_STATE, catalogue, find_edit};

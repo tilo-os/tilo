@@ -365,7 +365,7 @@ pub struct HistoryDocument {
 /// An app's document a service runs over that belongs in a workspace, as
 /// [`Service::workspace_document`] hands it over.
 pub struct WorkspaceDocument {
-    /// The app the document is of, as its package names it (`so.tilo.lang.tasks`).
+    /// The app the document is of, as its package names it (`so.tilo.tasks`).
     pub app: String,
     /// The document's id in its app, as the workspace names it: empty for the workspace's document
     /// of the app, the person's own document of it for an app that keeps each member's apart.

@@ -14,7 +14,6 @@
 //! tree is never built for a page, and that a page at ten thousand costs
 //! within a small factor of one at two hundred.
 
-
 use std::time::{Duration, Instant};
 
 use tilo_actions::MemberId;

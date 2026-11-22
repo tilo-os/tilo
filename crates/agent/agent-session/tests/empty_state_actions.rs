@@ -5,7 +5,6 @@
 //! user or an agent reading the tree otherwise sees a blank page whose only
 //! way forward is invisible to them.
 
-
 use std::fmt::Write as _;
 
 use crate::common::{WORKSPACE, catalogue};

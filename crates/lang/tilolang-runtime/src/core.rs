@@ -35,9 +35,9 @@ use Imp::{
     Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
     ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
     MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
-    MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
-    MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed, Phrase,
-    Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
+    MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, MemberOf, Members, Mentions,
+    MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, PersonNamed,
+    Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
     RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
     RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
     ResTextSet, ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichMarkdown, RichNew,
@@ -551,7 +551,7 @@ impl Core {
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | SeenBy | Mentions | Steps | VersionEnd
             | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
-            WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole => {
+            WorkspaceMembers | Members | MayRead | Speakers | ActorKind | ActorRole | MemberOf => {
                 self.members_import(imp, a)
             }
             EditField => self.edit_field(a),

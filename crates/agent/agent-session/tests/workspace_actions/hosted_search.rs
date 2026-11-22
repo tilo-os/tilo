@@ -32,8 +32,6 @@ struct Served {
     ada: SigningKey,
 }
 
-/// The app that keeps the tracker the issues are in.
-const TASKS: &str = "so.tilo.tasks";
 /// A search with many hits in one conversation.
 #[path = "hosted_search_many.rs"]
 mod many_hits;
@@ -418,21 +416,6 @@ impl Served {
             .join("\n");
         let failed = answer["result"]["isError"] == true || answer.get("error").is_some();
         (text, failed)
-    }
-
-    /// Whether `needle` finds `wanted` for `caller` within a few seconds: what a search that
-    /// may never find it is asked.
-    async fn finds_in_time(&self, workspace: &str, caller: &Caller, wanted: &str) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(8);
-        loop {
-            if self.finds(workspace, caller, wanted).await.contains(wanted) {
-                return true;
-            }
-            if Instant::now() > deadline {
-                return false;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
     }
 
     /// What `needle` finds for `caller` in `workspace`, narrowed to `within`, best first, as
@@ -981,30 +964,6 @@ async fn what_a_person_tells_an_agent_is_found_by_them_and_their_own_turns_alone
             .await;
         assert!(found.contains(WRITER), "{who} finds the letter: {found}");
     }
-    // What each of them finds of an issue in Tasks by its title is said here and not judged:
-    // being held to what they may read takes nothing of Tasks from any of them.
-    file_issue(
-        &served.actions,
-        &served.workspaces,
-        &workspace,
-        &served.ada,
-        (&served.devices.0, &served.devices.1),
-    )
-    .await;
-    let title = "Plan the launch";
-    let by_her = served.finds_in_time(&workspace, &ada, title).await;
-    let by_him = served
-        .finds(&workspace, &bo_himself, title)
-        .await
-        .contains(title);
-    let by_her_turn = served
-        .finds(&workspace, &her_turn, title)
-        .await
-        .contains(title);
-    eprintln!(
-        "an issue is found by its title: by the server's own person {by_her}, by another \
-         member {by_him}, by a turn of hers {by_her_turn}"
-    );
     page.peer.close();
 }
 
@@ -1327,191 +1286,5 @@ async fn a_find_reads_no_folder_document_and_no_file_once_the_folder_is_indexed(
             assert_eq!(file_read, 0, "a settled find reads no file");
         }
     }
-    page.peer.close();
-}
-
-/// What the page's search asks the workspace answers with a word in an issue's body: the page
-/// itself no longer reads bodies, its documents being named there from names alone.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_search_finds_a_word_in_an_issues_body() {
-    let mut served = Served::start(1).await;
-    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
-    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
-    let her_agent = on_a_turn(
-        &ada,
-        SCOUT,
-        (&conversation_with(&served.ada, SCOUT), &said),
-        Vec::new(),
-    );
-    for issue in 0..8 {
-        let (answered, failed) = served
-            .tool(
-                &workspace,
-                &her_agent,
-                "tilo_do",
-                serde_json::json!({
-                    "path": "tasks#create",
-                    "args": {
-                        "title": format!("Maritime Talk {issue}"),
-                        "body": "The hospitals are in this body.",
-                    },
-                }),
-            )
-            .await;
-        assert!(!failed, "{issue}: {answered}");
-    }
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let found = served
-            .found(&workspace, &ada, ("hospitals", &Within::default()))
-            .await;
-        if found
-            .iter()
-            .any(|found| found.app.as_deref() == Some(TASKS))
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the page's search never finds a word in an issue's body: {found:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    page.peer.close();
-}
-
-/// What the page's search asks the workspace answers a title prefix with the issue that carries
-/// it, named as its own app lists it: what a person types in the search box.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_search_finds_a_title_prefix_in_an_issue() {
-    let mut served = Served::start(1).await;
-    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
-    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
-    let her_agent = on_a_turn(
-        &ada,
-        SCOUT,
-        (&conversation_with(&served.ada, SCOUT), &said),
-        Vec::new(),
-    );
-    let title = "Write a launch checklist note with five short items";
-    let (answered, failed) = served
-        .tool(
-            &workspace,
-            &her_agent,
-            "tilo_do",
-            serde_json::json!({
-                "path": "tasks#create",
-                "args": {
-                    "title": title,
-                    "body": "Link it here and move this to In review.",
-                },
-            }),
-        )
-        .await;
-    assert!(!failed, "tasks#create: {answered}");
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let found = served
-            .found(&workspace, &ada, ("Write a launch", &Within::default()))
-            .await;
-        let kept_by = |app: &str| found.iter().any(|found| found.app.as_deref() == Some(app));
-        if kept_by(TASKS) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "a title prefix finds the issue: {found:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    page.peer.close();
-}
-
-/// What a find asks of the workspace is decided for the answers it returns, not for every
-/// document it ranks, and kept per caller: the next find asks nothing, however many documents
-/// the workspace holds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_find_asks_what_its_caller_may_read_only_for_the_answers_it_returns() {
-    // Where the time goes, as the service logs it, when `RUST_LOG` asks.
-    if std::env::var_os("RUST_LOG").is_some() {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .with_timer(tracing_subscriber::fmt::time::uptime())
-            .with_writer(std::io::stderr)
-            .try_init();
-    }
-    let mut served = Served::start(1).await;
-    let (workspace, page, said) = served.workspace(|_| Vec::new()).await;
-    let ada = Served::person(&served.ada, &served.devices.1, &workspace);
-    let her_agent = on_a_turn(
-        &ada,
-        SCOUT,
-        (&conversation_with(&served.ada, SCOUT), &said),
-        Vec::new(),
-    );
-    let notes = 60;
-    for file in 0..notes {
-        let (answered, failed) = served
-            .tool(
-                &workspace,
-                &her_agent,
-                "tilo_do",
-                serde_json::json!({
-                    "path": "tasks#create",
-                    "args": {
-                        "title": format!("Issue {file}"),
-                        "body": "The word grebe appears in this body.",
-                    },
-                }),
-            )
-            .await;
-        assert!(!failed, "{file}: {answered}");
-    }
-    // An issue's write can land after it was answered, and a write landing lets go of what every
-    // caller was kept: the agent's finds are timed once the workspace took in every issue, when
-    // Ada's next find keeps what her last one was answered.
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        served
-            .found(&workspace, &ada, ("grebe", &Within::default()))
-            .await;
-        let before = served.actions.search_permissions_read();
-        served
-            .found(&workspace, &ada, ("grebe", &Within::default()))
-            .await;
-        if served.actions.search_permissions_read() == before {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the workspace never took in the issues' writes"
-        );
-    }
-    // An agent that may read everything pays for the answers it returns and keeps them: the
-    // second find asks the workspace nothing.
-    let mut reads = Vec::new();
-    for ask in 0..2 {
-        let before = served.actions.search_permissions_read();
-        let began = Instant::now();
-        let found = served
-            .found(&workspace, &her_agent, ("grebe", &Within::default()))
-            .await;
-        let elapsed = began.elapsed();
-        let asked = served.actions.search_permissions_read() - before;
-        eprintln!(
-            "agent find {ask} over {notes} notes: {elapsed:?}, {} found, {asked} permission reads",
-            found.len()
-        );
-        assert!(!found.is_empty(), "the word in every note is found");
-        reads.push(asked);
-    }
-    assert!(
-        reads[0] > 0 && reads[0] < notes as u64,
-        "a find asks about its own answers, not every document it ranks: {reads:?} for {notes} notes"
-    );
-    assert_eq!(
-        reads[1], 0,
-        "the next find answers from what the workspace kept: {reads:?}"
-    );
     page.peer.close();
 }
