@@ -581,7 +581,7 @@ mod tests {
                 std::fs::read(&binary).unwrap(),
                 b"app fixture, not executable"
             );
-            project.manifest.entrypoint.as_mut().unwrap().bin = PathBuf::from("bin/TILO-RUNTIME-MCP");
+            project.manifest.entrypoint.as_mut().unwrap().bin = PathBuf::from("bin/TILO-RUNTIME");
             assert!(
                 super::super::assemble_macos_project(
                     &project,
