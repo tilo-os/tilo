@@ -75,6 +75,7 @@ run_lounge() {
     TILO_WORKSPACES_WEB="127.0.0.1:$lounge_web_port" \
     TILO_WORKSPACES_WEB_ENTRY="$site_origin/" \
     TILO_WORKSPACES_SITE_ORIGINS="$site_origin" \
+    TILO_WORKSPACES_LOCAL=1 \
     TILO_WORKSPACES_ROOT_FILE="$lounge_volume/secrets/workspace-root" \
     TILO_WORKSPACES_FETCH_PROXY=0 \
     TILO_WORKSPACES_CHAT_CHANNELS=general \

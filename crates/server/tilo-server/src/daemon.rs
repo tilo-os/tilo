@@ -596,9 +596,12 @@ impl Server {
         if let (Some(workspace_keys), Some(governed)) = (&workspace_keys, &governed) {
             workspace_keys.attach(governed);
         }
-        // The links its invitations hand over open the server's web entry.
+        // The links its invitations hand over open the server's web entry. A stack on this
+        // machine alone (`TILO_WORKSPACES_LOCAL`) keeps its own site: its addresses are
+        // loopback, which no public page dials.
         if let (Some(entry), Some(governed)) = (&cfg.web_entry, &governed) {
-            let _ = governed.invite_at(entry);
+            let local = std::env::var_os("TILO_WORKSPACES_LOCAL").is_some();
+            let _ = governed.invite_at(entry, local);
         }
         let workspaces = sessions.workspaces.clone();
         let metrics = sessions.metrics.clone();

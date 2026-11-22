@@ -678,15 +678,15 @@ impl super::Workspaces {
     /// addresses in it, so the page dials the server with nothing asked of any site. Without
     /// one, or with one only this computer or its network reaches (`http://tilo.localhost`, a
     /// private address), tilo.sh's page opens it: a link pasted into a message must open
-    /// wherever it is followed. `false` once called before.
-    pub fn invite_at(&self, entry: &str) -> bool {
-        let entry = format!("{}/", entry.trim_end_matches('/'));
-        let entry = if reached_from_elsewhere(&entry) {
-            entry
-        } else {
-            PUBLIC_INVITE_ENTRY.to_owned()
-        };
-        self.inner.entry.invitations.set(entry).is_ok()
+    /// wherever it is followed. `local` is a stack on this machine alone (`TILO_WORKSPACES_LOCAL`):
+    /// its addresses are this machine's, so a public page cannot dial it, and its own site is
+    /// the only page that opens the link. `false` once called before.
+    pub fn invite_at(&self, entry: &str, local: bool) -> bool {
+        self.inner
+            .entry
+            .invitations
+            .set(invitation_entry(entry, local))
+            .is_ok()
     }
 
     /// The link that brings whoever follows it into `workspace` with `invitation` (its signed
@@ -709,6 +709,19 @@ impl super::Workspaces {
     #[must_use]
     pub fn mail_entry(&self) -> Option<String> {
         self.inner.entry.mail.get().map(|(entry, _)| entry.clone())
+    }
+}
+
+/// The page an invitation's link opens, from the server's web entry (`entry`) and whether it
+/// runs on this machine alone (`local`): the site's own page where another computer reaches it,
+/// or where the stack is this machine's and its addresses are loopback, which no public page
+/// dials; tilo.sh's page otherwise, which opens wherever the link is followed.
+fn invitation_entry(entry: &str, local: bool) -> String {
+    let entry = format!("{}/", entry.trim_end_matches('/'));
+    if local || reached_from_elsewhere(&entry) {
+        entry
+    } else {
+        PUBLIC_INVITE_ENTRY.to_owned()
     }
 }
 
@@ -772,6 +785,27 @@ mod tests {
         ] {
             assert!(!reached_from_elsewhere(site), "{site}");
         }
+    }
+
+    #[test]
+    fn a_stack_on_this_machine_keeps_its_own_invitation_page() {
+        // A stack reached only from this machine: its addresses are loopback, so no public page
+        // dials it and its own site is the page that opens a link made there.
+        assert_eq!(
+            invitation_entry("http://tilo.localhost:24120", true),
+            "http://tilo.localhost:24120/"
+        );
+        // The same site on a stack reachable from elsewhere hands over tilo.sh's page, which
+        // opens wherever the link is followed.
+        assert_eq!(
+            invitation_entry("http://tilo.localhost:24120", false),
+            PUBLIC_INVITE_ENTRY
+        );
+        // A site another computer reaches opens as itself.
+        assert_eq!(
+            invitation_entry("https://tilo.example", false),
+            "https://tilo.example/"
+        );
     }
 
     /// The wait list file this build writes: an address confirmed beside the
