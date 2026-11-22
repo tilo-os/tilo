@@ -1058,34 +1058,16 @@ fn run_send(session: &mut Session, draft: &ResourceRef) -> Result<(), String> {
     ran
 }
 
-/// The action the window's Ask bar asks the person about, when it is up.
-fn asked(session: &mut Session) -> Option<String> {
-    session
-        .hosted()
-        .view()
-        .and_then(tilo_app_window::AppWindow::asks)
-        .map(|ask| ask.action.clone())
-}
-
-/// Bo at a Letters window of Ada's workspace, whose editor she made him: an editor asks before
-/// what leaves the workspace.
+/// Bo at a Letters window of Ada's workspace, made its editor.
 fn bo_editing_letters() -> Session {
-    use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
-    let route = collaboration::RouteSpec::app(LETTERS, uuid::Uuid::new_v4());
-    let workspace = route.cluster_id.to_string();
-    let mut policy = WorkspacePolicy::new(&workspace, "ada");
-    policy.members.insert("bo".to_owned(), Role::Editor);
-    let spec = tilolang_process::hosted::Spec::new(LETTERS, workspace, 1, "bo")
-        .in_language("en-US")
-        .access(MemberAccess::person(policy, "bo"));
-    let mut session = Session::brokered_as(&route, spec, super::Window::in_harness);
+    let mut session = Session::bo_editing(LETTERS, super::Window::in_harness);
     session.instance_mut().stage("a mailbox of letters");
     session.settle();
     session
 }
 
-/// Bo's own Send asks him on his window's Ask bar, as a press of the letter's control does, and
-/// goes once he allows it; run again once it went, it is refused with the letter's own reason.
+/// Bo's own Send asks on their window's Ask bar, as a press of the letter's control does, and
+/// goes once they allow it; run again once it went, it is refused with the letter's own reason.
 /// An ask is never left as a record nobody shows.
 #[test]
 fn an_editors_send_asks_on_the_ask_bar_and_a_refused_one_says_why() {
@@ -1093,7 +1075,7 @@ fn an_editors_send_asks_on_the_ask_bar_and_a_refused_one_says_why() {
     let draft = first_draft(&mut session);
     run_send(&mut session, &draft).expect("the send is taken, to ask first");
     assert_eq!(
-        asked(&mut session).as_deref(),
+        session.ask_bar().as_deref(),
         Some("Send"),
         "the press asks the person first"
     );
@@ -1108,14 +1090,14 @@ fn an_editors_send_asks_on_the_ask_bar_and_a_refused_one_says_why() {
         .answer(tilo_render_protocol::patch::Answer::Allow);
     session.settle();
     assert!(sent(&mut session, &draft), "the letter went");
-    assert_eq!(asked(&mut session), None, "the answered ask is gone");
+    assert_eq!(session.ask_bar(), None, "the answered ask is gone");
 
     let refused = run_send(&mut session, &draft).expect_err("a letter goes once");
     assert!(
         refused.contains("This letter went already"),
         "the refusal says why: {refused}"
     );
-    assert_eq!(asked(&mut session), None, "a refused press asks nothing");
+    assert_eq!(session.ask_bar(), None, "a refused press asks nothing");
 }
 
 // ----- an app's own window ----------------------------------------------------------------

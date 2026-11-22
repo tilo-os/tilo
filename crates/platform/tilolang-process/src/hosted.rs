@@ -1668,6 +1668,9 @@ impl Hosted {
         descriptor.offers(&offered);
     }
 
+    /// Dim, for the person at the window, an action the rules of a document that holds its own
+    /// keys deny them, saying so in their words. One the rules answer Ask stays pressable: the
+    /// press stops on the Ask bar.
     fn apply_document_grants(&self, descriptors: &mut [ActionDescriptor]) {
         use tilo_action_policy::{Answer, Context, TreePath};
 
@@ -1690,8 +1693,11 @@ impl Hosted {
                 .resource(document)
                 .field(need.field.as_deref().unwrap_or(""))
                 .action(&descriptor.address.action);
-            if access.answer(&node, need.kind, &context) != Answer::Allow {
-                descriptor.contract.availability = tilo_actions::Availability::not_allowed(None);
+            if access.answer(&node, need.kind, &context) == Answer::Deny {
+                descriptor.contract.availability = tilo_actions::Availability::Unavailable {
+                    code: tilo_actions::Availability::NOT_ALLOWED.to_owned(),
+                    reason: self.phrases.say("tilolang-ask-denied", &[]),
+                };
             }
         }
     }

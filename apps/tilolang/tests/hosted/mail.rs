@@ -669,6 +669,36 @@ fn an_account_syncs_into_mailboxes_and_conversations() {
     assert_eq!(session.threads().len(), 2);
 }
 
+/// An editor of the workspace's mailbox, which holds its own keys, is offered Check now like
+/// its owner; the rules ask an editor before what reaches outside, so the press stops on the
+/// window's Ask bar rather than the action showing dimmed.
+#[test]
+fn an_editors_check_now_is_offered_and_asks_on_the_ask_bar() {
+    let _settled = ui::motion::testing::settled();
+    let servers = servers();
+    let connector = MailConnector::of(account(&servers));
+    let mut session = connector.attach(Session::bo_editing(APP, Window::live));
+    synced(&mut session);
+    let check = session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .actions()
+        .iter()
+        .find(|action| action.action_label == "Check now")
+        .expect("the window offers Check now")
+        .contract
+        .availability
+        .clone();
+    assert_eq!(check, ui::tilo_actions::Availability::Available);
+    super::choose(&mut session, "Check now");
+    assert_eq!(
+        session.ask_bar().as_deref(),
+        Some("Check now"),
+        "the press asks first"
+    );
+}
+
 #[test]
 fn reading_and_archiving_reach_the_server_and_come_back() {
     let servers = servers();

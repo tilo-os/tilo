@@ -540,6 +540,25 @@ impl Session {
         Self::on_bus_window(&bus, route, spec, window)
     }
 
+    /// Bo at a window of `app` in Ada's workspace, made its editor: an editor asks before what
+    /// leaves the workspace.
+    fn bo_editing(app: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
+        use ui::permissions::policy::{MemberAccess, Role, WorkspacePolicy};
+        let route = RouteSpec::app(app, uuid::Uuid::new_v4());
+        let mut policy = WorkspacePolicy::new(route.cluster_id.to_string(), "ada");
+        policy.members.insert("bo".to_owned(), Role::Editor);
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, "bo")
+            .in_language("en-US")
+            .access(MemberAccess::person(policy, "bo"));
+        Self::brokered_as(&route, spec, window)
+    }
+
+    /// The action the window's Ask bar asks the person about, when it is up.
+    fn ask_bar(&mut self) -> Option<String> {
+        let view = self.hosted().view()?;
+        tilo_app_window::AppWindow::asks(view).map(|ask| ask.action.clone())
+    }
+
     /// [`Self::brokered`] of the instance `spec` names: a workspace of its own.
     fn brokered_as(
         route: &RouteSpec,
