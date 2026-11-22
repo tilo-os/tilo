@@ -246,13 +246,34 @@ def refusal(error) -> dict:
     return {"code": ERROR_CODES.get(variant, variant), "message": json.dumps(error)}
 
 
+class Status(dict):
+    """A receipt's status. The session's old answer kept it under `receipt`/`update`; reading
+    those keys here is a leftover of that answer, so it fails saying so instead of finding
+    nothing."""
+
+    OLD_KEYS = ("receipt", "update")
+
+    def _refuse(self, key):
+        if key in self.OLD_KEYS:
+            raise KeyError(f"{key!r} is the old receipt's shape; a status is one of "
+                           f"`Accepted`, `{{Completed: ...}}`, `{{Failed: ...}}`: {dict(self)!r}")
+
+    def __getitem__(self, key):
+        self._refuse(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self._refuse(key)
+        return super().get(key, default)
+
+
 def receipt(answer: dict) -> dict | str:
     """Where an invocation frame's answer says it stands (`"Accepted"`, `{"Completed": ...}`,
     `{"Failed": ...}`); a refusal raises, with its code and reason."""
     status = answer["message"]["Receipt"]["status"]
     if isinstance(status, dict) and "Rejected" in status:
         raise Refused("invoke", refusal(status["Rejected"]["error"]))
-    return status
+    return Status(status) if isinstance(status, dict) else status
 
 
 def runtime_for(state: Path) -> Path:

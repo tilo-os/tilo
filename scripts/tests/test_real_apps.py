@@ -181,6 +181,15 @@ class Invocation(unittest.TestCase):
         with self.assertRaises(TypeError):
             real_apps.invocation("session", "desktop:chrome\x1fnew-workspace", "new-workspace")
 
+    def test_reading_a_status_as_the_old_receipt_fails_saying_so(self):
+        answer = real_apps.frame({"Receipt": {"status": {"Completed": {"value": 1}}}})
+        status = real_apps.receipt(answer)
+        self.assertEqual(status["Completed"], {"value": 1})
+        with self.assertRaises(KeyError):
+            status.get("receipt")
+        with self.assertRaises(KeyError):
+            status["update"]
+
 
 if __name__ == "__main__":
     unittest.main()
