@@ -1454,12 +1454,18 @@ async fn bind_endpoint(
         Some(mode) => Endpoint::builder(presets::Minimal).relay_mode(mode),
         None => Endpoint::builder(presets::N0),
     };
+    let builder = builder.transport_config(tilo_server_client::host::transport());
+    // A host told one address binds that one, and opens no port on a router it
+    // was not asked about: the portmapper probes UPnP over SSDP and resolves
+    // names for a port the host would never use. A host given every address is
+    // the one at home behind a router, which that port is how other devices
+    // reach without the relay: it keeps its portmapper.
+    let builder = if cfg.iroh_listen.ip().is_unspecified() {
+        builder
+    } else {
+        builder.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+    };
     builder
-        .transport_config(tilo_server_client::host::transport())
-        // A host binds the address it was told to, and opens no port on a
-        // router it was not asked about: the portmapper probes UPnP over SSDP
-        // and resolves names for a port it would never use.
-        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .secret_key(secret)
         .bind_addr(cfg.iroh_listen)
         .map_err(|e| ServerError::Iroh(format!("invalid iroh listen address: {e}")))?
