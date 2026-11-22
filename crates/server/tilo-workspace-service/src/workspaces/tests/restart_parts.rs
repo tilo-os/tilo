@@ -1,21 +1,24 @@
-//! A restart with a workspace's chain of a document's parts: how quickly it answers.
+//! A restart with a workspace's chain of a document's parts: the work it does to answer.
 //!
 //! A workspace's chain of parts is kept as documents of the workspace's own history, each
-//! as large as the part it holds. A start reads them before it answers, so
-//! it reads them side by side rather than one after another: the bound below is the point of
-//! the test, and the chain is of the size a chain grows to.
+//! as large as the part it holds. A start reads them before it answers. What it reads for each
+//! part, and what its first answer reads, are the same whether the chain is short or as long as
+//! a chain grows to: the test counts that work, the system calls and bytes the process reads
+//! and writes, so a loaded machine does not change what it measures. Only Linux counts a process's input and output where the
+//! test can read it.
+#![cfg(target_os = "linux")]
 
 use super::*;
 use automerge::ReadDoc as _;
 
 /// The app the chain belongs to.
 const APP: &str = "so.tilo.notes";
-/// How many parts the chain has.
-const PARTS: usize = 26;
+/// How many parts a short chain has.
+const SHORT: usize = 2;
+/// How many parts a long chain has.
+const LONG: usize = 26;
 /// How large each part's document is.
 const BYTES: usize = 512 * 1024;
-/// How long a restart may take to open the chain and answer its first read.
-const BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Incompressible text, so a part's document is as large as it says.
 fn text(bytes: usize) -> String {
@@ -31,8 +34,45 @@ fn text(bytes: usize) -> String {
     out
 }
 
-#[test]
-fn a_restart_with_a_large_chain_answers_within_two_seconds() {
+/// The input and output this process did so far, as the kernel counts it: system calls that read
+/// or write, and the bytes they moved. Each test runs in a process of its own.
+#[derive(Clone, Copy, Debug)]
+struct Io {
+    calls: u64,
+    bytes: u64,
+}
+
+impl Io {
+    fn now() -> Self {
+        let counted = std::fs::read_to_string("/proc/self/io").unwrap();
+        let field = |name: &str| {
+            counted
+                .lines()
+                .find_map(|line| line.strip_prefix(name)?.trim().parse::<u64>().ok())
+                .unwrap()
+        };
+        Self {
+            calls: field("syscr:") + field("syscw:"),
+            bytes: field("rchar:") + field("wchar:"),
+        }
+    }
+
+    fn since(self, before: Self) -> Self {
+        Self {
+            calls: self.calls - before.calls,
+            bytes: self.bytes - before.bytes,
+        }
+    }
+}
+
+/// What a restart of a workspace with a chain of `parts` parts did: to open, and to answer
+/// its first read.
+struct Restart {
+    opened: Io,
+    answered: Io,
+}
+
+fn restart_with_chain_of(parts: usize) -> Restart {
     use automerge::transaction::Transactable as _;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -57,7 +97,7 @@ fn a_restart_with_a_large_chain_answers_within_two_seconds() {
             .commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
             .unwrap();
     }
-    for index in 0..PARTS {
+    for index in 0..parts {
         let part = chain.part(u64::try_from(index).unwrap());
         let mut document = automerge::AutoCommit::new();
         document.put(automerge::ROOT, "text", text(BYTES)).unwrap();
@@ -78,19 +118,25 @@ fn a_restart_with_a_large_chain_answers_within_two_seconds() {
     drop(workspace);
 
     // A hard stop: the next start opens what the parts hold and nothing more.
+    let before = Io::now();
     let started = std::time::Instant::now();
     let reopened = GovernedWorkspace::open(path, None).unwrap();
     let reopened_in = started.elapsed();
-    println!("a restart of {PARTS} parts of {BYTES} bytes opened in {reopened_in:?}");
-    let started = std::time::Instant::now();
-    let read = tokio::runtime::Builder::new_current_thread()
+    let opened = Io::now().since(before);
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .unwrap();
+    let before = Io::now();
+    let read = runtime
         .block_on(reopened.readable_document(APP, "welcome"))
         .unwrap()
         .unwrap();
-    let answered = started.elapsed();
+    let answered = Io::now().since(before);
+    println!(
+        "a restart of {parts} parts of {BYTES} bytes opened in {reopened_in:?} with {opened:?}, \
+         and answered with {answered:?}"
+    );
     assert_eq!(
         automerge::AutoCommit::load(&read)
             .unwrap()
@@ -105,12 +151,35 @@ fn a_restart_with_a_large_chain_answers_within_two_seconds() {
         reopened.peer().holds_document(APP, chain.part(0).as_str()),
         "the chain's parts are held"
     );
+    Restart { opened, answered }
+}
+
+#[test]
+fn a_restart_does_the_same_work_for_each_part_of_a_long_chain() {
+    let short = restart_with_chain_of(SHORT);
+    let long = restart_with_chain_of(LONG);
+    let per_part = |io: Io, parts: usize| {
+        let parts = parts as f64;
+        (io.calls as f64 / parts, io.bytes as f64 / parts)
+    };
+    let (short_calls, short_bytes) = per_part(short.opened, SHORT);
+    let (long_calls, long_bytes) = per_part(long.opened, LONG);
     assert!(
-        reopened_in < BOUND,
-        "a restart of {PARTS} parts of {BYTES} bytes opened in {reopened_in:?}"
+        long_calls <= short_calls * 1.25 + 1.0,
+        "a restart's open makes {long_calls:.1} system calls for each of {LONG} parts, \
+         {short_calls:.1} for each of {SHORT}"
     );
     assert!(
-        answered < BOUND,
-        "the first answer took {answered:?} after a restart"
+        long_bytes <= short_bytes * 1.25,
+        "a restart's open moves {long_bytes:.0} bytes for each of {LONG} parts, \
+         {short_bytes:.0} for each of {SHORT}"
+    );
+    // Its first answer reads the document asked for, none of the chain's.
+    assert!(
+        long.answered.calls <= short.answered.calls + 4
+            && long.answered.bytes <= short.answered.bytes * 5 / 4 + 4096,
+        "a restart's first answer took {:?} after a chain of {LONG} parts, {:?} after {SHORT}",
+        long.answered,
+        short.answered
     );
 }
