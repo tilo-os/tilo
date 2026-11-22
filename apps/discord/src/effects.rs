@@ -108,9 +108,7 @@ pub enum DiscordEffect {
     #[effect(kind = "read", returns, audience = "agents")]
     PlanEvent {
         event: Value,
-        #[param(
-            "Chat's resources as the resource api reads them: chat, its resource of the workspace; messages, the newest part of its messages' chain; changed, the part a change was made in, or null"
-        )]
+        #[param("Chat's tree as the core read answers it: every conversation with its messages")]
         chat: Value,
         #[param("Where avatars and Tilo links point; an install may give none")]
         context: Option<Context>,

@@ -4,6 +4,16 @@ use serde_json::json;
 use super::*;
 use crate::guild::{Link, Mapping, Ownership};
 use crate::layout::tests::mapping;
+
+/// The published id of Chat's resource `id`.
+fn at(id: &str) -> String {
+    format!("tl:so.tilo.chat:{id}")
+}
+
+/// An empty Chat: no conversation yet.
+fn empty() -> crate::tilo::ChatRead {
+    crate::tilo::ChatRead::default()
+}
 use discord_wire::event::{Authorized, link_check, link_proof};
 
 fn guild() -> Guild {
@@ -14,8 +24,8 @@ fn guild() -> Guild {
         ..Guild::default()
     };
     g.map = [
-        mapping(MappedKind::Channel, "c1", "d1"),
-        mapping(MappedKind::Webhook, "c1", "wh1"),
+        mapping(MappedKind::Channel, &at("c1"), "d1"),
+        mapping(MappedKind::Webhook, &at("c1"), "wh1"),
     ]
     .into_iter()
     .collect();
@@ -49,7 +59,7 @@ fn discord_origin(tilo: &str, discord: &str, root: Option<&str>) -> Mapping {
         origin: Origin::Discord,
         persona: Some("u7".into()),
         root: root.map(Into::into),
-        ..mapping(MappedKind::Message, tilo, discord)
+        ..mapping(MappedKind::Message, &at(tilo), discord)
     }
 }
 
@@ -60,7 +70,7 @@ tilo_test_env::scenario! {
     {
         let plan = plan_created(
             &guild(),
-            &crate::tilo::ChatRead::default(),
+            &empty(),
             &created("dm1", "hello"),
         );
         let post = &plan.posts[0];
@@ -70,7 +80,7 @@ tilo_test_env::scenario! {
                 post.text.as_str(),
                 post.discord.as_str()
             ),
-            ("c1", "hello", "dm1")
+            (at("c1").as_str(), "hello", "dm1")
         );
         assert_eq!(post.appearance.name, "alice");
         assert_eq!(post.appearance.avatar.as_deref(), Some("blob1"));
@@ -89,10 +99,26 @@ tilo_test_env::scenario! {
         // Discord message 1150000000000000000 was written in mid 2023.
         let written = discord_wire::snowflake_ms("1150000000000000000");
         let holding = |ts: i64| {
-            crate::tilo::ChatRead::new(
-                json!({}),
-                vec![("m_here".into(), json!({"channel": "c1", "text": "here", "ts": ts}))],
-            )
+            let message = json!({
+                "item": at("m_here"),
+                "kind": "tl.so.tilo.chat.Message",
+                "id": "m_here",
+                "created": {"who": {"actor": {"member": {"person": "u_ada"}}},
+                            "at": "2026-01-01T00:00:00Z"},
+                "fields": {"body": "here", "by": "", "written_in": "", "written": ts,
+                           "reactions": {}},
+            });
+            let channel = json!({
+                "item": at("c1"),
+                "kind": "tl.so.tilo.chat.TextChannel",
+                "id": "c1",
+                "fields": {"name": "general", "topic": "", "messages": {"items": [message]}},
+            });
+            crate::tilo::ChatRead::of(&json!({"records": [{
+                "item": at("root"),
+                "kind": "tl.so.tilo.chat.Conversations",
+                "fields": {"channels": {"items": [channel]}},
+            }]}))
         };
         let plan = plan_created(
             &guild(),
@@ -120,15 +146,19 @@ tilo_test_env::scenario! {
             user_name: "alice".into(),
             ..Link::default()
         });
-        let chat = crate::tilo::ChatRead::new(json!({}), Vec::new()).knowing(&json!({
-            "members": [{"member": {"person": "u_ada"}, "name": "Ada Lovelace", "avatar": "blob-ada"}]
+        let chat = empty().knowing(&json!({
+            "members": [{"member": {"person": "u_ada"}, "name": "Ada Lovelace"}]
         }));
         let post = &plan_created(&g, &chat, &created("dm1", "hello")).posts[0];
         assert_eq!(
             post.appearance.name, "Ada Lovelace",
             "Chat shows their Tilo name"
         );
-        assert_eq!(post.appearance.avatar.as_deref(), Some("blob-ada"));
+        assert_eq!(
+            post.appearance.avatar.as_deref(),
+            Some("blob1"),
+            "Chat keeps no member picture, so their Discord one crosses"
+        );
         assert_eq!(
             post.appearance.persona,
             Persona {
@@ -140,7 +170,7 @@ tilo_test_env::scenario! {
         );
 
         // Unlinked again, or a person Chat does not know: their Discord name.
-        let unknown = crate::tilo::ChatRead::new(json!({}), vec![]);
+        let unknown = empty();
         let post = &plan_created(&g, &unknown, &created("dm2", "hi")).posts[0];
         assert_eq!(post.appearance.name, "alice");
         g.links.clear();
@@ -154,7 +184,7 @@ tilo_test_env::scenario! {
         g.avatars.clear();
         let plan = plan_created(
             &g,
-            &crate::tilo::ChatRead::default(),
+            &empty(),
             &created("dm1", "hello"),
         );
         assert!(plan.posts.is_empty());
@@ -168,14 +198,14 @@ tilo_test_env::scenario! {
         let mut own = created("dm1", "x");
         own.author.webhook_id = Some("wh1".into());
         assert_eq!(
-            plan_created(&g, &crate::tilo::ChatRead::default(), &own),
+            plan_created(&g, &empty(), &own),
             InboundPlan::default(),
             "the bridge's own webhook"
         );
         let mut bot = created("dm2", "x");
         bot.author.id = "b0".into();
         assert_eq!(
-            plan_created(&g, &crate::tilo::ChatRead::default(), &bot),
+            plan_created(&g, &empty(), &bot),
             InboundPlan::default(),
             "the bot user"
         );
@@ -183,7 +213,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             plan_created(
                 &g,
-                &crate::tilo::ChatRead::default(),
+                &empty(),
                 &created("dm3", "again")
             ),
             InboundPlan::default(),
@@ -199,7 +229,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             plan_created(
                 &g,
-                &crate::tilo::ChatRead::default(),
+                &empty(),
                 &created("dm9", "spam")
             ),
             InboundPlan::default()
@@ -218,12 +248,12 @@ tilo_test_env::scenario! {
             ..ReactionChanged::default()
         };
         assert_eq!(
-            plan_reaction(&g, &reaction, &crate::tilo::ChatRead::default(), true),
+            plan_reaction(&g, &reaction, &empty(), true),
             InboundPlan::default()
         );
         assert_eq!(
             plan_block(&g, "u7").deletes,
-            ["m1"],
+            [at("m1")],
             "what was mirrored before the block is removed"
         );
     }
@@ -236,35 +266,39 @@ tilo_test_env::scenario! {
         let mut reply = created("d_new", "me too");
         reply.reply_to = Some("d_root".into());
         assert_eq!(
-            plan_created(&g, &crate::tilo::ChatRead::default(), &reply).posts[0]
+            plan_created(&g, &empty(), &reply).posts[0]
                 .parent
                 .as_deref(),
-            Some("root")
+            Some(at("root").as_str())
         );
 
         let mut deep = created("d_deep", "agreed");
         deep.reply_to = Some("d_r1".into());
         deep.reply_author = Some("bo".into());
         deep.reply_text = Some("first line\nsecond".into());
-        let post = &plan_created(&g, &crate::tilo::ChatRead::default(), &deep).posts[0];
-        assert_eq!(post.parent.as_deref(), Some("root"));
+        let post = &plan_created(&g, &empty(), &deep).posts[0];
+        assert_eq!(
+            post.parent.as_deref(),
+            Some(at("r1").as_str()),
+            "a reply to a reply answers the message it answered"
+        );
         assert_eq!(post.text, "> bo: first line\nagreed");
     }
 
     phase a_message_in_a_discord_thread_replies_to_its_root;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Thread, "root", "d_thread"));
+        g.map.push(mapping(MappedKind::Thread, &at("root"), "d_thread"));
         let mut event = created("dm", "in thread");
         event.channel_id = "d_thread".into();
         event.thread = Some(ThreadRef {
             id: "d_thread".into(),
             parent: "d1".into(),
         });
-        let post = &plan_created(&g, &crate::tilo::ChatRead::default(), &event).posts[0];
+        let post = &plan_created(&g, &empty(), &event).posts[0];
         assert_eq!(
             (post.channel.as_str(), post.parent.as_deref()),
-            ("c1", Some("root"))
+            (at("c1").as_str(), Some(at("root").as_str()))
         );
     }
 
@@ -288,7 +322,7 @@ tilo_test_env::scenario! {
                 ..AttachmentInfo::default()
             },
         ];
-        let plan = plan_created(&guild(), &crate::tilo::ChatRead::default(), &event);
+        let plan = plan_created(&guild(), &empty(), &event);
         assert_eq!(plan.files.len(), 1);
         assert!(matches!(
             plan.files[0].fetch.attachment,
@@ -321,7 +355,7 @@ tilo_test_env::scenario! {
             file("notes.txt", "text/plain", 0),
         ];
         let posted: Vec<tilo_reference::Attached> =
-            plan_created(&guild(), &crate::tilo::ChatRead::default(), &event)
+            plan_created(&guild(), &empty(), &event)
                 .files
                 .into_iter()
                 .map(|post| {
@@ -392,7 +426,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             plan_updated(&g, &update).edits,
             [EditItem {
-                message: "m1".into(),
+                message: at("m1"),
                 text: "fixed".into()
             }]
         );
@@ -400,7 +434,7 @@ tilo_test_env::scenario! {
             message_id: "dm1".into(),
             ..MessageDeleted::default()
         };
-        assert_eq!(plan_deleted(&g, &delete).deletes, ["m1"]);
+        assert_eq!(plan_deleted(&g, &delete).deletes, [at("m1")]);
     }
 
     phase deleting_a_discord_post_removes_every_attachment_copy;
@@ -416,7 +450,7 @@ tilo_test_env::scenario! {
                 ..AttachmentInfo::default()
             })
             .collect();
-        let posted = plan_created(&g, &crate::tilo::ChatRead::default(), &event);
+        let posted = plan_created(&g, &empty(), &event);
         assert_eq!(posted.files.len(), 3);
         for (index, file) in posted.files.iter().enumerate() {
             g.map.push(discord_origin(
@@ -433,14 +467,14 @@ tilo_test_env::scenario! {
                 ..MessageDeleted::default()
             },
         );
-        assert_eq!(deleted.deletes, ["m0", "m1", "m2"]);
+        assert_eq!(deleted.deletes, [at("m0"), at("m1"), at("m2")]);
         assert!(deleted.removes.is_empty());
     }
 
     phase a_tilo_message_deleted_in_discord_goes_in_tilo_too_whoever_deleted_it;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
         g.links.push(Link {
             discord_user: "d_ed".into(),
             person: "u_ed".into(),
@@ -457,7 +491,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             removed(Some("d_ed")),
             [RemoveItem {
-                message: "m1".into(),
+                message: at("m1"),
                 reason: "deleted in Discord by u_ed".into()
             }]
         );
@@ -477,7 +511,7 @@ tilo_test_env::scenario! {
     phase reactions_carry_the_persona;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
         // A Discord custom emoji is the workspace emoji of its name in Tilo.
         let event = ReactionChanged {
             message_id: "dm1".into(),
@@ -488,26 +522,17 @@ tilo_test_env::scenario! {
             animated: true,
             ..ReactionChanged::default()
         };
-        let plan = plan_reaction(&g, &event, &crate::tilo::ChatRead::default(), false);
-        assert_eq!(plan.unreacts[0].message, "m1");
+        let plan = plan_reaction(&g, &event, &empty(), false);
+        assert_eq!(plan.unreacts[0].message, at("m1"));
         assert_eq!(plan.unreacts[0].emoji, ":tilo_hello:");
-        assert_eq!(plan.unreacts[0].appearance.name, "bo");
-        assert_eq!(plan.unreacts[0].appearance.persona.service, "discord");
-        assert_eq!(plan.unreacts[0].appearance.persona.account, "u8");
         assert!(plan.reacts.is_empty());
     }
 
     phase a_unicode_reaction_takes_the_spelling_the_message_already_has;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-        let chat = crate::tilo::ChatRead::new(
-            serde_json::Value::Null,
-            vec![(
-                "m1".into(),
-                json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "x", "reactions": [{"emoji": "❤", "by": r#"{"person":"u_ada"}"#, "at": 1}]}),
-            )],
-        );
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
+        let chat = reacting("❤", "u_ada");
         let event = ReactionChanged {
             message_id: "dm1".into(),
             user_id: "u8".into(),
@@ -529,14 +554,8 @@ tilo_test_env::scenario! {
     phase a_reaction_taken_off_by_id_alone_keeps_the_name_it_was_given;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-        let chat = crate::tilo::ChatRead::new(
-            serde_json::Value::Null,
-            vec![(
-                "m1".into(),
-                json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "x", "reactions": [{"emoji": "🎉", "by": r#"{"person":"bot"}"#, "persona": "discord/u8", "name": "Bo", "at": 1}]}),
-            )],
-        );
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
+        let chat = reacting("🎉", "u_ada");
         // Discord's removal names the member by id, without their name.
         let removed = ReactionChanged {
             message_id: "dm1".into(),
@@ -545,24 +564,15 @@ tilo_test_env::scenario! {
             ..ReactionChanged::default()
         };
         let plan = plan_reaction(&g, &removed, &chat, false);
-        assert_eq!(plan.unreacts[0].appearance.name, "Bo");
-        let unknown = ReactionChanged {
-            user_id: "u9".into(),
-            ..removed
-        };
-        assert_eq!(
-            plan_reaction(&g, &unknown, &chat, false).unreacts[0]
-                .appearance
-                .name,
-            "u9"
-        );
+        assert_eq!(plan.unreacts[0].emoji, "🎉");
+        assert!(plan.reacts.is_empty());
     }
 
     phase the_bots_own_reactions_are_echoes;
     {
         let mut g = guild();
         g.bot_user = "b0".into();
-        g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
         let echo = ReactionChanged {
             message_id: "dm1".into(),
             user_id: "b0".into(),
@@ -570,7 +580,7 @@ tilo_test_env::scenario! {
             ..ReactionChanged::default()
         };
         assert_eq!(
-            plan_reaction(&g, &echo, &crate::tilo::ChatRead::default(), true),
+            plan_reaction(&g, &echo, &empty(), true),
             InboundPlan::default()
         );
     }
@@ -590,7 +600,11 @@ tilo_test_env::scenario! {
         };
         let banned = plan_member(&g, &ban, &json!({}));
         assert_eq!(banned.blocks, ["u7"]);
-        assert_eq!(banned.deletes, ["m1"], "what was mirrored of them goes");
+        assert_eq!(
+            banned.deletes,
+            [at("m1")],
+            "what was mirrored of them goes"
+        );
         g.map_roles = true;
         g.map.push(mapping(MappedKind::Role, "editor", "r_ed"));
         g.map.push(mapping(MappedKind::Role, "owner", "r_own"));
@@ -624,7 +638,7 @@ tilo_test_env::scenario! {
             avatar: Some("a1b2".into()),
             ..Command::default()
         };
-        let plan = plan_command(&g, &crate::tilo::ChatRead::default(), &linking);
+        let plan = plan_command(&g, &empty(), &linking);
         assert_eq!(
             plan.offers,
             [OfferItem {
@@ -646,7 +660,7 @@ tilo_test_env::scenario! {
             ..linking
         };
         assert!(
-            plan_command(&g, &crate::tilo::ChatRead::default(), &without)
+            plan_command(&g, &empty(), &without)
                 .offers
                 .is_empty(),
             "no token, nothing to offer"
@@ -809,7 +823,32 @@ fn named(user_name: &str, display_name: Option<&str>) -> UserName {
 }
 
 fn chat_with_ada() -> crate::tilo::ChatRead {
-    crate::tilo::ChatRead::new(json!({}), vec![]).knowing(&json!({
+    empty().knowing(&json!({
         "members": [{"member": {"person": "u_ada"}, "name": "Ada Lovelace"}]
     }))
+}
+
+/// Chat holding message `m1` reacted to with `emoji` by `person`.
+fn reacting(emoji: &str, person: &str) -> crate::tilo::ChatRead {
+    let message = json!({
+        "item": at("m1"),
+        "kind": "tl.so.tilo.chat.Message",
+        "id": "m1",
+        "created": {"who": {"actor": {"member": {"person": "u_ada"}}},
+                    "at": "2026-01-01T00:00:00Z"},
+        "fields": {"body": "x", "by": "", "written_in": "", "written": 0,
+                   "reactions": {emoji: {"count": 1,
+                       "items": [{"actor": {"member": {"person": person}}}]}}},
+    });
+    let channel = json!({
+        "item": at("c1"),
+        "kind": "tl.so.tilo.chat.TextChannel",
+        "id": "c1",
+        "fields": {"name": "general", "topic": "", "messages": {"items": [message]}},
+    });
+    crate::tilo::ChatRead::of(&json!({"records": [{
+        "item": at("root"),
+        "kind": "tl.so.tilo.chat.Conversations",
+        "fields": {"channels": {"items": [channel]}},
+    }]}))
 }

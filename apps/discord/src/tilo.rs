@@ -1,9 +1,34 @@
-//! The Tilo side as the planners read it: Chat's resources as the resource api
-//! reads them ([`ChatRead`]), and the workspace's member list. Read from JSON
-//! rather than Chat's types so the connector does not carry Chat's code.
+//! The Tilo side as the planners read it: tl Chat's tree read ([`ChatRead`]), and the workspace's
+//! member list. Read from JSON rather than Chat's types so the connector does not carry Chat's
+//! code.
+//!
+//! The tree read is the whole app as the core read answers it: every root resource with each
+//! collection expanded, each row `{"item", "kind", "label", "created", "fields"}`, references kept
+//! as `{"type", "id", "label"}`. `item` is the row's published id (`tl:so.tilo.chat:<id>`), which
+//! is what Chat's own actions take, and `id` inside a reference is the id Chat keeps.
 
 use serde_json::Value;
 use ui::tilo_resource::MemberId;
+
+/// Who reacted, and with what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reaction {
+    /// A Unicode emoji, or a workspace emoji as `:name:`.
+    pub emoji: String,
+    /// The member who reacted: a person, an agent or the bridge.
+    pub member: Option<MemberId>,
+}
+
+/// A file a message carries, as Chat keeps it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Attachment {
+    /// The content address its bytes are kept at.
+    pub blob: String,
+    pub name: String,
+    pub media: String,
+    /// Bytes, when Chat knows them.
+    pub size: Option<u64>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Category {
@@ -21,69 +46,27 @@ pub struct Channel {
     pub archived: bool,
 }
 
-/// One reaction, as Chat's `Reactions` field holds it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Reaction {
-    /// A Unicode emoji, or a workspace emoji as `:name:`.
-    pub emoji: String,
-    /// The outside account a bot reacted for (`discord/80351110224678912`).
-    pub persona: Option<String>,
-    /// The name that account shows.
-    pub name: Option<String>,
-}
-
-/// A Chat attachment.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Attachment {
-    pub blob: String,
-    pub name: String,
-    /// Bytes, when Chat knows them (images do not say).
-    pub size: Option<u64>,
-}
-
-/// The resource a message shares, and the part of it: the address Chat
-/// keeps, never its content.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Reference {
-    pub kind: String,
-    pub id: String,
-    pub label: String,
-    /// The resource it lives in (`record:<app>:<record>`), its resource empty
-    /// for the app's own one.
-    pub provider: Option<String>,
-}
-
-/// A window shared live into a message (`Message.share`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Share {
-    /// `view` or `edit`.
-    pub access: String,
-    /// Whether its sharer still has it open.
-    pub open: bool,
-    /// Whether its sharer stopped sharing it, or it is gone.
-    pub ended: bool,
-}
-
 /// A Chat message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
+    /// The message's published id (`tl:so.tilo.chat:<id>`).
     pub id: String,
+    /// The conversation it was posted in: a channel, a thread or a direct conversation.
     pub channel: String,
+    /// Who posted it here: the person, the agent, or the bridge that relayed it.
     pub author: MemberId,
     pub text: String,
+    /// The thread root it answers in, when it was posted in a thread.
     pub parent: Option<String>,
     pub reactions: Vec<Reaction>,
-    /// `(user, byte start, byte len)` of each mention in `text`.
-    pub mentions: Vec<(MemberId, usize, usize)>,
     /// The files it carries, which go across as Discord attachments.
     pub attachments: Vec<Attachment>,
-    /// The name the message shows instead of its author's, when a bot posted
-    /// it for someone (`Message.appearance`).
-    pub appearance_name: Option<String>,
-    /// The resource it shares, when it was written by sharing something.
-    pub reference: Option<Reference>,
-    /// The live share of a window it carries.
-    pub share: Option<Share>,
+    /// Who wrote it where it was written, as that place named them, for a relayed message.
+    pub by: String,
+    /// Where a relayed message was written.
+    pub written_in: String,
+    /// When it was written there, in milliseconds since 1970; 0 for one written here.
+    pub written: i64,
 }
 
 /// A person or agent in the chat.
@@ -92,8 +75,6 @@ pub struct Person {
     pub id: MemberId,
     pub name: String,
     pub agent: bool,
-    /// Their avatar's content address.
-    pub avatar: Option<String>,
 }
 
 /// The workspace's chat: its categories and channels.
@@ -105,96 +86,32 @@ pub struct WorkspaceChat {
     pub busy: Vec<String>,
 }
 
-/// Chat's resources as the bridge reads them through the resource api: Chat's
-/// resource of the workspace and the messages of the parts read of its chain
-/// (its newest, and the one a change was made in), in the chain's order,
-/// with each filed report's message after them.
+/// tl Chat's tree read: the workspace's conversations with every channel's messages and threads.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatRead {
-    record: Value,
-    messages: Vec<(String, Value)>,
-    /// The channels holding a message in a part not read, as the parts read
-    /// count them ([`ChatRead::of`]).
-    earlier: std::collections::BTreeSet<String>,
-    /// The workspace's members as its host binds them ([`ChatRead::knowing`]): who wrote what
-    /// the chat holds.
+    tree: Value,
+    /// The workspace's members as its host binds them ([`ChatRead::knowing`]): who wrote what the
+    /// chat holds.
     members: Vec<Value>,
 }
 
+/// The app whose resources these are.
+pub const APP: &str = "so.tilo.chat";
+/// The published id prefix of Chat's resources.
+const ID_PREFIX: &str = "tl:so.tilo.chat:";
+
 impl ChatRead {
-    /// The API's readings `{"chat", "changed", "messages"}`: Chat's resource
-    /// of the workspace, the part of its messages a change was made in
-    /// (`null` for none), and the chain's head, its newest part, each
-    /// `{revision, records: [{record, value}]}`. A part still arriving or
-    /// absent reads as holding nothing. However long the chat, a pass reads
-    /// at most two parts: each part counts the messages of every channel in
-    /// the parts before it, which tells the channels that hold any.
+    /// The tree `read` answers: the whole app, its collections expanded.
     #[must_use]
     pub fn of(read: &Value) -> Self {
-        let values = |reading: Option<&Value>| -> Vec<Value> {
-            reading
-                .and_then(|reading| reading.get("records"))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|record| record.get("value"))
-                .filter(|value| value.is_object())
-                .cloned()
-                .collect()
-        };
-        let record = values(read.get("chat"))
-            .into_iter()
-            .next()
-            .unwrap_or_default();
-        let parts: Vec<Value> = ["changed", "messages"]
-            .into_iter()
-            .flat_map(|reading| values(read.get(reading)))
-            .collect();
-        let messages = parts
-            .iter()
-            .flat_map(|part| entries(part, "messages"))
-            .collect();
-        let earlier = parts
-            .iter()
-            .filter_map(|part| part.get("earlier")?.as_object())
-            .flat_map(|counts| counts.values())
-            .filter_map(Value::as_object)
-            .flatten()
-            .filter(|(_, count)| count.as_i64().is_some_and(|count| count > 0))
-            .map(|(channel, _)| channel.clone())
-            .collect();
         Self {
-            earlier,
-            ..Self::new(record, messages)
-        }
-    }
-
-    /// Chat's resource of the workspace and the messages its parts hold, in
-    /// order.
-    #[must_use]
-    pub fn new(record: Value, messages: Vec<(String, Value)>) -> Self {
-        Self {
-            record,
-            messages,
-            earlier: std::collections::BTreeSet::new(),
+            tree: read.clone(),
             members: Vec::new(),
         }
     }
 
-    /// When the newest message `channel` holds was written, in milliseconds
-    /// since the epoch, among the parts read: the newest part holds the
-    /// newest messages. `None` for a channel holding none of them.
-    #[must_use]
-    pub fn newest_in(&self, channel: &str) -> Option<i64> {
-        self.messages
-            .iter()
-            .filter(|(_, value)| value.get("channel").and_then(Value::as_str) == Some(channel))
-            .filter_map(|(_, value)| value.get("ts").and_then(Value::as_i64))
-            .max()
-    }
-
-    /// The same records, read with the workspace's members as its host binds them
-    /// (`{"members": [{"member", "name"}]}`), those it removed among them.
+    /// The same tree, read with the workspace's members as its host binds them (`{"members":
+    /// [{"member", "name"}]}`).
     #[must_use]
     pub fn knowing(mut self, workspace: &Value) -> Self {
         self.members = workspace
@@ -204,97 +121,398 @@ impl ChatRead {
             .unwrap_or_default();
         self
     }
-}
 
-/// The items of the collection `field` of a resource, as a resource keeps them
-/// (`{id: {"k": order, "v": value}}`), in their order.
-fn entries(value: &Value, field: &str) -> Vec<(String, Value)> {
-    let mut items: Vec<(&str, &str, Value)> = value
-        .get(field)
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .map(|(id, entry)| {
-            let order = entry.get("k").and_then(Value::as_str).unwrap_or_default();
-            (
-                order,
-                id.as_str(),
-                entry.get("v").cloned().unwrap_or_default(),
-            )
-        })
-        .collect();
-    items.sort_by(|(a, a_id, _), (b, b_id, _)| (a, a_id).cmp(&(b, b_id)));
-    items
-        .into_iter()
-        .map(|(_, id, value)| (id.to_owned(), value))
-        .collect()
-}
-
-fn text(value: &Value, field: &str) -> String {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
-}
-
-fn opt_text(value: &Value, field: &str) -> Option<String> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-}
-
-fn flag(value: &Value, field: &str) -> bool {
-    value.get(field).and_then(Value::as_bool).unwrap_or(false)
-}
-
-/// A value the chat stores as JSON text (`json_model!`) or as itself.
-fn json_field(value: &Value, field: &str) -> Value {
-    match value.get(field) {
-        Some(Value::String(text)) => serde_json::from_str(text).unwrap_or(Value::Null),
-        Some(other) => other.clone(),
-        None => Value::Null,
+    /// The app's root record: the sidebar's conversations.
+    fn root(&self) -> Option<&Value> {
+        self.tree
+            .get("records")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|record| record.get("fields").and_then(Value::as_object).is_some())
     }
-}
 
-impl WorkspaceChat {
-    /// The categories and channels of the workspace's `chat`, in sidebar order.
+    /// The channels and categories of the workspace's chat, in sidebar order.
     #[must_use]
-    pub fn from_chat(chat: &ChatRead) -> Self {
-        let categories = entries(&chat.record, "categories")
-            .into_iter()
-            .map(|(id, v)| Category {
-                id,
-                name: text(&v, "name"),
-            })
+    pub fn workspace(&self) -> WorkspaceChat {
+        let mut categories = Vec::new();
+        let mut channels = Vec::new();
+        for row in self.rows(self.root(), "channels") {
+            match kind(row) {
+                "tl.so.tilo.chat.Category" => {
+                    let category = item(row);
+                    for inner in self.rows(Some(row), "channels") {
+                        channels.push(channel(inner, Some(category.clone())));
+                    }
+                    categories.push(Category {
+                        id: category,
+                        name: text(row, "name"),
+                    });
+                }
+                "tl.so.tilo.chat.TextChannel" | "tl.so.tilo.chat.VoiceChannel" => {
+                    channels.push(channel(row, None));
+                }
+                _ => {}
+            }
+        }
+        let busy = channels
+            .iter()
+            .filter(|channel| !self.rows_of(&channel.id, "messages").is_empty())
+            .map(|channel| channel.id.clone())
             .collect();
-        let channels = entries(&chat.record, "channels")
-            .into_iter()
-            .map(|(id, v)| Channel {
-                id,
-                name: text(&v, "name"),
-                topic: text(&v, "topic"),
-                voice: v.get("kind").and_then(Value::as_str) == Some("voice"),
-                category: opt_text(&v, "category"),
-                archived: flag(&v, "archived"),
-            })
-            .collect();
-        let mut busy = chat.earlier.clone();
-        busy.extend(
-            chat.messages
-                .iter()
-                .map(|(_, message)| text(message, "channel")),
-        );
-        let busy = busy.into_iter().collect();
-        Self {
+        WorkspaceChat {
             categories,
             channels,
             busy,
         }
     }
 
+    /// Every message the chat holds, in the sidebar's order and each conversation's own.
+    #[must_use]
+    pub fn messages(&self) -> Vec<Message> {
+        let mut all = Vec::new();
+        for channel in self.workspace().channels {
+            all.extend(self.conversation_messages(&channel.id, None));
+            for thread in self.rows_of(&channel.id, "threads") {
+                let thread_at = item(thread);
+                let root = self.thread_root(&channel.id, &thread_at);
+                all.extend(self.conversation_messages(&thread_at, root.as_deref()));
+            }
+        }
+        all
+    }
+
+    /// The message `id` names, published or as Chat keeps it.
+    #[must_use]
+    pub fn message(&self, id: &str) -> Option<Message> {
+        let wanted = publish(id);
+        self.messages()
+            .into_iter()
+            .find(|message| message.id == wanted)
+    }
+
+    /// The messages of the conversation `conversation`, each with the thread root it answers in
+    /// when it is a thread's.
+    fn conversation_messages(&self, conversation: &str, parent: Option<&str>) -> Vec<Message> {
+        self.rows_of(conversation, "messages")
+            .into_iter()
+            .filter_map(|row| self.read_message(row, conversation, parent))
+            .collect()
+    }
+
+    /// The thread rooted at the message whose `thread` names `thread`, in `channel`.
+    fn thread_root(&self, channel: &str, thread: &str) -> Option<String> {
+        self.rows_of(channel, "messages")
+            .into_iter()
+            .find(|row| {
+                row.get("fields")
+                    .and_then(|fields| fields.get("thread"))
+                    .and_then(reference_id)
+                    .is_some_and(|found| publish(&found) == thread)
+            })
+            .map(|row| item(row))
+    }
+
+    fn read_message(
+        &self,
+        row: &Value,
+        conversation: &str,
+        parent: Option<&str>,
+    ) -> Option<Message> {
+        let author = row
+            .get("created")
+            .and_then(|created| created.get("who"))
+            .and_then(|who| who.get("actor"))
+            .and_then(|actor| serde_json::from_value::<ui::tilo_actions::Actor>(actor.clone()).ok())
+            .and_then(|actor| actor.member_id().cloned())?;
+        Some(Message {
+            id: item(row),
+            channel: conversation.to_owned(),
+            author,
+            text: text(row, "body"),
+            parent: parent.map(str::to_owned),
+            reactions: reactions(row),
+            attachments: attachments(row),
+            by: text(row, "by"),
+            written_in: text(row, "written_in"),
+            written: row
+                .get("fields")
+                .and_then(|fields| fields.get("written"))
+                .and_then(Value::as_i64)
+                .unwrap_or_default(),
+        })
+    }
+
+    /// The channel `id` names, published or as Chat keeps it.
+    #[must_use]
+    pub fn channel(&self, id: &str) -> Option<Channel> {
+        let wanted = publish(id);
+        self.workspace()
+            .channels
+            .into_iter()
+            .find(|channel| channel.id == wanted)
+    }
+
+    /// The thread whose root message is `root`: where a reply to a Chat thread is posted.
+    #[must_use]
+    pub fn thread_of(&self, root: &str) -> Option<String> {
+        let wanted = publish(root);
+        for channel in self.workspace().channels {
+            for row in self.rows_of(&channel.id, "messages") {
+                if item(row) != wanted {
+                    continue;
+                }
+                if let Some(thread) = row
+                    .get("fields")
+                    .and_then(|fields| fields.get("thread"))
+                    .and_then(reference_id)
+                {
+                    return Some(publish(&thread));
+                }
+            }
+        }
+        None
+    }
+
+    /// When the newest message `channel` holds was written, in milliseconds since the epoch.
+    #[must_use]
+    pub fn newest_in(&self, channel: &str) -> Option<i64> {
+        let wanted = publish(channel);
+        self.rows_of(&wanted, "messages")
+            .into_iter()
+            .map(|row| {
+                row.get("fields")
+                    .and_then(|fields| fields.get("written"))
+                    .and_then(Value::as_i64)
+                    .filter(|written| *written > 0)
+                    .or_else(|| {
+                        row.get("created")
+                            .and_then(|created| created.get("at"))
+                            .and_then(Value::as_str)
+                            .and_then(iso_ms)
+                    })
+            })
+            .max()
+            .flatten()
+    }
+
+    /// The channel holding the thread `thread`, or `thread` itself when it is a channel.
+    #[must_use]
+    pub fn thread_channel(&self, thread: &str) -> Option<String> {
+        let wanted = publish(thread);
+        for channel in self.workspace().channels {
+            if channel.id == wanted {
+                return None;
+            }
+            if self
+                .rows_of(&channel.id, "threads")
+                .into_iter()
+                .any(|row| item(row) == wanted)
+            {
+                return Some(channel.id);
+            }
+        }
+        None
+    }
+
+    /// Whether `member` has a reaction `emoji` on the message `message`, as the chat holds it now.
+    #[must_use]
+    pub fn reacted(&self, message: &str, emoji: &str, member: &MemberId) -> bool {
+        self.message(message).is_some_and(|message| {
+            message.reactions.iter().any(|reaction| {
+                crate::emoji::key(&reaction.emoji) == crate::emoji::key(emoji)
+                    && reaction.member.as_ref() == Some(member)
+            })
+        })
+    }
+
+    /// The rows `node` holds in the collection `field`.
+    fn rows<'v>(&self, node: Option<&'v Value>, field: &str) -> Vec<&'v Value> {
+        let _ = self;
+        node.and_then(|node| node.get("fields"))
+            .and_then(|fields| fields.get(field))
+            .and_then(|collection| collection.get("items"))
+            .and_then(Value::as_array)
+            .map(|items| items.iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// The collection `field` of the resource whose published id is `id`.
+    fn rows_of(&self, id: &str, field: &str) -> Vec<&Value> {
+        let wanted = publish(id);
+        let found = self.find_row(self.root(), &wanted);
+        self.rows(found, field)
+    }
+
+    /// The row whose published id is `item`, anywhere in the tree.
+    fn find_row<'v>(&self, node: Option<&'v Value>, item_id: &str) -> Option<&'v Value> {
+        let node = node?;
+        if item(node) == item_id {
+            return Some(node);
+        }
+        for field in node
+            .get("fields")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|fields| fields.values())
+        {
+            if let Some(items) = field.get("items").and_then(Value::as_array) {
+                for row in items {
+                    if let Some(found) = self.find_row(Some(row), item_id) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The person or agent `id` of the workspace, as its member list names them.
+    #[must_use]
+    pub fn person(&self, id: &MemberId) -> Option<Person> {
+        self.members.iter().find_map(|row| {
+            let member: MemberId = serde_json::from_value(row.get("member")?.clone()).ok()?;
+            (member == *id).then(|| Person {
+                id: id.clone(),
+                name: text(row, "name"),
+                agent: !id.is_person(),
+            })
+        })
+    }
+}
+
+/// A row's kind.
+fn kind(row: &Value) -> &str {
+    row.get("kind").and_then(Value::as_str).unwrap_or_default()
+}
+
+/// A row's published id.
+fn item(row: &Value) -> String {
+    row.get("item")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// `id` as the published id of Chat's resource: what the tree's `item` names it by.
+pub fn published(id: &str) -> String {
+    publish(id)
+}
+
+/// `id` as the published id of Chat's resource: what the tree's `item` names it by.
+fn publish(id: &str) -> String {
+    if id.starts_with(ID_PREFIX) {
+        id.to_owned()
+    } else {
+        format!("{ID_PREFIX}{id}")
+    }
+}
+
+/// A reference's id, as Chat keeps it.
+fn reference_id(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(reference) => reference.get("id")?.as_str().map(str::to_owned),
+        Value::String(id) => Some(id.clone()),
+        _ => None,
+    }
+}
+
+fn text(value: &Value, field: &str) -> String {
+    match value.get("fields").and_then(|fields| fields.get(field)) {
+        Some(Value::String(text)) => text.clone(),
+        Some(other) => other.as_str().unwrap_or_default().to_owned(),
+        None => value
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
+
+fn channel(row: &Value, category: Option<String>) -> Channel {
+    Channel {
+        id: item(row),
+        name: text(row, "name"),
+        topic: text(row, "topic"),
+        voice: kind(row) == "tl.so.tilo.chat.VoiceChannel",
+        category,
+        archived: false,
+    }
+}
+
+/// A message's reactions, as the chat keeps them: each emoji with the members who reacted.
+fn reactions(row: &Value) -> Vec<Reaction> {
+    let Some(Value::Object(by_emoji)) =
+        row.get("fields").and_then(|fields| fields.get("reactions"))
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (emoji, who) in by_emoji {
+        for actor in who
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let member = actor
+                .get("actor")
+                .and_then(|actor| {
+                    serde_json::from_value::<ui::tilo_actions::Actor>(actor.clone()).ok()
+                })
+                .and_then(|actor| actor.member_id().cloned());
+            out.push(Reaction {
+                emoji: emoji.clone(),
+                member,
+            });
+        }
+    }
+    out
+}
+
+/// The files a message carries, as a `List<File>` reads: each `{"file": {name, media, size,
+/// content, url}}`.
+fn attachments(row: &Value) -> Vec<Attachment> {
+    let Some(items) = row
+        .get("fields")
+        .and_then(|fields| fields.get("attachments"))
+        .and_then(|files| files.get("items"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|entry| {
+            let file = entry.get("file").unwrap_or(entry);
+            let url = file.get("url").and_then(Value::as_str).unwrap_or_default();
+            let content = file
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let blob = content
+                .strip_prefix("tilo.content:")
+                .or_else(|| url.strip_prefix("tilo-blob://"))
+                .unwrap_or(content)
+                .to_owned();
+            Some(Attachment {
+                blob,
+                name: file.get("name").and_then(Value::as_str)?.to_owned(),
+                media: file
+                    .get("media")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                size: file
+                    .get("size")
+                    .and_then(Value::as_u64)
+                    .filter(|size| *size > 0),
+            })
+        })
+        .collect()
+}
+
+impl WorkspaceChat {
     #[must_use]
     pub fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|c| c.id == id)
@@ -305,162 +523,6 @@ impl WorkspaceChat {
     pub fn first_text_channel(&self) -> Option<&Channel> {
         self.channels.iter().find(|c| !c.voice && !c.archived)
     }
-}
-
-/// A message's reactions, as a resource keeps them (`{key: {emoji, by,
-/// persona?, name?, at}}`), in the order they were made.
-fn reactions(value: &Value) -> Vec<Reaction> {
-    let mut made: Vec<&Value> = match value.get("reactions") {
-        Some(Value::Object(kept)) => kept.values().collect(),
-        Some(Value::Array(listed)) => listed.iter().collect(),
-        _ => Vec::new(),
-    };
-    made.sort_by_key(|r| r.get("at").and_then(Value::as_i64).unwrap_or_default());
-    made.into_iter()
-        .filter_map(|r| {
-            Some(Reaction {
-                emoji: r.get("emoji")?.as_str()?.to_owned(),
-                persona: opt_text(r, "persona"),
-                name: opt_text(r, "name"),
-            })
-        })
-        .collect()
-}
-
-/// What a message carries besides its words: the files it posts, and the
-/// record it shares. A data enum names its variant beside its fields
-/// (`{"$variant": "image", "blob": …}`); a resource from before kept serde's
-/// externally tagged form (`{"Image": {…}}`) as JSON text.
-fn carried(value: &Value) -> (Vec<Attachment>, Option<Reference>) {
-    let mut files = Vec::new();
-    let mut shared = None;
-    let attached = json_field(value, "attachments");
-    for item in attached.as_array().into_iter().flatten() {
-        match variant(item).as_deref() {
-            Some("image" | "video" | "file") => files.push(Attachment {
-                blob: text(item, "blob"),
-                name: text(item, "name"),
-                size: item.get("size").and_then(Value::as_u64),
-            }),
-            Some("resource") if shared.is_none() => {
-                let at = json_field(item, "at");
-                let reference = json_field(&at, "reference");
-                let Some(id) = opt_text(&reference, "id") else {
-                    continue;
-                };
-                shared = Some(Reference {
-                    kind: text(&reference, "kind"),
-                    label: opt_text(&reference, "label").unwrap_or_else(|| id.clone()),
-                    id,
-                    provider: provider(&at),
-                });
-            }
-            _ => {}
-        }
-    }
-    (files, shared)
-}
-
-/// The `record:<app>:<record>` provider of the resource `at` names, its
-/// resource empty for the app's own one.
-fn provider(at: &Value) -> Option<String> {
-    let app = opt_text(at, "app")?;
-    let record = opt_text(at, "record").unwrap_or_default();
-    Some(format!("record:{app}:{record}"))
-}
-
-/// A stored data enum's variant, lower case: as a plain string, as
-/// `{"$variant": …}` or in serde's externally tagged form.
-fn variant(value: &Value) -> Option<String> {
-    match value {
-        Value::String(name) => Some(name.to_ascii_lowercase()),
-        Value::Object(object) => match object.get("$variant") {
-            Some(Value::String(name)) => Some(name.to_ascii_lowercase()),
-            _ => object.keys().next().map(|name| name.to_ascii_lowercase()),
-        },
-        _ => None,
-    }
-}
-
-fn share(value: &Value) -> Option<Share> {
-    let share = json_field(value, "share");
-    share.as_object()?;
-    Some(Share {
-        access: share
-            .get("access")
-            .and_then(variant)
-            .unwrap_or_else(|| "view".to_owned()),
-        open: flag(&share, "open"),
-        ended: flag(&share, "ended"),
-    })
-}
-
-/// Every message `chat` holds, in the chain's order.
-#[must_use]
-pub fn messages(chat: &ChatRead) -> Vec<Message> {
-    chat.messages
-        .iter()
-        .filter_map(|(id, value)| read_message(id, value))
-        .collect()
-}
-
-#[must_use]
-pub fn message(chat: &ChatRead, id: &str) -> Option<Message> {
-    let (id, value) = chat.messages.iter().find(|(m, _)| m == id)?;
-    read_message(id, value)
-}
-
-/// The member `value` holds under `field`: a resource stores a member as its
-/// JSON text.
-fn member(value: &Value, field: &str) -> Option<MemberId> {
-    serde_json::from_str(value.get(field)?.as_str()?).ok()
-}
-
-/// The message `v` holds; none when it names no author.
-fn read_message(id: &str, v: &Value) -> Option<Message> {
-    let id = id.to_owned();
-    let mentions = match v.get("mentions") {
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(|m| {
-                Some((
-                    member(m, "user")?,
-                    usize::try_from(m.get("start")?.as_u64()?).ok()?,
-                    usize::try_from(m.get("len")?.as_u64()?).ok()?,
-                ))
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    let appearance = json_field(v, "appearance");
-    let (attachments, reference) = carried(v);
-    Some(Message {
-        id,
-        channel: text(v, "channel"),
-        author: member(v, "author")?,
-        text: text(v, "text"),
-        parent: opt_text(v, "parent"),
-        reactions: reactions(v),
-        mentions,
-        attachments,
-        appearance_name: opt_text(&appearance, "name"),
-        reference,
-        share: share(v),
-    })
-}
-
-/// The person or agent `id` of the workspace, as its member list names them.
-#[must_use]
-pub fn person(chat: &ChatRead, id: &MemberId) -> Option<Person> {
-    chat.members.iter().find_map(|row| {
-        let member: MemberId = serde_json::from_value(row.get("member")?.clone()).ok()?;
-        (member == *id).then(|| Person {
-            id: id.clone(),
-            name: text(row, "name"),
-            agent: !id.is_person(),
-            avatar: opt_text(row, "avatar"),
-        })
-    })
 }
 
 /// The Tilo role of `person` in the workspace's own read (`{"members":
@@ -476,166 +538,169 @@ pub fn workspace_role(workspace: &Value, person: &str) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+/// An ISO-8601 UTC instant (`2026-11-22T06:58:42.123Z`) in milliseconds since the epoch.
+fn iso_ms(at: &str) -> Option<i64> {
+    let at = at.trim_end_matches('Z');
+    let (date, time) = at.split_once('T')?;
+    let mut fields = date.split('-').map(str::parse::<i64>);
+    let (year, month, day) = (
+        fields.next().and_then(Result::ok)?,
+        fields.next().and_then(Result::ok)?,
+        fields.next().and_then(Result::ok)?,
+    );
+    let mut clock = time.split(':');
+    let (hour, minute) = (
+        clock.next()?.parse::<i64>().ok()?,
+        clock.next()?.parse::<i64>().ok()?,
+    );
+    let second = clock.next()?;
+    let (second, millis) = match second.split_once('.') {
+        Some((second, fraction)) => {
+            let mut fraction = fraction.to_owned();
+            fraction.truncate(3);
+            while fraction.len() < 3 {
+                fraction.push('0');
+            }
+            (second.parse::<i64>().ok()?, fraction.parse::<i64>().ok()?)
+        }
+        None => (second.parse::<i64>().ok()?, 0),
+    };
+    // Days from the civil date: Howard Hinnant's `days_from_civil`.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400_000 + hour * 3_600_000 + minute * 60_000 + second * 1000 + millis)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    pub(crate) fn chat() -> ChatRead {
-        ChatRead::new(
-            json!({
-                "categories": {
-                    "k_chat": {"k": "a", "v": {"name": "chat"}}
-                },
-                "channels": {
-                    "c_goal": {"k": "a", "v": {"category": null, "name": "goal", "topic": "", "kind": "text", "archived": false}},
-                    "c_general": {"k": "b", "v": {"category": "k_chat", "name": "general", "topic": "talk", "kind": "text", "archived": false}},
-                    "c_voice": {"k": "c", "v": {"category": "k_chat", "name": "voice", "topic": "", "kind": "voice", "archived": false}}
-                }
-            }),
-            vec![(
-                "m1".into(),
-                json!({"channel": "c_general", "author": r#"{"person":"u_ada"}"#, "text": "hi @Bo", "parent": null,
-                  "reactions": [{"emoji": "👍", "by": r#"{"person":"u_bo"}"#, "at": 1},
-                                {"emoji": "👍", "by": r#"{"bot":"i"}"#, "persona": "discord/d7", "name": "Dee", "at": 2}],
-                  "mentions": [{"user": r#"{"person":"u_bo"}"#, "start": 3, "len": 3, "is_agent": false}],
-                  "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}]}),
-            )],
-        )
-        .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada", "avatar": "aa"}]}))
+    /// A message row of the tree.
+    fn message(id: &str, author: &str, body: &str) -> Value {
+        json!({
+            "item": format!("tl:so.tilo.chat:{id}"),
+            "kind": "tl.so.tilo.chat.Message",
+            "id": id,
+            "created": {"who": {"actor": {"member": {"person": author}}}},
+            "fields": {"body": body, "by": "", "written_in": "", "written": 0, "reactions": {},
+                       "thread": {"type": "Thread", "id": "t_1", "label": ""}},
+        })
     }
 
-    tilo_test_env::scenario! {
-        fn chat_is_read_from_what_the_resource_api_gives;
+    pub(crate) fn chat() -> ChatRead {
+        ChatRead::of(&json!({
+            "records": [{
+                "item": "tl:so.tilo.chat:root",
+                "kind": "tl.so.tilo.chat.Conversations",
+                "fields": {"channels": {"items": [
+                    {"item": "tl:so.tilo.chat:c_goal", "kind": "tl.so.tilo.chat.TextChannel",
+                     "fields": {"name": "goal", "topic": "", "messages": {"items": []}}},
+                    {"item": "tl:so.tilo.chat:k_chat", "kind": "tl.so.tilo.chat.Category",
+                     "fields": {"name": "chat", "channels": {"items": [
+                        {"item": "tl:so.tilo.chat:c_general", "kind": "tl.so.tilo.chat.TextChannel",
+                         "fields": {"name": "general", "topic": "talk", "messages": {"items": [
+                            message("m1", "u_ada", "hi @Bo")
+                         ]}, "threads": {"items": [
+                            {"item": "tl:so.tilo.chat:t_1", "kind": "tl.so.tilo.chat.Thread",
+                             "fields": {"name": "hi @Bo", "messages": {"items": [
+                                message("m2", "u_bo", "hello")
+                             ]}}}
+                         ]}}},
+                        {"item": "tl:so.tilo.chat:c_voice", "kind": "tl.so.tilo.chat.VoiceChannel",
+                         "fields": {"name": "voice", "topic": "", "messages": {"items": []}}}
+                    ]}}}
+                ]}}
+            }]
+        }))
+        .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada"}]}))
+    }
 
-        phase reads_the_parts_read_and_counts_the_channels_of_the_parts_before;
-        {
-            let part =
-                |record: &str, value: Value| json!({"records": [{"record": record, "value": value}]});
-            let message = |channel: &str, k: &str| {
-                json!({"k": k, "v": {"channel": channel, "author": r#"{"person":"u_ada"}"#, "text": k}})
-            };
-            let read = ChatRead::of(&json!({
-                "chat": part("", json!({"channels": {}})),
-                "changed": part("p1", json!({"messages": {"m1": message("c_a", "a")}})),
-                "messages": part("p2", json!({
-                    "messages": {"m2": message("c_b", "b")},
-                    "earlier": {"0": {"c_old": 3, "c_gone": 0}, "1": {"c_a": 1}}
-                })),
-            }));
-            let ids: Vec<String> = messages(&read).into_iter().map(|m| m.id).collect();
-            assert_eq!(ids, ["m1", "m2"], "the changed part, then the newest");
-            assert_eq!(
-                WorkspaceChat::from_chat(&read).busy,
-                ["c_a", "c_b", "c_old"],
-                "a channel counted in an earlier part holds messages"
-            );
-        }
+    #[test]
+    fn reads_the_workspaces_chat_in_order() {
+        let ws = chat().workspace();
+        assert_eq!(
+            ws.categories,
+            [Category {
+                id: "tl:so.tilo.chat:k_chat".into(),
+                name: "chat".into()
+            }]
+        );
+        assert_eq!(ws.channels.len(), 3);
+        assert!(ws.channels[2].voice);
+        assert_eq!(
+            ws.first_text_channel().unwrap().id,
+            "tl:so.tilo.chat:c_goal"
+        );
+        assert_eq!(ws.busy, ["tl:so.tilo.chat:c_general"]);
+    }
 
-        phase reads_the_workspaces_chat_in_order;
-        {
-            let ws = WorkspaceChat::from_chat(&chat());
-            assert_eq!(
-                ws.categories,
-                [Category {
-                    id: "k_chat".into(),
-                    name: "chat".into()
-                }]
-            );
-            assert_eq!(ws.channels.len(), 3);
-            assert!(ws.channel("c_voice").unwrap().voice);
-            assert_eq!(ws.first_text_channel().unwrap().id, "c_goal");
-        }
+    #[test]
+    fn reads_a_message_its_thread_and_its_author() {
+        let chat = chat();
+        let m = chat.message("m1").unwrap();
+        assert_eq!(m.author, MemberId::person("u_ada"));
+        assert_eq!(m.text, "hi @Bo");
+        assert_eq!(m.channel, "tl:so.tilo.chat:c_general");
+        let reply = chat.message("m2").unwrap();
+        assert_eq!(reply.parent.as_deref(), Some("tl:so.tilo.chat:m1"));
+        assert_eq!(reply.channel, "tl:so.tilo.chat:t_1");
+        assert_eq!(chat.thread_of("m1").as_deref(), Some("tl:so.tilo.chat:t_1"));
+        assert_eq!(
+            chat.person(&MemberId::person("u_ada"))
+                .unwrap()
+                .name
+                .as_str(),
+            "Ada"
+        );
+    }
 
-        phase reads_a_message_its_reactions_and_mentions;
-        {
-            let m = message(&chat(), "m1").unwrap();
-            assert_eq!(m.author, MemberId::person("u_ada"));
-            assert_eq!(m.mentions, [(MemberId::person("u_bo"), 3, 3)]);
-            assert_eq!(m.reactions.len(), 2);
-            assert_eq!(
-                m.reactions[0],
-                Reaction {
-                    emoji: "👍".into(),
-                    persona: None,
-                    name: None,
-                }
-            );
-            assert_eq!(m.reactions[1].persona.as_deref(), Some("discord/d7"));
-            assert_eq!(m.reactions[1].name.as_deref(), Some("Dee"));
-            assert_eq!(m.attachments[0].size, Some(5));
-            assert_eq!(
-                person(&chat(), &MemberId::person("u_ada"))
-                    .unwrap()
-                    .avatar
-                    .as_deref(),
-                Some("aa")
-            );
-        }
-
-        phase reads_a_message_with_model_fields;
-        // A message as the chat stores it now: its mentions, attachments and
-        // shown name as values, each attachment naming its variant.
-        {
-            let chat = crate::tilo::ChatRead::new(
-                serde_json::Value::Null,
-                vec![(
-                    "m2".into(),
-                    json!({"channel": "c_general", "author": r#"{"bot":"i"}"#, "text": "hi @Bo", "parent": null, "reactions": [], "mentions": [{"user": r#"{"person":"u_bo"}"#, "start": 3, "len": 3, "is_agent": false}], "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}], "appearance": {"name": "Bo"}}),
-                )],
-            );
-            let m = message(&chat, "m2").unwrap();
-            assert_eq!(m.mentions, [(MemberId::person("u_bo"), 3, 3)]);
-            let attachment = &m.attachments[0];
-            assert_eq!((attachment.blob.as_str(), attachment.size), ("ff", Some(5)));
-            assert_eq!(m.appearance_name.as_deref(), Some("Bo"));
-        }
-
-        phase reads_a_shared_window;
-        // A window shared live: its address, its resource and the share's
-        // state, the access stored as a data enum or as text.
-        {
-            let chat = crate::tilo::ChatRead::new(
-                serde_json::Value::Null,
-                vec![
-                    (
-                        "m3".into(),
-                        json!({"channel": "c_general", "author": r#"{"person":"u_ada"}"#, "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "record": "plan", "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan", "span": null}}}], "share": {"access": {"$variant": "edit"}, "open": true, "ended": false}}),
-                    ),
-                    (
-                        "m4".into(),
-                        json!({"channel": "c_general", "author": r#"{"person":"u_ada"}"#, "text": "Plan", "parent": null, "attachments": [{"$variant": "resource", "label": "Plan", "at": {"app": "so.tilo.notes", "reference": "{\"kind\":\"notes.page\",\"id\":\"notes.page:1\",\"label\":\"Plan\"}"}}], "share": {"access": "View", "open": false, "ended": true}}),
-                    ),
-                ],
-            );
-            let live = message(&chat, "m3").unwrap();
-            assert_eq!(
-                live.reference,
-                Some(Reference {
-                    kind: "notes.page".into(),
-                    id: "notes.page:1".into(),
-                    label: "Plan".into(),
-                    provider: Some("record:so.tilo.notes:plan".into()),
-                })
-            );
-            assert_eq!(
-                live.share,
-                Some(Share {
-                    access: "edit".into(),
-                    open: true,
-                    ended: false
-                })
-            );
-            let ended = message(&chat, "m4").unwrap();
-            let reference = ended.reference.unwrap();
-            assert_eq!(
-                (reference.label.as_str(), reference.provider),
-                ("Plan", Some("record:so.tilo.notes:".into()))
-            );
-            let share = ended.share.unwrap();
-            assert_eq!((share.access.as_str(), share.ended), ("view", true));
-            assert_eq!(message(&self::chat(), "m1").unwrap().share, None);
-        }
+    #[test]
+    fn reads_reactions_and_attachment_files() {
+        let message = json!({
+            "item": "tl:so.tilo.chat:m1",
+            "kind": "tl.so.tilo.chat.Message",
+            "created": {"who": {"actor": {"member": {"person": "u_ada"}}}},
+            "fields": {
+                "body": "hi",
+                "by": "Dee",
+                "written_in": "Discord",
+                "written": 5,
+                "reactions": {"👍": {"count": 1, "items": [{"actor": {"member": {"bot": "b1"}}}]}},
+                "attachments": {"count": 1, "items": [{"file": {
+                    "name": "a.png",
+                    "media": "image/png",
+                    "size": 5,
+                    "url": "tilo-blob://abcd",
+                }}]},
+            },
+        });
+        let channel = json!({
+            "item": "tl:so.tilo.chat:c1",
+            "kind": "tl.so.tilo.chat.TextChannel",
+            "fields": {"name": "c1", "topic": "", "messages": {"items": [message]}},
+        });
+        let chat = ChatRead::of(&json!({
+            "records": [{
+                "item": "tl:so.tilo.chat:root",
+                "kind": "tl.so.tilo.chat.Conversations",
+                "fields": {"channels": {"items": [channel]}},
+            }],
+        }));
+        let m = chat.message("m1").unwrap();
+        assert_eq!(m.reactions[0].emoji, "👍");
+        assert_eq!(m.reactions[0].member, Some(MemberId::bot("b1")));
+        assert_eq!(m.attachments[0].blob, "abcd");
+        assert_eq!(m.attachments[0].size, Some(5));
+        assert_eq!(
+            (m.by.as_str(), m.written_in.as_str(), m.written),
+            ("Dee", "Discord", 5)
+        );
     }
 
     #[test]

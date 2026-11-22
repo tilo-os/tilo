@@ -97,11 +97,12 @@ fn moved(guild: &Guild, id: &str, parent: Option<&str>, position: i64) -> Guild 
     after
 }
 
-fn place(channel: &str, category: Option<&str>) -> ChatPlace {
-    ChatPlace {
-        channel: channel.into(),
-        category: category.map(Into::into),
-    }
+/// The move of `id` in `moves`.
+fn moved_to<'a>(moves: &'a [ChatMove], id: &str) -> &'a ChatMove {
+    moves
+        .iter()
+        .find(|moved| moved.id == id)
+        .unwrap_or_else(|| panic!("no move of {id}: {moves:?}"))
 }
 
 /// `guild` with `op` asked for, answered as `settled`.
@@ -148,7 +149,7 @@ tilo_test_env::scenario! {
     phase both_sides_in_one_order_ask_for_nothing;
     {
         let guild = guild();
-        assert_eq!(to_chat(&guild, &guild, &workspace()), None);
+        assert!(to_chat(&guild, &guild, &workspace()).is_empty());
         assert_eq!(to_discord(&guild, &workspace()), None);
         assert!(!moved_in_discord(&guild, &guild, &workspace()));
     }
@@ -160,7 +161,7 @@ tilo_test_env::scenario! {
         let mut workspace = workspace();
         workspace.channels.swap(1, 3);
         assert_eq!(to_discord(&guild(), &workspace), None);
-        assert_eq!(to_chat(&guild(), &guild(), &workspace), None);
+        assert!(to_chat(&guild(), &guild(), &workspace).is_empty());
     }
 
     phase a_channel_moved_in_discord_moves_in_chat;
@@ -170,16 +171,26 @@ tilo_test_env::scenario! {
         let after = moved(&before, "23", Some("20"), 0);
         let after = moved(&after, "21", Some("20"), 1);
         assert!(moved_in_discord(&before, &after, &workspace()));
-        let arranged = to_chat(&after, &before, &workspace()).unwrap();
-        assert_eq!(arranged.categories, ["k_chat", "k_dev"]);
+        let arranged = to_chat(&after, &before, &workspace());
+        let categories: Vec<_> = arranged
+            .iter()
+            .filter(|moved| moved.kind == "category")
+            .map(|moved| (moved.id.as_str(), moved.at))
+            .collect();
+        assert_eq!(categories, [("k_chat", 0), ("k_dev", 1)]);
+        let channels: Vec<_> = arranged
+            .iter()
+            .filter(|moved| moved.kind == "channel")
+            .map(|moved| (moved.id.as_str(), moved.category.as_deref(), moved.at))
+            .collect();
         assert_eq!(
-            arranged.channels,
+            channels,
             [
-                place("c_goal", None),
-                place("c_ideas", Some("k_chat")),
-                place("c_general", Some("k_chat")),
-                place("c_voice", Some("k_chat")),
-                place("c_plans", Some("k_dev")),
+                ("c_goal", None, 0),
+                ("c_ideas", Some("k_chat"), 0),
+                ("c_general", Some("k_chat"), 1),
+                ("c_voice", Some("k_chat"), 2),
+                ("c_plans", Some("k_dev"), 0),
             ],
             "Tilo's own #help is not named and keeps its place"
         );
@@ -190,9 +201,10 @@ tilo_test_env::scenario! {
         let before = guild();
         let after = moved(&before, "23", Some("30"), 1);
         assert!(moved_in_discord(&before, &after, &workspace()));
-        let arranged = to_chat(&after, &before, &workspace()).unwrap();
-        assert!(arranged.channels.contains(&place("c_ideas", Some("k_dev"))));
-        let at = |id: &str| arranged.channels.iter().position(|p| p.channel == id);
+        let arranged = to_chat(&after, &before, &workspace());
+        let ideas = moved_to(&arranged, "c_ideas");
+        assert_eq!(ideas.category.as_deref(), Some("k_dev"));
+        let at = |id: &str| arranged.iter().position(|moved| moved.id == id);
         assert!(at("c_plans") < at("c_ideas"));
     }
 
@@ -201,8 +213,9 @@ tilo_test_env::scenario! {
         let before = guild();
         let after = moved(&before, "30", None, 0);
         assert!(moved_in_discord(&before, &after, &workspace()));
-        let arranged = to_chat(&after, &before, &workspace()).unwrap();
-        assert_eq!(arranged.categories, ["k_dev", "k_chat"]);
+        let arranged = to_chat(&after, &before, &workspace());
+        assert_eq!(moved_to(&arranged, "k_dev").at, 0);
+        assert_eq!(moved_to(&arranged, "k_chat").at, 1);
     }
 
     phase changes_in_discord_that_move_nothing_are_no_move;
@@ -290,7 +303,7 @@ tilo_test_env::scenario! {
         workspace.categories.reverse();
         assert_eq!(to_discord(&guild, &workspace), None);
         // Discord's order still shows in Chat.
-        assert!(to_chat(&guild, &guild, &workspace).is_some());
+        assert!(!to_chat(&guild, &guild, &workspace).is_empty());
     }
 
     phase a_bridge_of_one_channel_keeps_out_of_the_order;
@@ -300,7 +313,7 @@ tilo_test_env::scenario! {
         let mut workspace = workspace();
         workspace.categories.reverse();
         assert_eq!(to_discord(&guild, &workspace), None);
-        assert_eq!(to_chat(&guild, &guild, &workspace), None);
+        assert!(to_chat(&guild, &guild, &workspace).is_empty());
     }
 
     phase channels_kept_on_one_side_or_archived_keep_their_places;
@@ -326,7 +339,7 @@ tilo_test_env::scenario! {
         let mut before = waiting.clone();
         for (n, after) in echoes(&waiting, &op).into_iter().enumerate() {
             assert!(!moved_in_discord(&before, &after, &workspace), "update {n}");
-            assert_eq!(to_chat(&after, &before, &workspace), None, "update {n}");
+            assert!(to_chat(&after, &before, &workspace).is_empty(), "update {n}");
             assert_eq!(to_discord(&after, &workspace), None, "update {n}");
             before = after;
         }
@@ -366,9 +379,11 @@ tilo_test_env::scenario! {
         // moved: Chat follows that move and keeps its own.
         let after = moved(&waiting, "31", None, 1);
         assert!(moved_in_discord(&waiting, &after, &workspace));
-        let arranged = to_chat(&after, &waiting, &workspace).unwrap();
-        assert_eq!(arranged.categories, ["k_dev", "k_chat"]);
-        assert_eq!(arranged.channels[1], place("c_plans", None));
+        let arranged = to_chat(&after, &waiting, &workspace);
+        assert_eq!(moved_to(&arranged, "k_dev").at, 0);
+        assert_eq!(moved_to(&arranged, "k_chat").at, 1);
+        let plans = moved_to(&arranged, "c_plans");
+        assert_eq!((plans.at, plans.category.as_deref()), (1, None));
     }
 
     phase a_failed_order_is_done_with_and_laid_over_nothing;

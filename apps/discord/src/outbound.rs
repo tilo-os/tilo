@@ -3,13 +3,12 @@
 //! so a program runs it with one loop per list and needs no conditions.
 
 use discord_wire::op::{DeleteOp, EditOp, OutAttachment, ReactOp, SendOp, StartThreadOp};
-use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema};
 
 use crate::guild::{Guild, MAX_CONTENT_CHARS, MAX_UPLOAD_BYTES, MappedKind, Origin};
-use crate::tilo::{self, Message};
+use crate::tilo::Message;
 use crate::{emoji, slug};
 
 /// A send, and the thread root the posted message maps under.
@@ -64,77 +63,6 @@ pub struct Links {
     pub host_device: String,
 }
 
-impl Links {
-    /// The link that opens `reference` in its resource on the web: the URL
-    /// `share-link` mints for it on the workspace's host.
-    pub fn resource(&self, reference: &tilo::Reference) -> Result<String, String> {
-        let provider = reference
-            .provider
-            .as_deref()
-            .ok_or_else(|| format!("{} names no resource", reference.id))?;
-        let (app, record) = provider
-            .strip_prefix("record:")
-            .and_then(|rest| rest.split_once(':'))
-            .ok_or_else(|| format!("{provider} names no resource"))?;
-        let request = tilo_resource::share::ShareRequest {
-            resource: reference.id.clone(),
-            kind: reference.kind.clone(),
-            views: vec![tilo_resource::share::SharedView {
-                id: "main".into(),
-                primary: true,
-                range: false,
-                desktop: false,
-            }],
-            invite: false,
-            args: serde_json::Map::new(),
-        };
-        let locator = ui::tilo_actions::remote::ResourceViewLocator {
-            origin: self.origin.clone(),
-            workspace: self.workspace.clone(),
-            host_device: self.host_device.clone(),
-            provider: provider.to_owned(),
-            web_entry: Some(self.web_entry.clone()),
-        };
-        ui::framework::host_link(&request, app, record, &locator)
-    }
-}
-
-/// `text` with Discord's markdown marks shown as written.
-fn plain(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if matches!(c, '*' | '_' | '~' | '`' | '|' | '\\' | '<' | '>') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// The line a message that shares something ends with: a live window says
-/// so and links to where it opens, a window its sharer has closed says it
-/// is not live right now, an ended share says it is no longer shared, and a
-/// shared resource links to it. `None` for any other message.
-fn shared_line(message: &Message, context: &Context) -> Option<String> {
-    let reference = message.reference.as_ref()?;
-    let label = plain(&reference.label);
-    let url = context
-        .links
-        .as_ref()
-        .and_then(|links| links.resource(reference).ok());
-    Some(match (&message.share, url) {
-        (Some(share), _) if share.ended => format!("**{label}** is no longer shared"),
-        (Some(share), Some(url)) if !share.open => {
-            format!("Shared **{label}**, not live right now. Open it in Tilo: {url}")
-        }
-        (Some(share), None) if !share.open => format!("Shared **{label}**, not live right now"),
-        (Some(_), Some(url)) => format!("Sharing **{label}** live. Open it in Tilo: {url}"),
-        (Some(_), None) => format!("Sharing **{label}** live in Tilo"),
-        (None, Some(url)) => format!("**{label}**: {url}"),
-        (None, None) => return None,
-    })
-}
-
 /// The plan for the Chat message `message` of `chat`.
 #[must_use]
 pub fn plan_post(
@@ -144,13 +72,17 @@ pub fn plan_post(
     context: &Context,
 ) -> PostPlan {
     let mut plan = PostPlan::default();
-    let Some(message) = tilo::message(chat, message) else {
+    let Some(message) = chat.message(message) else {
         return plan;
     };
     if guild.mapping(MappedKind::Message, &message.id).is_some() {
         return plan;
     }
-    let Some(target) = target(guild, &message) else {
+    // A message the bridge relayed from Discord is already there: never sent back.
+    if !message.by.is_empty() {
+        return plan;
+    }
+    let Some(target) = target(guild, chat, &message) else {
         return plan;
     };
     let thread = match &message.parent {
@@ -158,7 +90,8 @@ pub fn plan_post(
             let Some(thread) = guild.mapping(MappedKind::Thread, root) else {
                 // The root must be in Discord to grow a thread from.
                 if let Some(root_message) = guild.mapping(MappedKind::Message, root) {
-                    let name = tilo::message(chat, root)
+                    let name = chat
+                        .message(root)
                         .map(|m| thread_name(&m.text))
                         .unwrap_or_default();
                     plan.threads.push(StartThreadOp {
@@ -174,17 +107,11 @@ pub fn plan_post(
         }
         None => None,
     };
-    let author = tilo::person(chat, &message.author);
-    let name = message
-        .appearance_name
-        .clone()
-        .or_else(|| author.as_ref().map(|a| a.name.clone()))
-        .unwrap_or_default();
+    let author = chat.person(&message.author);
+    let name = author.as_ref().map(|a| a.name.clone()).unwrap_or_default();
     let automated = author.as_ref().is_some_and(|a| a.agent) || !message.author.is_person();
-    let avatar_blob = author
-        .as_ref()
-        .and_then(|a| a.avatar.clone())
-        .filter(|_| !context.avatars.is_empty());
+    // Chat keeps no picture of a member: a linked account's Discord avatar stands for them.
+    let avatar_blob: Option<String> = None;
     let (text, attachments) = body(guild, &message, context);
     if text.is_empty() && attachments.is_empty() {
         return plan;
@@ -208,7 +135,7 @@ pub fn plan_post(
     });
     plan.sends.push(SendItem {
         op: SendOp {
-            channel: target.channel,
+            channel: target.channel.clone(),
             webhook: target.webhook,
             thread,
             username,
@@ -222,8 +149,8 @@ pub fn plan_post(
             created_ms: 0,
             tilo: message.id.clone(),
         },
-        root: message.parent,
-        channel: message.channel.clone(),
+        root: message.parent.clone(),
+        channel: target.tilo.clone(),
     });
     plan
 }
@@ -236,15 +163,22 @@ pub fn discord_avatar_url(user: &str, hash: &str) -> String {
 }
 
 struct Target {
+    /// The Discord channel the message lands in.
     channel: String,
+    /// The Chat channel it was posted in, the one holding the thread it answers in.
+    tilo: String,
     webhook: String,
 }
 
-fn target(guild: &Guild, message: &Message) -> Option<Target> {
-    let channel = guild.mapping(MappedKind::Channel, &message.channel)?;
-    let webhook = guild.mapping(MappedKind::Webhook, &message.channel)?;
+fn target(guild: &Guild, chat: &crate::tilo::ChatRead, message: &Message) -> Option<Target> {
+    let tilo = chat
+        .thread_channel(&message.channel)
+        .unwrap_or_else(|| message.channel.clone());
+    let channel = guild.mapping(MappedKind::Channel, &tilo)?;
+    let webhook = guild.mapping(MappedKind::Webhook, &tilo)?;
     Some(Target {
         channel: channel.discord.clone(),
+        tilo,
         webhook: webhook.discord.clone(),
     })
 }
@@ -259,51 +193,13 @@ fn thread_name(text: &str) -> String {
     }
 }
 
-/// The Discord text of `message` and the files that go with it. Mentions of
-/// linked people become `<@id>`; everything else stays plain text, and the
-/// send allows only user mentions, so `@everyone` typed in Tilo pings nobody.
+/// The Discord text of `message` and the files that go with it, written as plain text: the send
+/// allows only user mentions, so `@everyone` typed in Tilo pings nobody.
 fn body(guild: &Guild, message: &Message, context: &Context) -> (String, Vec<OutAttachment>) {
-    let mut text = String::new();
-    let mut at = 0;
-    let mut mentions = message.mentions.clone();
-    mentions.sort_by_key(|(_, start, _)| *start);
-    for (user, start, len) in &mentions {
-        let end = start.saturating_add(*len);
-        let (Some(before), Some(run)) =
-            (message.text.get(at..*start), message.text.get(*start..end))
-        else {
-            continue;
-        };
-        text.push_str(before);
-        match guild
-            .links
-            .iter()
-            .find(|l| user.person_id() == Some(l.person.as_str()))
-        {
-            Some(link) => {
-                let _ = write!(text, "<@{}>", link.discord_user);
-            }
-            None => text.push_str(run.trim_start_matches('@')),
-        }
-        at = end;
-    }
-    text.push_str(message.text.get(at..).unwrap_or_default());
     // A workspace emoji the server has goes across as that emoji.
-    let mut text = emoji::to_discord_text(guild, &text);
-
+    let text = emoji::to_discord_text(guild, &message.text);
     let mut attachments = Vec::new();
     let mut extra = Vec::new();
-    if let Some(line) = shared_line(message, context) {
-        // A share's words default to its label, which the line names.
-        if message
-            .reference
-            .as_ref()
-            .is_some_and(|reference| reference.label == message.text)
-        {
-            text.clear();
-        }
-        extra.push(line);
-    }
     for file in &message.attachments {
         match file.size {
             Some(size) if size > MAX_UPLOAD_BYTES => {
@@ -325,6 +221,7 @@ fn body(guild: &Guild, message: &Message, context: &Context) -> (String, Vec<Out
             }),
         }
     }
+    let mut text = text;
     for line in extra {
         if !text.is_empty() {
             text.push('\n');
@@ -364,16 +261,17 @@ pub fn plan_edit(
     message: &str,
     context: &Context,
 ) -> Vec<EditOp> {
-    let Some(mapped) = guild.mapping(MappedKind::Message, message) else {
+    let message = crate::tilo::published(message);
+    let Some(mapped) = guild.mapping(MappedKind::Message, &message) else {
         return Vec::new();
     };
     if mapped.origin != Origin::Tilo {
         return Vec::new();
     }
-    let Some(message) = tilo::message(chat, message) else {
+    let Some(message) = chat.message(&message) else {
         return Vec::new();
     };
-    let Some(target) = target(guild, &message) else {
+    let Some(target) = target(guild, chat, &message) else {
         return Vec::new();
     };
     let (text, attachments) = body(guild, &message, context);
@@ -406,11 +304,20 @@ pub struct DeleteItem {
 /// user otherwise. `channel` is the message's Tilo channel (the message is
 /// gone from the resource by now).
 #[must_use]
-pub fn plan_delete(guild: &Guild, channel: &str, message: &str) -> Vec<DeleteItem> {
-    let Some(mapped) = guild.mapping(MappedKind::Message, message) else {
+pub fn plan_delete(
+    guild: &Guild,
+    chat: &crate::tilo::ChatRead,
+    channel: &str,
+    message: &str,
+) -> Vec<DeleteItem> {
+    let message = crate::tilo::published(message);
+    let Some(mapped) = guild.mapping(MappedKind::Message, &message) else {
         return Vec::new();
     };
-    let Some(discord_channel) = guild.mapping(MappedKind::Channel, channel) else {
+    let channel = chat
+        .thread_channel(channel)
+        .unwrap_or_else(|| channel.to_owned());
+    let Some(discord_channel) = guild.mapping(MappedKind::Channel, &channel) else {
         return Vec::new();
     };
     let thread = mapped
@@ -420,7 +327,7 @@ pub fn plan_delete(guild: &Guild, channel: &str, message: &str) -> Vec<DeleteIte
         .map(|t| t.discord.clone());
     let webhook = match mapped.origin {
         Origin::Tilo => guild
-            .mapping(MappedKind::Webhook, channel)
+            .mapping(MappedKind::Webhook, &channel)
             .map(|w| w.discord.clone()),
         Origin::Discord => None,
     };
@@ -453,10 +360,11 @@ pub fn plan_reaction(
     let Some(discord_emoji) = emoji::to_discord(guild, emoji) else {
         return none;
     };
-    let Some(mapped) = guild.mapping(MappedKind::Message, message) else {
+    let message = crate::tilo::published(message);
+    let Some(mapped) = guild.mapping(MappedKind::Message, &message) else {
         return none;
     };
-    let Some(row) = tilo::message(chat, message) else {
+    let Some(row) = chat.message(&message) else {
         return none;
     };
     let channel_id = match row
@@ -465,16 +373,25 @@ pub fn plan_reaction(
         .and_then(|root| guild.mapping(MappedKind::Thread, root))
     {
         Some(thread) => thread.discord.clone(),
-        None => match guild.mapping(MappedKind::Channel, &row.channel) {
-            Some(channel) => channel.discord.clone(),
-            None => return none,
-        },
+        None => {
+            let channel = chat
+                .thread_channel(&row.channel)
+                .unwrap_or_else(|| row.channel.clone());
+            match guild.mapping(MappedKind::Channel, &channel) {
+                Some(channel) => channel.discord.clone(),
+                None => return none,
+            }
+        }
     };
     let wanted = emoji::key(&discord_emoji);
     let tilo_people = row
         .reactions
         .iter()
-        .filter(|r| r.persona.is_none())
+        .filter(|r| {
+            r.member
+                .as_ref()
+                .is_some_and(ui::tilo_resource::MemberId::is_person)
+        })
         .filter(|r| emoji::to_discord(guild, &r.emoji).is_some_and(|e| emoji::key(&e) == wanted))
         .count();
     let op = ReactOp {

@@ -37,18 +37,17 @@ use ui::tilo_resource::{self, Id, JsonSchema, Keyed};
 use crate::guild::{DChannel, Guild, MappedKind};
 use crate::tilo::WorkspaceChat;
 
-/// Chat `arrange-channels`: the bridged categories, and the bridged
-/// channels each under its category, in Discord's order.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ChatOrder {
-    pub categories: Vec<String>,
-    pub channels: Vec<ChatPlace>,
-}
-
-/// One channel's place in Chat: listed under `category`, none for the top.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ChatPlace {
-    pub channel: String,
+/// One move of Chat's sidebar into Discord's order: a category or a channel put at `at` in its
+/// list, the channel under `category` when it has one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChatMove {
+    /// `category` or `channel`.
+    pub kind: String,
+    /// The category's or channel's published id.
+    pub id: String,
+    pub at: i64,
+    /// The category a channel is listed under; none for the top level.
+    #[serde(default)]
     pub category: Option<String>,
 }
 
@@ -383,19 +382,31 @@ pub fn moved_in_discord(before: &Guild, after: &Guild, workspace: &WorkspaceChat
 /// the layout `layout` with the orders `asked` has in flight laid
 /// over it; none when Chat lists them so already.
 #[must_use]
-pub fn to_chat(layout: &Guild, asked: &Guild, workspace: &WorkspaceChat) -> Option<ChatOrder> {
+pub fn to_chat(layout: &Guild, asked: &Guild, workspace: &WorkspaceChat) -> Vec<ChatMove> {
     if !ordered(layout) {
-        return None;
+        return Vec::new();
     }
     let seen = Seen::new(layout, asked);
     let items = comparable(shared(layout, workspace), &seen);
     let discord = discord_order(&items, &seen);
     if discord == tilo_order(&items) {
-        return None;
+        return Vec::new();
     }
     let by_discord: BTreeMap<&str, &Item> = items.iter().map(|i| (i.discord.as_str(), i)).collect();
     let tilo = |discord: &str| by_discord.get(discord).map(|item| item.tilo.clone());
-    let mut channels = Vec::new();
+    let mut moves = Vec::new();
+    for (at, id) in discord.categories.iter().enumerate() {
+        let Some(id) = tilo(id) else {
+            continue;
+        };
+        moves.push(ChatMove {
+            kind: "category".into(),
+            id,
+            at: i64::try_from(at).unwrap_or(i64::MAX),
+            category: None,
+        });
+    }
+    let mut placed: BTreeMap<Option<String>, i64> = BTreeMap::new();
     let parents = std::iter::once(None).chain(discord.categories.iter().cloned().map(Some));
     for parent in parents {
         for class in [Class::Text, Class::Voice] {
@@ -415,21 +426,18 @@ pub fn to_chat(layout: &Guild, asked: &Guild, workspace: &WorkspaceChat) -> Opti
                 } else {
                     parent.as_deref().and_then(tilo)
                 };
-                channels.push(ChatPlace {
-                    channel: item.tilo.clone(),
+                let at = placed.entry(category.clone()).or_insert(0);
+                moves.push(ChatMove {
+                    kind: "channel".into(),
+                    id: item.tilo.clone(),
+                    at: *at,
                     category,
                 });
+                *at += 1;
             }
         }
     }
-    Some(ChatOrder {
-        categories: discord
-            .categories
-            .iter()
-            .filter_map(|id| tilo(id))
-            .collect(),
-        channels,
-    })
+    moves
 }
 
 /// `full`, one list as Discord sorts it, with the bridged entries put in

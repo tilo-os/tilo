@@ -4,6 +4,11 @@ use super::*;
 use crate::guild::{Link, Mapping, Ownership};
 use crate::layout::tests::mapping;
 
+/// The published id of Chat's resource `id`.
+fn at(id: &str) -> String {
+    format!("tl:so.tilo.chat:{id}")
+}
+
 fn guild() -> Guild {
     let mut g = Guild {
         guild_id: "1".into(),
@@ -11,37 +16,65 @@ fn guild() -> Guild {
         ..Guild::default()
     };
     g.map = [
-        mapping(MappedKind::Channel, "c1", "d1"),
-        mapping(MappedKind::Webhook, "c1", "wh1"),
+        mapping(MappedKind::Channel, &at("c1"), "d1"),
+        mapping(MappedKind::Webhook, &at("c1"), "wh1"),
     ]
     .into_iter()
     .collect();
     g
 }
 
-/// `author` as the resource stores a member, as its JSON text: `agent:<id>` an
-/// agent's, else a person's.
-fn member(author: &str) -> Value {
-    let member = author.strip_prefix("agent:").map_or_else(
-        || ui::tilo_resource::MemberId::person(author),
-        ui::tilo_resource::MemberId::agent,
-    );
-    Value::String(serde_json::to_string(&member).unwrap())
+/// A member as the tree read names one in a message's `created`.
+fn actor(author: &str) -> Value {
+    let member = author
+        .strip_prefix("agent:")
+        .map_or_else(|| json!({"person": author}), |id| json!({"agent": id}));
+    json!({"who": {"actor": {"member": member}}})
 }
 
-fn msg(id: &str, author: &str, text: &str, extra: &Value) -> (String, Value) {
-    let mut value =
-        json!({"channel": "c1", "author": member(author), "text": text, "parent": null});
-    if let (Some(v), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
-        v.extend(extra.clone());
+/// A message row of the tree.
+fn row(id: &str, author: &str, text: &str, extra: &Value) -> Value {
+    let mut fields = json!({
+        "body": text,
+        "by": "",
+        "written_in": "",
+        "written": 0,
+        "reactions": {},
+    });
+    if let (Some(fields), Some(extra)) = (fields.as_object_mut(), extra.as_object()) {
+        fields.extend(extra.clone());
     }
-    (id.to_owned(), value)
+    let created = actor(author);
+    json!({
+        "item": at(id),
+        "kind": "tl.so.tilo.chat.Message",
+        "id": id,
+        "created": created,
+        "fields": fields,
+    })
 }
 
-fn chat(messages: &[(String, Value)]) -> crate::tilo::ChatRead {
-    crate::tilo::ChatRead::new(json!({}), messages.to_vec()).knowing(&json!({
+fn msg(id: &str, author: &str, text: &str, extra: &Value) -> Value {
+    row(id, author, text, extra)
+}
+
+fn chat(messages: &[Value]) -> crate::tilo::ChatRead {
+    let channel = json!({
+        "item": at("c1"),
+        "kind": "tl.so.tilo.chat.TextChannel",
+        "id": "c1",
+        "fields": {"name": "general", "topic": "", "messages": {"items": messages}},
+    });
+    crate::tilo::ChatRead::of(&json!({
+        "records": [{
+            "item": at("root"),
+            "kind": "tl.so.tilo.chat.Conversations",
+            "fields": {"channels": {"items": [channel]}},
+        }],
+    }))
+    .knowing(&json!({
         "members": [
-            {"member": {"person": "u_ada"}, "name": "Ada", "avatar": "av1"},
+            {"member": {"person": "u_ada"}, "name": "Ada"},
             {"member": {"person": "u_bo"}, "name": "Bo"},
             {"member": {"agent": "x"}, "name": "Discord Scribe"}
         ]
@@ -57,38 +90,6 @@ fn context() -> Context {
 }
 
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
-
-fn linked() -> Context {
-    Context {
-        links: Some(Box::new(Links {
-            web_entry: "https://tilo.example/".into(),
-            origin: "https://lounge.tilo.example".into(),
-            workspace: WORKSPACE.into(),
-            host_device: "ab".repeat(32),
-        })),
-        ..context()
-    }
-}
-
-fn shared(id: &str, text: &str, share: &Value) -> (String, Value) {
-    msg(
-        id,
-        "u_ada",
-        text,
-        &json!({
-            "attachments": [{
-                "$variant": "resource",
-                "label": "Launch *plan*",
-                "at": {
-                    "app": "so.tilo.notes",
-                    "record": "notes:plan",
-                    "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Launch *plan*"},
-                },
-            }],
-            "share": share,
-        }),
-    )
-}
 
 tilo_test_env::scenario! {
     fn a_context_names_its_workspace;
@@ -115,137 +116,6 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn a_share_goes_out_as_what_it_is_now;
-
-    phase a_live_share_links_to_where_it_opens_on_the_web;
-    // A window shared live goes across as a line that says so and opens the
-    // resource on the workspace's web entry, where `share-link` would send its
-    // reader; its words go first unless they only repeat its name.
-    {
-        let url = format!(
-            "https://tilo.example/app/#/@lounge.tilo.example/w/{WORKSPACE}/so.tilo.notes/notes:plan/notes.page:1"
-        );
-        let chat = chat(&[
-            shared(
-                "m1",
-                "Launch *plan*",
-                &json!({"access": {"$variant": "view"}, "open": true, "ended": false}),
-            ),
-            shared(
-                "m2",
-                "Look at this",
-                &json!({"access": {"$variant": "edit"}, "open": true, "ended": false}),
-            ),
-        ]);
-        let reference = crate::tilo::message(&chat, "m1")
-            .unwrap()
-            .reference
-            .unwrap();
-        assert_eq!(
-            linked().links.unwrap().resource(&reference),
-            Ok(url.clone())
-        );
-        let one = &plan_post(&guild(), &chat, "m1", &linked()).sends[0].op;
-        assert_eq!(
-            one.content,
-            format!("Sharing **Launch \\*plan\\*** live. Open it in Tilo: {url}")
-        );
-        let two = &plan_post(&guild(), &chat, "m2", &linked()).sends[0].op;
-        assert_eq!(
-            two.content,
-            format!("Look at this\nSharing **Launch \\*plan\\*** live. Open it in Tilo: {url}")
-        );
-        // A host that serves no web page leaves the link out.
-        let bare = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
-        assert_eq!(bare.content, "Sharing **Launch \\*plan\\*** live in Tilo");
-    }
-
-    phase an_ended_share_is_edited_to_say_it_is_no_longer_shared;
-    // When the share ends, its Discord copy is edited to say so, without the
-    // link that no longer opens anything.
-    {
-        let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
-        let chat = chat(&[shared(
-            "m1",
-            "Launch *plan*",
-            &json!({"access": {"$variant": "view"}, "open": false, "ended": true}),
-        )]);
-        let edit = &plan_edit(&g, &chat, "m1", &linked())[0];
-        assert_eq!(
-            (edit.message.as_str(), edit.content.as_str()),
-            ("d_m1", "**Launch \\*plan\\*** is no longer shared")
-        );
-    }
-
-    phase a_closed_share_reads_as_not_live_right_now;
-    // While its sharer has the window closed, the Discord copy says it is not
-    // live right now and still links to it; reopening makes it live again.
-    {
-        let url = format!(
-            "https://tilo.example/app/#/@lounge.tilo.example/w/{WORKSPACE}/so.tilo.notes/notes:plan/notes.page:1"
-        );
-        let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
-        let closed = chat(&[shared(
-            "m1",
-            "Launch *plan*",
-            &json!({"access": {"$variant": "view"}, "open": false, "ended": false}),
-        )]);
-        let edit = &plan_edit(&g, &closed, "m1", &linked())[0];
-        assert_eq!(
-            edit.content,
-            format!("Shared **Launch \\*plan\\***, not live right now. Open it in Tilo: {url}")
-        );
-        let bare = &plan_edit(&g, &closed, "m1", &context())[0];
-        assert_eq!(
-            bare.content,
-            "Shared **Launch \\*plan\\***, not live right now"
-        );
-        let reopened = chat(&[shared(
-            "m1",
-            "Launch *plan*",
-            &json!({"access": {"$variant": "view"}, "open": true, "ended": false}),
-        )]);
-        let edit = &plan_edit(&g, &reopened, "m1", &linked())[0];
-        assert_eq!(
-            edit.content,
-            format!("Sharing **Launch \\*plan\\*** live. Open it in Tilo: {url}")
-        );
-    }
-
-    phase a_shared_resource_links_to_it;
-    // A resource shared without a live window links to it too.
-    {
-        let chat = chat(&[msg(
-            "m1",
-            "u_ada",
-            "Discuss",
-            &json!({
-                "attachments": [{
-                    "$variant": "resource",
-                    "label": "Plan",
-                    "at": {
-                        "app": "so.tilo.notes",
-                        "record": "notes:plan",
-                        "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan"},
-                    },
-                }],
-            }),
-        )]);
-        let send = &plan_post(&guild(), &chat, "m1", &linked()).sends[0].op;
-        assert!(
-            send.content
-                .starts_with("Discuss\n**Plan**: https://tilo.example/"),
-            "{}",
-            send.content
-        );
-        let bare = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
-        assert_eq!(bare.content, "Discuss");
-    }
-}
-
-tilo_test_env::scenario! {
     fn chat_messages_are_planned_as_discord_calls;
 
     phase a_post_goes_out_through_the_channels_webhook_under_the_authors_name;
@@ -259,13 +129,26 @@ tilo_test_env::scenario! {
             ("d1", "wh1")
         );
         assert_eq!(send.username, "Ada");
+        assert_eq!(send.content, "hello");
+        assert_eq!(send.tilo, at("m1"));
+    }
+
+    phase a_linked_account_shows_its_discord_avatar;
+    {
+        let mut g = guild();
+        g.links.push(Link {
+            discord_user: "d_ada".into(),
+            person: "u_ada".into(),
+            avatar: Some("aa".into()),
+            ..Link::default()
+        });
+        let chat = chat(&[msg("m1", "u_ada", "hello", &json!({}))]);
+        let send = &plan_post(&g, &chat, "m1", &context()).sends[0].op;
         assert_eq!(
             send.avatar_url.as_deref(),
-            Some("https://workspaces.example/avatars/av1")
+            Some("https://cdn.discordapp.com/avatars/d_ada/aa.png?size=128")
         );
-        assert_eq!(send.avatar_blob.as_deref(), Some("av1"));
-        assert_eq!(send.content, "hello");
-        assert_eq!(send.tilo, "m1");
+        assert!(send.avatar_blob.is_none());
     }
 
     phase agents_get_the_robot_mark_and_a_cleaned_name;
@@ -275,13 +158,22 @@ tilo_test_env::scenario! {
         assert_eq!(plan.sends[0].op.username, "🤖 Scribe");
     }
 
+    phase a_relayed_discord_message_is_not_sent_back;
+    {
+        let chat = chat(&[msg("m1", "u_ada", "hello", &json!({"by": "Ada", "written_in": "Discord"}))]);
+        assert!(
+            plan_post(&guild(), &chat, "m1", &context()).sends.is_empty(),
+            "it came from Discord"
+        );
+    }
+
     phase unmapped_channels_and_mapped_messages_send_nothing;
     {
         let mut g = guild();
-        let chat = chat(&[msg("m1", "u_ada", "hello", &json!({"channel": "c_other"}))]);
-        assert!(plan_post(&g, &chat, "m1", &context()).sends.is_empty());
-        let chat2 = self::chat(&[msg("m2", "u_ada", "hello", &json!({}))]);
-        g.map.push(mapping(MappedKind::Message, "m2", "d_m2"));
+        let elsewhere = chat(&[]);
+        assert!(plan_post(&g, &elsewhere, "m1", &context()).sends.is_empty());
+        let chat2 = chat(&[msg("m2", "u_ada", "hello", &json!({}))]);
+        g.map.push(mapping(MappedKind::Message, &at("m2"), "d_m2"));
         assert!(
             plan_post(&g, &chat2, "m2", &context()).sends.is_empty(),
             "already across"
@@ -298,56 +190,60 @@ tilo_test_env::scenario! {
         assert!(content.ends_with("…\nhttps://app.example/#m"));
     }
 
-    phase linked_mentions_ping_and_others_are_plain;
-    {
-        let mut g = guild();
-        g.links.push(Link {
-            discord_user: "d_bo".into(),
-            person: "u_bo".into(),
-            ..Link::default()
-        });
-        let mentions = json!([
-            {"user": member("u_bo"), "start": 3, "len": 3, "is_agent": false},
-            {"user": member("u_ada"), "start": 11, "len": 4, "is_agent": false}
-        ]);
-        let chat = chat(&[msg(
-            "m1",
-            "u_ada",
-            "hi @Bo and @Ada @everyone",
-            &json!({"mentions": mentions}),
-        )]);
-        let content = &plan_post(&g, &chat, "m1", &context()).sends[0].op.content;
-        assert_eq!(
-            content, "hi <@d_bo> and Ada @everyone",
-            "@everyone stays text; the send allows user mentions only"
-        );
-    }
-
     phase a_reply_starts_the_thread_first_then_posts_into_it;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "root", "d_root"));
-        let chat = chat(&[
-            msg("root", "u_bo", "question?\nmore", &json!({})),
-            msg("r1", "u_ada", "answer", &json!({"parent": "root"})),
-        ]);
+        g.map.push(mapping(MappedKind::Message, &at("root"), "d_root"));
+        let thread = json!({
+            "item": at("t1"),
+            "kind": "tl.so.tilo.chat.Thread",
+            "id": "t1",
+            "fields": {"name": "question?", "messages": {"items": [
+                row("r1", "u_ada", "answer", &json!({}))
+            ]}},
+        });
+        let channel = json!({
+            "item": at("c1"),
+            "kind": "tl.so.tilo.chat.TextChannel",
+            "id": "c1",
+            "fields": {"name": "general", "topic": "", "threads": {"items": [thread]},
+                       "messages": {"items": [
+                json!({
+                    "item": at("root"),
+                    "kind": "tl.so.tilo.chat.Message",
+                    "id": "root",
+                    "created": actor("u_bo"),
+                    "fields": {"body": "question?\nmore", "by": "", "written_in": "", "written": 0,
+                               "reactions": {}, "thread": {"type": "tl.so.tilo.chat.Thread", "id": at("t1")}},
+                }),
+            ]}},
+        });
+        let chat = crate::tilo::ChatRead::of(&json!({
+            "records": [{
+                "item": at("root-conversations"),
+                "kind": "tl.so.tilo.chat.Conversations",
+                "fields": {"channels": {"items": [channel]}},
+            }],
+        }))
+        .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada"}]}));
         let first = plan_post(&g, &chat, "r1", &context());
         assert!(first.sends.is_empty());
         assert_eq!(first.threads[0].message, "d_root");
         assert_eq!(first.threads[0].name, "question?");
-        g.map.push(mapping(MappedKind::Thread, "root", "d_thread"));
+        g.map
+            .push(mapping(MappedKind::Thread, &at("root"), "d_thread"));
         let second = plan_post(&g, &chat, "r1", &context());
         assert_eq!(second.sends[0].op.thread.as_deref(), Some("d_thread"));
-        assert_eq!(second.sends[0].root.as_deref(), Some("root"));
+        assert_eq!(second.sends[0].root.as_deref(), Some(at("root").as_str()));
     }
 
     phase a_large_file_becomes_a_line;
     {
-        let small = json!({"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5});
-        let big = json!({"$variant": "file", "name": "film.mkv", "blob": "ee", "size": 20_971_520});
+        let small = json!({"file": {"name": "a.txt", "media": "text/plain", "size": 5, "url": "tilo-blob://ff"}});
+        let big = json!({"file": {"name": "film.mkv", "media": "video/x-matroska", "size": 20_971_520, "url": "tilo-blob://ee"}});
         let chat = chat(&[
-            msg("m1", "u_ada", "", &json!({"attachments": [small]})),
-            msg("m2", "u_ada", "watch", &json!({"attachments": [big]})),
+            msg("m1", "u_ada", "", &json!({"attachments": {"items": [small]}})),
+            msg("m2", "u_ada", "watch", &json!({"attachments": {"items": [big]}})),
         ]);
         let one = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
         assert_eq!(
@@ -374,18 +270,18 @@ tilo_test_env::scenario! {
             plan_edit(&g, &chat, "m1", &context()).is_empty(),
             "not across yet"
         );
-        g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "d_m1"));
         let edit = &plan_edit(&g, &chat, "m1", &context())[0];
         assert_eq!(
             (edit.message.as_str(), edit.content.as_str()),
             ("d_m1", "fixed")
         );
-        let delete = &plan_delete(&g, "c1", "m1")[0];
+        let delete = &plan_delete(&g, &chat, &at("c1"), &at("m1"))[0];
         assert_eq!(delete.op.webhook.as_deref(), Some("wh1"));
 
         let mut from_discord = Mapping {
             origin: Origin::Discord,
-            ..mapping(MappedKind::Message, "m9", "d_m9")
+            ..mapping(MappedKind::Message, &at("m9"), "d_m9")
         };
         from_discord.persona = Some("d_user".into());
         g.map.push(from_discord);
@@ -394,7 +290,7 @@ tilo_test_env::scenario! {
             "a Discord message is edited in Discord"
         );
         assert_eq!(
-            plan_delete(&g, "c1", "m9")[0].op.webhook,
+            plan_delete(&g, &chat, &at("c1"), &at("m9"))[0].op.webhook,
             None,
             "removed by the bot user"
         );
@@ -406,14 +302,14 @@ tilo_test_env::scenario! {
 
         let mut bot = tests::connected();
         for action in [
-            tests::map(MappedKind::Channel, "c1", "d_general"),
-            tests::map(MappedKind::Webhook, "c1", "wh1"),
+            tests::map(MappedKind::Channel, &at("c1"), "d_general"),
+            tests::map(MappedKind::Webhook, &at("c1"), "wh1"),
         ] {
             bot.apply(action).unwrap();
         }
-        let attachment = json!({"attachments": [
-            {"$variant": "file", "name": "notes.txt", "blob": "ff", "size": 5}
-        ]});
+        let attachment = json!({"attachments": {"items": [
+            {"file": {"name": "notes.txt", "media": "text/plain", "size": 5, "url": "tilo-blob://ff"}}
+        ]}});
         let before = chat(&[msg("m1", "u_ada", "old caption", &attachment)]);
         let post = plan_post(&bot.state().unwrap(), &before, "m1", &context());
         assert_eq!(post.sends.len(), 1);
@@ -422,7 +318,7 @@ tilo_test_env::scenario! {
             op: post.sends[0].op.clone(),
         }))
         .unwrap();
-        bot.apply(tests::map(MappedKind::Message, "m1", "dm1"))
+        bot.apply(tests::map(MappedKind::Message, &at("m1"), "dm1"))
             .unwrap();
 
         let after = chat(&[msg("m1", "u_ada", "", &attachment)]);
@@ -464,9 +360,20 @@ tilo_test_env::scenario! {
     phase the_bot_reacts_once_per_emoji_while_tilo_people_have_it;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
-        let reacted = |rs: Value| chat(&[msg("m1", "u_ada", "x", &json!({"reactions": rs}))]);
-        let one = reacted(json!([{"emoji": "👍", "by": r#"{"person":"u_ada"}"#, "at": 1}]));
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "d_m1"));
+        let reacted = |who: &[&str]| {
+            let items: Vec<Value> = who
+                .iter()
+                .map(|person| json!({"actor": {"member": {"person": person}}}))
+                .collect();
+            chat(&[msg(
+                "m1",
+                "u_ada",
+                "x",
+                &json!({"reactions": {"👍": {"count": items.len(), "items": items}}}),
+            )])
+        };
+        let one = reacted(&["u_ada"]);
         let (reacts, unreacts) = plan_reaction(&g, &one, "m1", "👍", true);
         assert_eq!(
             reacts,
@@ -477,10 +384,7 @@ tilo_test_env::scenario! {
             }]
         );
         assert!(unreacts.is_empty());
-        let two = reacted(json!([
-            {"emoji": "👍", "by": r#"{"person":"u_ada"}"#, "at": 1},
-            {"emoji": "👍", "by": r#"{"person":"u_bo"}"#, "at": 2}
-        ]));
+        let two = reacted(&["u_ada", "u_bo"]);
         assert!(
             plan_reaction(&g, &two, "m1", "👍", true).0.is_empty(),
             "already there"
@@ -489,20 +393,28 @@ tilo_test_env::scenario! {
             plan_reaction(&g, &one, "m1", "👍", false).1.is_empty(),
             "Ada still has it"
         );
-        // What the bridge reacted for Discord people never goes back out.
-        let persona_only = reacted(json!([
-            {"emoji": "👍", "by": r#"{"bot":"i"}"#, "persona": "discord/d7", "name": "Dee", "at": 1}
-        ]));
+        // The bridge's own reaction for Discord people never goes back out.
+        let bot_only = chat(&[msg(
+            "m1",
+            "u_ada",
+            "x",
+            &json!({"reactions": {"👍": {"count": 1, "items": [{"actor": {"member": {"bot": "i"}}}]}}}),
+        )]);
         assert_eq!(
-            plan_reaction(&g, &persona_only, "m1", "👍", false).1.len(),
+            plan_reaction(&g, &bot_only, "m1", "👍", false).1.len(),
             1,
             "the last Tilo person took it back"
         );
         // One emoji spelled with or without its variation selector is one.
-        let hearts = reacted(json!([
-            {"emoji": "❤", "by": r#"{"person":"u_bo"}"#, "at": 1},
-            {"emoji": "❤️", "by": r#"{"person":"u_ada"}"#, "at": 2}
-        ]));
+        let hearts = chat(&[msg(
+            "m1",
+            "u_ada",
+            "x",
+            &json!({"reactions": {
+                "❤": {"count": 1, "items": [{"actor": {"member": {"person": "u_bo"}}}]},
+                "❤️": {"count": 1, "items": [{"actor": {"member": {"person": "u_ada"}}}]},
+            }}),
+        )]);
         assert!(
             plan_reaction(&g, &hearts, "m1", "❤️", true).0.is_empty(),
             "Bo's heart is already the bot's"
@@ -512,26 +424,33 @@ tilo_test_env::scenario! {
     phase a_workspace_emoji_crosses_as_the_servers_emoji_of_its_name_only;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "d_m1"));
         g.observe_emojis(vec![discord_wire::event::EmojiInfo {
             id: "55".into(),
             name: "tilo_hello".into(),
             animated: false,
         }]);
-        let reacted = |rs: Value| chat(&[msg("m1", "u_ada", "x", &json!({"reactions": rs}))]);
-        let hello = reacted(json!([{"emoji": ":tilo_hello:", "by": r#"{"person":"u_ada"}"#, "at": 1}]));
+        let reacted = |emoji: &str, person: &str| {
+            chat(&[msg(
+                "m1",
+                "u_ada",
+                "x",
+                &json!({"reactions": {emoji: {"count": 1, "items": [{"actor": {"member": {"person": person}}}]}}}),
+            )])
+        };
         assert_eq!(
-            plan_reaction(&g, &hello, "m1", ":tilo_hello:", true).0[0].emoji,
+            plan_reaction(&g, &reacted(":tilo_hello:", "u_ada"), "m1", ":tilo_hello:", true).0[0]
+                .emoji,
             "tilo_hello:55",
             "Discord's reaction routes name a custom emoji `name:id`"
         );
         assert_eq!(
-            plan_reaction(&g, &reacted(json!([])), "m1", ":tilo_hello:", false).1[0].emoji,
+            plan_reaction(&g, &chat(&[msg("m1", "u_ada", "x", &json!({}))]), "m1", ":tilo_hello:", false).1[0]
+                .emoji,
             "tilo_hello:55"
         );
-        let pizza = reacted(json!([{"emoji": ":pizza:", "by": r#"{"person":"u_ada"}"#, "at": 1}]));
         assert_eq!(
-            plan_reaction(&g, &pizza, "m1", ":pizza:", true),
+            plan_reaction(&g, &reacted(":pizza:", "u_ada"), "m1", ":pizza:", true),
             (Vec::new(), Vec::new()),
             "a workspace emoji the server has no emoji of stays in Tilo"
         );

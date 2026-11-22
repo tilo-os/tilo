@@ -2,7 +2,7 @@
 //! change or a Discord event, means for both sides.
 //!
 //! The bot's program only sequences steps, so everything it does comes from
-//! one effect. The program reads Chat's resources through the resource api, and
+//! one effect. The program reads tl Chat's tree through the core read, and
 //! `plan-event` answers a [`BridgePlan`]: one list per verb, each element holding exactly that
 //! verb's arguments, so the program is a fixed run of loops with no
 //! conditions. Work that needs an earlier result (a thread before the reply
@@ -22,18 +22,19 @@ use ui::tilo_resource::MemberId;
 use crate::guild::{Guild, MappedKind, Ownership};
 use crate::inbound::{self, InboundPlan};
 use crate::outbound::{self, Context};
-use crate::tilo::{self, WorkspaceChat};
+use crate::tilo;
 use crate::{import, layout, order, roles};
 
-/// The Chat resource kind the bridge mirrors.
-pub const CHAT_KIND: &str = "chat.workspace";
-/// The kind of the parts Chat keeps its messages in, beside its resource.
-pub const MESSAGES_KIND: &str = "chat.messages";
+/// Every tl Chat resource's kind begins with this: the type the change wrote.
+pub const CHAT_PREFIX: &str = "tl.so.tilo.chat.";
+/// Chat's root resource kind: the sidebar's conversations.
+pub const CHAT_KIND: &str = "tl.so.tilo.chat.Conversations";
 /// The workspace's own emoji, which the bridge uploads to the server.
 pub const EMOJI_KIND: &str = "tilo.workspace.emoji";
 /// The workspace's own governance resource kind, whose role changes the
 /// bridge mirrors.
 pub const WORKSPACE_KIND: &str = "tilo.workspace";
+
 /// Every list the program loops over, by the verb each runs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct BridgePlan {
@@ -74,24 +75,25 @@ pub struct BridgePlan {
     pub unbans: Vec<Value>,
     /// `fetch-asset`, then `remember-avatar`.
     pub avatars: Vec<Value>,
-    /// Chat `post` with the Discord author's appearance, then `map`.
+    /// Chat `relay` with the Discord author's name, then `map`.
     pub posts: Vec<Value>,
-    /// `fetch-asset`, then Chat `post` with the file, then `map`.
+    /// `fetch-asset`, then Chat `relay` with the file, then `map`.
     pub files: Vec<Value>,
-    /// Chat `import-message` with the Discord author's appearance and where
-    /// it was written, then `map`: what Discord wrote before the newest
-    /// message its Tilo channel holds.
+    /// Chat `relay` with the Discord author's name and where it was written, then `map`: what
+    /// Discord wrote before the newest message its Tilo conversation holds.
     pub imports: Vec<Value>,
-    /// `fetch-asset`, then Chat `import-message` with the file, then `map`.
+    /// `fetch-asset`, then Chat `relay` with the file, then `map`.
     pub file_imports: Vec<Value>,
+    /// Chat `start-thread` in a conversation, then `map` the thread, then plan again: a reply in
+    /// a Discord thread whose Tilo thread does not exist yet.
+    pub tilo_threads: Vec<Value>,
     pub chat_edits: Vec<Value>,
     pub chat_deletes: Vec<Value>,
-    /// Chat `remove-message`, then `unmap`.
+    /// Chat `delete`, then `unmap`.
     pub chat_removes: Vec<Value>,
-    /// The `react` field edit of a Chat message's reactions, with the
-    /// Discord user's appearance.
+    /// Chat `react`: the bot's own reaction for a Discord member.
     pub chat_reacts: Vec<Value>,
-    /// The `unreact` field edit, likewise.
+    /// Chat `react` again: the bot takes its reaction back.
     pub chat_unreacts: Vec<Value>,
     /// `block-persona`.
     pub blocks: Vec<Value>,
@@ -112,25 +114,24 @@ pub struct BridgePlan {
     pub import_channels: Vec<Value>,
     /// `map` of a Tilo channel or category that already matches.
     pub adopt: Vec<Value>,
-    /// Chat `set-channel-category`: a joined channel moves to its Discord
-    /// channel's category.
+    /// Chat `move_channel`: a joined channel moves to its Discord channel's category.
     pub file_channels: Vec<Value>,
-    /// Chat `delete-channel`: a channel of the workspace's the server had no
+    /// Chat `delete_channel`: a channel of the workspace's the server had no
     /// match for and nothing was written in.
     pub drop_channels: Vec<Value>,
-    /// Chat `delete-category`: a category of Tilo's own the moves or dropped
+    /// Chat `delete_category`: a category of Tilo's own the moves or dropped
     /// channels left empty.
     pub drop_categories: Vec<Value>,
-    /// Chat `arrange-channels`: Chat put in Discord's order.
-    pub chat_orders: Vec<Value>,
+    /// Chat `move_channel` / `move_category`: Chat put in Discord's order.
+    pub chat_moves: Vec<Value>,
     /// `finish-import`, with the Tilo channels left Tilo's own.
     pub finish: Vec<Value>,
     /// Plan again after this pass: something here unblocks more.
     pub again: bool,
 }
 
-/// A reaction someone added to or took back from a Chat message: the
-/// `react` or `unreact` field edit of its reactions.
+/// A reaction someone made on a Chat message: Chat's `react`, which adds or takes back the
+/// invoker's own reaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Reacted {
     message: String,
@@ -138,19 +139,16 @@ struct Reacted {
     added: bool,
 }
 
-/// What a change did, from its history entry (`did`): the verbs it ran and
-/// the reactions it changed.
+/// What a change did, from its history entry (`did`): the verbs it ran.
 #[derive(Default)]
 struct Did {
     verbs: Vec<String>,
-    reactions: Vec<Reacted>,
 }
 
 /// What fired the bot, read from its `event` input.
 enum Fired<'e> {
     Chat {
         verbs: Vec<String>,
-        reactions: Vec<Reacted>,
         item: Option<&'e str>,
         event: &'e Value,
     },
@@ -184,11 +182,10 @@ fn fired(event: &Value) -> Fired<'_> {
     if let Some(entry) = event.get("did") {
         did_of(entry, &mut did);
     }
-    let Did { verbs, reactions } = did;
+    let Did { verbs } = did;
     match event.get("kind").and_then(Value::as_str) {
-        Some(CHAT_KIND | MESSAGES_KIND) => Fired::Chat {
+        Some(kind) if kind.starts_with(CHAT_PREFIX) => Fired::Chat {
             verbs,
-            reactions,
             item: event.pointer("/item/id").and_then(Value::as_str),
             event,
         },
@@ -207,7 +204,6 @@ fn did_of(did: &Value, out: &mut Did) {
                 out.verbs.push(verb.to_owned());
             }
         }
-        Some("edit") => out.reactions.extend(reacted(did)),
         Some("group") => {
             for member in did
                 .get("members")
@@ -222,63 +218,44 @@ fn did_of(did: &Value, out: &mut Did) {
     }
 }
 
-/// A field edit's entry, when it is a reaction to a message: `react` or
-/// `unreact` on `messages › <message> › reactions`, the emoji its `new`.
-fn reacted(edit: &Value) -> Option<Reacted> {
-    let added = match edit.get("op").and_then(Value::as_str)? {
-        "react" => true,
-        "unreact" => false,
-        _ => return None,
-    };
-    let path = edit.get("path")?.as_array()?;
-    let step = |at: usize, kind: &str| path.get(at)?.get(kind)?.as_str();
-    if path.len() != 3 || step(2, "field")? != "reactions" {
-        return None;
+/// The id `value` names: a reference to a resource, or the resource's id.
+fn named(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(id) => Some(id),
+        Value::Object(reference) => reference.get("id").and_then(Value::as_str),
+        _ => None,
     }
-    if step(0, "field")? != "messages" {
-        return None;
-    }
-    let message = step(1, "item")?.to_owned();
-    Some(Reacted {
-        message,
-        emoji: edit.get("new")?.as_str()?.to_owned(),
-        added,
-    })
 }
 
 /// The message a Chat change is about: the one its verb names, else the
 /// item it addressed.
 fn about<'a>(item: Option<&'a str>, event: &'a Value) -> &'a str {
     event
-        .pointer("/arguments/message")
-        .and_then(Value::as_str)
+        .pointer("/arguments/m")
+        .and_then(named)
+        .or_else(|| event.pointer("/arguments/message").and_then(named))
         .or(item)
         .unwrap_or_default()
 }
 
-/// The Chat verbs that make a message: a post, and sharing a resource or a
-/// live window, which post the share.
-const POSTS: &[&str] = &["post", "share-resource", "share-window"];
-
-/// The Chat verbs that change how a share reads without editing its words:
-/// its sharer stopping it, or closing or reopening the window it shows.
-const SHARE_CHANGES: &[&str] = &["stop-sharing", "share-open"];
+/// The Chat verbs that make a message: a send, a relay, and sharing a view, which posts one.
+const POSTS: &[&str] = &["send", "relay", "send_view"];
 
 fn posts(verb: &str) -> bool {
     POSTS.contains(&verb)
 }
 
-/// The channel a Chat change names: its `channel` argument, else the item
-/// it addressed (a post is made on its channel).
+/// The conversation a Chat change names: its target, which for a send is where it posts.
 fn channel_of<'a>(item: Option<&'a str>, event: &'a Value) -> &'a str {
     event
-        .pointer("/arguments/channel")
-        .and_then(Value::as_str)
+        .pointer("/arguments/to")
+        .and_then(named)
+        .or_else(|| event.pointer("/arguments/channel").and_then(named))
         .or(item)
         .unwrap_or_default()
 }
 
-/// The message a post made: the newest message in its channel by its
+/// The message a post made: the newest message in its conversation by its
 /// author with its text that the bridge has not sent yet.
 fn posted(
     guild: &Guild,
@@ -287,22 +264,20 @@ fn posted(
     event: &Value,
 ) -> Option<String> {
     let named = about(item, event);
-    // A reply in a thread is made on the message it answers, which its
-    // change names: that one is not the post.
-    let answers = event.pointer("/arguments/parent").and_then(Value::as_str);
-    if answers != Some(named) && tilo::message(chat, named).is_some() {
-        return Some(named.to_owned());
+    // A reply is made in the conversation it answers in.
+    if let Some(message) = chat.message(named) {
+        return Some(message.id);
     }
-    let channel = channel_of(item, event);
-    let text = event.pointer("/arguments/text").and_then(Value::as_str);
+    let channel = tilo::published(channel_of(item, event));
+    let text = event.pointer("/arguments/body").and_then(Value::as_str);
     let author = actor(event);
-    tilo::messages(chat)
+    chat.messages()
         .into_iter()
         .rev()
         .find(|message| {
             message.channel == channel
                 && author.as_ref() == Some(&message.author)
-                && text.is_none_or(|text| message.text == text)
+                && text.is_none_or(|body| message.text == body)
                 && guild.mapping(MappedKind::Message, &message.id).is_none()
         })
         .map(|message| message.id)
@@ -325,7 +300,7 @@ fn values<T: Serialize>(items: impl IntoIterator<Item = T>) -> Vec<Value> {
         .collect()
 }
 
-/// What a plan reads: the guild, Chat's resources of the workspace, and where
+/// What a plan reads: the guild, Chat's tree of the workspace, and where
 /// links point.
 #[derive(Clone, Copy)]
 pub struct Reading<'a> {
@@ -347,12 +322,7 @@ pub struct Reading<'a> {
 pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
     let mut plan = BridgePlan::default();
     match fired(event) {
-        Fired::Chat {
-            verbs,
-            reactions,
-            item,
-            event,
-        } => {
+        Fired::Chat { verbs, item, event } => {
             for verb in &verbs {
                 let message = if posts(verb) {
                     posted(read.guild, read.chat, item, event).unwrap_or_default()
@@ -360,17 +330,6 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
                     about(item, event).to_owned()
                 };
                 tilo_change(&mut plan, read, verb, &message, event);
-            }
-            for reacted in &reactions {
-                let (reacts, unreacts) = outbound::plan_reaction(
-                    read.guild,
-                    read.chat,
-                    &reacted.message,
-                    &reacted.emoji,
-                    reacted.added,
-                );
-                plan.reacts.extend(values(reacts));
-                plan.unreacts.extend(values(unreacts));
             }
         }
         Fired::Workspace { verbs, event } => {
@@ -396,6 +355,7 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
         && plan.file_channels.is_empty()
         && plan.drop_channels.is_empty()
         && plan.drop_categories.is_empty()
+        && plan.tilo_threads.is_empty()
         && plan.finish.is_empty()
         // A channel made now is put in its place on the next pass.
         && !plan
@@ -405,18 +365,19 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
     plan
 }
 
-/// The Chat verbs that rearrange the workspace's channels: after them the
+/// The Chat verbs that rearrange the workspace's conversations: after them the
 /// bridge puts Discord in Chat's order.
 const ARRANGES: &[&str] = &[
-    "create-channel",
-    "create-channel-with-id",
-    "create-category",
-    "move-channel",
-    "move-category",
-    "set-channel-category",
-    "arrange-channels",
-    "archive-channel",
-    "delete-category",
+    "new_channel",
+    "add_channel",
+    "new_voice_channel",
+    "add_voice_channel",
+    "new_category",
+    "move_channel",
+    "move_category",
+    "delete_channel",
+    "delete_category",
+    "start_thread",
 ];
 
 fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &str, event: &Value) {
@@ -428,17 +389,37 @@ fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &s
     } = read;
     match verb {
         verb if posts(verb) => post(plan, guild, chat, message, context),
-        verb if verb == "edit-message" || SHARE_CHANGES.contains(&verb) => {
-            plan.edits
-                .extend(values(outbound::plan_edit(guild, chat, message, context)));
+        "edit" => plan
+            .edits
+            .extend(values(outbound::plan_edit(guild, chat, message, context))),
+        "delete" => {
+            let channel = chat
+                .message(message)
+                .map_or_else(|| channel_of(None, event).to_owned(), |m| m.channel);
+            plan.deletes.extend(values(outbound::plan_delete(
+                guild, chat, &channel, message,
+            )));
         }
-        "delete-message" | "remove-message" => {
-            let channel = event
-                .pointer("/before/channel")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            plan.deletes
-                .extend(values(outbound::plan_delete(guild, channel, message)));
+        "react" => {
+            if let Some(emoji) = event.pointer("/arguments/emoji").and_then(Value::as_str)
+                && let Some(member) = actor(event)
+            {
+                let added = chat.reacted(message, emoji, &member);
+                let reacted = Reacted {
+                    message: message.to_owned(),
+                    emoji: emoji.to_owned(),
+                    added,
+                };
+                let (reacts, unreacts) = outbound::plan_reaction(
+                    guild,
+                    chat,
+                    &reacted.message,
+                    &reacted.emoji,
+                    reacted.added,
+                );
+                plan.reacts.extend(values(reacts));
+                plan.unreacts.extend(values(unreacts));
+            }
         }
         verb => reconcile(plan, read, ARRANGES.contains(&verb)),
     }
@@ -461,7 +442,7 @@ fn post(
 /// someone rearranged Chat, which Discord follows.
 fn reconcile(plan: &mut BridgePlan, read: Reading<'_>, arranged: bool) {
     let guild = read.guild;
-    let tilo = WorkspaceChat::from_chat(read.chat);
+    let tilo = read.chat.workspace();
     let import = import::plan(guild, &tilo);
     plan.import_categories
         .extend(import.categories.into_iter().map(|c| {
@@ -475,18 +456,25 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>, arranged: bool) {
             json!({
                 "name": c.name,
                 "category": c.category,
-                "kind": c.kind,
+                "kind": if c.kind == "voice" {
+                    "tl.so.tilo.chat.VoiceChannel"
+                } else {
+                    "tl.so.tilo.chat.TextChannel"
+                },
                 "discord": c.discord,
             })
         }));
     plan.adopt.extend(values(import.adopt));
     plan.file_channels.extend(values(import.file));
-    plan.drop_channels.extend(
-        import
-            .drop_channels
-            .into_iter()
-            .map(|channel| json!({ "channel": channel })),
-    );
+    plan.drop_channels
+        .extend(import.drop_channels.into_iter().map(|channel| {
+            let category = tilo
+                .channels
+                .iter()
+                .find(|c| c.id == channel)
+                .and_then(|c| c.category.clone());
+            json!({ "channel": channel, "category": category })
+        }));
     plan.drop_categories.extend(
         import
             .drop_categories
@@ -495,7 +483,7 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>, arranged: bool) {
     );
     // Adopted, the workspace lists the server's channels as the server does.
     if !import.finish.is_empty() {
-        plan.chat_orders
+        plan.chat_moves
             .extend(values(order::to_chat(guild, guild, &tilo)));
     }
     plan.finish.extend(values(import.finish));
@@ -561,7 +549,11 @@ fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Va
     if verb == "complete-link" {
         // A person took a link offer: the `/link` it answered says so.
         if let Some(person) = actor(event).as_ref().and_then(MemberId::person_id) {
-            inbound_plan(plan, inbound::plan_linked(read.guild, read.chat, person));
+            inbound_plan(
+                plan,
+                read,
+                inbound::plan_linked(read.guild, read.chat, person),
+            );
         }
         return;
     }
@@ -574,7 +566,7 @@ fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Va
     else {
         return;
     };
-    inbound_plan(plan, inbound::plan_block(read.guild, user));
+    inbound_plan(plan, read, inbound::plan_block(read.guild, user));
 }
 
 fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &Value) {
@@ -617,7 +609,7 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
         _ => None,
     };
     if let Some(inbound) = inbound {
-        inbound_plan(plan, inbound);
+        inbound_plan(plan, read, inbound);
     }
 }
 
@@ -631,12 +623,12 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
     );
     observed.observe_emojis(layout.emojis.clone());
     let adopted = read.guild.ownership == Ownership::Adopted;
-    let workspace = WorkspaceChat::from_chat(read.chat);
+    let workspace = read.chat.workspace();
     if observed == *read.guild {
         reconcile(plan, read, false);
         // Back after a while: what moved in Discord meanwhile shows in Chat.
         if adopted && layout.connected {
-            plan.chat_orders
+            plan.chat_moves
                 .extend(values(order::to_chat(read.guild, read.guild, &workspace)));
         }
         // On every start too: the workspace's emoji made while the bridge
@@ -657,89 +649,61 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
         if adopted
             && (layout.connected || order::moved_in_discord(read.guild, &observed, &workspace))
         {
-            plan.chat_orders
+            plan.chat_moves
                 .extend(values(order::to_chat(&observed, read.guild, &workspace)));
         }
     }
 }
 
-/// A Chat `import-message` of what `post` mirrors: its words in its place, by
-/// its author in Discord at the moment it was written there, after `fetch`
-/// copies the file it carries.
-fn imported(post: &inbound::PostItem, fetch: Option<&discord_wire::op::FetchAssetOp>) -> Value {
-    let origin = ui::tilo_resource::Origin {
-        author: post.appearance.name.clone(),
-        handle: Some(post.persona.clone()),
-        source: "Discord".to_owned(),
-        url: None,
-        reference: Some(post.discord.clone()),
-        created_ms: Some(discord_wire::snowflake_ms(&post.discord)),
-        updated_ms: None,
-    };
+/// What a Discord post becomes in Chat: a message relayed at the name and time it was written
+/// there, answering the message it replied to.
+fn relay_item(post: &inbound::PostItem) -> Value {
     json!({
         "channel": post.channel,
         "text": post.text,
-        "parent": post.parent,
+        "reply_to": post.parent,
+        "by": post.appearance.name,
+        "written_in": "Discord",
+        "written": post.written.saturating_mul(1000),
         "appearance": post.appearance,
         "discord": post.discord,
         "persona": post.persona,
-        "origin": origin,
-        "fetch": fetch,
     })
 }
 
-fn inbound_plan(plan: &mut BridgePlan, inbound: InboundPlan) {
+fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) {
     plan.avatars.extend(values(inbound.avatars));
-    plan.posts.extend(inbound.posts.into_iter().map(|p| {
-        json!({
-            "channel": p.channel,
-            "text": p.text,
-            "parent": p.parent,
-            "appearance": p.appearance,
-            "discord": p.discord,
-            "persona": p.persona,
-            "written": p.written,
-        })
-    }));
+    plan.posts
+        .extend(inbound.posts.into_iter().map(|p| relay_item(&p)));
     plan.files.extend(inbound.files.into_iter().map(|f| {
-        json!({
-            "fetch": f.fetch,
-            "channel": f.post.channel,
-            "text": f.post.text,
-            "parent": f.post.parent,
-            "appearance": f.post.appearance,
-            "discord": f.post.discord,
-            "persona": f.post.persona,
-            "written": f.post.written,
-        })
+        let mut item = relay_item(&f.post);
+        item["fetch"] = json!(f.fetch);
+        item
     }));
-    plan.imports
-        .extend(inbound.imports.into_iter().map(|p| imported(&p, None)));
-    plan.file_imports.extend(
-        inbound
-            .file_imports
-            .into_iter()
-            .map(|f| imported(&f.post, Some(&f.fetch))),
-    );
+    plan.imports.extend(inbound.imports.iter().map(relay_item));
+    plan.file_imports
+        .extend(inbound.file_imports.iter().map(|f| {
+            let mut item = relay_item(&f.post);
+            item["fetch"] = json!(f.fetch);
+            item
+        }));
     plan.chat_edits.extend(
         inbound
             .edits
             .into_iter()
             .map(|e| json!({ "message": e.message, "text": e.text })),
     );
-    plan.chat_deletes.extend(
-        inbound
-            .deletes
-            .into_iter()
-            .map(|id| json!({ "message": id })),
-    );
-    plan.chat_removes.extend(
-        inbound
-            .removes
-            .into_iter()
-            .map(|r| json!({ "message": r.message })),
-    );
-    let reaction = |r: inbound::ReactItem| json!({ "message": r.message, "emoji": r.emoji, "appearance": r.appearance });
+    for id in inbound.deletes {
+        let channel = read.chat.message(&id).map(|m| m.channel);
+        plan.chat_deletes
+            .push(json!({ "message": id, "channel": channel }));
+    }
+    plan.chat_removes
+        .extend(inbound.removes.into_iter().map(|r| {
+            let channel = read.chat.message(&r.message).map(|m| m.channel);
+            json!({ "message": r.message, "channel": channel, "reason": r.reason })
+        }));
+    let reaction = |r: inbound::ReactItem| json!({ "message": r.message, "emoji": r.emoji });
     plan.chat_reacts
         .extend(inbound.reacts.into_iter().map(reaction));
     plan.chat_unreacts

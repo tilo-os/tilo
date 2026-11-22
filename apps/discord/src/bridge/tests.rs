@@ -4,6 +4,11 @@ use super::*;
 use crate::guild::Link;
 use crate::layout::tests::mapping;
 
+/// The published id of Chat's resource `id`.
+fn at(id: &str) -> String {
+    format!("tl:so.tilo.chat:{id}")
+}
+
 fn guild() -> Guild {
     let mut g = Guild {
         guild_id: "1".into(),
@@ -12,22 +17,78 @@ fn guild() -> Guild {
         ..Guild::default()
     };
     g.map = [
-        mapping(MappedKind::Channel, "c1", "d1"),
-        mapping(MappedKind::Webhook, "c1", "wh1"),
+        mapping(MappedKind::Channel, &at("c1"), "d1"),
+        mapping(MappedKind::Webhook, &at("c1"), "wh1"),
     ]
     .into_iter()
     .collect();
     g
 }
 
+/// A message row of the tree.
+fn row(id: &str, author: &str, body: &str, extra: &Value) -> Value {
+    let mut fields =
+        json!({"body": body, "by": "", "written_in": "", "written": 0, "reactions": {}});
+    if let (Some(fields), Some(extra)) = (fields.as_object_mut(), extra.as_object()) {
+        fields.extend(extra.clone());
+    }
+    json!({
+        "item": at(id),
+        "kind": "tl.so.tilo.chat.Message",
+        "id": id,
+        "created": {"who": {"actor": {"member": {"person": author}}}},
+        "fields": fields,
+    })
+}
+
+/// A chat whose `general` channel (under the category `chat`) holds `messages`, and `goal` at
+/// the top.
+fn chat_with(messages: &[Value]) -> crate::tilo::ChatRead {
+    let channel = json!({
+        "item": at("c1"),
+        "kind": "tl.so.tilo.chat.TextChannel",
+        "id": "c1",
+        "fields": {"name": "general", "topic": "talk", "messages": {"items": messages}},
+    });
+    let goal = json!({
+        "item": at("c_goal"),
+        "kind": "tl.so.tilo.chat.TextChannel",
+        "id": "c_goal",
+        "fields": {"name": "goal", "topic": "", "messages": {"items": []}},
+    });
+    let category = json!({
+        "item": at("k_chat"),
+        "kind": "tl.so.tilo.chat.Category",
+        "id": "k_chat",
+        "fields": {"name": "chat", "channels": {"items": [channel]}},
+    });
+    crate::tilo::ChatRead::of(&json!({
+        "records": [{
+            "item": at("root"),
+            "kind": "tl.so.tilo.chat.Conversations",
+            "fields": {"channels": {"items": [goal, category]}},
+        }],
+    }))
+    .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada"}]}))
+}
+
 fn chat() -> crate::tilo::ChatRead {
-    crate::tilo::ChatRead::new(
-        json!({}),
-        vec![(
-            "m1".into(),
-            json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "hello", "parent": null}),
-        )],
-    )
+    // The bridge's own channel `c1`, holding Ada's `hello`.
+    let channel = json!({
+        "item": at("c1"),
+        "kind": "tl.so.tilo.chat.TextChannel",
+        "id": "c1",
+        "fields": {"name": "general", "topic": "", "messages": {"items": [
+            row("m1", "u_ada", "hello", &json!({}))
+        ]}},
+    });
+    crate::tilo::ChatRead::of(&json!({
+        "records": [{
+            "item": at("root"),
+            "kind": "tl.so.tilo.chat.Conversations",
+            "fields": {"channels": {"items": [channel]}},
+        }],
+    }))
     .knowing(&json!({"members": [{"member": {"person": "u_ada"}, "name": "Ada"}]}))
 }
 
@@ -58,7 +119,7 @@ tilo_test_env::scenario! {
     phase a_tilo_message_deleted_in_discord_is_removed_in_chat_not_sent_again;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
         let deleted = discord(
             source::MESSAGE_DELETED,
             &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "executor": "d_admin"}),
@@ -66,13 +127,13 @@ tilo_test_env::scenario! {
         let removed = planned(&g, &deleted);
         assert_eq!(
             removed.chat_removes,
-            [json!({"message": "m1"})],
+            [json!({"message": at("m1"), "channel": at("c1"), "reason": "deleted in Discord"})],
             "{removed:?}"
         );
         assert!(removed.sends.is_empty(), "never sent again: {removed:?}");
     }
 
-    phase a_discord_message_posts_on_the_mapped_channels_item_with_an_appearance;
+    phase a_discord_message_is_relayed_on_the_mapped_channels_item_with_its_author;
     {
         let payload = json!({
             "guild_id": "1",
@@ -84,9 +145,10 @@ tilo_test_env::scenario! {
         let plan = planned(&guild(), &discord("message-created", &payload));
         assert_eq!(plan.posts.len(), 1, "{plan:?}");
         let post = &plan.posts[0];
-        assert_eq!(post["channel"], "c1");
-        assert_eq!(post["appearance"]["name"], "thor");
-        assert_eq!(post["appearance"]["persona"]["account"], "42");
+        assert_eq!(post["channel"], at("c1"));
+        assert_eq!(post["by"], "thor");
+        assert_eq!(post["written_in"], "Discord");
+        assert_eq!(post["persona"], "42");
         assert_eq!(post["discord"], "dm7");
 
         let echo = json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm8", "content": "x", "author": {"id": "9", "name": "bridge"}});
@@ -114,10 +176,10 @@ tilo_test_env::scenario! {
         assert!(!second.again);
     }
 
-    phase a_discord_reaction_is_the_members_own_reaction_on_the_mapped_message;
+    phase a_discord_reaction_is_the_bots_own_reaction_on_the_mapped_message;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
         let event = discord(
             source::REACTION_ADDED,
             &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "user_id": "d7",
@@ -126,10 +188,8 @@ tilo_test_env::scenario! {
         let planned = planned(&g, &event);
         assert_eq!(planned.chat_reacts.len(), 1, "{planned:?}");
         let react = &planned.chat_reacts[0];
-        assert_eq!(react["message"], "m1");
+        assert_eq!(react["message"], at("m1"));
         assert_eq!(react["emoji"], ":party:");
-        assert_eq!(react["appearance"]["name"], "Dee");
-        assert_eq!(react["appearance"]["persona"]["account"], "d7");
         // The bot's own reaction comes back from Discord as nothing.
         let echo = discord(
             source::REACTION_REMOVED,
@@ -171,98 +231,42 @@ fn actor(person: &str) -> Value {
 tilo_test_env::scenario! {
     fn what_happens_in_tilo_is_planned_for_discord;
 
-    phase a_chat_post_is_routed_to_its_message_and_sent_once;
+    phase a_chat_send_is_routed_to_its_message_and_sent_once;
     {
-        let event =
-            json!({"kind": CHAT_KIND, "did": verb("post"), "item": {"kind": "messages", "id": "m1"}});
+        let event = json!({
+            "kind": "tl.so.tilo.chat.TextChannel",
+            "did": verb("send"),
+            "item": {"kind": "tl.so.tilo.chat.TextChannel", "id": "c1"},
+            "actor": actor("u_ada"),
+            "arguments": {"body": "hello"},
+        });
         let plan = planned(&guild(), &event);
         assert_eq!(plan.sends.len(), 1);
         assert_eq!(plan.sends[0]["op"]["webhook"], "wh1");
         assert_eq!(plan.sends[0]["op"]["username"], "Ada");
+        assert_eq!(plan.sends[0]["op"]["tilo"], at("m1"));
         assert!(!plan.again, "a send unblocks nothing");
-    }
-
-    phase a_post_entry_names_its_channel_and_the_plan_finds_the_message_it_made;
-    {
-        // Chat records a post on the channel it was made in, with its text.
-        let event = json!({
-            "kind": CHAT_KIND,
-            "did": verb("post"),
-            "item": {"kind": "channels", "id": "c1"},
-            "actor": actor("u_ada"),
-            "arguments": {"channel": "c1", "text": "hello"},
-        });
-        let plan = planned(&guild(), &event);
-        assert_eq!(plan.sends.len(), 1, "{:?}", plan.sends);
-        assert_eq!(plan.sends[0]["op"]["tilo"], "m1");
         let mut sent = guild();
-        sent.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+        sent.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
         assert!(
             planned(&sent, &event).sends.is_empty(),
             "a message already in Discord is not sent again"
         );
     }
 
-    phase sharing_posts_and_stopping_a_share_edits_its_copy;
-    // Sharing a window or a resource posts a message, which goes across like
-    // any post; its sharer stopping the share edits the Discord copy.
-    {
-        let shared = json!({
-            "kind": CHAT_KIND,
-            "did": verb("share-window"),
-            "item": {"kind": "channels", "id": "c1"},
-            "actor": actor("u_ada"),
-            "arguments": {"channel": "c1"},
-        });
-        let plan = planned(&guild(), &shared);
-        assert_eq!(plan.sends.len(), 1, "{:?}", plan.sends);
-        assert_eq!(plan.sends[0]["op"]["tilo"], "m1");
-        let mut sent = guild();
-        sent.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-        let stopped = json!({
-            "kind": CHAT_KIND,
-            "did": verb("stop-sharing"),
-            "item": {"kind": "messages", "id": "m1"},
-            "arguments": {"message": "m1"},
-        });
-        let plan = planned(&sent, &stopped);
-        assert_eq!(plan.edits.len(), 1, "{plan:?}");
-        assert_eq!(plan.edits[0]["message"], "dm1");
-    }
-
-    phase closing_or_reopening_a_shared_window_edits_its_copy;
-    // Its sharer closing or reopening the shared window edits the Discord copy,
-    // so it says whether the share is live right now.
-    {
-        let mut sent = guild();
-        sent.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-        for open in [false, true] {
-            let event = json!({
-                "kind": CHAT_KIND,
-                "did": verb("share-open"),
-                "item": {"kind": "messages", "id": "m1"},
-                "actor": actor("u_ada"),
-                "arguments": {"open": open},
-            });
-            let plan = planned(&sent, &event);
-            assert_eq!(plan.edits.len(), 1, "{plan:?}");
-            assert_eq!(plan.edits[0]["message"], "dm1");
-        }
-    }
-
     phase a_chat_delete_finds_the_channel_the_message_was_in;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
         let event = json!({
-            "kind": CHAT_KIND,
-            "did": {"did": "group", "members": [verb("delete-message")]},
-            "item": {"kind": "messages", "id": "m1"},
-            "before": {"channel": "c1"},
+            "kind": "tl.so.tilo.chat.TextChannel",
+            "did": {"did": "group", "members": [verb("delete")]},
+            "item": {"kind": "tl.so.tilo.chat.TextChannel", "id": "c1"},
+            "arguments": {"m": at("m1")},
         });
         let plan = planned(&g, &event);
         assert_eq!(plan.deletes[0]["op"]["message"], "dm1");
-        assert_eq!(plan.deletes[0]["tilo"], "m1");
+        assert_eq!(plan.deletes[0]["tilo"], at("m1"));
     }
 
     phase a_tilo_role_change_reaches_the_linked_discord_account;
@@ -320,15 +324,14 @@ tilo_test_env::scenario! {
     phase a_tilo_reaction_is_routed_to_its_message_and_becomes_the_bots;
     {
         let mut g = guild();
-        g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-        let event = json!({"kind": MESSAGES_KIND, "did": {"did": "group", "members": [reaction_edit("react", "m1", "👍")]}});
-        let chat = crate::tilo::ChatRead::new(
-            serde_json::Value::Null,
-            vec![(
-                "m1".into(),
-                json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "hello", "reactions": [{"emoji": "👍", "by": r#"{"person":"u_bo"}"#, "at": 1}]}),
-            )],
-        );
+        g.map.push(mapping(MappedKind::Message, &at("m1"), "dm1"));
+        let reacted = chat_with(&[row(
+            "m1",
+            "u_ada",
+            "hello",
+            &json!({"reactions": {"👍": {"count": 1,
+                "items": [{"actor": {"member": {"person": "u_bo"}}}]}}}),
+        )]);
         let read = |chat: &crate::tilo::ChatRead, event: &Value| {
             plan(
                 Reading {
@@ -341,39 +344,34 @@ tilo_test_env::scenario! {
                 event,
             )
         };
-        let planned = read(&chat, &event);
+        let event = json!({
+            "kind": "tl.so.tilo.chat.Message",
+            "did": verb("react"),
+            "item": {"kind": "tl.so.tilo.chat.Message", "id": "m1"},
+            "actor": actor("u_bo"),
+            "arguments": {"emoji": "👍"},
+        });
+        let planned = read(&reacted, &event);
         assert_eq!(
             planned.reacts,
             [json!({"channel": "d1", "message": "dm1", "emoji": "👍"})]
         );
         assert!(planned.apply_channels.is_empty() && !planned.again);
 
-        let taken = json!({"kind": MESSAGES_KIND, "did": reaction_edit("unreact", "m1", "👍")});
-        let none = crate::tilo::ChatRead::new(
-            serde_json::Value::Null,
-            vec![(
-                "m1".into(),
-                json!({"channel": "c1", "author": r#"{"person":"u_ada"}"#, "text": "hello", "reactions": []}),
-            )],
-        );
+        let none = chat_with(&[row("m1", "u_ada", "hello", &json!({}))]);
         assert_eq!(
-            read(&none, &taken).unreacts,
-            [json!({"channel": "d1", "message": "dm1", "emoji": "👍"})]
+            read(&none, &event).unreacts,
+            [json!({"channel": "d1", "message": "dm1", "emoji": "👍"})],
+            "Bo took it back"
         );
-        // Another field edit of a message is no reaction.
-        let pinned = json!({"kind": MESSAGES_KIND, "did": {"did": "edit", "op": "set", "new": true,
-            "path": [{"field": "messages"}, {"item": "m1"}, {"field": "pinned"}]}});
-        assert_eq!(read(&chat, &pinned), BridgePlan::default());
+        // Another kind of change to a message is no reaction.
+        let pinned = json!({
+            "kind": "tl.so.tilo.chat.Message",
+            "did": verb("pin"),
+            "item": {"kind": "tl.so.tilo.chat.Message", "id": "m1"},
+        });
+        assert!(!read(&reacted, &pinned).again, "{:?}", read(&reacted, &pinned));
     }
-
-
-}
-
-/// A Chat change's history entry for a reaction: the framework's field
-/// edit of a message's reactions.
-fn reaction_edit(op: &str, message: &str, emoji: &str) -> Value {
-    json!({"did": "edit", "ty": "message", "field": "reactions", "op": op, "new": emoji,
-           "path": [{"field": "messages"}, {"item": message}, {"field": "reactions"}]})
 }
 
 /// A mirroring bridge of "talk" with #one and #two, Discord listing them so.
@@ -381,11 +379,11 @@ fn arranged_guild() -> Guild {
     let mut g = guild();
     g.mirror_channels = true;
     g.map = [
-        mapping(MappedKind::Category, "k_talk", "d_talk"),
-        mapping(MappedKind::Channel, "c_one", "d_one"),
-        mapping(MappedKind::Channel, "c_two", "d_two"),
-        mapping(MappedKind::Webhook, "c_one", "wh_one"),
-        mapping(MappedKind::Webhook, "c_two", "wh_two"),
+        mapping(MappedKind::Category, &at("k_talk"), "d_talk"),
+        mapping(MappedKind::Channel, &at("c_one"), "d_one"),
+        mapping(MappedKind::Channel, &at("c_two"), "d_two"),
+        mapping(MappedKind::Webhook, &at("c_one"), "wh_one"),
+        mapping(MappedKind::Webhook, &at("c_two"), "wh_two"),
     ]
     .into_iter()
     .collect();
@@ -414,23 +412,32 @@ fn observed(g: &mut Guild, positions: &[(&str, i64)]) {
 
 /// The workspace's chat with "talk" listing `channels` in this order.
 fn talk(channels: &[&str]) -> crate::tilo::ChatRead {
-    let listed: serde_json::Map<String, Value> = channels
+    let listed: Vec<Value> = channels
         .iter()
         .enumerate()
         .map(|(order, id)| {
-            let channel = json!({"k": format!("{order:03}"), "v": {
-                "category": "k_talk", "name": id.trim_start_matches("c_"), "topic": "",
-                "kind": "text", "archived": false}});
-            ((*id).to_owned(), channel)
+            json!({
+                "item": at(id),
+                "kind": "tl.so.tilo.chat.TextChannel",
+                "id": id,
+                "fields": {"name": id.trim_start_matches("c_"), "topic": "",
+                           "messages": {"items": []}, "order": order},
+            })
         })
         .collect();
-    crate::tilo::ChatRead::new(
-        json!({
-            "categories": {"k_talk": {"k": "a", "v": {"name": "talk"}}},
-            "channels": listed,
-        }),
-        Vec::new(),
-    )
+    let category = json!({
+        "item": at("k_talk"),
+        "kind": "tl.so.tilo.chat.Category",
+        "id": "k_talk",
+        "fields": {"name": "talk", "channels": {"items": listed}},
+    });
+    crate::tilo::ChatRead::of(&json!({
+        "records": [{
+            "item": at("root"),
+            "kind": "tl.so.tilo.chat.Conversations",
+            "fields": {"channels": {"items": [category]}},
+        }],
+    }))
 }
 
 fn planned_on(guild: &Guild, chat: &crate::tilo::ChatRead, event: &Value) -> BridgePlan {
@@ -458,19 +465,27 @@ tilo_test_env::scenario! {
         );
         let first = planned_on(&g, &talk(&["c_one", "c_two"]), &event);
         assert_eq!(first.observe.len(), 1);
-        assert_eq!(
-            first.chat_orders,
-            [json!({"categories": ["k_talk"], "channels": [
-                {"channel": "c_two", "category": "k_talk"},
-                {"channel": "c_one", "category": "k_talk"},
-            ]})]
+        let moves: Vec<_> = first
+            .chat_moves
+            .iter()
+            .map(|moved| moved["id"].as_str().unwrap_or_default())
+            .collect();
+        assert!(moves.contains(&"tl:so.tilo.chat:c_two"), "{:?}", first.chat_moves);
+        assert!(
+            first.chat_moves.iter().any(|moved| {
+                moved["id"] == json!(at("c_two"))
+                    && moved["category"] == json!(at("k_talk"))
+                    && moved["at"] == json!(0)
+            }),
+            "{:?}",
+            first.chat_moves
         );
         assert!(first.arrange_channels.is_empty(), "never sent back");
         // Once recorded, with Chat rearranged, nothing is left to do.
         let mut recorded = g;
         observed(&mut recorded, &[("d_one", 1), ("d_two", 0)]);
         let second = planned_on(&recorded, &talk(&["c_two", "c_one"]), &event);
-        assert!(second.chat_orders.is_empty() && second.arrange_channels.is_empty());
+        assert!(second.chat_moves.is_empty() && second.arrange_channels.is_empty());
     }
 
     phase a_reconnect_brings_chat_in_line_with_discord;
@@ -480,16 +495,17 @@ tilo_test_env::scenario! {
         let same = layout_payload(&[("d_one", 0), ("d_two", 1)], false);
         assert!(
             planned_on(&g, &chat, &discord("layout-changed", &same))
-                .chat_orders
+                .chat_moves
                 .is_empty(),
             "a layout that moved nothing leaves Chat's order be"
         );
         let connected = layout_payload(&[("d_one", 0), ("d_two", 1)], true);
         assert_eq!(
             planned_on(&g, &chat, &discord("layout-changed", &connected))
-                .chat_orders
+                .chat_moves
                 .len(),
-            1
+            3,
+            "the category and its two channels"
         );
     }
 
@@ -497,8 +513,8 @@ tilo_test_env::scenario! {
     {
         let g = arranged_guild();
         let chat = talk(&["c_two", "c_one"]);
-        let moved = json!({"kind": CHAT_KIND, "did": verb("move-channel"),
-            "item": {"id": "c_two"}});
+        let moved = json!({"kind": "tl.so.tilo.chat.TextChannel", "did": verb("move_channel"),
+            "item": {"kind": "tl.so.tilo.chat.TextChannel", "id": "c_two"}});
         let plan = planned_on(&g, &chat, &moved);
         assert_eq!(
             plan.arrange_channels,
@@ -507,9 +523,10 @@ tilo_test_env::scenario! {
                 {"channel": "d_one", "parent": "d_talk", "position": 1},
             ]})]
         );
-        assert!(plan.chat_orders.is_empty());
+        assert!(plan.chat_moves.is_empty());
         // A change that rearranges nothing does not move Discord's channels.
-        let read = json!({"kind": CHAT_KIND, "did": verb("mark-read"), "item": {"id": "c_two"}});
+        let read = json!({"kind": "tl.so.tilo.chat.TextChannel", "did": verb("mark-read"),
+            "item": {"kind": "tl.so.tilo.chat.TextChannel", "id": "c_two"}});
         assert!(planned_on(&g, &chat, &read).arrange_channels.is_empty());
     }
 }

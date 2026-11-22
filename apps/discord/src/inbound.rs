@@ -82,14 +82,12 @@ pub struct RemoveItem {
     pub reason: String,
 }
 
-/// A reaction the bot adds or takes back on a Chat message for a Discord
-/// member: the `react` or `unreact` field edit of the message's reactions,
-/// with the member's appearance.
+/// A reaction the bot adds or takes back on a Chat message for a Discord member: Chat's `react`,
+/// which adds the bot's own reaction or takes it back.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReactItem {
     pub message: String,
     pub emoji: String,
-    pub appearance: Appearance,
 }
 
 /// `offer-link` or `offer-sign-in`: a Discord account Discord vouched for,
@@ -251,24 +249,12 @@ fn appearance(
         .iter()
         .find(|link| link.discord_user == author.id)
         .and_then(|link| {
-            let person = tilo::person(chat, &MemberId::parsed_person(&link.person)?)?;
+            let person = chat.person(&MemberId::parsed_person(&link.person)?)?;
             Some((link, person))
         })
         .filter(|(_, person)| !person.name.trim().is_empty());
-    // A linked person with no picture of their own in Tilo shows their
-    // Discord one, so they look the same on both sides.
-    if let Some((link, person)) = &linked
-        && person.avatar.is_some()
-    {
-        return Ok(Appearance {
-            name: person.name.clone(),
-            avatar: person.avatar.clone(),
-            persona: Persona {
-                linked: Some(link.person.clone()),
-                ..persona(&author.id)
-            },
-        });
-    }
+    // Chat keeps no member picture: a linked person shows their Discord avatar, so they look the
+    // same on both sides.
     let avatar = match (&author.avatar, &author.avatar_url) {
         (Some(hash), Some(url)) => match guild.avatars.get(hash) {
             Some(blob) => Some(blob.clone()),
@@ -303,52 +289,48 @@ fn appearance(
     })
 }
 
-/// The Tilo channel and thread root a Discord message lands in.
+/// Where a Discord message lands in Chat: the conversation it is posted in, and the message it
+/// answers, when Chat holds one.
 fn place(
     guild: &Guild,
+    chat: &crate::tilo::ChatRead,
     event: &MessageCreated,
 ) -> Option<(String, Option<String>, Option<String>)> {
-    // A message in a Discord thread replies to the thread's mapped root.
+    // A message in a Discord thread lands in the thread its root started, when the bridge made
+    // one; else in the thread's channel, answering the root.
     if let Some(thread) = &event.thread {
         let root = guild
-            .by_discord(MappedKind::Thread, &thread.id)?
-            .tilo
-            .clone();
+            .by_discord(MappedKind::Thread, &thread.id)
+            .map(|mapping| mapping.tilo.clone());
+        if let Some(conversation) = root.as_deref().and_then(|root| chat.thread_of(root)) {
+            return Some((conversation, root, None));
+        }
         let channel = guild
             .by_discord(MappedKind::Channel, &thread.parent)?
             .tilo
             .clone();
-        return Some((channel, Some(root), None));
+        return Some((channel, root, None));
     }
     let channel = guild
         .by_discord(MappedKind::Channel, &event.channel_id)?
         .tilo
         .clone();
-    let Some(answered) = event
+    let answered = event
         .reply_to
         .as_ref()
         .and_then(|r| guild.by_discord(MappedKind::Message, r))
-    else {
-        return Some((channel, None, None));
-    };
-    // Tilo threads are one level deep: a reply to a reply joins the root's
-    // thread and quotes what it answered.
-    match &answered.root {
-        Some(root) => {
-            let quote = event.reply_text.as_ref().map(|text| {
-                let line = text.lines().next().unwrap_or_default();
-                match &event.reply_author {
-                    Some(who) => format!("> {who}: {line}"),
-                    None => format!("> {line}"),
-                }
-            });
-            Some((channel, Some(root.clone()), quote))
+        .map(|mapped| mapped.tilo.clone());
+    let quote = event.reply_text.as_ref().map(|text| {
+        let line = text.lines().next().unwrap_or_default();
+        match &event.reply_author {
+            Some(who) => format!("> {who}: {line}"),
+            None => format!("> {line}"),
         }
-        None => Some((channel, Some(answered.tilo.clone()), None)),
-    }
+    });
+    Some((channel, answered, quote))
 }
 
-/// `message-created`, in the workspace whose Chat resource reads as `chat`.
+/// `message-created`, in the workspace whose Chat reads as `chat`.
 #[must_use]
 pub fn plan_created(
     guild: &Guild,
@@ -363,7 +345,7 @@ pub fn plan_created(
     {
         return plan;
     }
-    let Some((channel, parent, quote)) = place(guild, event) else {
+    let Some((channel, answered, quote)) = place(guild, chat, event) else {
         return plan;
     };
     let appearance = match appearance(guild, chat, &event.author) {
@@ -392,15 +374,14 @@ pub fn plan_created(
             files.push(file);
         }
     }
-    // Written before what the channel already holds: imported at its time,
-    // since a post reads after every message already there.
+    // Written before what the conversation already holds: relayed at its time.
     let older = chat
         .newest_in(&channel)
         .is_some_and(|newest| discord_wire::snowflake_ms(&event.message_id) < newest);
     let post = |text: String| PostItem {
         channel: channel.clone(),
         text,
-        parent: parent.clone(),
+        parent: answered.clone(),
         appearance: appearance.clone(),
         discord: event.message_id.clone(),
         persona: event.author.id.clone(),
@@ -543,36 +524,13 @@ pub fn plan_reaction(
     if event.emoji_id.is_some() && tilo_resource::custom_emoji_name(&event.emoji).is_none() {
         return plan;
     }
-    let held = tilo::message(chat, &mapped.tilo)
+    let held = chat
+        .message(&mapped.tilo)
         .map(|message| message.reactions)
         .unwrap_or_default();
-    let avatar = event.user_avatar_url.as_ref().and_then(|url| {
-        guild
-            .avatars
-            .iter()
-            .find(|(hash, _)| url.contains(hash.as_str()))
-            .map(|(_, blob)| blob.clone())
-    });
-    // Discord names who took a reaction off by id alone: they show under
-    // the name their reaction was given, else their id.
-    let name = if event.user_name.is_empty() {
-        let account = format!("discord/{}", event.user_id);
-        held.iter()
-            .find(|reaction| reaction.persona.as_deref() == Some(account.as_str()))
-            .and_then(|reaction| reaction.name.clone())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| event.user_id.clone())
-    } else {
-        event.user_name.clone()
-    };
     let item = ReactItem {
         message: mapped.tilo.clone(),
         emoji: crate::emoji::to_tilo(&event.emoji, &held),
-        appearance: Appearance {
-            name,
-            avatar,
-            persona: persona(&event.user_id),
-        },
     };
     if added {
         plan.reacts.push(item);
@@ -682,7 +640,7 @@ pub fn plan_command(guild: &Guild, chat: &crate::tilo::ChatRead, event: &Command
                 Some(link) => {
                     plan.unlinks.push(event.user_id.clone());
                     let name = MemberId::parsed_person(&link.person)
-                        .and_then(|id| tilo::person(chat, &id))
+                        .and_then(|id| chat.person(&id))
                         .map(|person| person.name)
                         .filter(|name| !name.trim().is_empty())
                         .unwrap_or_else(|| "your Tilo account".to_owned());
@@ -737,7 +695,7 @@ pub fn plan_linked(guild: &Guild, chat: &crate::tilo::ChatRead, person: &str) ->
     let Some(link) = guild.links.iter().find(|link| link.person == person) else {
         return plan;
     };
-    let tilo = MemberId::parsed_person(person).and_then(|id| tilo::person(chat, &id));
+    let tilo = MemberId::parsed_person(person).and_then(|id| chat.person(&id));
     if let Some(interaction) = &link.interaction {
         let name = tilo
             .as_ref()
