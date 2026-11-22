@@ -229,9 +229,6 @@ struct Geometry {
     action: Option<Rect>,
     secondary_action: Option<Rect>,
     dismiss: Option<Rect>,
-    /// The actions stand under the text rather than beside it: they are words of their own, with
-    /// no face, so a narrow banner does not put a filled block under what it says.
-    below: bool,
 }
 
 fn geometry(
@@ -384,7 +381,6 @@ fn geometry_with(
         action,
         secondary_action,
         dismiss,
-        below: !beside && !widths.is_empty(),
     }
 }
 
@@ -489,10 +485,7 @@ fn paint_banner(
     ] {
         if let (Some(label), Some(face_rect)) = (label, face_rect) {
             let face_rect = shift(face_rect);
-            let mut face = action_face(face_rect, label, primary);
-            if g.below {
-                face = face.role(ButtonRole::Plain);
-            }
+            let face = action_face(face_rect, label, primary);
             let hovered = face.contains(&on_well, hover);
             let face = face.hovered(hovered);
             crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, &on_well, &face);
@@ -837,9 +830,6 @@ pub struct Banner {
     body: BannerBody,
     secondary: Option<Button>,
     action: Option<Button>,
-    /// The role the main action was built with: under the text it is drawn as words of its own
-    /// ([`ButtonRole::Plain`]), beside it as the control it was built as.
-    action_role: ButtonRole,
     dismiss: Option<Button>,
     id: Option<String>,
     /// Absent: the banner collapses, and with it its gap in the parent.
@@ -906,7 +896,6 @@ impl Banner {
             },
             secondary: None,
             action: None,
-            action_role: ButtonRole::Secondary,
             dismiss: None,
             id: None,
             shown,
@@ -989,7 +978,6 @@ impl Banner {
     /// of their own, as an action in a sentence is.
     #[must_use]
     pub fn with_action(mut self, button: Button) -> Self {
-        self.action_role = button.role_of();
         self.action = Some(button.control_size(ControlSize::Small));
         self
     }
@@ -1230,12 +1218,6 @@ impl Banner {
         place(&mut self.secondary, g.secondary_action);
         place(&mut self.action, g.action);
         place(&mut self.dismiss, g.dismiss);
-        // Under the text the main action is the words it says, a control's face only where it
-        // stands beside what the banner says.
-        let built_as = self.action_role;
-        if let Some(button) = &mut self.action {
-            button.set_role(if g.below { ButtonRole::Plain } else { built_as });
-        }
     }
 
     /// The body and the buttons, where the layout placed them.

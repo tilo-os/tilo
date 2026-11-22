@@ -1073,3 +1073,45 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// A banner's two actions keep the faces they were built with at every width: wrapped under the
+/// message on a narrow banner they are the same controls they are beside it on a wide one.
+#[test]
+fn both_actions_keep_their_faces_whether_beside_or_under_the_message() {
+    fn roles(d: &FrameHarness) -> Vec<(String, ButtonRole)> {
+        let mut found = Vec::new();
+        let mut pending: Vec<&dyn Widget> = vec![d.root_widget()];
+        while let Some(widget) = pending.pop() {
+            if let Some(button) = widget.as_any().and_then(|any| any.downcast_ref::<Button>())
+                && let Some(id) = widget.test_id()
+            {
+                found.push((id.to_owned(), button.role_of()));
+            }
+            pending.extend(widget.children().iter().map(|child| &**child));
+        }
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
+    }
+    let column = Column::new().push(Box::new(
+        Banner::warning("Bookmarks hasn't arrived yet")
+            .with_message("Bookmarks from Browser hasn't reached this device yet.")
+            .with_id("waiting")
+            .with_action(Button::new("waiting.again", "Try again").role(ButtonRole::Secondary))
+            .with_secondary_action(
+                Button::new("waiting.without", "Continue without it").role(ButtonRole::Secondary),
+            ),
+    ));
+    let mut d = driver(Box::new(column));
+    d.relayout_at((900, 400)).expect("lays out wide");
+    let wide = roles(&d);
+    assert_eq!(
+        wide,
+        [
+            ("waiting.again".to_owned(), ButtonRole::Secondary),
+            ("waiting.without".to_owned(), ButtonRole::Secondary),
+        ],
+        "beside the message, each action is the control it was built as"
+    );
+    d.relayout_at((360, 400)).expect("lays out narrow");
+    assert_eq!(roles(&d), wide, "under the message, the same faces");
+}
