@@ -73,6 +73,10 @@ pub(super) fn caller_context(
         purpose: said.and_then(|context| context.purpose.clone()),
         gesture: said.and_then(|context| context.gesture),
         source_invocation: Some(request.invocation),
+        // What the caller signed, kept with every change it makes: the host signs those as
+        // the one who ran them, and this says who asked. Never what the caller's own context
+        // claims of it.
+        signed: tilo_actions::remote::SignedCall::of(request).map(Box::new),
         ..tilo_actions::ActionContext::default()
     }
 }

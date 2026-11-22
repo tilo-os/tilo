@@ -597,13 +597,20 @@ connection's say. A denial stays a denial. One invocation id names one request: 
 again for the same request is a retry, answered with what the first did; for anything else it is
 refused.
 
+A change the host makes for an invocation is signed by the host, as the one who ran it, and keeps
+the caller's signed invocation in its history entry, with the argument it signed (left out when it
+is larger than what the entry documents of an action whole). One invocation id signed again for
+another request is answered as a conflict.
+
 What a peer can check from a signed invocation:
 
 - **Who asked for which action on which resource.** The signer's key and certificate chain, the
   workspace, the target and the invocation id are all under the signature.
+- **That the change is the one asked for.** The signed invocation id is the change's own, the
+  workspace is this one, and the person who signed is the invoker the change names.
 - **The arguments, if it can read them.** A peer that can read a sealed resource's content can hash
-  the arguments it sees and compare them against the signed hash. A peer that cannot read the
-  resource has nothing to compare: the hash tells it nothing about the arguments.
+  the arguments the change keeps and compare them against the signed hash. A peer that cannot read
+  the resource has nothing to compare: the hash tells it nothing about the arguments.
 - **Not that the host ran it faithfully.** The envelope proves who asked, not what the executor did
   with the request. A change the executor writes is still checked as its own operation (§7.2).
 

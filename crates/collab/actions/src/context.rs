@@ -67,6 +67,13 @@ pub struct ActionContext {
     /// this field from their retained admission before applying an action.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_invocation: Option<InvocationId>,
+    /// The invocation as its caller signed it, when a host ran the action for
+    /// someone who asked it under their own key: the host signs the change as
+    /// the one who ran it, and this says who asked, for what, with what
+    /// arguments. A peer reading the change checks it against the person's
+    /// root ([`crate::remote::SignedCall`]); the host never makes one up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signed: Option<Box<crate::remote::SignedCall>>,
     /// The bot run that made this change, when one did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caused_by: Option<Cause>,
@@ -149,6 +156,7 @@ impl Clone for ActionContext {
             facets: self.facets.clone(),
             invoker: self.invoker.clone(),
             source_invocation: self.source_invocation,
+            signed: self.signed.clone(),
             caused_by: self.caused_by.clone(),
             action: self.action.clone(),
             compensation: self.compensation.clone(),
@@ -231,6 +239,9 @@ impl ActionContext {
         }
         if self.source_invocation.is_none() {
             self.source_invocation = ambient.source_invocation;
+        }
+        if self.signed.is_none() {
+            self.signed.clone_from(&ambient.signed);
         }
         if self.caused_by.is_none() {
             self.caused_by.clone_from(&ambient.caused_by);
@@ -814,6 +825,8 @@ mod wire {
         invoker: Option<ActionInvoker>,
         #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
         source_invocation: Option<crate::InvocationId>,
+        #[serde(rename = "sc", skip_serializing_if = "Option::is_none")]
+        signed: Option<Box<crate::remote::SignedCall>>,
         #[serde(rename = "cb", skip_serializing_if = "Option::is_none")]
         caused_by: Option<Cause>,
         #[serde(rename = "a", skip_serializing_if = "Option::is_none")]
@@ -1241,6 +1254,7 @@ mod wire {
                 facets: context.facets.clone(),
                 invoker: context.invoker.clone(),
                 source_invocation: context.source_invocation,
+                signed: context.signed.clone(),
                 caused_by: context.caused_by.clone(),
                 action: context.action.as_ref().map(Action::of),
                 compensation: context.compensation.as_ref().map(Action::of),
@@ -1280,6 +1294,7 @@ mod wire {
                 facets: self.facets,
                 invoker: self.invoker,
                 source_invocation: self.source_invocation,
+                signed: self.signed,
                 caused_by: self.caused_by,
                 compensation: self.compensation.and_then(Action::into_encoded),
                 gesture: self

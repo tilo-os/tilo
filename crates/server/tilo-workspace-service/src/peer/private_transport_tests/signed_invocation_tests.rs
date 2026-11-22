@@ -4,8 +4,8 @@
 
 use super::*;
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, RemoteActionFrame,
-    RemoteActionMessage, RemoteActionTarget,
+    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
+    ReceiptStatus, RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::invocation::sign_invocation_now;
@@ -190,7 +190,8 @@ async fn an_invocation_runs_only_as_the_key_that_signed_it() {
     assert!(matches!(refusal, Refusal::NotAMember(_)), "{refusal:?}");
 
     // One invocation id names one request: signed again for the same request
-    // it is a retry, for another action it is refused.
+    // it is a retry, for another action it is a conflict, as the invocation log
+    // answers one.
     let retry = signed_by(id, &asked, &a.cert, &a_key);
     assert_eq!(
         handle_remote_action(&a, &session, &[id], route(), invoke(retry)).await,
@@ -199,10 +200,19 @@ async fn an_invocation_runs_only_as_the_key_that_signed_it() {
     let mut reused = asked.clone();
     reused.target.address.action = "delete".into();
     let reused = signed_by(id, &reused, &a.cert, &a_key);
-    let refusal = refused(handle_remote_action(&a, &session, &[id], route(), invoke(reused)).await);
-    assert!(
-        matches!(&refusal, Refusal::NotAllowed(reason) if reason.starts_with("invocation_replayed")),
-        "{refusal:?}"
+    let Some(Envelope::RemoteAction { frame: answer, .. }) =
+        handle_remote_action(&a, &session, &[id], route(), invoke(reused)).await
+    else {
+        panic!("a reused invocation id is answered");
+    };
+    assert_eq!(
+        RemoteActionFrame::decode(&answer).unwrap().message,
+        RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation: asked.invocation,
+            status: ReceiptStatus::Rejected {
+                error: ActionCallError::InvocationConflict,
+            },
+        })
     );
     assert_eq!(served(), 2, "only the signed invocation and its retry ran");
 

@@ -105,7 +105,10 @@ pub(super) async fn handle_remote_action(
         // What this host runs for someone it runs as the key that signed it.
         let invoker = match signed_invoker(peer, session, &mut wr, workspace_id, &frame) {
             Ok(invoker) => invoker,
-            Err(refusal) => return refuse(refusal),
+            Err(NotRun::Refused(refusal)) => return refuse(refusal),
+            Err(NotRun::Conflict(invocation)) => {
+                return conflict(session, peer, (workspace_id, version), invocation);
+            }
         };
         let peer = &invoker;
         // An action of a window this host serves but does not hold (a Browser
@@ -183,6 +186,50 @@ fn answered_by_server(
     None
 }
 
+/// Why [`signed_invoker`] runs nothing for a frame.
+enum NotRun {
+    /// The frame is refused, undeliverable.
+    Refused(Refusal),
+    /// Its invocation id names another request this host took within the
+    /// freshness window: answered as the invocation log answers one, a
+    /// conflict.
+    Conflict(tilo_actions::InvocationId),
+}
+
+impl From<Refusal> for NotRun {
+    fn from(refusal: Refusal) -> Self {
+        Self::Refused(refusal)
+    }
+}
+
+/// The answer to `invocation`, signed for another request than the one this host took
+/// under its id: rejected as a conflict, on the connection that asked.
+fn conflict(
+    session: &SessionCtx<'_>,
+    peer: &AuthenticatedPeer,
+    (workspace_id, version): (WorkspaceId, u16),
+    invocation: tilo_actions::InvocationId,
+) -> Option<Envelope> {
+    use tilo_actions::remote::{
+        ActionCallError, InvocationReceipt, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    };
+    let receipt = RemoteActionMessage::Receipt(InvocationReceipt {
+        invocation,
+        status: ReceiptStatus::Rejected {
+            error: ActionCallError::InvocationConflict,
+        },
+    });
+    let frame = RemoteActionFrame::new(receipt).encode().ok()?;
+    Some(Envelope::RemoteAction {
+        workspace_id,
+        version,
+        to_device_public_key: peer.device_public_key,
+        from_device_public_key: *session.own_device_public_key,
+        from_user_public_key: *session.own_user_public_key,
+        frame,
+    })
+}
+
 /// Hand `frame` to the connected device `to` of the workspace, stamped with
 /// the authenticated `peer` as its sender: the server routes what it forwards,
 /// and never runs it.
@@ -200,14 +247,14 @@ fn answered_by_server(
 ///
 /// The refusal of an unsigned or wrongly signed invocation, of one signed by
 /// another key than the sender's, and of a signer the workspace does not
-/// admit.
+/// admit; a conflict for an invocation id this host took for another request.
 fn signed_invoker(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     wr: &mut crate::workspace::WorkspaceRuntime,
     workspace_id: WorkspaceId,
     frame: &[u8],
-) -> Result<AuthenticatedPeer, Refusal> {
+) -> Result<AuthenticatedPeer, NotRun> {
     use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
     use tilo_server_protocol::invocation::{InvocationError, verify_invocation};
     // A frame that does not decode is refused where it is served.
@@ -238,7 +285,8 @@ fn signed_invoker(
     {
         return Err(Refusal::NotAllowed(
             "the invocation is signed by another key than the device asking".into(),
-        ));
+        )
+        .into());
     }
     let invoker = AuthenticatedPeer {
         user_public_key: cert.user_public_key,
@@ -252,7 +300,12 @@ fn signed_invoker(
     action_peer_admitted(wr, &invoker, session)
         .map_err(|_| not_a_member(wr, &invoker, "the signer may not act in the workspace"))?;
     if let Some(signed) = &request.signed {
-        wr.invocations.admit(signed, now).map_err(refused)?;
+        wr.invocations
+            .admit(signed, now)
+            .map_err(|error| match error {
+                InvocationError::Replayed => NotRun::Conflict(request.invocation),
+                other => NotRun::Refused(refused(other)),
+            })?;
     }
     Ok(invoker)
 }

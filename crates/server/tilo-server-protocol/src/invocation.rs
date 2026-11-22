@@ -4,7 +4,8 @@
 //! on which resource of which workspace, with which arguments. A device signs
 //! each invocation it sends a host with its own key ([`sign_invocation`]);
 //! the host runs it as the verified signer ([`verify_invocation`]) and never
-//! signs one in a caller's place. What the envelope proves, and what it does
+//! signs one in a caller's place. A change the host makes for it keeps it, and
+//! a peer reading the change checks it there ([`verify_recorded`]). What the envelope proves, and what it does
 //! not, is in docs/security/README.md ("Signed invocations").
 
 use collab_types::signer::DeviceSigner;
@@ -54,6 +55,10 @@ pub enum InvocationError {
     /// The device's signer failed.
     #[error("the device signer failed: {0}")]
     Signer(String),
+    /// A change keeps an invocation another person signed than the one it
+    /// names as its invoker.
+    #[error("the invocation a change keeps is signed by someone it does not name")]
+    NotInvoker,
 }
 
 impl InvocationError {
@@ -72,6 +77,7 @@ impl InvocationError {
             Self::OutOfScope => "invocation_out_of_scope",
             Self::Replayed => "invocation_replayed",
             Self::Signer(_) => "invocation_signer_failed",
+            Self::NotInvoker => "invocation_not_invoker",
         }
     }
 }
@@ -206,6 +212,66 @@ pub fn verify_invocation(
     now_ns: u64,
 ) -> Result<DeviceCert, InvocationError> {
     let signed = request.signed.as_ref().ok_or(InvocationError::Unsigned)?;
+    check_signature(signed)?;
+    signed.statement().covers(workspace, request)?;
+    if !signed.statement().fresh_at(now_ns) {
+        return Err(InvocationError::Stale);
+    }
+    signer_of(signed, workspace, revocations, now_ns)
+}
+
+/// Check the invocation a change made for it keeps (`context`'s
+/// [`tilo_actions::ActionContext::signed`]), as a peer reading the change in
+/// `workspace` does, and return the certificate of the caller who asked.
+/// `Ok(None)` for a change that keeps none: the host made it of its own
+/// accord, or for someone who asked under no key of theirs.
+///
+/// Checks the signature, that it is this workspace's and the change's own
+/// invocation ([`tilo_actions::ActionContext::source_invocation`]), the
+/// argument kept beside it against the signed hash, the certificate's chain
+/// and validity when it signed, its revocation in `revocations`, a grant's
+/// reach, and that the person who signed is the one the change names as its
+/// invoker. Freshness is the host's to check when it runs the invocation: a
+/// change is read long after.
+///
+/// # Errors
+///
+/// The first check that fails, as [`InvocationError`]:
+/// [`InvocationError::NotInvoker`] when another person signed than the one
+/// the change names.
+pub fn verify_recorded(
+    context: &tilo_actions::ActionContext,
+    workspace: &str,
+    revocations: &RevocationList,
+) -> Result<Option<DeviceCert>, InvocationError> {
+    let Some(call) = context.signed.as_deref() else {
+        return Ok(None);
+    };
+    let signed = &call.signed;
+    check_signature(signed)?;
+    let statement = signed.statement();
+    if statement.workspace != workspace {
+        return Err(StatementMismatch::Workspace.into());
+    }
+    if context.source_invocation != Some(statement.invocation) {
+        return Err(StatementMismatch::Invocation.into());
+    }
+    if call.argument_signed() == Some(false) {
+        return Err(StatementMismatch::Arguments.into());
+    }
+    let cert = signer_of(signed, workspace, revocations, statement.issued_at_ns)?;
+    let person = hex::encode(cert.user_public_key);
+    let names_signer = context.invoker.as_ref().is_some_and(|invoker| {
+        [invoker.acting.person_id(), invoker.acting.acted_for_person()].contains(&Some(&person))
+    });
+    if !names_signer {
+        return Err(InvocationError::NotInvoker);
+    }
+    Ok(Some(cert))
+}
+
+/// That `signed`'s signature verifies under the key it names.
+fn check_signature(signed: &SignedInvocation) -> Result<(), InvocationError> {
     let statement = signed.statement();
     let key = ed25519_dalek::VerifyingKey::from_bytes(&statement.signer)
         .map_err(|_| InvocationError::Signature)?;
@@ -213,16 +279,23 @@ pub fn verify_invocation(
         &statement.signing_message(),
         &ed25519_dalek::Signature::from_bytes(signed.signature()),
     )
-    .map_err(|_| InvocationError::Signature)?;
-    statement.covers(workspace, request)?;
-    if !statement.fresh_at(now_ns) {
-        return Err(InvocationError::Stale);
-    }
+    .map_err(|_| InvocationError::Signature)
+}
+
+/// The certificate `signed` carries, checked: it certifies the signing key,
+/// chains to its person's root and is valid at `at_ns`, is not revoked in
+/// `revocations`, and a grant reaches `workspace`.
+fn signer_of(
+    signed: &SignedInvocation,
+    workspace: &str,
+    revocations: &RevocationList,
+    at_ns: u64,
+) -> Result<DeviceCert, InvocationError> {
     let cert = decode_cert(signed.signer_cert())?;
-    if cert.device_public_key != statement.signer {
+    if cert.device_public_key != signed.statement().signer {
         return Err(InvocationError::SignerMismatch);
     }
-    verify_device_cert_at(&cert, now_ns).map_err(InvocationError::Certificate)?;
+    verify_device_cert_at(&cert, at_ns).map_err(InvocationError::Certificate)?;
     if revocations.refuses(&cert) {
         return Err(InvocationError::Revoked);
     }
@@ -249,7 +322,7 @@ fn decode_cert(bytes: &[u8]) -> Result<DeviceCert, InvocationError> {
 /// The invocation ids a host admitted within the freshness window, so one id
 /// names one request: the same id signed again for the same request by the
 /// same key is a retry, which the host's invocation log answers with what the
-/// first did, and the same id for anything else is refused.
+/// first did, and the same id for anything else is a conflict.
 #[derive(Debug, Default)]
 pub struct InvocationReplay {
     seen: std::collections::HashMap<tilo_actions::InvocationId, Seen>,

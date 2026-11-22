@@ -263,6 +263,49 @@ impl SignedInvocation {
     }
 }
 
+/// The most of an invocation's argument a change keeps beside its signed
+/// invocation, encoded: what the change already documents of its action
+/// ([`crate::context::WHOLE_ACTION_BUDGET`]). A larger argument is left out,
+/// and the change still says who asked for what.
+pub const MAX_RECORDED_ARGUMENT_BYTES: usize = crate::context::WHOLE_ACTION_BUDGET;
+
+/// An invocation as a change a host made for it keeps it: the caller's
+/// [`SignedInvocation`] and the argument it signed. The host signs the change
+/// as the one who ran it; this is what says who asked for it. A peer that
+/// reads the change checks the signature and the certificate, and the
+/// argument against the hash under the signature ([`Self::argument_signed`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedCall {
+    pub signed: SignedInvocation,
+    /// The argument as the caller sent it. `None` when it was larger than
+    /// [`MAX_RECORDED_ARGUMENT_BYTES`]: the change then says who asked for
+    /// which action, not with what.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument: Option<InvokeArgument>,
+}
+
+impl SignedCall {
+    /// What a change made for `request` keeps of it: `None` for a request
+    /// nobody signed.
+    #[must_use]
+    pub fn of(request: &InvokeRequest) -> Option<Self> {
+        let signed = request.signed.as_deref()?.clone();
+        let argument = serde_json::to_vec(&request.argument)
+            .is_ok_and(|encoded| encoded.len() <= MAX_RECORDED_ARGUMENT_BYTES)
+            .then(|| request.argument.clone());
+        Some(Self { signed, argument })
+    }
+
+    /// Whether the kept argument is the one signed: `None` when the change
+    /// keeps none to compare.
+    #[must_use]
+    pub fn argument_signed(&self) -> Option<bool> {
+        self.argument
+            .as_ref()
+            .map(|argument| argument_hash(argument) == self.signed.statement.arguments)
+    }
+}
+
 /// The envelope on the wire: the statement's fields, the signature and the
 /// certificate, the byte strings as lower-case hex so the envelope reads the
 /// same in every encoding a frame travels in.

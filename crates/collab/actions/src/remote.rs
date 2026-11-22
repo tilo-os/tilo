@@ -45,7 +45,7 @@ pub mod linux_apps;
 pub mod mcp_server;
 pub use caller::{Caller, device_agent_id};
 pub mod signed_invocation;
-pub use signed_invocation::SignedInvocation;
+pub use signed_invocation::{SignedCall, SignedInvocation};
 mod catalogue;
 mod changes;
 mod confirmation;
@@ -453,7 +453,7 @@ pub const CONFIRMED_ACTION_NEEDS_REVISION: &str =
     "a confirmed action needs the revision it was shown at";
 
 /// What an invocation carries for the action's declared input.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvokeArgument {
     /// The action takes nothing.
     #[default]

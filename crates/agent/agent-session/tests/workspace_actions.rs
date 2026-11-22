@@ -1078,6 +1078,53 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         assert!(Instant::now() < deadline, "the host's change never arrived");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // The host signed the change as the one who ran it; the change keeps the invocation as
+    // the page signed it, which a member reading it checks against Ada's root.
+    let kept = {
+        let mut doc = automerge::AutoCommit::new();
+        for (_, bytes) in &browser.documents[&sheets] {
+            let _ = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes);
+        }
+        doc.get_changes(&[])
+            .iter()
+            .filter_map(|change| change.message())
+            .filter_map(tilo_actions::ActionContext::from_change_message)
+            .find(|context| context.source_invocation == Some(add.invocation))
+            .expect("the host's change names the invocation it ran")
+    };
+    let workspace = browser.workspace.to_string();
+    let revocations = tilo_user_identity::RevocationList::default();
+    let recorded = |context: &tilo_actions::ActionContext| {
+        tilo_server_protocol::invocation::verify_recorded(context, &workspace, &revocations)
+    };
+    let signer = recorded(&kept)
+        .unwrap()
+        .expect("the change keeps the invocation its caller signed");
+    assert_eq!(
+        signer.device_public_key,
+        browser_device.cert.device_public_key
+    );
+    assert_eq!(
+        kept.signed.as_ref().unwrap().argument,
+        Some(sheet_named("Budget"))
+    );
+    let mut reargued = kept.clone();
+    reargued.signed.as_mut().unwrap().argument = Some(sheet_named("Other"));
+    assert_eq!(
+        recorded(&reargued),
+        Err(tilo_server_protocol::invocation::InvocationError::Mismatch(
+            tilo_actions::remote::signed_invocation::StatementMismatch::Arguments
+        ))
+    );
+    let mut misnamed = kept.clone();
+    misnamed.invoker = Some(tilo_actions::ActionInvoker::person(hex::encode([9; 32])));
+    assert_eq!(
+        recorded(&misnamed),
+        Err(tilo_server_protocol::invocation::InvocationError::NotInvoker)
+    );
+    let mut moved = kept.clone();
+    moved.source_invocation = Some(InvocationId::new());
+    assert!(recorded(&moved).is_err(), "another change's invocation");
 
     // 3. Idempotency: the same request under the same id reports the
     // original and runs nothing; another request under it is a conflict.
