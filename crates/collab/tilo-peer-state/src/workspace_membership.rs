@@ -310,6 +310,24 @@ pub enum WorkspaceMembershipCommand {
         ttl_ms: u64,
         rank: neighbour_wire::placement::Rank,
     },
+    /// Keep that the caller's device answered the schedule at `trigger` of the
+    /// automation `automation` through `answered_ms`, the schedule marked
+    /// `mark` ([`crate::state::schedules`]): the progress whichever device
+    /// fires the schedule next carries on from, written from a member device
+    /// as any member's change.
+    AnswerSchedule {
+        automation: String,
+        trigger: u32,
+        mark: String,
+        answered_ms: i64,
+    },
+    /// Keep that the caller's device did the work of the lease `id`, and
+    /// what it answered ([`crate::state::done`]): no device takes the work
+    /// again.
+    KeepDone {
+        id: String,
+        answer: serde_json::Value,
+    },
     /// Hold the person whose user root is `person` in the workspace at `place`,
     /// whether or not a device of theirs has joined yet: a role, one of its
     /// administrators, or its owner, whom the caller then hands it to. A member
@@ -432,9 +450,20 @@ pub fn valid_workspace_name(name: &str) -> Result<&str, String> {
 impl WorkspaceMembershipCommand {
     /// Validate the canonical identifier before entering the owner turn.
     pub fn validate(&self) -> Result<(), String> {
-        if let Self::Lease { id, .. } = self {
+        if let Self::Lease { id, .. } | Self::KeepDone { id, .. } = self {
             if id.is_empty() || id.len() > MAX_LEASE_ID || id.chars().any(char::is_control) {
                 return Err("invalid lease id".into());
+            }
+            return Ok(());
+        }
+        if let Self::AnswerSchedule {
+            automation, mark, ..
+        } = self
+        {
+            if [automation, mark].iter().any(|part| {
+                part.is_empty() || part.len() > MAX_LEASE_ID || part.chars().any(char::is_control)
+            }) {
+                return Err("invalid schedule answer".into());
             }
             return Ok(());
         }

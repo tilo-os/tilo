@@ -790,7 +790,7 @@ impl BotRunner {
             }
             let answered = state
                 .workspace()
-                .bot_schedule_answered(&installation, index, &mark);
+                .schedule_answered(&installation, index, &mark);
             let step = plan(timed, answered, now_ms, &zone);
             let answered_ms = match step {
                 SchedulePlan::Waiting { answered_ms } => answered_ms,
@@ -888,7 +888,7 @@ impl BotRunner {
         if let Err(error) = self
             .workspaces
             .author_own_workspace_state(workspace, host, |peer| {
-                peer.workspace_mut().answer_bot_schedule(
+                peer.workspace_mut().answer_schedule(
                     host,
                     &installation,
                     trigger,

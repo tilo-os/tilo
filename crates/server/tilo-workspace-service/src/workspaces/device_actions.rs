@@ -352,8 +352,9 @@ impl DeviceWork {
                     work.run_linux(claim, &caller, *run, completer).await;
                     return;
                 }
-                // The take action asks for no agent's turn: the agent engine takes those.
-                Turn::Agent { .. } => {
+                // The take action asks for no agent's turn and no automation's
+                // firing: the agent engine and the trigger runner take those.
+                Turn::Agent { .. } | Turn::Firing { .. } => {
                     work.log.lock_recover().abandon(&invocation);
                     completer.complete(Err(ActionCallError::UnknownAction));
                     return;
@@ -818,11 +819,67 @@ impl super::Workspaces {
         id: &str,
         ttl_ms: u64,
     ) -> Result<(), String> {
-        let command = tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Lease {
-            id: id.to_owned(),
-            ttl_ms,
-            rank: tilo_peer_state::unranked(),
-        };
+        self.write_own_row(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Lease {
+                id: id.to_owned(),
+                ttl_ms,
+                rank: tilo_peer_state::unranked(),
+            },
+        )
+        .await
+    }
+
+    /// Keep that this device answered the schedule at `trigger` of the
+    /// automation `automation`, marked `mark`, through `answered_ms`: the
+    /// progress whichever device fires it next carries on from.
+    #[cfg(feature = "apps")]
+    pub(crate) async fn answer_schedule(
+        &self,
+        workspace: &str,
+        automation: &str,
+        trigger: usize,
+        mark: &str,
+        answered_ms: i64,
+    ) -> Result<(), String> {
+        self.write_own_row(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::AnswerSchedule {
+                automation: automation.to_owned(),
+                trigger: u32::try_from(trigger).map_err(|error| error.to_string())?,
+                mark: mark.to_owned(),
+                answered_ms,
+            },
+        )
+        .await
+    }
+
+    /// Keep that this device did the work of the lease `id`, and what it
+    /// answered: no device of the workspace takes it again.
+    pub(crate) async fn write_done(
+        &self,
+        workspace: &str,
+        id: &str,
+        answer: serde_json::Value,
+    ) -> Result<(), String> {
+        self.write_own_row(
+            workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::KeepDone {
+                id: id.to_owned(),
+                answer,
+            },
+        )
+        .await
+    }
+
+    /// Write `command`, a row of this device's own in the workspace's state:
+    /// a member copy's write sent to the device serving it, or a change of
+    /// the workspace this device governs.
+    async fn write_own_row(
+        &self,
+        workspace: &str,
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> Result<(), String> {
         if self.is_member(workspace).await? {
             let commit = self.member_membership_write(workspace, command).await?;
             self.commit_member_document(workspace, commit).await?;

@@ -460,6 +460,7 @@ impl Daemon {
             )?;
         }
         start_agents(&broker, &workspaces);
+        start_triggers(&broker, &workspaces);
         let replicas = take_work_files(
             &TakenFiles {
                 root,
@@ -1737,6 +1738,21 @@ fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
         .spawn(tilo_workspace_service::agents::run_on_device(
             workspaces.copies().clone(),
             broker.device_host(),
+        ));
+}
+
+/// Run the triggers of the shortcuts the person saved in this device's workspaces: each firing
+/// that is this device's turn starts on `broker`.
+fn start_triggers(broker: &BrokerHandle, workspaces: &ServiceWorkspaces) {
+    let Some(broker) = broker.app_action_broker() else {
+        tracing::warn!("this device's broker is not up, so it starts no shortcut's trigger");
+        return;
+    };
+    tilo_rt::app()
+        .handle()
+        .spawn(tilo_workspace_service::apps::triggers::run_on_device(
+            workspaces.copies().clone(),
+            std::sync::Arc::new(broker),
         ));
 }
 

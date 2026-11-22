@@ -36,9 +36,7 @@ use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::{CanvasPlace, FloatPlace, LayoutKind, WorkspaceLayout};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
-use crate::projection::{
-    WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY, WORKSPACE_SCHEDULE_CLAIMS_KEY,
-};
+use crate::projection::{WORKSPACE_AUTOMATIONS_KEY, WORKSPACE_EFFECT_RECEIPTS_KEY};
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::serde_ids::deserialize_id_map;
 use crate::tree::Layout;
@@ -318,12 +316,6 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
         ws.shortcuts
             .iter()
             .map(|shortcut| (shortcut.id().to_owned(), shortcut)),
-    );
-    sync_blob_map(
-        doc,
-        entry,
-        WORKSPACE_SCHEDULE_CLAIMS_KEY,
-        ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
     );
     write_layout(doc, entry, &ws.layout);
     write_local(doc, entry, ws);
@@ -631,13 +623,6 @@ fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::Saved
     shortcuts
 }
 
-fn read_schedule_claims(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::ScheduleClaim> {
-    let mut claims: Vec<tilo_automation::ScheduleClaim> =
-        read_blob_map(doc, entry, WORKSPACE_SCHEDULE_CLAIMS_KEY).unwrap_or_default();
-    claims.compact_sort_by_key(tilo_automation::ScheduleClaim::key);
-    claims
-}
-
 fn read_effect_receipts(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceEffectReceipt> {
     let mut receipts: Vec<WorkspaceEffectReceipt> =
         read_blob_map(doc, entry, WORKSPACE_EFFECT_RECEIPTS_KEY).unwrap_or_default();
@@ -697,7 +682,6 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut Layout) {
         }
         ws.effect_receipts = read_effect_receipts(doc, entry);
         ws.shortcuts = read_shortcuts(doc, entry);
-        ws.schedule_claims = read_schedule_claims(doc, entry);
         ws.layout = read_layout(doc, entry);
         if let Some(local) = read_local(doc, entry) {
             local.apply(&mut ws);

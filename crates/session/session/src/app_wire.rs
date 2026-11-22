@@ -632,7 +632,7 @@ async fn save_shortcut(
             // A trigger this device cannot watch would be saved into a shortcut
             // that never runs: the person is told now.
             for trigger in &shortcut.triggers {
-                crate::automation::triggers::validate_trigger(trigger)?;
+                tilo_workspace_service::apps::automation::validate_trigger(trigger)?;
             }
             tilo_peer_state::workspace::sign_saved_shortcut(
                 &request.workspace,

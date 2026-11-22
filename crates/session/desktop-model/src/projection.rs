@@ -55,8 +55,6 @@ pub const WORKSPACE_PRESETS_KEY: &str = "presets_v1";
 pub const WORKSPACE_MEMBERS_KEY: &str = "members_v3";
 /// Key of the map from sandbox capability id to the capability (JSON bytes).
 pub const WORKSPACE_SANDBOX_KEY: &str = "sandbox";
-/// Key a workspace document stores its schedule claims under.
-pub const WORKSPACE_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
 /// Key of the workspace's entry policy: whether a directory lists it, and
 /// whom it admits (JSON bytes, [`tilo_action_policy::EntryPolicy`]).
 pub const WORKSPACE_ENTRY_KEY: &str = "entry_v1";
@@ -290,32 +288,6 @@ pub fn workspace_shortcuts_of(doc: &AutoCommit) -> Vec<tilo_automation::SavedSho
         .collect();
     shortcuts.compact_sort_by(|left, right| left.id().cmp(right.id()));
     shortcuts
-}
-
-/// The schedule claims a workspace document carries. A value that does not
-/// decode, or that is filed under another schedule's key, is skipped.
-pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClaim> {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-    let Some((_, map)) = doc.get(&ROOT, WORKSPACE_SCHEDULE_CLAIMS_KEY).ok().flatten() else {
-        return Vec::new();
-    };
-    let mut claims: Vec<tilo_automation::ScheduleClaim> = doc
-        .keys(&map)
-        .filter_map(|key| {
-            let claim: tilo_automation::ScheduleClaim =
-                match doc.get(&map, key.as_str()).ok().flatten() {
-                    Some((Value::Scalar(value), _)) => match value.as_ref() {
-                        ScalarValue::Bytes(blob) => serde_json::from_slice(blob).ok(),
-                        _ => None,
-                    },
-                    _ => None,
-                }?;
-            (claim.key() == key).then_some(claim)
-        })
-        .collect();
-    claims.compact_sort_by_key(tilo_automation::ScheduleClaim::key);
-    claims
 }
 
 /// Project `receipts` into `person`'s rows of the workspace's effect receipts,

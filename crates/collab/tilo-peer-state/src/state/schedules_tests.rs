@@ -27,32 +27,32 @@ fn a_fire_time_one_key_holder_answered_is_where_the_next_one_carries_on() {
     assert_eq!(
         right
             .workspace()
-            .bot_schedule_answered(INSTALLATION, TRIGGER, &mark),
+            .schedule_answered(INSTALLATION, TRIGGER, &mark),
         None,
         "no key holder has seen it"
     );
     assert!(
         left.workspace_mut()
-            .answer_bot_schedule(&left_cert, INSTALLATION, TRIGGER, &mark, 3_660_000, now)
+            .answer_schedule(&left_cert, INSTALLATION, TRIGGER, &mark, 3_660_000, now)
             .unwrap()
     );
     assert_eq!(
         left.workspace()
-            .bot_schedule_answered(INSTALLATION, TRIGGER, &mark),
+            .schedule_answered(INSTALLATION, TRIGGER, &mark),
         Some(3_660_000)
     );
     sync(&left, &mut right);
     assert_eq!(
         right
             .workspace()
-            .bot_schedule_answered(INSTALLATION, TRIGGER, &mark),
+            .schedule_answered(INSTALLATION, TRIGGER, &mark),
         Some(3_660_000),
         "the answer travels with the workspace, not in one host's file"
     );
     assert_eq!(
         right
             .workspace()
-            .bot_schedule_answered(INSTALLATION, TRIGGER, "another trigger"),
+            .schedule_answered(INSTALLATION, TRIGGER, "another trigger"),
         None,
         "a program updated to another trigger starts its own times"
     );
@@ -61,12 +61,12 @@ fn a_fire_time_one_key_holder_answered_is_where_the_next_one_carries_on() {
     assert!(
         !left
             .workspace_mut()
-            .answer_bot_schedule(&left_cert, INSTALLATION, TRIGGER, &mark, 3_600_000, now)
+            .answer_schedule(&left_cert, INSTALLATION, TRIGGER, &mark, 3_600_000, now)
             .unwrap()
     );
     assert_eq!(
         left.workspace()
-            .bot_schedule_answered(INSTALLATION, TRIGGER, &mark),
+            .schedule_answered(INSTALLATION, TRIGGER, &mark),
         Some(3_660_000)
     );
 }
@@ -89,7 +89,7 @@ fn a_key_holder_taking_the_lease_over_answers_where_the_previous_one_stopped() {
         .unwrap()
         .expect("the first key holder holds the schedule");
     left.workspace_mut()
-        .answer_bot_schedule(&left_cert, INSTALLATION, TRIGGER, &mark, 3_660_000, now)
+        .answer_schedule(&left_cert, INSTALLATION, TRIGGER, &mark, 3_660_000, now)
         .unwrap();
     let over = now + Duration::from_secs(62) + Duration::from_nanos(CLOCK_SKEW_NS);
     sync(&left, &mut right);
@@ -113,12 +113,12 @@ fn a_key_holder_taking_the_lease_over_answers_where_the_previous_one_stopped() {
     );
     right
         .workspace_mut()
-        .answer_bot_schedule(&right_cert, INSTALLATION, TRIGGER, &mark, 3_720_000, over)
+        .answer_schedule(&right_cert, INSTALLATION, TRIGGER, &mark, 3_720_000, over)
         .unwrap();
     sync(&right, &mut left);
     assert_eq!(
         left.workspace()
-            .bot_schedule_answered(INSTALLATION, TRIGGER, &mark),
+            .schedule_answered(INSTALLATION, TRIGGER, &mark),
         Some(3_720_000),
         "the latest answer of every key holder is the progress"
     );

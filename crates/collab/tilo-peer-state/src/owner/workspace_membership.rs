@@ -147,6 +147,14 @@ fn receipt_id(
         WorkspaceMembershipCommand::Lease { id, .. } => {
             serde_json::to_string(&(caller.device_public_key, "lease", id))
         }
+        WorkspaceMembershipCommand::KeepDone { id, .. } => {
+            serde_json::to_string(&(caller.device_public_key, "done", id))
+        }
+        WorkspaceMembershipCommand::AnswerSchedule {
+            automation,
+            trigger,
+            ..
+        } => serde_json::to_string(&(caller.device_public_key, "schedule", automation, trigger)),
         _ => serde_json::to_string(&(caller.device_public_key, invocation)),
     }
     .map_err(|error| error.to_string())
@@ -162,7 +170,14 @@ fn replayed(
 ) -> Result<Option<OwnerCommitReceipt>, String> {
     match kept {
         Some(kept) if kept.binding == *binding => Ok(Some(kept.clone())),
-        Some(_) if !matches!(command, WorkspaceMembershipCommand::Lease { .. }) => {
+        Some(_)
+            if !matches!(
+                command,
+                WorkspaceMembershipCommand::Lease { .. }
+                    | WorkspaceMembershipCommand::AnswerSchedule { .. }
+                    | WorkspaceMembershipCommand::KeepDone { .. }
+            ) =>
+        {
             Err("membership invocation was already bound to another command".into())
         }
         _ => Ok(None),

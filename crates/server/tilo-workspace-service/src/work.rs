@@ -1,14 +1,29 @@
-//! Which device takes a turn of work: the one way a device of a workspace
-//! takes work another device asked for.
+//! Which device takes a turn of work: the one placement rule of where work
+//! runs, decided here and nowhere else.
 //!
-//! A device that wants work done somewhere else asks the workspace's devices it
-//! reaches to take it (`tilo.work#take` on the device action service,
-//! [`WORK_PROVIDER`]). Each one asked calls [`takes_turn`]. A device that may
-//! take the turn claims it with an ordinary change, a lease of the workspace
-//! named after the turn; the earliest claim wins, and a claim that is not
-//! renewed for a minute ([`tilo_peer_state::CLOCK_SKEW_NS`]) may be taken over.
-//! The device that won runs the turn and renews its claim while it does;
-//! every other device answers whose turn it is, or why it may not take it.
+//! A turn is work that has to run on one device of a workspace: an offloaded
+//! action another device asked for, or a saved automation's trigger firing.
+//! Each device that may take it calls [`takes_turn`], and the turn goes, in
+//! this order, to the device that started it if that device qualifies,
+//! otherwise to an always-on server of the person, otherwise to any other
+//! eligible device:
+//!
+//! - the starting device ([`Turn::starter`]) claims at once;
+//! - an always-on server (its entry among the person's servers,
+//!   [`crate::workspaces::servers`]) claims at once when the starter asked it
+//!   to take the turn, which a device does only when it cannot run the work
+//!   itself (`tilo.work#take` on the device action service, [`WORK_PROVIDER`]),
+//!   and otherwise once [`Order::server_grace`] passed since the turn came up,
+//!   time for the starter's claim to sync;
+//! - any other eligible device claims once [`Order::other_grace`] passed.
+//!
+//! A claim is an ordinary change, a lease of the workspace named after the
+//! turn. A device never claims over another device's live claim; a claim that
+//! is not renewed for a minute ([`tilo_peer_state::CLOCK_SKEW_NS`]) is over,
+//! and the next device in the order takes the turn over. The device that won
+//! runs the turn and renews its claim while it does. Work that must never run
+//! twice is kept done when it ran ([`keep_done`]), and no device takes a turn
+//! kept done again.
 //!
 //! An agent's turn is a turn too ([`Turn::Agent`]), claimed under the agent
 //! and the place it was started in: every device that runs an agent engine
@@ -26,7 +41,9 @@
 //! the agent: it holds the agent's approved key, or it is a device of the
 //! person it acts for (a server of theirs only where its entry offers compute and
 //! is not retired). Who started the turn does not decide where it runs: any
-//! member may start any agent's turn. No caller checks any of this itself.
+//! member may start any agent's turn. For an automation's firing: this device
+//! acts for the person who saved the automation. No caller checks any of this
+//! itself.
 //!
 //! A run that needs Linux (a workspace's shell command, its terminal, its
 //! machine, its Browser) is asked the same way ([`Turn::Linux`], on
@@ -86,6 +103,25 @@ pub fn linux_take_request(run: &InvokeRequest) -> InvokeRequest {
 /// claim is given for clocks that differ: none, so a claim is live for exactly
 /// that minute after its holder last renewed it.
 const CLAIM_TTL_MS: u64 = 1;
+
+/// How long after a turn came up each device that did not start it waits
+/// before it claims: the starter's claim syncs in that time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Order {
+    /// An always-on server of the person, for a turn its starter did not ask
+    /// it to take: a few seconds.
+    pub server_grace: std::time::Duration,
+    /// Any other eligible device.
+    pub other_grace: std::time::Duration,
+}
+
+impl Order {
+    /// The order every device of a workspace keeps.
+    pub const WORKSPACE: Self = Self {
+        server_grace: std::time::Duration::from_secs(5),
+        other_grace: std::time::Duration::from_secs(30),
+    };
+}
 
 /// An app's offloadable action, as a device is asked to take it: the transform
 /// its contract declares, over the app's content it names.
@@ -168,15 +204,59 @@ pub enum Turn {
         /// That record.
         record: String,
     },
+    /// One firing of a saved automation's trigger: starting its run once,
+    /// for the person who saved it.
+    Firing {
+        /// Which firing it is, the same on every device that saw it: the
+        /// automation, the trigger and the fire time or change that fired it.
+        firing: String,
+        /// The person who saved the automation, by their person id.
+        saver: String,
+        /// The device it starts on: the one that saved the automation.
+        starter: [u8; 32],
+        /// When it came up, ms since the epoch: the fire time, or when the
+        /// change that fired it was seen.
+        came_up_ms: i64,
+    },
 }
 
 impl Turn {
-    /// The lease the turn is claimed under.
-    fn lease(&self) -> String {
+    /// The lease the turn is claimed under, and its done row is kept under.
+    #[must_use]
+    pub fn lease(&self) -> String {
         match self {
             Self::Invocation { id, .. } => format!("invocation/{}", id.0),
             Self::Linux { id, .. } => format!("linux/{}", id.0),
             Self::Agent { agent, place, .. } => format!("turn/{agent}/{place}"),
+            Self::Firing { firing, .. } => format!("firing/{firing}"),
+        }
+    }
+
+    /// The device the turn started on; `None` for an agent's turn, which
+    /// every device that may answer it starts.
+    #[must_use]
+    pub const fn starter(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::Invocation { requester, .. } | Self::Linux { requester, .. } => {
+                Some(*requester)
+            }
+            Self::Firing { starter, .. } => Some(*starter),
+            Self::Agent { .. } => None,
+        }
+    }
+
+    /// Whether the starter asked this device to take the turn, which it does
+    /// only when it cannot run the work itself.
+    const fn asked(&self) -> bool {
+        matches!(self, Self::Invocation { .. } | Self::Linux { .. })
+    }
+
+    /// When the turn came up, ms since the epoch; `None` for one asked of
+    /// this device now.
+    const fn came_up_ms(&self) -> Option<i64> {
+        match self {
+            Self::Invocation { .. } | Self::Linux { .. } | Self::Agent { .. } => None,
+            Self::Firing { came_up_ms, .. } => Some(*came_up_ms),
         }
     }
 }
@@ -211,6 +291,8 @@ pub enum Ineligible {
     CannotRunAgent,
     /// This device runs no agent engine.
     RunsNoAgents,
+    /// This device does not act for the person who saved the automation.
+    NotTheSaver,
 }
 
 impl fmt::Display for Ineligible {
@@ -228,6 +310,7 @@ impl fmt::Display for Ineligible {
             Self::MachineElsewhere => "the workspace's Linux machine is kept on another device",
             Self::CannotRunAgent => "this device cannot run the agent",
             Self::RunsNoAgents => "this device runs no agents",
+            Self::NotTheSaver => "this device does not act for the person who saved it",
         })
     }
 }
@@ -241,6 +324,14 @@ pub enum NotTaken {
     Ineligible(Ineligible),
     /// The claim could not be written.
     Unwritten(String),
+    /// A device earlier in the order may still claim it: this device asks
+    /// again from `at_ms`, ms since the epoch.
+    Waiting {
+        /// When this device's turn in the order comes.
+        at_ms: i64,
+    },
+    /// A device did the turn already, and kept that it did.
+    Done,
 }
 
 impl fmt::Display for NotTaken {
@@ -253,6 +344,8 @@ impl fmt::Display for NotTaken {
             }
             Self::Ineligible(why) => write!(f, "{why}"),
             Self::Unwritten(why) => write!(f, "the claim was not written: {why}"),
+            Self::Waiting { .. } => f.write_str("waiting for the device that started it"),
+            Self::Done => f.write_str("the turn was done already"),
         }
     }
 }
@@ -267,7 +360,7 @@ pub struct Claim {
 }
 
 impl Claim {
-    /// Push the claim out again. `false` once another device holds the turn,
+    /// Push the claim out again. `false` once another device claimed the turn,
     /// as it does after two devices claimed it at once and their claims met:
     /// the device that renews then stops the work.
     pub async fn renew(&self) -> bool {
@@ -308,23 +401,42 @@ impl Claim {
     }
 }
 
-/// Whether this device takes `turn` of `workspace`: its claim when it does, or
-/// whose turn it is and why not.
+/// Whether this device takes `turn` of `workspace` now, in the order every
+/// device keeps ([`Order::WORKSPACE`]): its claim when it does, or whose turn
+/// it is and why not.
 ///
 /// # Errors
 ///
-/// [`NotTaken`]: another device holds the turn, this device may not take it, or
-/// its claim could not be written.
+/// [`NotTaken`]: another device claimed the turn, it is done, it is not this
+/// device's turn in the order yet, this device may not take it, or its claim
+/// could not be written.
 pub async fn takes_turn(
     workspaces: &Workspaces,
     workspace: &str,
     turn: &Turn,
 ) -> Result<Claim, NotTaken> {
+    takes_turn_in(workspaces, workspace, turn, Order::WORKSPACE).await
+}
+
+/// [`takes_turn`], with the waits of `order`.
+///
+/// # Errors
+///
+/// As [`takes_turn`].
+pub async fn takes_turn_in(
+    workspaces: &Workspaces,
+    workspace: &str,
+    turn: &Turn,
+    order: Order,
+) -> Result<Claim, NotTaken> {
+    let lease = turn.lease();
+    if turn_done(workspaces, workspace, turn).await {
+        return Err(NotTaken::Done);
+    }
     eligibility(workspaces, workspace, turn)
         .await
         .map_err(NotTaken::Ineligible)?;
     let device = workspaces.lease_device(workspace).await;
-    let lease = turn.lease();
     let holder = workspaces
         .lease_holder(workspace, &lease)
         .await
@@ -332,6 +444,12 @@ pub async fn takes_turn(
         .flatten();
     if let Some(holder) = holder.filter(|holder| *holder != device) {
         return Err(NotTaken::TakenBy(holder));
+    }
+    if holder.is_none()
+        && let Some(at_ms) = turn_comes(workspaces, turn, device, order).await
+        && tilo_clock::unix_now_ms_i64() < at_ms
+    {
+        return Err(NotTaken::Waiting { at_ms });
     }
     let written = workspaces
         .write_lease(workspace, &lease, CLAIM_TTL_MS)
@@ -353,6 +471,63 @@ pub async fn takes_turn(
             written.err().unwrap_or_else(|| "it was not kept".into()),
         )),
     }
+}
+
+/// When this device's place in the order lets it claim `turn`, ms since the
+/// epoch; `None` for at once.
+async fn turn_comes(
+    workspaces: &Workspaces,
+    turn: &Turn,
+    device: [u8; 32],
+    order: Order,
+) -> Option<i64> {
+    if turn.starter().is_none_or(|starter| starter == device) {
+        return None;
+    }
+    let came_up = turn.came_up_ms()?;
+    let wait = if always_on(workspaces).await {
+        if turn.asked() {
+            return None;
+        }
+        order.server_grace
+    } else {
+        order.other_grace
+    };
+    Some(came_up.saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX)))
+}
+
+/// Whether this device is one of its person's always-on servers: it has an
+/// entry among their servers that was not retired.
+async fn always_on(workspaces: &Workspaces) -> bool {
+    let person = workspaces.serving_certificate().user_public_key;
+    server_entry(workspaces, &person)
+        .await
+        .is_some_and(|entry| !entry.retired)
+}
+
+/// Whether a device of `workspace` kept that it did `turn`.
+pub async fn turn_done(workspaces: &Workspaces, workspace: &str, turn: &Turn) -> bool {
+    workspaces
+        .lease_done(workspace, &turn.lease())
+        .await
+        .unwrap_or(false)
+}
+
+/// Keep that this device did `turn` of `workspace`, and what it answered:
+/// every device then reads the turn as done ([`NotTaken::Done`]).
+///
+/// # Errors
+///
+/// The workspace is not kept here, or the row could not be written.
+pub async fn keep_done(
+    workspaces: &Workspaces,
+    workspace: &str,
+    turn: &Turn,
+    answer: serde_json::Value,
+) -> Result<(), String> {
+    workspaces
+        .write_done(workspace, &turn.lease(), answer)
+        .await
 }
 
 /// Whether this device offers compute to its person's workspaces: the person's
@@ -443,6 +618,13 @@ async fn eligibility(
                 return Ok(());
             }
             device_of(workspaces, acts_for).await
+        }
+        Turn::Firing { saver, .. } => {
+            let person = hex::encode(workspaces.serving_certificate().user_public_key);
+            if *saver != person {
+                return Err(Ineligible::NotTheSaver);
+            }
+            Ok(())
         }
     }
 }

@@ -49,23 +49,10 @@ pub fn adopt_workspace(
     );
     changed |= replace(&mut workspace.bots, super::workspace_bots_of(doc));
 
-    let shortcuts = projection::workspace_shortcuts_of(doc);
-    let mut claims = projection::schedule_claims_of(doc);
-    for claim in &workspace.schedule_claims {
-        match claims.iter_mut().find(|held| held.key() == claim.key()) {
-            Some(held) if claim.supersedes(held) => *held = claim.clone(),
-            Some(_) => {}
-            None => claims.push(claim.clone()),
-        }
-    }
-    claims.retain(|claim| {
-        shortcuts
-            .iter()
-            .any(|shortcut| shortcut.id() == claim.shortcut)
-    });
-    claims.sort_by_key(tilo_automation::ScheduleClaim::key);
-    changed |= replace(&mut workspace.shortcuts, shortcuts);
-    changed |= replace(&mut workspace.schedule_claims, claims);
+    changed |= replace(
+        &mut workspace.shortcuts,
+        projection::workspace_shortcuts_of(doc),
+    );
 
     let mut receipts = projection::workspace_effect_receipts_of(doc);
     for held in kept {

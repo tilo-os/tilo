@@ -1,9 +1,10 @@
-//! How far a bot's schedules have been answered, kept in the workspace so
-//! whichever key holder runs the bot carries on from there.
+//! How far an automation's schedules have been answered (a saved shortcut's, a
+//! bot's), kept in the workspace so whichever device fires the next one
+//! carries on from there.
 //!
-//! A bot is installed in the workspace, not on a host: its schedules are the
-//! workspace's work, and which key holder fires one is the lease's call
-//! ([`super::leases`]). What must not be a host's own file is the progress:
+//! An automation is saved in the workspace, not on a device: its schedules are
+//! the workspace's work, and which device fires one is the lease's call
+//! ([`super::leases`]). What must not be a device's own file is the progress:
 //! each key holder that fires a schedule records the fire time it answered
 //! under its own device, and every key holder reads the latest answer of
 //! them. A missed fire time is derived from that answer
@@ -21,11 +22,11 @@ use super::device_rows;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use serde::{Deserialize, Serialize};
 
-/// Key of the bots' answered fire times in the workspace's own document: a
-/// map, there from the workspace's founding, from
-/// `<installation>/<trigger index>/<key holder's device key hex>` to its
-/// answer ([`device_rows`]).
-pub const BOT_SCHEDULES_KEY: &str = "bot_schedules_v1";
+/// Key of the automations' answered fire times in the workspace's own
+/// document: a map, there from the workspace's founding, from
+/// `<automation>/<trigger index>/<device key hex>` to its answer
+/// ([`device_rows`]).
+pub const SCHEDULES_KEY: &str = "bot_schedules_v1";
 
 /// What one device answered for one trigger: which trigger it answered, and
 /// the last fire time it answered.
@@ -44,20 +45,20 @@ pub fn trigger_mark(trigger: &tilo_automation::TriggerSpec) -> String {
     hex::encode(blake3::hash(&bytes).as_bytes())
 }
 
-/// The scope a device's answer for `trigger` of `installation` sits under.
-fn scope(installation: &str, trigger: usize) -> String {
-    format!("{installation}/{trigger}")
+/// The scope a device's answer for `trigger` of `automation` sits under.
+fn scope(automation: &str, trigger: usize) -> String {
+    format!("{automation}/{trigger}")
 }
 
-/// The latest fire time any device answered for `trigger` of `installation`,
+/// The latest fire time any device answered for `trigger` of `automation`,
 /// if any did.
 fn answered_of(
     doc: Option<&automerge::AutoCommit>,
-    installation: &str,
+    automation: &str,
     trigger: usize,
     mark: &str,
 ) -> Option<i64> {
-    device_rows::rows_of(doc, BOT_SCHEDULES_KEY, &scope(installation, trigger))
+    device_rows::rows_of(doc, SCHEDULES_KEY, &scope(automation, trigger))
         .into_iter()
         .filter_map(|(_, json)| {
             let answer: StoredAnswer = serde_json::from_str(&json).ok()?;
@@ -68,18 +69,13 @@ fn answered_of(
 
 impl PeerWorkspace<'_> {
     /// The latest fire time any key holder answered for the schedule at
-    /// `trigger` of `installation`'s program, `mark` being its
+    /// `trigger` of `automation`'s program, `mark` being its
     /// [`trigger_mark`]; `None` when no key holder has seen it before.
     #[must_use]
-    pub fn bot_schedule_answered(
-        self,
-        installation: &str,
-        trigger: usize,
-        mark: &str,
-    ) -> Option<i64> {
+    pub fn schedule_answered(self, automation: &str, trigger: usize, mark: &str) -> Option<i64> {
         answered_of(
             self.peer.core.workspace_doc.as_deref(),
-            installation,
+            automation,
             trigger,
             mark,
         )
@@ -89,7 +85,7 @@ impl PeerWorkspace<'_> {
 impl PeerWorkspaceMut<'_> {
     /// Record that `device`, a member's device whose exact current
     /// certificate this workspace holds and who may change it, answered
-    /// through `answered_ms` for the schedule at `trigger` of `installation`'s
+    /// through `answered_ms` for the schedule at `trigger` of `automation`'s
     /// program, marked `mark`. A smaller answer than one already kept never
     /// replaces it. Answers whether the workspace changed.
     ///
@@ -97,10 +93,10 @@ impl PeerWorkspaceMut<'_> {
     ///
     /// `device` is not allowed to change this workspace, or the answer cannot
     /// be written.
-    pub fn answer_bot_schedule(
+    pub fn answer_schedule(
         &mut self,
         device: &tilo_user_identity::DeviceCert,
-        installation: &str,
+        automation: &str,
         trigger: usize,
         mark: &str,
         answered_ms: i64,
@@ -110,7 +106,7 @@ impl PeerWorkspaceMut<'_> {
         if self
             .peer
             .workspace()
-            .bot_schedule_answered(installation, trigger, mark)
+            .schedule_answered(automation, trigger, mark)
             .is_some_and(|answered| answered >= answered_ms)
         {
             return Ok(false);
@@ -120,9 +116,9 @@ impl PeerWorkspaceMut<'_> {
             answered_ms,
         })
         .map_err(|error| error.to_string())?;
-        let key = device_rows::row_key(&scope(installation, trigger), &device.device_public_key);
+        let key = device_rows::row_key(&scope(automation, trigger), &device.device_public_key);
         self.write_row(
-            BOT_SCHEDULES_KEY,
+            SCHEDULES_KEY,
             &key,
             &device.device_public_key,
             Some(&json),

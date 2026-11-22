@@ -1235,7 +1235,7 @@ impl Workspaces {
     /// holds the workspace reads it.
     ///
     /// # Errors
-    /// The workspace is not held here.
+    /// The workspace is not kept here.
     pub async fn lease_holder(
         &self,
         workspace: &str,
@@ -1252,6 +1252,50 @@ impl Workspaces {
             .lease(lease, now)
             .holder
             .map(|claim| claim.device))
+    }
+
+    /// Whether a device of `workspace` kept the work of the lease `lease`
+    /// done ([`tilo_peer_state::Done`]).
+    ///
+    /// # Errors
+    /// The workspace is not kept here.
+    pub async fn lease_done(
+        &self,
+        workspace: &str,
+        lease: &str,
+    ) -> Result<bool, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .workspace()
+            .done(lease)
+            .is_some())
+    }
+
+    /// The latest fire time a device of `workspace` answered for the
+    /// schedule at `trigger` of the automation `automation`, marked `mark`
+    /// ([`tilo_peer_state::trigger_mark`]); `None` when none has.
+    ///
+    /// # Errors
+    /// The workspace is not kept here.
+    pub async fn schedule_answered(
+        &self,
+        workspace: &str,
+        automation: &str,
+        trigger: usize,
+        mark: &str,
+    ) -> Result<Option<i64>, CollaborationError> {
+        Ok(self
+            .workspace(workspace)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .workspace()
+            .schedule_answered(automation, trigger, mark))
     }
 
     /// Install a bot as a governed member of `workspace`, update its program,

@@ -59,12 +59,12 @@ pub use copies::{
 };
 mod leases;
 pub use leases::{CLOCK_SKEW_NS, LEASES_KEY, Lease, LeaseClaim, unranked, vm_lease, vm_rank};
-mod bot_schedules;
-pub use bot_schedules::{BOT_SCHEDULES_KEY, trigger_mark};
+mod schedules;
+pub use schedules::{SCHEDULES_KEY, trigger_mark};
 mod done;
 pub use done::{DONE_KEY, Done, mail_send_lease};
 #[cfg(test)]
-mod bot_schedules_tests;
+mod schedules_tests;
 #[cfg(test)]
 pub(crate) mod test_desktops;
 pub use delegates::{ActingAs, DelegateInactive, GovernedAgent, GovernedDelegateRow};

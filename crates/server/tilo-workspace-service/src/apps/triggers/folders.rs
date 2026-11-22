@@ -1,6 +1,6 @@
 //! Watching the folders that file-changed triggers name.
 //! [`FolderWatch`] watches exactly the folders it was last given
-//! ([`watched_folders`](super::triggers::watched_folders), resolved from each trigger's capability)
+//! ([`watched_folders`], resolved from each trigger's capability)
 //! and reports what changed inside them since the last look, as [`FolderChange`]s for the
 //! file-changed trigger source.
 //! A file is reported once, and only after it has stopped changing: dropping one file into a folder
@@ -11,14 +11,102 @@
 //! change seen while a file settles keeps it settling.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
-use std::sync::mpsc;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 
+use tilo_automation::TriggerSpec;
 use tilo_files::ChangeKind;
 use tilo_files::native::{ChangeWatch, WatchEvent, Watcher};
 
-use super::triggers::{FileChange, FolderChange, WatchedFolder};
+use super::Armed;
+
+/// How a file in a watched folder changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FileChange {
+    Created,
+    Modified,
+    Removed,
+}
+
+impl FileChange {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Modified => "modified",
+            Self::Removed => "removed",
+        }
+    }
+}
+
+/// A folder a file-changed trigger watches: the path the capability `capability` of `workspace`
+/// shares with the shortcut's saver.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WatchedFolder {
+    pub workspace: String,
+    pub capability: String,
+    pub path: PathBuf,
+}
+
+/// One file that changed inside a watched folder.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FolderChange {
+    pub workspace: String,
+    pub capability: String,
+    /// The file's path inside the folder.
+    pub file: String,
+    pub change: FileChange,
+}
+
+impl FolderChange {
+    /// Whether `other` is about the same file, so one file settling is one change however many
+    /// kinds of change it made.
+    fn same_file(&self, other: &Self) -> bool {
+        (&self.workspace, &self.capability, &self.file)
+            == (&other.workspace, &other.capability, &other.file)
+    }
+
+    #[must_use]
+    pub fn inside(folder: &WatchedFolder, path: &Path, change: FileChange) -> Option<Self> {
+        let file = path.strip_prefix(&folder.path).ok()?;
+        (!file.as_os_str().is_empty()).then(|| Self {
+            workspace: folder.workspace.clone(),
+            capability: folder.capability.clone(),
+            file: file.to_string_lossy().into_owned(),
+            change,
+        })
+    }
+}
+
+/// The folders the file-changed triggers of `armed` watch. A trigger names a capability of its
+/// shortcut's workspace; it watches that capability's folder only while the capability is a
+/// filesystem grant the saver may still read through, so a revoked or narrowed grant stops the
+/// watch.
+#[must_use]
+pub fn watched_folders(armed: &[Armed]) -> Vec<WatchedFolder> {
+    let mut folders = Vec::new();
+    for armed in armed {
+        let saver = tilo_actions::MemberId::person(armed.saver.clone());
+        for trigger in &armed.shortcut.triggers {
+            let TriggerSpec::FileChanged { capability } = trigger else {
+                continue;
+            };
+            if let Ok(path) =
+                crate::apps::automation::readable_folder(&armed.described, capability, &saver)
+            {
+                folders.push(WatchedFolder {
+                    workspace: armed.workspace.clone(),
+                    capability: capability.clone(),
+                    path,
+                });
+            }
+        }
+    }
+    folders.sort();
+    folders.dedup();
+    folders
+}
 
 /// How long a file must go untouched before the change is reported, so one write of a file is one
 /// change.
@@ -28,7 +116,7 @@ pub const SETTLE: Duration = Duration::from_millis(1500);
 #[derive(Default)]
 pub struct FolderWatch {
     folders: Vec<WatchedFolder>,
-    watcher: Option<(Vec<ChangeWatch>, mpsc::Receiver<WatchEvent>)>,
+    watcher: Option<(Vec<ChangeWatch>, mpsc::UnboundedReceiver<WatchEvent>)>,
     /// Changes seen but not yet reported, and when each file was last seen changing.
     settling: BTreeMap<FolderChange, Instant>,
 }
@@ -56,7 +144,7 @@ impl FolderWatch {
         if paths.is_empty() {
             return;
         }
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::unbounded_channel();
         let mut watches = Vec::new();
         for path in paths {
             let sender = sender.clone();
@@ -79,21 +167,13 @@ impl FolderWatch {
     /// rewriting a file, or removing it and writing it again, reports the first change seen, so one
     /// file is one run.
     pub fn changes(&mut self) -> Vec<FolderChange> {
-        self.changes_at(Instant::now())
-    }
-
-    /// When the oldest change held back has settled, so the next pass reports it.
-    pub fn next_deadline(&self) -> Option<Instant> {
-        self.settling
-            .values()
-            .filter_map(|last_seen| last_seen.checked_add(SETTLE))
-            .min()
+        self.changes_at(tilo_clock::now())
     }
 
     /// [`Self::changes`], with `now` deciding which files have settled.
     pub fn changes_at(&mut self, now: Instant) -> Vec<FolderChange> {
         let mut seen = Vec::new();
-        if let Some((_, receiver)) = self.watcher.as_ref() {
+        if let Some((_, receiver)) = self.watcher.as_mut() {
             while let Ok(event) = receiver.try_recv() {
                 let Some(change) = file_change(event.kind) else {
                     continue;
@@ -126,7 +206,7 @@ impl FolderWatch {
         let seen = self
             .settling
             .iter_mut()
-            .find(|(settling, _)| settling.same_file() == found.same_file());
+            .find(|(settling, _)| settling.same_file(&found));
         match seen {
             Some((_, at)) => *at = now,
             None => {
@@ -150,8 +230,6 @@ fn file_change(kind: ChangeKind) -> Option<FileChange> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-    use std::time::{Duration, Instant};
 
     #[test]
     fn a_file_written_in_a_watched_folder_is_reported_inside_it() {

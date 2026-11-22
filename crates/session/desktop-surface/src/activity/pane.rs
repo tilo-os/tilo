@@ -2509,7 +2509,7 @@ fn describe_workspace_changes(
 }
 
 /// The workspace keys a desktop writes to keep its projection consistent (the id counter, the
-/// record index, schedule claims, and in older workspaces who owned each id namespace and a kept
+/// record index, and in older workspaces who owned each id namespace and a kept
 /// strip's marker), and those its devices write to keep it: the receipt of each action done in it
 /// (the action is its own row), what each device holds of it, where each device that keeps it
 /// answers, and the invitation parts its receipts share. State about the workspace, not something
@@ -2518,7 +2518,6 @@ const WORKSPACE_BOOKKEEPING_KEYS: &[&str] = &[
     tilo_desktop_model::projection::WORKSPACE_DESKTOP_COUNTER_KEY,
     "contents_owners_v1",
     tilo_desktop_model::projection::WORKSPACE_RECORDS_KEY,
-    tilo_desktop_model::projection::WORKSPACE_SCHEDULE_CLAIMS_KEY,
     "retained_empty_v1",
     tilo_desktop_model::projection::WORKSPACE_EFFECT_RECEIPTS_KEY,
     "held_copies_v1",

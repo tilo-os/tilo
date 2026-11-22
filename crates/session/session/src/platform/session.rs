@@ -42,7 +42,6 @@ pub use crate::notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 use crate::options::start_collaboration;
 pub use crate::options::{AppSocket, Machine, Options, no_session_actions};
 pub use crate::platform::keys::{KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE};
-use crate::platform::records::{Held, Source};
 pub use crate::records::Records;
 pub use crate::rotation::Accelerometer;
 pub use crate::run::{Backend, Reach};
@@ -1405,24 +1404,18 @@ impl Session {
             server
         });
         let automation = crate::automation::Automation::new(
-            options.state.as_deref(),
-            options.wake.handle(),
             handle.clone(),
             options.person.clone(),
             crate::automation::Feeds {
-                // What the workspaces hold, whose changes a shortcut can answer.
-                held: engine.as_ref().map(|_| {
-                    let held = Held::over(document_reads.clone(), changes.clone());
-                    (Arc::new(held) as Source, changes.clone())
-                }),
-                // Which of the person's devices this one is, and which of
-                // them are online: each schedule runs on one of them.
-                fabric: sync.as_ref().and_then(|sync| sync.fabric()),
-                // The apps this session starts, the person's focus modes, and
-                // what its workspaces revoke: each is a trigger a shortcut can answer.
+                // The apps this session starts, the person's focus modes, and what its
+                // workspaces revoke: each is a trigger a shortcut can answer.
                 launches: std::sync::Arc::clone(&options.launches),
                 policy: std::sync::Arc::clone(&notification_policy),
                 revocations,
+                workspaces: (
+                    workspace_service.clone(),
+                    automation_runtime.handle().clone(),
+                ),
             },
         );
 
