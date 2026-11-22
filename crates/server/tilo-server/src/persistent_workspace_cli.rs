@@ -479,7 +479,7 @@ fn parse_role(role: &str) -> Result<Role, String> {
 
 /// The identity this workspace hosts as: the operator's root file, the host
 /// device it keeps in its state, and the revocations its state's log holds.
-/// `tilo-enroll revoke` writes that log, so a device the root withdrew is
+/// `tilo device revoke` writes that log, so a device the root withdrew is
 /// refused when it connects, as on the plain daemon.
 fn hosted_identity(
     root: &SigningKey,

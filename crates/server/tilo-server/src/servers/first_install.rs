@@ -3,9 +3,9 @@
 //!
 //! The plan is the machine's entry in its person's Servers workspace
 //! ([`tilo_workspace_service::workspaces::servers`]). A machine that came from
-//! a plan's token enrolled with it, so the person's devices know it and one of
-//! them approved it: its entry is named by its own device key from then on,
-//! and it reads what its entry says.
+//! a plan joined the person's devices with a ticket, and one of their devices
+//! took it into its entry under its own device key: it reads what its entry
+//! says from then on.
 //!
 //! This is the machine's side of that: it reports the drives it really has and
 //! the choices its plan left it unable to settle
@@ -25,27 +25,20 @@ use tilo_workspace_service::workspaces::{ResourceWrite, Workspaces};
 
 use super::{SERVERS, apply, person_workspace_id, read};
 
-/// Where the token's nonce is kept for this machine: written by
-/// `tilo-enroll enroll` when it enrolled with a plan's token, and read here
-/// after the enrollment.
-pub const NONCE: &str = "install-plan.nonce";
-
 /// How long this machine waits for the root helper to say it applied the
 /// configuration: longer than the helper's own window for a network it must
 /// confirm, so a slow helper is not taken for a refusal.
 const APPLY_WAIT: Duration = Duration::from_secs(150);
 
-/// The nonce of the token this machine enrolled with, when it was handed a
-/// plan: `tilo-enroll enroll` writes it beside this server's state.
+/// Whether a ticket joined this machine to a person: the login it left beside
+/// the identity root's device key and certificate. A machine that founded its
+/// own workspace has none, and installs no plan.
 #[must_use]
-pub fn recorded_nonce(state_root: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(state_root.join(NONCE)).ok()?;
-    let nonce = text.trim();
-    (nonce.len() == 32
-        && nonce
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
-    .then(|| nonce.to_owned())
+pub fn joined(identity_root: &Path) -> bool {
+    let paths = tilo_device_identity::IdentityPaths::under(identity_root);
+    tilo_device_identity::login::Place::here(paths)
+        .and_then(|place| tilo_device_identity::login::load(&place))
+        .is_ok_and(|login| login.is_some())
 }
 
 /// The drives this machine really has, as a plan's machine reports them.
@@ -123,13 +116,13 @@ fn name(node: &serde_json::Value, field: &str) -> String {
         .to_owned()
 }
 
-/// Install this machine from the plan its token `nonce` names, applying the
+/// Install this machine from the plan its own entry names, applying the
 /// configuration its entry asks of its own machine, and say it finished in the
 /// entry. `drives` are the ones it really has ([`real_drives`], or a test's).
 ///
 /// It waits for its entry while the workspace's document is still reaching it, and at its entry
 /// while one of the person's devices has not answered a choice the plan left open: this machine
-/// never fills one in itself.
+/// never fills one in itself. A machine whose person planned nothing for it installs nothing.
 ///
 /// # Errors
 /// The entry names a plan this build cannot read, the root helper refused the configuration, or the entry could
@@ -137,11 +130,10 @@ fn name(node: &serde_json::Value, field: &str) -> String {
 pub async fn install(
     workspaces: &Workspaces,
     cert: &tilo_user_identity::DeviceCert,
-    nonce: &str,
     drives: &[Drive],
     requests: &super::applied::Requests,
 ) -> Result<(), String> {
-    tracing::info!(%nonce, "this machine installs from its plan");
+    let here = device_id(&cert.device_public_key);
     let mut told_arriving = false;
     // Heard from before the first read, so a change that lands between a read and the wait
     // after it still wakes the wait.
@@ -149,12 +141,12 @@ pub async fn install(
     loop {
         let servers = read(workspaces).await?;
         // Holding the workspace comes before its document has all reached this machine: the
-        // entry its plan wrote is on its way, and the machine waits for it as it waits for an
-        // answer.
-        let Some((id, entry)) = servers
-            .planned_by_nonce(nonce)
-            .map(|(id, entry)| (id.clone(), entry.clone()))
-        else {
+        // entry the person's device wrote is on its way, and the machine waits for it as it
+        // waits for an answer.
+        let Some(entry) = servers.servers.get(&here).cloned() else {
+            if servers.waiting().next().is_none() {
+                return Ok(());
+            }
             if !told_arriving {
                 tracing::info!("this machine waits for its plan to reach it");
                 told_arriving = true;
@@ -164,13 +156,17 @@ pub async fn install(
         };
         // What this machine has is its own report: the entry is told once,
         // and again only when the machine's drives are not the ones it keeps.
+        // An entry no plan made is a server that installs nothing.
+        if entry.plan.status.is_empty() {
+            return Ok(());
+        }
         if entry.plan.drives.is_empty() {
             let report = machine::report(&entry, drives)?;
             apply(
                 workspaces,
                 Servers::BEGIN_INSTALL.with((
                     hex::encode(cert.device_public_key),
-                    nonce.to_owned(),
+                    entry.plan.nonce.clone(),
                     report.drives,
                     report.ask,
                 )),
@@ -198,12 +194,8 @@ pub async fn install(
             Step::Install(plan) => {
                 tracing::info!(plan = %plan.plan, "this machine installs with its plan");
                 apply_device_config(&requests.device, &entry).await?;
-                apply(
-                    workspaces,
-                    Servers::FINISH_INSTALL.with(device_id(&cert.device_public_key)),
-                )
-                .await?;
-                tracing::info!(%id, "this machine finished installing");
+                apply(workspaces, Servers::FINISH_INSTALL.with(here.clone())).await?;
+                tracing::info!(id = %here, "this machine finished installing");
                 return Ok(());
             }
             Step::Finished => return Ok(()),
@@ -324,19 +316,6 @@ mod tests {
                  "type":"disk","fstype":null,"mountpoint":null}
             ]}"#;
             assert!(parse_drives(listing).is_empty());
-        }
-
-        phase the_nonce_is_read_only_when_it_names_a_token;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            assert_eq!(recorded_nonce(dir.path()), None);
-            std::fs::write(dir.path().join(NONCE), "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\n").unwrap();
-            assert_eq!(
-                recorded_nonce(dir.path()).as_deref(),
-                Some("5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a")
-            );
-            std::fs::write(dir.path().join(NONCE), "not a nonce").unwrap();
-            assert_eq!(recorded_nonce(dir.path()), None);
         }
     }
 }

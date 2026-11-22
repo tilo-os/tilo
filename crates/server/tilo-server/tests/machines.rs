@@ -448,17 +448,8 @@ async fn a_machine_that_enrolled_with_a_plan_installs_from_it_on_its_first_start
     })
     .await;
 
-    // What the enumeration wrote: the plan it must finish installing.
+    // The machine's first start: its entry is its own, under its device key.
     let state = tempfile::tempdir().unwrap();
-    std::fs::write(
-        state.path().join("install-plan.nonce"),
-        format!("{nonce}\n"),
-    )
-    .unwrap();
-    assert_eq!(
-        tilo_server::servers::first_install::recorded_nonce(state.path()).as_deref(),
-        Some(nonce.as_str())
-    );
 
     // The machine's first start: it reports the two drives it has and asks
     // which to install on, since the plan's rule names no drive.
@@ -482,18 +473,11 @@ async fn a_machine_that_enrolled_with_a_plan_installs_from_it_on_its_first_start
     let installing = {
         let workspaces = machine_host.host.workspaces().clone();
         let cert = cupboard.cert.clone();
-        let nonce = nonce.clone();
         let requests = requests.clone();
         let drives = drives.clone();
         tokio::spawn(async move {
-            tilo_server::servers::first_install::install(
-                &workspaces,
-                &cert,
-                &nonce,
-                &drives,
-                &requests,
-            )
-            .await
+            tilo_server::servers::first_install::install(&workspaces, &cert, &drives, &requests)
+                .await
         })
     };
     let entry = entry_where(&laptop_host, &machine_key, |entry| {

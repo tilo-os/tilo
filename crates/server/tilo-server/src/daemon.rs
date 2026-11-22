@@ -710,6 +710,7 @@ impl Server {
                             introducer,
                             governed.clone(),
                             cfg.state_root.clone(),
+                            cfg.identity_root.clone(),
                         )),
                     );
                     Ok(())
@@ -735,7 +736,7 @@ impl Server {
             // comes up holding the workspace, whether it was handed it before
             // or just now: the entry says what still has to happen.
             if crate::servers::holds_person_workspace(governed).await
-                && let Some(nonce) = crate::servers::first_install::recorded_nonce(&cfg.state_root)
+                && crate::servers::first_install::joined(&cfg.identity_root)
             {
                 let workspaces = governed.clone();
                 let cert = identity.device_cert.clone();
@@ -746,7 +747,6 @@ impl Server {
                         if let Err(error) = crate::servers::first_install::install(
                             &workspaces,
                             &cert,
-                            &nonce,
                             &crate::servers::first_install::real_drives(),
                             &requests,
                         )
@@ -1164,6 +1164,7 @@ async fn admitted_first_boot(
     introducer: (tilo_user_identity::DeviceCert, EndpointAddr),
     workspaces: crate::workspaces::Workspaces,
     state_root: PathBuf,
+    identity_root: PathBuf,
 ) {
     ask_to_be_admitted(endpoint.clone(), identity.clone(), introducer).await;
     // The hand-over is the holders' to make: one of them names this device in
@@ -1173,12 +1174,11 @@ async fn admitted_first_boot(
         tokio::time::sleep(wait).await;
         wait = wait.saturating_mul(2).min(Duration::from_secs(30));
     }
-    if let Some(nonce) = crate::servers::first_install::recorded_nonce(&state_root) {
+    if crate::servers::first_install::joined(&identity_root) {
         let requests = crate::servers::applied::Requests::default();
         match crate::servers::first_install::install(
             &workspaces,
             &identity.device_cert,
-            &nonce,
             &crate::servers::first_install::real_drives(),
             &requests,
         )
