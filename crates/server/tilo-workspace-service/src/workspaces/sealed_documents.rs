@@ -916,7 +916,7 @@ impl Workspaces {
 
 #[cfg(all(test, feature = "agents"))]
 mod behind_tests;
-#[cfg(all(test, feature = "agents"))]
+#[cfg(all(test, feature = "agents", feature = "apps"))]
 mod chain_head_tests;
 #[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
 pub mod fixtures;
