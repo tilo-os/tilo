@@ -1061,10 +1061,9 @@ impl Sync {
             ));
         }
         if unsent > 0 {
-            why.push(format!(
-                "changes to {unsent} {} of the file list did not go out and are sent again",
-                parts(unsent),
-            ));
+            why.push(
+                "some changes haven't reached the workspace yet and are sent again".to_owned(),
+            );
         }
         if lacking > 0 {
             why.push(format!(
