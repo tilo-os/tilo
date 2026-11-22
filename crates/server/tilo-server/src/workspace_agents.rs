@@ -1037,7 +1037,7 @@ impl ServerAgents {
         past: Option<&(String, Ask)>,
     ) -> Result<bool, String> {
         let read = self.read_look(workspace).await?;
-        Ok(self.enter_past(workspace, read, past).await)
+        Ok(Box::pin(self.enter_past(workspace, read, past)).await)
     }
 
     /// The first step of a look: what `workspace` owes, read once what its people answered and
@@ -1065,7 +1065,7 @@ impl ServerAgents {
     /// the others to the turns that go there. Whether what was read was still current wherever
     /// it was handed on: where it was not, a look reads again.
     pub async fn enter_look(&self, workspace: &str, read: LookRead) -> bool {
-        self.enter_past(workspace, read, None).await
+        Box::pin(self.enter_past(workspace, read, None)).await
     }
 
     /// [`Self::enter_look`], leaving out the ask `past` names ([`Self::look_past`]).
@@ -1155,7 +1155,7 @@ impl ServerAgents {
             }
         }
         // A note is handed on as its person's own words are: with what this look read.
-        let carried = self.carry(workspace, asks.sub, reading).await;
+        let carried = Box::pin(self.carry(workspace, asks.sub, reading)).await;
         current && carried
     }
 

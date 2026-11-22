@@ -11,6 +11,7 @@
 //! ([`tilo_workspace_service::asks::around`]): the conversation a message is in, read by
 //! structure, never by Chat's own fields.
 
+use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
 
 use tilo_lock::MutexRecover as _;
@@ -113,7 +114,7 @@ fn turn_of(app: &str, agent: &Agent, asked: &Asked, around: Option<&asks::Around
     let mut request = String::new();
     if let Some(around) = around {
         if !around.title.trim().is_empty() {
-            request.push_str(&format!("In \"{}\":\n", around.title.trim()));
+            let _ = writeln!(request, "In \"{}\":", around.title.trim());
         }
         for item in &around.items {
             if item.asked_about {
@@ -131,7 +132,7 @@ fn turn_of(app: &str, agent: &Agent, asked: &Asked, around: Option<&asks::Around
                 }
                 _ => "another member".to_owned(),
             };
-            request.push_str(&format!("{who}: {}\n", item.text.trim()));
+            let _ = writeln!(request, "{who}: {}", item.text.trim());
         }
         if !request.is_empty() {
             request.push('\n');
@@ -262,7 +263,8 @@ impl Replying {
 
     /// The reply: the one this run started, else the ask's newest, which an earlier run left.
     async fn reply(&self) -> Result<asks::ResourceRef, String> {
-        if let Some(reply) = self.reply.lock_recover().clone() {
+        let started = self.reply.lock_recover().clone();
+        if let Some(reply) = started {
             return Ok(reply);
         }
         let ask = self.ask.clone();
