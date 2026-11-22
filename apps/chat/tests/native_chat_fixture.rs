@@ -77,15 +77,23 @@ fn native_chat_fixture() {
     let mut workspace = Workspace::default();
     // The workspace's first channels, #chat and #voice, as the first one to open it makes them.
     start(&mut workspace.chat, "u_ada").unwrap();
+    channels(&mut workspace);
+    conversation(&mut workspace, &ada, &leo, &mia);
+    direct_message(&mut workspace, &ada, &leo);
+    write_fixture(&mut workspace);
+}
+
+/// The categories and channels the fixture's chat holds, one channel archived.
+fn channels(workspace: &mut Workspace) {
     let apply = |workspace: &mut Workspace, invoke| workspace.apply_as("u_ada", invoke).unwrap();
     apply(
-        &mut workspace,
+        workspace,
         Chat::CREATE_CATEGORY.with(verbs::CreateCategory {
             name: "Team".parse().unwrap(),
         }),
     );
     apply(
-        &mut workspace,
+        workspace,
         Chat::CREATE_CATEGORY.with(verbs::CreateCategory {
             name: "Social".parse().unwrap(),
         }),
@@ -112,7 +120,7 @@ fn native_chat_fixture() {
         ("c_plans", "old-plans", None, Some("What we planned last year")),
     ] {
         apply(
-            &mut workspace,
+            workspace,
             Chat::CREATE_CHANNEL_WITH_ID.with(verbs::CreateChannelWithId {
                 id: id.into(),
                 name: name.parse().unwrap(),
@@ -124,18 +132,21 @@ fn native_chat_fixture() {
         );
     }
     apply(
-        &mut workspace,
+        workspace,
         Chat::ARCHIVE_CHANNEL.with(verbs::ArchiveChannel {
             channel: Id::from_raw("c_plans"),
             archived: true,
         }),
     );
+}
 
+/// The conversation in #design: what was said, reacted to and pinned.
+fn conversation(workspace: &mut Workspace, ada: &MemberId, leo: &MemberId, mia: &MemberId) {
     // 2026-06-29, from 07:02 UTC.
-    let at = |minute: i64| 1_782_716_520_000 + minute * 60_000;
+    let at = |minute: i64| 1_782_716_520_000_i64.saturating_add(minute.saturating_mul(60_000));
     post(
-        &mut workspace,
-        &mia,
+        workspace,
+        mia,
         at(0),
         message(
             "m-build",
@@ -145,8 +156,8 @@ fn native_chat_fixture() {
         ),
     );
     post(
-        &mut workspace,
-        &mia,
+        workspace,
+        mia,
         at(1),
         message(
             "m-launch",
@@ -155,12 +166,12 @@ fn native_chat_fixture() {
             None,
         ),
     );
-    react(&mut workspace, &leo, at(3), "m-launch", "🎉");
-    react(&mut workspace, &ada, at(4), "m-launch", "🎉");
-    react(&mut workspace, &ada, at(4), "m-launch", "🚀");
+    react(workspace, leo, at(3), "m-launch", "🎉");
+    react(workspace, ada, at(4), "m-launch", "🎉");
+    react(workspace, ada, at(4), "m-launch", "🚀");
     workspace
         .apply_part_at(
-            &ada,
+            ada,
             at(4),
             ChatMessages::PIN.with(chat_messages::Pin {
                 message: Id::from_raw("m-launch"),
@@ -169,8 +180,8 @@ fn native_chat_fixture() {
         )
         .unwrap();
     post(
-        &mut workspace,
-        &leo,
+        workspace,
+        leo,
         at(18),
         message(
             "m-ask",
@@ -180,8 +191,8 @@ fn native_chat_fixture() {
         ),
     );
     post(
-        &mut workspace,
-        &ada,
+        workspace,
+        ada,
         at(29),
         message(
             "m-thread-1",
@@ -201,10 +212,15 @@ fn native_chat_fixture() {
         start: 12,
         end: 28,
     });
-    post(&mut workspace, &leo, at(38), quoting);
+    post(workspace, leo, at(38), quoting);
+}
+
+/// What #general and #old-plans hold, and the direct conversation between two people.
+fn direct_message(workspace: &mut Workspace, ada: &MemberId, leo: &MemberId) {
+    let at = |minute: i64| 1_782_716_520_000_i64.saturating_add(minute.saturating_mul(60_000));
     post(
-        &mut workspace,
-        &leo,
+        workspace,
+        leo,
         at(88),
         message(
             "m-coffee",
@@ -214,15 +230,15 @@ fn native_chat_fixture() {
         ),
     );
     post(
-        &mut workspace,
-        &ada,
+        workspace,
+        ada,
         at(90),
         message("m-plans", "c_plans", "Ship it by spring.", None),
     );
     let direct = Chat::direct_id([ada.clone(), leo.clone()]);
     post(
-        &mut workspace,
-        &leo,
+        workspace,
+        leo,
         at(120),
         message(
             "m-walk",
@@ -232,12 +248,15 @@ fn native_chat_fixture() {
         ),
     );
     post(
-        &mut workspace,
-        &ada,
+        workspace,
+        ada,
         at(121),
         message("m-walk-yes", direct.as_str(), "Yes, at ten.", None),
     );
+}
 
+/// Writes the workspace's documents, one a line, to the fixture file.
+fn write_fixture(workspace: &mut Workspace) {
     let mut out = String::new();
     let _ = writeln!(
         out,
