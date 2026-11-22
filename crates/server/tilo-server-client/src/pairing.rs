@@ -10,9 +10,7 @@
 use tilo_server_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval,
 };
-use tilo_user_identity::{
-    DeviceCert, RevocationEntry, RevocationReason, sign_revocation_entry_async,
-};
+use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry_async};
 #[cfg(test)]
 use tilo_user_identity::{RevocationList, issue_device_cert_async};
 
@@ -159,7 +157,7 @@ pub async fn decide_pairing(
     server: &impl MemberServer,
     approver: &dyn DeviceSigner,
     request_digest: [u8; 32],
-    cert: Option<DeviceCert>,
+    cert: Option<tilo_user_identity::DeviceCert>,
 ) -> Result<(), CertifyError> {
     let decision = match cert {
         Some(cert) => ApproverDecision::Issue(cert),
