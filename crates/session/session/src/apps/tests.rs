@@ -173,7 +173,13 @@ fn note_launch(
 /// What the desktop shows after `end` ended the app `asked` , which this session started with
 /// a window that came; `asked_to_end` when the person's own Quit ended it.
 fn showed_after(end: End, asked_to_end: bool) -> Vec<String> {
+    showed_after_in(end, asked_to_end, || false)
+}
+
+/// [`showed_after`] in a session that `session_ending` says was told to end, or not.
+fn showed_after_in(end: End, asked_to_end: bool, session_ending: fn() -> bool) -> Vec<String> {
     let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    apps.state.borrow_mut().session_ending = session_ending;
     let desktop = shell();
     apps.attach(desktop.clone());
     note_launch(
@@ -442,6 +448,22 @@ fn a_stop_the_person_asked_for_is_not_a_crash() {
             .iter()
             .any(|text| text.starts_with("Canvas stopped working")),
         "the same end the session did not ask for is still a crash: {crashed:?}"
+    );
+}
+
+/// A logout or a shutdown stops the session's whole process group at once: an app it ends in
+/// that stroke did not stop working, so its tab is left as the person had it for the next login
+/// to open again, and offers no reopen.
+#[test]
+fn an_app_ended_by_the_session_ending_is_not_a_crash() {
+    let ended = showed_after_in(End::signalled(libc::SIGTERM), false, || true);
+    assert!(
+        !ended.iter().any(|text| text.contains("stopped working")),
+        "an app the session's own stop ended is no crash: {ended:?}"
+    );
+    assert!(
+        !ended.iter().any(|text| text == "Reopen"),
+        "and its tab offers no reopen: {ended:?}"
     );
 }
 

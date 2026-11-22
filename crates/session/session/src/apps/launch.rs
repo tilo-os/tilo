@@ -178,6 +178,13 @@ impl Apps {
                 self.person_ended(&event, launch.as_ref(), could_not_open);
                 continue;
             }
+            // The stop that ends the session ends its apps with it: the tab stays as the person
+            // left it, saved with the layout, and the next login opens the app there again rather
+            // than offering to reopen an app that stopped working.
+            if (self.state.borrow().session_ending)() {
+                tracing::info!(app = %event.app, end = %event.end, "an app ended with the session");
+                continue;
+            }
             // An app that ran with no window at all (an action's run) and one whose window came
             // are closed by an end they chose; one that crashed gets a notice.
             if !event.end.crashed() && !could_not_open {
