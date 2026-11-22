@@ -791,8 +791,6 @@ pub(super) const APPS: &[FleetApp] = &[
             "agent runs",
             "mcp",
             "connect an agent",
-            "claude code",
-            "codex",
             "stop agent",
             "undo agent",
             "grants",

@@ -169,7 +169,7 @@ pub fn author_spoken(parts: &AuthorParts) -> String {
 }
 
 /// The hover that names what wrote an attributed change, a field to a line: "External
-/// agent", "Claude Code", "‘Prepare the report’", "Kaiserslautern", "/Reports".
+/// agent", "Scout", "‘Prepare the report’", "Kaiserslautern", "/Reports".
 /// `None` for a change with no recorded writer, whose row names a person.
 pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     // Each fact on a line of its own: the tooltip lays them out apart, never joined by a glyph.

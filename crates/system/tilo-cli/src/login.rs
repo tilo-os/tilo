@@ -663,10 +663,7 @@ fn entered_after_login(
         }
     }
     println!();
-    println!(
-        "{}",
-        next_steps(agent, &tilo, http_mcp(device).as_deref())
-    );
+    println!("{}", next_steps(agent, &tilo, http_mcp(device).as_deref()));
     Ok(ExitCode::SUCCESS)
 }
 

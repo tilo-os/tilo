@@ -516,14 +516,10 @@ impl ActionProvider for EnvironmentCommands {
 
     fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
         self.observe(caller, id)?;
-        // A served program's server waiting for its next change asks after it until the wait
-        // is answered, however long the program stays quiet.
-        let waiting = self.0.program(caller, id).map(|(_, held)| held.waited_on());
         let (changed, change) = tilo_actions::remote::pending();
         let inner = Arc::clone(&self.0);
         std::thread::spawn(move || {
             inner.wait_for_a_move();
-            drop(waiting);
             changed.complete(());
         });
         Some(change)
