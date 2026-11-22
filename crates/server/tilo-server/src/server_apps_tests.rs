@@ -279,3 +279,152 @@ async fn a_server_runs_one_broker_for_each_workspace_while_it_keeps_it() {
     assert_eq!(apps.reconcile().await, BTreeMap::new());
     assert_eq!(apps.workspaces(), BTreeSet::from([other]));
 }
+
+/// The keys a page's instance asks for, as the identity service a test's server runs hands
+/// them: each one the route's keys, whoever the service decided may have them.
+#[cfg(feature = "agents")]
+struct RouteKeys;
+
+#[cfg(feature = "agents")]
+impl tilo_identity::sources::GroupKeySource for RouteKeys {
+    fn access(
+        &self,
+        _: tilo_desktop_model::WorkspaceId,
+        _: u64,
+    ) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
+        Some(Ok((
+            tilo_identity_client::wire::KeyAccess::Ready,
+            1,
+            b"the route's keys".to_vec(),
+        )))
+    }
+}
+
+/// A page's instance, asking the server's identity service on the connection its page was
+/// opened with: every request decided as whoever its call names.
+#[cfg(feature = "agents")]
+fn page_keys(socket: &std::path::Path, workspace: &str, call: [u8; 16]) -> Vec<u8> {
+    use tilo_identity_client::wire::{
+        FRAMING, HANDSHAKE_FRAMING, Handshake, PresentationHandshake, Request, Response,
+    };
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    let handshake = serde_json::to_vec(&PresentationHandshake {
+        handshake: Handshake {
+            workspace_id: workspace.to_owned(),
+            app_id: "so.tilo.notes".to_owned(),
+            surface: None,
+            call: Some(call),
+        },
+        presentation_version: 0,
+    })
+    .unwrap();
+    HANDSHAKE_FRAMING.write(&mut stream, &handshake).unwrap();
+    let ask = Request::GroupKeys {
+        workspace_id: workspace.to_owned(),
+        app_id: "so.tilo.notes".to_owned(),
+        document_id: String::new(),
+        known_generation: 0,
+    };
+    FRAMING.write_value(&mut stream, &ask).unwrap();
+    match FRAMING.read_value(&mut stream).unwrap().unwrap() {
+        Response::GroupKeys { keys, .. } => keys,
+        Response::Denied(_) => Vec::new(),
+        other => panic!("the service answered {other:?}"),
+    }
+}
+
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the host serves its workspaces until the test ends"
+)]
+async fn a_page_is_handed_keys_only_while_a_reader_who_may_read_it_reads() {
+    use tilo_workspace_service::apps::caller_signer::{CallerSigner, Callers, VerifiedCaller};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = crate::workspaces::fixtures::governor();
+    let host = crate::workspaces::fixtures::test_host_taking_part(
+        &dir.path().join("server"),
+        &key,
+        &owner,
+    )
+    .await;
+    let workspaces = host.workspaces().clone();
+    let summary = workspaces.create("Team").await.unwrap();
+    let (workspace, id) = (summary.workspace.clone(), summary.workspace_id);
+    let (_, reader) = crate::workspaces::fixtures::device_cert(
+        &ed25519_dalek::SigningKey::from_bytes(&[3; 32]),
+        "reader",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    crate::workspaces::fixtures::admit_view_reader(&workspaces, &workspace, &key, &reader).await;
+    let (_, outsider) = crate::workspaces::fixtures::device_cert(
+        &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
+        "outsider",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    let verified = |cert: &tilo_user_identity::DeviceCert| VerifiedCaller {
+        device_public_key: cert.device_public_key,
+        user_public_key: cert.user_public_key,
+    };
+
+    let paths = tilo_device_identity::persist::IdentityPaths::under(dir.path().join("identity"));
+    std::fs::create_dir_all(paths.device_privkey.parent().unwrap()).unwrap();
+    tilo_device_identity::persist::write_device_key(&paths.device_privkey, &key).unwrap();
+    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &owner).unwrap();
+    let readers = std::sync::Arc::new(Readers::default());
+    let runtime = tokio::runtime::Handle::current();
+    let socket = dir.path().join("identity.sock");
+    let _identity = tilo_identity::broker::spawn_signing(
+        socket.clone(),
+        std::sync::Arc::new(ServerWorkspaces::new(workspaces.clone(), runtime.clone())),
+        std::sync::Arc::new(RouteKeys),
+        std::sync::Arc::new(()),
+        std::sync::Arc::new(CallerSigner::new(
+            workspaces.clone(),
+            runtime,
+            paths,
+            owner.user_public_key,
+            std::sync::Arc::clone(&readers) as std::sync::Arc<dyn Callers>,
+        )),
+    )
+    .unwrap();
+    let keys = |call: [u8; 16]| {
+        let (socket, workspace) = (socket.clone(), workspace.clone());
+        async move {
+            tokio::task::spawn_blocking(move || page_keys(&socket, &workspace, call))
+                .await
+                .unwrap()
+        }
+    };
+
+    // A reader the workspace lets read is handed the route's keys while they read.
+    let reading = readers.reading(id, "so.tilo.notes", verified(&reader));
+    assert_eq!(keys(reading.call()).await, b"the route's keys");
+    // Someone the workspace does not have is handed none, page open or not.
+    let outside = readers.reading(id, "so.tilo.notes", verified(&outsider));
+    assert!(keys(outside.call()).await.is_empty());
+    // A page of another app names nobody here.
+    let elsewhere = readers.reading(id, "so.tilo.mail", verified(&reader));
+    assert!(keys(elsewhere.call()).await.is_empty());
+    // Once the last reader has left, the page's call names nobody: nothing more is handed.
+    let left = reading.call();
+    drop(reading);
+    assert!(keys(left).await.is_empty());
+
+    // A reader the workspace removes while they read is refused on the page's next ask.
+    let reading = readers.reading(id, "so.tilo.notes", verified(&reader));
+    assert_eq!(keys(reading.call()).await, b"the route's keys");
+    workspaces
+        .remove_member(
+            &workspace,
+            &owner,
+            tilo_server_session::workspaces::RemoveMemberRequest {
+                request_id: [41; 32],
+                user_public_key: reader.user_public_key,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(keys(reading.call()).await.is_empty());
+}

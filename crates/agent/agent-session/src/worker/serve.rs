@@ -390,7 +390,9 @@ impl Worker {
         // carries (a note's row): activated as a click on that row is.
         if let Some(show) = show {
             let (composition, _) = replica.page();
-            let shown = widget_of_target(&composition, show)
+            let shown = composition
+                .targeted(show)
+                .map(str::to_owned)
                 .ok_or_else(|| "no element carries it".to_owned())
                 .and_then(|widget| {
                     replica.act_on_page(&widget, Some(show), &ui::a11y::Action::Activate)
@@ -1005,22 +1007,4 @@ fn taken_document_mutations(replica: &mut crate::Replica) -> Reply {
         ),
         Err(error) => Reply::Failed(error.to_string()),
     }
-}
-
-/// The path of the widget whose element carries the semantic target `target`.
-fn widget_of_target(composition: &ui::composition::Composition, target: &str) -> Option<String> {
-    fn find(node: &ui::composition::Composed, target: &str) -> Option<String> {
-        if node
-            .semantics
-            .as_ref()
-            .and_then(|semantics| semantics.action_target.as_deref())
-            == Some(target)
-        {
-            return Some(node.path.clone());
-        }
-        node.children.iter().find_map(|child| find(child, target))
-    }
-    std::iter::once(&composition.root)
-        .chain(&composition.layers)
-        .find_map(|node| find(node, target))
 }

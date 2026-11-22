@@ -36,6 +36,7 @@ fn connect_identity(identity: &Path, workspace: &str) -> Result<BrokerSigningIde
             workspace_id: workspace.to_owned(),
             app_id: FILES_APP.to_owned(),
             surface: None,
+            call: None,
         },
         presentation_version: PRESENTATION_VERSION,
     };

@@ -401,6 +401,31 @@ impl Processes {
     /// # Errors
     /// The app does not verify, its module cannot be sealed, or no process takes the instance.
     pub fn hand_over_now(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
+        // An instance with no patch connection draws nothing: it runs the app's actions for
+        // whoever invokes them.
+        let shows = if instance.patch.is_some() {
+            runtime_portal::process_link::Shows::View
+        } else {
+            runtime_portal::process_link::Shows::Nothing
+        };
+        self.hand_over_showing(instance, shows)
+    }
+
+    /// Start an instance of an app in its tilolang host as a page: the host lays its window out
+    /// itself and writes it as a page for the one who looks at it, asked for on `instance.patch`,
+    /// which is the page's connection here (`tilo_server_protocol::page_window`).
+    ///
+    /// # Errors
+    /// As [`Self::hand_over_now`].
+    pub fn show_page(self: &Arc<Self>, instance: Instance) -> std::io::Result<bool> {
+        self.hand_over_showing(instance, runtime_portal::process_link::Shows::Page)
+    }
+
+    fn hand_over_showing(
+        self: &Arc<Self>,
+        instance: Instance,
+        shows: runtime_portal::process_link::Shows,
+    ) -> std::io::Result<bool> {
         let refused =
             |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
         let began = std::time::Instant::now();
@@ -434,13 +459,7 @@ impl Processes {
             person: instance.person,
             module_len,
             documents_under,
-            // An instance with no patch connection draws nothing: it runs the app's actions for
-            // whoever invokes them.
-            shows: if instance.patch.is_some() {
-                runtime_portal::process_link::Shows::View
-            } else {
-                runtime_portal::process_link::Shows::Nothing
-            },
+            shows,
             formats: instance.locale.formats,
             // The person's language, as this session resolved it: their windows read every word in
             // it, so the process that draws them must not read its own process's language instead.
