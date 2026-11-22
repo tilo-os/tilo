@@ -125,10 +125,19 @@ fn a_workspace_made_on_another_device_arrives_without_taking_the_front() {
         .find(|workspace| !before.contains(workspace))
         .expect("the workspace the phone made");
 
-    tilo_test_env::wait_until(
-        format!("{} holds {made}, made on the phone", laptop.label),
-        || laptop.on_shell().contains(&made),
-    );
+    let until = tilo_test_env::hang_deadline();
+    while !laptop.on_shell().contains(&made) {
+        assert!(
+            Instant::now() < until,
+            "{} never held {made}, made on the phone\n--- {} ---\n{}\n--- {} ---\n{}",
+            laptop.label,
+            laptop.label,
+            syncing(&laptop),
+            phone.label,
+            syncing(&phone),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
     assert_eq!(
         laptop.showing().as_deref(),
         Some(site.workspace.as_str()),
@@ -625,6 +634,8 @@ fn syncing(device: &Device) -> String {
                 "ownership",
                 "native",
                 "link",
+                "person's",
+                "found",
                 "WARN",
                 "ERROR",
             ]
@@ -717,9 +728,15 @@ fn a_workspace_its_source_hosts_and_a_copy_edit_each_other_after_every_restart()
     let before = laptop.on_shell();
     let made = laptop.act_wait(&new_workspace(), &json!({}));
     assert_eq!(made["update"]["state"], json!("succeeded"), "{made}");
-    tilo_test_env::wait_until("the laptop's session holds the workspace it made", || {
-        laptop.on_shell().len() > before.len()
-    });
+    let until = tilo_test_env::hang_deadline();
+    while laptop.on_shell().len() <= before.len() {
+        assert!(
+            Instant::now() < until,
+            "the laptop's session never held the workspace it made\n{}",
+            syncing(&laptop),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
     let hosted = laptop
         .on_shell()
         .into_iter()

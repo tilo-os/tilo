@@ -887,6 +887,9 @@ pub struct Person {
     /// The identity the first use of this machine provisioned for them: the record each of their
     /// devices carries, and the root secret devices certify their own keys with.
     identity: tempfile::TempDir,
+    /// Whether the next device made is their first: the one that made their root, which founds
+    /// their own workspace. Every later device is taken into it by one that holds it.
+    first_device: std::sync::atomic::AtomicBool,
 }
 
 impl Person {
@@ -913,6 +916,7 @@ impl Person {
             public: root.group_public_key(),
             root,
             identity,
+            first_device: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -1003,6 +1007,15 @@ impl Person {
             &self.identity.path().join("config/tilo/identity"),
             &root.join("config/tilo/identity"),
         );
+        // Only the device that made the person's root founds their own workspace: a later one
+        // carries the record without that mark, and asks a device of theirs to take it in.
+        if !self
+            .first_device
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            tilo_identity::provisioning::clear_founding_mark(&root.join("config/tilo/identity"))
+                .expect("a later device of the person's founds nothing");
+        }
         // This device relays through this machine's loopback relay, as the site does: no session
         // of a test reaches the person's relays or their directory out on the internet.
         test_server::relay_through_loopback_in(&root.join("config"), &root.join("data"));
