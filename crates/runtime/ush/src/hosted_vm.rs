@@ -254,7 +254,32 @@ impl HostedPrograms {
             started.retain(|(existing, _)| *existing != name);
             started.push((name.to_owned(), value));
         }
+        self.own_programs(&mut started);
         started
+    }
+
+    /// What a person installs for themselves is found and kept, as in a home on any Linux
+    /// machine: `~/.local/bin` comes first on `PATH`, and `npm install --global` puts its
+    /// programs there (`NPM_CONFIG_PREFIX`) rather than into the image's own Node. `~` is the
+    /// workspace's files, so a program installed once is there for the next run, the next VM and
+    /// every member. A `PATH` the shell set keeps its order behind it, and a prefix the shell
+    /// set is kept.
+    fn own_programs(&self, env: &mut Vec<(String, String)>) {
+        let bin = format!("{}/.local/bin", self.home.display());
+        let path = env
+            .iter()
+            .position(|(name, _)| name == "PATH")
+            .map(|at| env.remove(at).1)
+            .unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".to_owned());
+        let rest = path.split(':').filter(|dir| !dir.is_empty() && *dir != bin);
+        let path = std::iter::once(bin.as_str()).chain(rest).collect::<Vec<_>>().join(":");
+        env.push(("PATH".to_owned(), path));
+        if !env.iter().any(|(name, _)| name == "NPM_CONFIG_PREFIX") {
+            env.push((
+                "NPM_CONFIG_PREFIX".to_owned(),
+                format!("{}/.local", self.home.display()),
+            ));
+        }
     }
 
     /// What every program the VM runs starts with, set over the variables it was asked to run
@@ -1496,6 +1521,16 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
         assert_eq!(get("RUSTUP_HOME"), Some("/home/tilo/.rustup".into()));
         assert_eq!(get("NPM_CONFIG_CACHE"), Some("/home/tilo/.npm".into()));
         assert_eq!(get("CARGO_TARGET_DIR"), Some("/var/tmp/tilo/target".into()));
+        assert_eq!(
+            get("PATH"),
+            Some(format!("{}/.local/bin:/usr/local/bin:/usr/bin:/bin", files.display())),
+            "what the person installed in `~` comes first"
+        );
+        assert_eq!(
+            get("NPM_CONFIG_PREFIX"),
+            Some(format!("{}/.local", files.display())),
+            "`npm install --global` installs into `~`"
+        );
     }
 
     #[test]
