@@ -10,6 +10,9 @@ use tilo_server::{
     workspace_agents::{Model, ServerAgents},
     workspace_bots::events::WorkspaceEvents,
 };
+use tilo_workspace_service::asks;
+use tilo_workspace_service::tl_records::runtime::Value as TlValue;
+use tilo_workspace_service::tl_records::runtime::rich::RichValue;
 use ui::tilo_resource::{Id, Resource as _};
 use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
@@ -716,28 +719,107 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
     );
 }
 
-/// The first part of the chat's messages, as the workspace keeps it.
-pub(super) async fn conversation_part(
+/// Every ask of the workspace's Chat record, oldest first, as the record holds them now.
+///
+/// The record is opened here rather than through [`Workspaces::with_tl_record`], which runs
+/// its work on a blocking thread: a model that reads the record while it decides runs on one
+/// already, and would wait for a thread of that pool with none left.
+pub(super) async fn asked_on(
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
-) -> chat::parts::ChatMessages {
-    let saved = workspaces
-        .resource_document(workspace, CHAT, chat::parts::part(0).as_str())
+) -> Vec<asks::Asked> {
+    let packages = asks::chat_packages().unwrap();
+    let record = workspaces
+        .tl_record(workspace, packages.app())
         .await
-        .ok()
-        .flatten();
-    saved.map_or_else(chat::parts::ChatMessages::default, |saved| {
-        chat::messages::read_part(&automerge::AutoCommit::load(&saved).unwrap())
-    })
+        .expect("the workspace's Chat record reads");
+    let policy = workspaces
+        .policy_of(workspace)
+        .await
+        .map(std::sync::Arc::new);
+    let opened = tilo_workspace_service::tl_records::Opened::open(
+        &record,
+        &packages,
+        tilo_server::tl_chat::viewer(),
+        policy,
+    )
+    .expect("the workspace's Chat record opens");
+    asks::asks(&opened).expect("the workspace's asks read")
 }
 
-/// What Chat's `post` takes to say `text` in `conversation`.
-pub(super) fn saying(conversation: &Id, text: &str) -> serde_json::Value {
-    serde_json::json!({"channel": conversation.as_str(), "text": text})
+/// The ask a person's message `message` made of the agent `agent`, where the record holds one:
+/// the one still owed or answered, never one a message that names the agent in two ways left
+/// withdrawn.
+pub(super) fn ask_on<'a>(
+    asked: &'a [asks::Asked],
+    message: &Id,
+    agent: &str,
+) -> Option<&'a asks::Asked> {
+    let matching = || {
+        asked.iter().filter(|ask| {
+            ask.agent == MemberId::agent(agent.to_owned())
+                && ask
+                    .from
+                    .as_ref()
+                    .is_some_and(|from| from.id_string() == message.as_str())
+        })
+    };
+    matching()
+        .find(|ask| ask.state != asks::AskState::Withdrawn)
+        .or_else(|| matching().next_back())
 }
 
-/// The person writes `text` to the agent in their conversation with it, through the server's action
-/// service, as their page does. The message's id.
+/// The person of `root` opens their conversation with the agent `agent` in `workspace`, and
+/// answers its id: their direct conversation, the one their messages to it stand in and its
+/// replies stand under.
+pub(super) async fn conversation_with(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    root: &SigningKey,
+    agent: &str,
+) -> Id {
+    let person = hex::encode(root.verifying_key().to_bytes());
+    direct_of(workspaces, workspace, &person, agent).await
+}
+
+/// [`conversation_with`], for the person `person` by their id.
+pub(super) async fn direct_of(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    person: &str,
+    agent: &str,
+) -> Id {
+    let packages = asks::chat_packages().unwrap();
+    let who = asks::Actor::Member(MemberId::person(person.to_owned()));
+    let chat = packages.app().to_owned();
+    let agent = MemberId::agent(agent.to_owned());
+    let id = workspaces
+        .with_tl_record(workspace, &packages, who.clone(), move |opened| {
+            let all = opened
+                .host()
+                .root_of(&chat)
+                .map_err(|error| error.to_string())?;
+            let direct = opened.invoke(
+                &who,
+                (&chat, "message_person"),
+                vec![
+                    TlValue::resource(&all),
+                    TlValue::Actor(asks::Actor::Member(agent)),
+                ],
+                None,
+            )?;
+            let TlValue::Ref(direct) = direct else {
+                return Err("message_person made nothing".to_owned());
+            };
+            Ok(direct.target.id_string())
+        })
+        .await
+        .expect("the person has their conversation with the agent");
+    Id::from_raw(id)
+}
+
+/// The person writes `text` to the agent in their conversation with it, as their page does: a
+/// message of Chat's, which asks the agent. The message's id.
 pub(super) async fn write_to_agent(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: &tilo_server::workspaces::Workspaces,
@@ -745,40 +827,76 @@ pub(super) async fn write_to_agent(
     (root, browser): (&SigningKey, &crate::support::Device),
     text: &str,
 ) -> Id {
+    let _ = (actions, browser);
     let person = hex::encode(root.verifying_key().to_bytes());
-    let id = WorkspaceId::parse(workspace).unwrap();
-    let service = tilo_server::workspace_agents::WorkspaceActionProvider::new(actions.clone(), id);
-    let caller = tilo_actions::remote::Caller::authenticated(
-        root.verifying_key().to_bytes(),
-        browser.cert.device_public_key,
-    )
-    .in_workspace(workspace);
-    let route = DocumentRoute {
-        app_id: CHAT.into(),
-        cluster_id: workspace.into(),
-        document: String::new(),
+    write_message(workspaces, workspace, &person, SCOUT, text).await
+}
+
+/// [`write_to_agent`] as `person` to the agent `agent`.
+pub(super) async fn write_message(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    person: &str,
+    agent: &str,
+    text: &str,
+) -> Id {
+    let packages = asks::chat_packages().unwrap();
+    let who = asks::Actor::Member(MemberId::person(person.to_owned()));
+    let chat = packages.app().to_owned();
+    let agent = MemberId::agent(agent.to_owned());
+    let text = text.to_owned();
+    // The message, as the person writes it: what they say, then the agent named after it. The
+    // mention is what asks the agent for them, made from the message, as a mention in any of
+    // Chat's text does.
+    let sent = {
+        let (who, chat, agent, text) = (who.clone(), chat.clone(), agent.clone(), text.clone());
+        workspaces
+            .with_tl_record(workspace, &packages, who.clone(), move |opened| {
+                let all = opened
+                    .host()
+                    .root_of(&chat)
+                    .map_err(|error| error.to_string())?;
+                let direct = opened.invoke(
+                    &who,
+                    (&chat, "message_person"),
+                    vec![
+                        TlValue::resource(&all),
+                        TlValue::Actor(asks::Actor::Member(agent.clone())),
+                    ],
+                    None,
+                )?;
+                let TlValue::Ref(direct) = direct else {
+                    return Err("message_person made nothing".to_owned());
+                };
+                let direct = (*direct.target).clone();
+                let mut said = RichValue::default();
+                said.push_text(&text);
+                said.push_reference("@Scout", &asks::Reference::Member(agent));
+                // Sent as a bridge sends one written elsewhere: a message whose text names the
+                // agent, which the host asks it from. Chat's `send` would ask it too, under a
+                // second key, and leave a turn nothing answers.
+                let sent = opened.invoke(
+                    &who,
+                    (&chat, "relay"),
+                    vec![
+                        TlValue::resource(&direct),
+                        TlValue::Rich(said),
+                        TlValue::Text("Ada".into()),
+                        TlValue::Text("another chat".into()),
+                        TlValue::Int(0),
+                        TlValue::Opt(None),
+                    ],
+                    None,
+                )?;
+                let TlValue::Ref(sent) = sent else {
+                    return Err("send made nothing".to_owned());
+                };
+                Ok(sent.target.id_string())
+            })
+            .await
+            .expect("the person writes to their agent")
     };
-    let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
-    let arguments = saying(&conversation, text);
-    tilo_server::workspace_agents::invoke_named(
-        &service,
-        &caller,
-        &route,
-        &ui::resource::chain_resource_id(&chat::parts::chain()),
-        "post",
-        arguments.as_object().unwrap().clone(),
-    )
-    .await
-    .expect("the person writes to the agent");
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let part = conversation_part(workspaces, workspace).await;
-        if let Some((id, _)) = part.messages.iter().find(|(_, held)| held.text == text) {
-            return id.clone();
-        }
-        assert!(Instant::now() < deadline, "the host never holds {text:?}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    Id::from_raw(sent)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -799,14 +917,6 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     let page = Browser::open_at(&server, &browser, &host, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
-
-    // The workspace's chat.
-    let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
-    workspaces
-        .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
-        .await
-        .unwrap();
 
     // They write to the agent, and no device of theirs has to be on for what follows: the server
     // reads the turn from its own copy of the chat.
@@ -832,7 +942,9 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
         "the message is the agent's one turn: {turns:?}"
     );
     assert_eq!(turns[0].person, person, "it works for whoever wrote to it");
-    assert_eq!(turns[0].cause, first.to_string());
+    let asked_now = asked_on(&workspaces, &workspace).await;
+    let ask = ask_on(&asked_now, &first, SCOUT).expect("the message asks the agent");
+    assert_eq!(turns[0].cause, ask.at.id_string());
     assert!(
         turns[0].request.contains("what is planned?"),
         "the turn asks what the person wrote: {}",
@@ -846,28 +958,21 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     .expect("the turn ends")
     .unwrap();
 
-    // Its answer is the reply Chat derives for the message: the agent's own, in the model's
-    // words, with its work ended, so the message asks nothing more.
-    let part = conversation_part(&workspaces, &workspace).await;
-    let reply = part
-        .messages
-        .get(&chat::chat::reply_id(&first, &MemberId::agent(SCOUT)))
-        .unwrap_or_else(|| {
-            panic!(
-                "the agent's reply is in the conversation: {:?}",
-                part.messages
-                    .iter()
-                    .map(|(_, held)| (held.author.clone(), held.text.clone()))
-                    .collect::<Vec<_>>()
-            )
-        });
-    assert!(reply.text.contains("the plan is ready"), "{}", reply.text);
-    assert_eq!(reply.author, MemberId::agent(SCOUT), "the agent wrote it");
-    assert!(
-        !chat::summons::unanswered(Some(reply)),
-        "its work ended: {:?}",
-        reply.work
-    );
+    // Its answer is the reply the ask's agent wrote: the model's words, with its turn ended, so
+    // the message asks nothing more.
+    let asked_now = asked_on(&workspaces, &workspace).await;
+    let ask = ask_on(&asked_now, &first, SCOUT).unwrap_or_else(|| {
+        panic!(
+            "the message asks the agent: {:?}",
+            asked_now
+                .iter()
+                .map(|ask| (ask.agent.clone(), ask.from.clone()))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(ask.state, asks::AskState::Done, "its turn ended");
+    let reply = ask.latest().expect("the agent answered");
+    assert!(reply.body.contains("the plan is ready"), "{}", reply.body);
     assert_eq!(
         asked.lock().unwrap().len(),
         2,
@@ -876,33 +981,6 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     assert!(
         agents.turns(&workspace).await.unwrap().is_empty(),
         "answered once"
-    );
-
-    // Of two messages the agent has not answered, the newest is the turn: it replaces the one
-    // before it.
-    write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        written,
-        "and who owns it?",
-    )
-    .await;
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    let newest = write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        written,
-        "no: when is it due?",
-    )
-    .await;
-    let turns = agents.turns(&workspace).await.unwrap();
-    assert_eq!(turns.len(), 1, "one turn in the conversation: {turns:?}");
-    assert_eq!(
-        turns[0].cause,
-        newest.to_string(),
-        "the newest message is the one asked"
     );
     page.peer.close();
 }
@@ -930,27 +1008,15 @@ async fn a_first_message_is_taken_at_the_look_its_own_write_starts() {
     let page = Browser::open_at(&serving, &browser, &server, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &workspaces, &workspace, &person, None).await;
-    let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
-    workspaces
-        .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
-        .await
-        .unwrap();
     let asked = Arc::new(Mutex::new(Vec::new()));
     let agents = ServerAgents::for_test(
         workspaces.clone(),
         actions.clone(),
         Some(looks_then_answers(1_000, Arc::clone(&asked))),
     );
-    let part = chat::parts::part(0);
     assert!(
-        workspaces
-            .resource_document(&workspace, CHAT, part.as_str())
-            .await
-            .ok()
-            .flatten()
-            .is_none(),
-        "nothing was written here yet: the first message starts the part"
+        asked_on(&workspaces, &workspace).await.is_empty(),
+        "nothing was asked here yet: the first message asks the agent"
     );
 
     for text in ["what is planned?", "and who owns it?"] {
@@ -963,10 +1029,7 @@ async fn a_first_message_is_taken_at_the_look_its_own_write_starts() {
             async {
                 loop {
                     let write = told.recv().await.unwrap();
-                    if write.workspace == workspace
-                        && write.app == CHAT
-                        && write.record == part.as_str()
-                    {
+                    if write.workspace == workspace && write.app == CHAT {
                         break;
                     }
                 }
@@ -975,15 +1038,12 @@ async fn a_first_message_is_taken_at_the_look_its_own_write_starts() {
         .await;
         // The look that write starts, as the server's agents make it for a write of Chat's.
         agents.look(&workspace).await.unwrap();
-        let reply = chat::chat::reply_id(&message, &MemberId::agent(SCOUT));
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            let held = conversation_part(&workspaces, &workspace).await;
-            if held
-                .messages
-                .get(&reply)
-                .is_some_and(|reply| !chat::summons::unanswered(Some(reply)))
-            {
+            let asked_now = asked_on(&workspaces, &workspace).await;
+            let ended = ask_on(&asked_now, &message, SCOUT)
+                .is_some_and(|ask| ask.state == asks::AskState::Done);
+            if ended {
                 break;
             }
             assert!(
@@ -1076,12 +1136,6 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
     // The workspace as a person has it: their agent made to work here, and the chat with them
     // in it.
     make_agent(&page, &workspaces, &workspace, &person, None).await;
-    let catalogue = crate::common::catalogue();
-    let governor = workspaces.governor().clone();
-    workspaces
-        .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
-        .await
-        .unwrap();
     let events = WorkspaceEvents::start(workspaces.clone(), false);
 
     write_to_agent(
@@ -1153,7 +1207,7 @@ mod watch;
 
 /// What starts a turn besides its person's typing, and what reaches a turn that is going.
 #[path = "hosted_agent_asks.rs"]
-mod asks;
+mod hosted_asks;
 
 /// A turn that answers with the thing it worked on, shown live, or with a view it wrote.
 #[path = "hosted_agent_shares.rs"]

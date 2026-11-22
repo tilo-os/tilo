@@ -104,11 +104,6 @@ impl Kept {
 
         // His assistant, made as the Agents tab of his page makes it, and the workspace's chat.
         make_agent(&own_page, &workspaces, &own, &hex::encode(person), None).await;
-        let governor = workspaces.governor().clone();
-        workspaces
-            .prepare_application(&own, &governor, &crate::common::catalogue(), CHAT, "")
-            .await
-            .unwrap();
         Self {
             served,
             shared: (shared, shared_page),

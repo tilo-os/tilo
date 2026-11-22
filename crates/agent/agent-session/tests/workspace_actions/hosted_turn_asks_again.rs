@@ -162,10 +162,7 @@ async fn a_refusal_between_two_steps_is_asked_again_and_no_step_is_done_twice() 
         "the event was set up once, not once more for the call asked again: {listed}"
     );
     assert_eq!(reply.text, "You will be reminded every morning.");
-    assert_eq!(
-        end_of(&reply),
-        Some(chat::agent_stream::AgentFinish::Complete)
-    );
+    assert_eq!(end_of(&reply), Some(AgentFinish::Complete));
     let _ = person;
     page.peer.close();
 }
@@ -217,10 +214,7 @@ async fn a_provider_that_stays_down_ends_the_turn_saying_what_it_had_done() {
         assert_eq!(again, &asked[1], "each further ask is the call as it was");
         assert_eq!(tools_answered(again), 1, "the step was carried out once");
     }
-    assert_eq!(
-        end_of(&reply),
-        Some(chat::agent_stream::AgentFinish::Failed)
-    );
+    assert_eq!(end_of(&reply), Some(AgentFinish::Failed));
     assert!(
         reply
             .text
@@ -274,10 +268,7 @@ async fn a_refusal_that_is_the_keys_fault_is_not_asked_again() {
         reply.text,
         "My model did not answer: Provider authentication failed; check the credential in Settings"
     );
-    assert_eq!(
-        end_of(&reply),
-        Some(chat::agent_stream::AgentFinish::Failed)
-    );
+    assert_eq!(end_of(&reply), Some(AgentFinish::Failed));
     let _ = person;
     page.peer.close();
 }

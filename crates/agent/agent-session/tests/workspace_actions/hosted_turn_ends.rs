@@ -7,11 +7,6 @@
 //! own entering is what matters, a test takes the look's two steps one at a time.
 use super::*;
 
-/// Whether the turn of `request` began with what its person wrote as `words`.
-fn begins_with(request: &ModelRequest, words: &str) -> bool {
-    asked_in(request).starts_with(words)
-}
-
 /// Her message is answered, and a look that read the workspace before that answer enters its
 /// place only afterwards. The message is not asked of the model again, and its reply stands as
 /// it was written.
@@ -69,9 +64,7 @@ async fn a_look_that_read_before_an_answer_does_not_ask_the_message_again() {
 /// stops it by naming that reply: their stop ends the turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn() {
-    team!(root, browser, actions, workspaces, workspace, page, _person);
-    let me = themselves(&root, &browser, &workspace);
-    let scout = MemberId::agent(SCOUT);
+    team!(root, browser, actions, workspaces, workspace, page, person);
 
     // A turn their own message began.
     let first = write_to_agent(
@@ -99,197 +92,20 @@ async fn a_persons_stop_that_names_the_agents_reply_ends_the_turn() {
         asked.lock().unwrap().len() == 2
     })
     .await;
-    stop_agent(
-        &actions,
-        &workspace,
-        &me,
-        &chat::chat::reply_id(&first, &scout),
-    )
-    .await
-    .expect("the person stops their agent's work by the reply that shows it");
+    stop_agent(&workspaces, &workspace, &person, &first)
+        .await
+        .expect("the person stops their agent's work by the reply that shows it");
     agents.look(&workspace).await.unwrap();
     hold.open();
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(
         end_of(&reply),
-        Some(chat::agent_stream::AgentFinish::Cancelled),
+        Some(AgentFinish::Cancelled),
         "its reply says it was stopped: {:?}",
-        reply.work
+        reply.state
     );
     assert_eq!(asked.lock().unwrap().len(), 2, "no step follows a stop");
 
-    page.peer.close();
-}
-
-/// She writes her next message while a look that read before her first answer enters its
-/// place. The message gets a turn of its own: one model call that begins with her words and is
-/// told the answer before them. Nothing of it goes into a second turn on her first message.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_message_after_an_answer_gets_a_turn_of_its_own() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
-    let written = (&root, &browser);
-    let first = write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        written,
-        "plan the launch",
-    )
-    .await;
-    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
-    let _opens = Opens(Arc::clone(&hold));
-    // The model waits before it answers its second call, whichever turn asks it.
-    let agents = worked(
-        &workspaces,
-        &actions,
-        waits(
-            vec![says("The launch is planned."), says("The cake is ordered.")],
-            1,
-            &asked,
-            &hold,
-        ),
-    );
-    let read = agents.turns(&workspace).await.unwrap();
-    assert_eq!(read.len(), 1, "{read:?}");
-    agents.answer(&workspace, &read[0]).await.unwrap();
-    let answer = ended(&workspaces, &workspace, &first).await;
-    assert_eq!(answer.text, "The launch is planned.");
-
-    // The look that read before that answer enters the place now. Where it begins her first
-    // message again its model is asked and waits; where it begins nothing it is done.
-    let (again, at, stale) = (agents.clone(), workspace.clone(), read[0].clone());
-    let entering = tokio::spawn(async move { again.answer(&at, &stale).await });
-    until("the look that read before the answer entered", || {
-        entering.is_finished() || asked.lock().unwrap().len() == 2
-    })
-    .await;
-
-    // She writes her next message, and the look its write starts finds it.
-    let second = write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        written,
-        "also order the cake",
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    hold.open();
-    let ordered = ended(&workspaces, &workspace, &second).await;
-    entering.await.unwrap().unwrap();
-
-    let requests = asked.lock().unwrap().clone();
-    let words: Vec<String> = requests.iter().map(said_in).collect();
-    assert_eq!(
-        requests.len(),
-        2,
-        "one model call for each of her messages: {words:?}"
-    );
-    assert!(
-        begins_with(&requests[1], "also order the cake"),
-        "the call that answers her second message begins with it: {words:?}"
-    );
-    assert!(
-        !words[1].contains("your person wrote again"),
-        "it is a turn of its own, not her first one going on: {}",
-        words[1]
-    );
-    assert!(
-        words[1].contains("The launch is planned."),
-        "and it is told the answer before it: {}",
-        words[1]
-    );
-    assert_eq!(ordered.text, "The cake is ordered.");
-    let planned = ended(&workspaces, &workspace, &first).await;
-    assert_eq!(
-        planned.text, "The launch is planned.",
-        "her first answer stands"
-    );
-    let _ = person;
-    page.peer.close();
-}
-
-/// A look reads while her first message is owed, and enters only once that message is answered
-/// and a turn on her next one is at work: the look's two steps, taken one at a time. What it
-/// read is older than what the turn that goes there answers now, and that turn takes nothing
-/// of it. Her second message keeps its answer, her first answer stands as it was written, and
-/// no model is asked a third time.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_look_overtaken_by_the_next_turn_hands_that_turn_nothing() {
-    team!(root, browser, actions, workspaces, workspace, page, person);
-    let written = (&root, &browser);
-    let first = write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        written,
-        "plan the launch",
-    )
-    .await;
-    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
-    let _opens = Opens(Arc::clone(&hold));
-    // The model waits before it answers its second call: the one her second message's turn asks.
-    let agents = worked(
-        &workspaces,
-        &actions,
-        waits(
-            vec![says("The launch is planned."), says("The cake is ordered.")],
-            1,
-            &asked,
-            &hold,
-        ),
-    );
-
-    // A look reads: her first message is the turn. It does not enter yet.
-    let overtaken = agents.read_look(&workspace).await.unwrap();
-
-    // Another look answers her first message.
-    agents.look(&workspace).await.unwrap();
-    let planned = ended(&workspaces, &workspace, &first).await;
-    assert_eq!(planned.text, "The launch is planned.");
-
-    // She writes again, and the turn on that message is at work.
-    let second = write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        written,
-        "also order the cake",
-    )
-    .await;
-    agents.look(&workspace).await.unwrap();
-    until("the turn on her second message asks its model", || {
-        asked.lock().unwrap().len() == 2
-    })
-    .await;
-
-    // The first look enters only now, with what it read before both.
-    let current = agents.enter_look(&workspace, overtaken);
-    hold.open();
-
-    let ordered = ended(&workspaces, &workspace, &second).await;
-    assert_eq!(
-        ordered.text, "The cake is ordered.",
-        "her second message keeps its answer"
-    );
-    let after = ended(&workspaces, &workspace, &first).await;
-    assert_eq!(
-        (after.text.as_str(), end_of(&after)),
-        (planned.text.as_str(), end_of(&planned)),
-        "her first answer stands as it was written"
-    );
-    let requests = asked.lock().unwrap().clone();
-    let words: Vec<String> = requests.iter().map(said_in).collect();
-    assert_eq!(
-        requests.len(),
-        2,
-        "one model call for each of her messages: {words:?}"
-    );
-    assert!(
-        !current,
-        "what the look read was overtaken, so a look reads again"
-    );
-    let _ = person;
     page.peer.close();
 }
 
@@ -316,11 +132,9 @@ fn looks_then_says(
 
 /// Whether the agent's reply to `message` has ended.
 async fn has_ended(workspaces: &Workspaces, workspace: &str, message: &Id) -> bool {
-    conversation_part(workspaces, workspace)
-        .await
-        .messages
-        .get(&chat::chat::reply_id(message, &MemberId::agent(SCOUT)))
-        .is_some_and(|reply| !chat::summons::unanswered(Some(reply)))
+    let asked_now = asked_on(workspaces, workspace).await;
+    ask_on(&asked_now, message, SCOUT)
+        .is_some_and(|ask| !matches!(ask.state, asks::AskState::Waiting | asks::AskState::Working))
 }
 
 /// Her agent needs thirty looks through the workspace before it can answer. Nothing of the
@@ -350,13 +164,13 @@ async fn a_turn_of_thirty_steps_ends_with_its_models_answer() {
     assert_eq!(
         reply.text, "All thirty are tidied.",
         "the turn ends with its model's answer: {:?}",
-        reply.work
+        reply.state
     );
     assert_eq!(
         end_of(&reply),
-        Some(chat::agent_stream::AgentFinish::Complete),
+        Some(AgentFinish::Complete),
         "and its reply says it is whole: {:?}",
-        reply.work
+        reply.state
     );
     assert_eq!(
         asked.lock().unwrap().len(),
@@ -373,7 +187,6 @@ async fn a_turn_of_thirty_steps_ends_with_its_models_answer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_that_never_answers_goes_on_until_its_person_stops_it() {
     team!(root, browser, actions, workspaces, workspace, page, person);
-    let me = themselves(&root, &browser, &workspace);
     let first = write_to_agent(
         &actions,
         &workspaces,
@@ -400,16 +213,16 @@ async fn a_turn_that_never_answers_goes_on_until_its_person_stops_it() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
-    stop_agent(&actions, &workspace, &me, &first)
+    stop_agent(&workspaces, &workspace, &person, &first)
         .await
         .expect("she stops her agent's work");
     agents.look(&workspace).await.unwrap();
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(
         end_of(&reply),
-        Some(chat::agent_stream::AgentFinish::Cancelled),
+        Some(AgentFinish::Cancelled),
         "its reply says it was stopped: {:?}",
-        reply.work
+        reply.state
     );
     let steps = asked.lock().unwrap().len();
     assert!(

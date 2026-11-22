@@ -930,8 +930,7 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     make_agent(&page, &workspaces, &workspace, &person, None).await;
     let id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
     // The agent as a turn of Ada's carries it, held to `rules`.
-    let conversation =
-        chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
+    let conversation = ui::tilo_resource::Id::from_raw(format!("direct:{person}/{SCOUT}"));
     let scout = |rules: Vec<tilo_action_policy::Rule>| {
         Caller::authenticated(
             root.verifying_key().to_bytes(),
@@ -942,10 +941,7 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
         .named("Scout")
         .in_agent_session("agent-session:files".to_owned())
         .on_turn(
-            tilo_action_policy::turn::Turn::new(
-                chat::summons::conversation_address(&conversation),
-                "asked".to_owned(),
-            ),
+            tilo_action_policy::turn::Turn::new(conversation.to_string(), "asked".to_owned()),
             rules,
         )
     };

@@ -700,23 +700,24 @@ async fn identity_in_the_vm() {
     )
     .await;
     let asked_in_conversation = beside(&mut page, hosted.questions()).await;
-    let (question, _) = asked_in_conversation
+    let _question = asked_in_conversation
         .into_iter()
         .next()
         .expect("the command is asked before it runs");
 
+    // Her answer, where it asked, carries it out; the turn is told what the command printed.
     hosted.model.then(Reply::text("It ran."));
-    beside(&mut page, hosted.answers(&question, "allow")).await;
-    let settled = beside(&mut page, hosted.settled(&question)).await;
-    assert_eq!(
-        settled
-            .outcome
-            .as_ref()
-            .map(|outcome| outcome.outcome.0.as_str()),
-        Some(chat::question::DONE),
-        "the command ran: {settled:?}; the model was shown:\n{}",
-        hosted.shown()
-    );
+    Box::pin(beside(&mut page, hosted.chat.says("allow"))).await;
+    let deadline = tilo_test_env::hang_deadline();
+    while !hosted.was_shown("Scout <scout@team.tilo>") {
+        assert!(
+            Instant::now() < deadline,
+            "the command ran, and the model was shown what it printed:\n{}",
+            hosted.shown()
+        );
+        beside(&mut page, hosted.works()).await;
+        beside(&mut page, tokio::time::sleep(Duration::from_millis(50))).await;
+    }
 
     let deadline = tilo_test_env::hang_deadline();
     let vms = hosted

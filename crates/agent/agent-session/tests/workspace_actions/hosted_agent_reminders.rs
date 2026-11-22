@@ -175,12 +175,6 @@ async fn team_on(
     let page = Browser::open_at(&up.server, browser, device, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     make_agent(&page, &up.workspaces, &workspace, &person, None).await;
-    let catalogue = crate::common::catalogue();
-    let governor = up.workspaces.governor().clone();
-    up.workspaces
-        .prepare_application(&workspace, &governor, &catalogue, CHAT, "")
-        .await
-        .unwrap();
     (up, workspace, page)
 }
 

@@ -155,10 +155,6 @@ async fn furnished(
     make_agent(page, workspaces, workspace, person, None).await;
     let catalogue = crate::common::catalogue();
     let governor = workspaces.governor().clone();
-    workspaces
-        .prepare_application(workspace, &governor, &catalogue, CHAT, "")
-        .await
-        .unwrap();
     let tracker_document = workspace_resource(&catalogue, TASKS);
     workspaces
         .prepare_application(workspace, &governor, &catalogue, TASKS, &tracker_document)

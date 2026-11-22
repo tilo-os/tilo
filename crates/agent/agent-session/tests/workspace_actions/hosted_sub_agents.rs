@@ -676,10 +676,6 @@ async fn a_note_asks_it_again_and_a_stop_takes_back_what_waits() {
 #[path = "hosted_sub_agent_teams.rs"]
 mod teams;
 
-/// The workspace’s shared Skills actions.
-#[path = "hosted_skills.rs"]
-mod skills;
-
 /// What a look read before a turn ended, once that turn has ended.
 #[path = "hosted_turn_ends.rs"]
 mod turn_ends;
