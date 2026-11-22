@@ -455,11 +455,12 @@ tilo_test_env::scenario! {
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names.last().map(String::as_str), Some("today"));
-        // `discussion` is not today's own import: tasks and notes use it, so it comes first.
-        for dep in ["notes", "tasks", "chat", "discussion"] {
+        // `discussion` and `agent` are not today's own imports: tasks and notes use the one, chat
+        // the other, so they come first.
+        for dep in ["notes", "tasks", "chat", "discussion", "agent"] {
             assert!(names.contains(&dep.to_string()), "{names:?}");
         }
-        assert_eq!(names.len(), 5, "only what today imports: {names:?}");
+        assert_eq!(names.len(), 6, "only what today imports: {names:?}");
         let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(
             built.last().unwrap().compiled.meta.app,

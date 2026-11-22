@@ -345,14 +345,16 @@ action send(
             // Writing to an agent asks it, made from the message, whose replies stand under it.
             // Nothing said goes to an agent that may not read it.
             if d.person.kind() == .agent {
-                agent.ask(
-                    agent.agents,
-                    d.person,
-                    if std.may_read(d.person, sent) { body } else { RichText("") },
-                ).made_from(sent)
+                agent
+                    .ask(
+                        agent.agents,
+                        d.person,
+                        if std.may_read(d.person, sent) { body } else { RichText("") },
+                    )
+                    .made_from(sent)
             }
             sent
-        },
+        }
     }
 }
 

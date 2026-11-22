@@ -107,9 +107,7 @@ action ask(all: Agents, agent: Actor, said: RichText, mention: Text = "") -> Ask
     }
     if let from = made_from {
         all.asks.insert(a, key: if mention == "" { from.id() } else { "{from.id()}|{mention}" })
-    } else {
-        all.asks.insert(a)
-    }
+    } else { all.asks.insert(a) }
 }
 
 /// Takes an ask back before a device took its turn. Only its asker may.
