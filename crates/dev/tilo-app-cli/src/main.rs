@@ -1131,7 +1131,7 @@ fn main() -> ExitCode {
         Command::Surface(args) => run_surface(args),
         Command::Surfaces(args) => run_surfaces(args),
         Command::Run(args) => run_run(args),
-        Command::Build(args) => run_build(args),
+        Command::Build(args) => run_build(&args),
         Command::BundleMacos(args) => run_bundle_macos(&args),
         Command::Test(args) => run_app_task(args, tilo_app_cli::AppTask::Test),
         Command::Dev(args) => run_dev(args),
@@ -1903,7 +1903,7 @@ fn run_bundle_macos(args: &BundleMacosArgs) -> Result<Value> {
     Ok(json!({"artifact": artifact, "signed": false, "notarized": false}))
 }
 
-fn run_build(args: BuildArgs) -> Result<Value> {
+fn run_build(args: &BuildArgs) -> Result<Value> {
     let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
     let Some(target) = args.target.and_then(TargetArg::sdk) else {
         return run_platform_build(&path, args);
@@ -1984,12 +1984,12 @@ fn dev_profile(release: bool, profile: Option<String>) -> Option<String> {
     }
 }
 
-fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
+fn run_platform_build(path: &Path, args: &BuildArgs) -> Result<Value> {
     let (platform, arch) = args.platform.or_target(args.target).resolve();
     if platform == tilo_app_cli::PackagePlatform::Android {
-        return build_android(path, &args, arch);
+        return build_android(path, args, arch);
     }
-    build_native(path, &args, platform, arch)
+    build_native(path, args, platform, arch)
 }
 
 /// A debug-signed APK under `target/android/`, copied to `--output`.
