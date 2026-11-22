@@ -1787,7 +1787,8 @@ fn a_view_write_that_waits_is_no_refusal_and_waits_for_the_record_to_move() {
         });
     desktops.attach(&engine, &service.reads(), &writes);
     let patience = std::time::Duration::from_secs(10);
-    desktops.follow(&engine, "", &mut shown);
+    // The session's looks read the view off the loop before anything of it is written.
+    look(&desktops, &engine, &mut shown);
     // The view's first write founds its record, which the workspace takes.
     desktops.finish_view(&engine, &shown, patience);
     assert_eq!(
