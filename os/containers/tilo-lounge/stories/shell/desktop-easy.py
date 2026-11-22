@@ -166,8 +166,11 @@ def steps(story: Story) -> None:
               lambda: bar_workspace(robin) == first["workspace"], 60, 0.25)
         until("both their workspaces",
               lambda: sorted(w.get("id") for w in workspaces(robin)) == sorted(made), 30, 0.25)
-        press_bar(robin, STRIPS, "the strips in the bar")
-        until("the Writing strip they made", lambda: robin.target("Writing"), 15, 0.2)
+        # The bar names the strip they were on, without anything being opened over the desk, and
+        # the Settings window they left there opens again and draws.
+        until("the Writing strip they made, named in the bar",
+              lambda: bar_strip(robin) == "Writing", 15, 0.2)
+        until("Settings' window again, placed and drawn", lambda: drawn(robin, SETTINGS), 60, 0.25)
         return {"tookMs": took["tookMs"]}
 
     story.step("They come back to their desk", comes_back, people=[robin])
