@@ -133,6 +133,52 @@ action stop(a: Ask) (icon: .square, label: "Stop") {
     a.state = .stopped
 }
 
+/// The agent takes the turn of `a` on `device` at `at`. When several devices took it, the
+/// earliest claim wins and a tie goes to the lowest device key; the others leave it.
+action claim(a: Ask, device: Text, at: Int) (icon: .refresh, label: "Take the turn") {
+    require invoker == a.agent "Only the agent asked takes its turn"
+    require a.state == .waiting or a.state == .working "Nobody waits for an answer"
+    a.claims.insert(Claim(device: device, at: at))
+}
+
+/// The agent starts its reply to `a`, the ask's next attempt.
+action answer(a: Ask) -> Reply (icon: .sparkles, label: "Answer", did: "answered") {
+    require invoker == a.agent "Only the agent asked may answer"
+    require a.state == .waiting or a.state == .working "Nobody waits for an answer"
+    let attempt = agents.replies.filter(r -> r.ask == a).len() + 1
+    a.state = .working
+    agents.replies.insert(Reply(ask: a, body: RichText(""), attempt: attempt))
+}
+
+/// The agent writes `more` at the end of its answer.
+action say(r: Reply, more: RichText) {
+    require invoker == r.ask.agent "Only the agent asked may answer"
+    require r.state == .working "The answer is finished"
+    r.body = RichText(r.body, more)
+}
+
+/// The agent called `called` on the way, and it answered `answered`.
+action step(r: Reply, called: Text, answered: RichText, failed: Bool = false) {
+    require invoker == r.ask.agent "Only the agent asked may answer"
+    require r.state == .working "The answer is finished"
+    r.steps.insert(Step(called: called, answered: answered, failed: failed))
+}
+
+/// The agent's turn ended as `state`: done, failed, or stopped when a person stopped it.
+action finish(r: Reply, state: AskState) {
+    require invoker == r.ask.agent "Only the agent asked may answer"
+    require state == .done or state == .failed or state == .stopped "A turn ends done, failed or stopped"
+    let ended = if r.ask.state == .stopped { AskState.stopped } else { state }
+    r.state = ended
+    r.ask.state = ended
+}
+
+/// Another device's answer to the same ask stands instead of `r`.
+action supersede(r: Reply) {
+    require invoker == r.ask.agent "Only the agent asked may answer"
+    r.superseded = true
+}
+
 /// The asks made from `about`, oldest first: what a message, a note or a task shows under it.
 fn asks_on(about: host.Resource) -> List<Ask> {
     agents.asks.filter(a -> created(a)?.from == about)
@@ -170,14 +216,14 @@ view reply(r: Reply) {
     }
 }
 
-/// What answers `a`: each reply to it, in the order it was asked.
+/// The replies to `a`, in the order it was asked.
 view replies(a: Ask) {
     for r in agents.replies.filter(r -> r.ask == a) {
         reply(r)
     }
 }
 
-/// An ask's window: what it is about, which opens, what was asked, and what answers it.
+/// An ask's window: what it is about, which opens, what was asked, and the replies to it.
 view ask_page(a: Ask) {
     std.document(a) {
         std.origin(a)

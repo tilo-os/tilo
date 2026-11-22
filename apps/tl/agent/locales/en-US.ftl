@@ -151,11 +151,67 @@ d-5zilxes5 = Stop
     .doc = Stops a turn that is working; what the agent did until then stays.
     .w-nothing-is-working-on-it = Nothing is working on it
 
+d-nht76nfq = Take the turn
+    .doc = The agent takes the turn of `a` on `device` at `at`.
+    .w-only-the-agent-asked-takes-its = Only the agent asked takes its turn
+    .w-nobody-waits-for-an-answer = Nobody waits for an answer
+
+d-nht76nfq-device = Device
+
+d-nht76nfq-at = At
+
+d-zl7upzy7 = Answer
+    .doc = The agent starts its reply to `a`, the ask's next attempt.
+    .did = answered
+    .w-only-the-agent-asked-may-answer = Only the agent asked may answer
+    .w-nobody-waits-for-an-answer = Nobody waits for an answer
+
+d-s6gerkjs = Say
+    .doc = The agent writes `more` at the end of its answer.
+    .w-only-the-agent-asked-may-answer = Only the agent asked may answer
+    .w-the-answer-is-finished = The answer is finished
+
+d-s6gerkjs-more = More
+
+d-6s74tahg = Step
+    .doc = The agent called `called` on the way, and it answered `answered`.
+    .w-only-the-agent-asked-may-answer = Only the agent asked may answer
+    .w-the-answer-is-finished = The answer is finished
+
+d-6s74tahg-called = Called
+
+d-6s74tahg-answered = Answered
+
+d-6s74tahg-failed = Failed
+
+d-6koj42w5 = Finish
+    .doc = The agent's turn ended as `state`: done, failed, or stopped when a person stopped it.
+    .w-only-the-agent-asked-may-answer = Only the agent asked may answer
+    .w-a-turn-ends-done-failed-or = A turn ends done, failed or stopped
+
+d-6koj42w5-state = State
+
+d-5n4bbzji = Supersede
+    .doc = Another device's answer to the same ask stands instead of `r`.
+    .w-only-the-agent-asked-may-answer = Only the agent asked may answer
+
 d-koyxjtxv = Withdraw~present
 
 d-rxmz2d33 = Reopen~present
 
 d-mzbpkahz = Stop~present
+
+d-4c64ciji = Claim~present
+
+d-o6oeh6vp = Answer~present
+
+d-hdzxkm76 = Say~present
+
+d-k36fktxl = Step~present
+
+d-3ebfgkt2 = Finish~present
+
+d-wsxdear2 = Supersede~present
 
 d-zfzqq5xy = Asked
     .w-nobody-asked-an-agent-yet = Nobody asked an agent yet
