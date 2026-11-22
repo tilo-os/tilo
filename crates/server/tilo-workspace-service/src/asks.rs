@@ -45,7 +45,7 @@ pub fn chat_packages() -> Result<Packages, String> {
 }
 
 /// tilolang Chat's app id.
-const CHAT_APP: &str = "so.tilo.lang.chat";
+const CHAT_APP: &str = "so.tilo.chat";
 
 /// Where an ask or a reply stands, as the agent package's `AskState` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

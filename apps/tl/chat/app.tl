@@ -208,6 +208,7 @@ migration action carry_direct_people(all: Conversations) {
         match item {
             c: Category => {}
             ch: TextChannel => {}
+            v: VoiceChannel => {}
             d: Direct => {
                 if d.people.is_empty() {
                     d.people = [d.person]
