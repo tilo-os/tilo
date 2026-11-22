@@ -87,6 +87,12 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     mkdir -p "$out"
     install -m 0644 "$executable" "$out/imager-tests.exe"
     digest "$out/imager-tests.exe"
+    # The fonts the tests set text in: the build publishes them in the profile directory's
+    # font-catalogs, which a test program finds above itself, so they go beside the copy.
+    profile="$(dirname -- "$(dirname -- "$executable")")"
+    [ -d "$profile/font-catalogs" ] || { printf 'the build published no font catalogs in %s\n' "$profile" >&2; exit 1; }
+    rm -rf "$out/font-catalogs"
+    cp -a "$profile/font-catalogs" "$out/font-catalogs"
     ;;
   *) printf 'unknown mode: %s\n' "$mode" >&2; exit 2 ;;
 esac

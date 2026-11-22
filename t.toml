@@ -4301,7 +4301,7 @@ egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/windows/build.sh tests {arch} /target/windows/sdk/sdk-{arch}.tar.zst /target/windows/{arch}/tests"
 needs = ["build/windows-sdk-{arch}"]
 image = "registry.tilo.so/tilo/tilo-builder@sha256:da7c1556f8a38b33e5e85f8086bbd162194a2377e56898481000cefb4412fa9d"
-outputs = ["/target/windows/{arch}/tests/imager-tests.exe", "/target/windows/{arch}/tests/imager-tests.exe.sha256"]
+outputs = ["/target/windows/{arch}/tests/imager-tests.exe", "/target/windows/{arch}/tests/imager-tests.exe.sha256", "/target/windows/{arch}/tests/font-catalogs/**"]
 default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
