@@ -1416,29 +1416,14 @@ async fn a_sub_agent_writes_only_into_its_own_conversation() {
 #[path = "hosted_sub_agent_teams.rs"]
 mod teams;
 
-/// An answer longer than one message holds.
-#[path = "hosted_reply_goes_on.rs"]
-mod reply_goes_on;
-
 /// The workspace’s shared Skills actions.
 #[path = "hosted_skills.rs"]
 mod skills;
-
-/// A reply shows its model thinking.
-#[path = "hosted_reply_thinks.rs"]
-mod reply_thinks;
 
 /// What a look read before a turn ended, once that turn has ended.
 #[path = "hosted_turn_ends.rs"]
 mod turn_ends;
 
-/// What a device receives of an answer while its model writes it, measured.
-#[path = "hosted_reply_times.rs"]
-mod reply_times;
-
-/// A reply grows while its model writes it.
-#[path = "hosted_reply_grows.rs"]
-mod reply_grows;
 
 /// A model call its provider refuses for a moment is asked again, with the turn's work kept.
 #[path = "hosted_turn_asks_again.rs"]

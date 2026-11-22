@@ -62,7 +62,17 @@ pub(super) async fn turns(
     let packages = packages()?;
     let me = device(workspaces);
     let now = tilo_clock::unix_now_ms_i64();
-    let wanted: Vec<String> = agents.keys().cloned().collect();
+    // Each agent by its id, with its keeper where it has one.
+    let wanted: std::collections::BTreeMap<String, Option<tilo_action_policy::MemberId>> = agents
+        .iter()
+        .map(|(id, agent)| {
+            let keeper = tilo_action_policy::PersonId::parse(&agent.keeper)
+                .ok()
+                .and_then(|keeper| keeper.root())
+                .map(|root| tilo_action_policy::MemberId::person(hex::encode(root)));
+            (id.clone(), keeper)
+        })
+        .collect();
     let read = workspaces
         .with_tl_record(workspace, &packages, viewer(), move |opened| {
             let mut read = Vec::new();
@@ -70,21 +80,24 @@ pub(super) async fn turns(
                 let Some(agent) = asked.agent.agent_id().map(str::to_owned) else {
                     continue;
                 };
-                if !wanted.contains(&agent) {
+                let Some(keeper) = wanted.get(&agent) else {
                     continue;
-                }
+                };
                 let around = asked
                     .from
                     .as_ref()
                     .map(|from| asks::around(opened, from, AROUND));
-                read.push((agent, asked, around));
+                let private = keeper
+                    .as_ref()
+                    .is_some_and(|keeper| asks::private_to(opened, &asked, keeper, &asked.agent));
+                read.push((agent, asked, around, private));
             }
             Ok(read)
         })
         .await?;
     let mut owed = Vec::new();
     let mut stopped = Vec::new();
-    for (agent, asked, around) in read {
+    for (agent, asked, around, private) in read {
         let Some(agent) = agents.get(&agent) else {
             continue;
         };
@@ -93,7 +106,7 @@ pub(super) async fn turns(
             && asked
                 .latest()
                 .is_some_and(|reply| reply.state == AskState::Working);
-        let turn = || turn_of(packages.app(), agent, &asked, around.as_ref());
+        let turn = || turn_of(packages.app(), agent, &asked, around.as_ref(), private);
         match asked.state {
             AskState::Stopped if ours_working => stopped.extend(turn()),
             AskState::Waiting if !matches!(taking, Taking::Theirs(_)) => owed.extend(turn()),
@@ -101,11 +114,24 @@ pub(super) async fn turns(
             _ => {}
         }
     }
+    // A turn that is its keeper's own, about what nobody else reads, is told what its agent
+    // learned about them ([`super::learned`]).
+    for turn in &mut owed {
+        if let Some(known) = super::learned::learned_for(workspaces, workspace, turn).await {
+            turn.request.push_str(&super::learned::told(&known));
+        }
+    }
     Ok((owed, stopped))
 }
 
 /// The turn `asked` gives `agent`, kept in `app`'s record; none for an ask nobody we know made.
-fn turn_of(app: &str, agent: &Agent, asked: &Asked, around: Option<&asks::Around>) -> Option<Turn> {
+fn turn_of(
+    app: &str,
+    agent: &Agent,
+    asked: &Asked,
+    around: Option<&asks::Around>,
+    private: bool,
+) -> Option<Turn> {
     let person = match &asked.who {
         Some(asks::Actor::Member(member)) => member.person_id()?.to_owned(),
         _ => return None,
@@ -164,7 +190,6 @@ fn turn_of(app: &str, agent: &Agent, asked: &Asked, around: Option<&asks::Around
         request,
         history: Vec::new(),
         asked: said,
-        fold: None,
         typed: true,
         line: None,
         ask: Ask::Asked {
@@ -172,6 +197,7 @@ fn turn_of(app: &str, agent: &Agent, asked: &Asked, around: Option<&asks::Around
             ask: asked.at.id_string(),
             ty: asked.at.ty.clone(),
             attempt,
+            private,
         },
     })
 }
@@ -295,23 +321,31 @@ impl Replying {
         }
     }
 
-    /// End the turn as `outcome`: what it says goes onto the reply, then how it ended.
+    /// Put `more` at the end of the reply's body: a piece of the answer as its model writes it
+    /// ([`super::written`]).
+    ///
+    /// # Errors
+    /// The reply did not take it: it ended, or the record could not be written.
+    pub(super) async fn say(&self, more: &str) -> Result<(), String> {
+        let reply = self.reply().await?;
+        let agent = self.agent.clone();
+        let more = more.to_owned();
+        self.on_record(move |opened| asks::say(opened, &agent, &reply, &more))
+            .await
+    }
+
+    /// End the turn as `state`: `words` go onto the end of the reply first, where there are
+    /// any ([`super::written::Written::ending`]).
     ///
     /// # Errors
     /// The reply did not take it.
-    pub(super) async fn finish(&self, outcome: &tilo_agent_turn::Outcome) -> Result<(), String> {
+    pub(super) async fn finish(&self, words: &str, state: AskState) -> Result<(), String> {
         let reply = self.reply().await?;
         let agent = self.agent.clone();
-        let (words, state) = match outcome {
-            tilo_agent_turn::Outcome::Answered(words) => (words.clone(), AskState::Done),
-            tilo_agent_turn::Outcome::Stopped(words) | tilo_agent_turn::Outcome::Failed(words) => {
-                (words.clone(), AskState::Failed)
-            }
-            tilo_agent_turn::Outcome::Cancelled => (String::new(), AskState::Stopped),
-        };
+        let words = words.to_owned();
         self.on_record(move |opened| {
             if !words.trim().is_empty() {
-                asks::say(opened, &agent, &reply, words.trim())?;
+                asks::say(opened, &agent, &reply, &words)?;
             }
             asks::finish(opened, &agent, &reply, state)
         })

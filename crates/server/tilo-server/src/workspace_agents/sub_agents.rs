@@ -243,19 +243,9 @@ pub(super) struct Own {
     /// goes into that reply while it writes, and into no other. None for a turn that answers
     /// no message.
     reply: Option<String>,
-    /// The messages that reply's answer went on in, where it is longer than one message
-    /// holds: the ids this server derived for this one turn. What its model writes goes into
-    /// those as into its reply, and into no other message.
-    followed: super::written::Followed,
 }
 
 impl Own {
-    /// The messages the answer of the turn that answers with `reply` goes on in, for that
-    /// turn's writer to add to as its server derives them: none for another turn's.
-    pub(super) fn followed_by(&self, reply: Option<&str>) -> Option<super::written::Followed> {
-        (reply.is_some() && self.reply.as_deref() == reply).then(|| self.followed.clone())
-    }
-
     /// Whether `text` names nobody Chat would bind a mention to.
     fn names_nobody(&self, text: &str) -> bool {
         self.members
@@ -343,12 +333,31 @@ pub(super) fn admits(own: &Own, caller: &Caller, request: &InvokeRequest) -> boo
         // and nothing said beside.
         own.reply.as_deref().is_some_and(|reply| {
             said(TO) == Some(own.conversation.as_str())
-                && said("reply").is_some_and(|named| named == reply || own.followed.holds(named))
+                && said("reply").is_some_and(|named| named == reply)
                 && only(&[TO, "reply", "event"])
         })
     } else {
         false
     }
+}
+
+/// The reply `turn` answers with, by the id Chat derives for it: none for any turn that answers
+/// no message.
+fn reply_of(turn: &Turn) -> Option<String> {
+    let Ask::Message {
+        message, attempt, ..
+    } = &turn.ask
+    else {
+        return None;
+    };
+    Some(
+        chat::chat::reply_id_at(
+            &tilo_resource::Id::from_raw(message),
+            &tilo_actions::MemberId::agent(&turn.agent.id.0),
+            *attempt,
+        )
+        .to_string(),
+    )
 }
 
 /// The agent whose day `turn`'s model calls are counted on.
@@ -504,7 +513,6 @@ impl Team {
                     request: told.request,
                     history: told.history,
                     asked: chat::summons::asked_words(message),
-                    fold: told.fold,
                     typed: true,
                     line: None,
                     ask: Ask::Message {
@@ -649,7 +657,7 @@ impl ServerAgents {
     pub(super) async fn own_of(&self, workspace: &str, turn: &Turn) -> Option<Own> {
         let sub = turn.agent.sub.as_ref()?;
         let mut own = self.own_in(workspace, &sub.conversation).await;
-        own.reply = super::written::reply_of(turn);
+        own.reply = reply_of(turn);
         Some(own)
     }
 
@@ -673,7 +681,6 @@ impl ServerAgents {
             conversation: conversation.to_owned(),
             members,
             reply: None,
-            followed: super::written::Followed::default(),
         }
     }
 
@@ -1160,7 +1167,6 @@ mod tests {
             conversation: "own".to_owned(),
             members,
             reply: None,
-            followed: super::super::written::Followed::default(),
         };
         let kept = own(Some(named([
             (
@@ -1216,7 +1222,6 @@ mod tests {
             conversation: "own".to_owned(),
             members: Some(Vec::new()),
             reply: Some("m_reply_own".to_owned()),
-            followed: super::super::written::Followed::default(),
         };
         let caller = Caller::agent_turn(
             "writer",
@@ -1267,40 +1272,6 @@ mod tests {
             ),
         ] {
             assert!(!taken(&own, said), "{what} it is refused");
-        }
-        // Where its answer went on past one message, the message its server derived for it
-        // takes its model's words as its reply does, and no other message does.
-        let went_on = Own {
-            followed: super::super::written::Followed::of(&["m_reply_next"]),
-            ..own.clone()
-        };
-        assert!(
-            taken(&went_on, said("own", "m_reply_next", None)),
-            "into the message its server derived for its answer to go on in"
-        );
-        for (what, own, said) in [
-            (
-                "into a message no server derived for its turn",
-                &own,
-                said("own", "m_reply_next", None),
-            ),
-            (
-                "into another message than the one derived",
-                &went_on,
-                said("own", "m_reply_other", None),
-            ),
-            (
-                "into the derived message, named in its starter's conversation,",
-                &went_on,
-                said("thread", "m_reply_next", None),
-            ),
-            (
-                "into the derived message under a name of its choosing",
-                &went_on,
-                said("own", "m_reply_next", Some(("name", json!("Ada")))),
-            ),
-        ] {
-            assert!(!taken(own, said), "{what} it is refused");
         }
         let answers_none = Own { reply: None, ..own };
         assert!(
