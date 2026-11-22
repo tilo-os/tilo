@@ -8,6 +8,7 @@ packages = [
   "settings",
   "thumbnails",
   "tilo-fs",
+  "tilo-net",
   "tilo-runtime",
   "tilo-sandbox-core",
   "tilo-session",

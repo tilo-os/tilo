@@ -117,7 +117,7 @@ exclude = [
 # the launcher's sandbox, built with bubblewrap in a user namespace of its own. The packages are
 # tools/ci/nested-sandboxes.toml's, an edit there moving this list with it
 # (tools/tests/test_nested_sandboxes.py fails while the two disagree).
-isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session"] }
+isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle", "tilo-session", "tilo-net"] }
 # The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
 # setup in .config/nextest.toml names them for both packages, and for the session the four the
 # chat-siblings and tasks-siblings setups name (Chat, the launcher that starts it beside the
@@ -1096,7 +1096,6 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\ncargo test --locked -p tilo-device-vpn --features test-support --test netns_tunnel --test netns_profile_block --no-run --message-format json | python3 -c '\nimport json, os, shutil, sys\nmessages = list(map(json.loads, sys.stdin))\nbuilt = {m[\"target\"][\"name\"]: m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\")}\ntarget = os.environ[\"CARGO_TARGET_DIR\"]\nshutil.copy(built[\"netns_tunnel\"], target + \"/vm/device-vpn-netns-tunnel\")\nshutil.copy(built[\"netns_profile_block\"], target + \"/vm/device-vpn-netns-profile-block\")\n'\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/device-vpn-netns-tunnel", "/target/vm/device-vpn-netns-profile-block"]
-on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -1108,7 +1107,6 @@ needs = ["device-vpn-namespaces-build"]
 env = { TILO_REQUIRE_TUN = "1" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -1240,7 +1238,6 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  shift 3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run \"$@\" --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_target tilo-sandbox job tilo-sandbox-job\nbinary_lib runtime-bundle runtime_bundle runtime-bundle-lib\nbinary_target tilo-install-helpers it tilo-install-helpers-native-python\nbinary_target env-tools it env-tools-it\nbinary_target tilo-install-helpers it installer-accounts-native\nbinary_lib tilo-identity tilo_identity identity-host-lib --features native-current-device-qualification\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/tilo-sandbox-job", "/target/vm/runtime-bundle-lib", "/target/vm/tilo-install-helpers-native-python", "/target/vm/env-tools-it", "/target/vm/installer-accounts-native", "/target/vm/identity-host-lib", "/target/debug/tilo-firstboot-home-seeds", "/target/debug/install-test-firstboot-files", "/target/debug/staging-handoff-native-extractor"]
-on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -1250,7 +1247,6 @@ needs = ["sandbox-host-ids-build"]
 env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TMPDIR = "/var/tmp/tilo-test" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -1269,7 +1265,6 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  shift 3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run \"$@\" --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib tilo-device-identity tilo_device_identity identity-device-identity\nbinary_target tilo-files parent_provision identity-files\nbinary_lib tilo-files tilo_files identity-files-lib\nbinary_lib windows-vm windows_vm identity-windows-vm\nbinary_lib tilo-secrets tilo_secrets identity-secrets\nbinary_lib runtime-portal runtime_portal identity-runtime-portal\nbinary_lib linux-vm linux_vm identity-linux-vm\nbinary_lib tilo-identity tilo_identity identity-tilo-identity\nbinary_lib launcher launcher identity-launcher\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/identity-device-identity", "/target/vm/identity-files", "/target/vm/identity-files-lib", "/target/vm/identity-windows-vm", "/target/vm/identity-secrets", "/target/vm/identity-runtime-portal", "/target/vm/identity-linux-vm", "/target/vm/identity-tilo-identity", "/target/vm/identity-launcher"]
-on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -1279,7 +1274,6 @@ needs = ["identity-accounts-build"]
 env = { TILO_REQUIRE_NONROOT = "1", TILO_REQUIRE_ROOT = "1", TMPDIR = "/var/tmp/tilo-test" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -1326,7 +1320,6 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# Read every message before selecting: closing cargo's pipe early makes it\n# fail with a broken pipe while it is still writing build messages.\nselect_executable() {\n  python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$1\"\n}\ncp \"$(cargo test --locked -p launcher --lib --no-run --message-format json | select_executable launcher)\" \"$CARGO_TARGET_DIR/vm/launcher-lib\"\n# The integration tests copy the launcher binary from the path they were compiled with.\ncp \"$(cargo test --locked -p launcher --test it --no-run --message-format json | select_executable it)\" \"$CARGO_TARGET_DIR/vm/launcher-it\"\n# The capture-worker fixture is rustc-compiled by the test itself into the target directory it was\n# built in, which the guest cannot write: the check builds it here and names it instead.\nfixture=\"$CARGO_TARGET_DIR/vm/launcher-fixtures/capture-worker\"\nmkdir -p \"$fixture/bin\"\nrustc --edition=2024 -O crates/packaging/launcher/tests/fixtures/capture-worker/src/main.rs -o \"$fixture/bin/capture-worker\"\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/launcher-lib", "/target/vm/launcher-it", "/target/vm/launcher-fixtures/capture-worker/**", "/target/debug/tilo-launcher"]
-on = ["dispatch"]
 heavy = true
 
 [[check]]
@@ -1336,7 +1329,6 @@ needs = ["launcher-root-build"]
 env = { TILO_REQUIRE_CHOWN = "1", TILO_REQUIRE_USERNS = "1", TILO_REQUIRE_ROOT = "1", TILO_REQUIRE_NONROOT = "1", TILO_LAUNCHER_FIXTURE_CAPTURE_WORKER = "/target/vm/launcher-fixtures/capture-worker", TMPDIR = "/var/tmp/tilo-test" }
 requires = ["arch=x86_64"]
 isolation = "vm"
-on = ["dispatch"]
 heavy = true
 
 [[check]]

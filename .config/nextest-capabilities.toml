@@ -15,6 +15,12 @@
 #
 # A test that fails with "TILO_REQUIRE_... is set but ... is unavailable"
 # belongs in a group here.
+#
+# A group left out of every job that tests its package runs nowhere, and a
+# passing run does not show it. So each group runs on main where its probe
+# passes: in a t.toml cargo family whose isolation for its package gives the
+# probe what it needs, or in the t.toml checks its `checks` names
+# (tools/tests/test_capability_coverage.py holds every group to that).
 
 [capabilities.UserNamespace]
 variable = "TILO_REQUIRE_USERNS"
@@ -23,16 +29,19 @@ mapped = true
 [[capabilities.UserNamespace.tests]]
 # The seed test mounts in a private mount namespace.
 probe = "mount-namespace"
+checks = ["sandbox-host-ids"]
 filter = "package(tilo-install-helpers) and test(=native_python::native_home_seeds)"
 
 [[capabilities.UserNamespace.tests]]
 # The tool builder's sandbox: root of a user namespace with an overlay.
 probe = "bubblewrap-overlay"
+checks = ["sandbox-host-ids"]
 filter = "package(env-tools) and test(/^build::/)"
 
 [[capabilities.UserNamespace.tests]]
 # A capability-free root runs the peer scenario in a user namespace.
 probe = "user-namespace"
+checks = ["imager-tests-{arch}/{shard}"]
 filter = "package(imager-backend) and test(/capture::original_caller::/)"
 
 [[capabilities.UserNamespace.tests]]
@@ -50,6 +59,7 @@ mapped = true
 
 [[capabilities.NetworkTunnel.tests]]
 probe = "network-tunnel"
+checks = ["device-vpn-namespaces"]
 filter = """\
 package(tilo-device-vpn) and (test(=packets_cross_two_network_namespaces) \
 or test(=the_block_comes_and_goes_with_the_profile_state) \
@@ -66,6 +76,7 @@ mapped = true
 
 [[capabilities.NonRoot.tests]]
 probe = "non-root-identity"
+checks = ["identity-accounts"]
 filter = """\
 (package(tilo-device-identity) and test(=persist::tests::an_unreachable_device_key_is_an_error_not_a_fresh_machine)) \
 or (package(tilo-files) and test(=provisioning_flushes_every_barrier_and_keeps_what_a_failure_left)) \
@@ -87,6 +98,7 @@ mapped = true
 
 [[capabilities.Root.tests]]
 probe = "root-identity"
+checks = ["identity-accounts", "launcher-root"]
 filter = """\
 (package(tilo-identity) and (test(=enrolled_transport::fs::tests::explicit_owner_observation_is_read_only_and_preserves_private_admission) \
 or test(=enrolled_transport::fs::tests::enrollment_storage_authority) \
@@ -100,4 +112,5 @@ or test(=capture_service::openpgp_native::signed_original_openpgp_capsule_accept
 # `imager-tests` shards run it as the micro-VM guest's root, and a job elsewhere leaves it out.
 [[capabilities.Root.tests]]
 probe = "root-identity"
+checks = ["imager-tests-{arch}/{shard}"]
 filter = "package(imager) and test(=setup::journey::prepared_media_native::tests::media_preparation_exports_actual_enrolled_device_without_root_backup_fallback)"
