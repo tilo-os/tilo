@@ -323,3 +323,72 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
         "reading Mail, the account decides: {reading}"
     );
 }
+
+/// Mail's connector, holding an ask for its workspace's accounts that changed, is told the email
+/// account Settings adds once the workspace keeps it, well before the ask's longest wait: the
+/// account reaches a mailbox that is already open, with no reload.
+#[test]
+fn a_connector_is_told_an_account_added_while_it_waits() {
+    const MAIL: &str = "so.tilo.mail";
+    let served = served();
+    let (session, connector) = std::os::unix::net::UnixStream::pair().unwrap();
+    let (workspaces, changes) = (served.device.workspaces(), served.device.changes());
+    served.runtime.spawn(async move {
+        session.set_nonblocking(true).unwrap();
+        let stream = tokio::net::UnixStream::from_std(session).unwrap();
+        let by = Caller::authenticated([0x30; 32], [0x31; 32]);
+        let scope = super::Scope::connector(MAIL, WORKSPACE);
+        let answering = super::Answering::here(workspaces, by, changes);
+        super::connection(stream, &answering, &scope).await
+    });
+    let mut connector = Client::over(connector).unwrap();
+    let before = match connector.ask(&Ask::Accounts { after: None }) {
+        Ok(Answer::Accounts { revision, accounts }) => {
+            assert!(accounts.is_empty(), "the workspace keeps no account yet");
+            revision
+        }
+        other => panic!("the accounts, not {other:?}"),
+    };
+    let (answered, answer) = mpsc::channel();
+    let asked = Instant::now();
+    std::thread::spawn(move || {
+        let held = connector.ask(&Ask::Accounts {
+            after: Some(before),
+        });
+        answered.send(held.unwrap()).ok();
+    });
+    until_waiting(&served, 1);
+
+    let mut account = accounts::Account::new(
+        accounts::AccountId::from("lab@story.example"),
+        accounts::email::TYPE_ID,
+    );
+    account.display_name = "Ada".into();
+    served.device.keep(
+        WORKSPACE,
+        (ACCOUNTS_OWNER, &accounts_document()),
+        accounts_keeping(&account),
+        &|doc| PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+    );
+    let held = std::cell::RefCell::new(None);
+    served.device.until(|| {
+        if let Ok(answered) = answer.try_recv() {
+            *held.borrow_mut() = Some(answered);
+        }
+        held.borrow().is_some()
+    });
+    assert!(
+        asked.elapsed() < sign_ins::LONGEST_WAIT,
+        "told when the account was kept, not when the wait ran out"
+    );
+    match held.into_inner() {
+        Some(Answer::Accounts { accounts, .. }) => assert_eq!(
+            accounts
+                .iter()
+                .map(|held| (held.workspace.as_str(), held.account.id.as_str()))
+                .collect::<Vec<_>>(),
+            [(WORKSPACE, "lab@story.example")],
+        ),
+        other => panic!("the accounts, not {other:?}"),
+    }
+}
