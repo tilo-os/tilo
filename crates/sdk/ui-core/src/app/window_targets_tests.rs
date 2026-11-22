@@ -204,11 +204,16 @@ fn composer_window() -> App {
             .with_id("draft")
             .with_accessible_name("Message #general"),
     );
-    let button =
-        crate::widget::Button::icon_only("send", crate::icons::Icon::Send, "Send");
+    let button = crate::widget::Button::icon_only("send", crate::icons::Icon::Send, "Send");
     let row = crate::widget::Row::new()
-        .push(Box::new(crate::widget::Identified::new(Box::new(field), send.clone())))
-        .push(Box::new(crate::widget::Identified::new(Box::new(button), send)));
+        .push(Box::new(crate::widget::Identified::new(
+            Box::new(field),
+            send.clone(),
+        )))
+        .push(Box::new(crate::widget::Identified::new(
+            Box::new(button),
+            send,
+        )));
     let mut app = app_with_root(crate::State::new(), Box::new(row));
     layout(&mut app);
     app
@@ -220,7 +225,10 @@ fn composer_window() -> App {
 fn an_icon_only_button_in_a_composer_row_is_listed_by_its_label() {
     let mut app = composer_window();
     let controls = app.window_controls();
-    let names: Vec<&str> = controls.iter().map(|control| control.name.as_str()).collect();
+    let names: Vec<&str> = controls
+        .iter()
+        .map(|control| control.name.as_str())
+        .collect();
     let send = controls
         .iter()
         .find(|control| control.name == "Send")

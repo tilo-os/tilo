@@ -2297,11 +2297,9 @@ impl ListRow {
             face = face.subtitle(subtitle);
         }
         if let Some(secondary) = &self.secondary {
-            face = face.secondary(secondary).secondary_lines(
-                secondary_lines
-                    .unwrap_or(self.secondary_line_count)
-                    .max(1),
-            );
+            face = face
+                .secondary(secondary)
+                .secondary_lines(secondary_lines.unwrap_or(self.secondary_line_count).max(1));
         }
         face.described = self.description.is_some();
         if let Some(note) = &self.note {

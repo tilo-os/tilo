@@ -35,6 +35,10 @@ type TextChannel {
     /// The threads its messages started, each the one a message's `thread` names.
     /// TODO(language): an owned `Option<Thread>` on the message; a reference needs a home.
     threads: Collection<Thread>
+
+    search {
+        kind conversation
+    }
 }
 
 /// A message. Who wrote it, when, and its edits come from the log.
@@ -66,6 +70,7 @@ type Message {
     reacted: Text = ""
 
     search {
+        kind message
         filter pinned (icon: .pin)
     }
 }
@@ -88,6 +93,11 @@ type Direct {
     person: Actor
     messages: Collection<Message>
     threads: Collection<Thread>
+
+    search {
+        kind conversation
+        people person
+    }
 }
 
 /// A piece of a message kept as parts rather than as rich text: its text, or a block's source.

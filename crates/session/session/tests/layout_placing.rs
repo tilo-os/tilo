@@ -857,13 +857,11 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_opening_a_second
     struct Mail;
     impl Published for Mail {
         fn resources(&mut self) -> Vec<ResourceSpec> {
-            let mut root =
-                ResourceSpec::new("tl:so.tilo.mail:root-a1b2c3", "mail.mail", "Mail")
-                    .with_action(view_action("open-mailbox"))
-                    .with_view(
-                        ResourceViewSpec::new("mailbox", "Mailbox", "open-mailbox")
-                            .with_primary(true),
-                    );
+            let mut root = ResourceSpec::new("tl:so.tilo.mail:root-a1b2c3", "mail.mail", "Mail")
+                .with_action(view_action("open-mailbox"))
+                .with_view(
+                    ResourceViewSpec::new("mailbox", "Mailbox", "open-mailbox").with_primary(true),
+                );
             root.app_id = Some("so.tilo.mail".to_owned());
             let mut thread = ResourceSpec::new(
                 "tl:so.tilo.mail:root-a1b2c3/ie99c2c19-72",
@@ -930,10 +928,7 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_opening_a_second
     settle(&mut session, |session| {
         places_of(session, "tl:so.tilo.mail:root-a1b2c3") == 1
     });
-    open(
-        &mut session,
-        "tl:so.tilo.mail:root-a1b2c3/ie99c2c19-72",
-    );
+    open(&mut session, "tl:so.tilo.mail:root-a1b2c3/ie99c2c19-72");
     step(&mut session);
     step(&mut session);
     assert_eq!(

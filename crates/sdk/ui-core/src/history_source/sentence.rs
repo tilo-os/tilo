@@ -316,12 +316,14 @@ pub fn step_target(entry: &ActionContext, summary: &str) -> Option<crate::widget
     // The item is the sentence's last words, as they are or quoted ("Added to the note “Plan”").
     let summary = summary.trim_end();
     let action = summary.strip_suffix(label.as_str()).or_else(|| {
-        [("“", "”"), ("„", "“")].into_iter().find_map(|(open, close)| {
-            summary
-                .strip_suffix(close)?
-                .strip_suffix(label.as_str())?
-                .strip_suffix(open)
-        })
+        [("“", "”"), ("„", "“")]
+            .into_iter()
+            .find_map(|(open, close)| {
+                summary
+                    .strip_suffix(close)?
+                    .strip_suffix(label.as_str())?
+                    .strip_suffix(open)
+            })
     })?;
     // The framework's own words for an action it has no sentence for put a colon between the
     // two ("Write note: Supplier terms"): the row lays them out apart instead.
@@ -536,7 +538,11 @@ mod tests {
         ] {
             let target = super::step_target(&entry, summary).expect(summary);
             assert_eq!(
-                (target.action.as_str(), target.label.as_str(), target.id.as_str()),
+                (
+                    target.action.as_str(),
+                    target.label.as_str(),
+                    target.id.as_str()
+                ),
                 (action, "Spring plans", "n1")
             );
         }

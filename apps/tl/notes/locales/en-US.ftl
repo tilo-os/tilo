@@ -221,7 +221,7 @@ d-h3zczsen = Import archive
 d-h3zczsen-file = File
 
 d-hy2uefpy = Import files
-    .doc = Files dropped on the notebook come in one at a time. A Markdown file becomes a note. An archive becomes the pages it holds, whether the notebook's own written out or another app's export.
+    .doc = Files dropped on the notebook: a Markdown file comes in as a note, an archive as the pages it holds — the notebook's own written out, or another app's export — and each file of a drop in turn.
     .did = imported a file
 
 d-hy2uefpy-files = Files

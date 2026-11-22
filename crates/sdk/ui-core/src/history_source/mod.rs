@@ -66,8 +66,8 @@ pub use collaboration::history_source::words::{self, HistoryWords};
 pub use collaboration::history_source::{entry_id_from_hash, is_history_metadata};
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{
-    HistoryResourceTarget, HistorySelectionDetail, agent_spoken_label, place_app,
-    contains_opaque_id, human_label, place_record,
+    HistoryResourceTarget, HistorySelectionDetail, agent_spoken_label, contains_opaque_id,
+    human_label, place_app, place_record,
 };
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
 pub use facets::HistoryFacetIndex;

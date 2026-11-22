@@ -144,6 +144,9 @@ d-peb7lz2j = Senden
        *[other] schrieb { $count } Nachrichten
     }
 
+d-634q3q33 = Schreiben an
+    .doc = Schreibt `body` an `who`, eine Person oder einen Agenten, in der einen Direktunterhaltung mit ihnen: der schon offenen, sonst einer neuen in der Seitenleiste.
+
 d-qaa5kdra = Eine Ansicht senden
     .doc = Sendet eine Ansicht als Nachricht: ihren Titel als das, was die Nachricht sagt, ihre Definition, damit jeder, der sie liest, sie den eigenen Ansichten hinzufügen kann.
     .w-the-view-is-empty = Die Ansicht ist leer
@@ -233,6 +236,10 @@ d-peb7lz2j-to = An
 d-peb7lz2j-body = Text
 
 d-peb7lz2j-reply_to = Antwort auf
+
+d-634q3q33-who = Wer
+
+d-634q3q33-body = Text
 
 d-qaa5kdra-to = An
 

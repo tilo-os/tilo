@@ -11,7 +11,7 @@
 
 use crate::ast::{self, BinOp, Expr, ExprKind, SearchBlock, SearchEntryKind, StrPart, UnOp};
 use crate::diag::{Diagnostic, Span};
-use crate::meta::{FilterKind, FilterMeta, SearchMeta, SortMeta, SortOrder};
+use crate::meta::{FilterKind, FilterMeta, SearchKind, SearchMeta, SortMeta, SortOrder};
 use crate::pred::{CmpOp, Float, Lit, Operand, Pred};
 use crate::resolve::{Env, FieldInfo, TypeInfo, sentence_case};
 use crate::types::Ty;
@@ -296,11 +296,76 @@ pub fn resolve(
     let Some(block) = block else {
         return defaults(info, env);
     };
+    // A block that says only what the resource is and who it is with keeps the default filters
+    // and order: those lines are about the resource, not about how it is filtered.
+    let filters_declared = block.entries.iter().any(|entry| {
+        !matches!(
+            entry.kind,
+            SearchEntryKind::Kind { .. } | SearchEntryKind::People { .. }
+        )
+    });
     let mut ctx = Ctx { info, env, diags };
-    let mut out = SearchMeta {
-        declared: true,
-        ..SearchMeta::default()
+    let mut out = if filters_declared {
+        SearchMeta {
+            declared: true,
+            ..SearchMeta::default()
+        }
+    } else {
+        defaults(info, env)
     };
+    for entry in &block.entries {
+        match &entry.kind {
+            SearchEntryKind::Kind { kind } => {
+                let Some(found) = SearchKind::ALL.into_iter().find(|k| k.word() == kind.name)
+                else {
+                    let words: Vec<&str> = SearchKind::ALL.iter().map(|k| k.word()).collect();
+                    let msg = format!(
+                        "`{}` is no kind search knows; it knows {}",
+                        kind.name,
+                        words.join(", ")
+                    );
+                    ctx.err("E104", kind.span, msg);
+                    continue;
+                };
+                if out.kind.is_some() {
+                    let msg = format!("{} says its `kind` once", about(info));
+                    ctx.err("E104", entry.span, msg);
+                    continue;
+                }
+                out.kind = Some(found);
+            }
+            SearchEntryKind::People { field } => {
+                let Some(f) = ctx.field(field, "`people`") else {
+                    continue;
+                };
+                let (id, ty) = (f.id.clone(), f.ty.clone());
+                let names_people = match &ty {
+                    Ty::Actor => true,
+                    Ty::Option(inner) | Ty::Set(inner) => **inner == Ty::Actor,
+                    _ => false,
+                };
+                if !names_people {
+                    let msg = format!(
+                        "`people {}`: the field is {}, not an Actor or a set of them",
+                        field.name,
+                        ty.display(&env.app)
+                    );
+                    ctx.err("E104", field.span, msg);
+                    continue;
+                }
+                if out.people.contains(&id) {
+                    let msg = format!("`{}` is among the people already", field.name);
+                    ctx.err("E104", field.span, msg);
+                    continue;
+                }
+                out.people.push(id);
+            }
+            _ => {}
+        }
+    }
+    if !filters_declared {
+        return out;
+    }
     let mut hidden_names: Vec<(String, Span)> = Vec::new();
     for entry in &block.entries {
         match &entry.kind {
@@ -337,6 +402,7 @@ pub fn resolve(
                 }
                 out.sort = ctx.sort(field, order);
             }
+            SearchEntryKind::Kind { .. } | SearchEntryKind::People { .. } => {}
             SearchEntryKind::Hide { field } => {
                 if let Some(f) = ctx.field(field, "`hide`") {
                     let id = f.id.clone();
