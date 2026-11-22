@@ -439,7 +439,8 @@ impl DeviceMeshArea {
             model.remote = self.remote.clone();
             if self.devices {
                 model.follow_personal_devices();
-                model.read_servers();
+                // The person's servers are another app's to list, and reading them asks the
+                // person first: only the pane being shown asks, never a window's warm-up.
             } else if let Some(scene) = self.scene.as_deref() {
                 model.personal_devices = Some(scene.personal_devices.clone());
             } else {
@@ -1690,6 +1691,11 @@ impl DeviceMeshModel {
 pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
     let held = area(app)?;
     let model = Rc::clone(held.model());
+    // The pane is shown: ask for the person's servers now, where the question about another
+    // app's action belongs.
+    if held.devices {
+        model.borrow_mut().read_servers();
+    }
     let showing = model.borrow_mut().show();
     let following = model.borrow_mut().follow();
     model.borrow_mut().poll();

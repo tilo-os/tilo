@@ -129,24 +129,14 @@ def chosen(one: Person, name: str, what: str) -> dict:
     return until(f"{what} to show itself chosen", held, 15, 0.2)
 
 
-def answers_sheets(one: Person) -> list[str]:
-    """Answer any sheet that stands over Settings, as a person does before reaching its controls:
-    decline a step they did not ask for, so the window takes their clicks again. Answers the
-    buttons they pressed."""
-    pressed: list[str] = []
-    for _ in range(4):
-        answer = one.session.control({"op": "questions"}).get("answer") or {}
-        pending = answer.get("questions") or []
-        if not pending:
-            return pressed
-        button = next((label for label in ("Deny", "Not now", "Close")
-                       if one.target(label)), None)
-        if not button:
-            raise Failed(f"a sheet asks and offers no way to decline: {json.dumps(pending)[:600]}")
-        one.press(button, f"the {button} button on the question sheet")
-        pressed.append(button)
-        time.sleep(0.3)
-    raise Failed("the session kept asking questions over Settings")
+def no_sheets(one: Person) -> None:
+    """No sheet stands over Settings: opening it must ask nothing before the person touches a
+    control, and a question about a pane they never opened would take their clicks instead."""
+    answer = one.session.control({"op": "questions"}).get("answer") or {}
+    pending = answer.get("questions") or []
+    if pending:
+        raise Failed(f"a sheet stands over Settings before a look is picked: "
+                     f"{json.dumps(pending)[:800]}")
 
 
 def steps(story: Story) -> None:
@@ -221,9 +211,9 @@ def steps(story: Story) -> None:
     story.step("They find their settings", finds_settings, people=[robin])
 
     def picks_looks():
-        # A sheet about a pane they never opened stands over Settings as it opens; a person
-        # answers it before its controls take their clicks.
-        story.note("question-sheets", answers_sheets(robin))
+        # Opening Settings asks nothing: a sheet about a pane they never opened would take the
+        # first click instead of the control they meant.
+        no_sheets(robin)
         # The light palette paints two hues as one accent and offers them once, so the Pink
         # swatch exists while the look is dark.
         picks_mode(robin, "Dark")
