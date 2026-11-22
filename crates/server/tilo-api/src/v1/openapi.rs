@@ -147,6 +147,9 @@ fn parameters() -> Value {
             "schema": {"type": "string"}},
         "InvocationTitle": {"name": "Tilo-Invocation-Title", "in": "header", "required": false,
             "description": "What History calls the invocation", "schema": {"type": "string"}},
+        "ContentRange": {"name": "Content-Range", "in": "header", "required": false,
+            "description": "`bytes <from>-<to>/<size>`: where this piece of a file starts and ends, and how big the whole file is. Omitted when the whole file is one request.",
+            "schema": {"type": "string"}},
     })
 }
 
@@ -183,7 +186,7 @@ fn tag_of(path: &str) -> &'static str {
         Some("events") => "Events",
         Some("model") => "Models",
         Some("webhooks") => "Webhooks",
-        Some("uploads" | "content") => "Files",
+        Some("contents") => "Files",
         Some("programs") => "Programs",
         _ => "Resources",
     }
@@ -197,9 +200,10 @@ fn path_parameter(name: &str) -> &'static str {
         "path" => "A resource path, each segment percent-encoded",
         "action" => "The action's id",
         "invocation" => "The invocation, as an action answered it",
-        "content" => "`tilo.content:<hash>`, as an upload or an action answered it",
+        "hash" => {
+            "The content's address, lowercase BLAKE3 hex: what a put names the file's bytes by, and a reference's address with a sealed item's key after a `.`"
+        }
         "webhook" => "The webhook's id, as its creation answered it",
-        "upload" => "The upload's id, chosen by the caller when it opened the upload",
         _ => "",
     }
 }
@@ -220,6 +224,9 @@ fn operation_of(operation: &Operation) -> Value {
     }));
     parameters.push(json!({"$ref": "#/components/parameters/Invocation"}));
     parameters.push(json!({"$ref": "#/components/parameters/InvocationTitle"}));
+    if operation.id == "putContent" {
+        parameters.push(json!({"$ref": "#/components/parameters/ContentRange"}));
+    }
     if operation.mutating {
         parameters.push(json!({"$ref": "#/components/parameters/IdempotencyKey"}));
     }
@@ -253,6 +260,18 @@ fn operation_of(operation: &Operation) -> Value {
         Answer::Bytes => {
             responses.insert("200".into(), json!({"description": "The bytes",
                 "content": {"application/octet-stream": {"schema": {"type": "string", "contentMediaType": "application/octet-stream"}}}}));
+        }
+        Answer::Content => {
+            responses.insert(
+                "200".into(),
+                json!({"description": "A piece is there: send the next from `offset`",
+                "content": json_content(schema("PutContent"))}),
+            );
+            responses.insert(
+                "201".into(),
+                json!({"description": "Every byte is there",
+                "content": json_content(schema("PutContent"))}),
+            );
         }
     }
     responses.insert(

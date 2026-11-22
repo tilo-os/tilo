@@ -10,6 +10,8 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from urllib.parse import quote
 
+import blake3
+
 from ._endpoint import CURRENT, Endpoint, InvocationGroup, result_of, segments
 from ._errors import AskPending, ProtocolError, Refused
 from ._models import (
@@ -28,6 +30,8 @@ from ._models import (
 from ._resource import Resource
 
 INVOCATION_PREFIX = "sdk:"
+# How many bytes one piece of a content put carries, within the API's limit.
+PUT_PIECE = 8 * 1024 * 1024
 
 
 def _bytes_of(data: Any) -> bytes:
@@ -39,6 +43,13 @@ def _bytes_of(data: Any) -> bytes:
         return data.read()
     with open(data, "rb") as file:
         return file.read()
+
+
+def _content_of(answer: Mapping[str, Any]) -> str:
+    content = answer.get("content")
+    if not isinstance(content, str) or not content:
+        raise ProtocolError("the put answered no content reference")
+    return content
 
 
 class Files:
@@ -521,21 +532,36 @@ class Workspace:
 
     async def _upload(self, data: bytes) -> str:
         endpoint = await self._endpoint()
-        answer = await endpoint.json(
-            "POST",
-            endpoint.path("uploads"),
-            data=data,
-            headers={"content-type": "application/octet-stream"},
-        )
-        content = answer.get("content")
-        if not isinstance(content, str) or not content:
-            raise ProtocolError("the upload answered no content reference")
-        return content
+        hash = blake3.blake3(data).hexdigest()
+        route = endpoint.path("contents", hash)
+        headers = {"content-type": "application/octet-stream"}
+        if len(data) <= PUT_PIECE:
+            answer = await endpoint.json("PUT", route, data=data, headers=headers)
+            return _content_of(answer)
+        offset = 0
+        while offset < len(data):
+            piece = data[offset : offset + PUT_PIECE]
+            answer = await endpoint.json(
+                "PUT",
+                route,
+                data=piece,
+                headers={
+                    **headers,
+                    "content-range": f"bytes {offset}-{offset + len(piece) - 1}/{len(data)}",
+                },
+            )
+            content = answer.get("content")
+            if isinstance(content, str) and content:
+                return content
+            offset = int(answer.get("offset", offset + len(piece)))
+        raise ProtocolError("the host took every piece of the file without naming its content")
 
     async def _download(self, content: str) -> bytes:
         endpoint = await self._endpoint()
+        prefix = "tilo.content:"
+        hash = content.removeprefix(prefix)
         answer = await endpoint.call(
-            "GET", endpoint.path("content", quote(content, safe="")), grouped=False
+            "GET", endpoint.path("contents", quote(hash, safe="")), grouped=False
         )
         return answer.body
 

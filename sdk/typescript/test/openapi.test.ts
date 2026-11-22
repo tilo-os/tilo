@@ -15,7 +15,7 @@ import { Contract, ContractError } from "./openapiContract.ts";
 const contract = new Contract();
 
 const LIST = "/v1/workspaces/11111111-2222-3333-4444-555555555555/resources";
-const HAVE = "/v1/workspaces/11111111-2222-3333-4444-555555555555/contents/have";
+const PROGRAM = "/v1/workspaces/11111111-2222-3333-4444-555555555555/programs";
 
 function call(
   method = "GET",
@@ -85,10 +85,10 @@ describe("the openapi contract", () => {
   });
 
   it("refuses a body with an undeclared property", async () => {
-    const sent = JSON.stringify({ hashes: [], bogus: true });
+    const sent = JSON.stringify({ program: "1", bogus: true });
     await refused(
-      call("POST", HAVE, { body: sent, contentType: "application/json" }),
-      answer({ have: [] }),
+      call("POST", PROGRAM, { body: sent, contentType: "application/json" }),
+      answer({ status: "ok", output: [], changed: 0, steps: [] }),
       /body\.bogus is not a property/,
     );
   });

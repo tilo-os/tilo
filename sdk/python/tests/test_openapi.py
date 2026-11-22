@@ -50,7 +50,7 @@ def answer(body: Any, status: int = 200, content_type: str = "application/json")
 
 
 LIST = "/v1/workspaces/11111111-2222-3333-4444-555555555555/resources"
-HAVE = "/v1/workspaces/11111111-2222-3333-4444-555555555555/contents/have"
+PROGRAM = "/v1/workspaces/11111111-2222-3333-4444-555555555555/programs"
 ROW = {"path": "notes/Todo", "name": "Todo", "label": "Todo", "kind": "notes.Page"}
 LISTED = {"path": "notes", "rows": [ROW]}
 
@@ -92,12 +92,12 @@ def test_a_refusal_shaped_like_something_else_is_refused(contract: Contract) -> 
 
 
 def test_a_body_with_an_undeclared_property_is_refused(contract: Contract) -> None:
-    sent = b'{"hashes": [], "bogus": true}'
+    sent = b'{"program": "1", "bogus": true}'
     # An answer as the route declares, so only the request is at fault.
     with pytest.raises(ContractError, match=r"body\.bogus is not a property"):
         contract.check(
-            call("POST", HAVE, body=sent, content_type="application/json"),
-            answer({"have": []}),
+            call("POST", PROGRAM, body=sent, content_type="application/json"),
+            answer({"status": "ok", "output": [], "changed": 0, "steps": []}),
         )
 
 

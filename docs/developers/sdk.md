@@ -174,7 +174,8 @@ The SDKs speak Tilo's `/v1` JSON API, [`api.md`](api.md): an action is
 with `Last-Event-ID`). Each call carries an `Idempotency-Key`, so a retry runs nothing twice,
 and a group's calls carry `Tilo-Invocation` and `Tilo-Invocation-Title`. They can also reach a Tilo host in process, through the same
 Rust client the API server runs: no second implementation, no socket. File bytes go through
-`…/uploads`, then the Files app's actions.
+`PUT …/contents/{hash}` and come back from `GET …/contents/{hash}`, then the Files app's
+actions.
 
 ## tilolang
 

@@ -360,9 +360,11 @@ async def test_a_watch_asks_again_after_its_last_event_id(workspace, api):
 async def test_an_upload_answers_its_content_reference(workspace, api):
     content = await workspace.files.upload(b"passport bytes")
 
-    assert content == "tilo.content:14"
+    hash = "c7446cc3928575a8c90a4144c98a8db0101aa1d398bb2a0d7fb4e1dc113da83d"
+    assert content == f"tilo.content:{hash}"
     assert api.uploads == [b"passport bytes"]
-    assert api.asked("POST", "/uploads")[-1]["headers"]["content-type"] == "application/octet-stream"
+    asked = api.asked("PUT", f"/v1/workspaces/{WORKSPACE_ID}/contents/{hash}")[-1]
+    assert asked["headers"]["content-type"] == "application/octet-stream"
 
     imported = await workspace.do(f"{PDF}#import-pdf-content", content=content, name="passport.pdf")
     assert imported == {"imported": content}
@@ -372,13 +374,14 @@ async def test_a_download_answers_the_bytes(workspace, api):
     content = await workspace.files.upload(b"cover letter")
 
     assert await workspace.files.download(content) == b"cover letter"
-    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/content/")
+    hash = "f5f0d5bb5e3b8ed90ae7cd6ccc657211486a4c1352f78a2de819571f31233ba7"
+    assert api.asked("GET", f"/v1/workspaces/{WORKSPACE_ID}/contents/{hash}")
 
 
 async def test_an_action_that_makes_a_file_answers_its_reference(workspace):
     letter = await workspace.do("word-processor#export-content", format="docx")
 
-    assert letter == "tilo.content:15"
+    assert letter == "tilo.content:69c7ff4b13fb9cc707f7593341e677d01ee13f4623ea863980823dc72972f5e4"
     assert await workspace.files.download(letter) == b"PK cover letter"
 
 

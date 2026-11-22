@@ -78,10 +78,11 @@ async fn kept_bytes(on_server: &OnServer, workspace: &str, manifest: &str) -> Op
 /// Put `bytes` into `workspace`'s Files at `dir/name`, as the API puts a file.
 async fn put_file(key: &Key<'_>, workspace: &str, dir: &str, name: &str, bytes: &[u8]) {
     let base = format!("/v1/workspaces/{workspace}");
+    let hash = blake3::hash(bytes).to_hex().to_string();
     let (status, put) = json_of(
         key.send(
-            hyper::Method::POST,
-            &format!("{base}/uploads"),
+            hyper::Method::PUT,
+            &format!("{base}/contents/{hash}"),
             bytes,
             &[("content-type", "application/octet-stream")],
         )

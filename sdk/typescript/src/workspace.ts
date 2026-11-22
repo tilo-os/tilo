@@ -22,11 +22,15 @@ import {
   resultOf,
 } from "./models.ts";
 import { ProtocolError, refusalOf } from "./errors.ts";
+import { blake3 } from "@noble/hashes/blake3.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { resourceProxy, type Resource, type Surface } from "./resource.ts";
 import { query as queryOf, routes } from "./routes.ts";
 import { collect } from "./transport.ts";
 
 const INVOCATION_PREFIX = "sdk:";
+/** How many bytes one piece of a content put carries, within the API's limit. */
+const PUT_PIECE = 8 * 1024 * 1024;
 
 /** A file's bytes, as they go up: one upload's own type, when the caller knows it. */
 export type FileBytes = Uint8Array | ArrayBuffer | Blob;
@@ -54,20 +58,60 @@ export class Files {
     const endpoint = await this.workspace.endpoint();
     const contentType =
       data instanceof Blob && data.type !== "" ? data.type : "application/octet-stream";
-    const answer = await endpoint.answer("POST", routes.uploads(endpoint.id), {
-      data: await bytesOfFile(data),
-      headers: { "content-type": contentType },
-    });
-    if (typeof answer.content !== "string" || answer.content === "") {
-      throw new ProtocolError("the host took the upload without naming the content");
+    const bytes = await bytesOfFile(data);
+    const hash = bytesToHex(blake3(bytes));
+    const route = routes.contents(endpoint.id, hash);
+    if (bytes.length <= PUT_PIECE) {
+      const content = await this.put(endpoint, route, bytes, contentType, 0, bytes.length, bytes.length);
+      if (content === null) {
+        throw new ProtocolError("the host took the file without naming its content");
+      }
+      return content;
     }
-    return answer.content;
+    for (let offset = 0; offset < bytes.length; offset += PUT_PIECE) {
+      const piece = bytes.subarray(offset, Math.min(offset + PUT_PIECE, bytes.length));
+      const content = await this.put(
+        endpoint,
+        route,
+        piece,
+        contentType,
+        offset,
+        offset + piece.length - 1,
+        bytes.length,
+      );
+      if (content !== null) {
+        return content;
+      }
+    }
+    throw new ProtocolError("the host took every piece of the file without naming its content");
+  }
+
+  /** One piece of a put: its content once every byte is there, else `null`. */
+  private async put(
+    endpoint: Endpoint,
+    route: string,
+    piece: Uint8Array,
+    contentType: string,
+    from: number,
+    to: number,
+    size: number,
+  ): Promise<string | null> {
+    const headers: Record<string, string> = { "content-type": contentType };
+    if (from !== 0 || piece.length !== size) {
+      headers["content-range"] = `bytes ${from}-${to}/${size}`;
+    }
+    const answer = await endpoint.answer("PUT", route, { data: piece, headers });
+    if (typeof answer.content === "string" && answer.content !== "") {
+      return answer.content;
+    }
+    return null;
   }
 
   /** The bytes of `content`, a `tilo.content:<hash>` in this workspace. */
   async download(content: string): Promise<Uint8Array> {
     const endpoint = await this.workspace.endpoint();
-    const route = routes.content(endpoint.id, content);
+    const hash = content.startsWith("tilo.content:") ? content.slice("tilo.content:".length) : content;
+    const route = routes.contents(endpoint.id, hash);
     const reply = await endpoint.request("GET", route, { stream: true, idempotent: false });
     if (reply.status >= 400) {
       throw refusalOf(reply.status, reply.body);

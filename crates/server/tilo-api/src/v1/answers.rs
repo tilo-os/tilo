@@ -349,55 +349,15 @@ pub struct ProgramAnswer {
     pub session: String,
 }
 
+/// A content put: where an unfinished one stands, and what every byte of it
+/// is once the last piece answered.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Uploaded {
-    /// `tilo.content:<hash>`: what an action takes the file as.
-    pub content: String,
-    pub size: u64,
-}
-
-/// Several small files put into the workspace in one request.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct PutMany {
-    /// Each file's bytes, base64.
-    pub files: Vec<String>,
-}
-
-/// Each file's `tilo.content:<hash>` reference, in the order asked.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct PutManyAnswer {
-    pub contents: Vec<String>,
-}
-
-/// Content hashes (lowercase BLAKE3 hex) to ask whether the workspace holds.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct HaveHashes {
-    pub hashes: Vec<String>,
-}
-
-/// Whether each asked hash is held, in the order asked.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct HeldHashes {
-    pub have: Vec<bool>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct NewUpload {
-    /// How many bytes the whole file is.
-    pub size: u64,
-}
-
-/// One upload in pieces: where it stands, and what every byte of it is once
-/// the last piece answered.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Upload {
-    /// The id the caller named it by.
-    pub upload: String,
+pub struct PutContent {
     /// How many bytes the whole file is.
     pub size: u64,
     /// How many of them are there: the next piece goes at this offset.
     pub offset: u64,
-    /// `tilo.content:<hash>`, in the answer of the piece that completed it.
+    /// `tilo.content:<hash>`, once every byte is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
 }
@@ -439,12 +399,6 @@ pub struct ModelAsk {
     pub max_output_tokens: u32,
 }
 
-/// An upload dropped before every byte of it was sent.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct DeletedUpload {
-    pub deleted: String,
-}
-
 /// Every schema the description carries, by the name operations give it.
 #[must_use]
 pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, schemars::Schema)> {
@@ -464,15 +418,8 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         View,
         Program,
         ProgramAnswer,
-        Uploaded,
-        PutMany,
-        PutManyAnswer,
-        HaveHashes,
-        HeldHashes,
-        NewUpload,
-        Upload,
+        PutContent,
         Event,
         ModelAsk,
-        DeletedUpload,
     ]
 }

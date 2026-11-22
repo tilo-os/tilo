@@ -157,7 +157,7 @@ describe("acting", () => {
   it("answers a file an action made as its content reference", async () => {
     const api = new FakeApi();
     const letter = await open(api).workspace("jane-doe").do("word-processor#export-content", { format: "docx" });
-    expect(letter).toBe("tilo.content:15");
+    expect(letter).toBe("tilo.content:69c7ff4b13fb9cc707f7593341e677d01ee13f4623ea863980823dc72972f5e4");
   });
 
   it("throws the host's refusal", async () => {
@@ -420,15 +420,16 @@ describe("files", () => {
       .workspace("jane-doe")
       .files.upload(new TextEncoder().encode("passport, in bytes"));
 
-    expect(content).toBe("tilo.content:18");
-    expect(api.last()?.method).toBe("POST");
-    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/uploads`);
+    const hash = "9302ee66c472f04a7ba6712fe10477cd634e1e635382fd57442f873fffb5f5e0";
+    expect(content).toBe(`tilo.content:${hash}`);
+    expect(api.last()?.method).toBe("PUT");
+    expect(api.last()?.path).toBe(`/v1/workspaces/${WORKSPACE_ID}/contents/${hash}`);
     expect(api.last()?.headers["content-type"]).toBe("application/octet-stream");
   });
 
   it("downloads the bytes an action made", async () => {
     const api = new FakeApi();
-    api.contents.set("tilo.content:2", new Uint8Array([0x50, 0x4b]));
+    api.contents.set("2", new Uint8Array([0x50, 0x4b]));
     const bytes = await open(api).workspace("jane-doe").files.download("tilo.content:2");
 
     expect(Array.from(bytes)).toEqual([0x50, 0x4b]);

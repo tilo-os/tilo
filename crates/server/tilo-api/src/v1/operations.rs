@@ -47,6 +47,9 @@ pub enum Answer {
     Events,
     /// A file's bytes.
     Bytes,
+    /// A content put: where an unfinished one stands (`200`), or what the
+    /// bytes are once every one is there (`201`).
+    Content,
 }
 
 const fn op(
@@ -218,64 +221,18 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .body(Body::Json("Program"))
         .json(200, "ProgramAnswer"),
         op(
-            "upload",
-            Method::POST,
-            "/v1/workspaces/{workspace}/uploads",
-            "Put a file's bytes into the workspace, for an action to take",
+            "putContent",
+            Method::PUT,
+            "/v1/workspaces/{workspace}/contents/{hash}",
+            "Put a file's bytes into the workspace, addressed by their hash; `Content-Range` continues one too large for one request",
         )
         .body(Body::Bytes)
-        .json(201, "Uploaded"),
-        op(
-            "putManyContents",
-            Method::PUT,
-            "/v1/workspaces/{workspace}/contents",
-            "Store several small files whole in one request, answering each one's reference",
-        )
-        .body(Body::Json("PutMany"))
-        .json(200, "PutManyAnswer"),
-        op(
-            "haveContents",
-            Method::POST,
-            "/v1/workspaces/{workspace}/contents/have",
-            "Which of these content hashes the workspace already holds",
-        )
-        .body(Body::Json("HaveHashes"))
-        .json(200, "HeldHashes"),
-        op(
-            "openUpload",
-            Method::POST,
-            "/v1/workspaces/{workspace}/uploads/{upload}",
-            "Open an upload of a size under an id of the caller's choosing, for a file too large for one request",
-        )
-        .body(Body::Json("NewUpload"))
-        .json(201, "Upload"),
-        op(
-            "uploadPiece",
-            Method::PUT,
-            "/v1/workspaces/{workspace}/uploads/{upload}",
-            "Send the next bytes of an open upload, at the offset it stands at",
-        )
-        .body(Body::Bytes)
-        .json(200, "Upload"),
-        op(
-            "uploadStatus",
-            Method::GET,
-            "/v1/workspaces/{workspace}/uploads/{upload}",
-            "Where an open upload stands, to continue it",
-        )
-        .json(200, "Upload"),
-        op(
-            "abandonUpload",
-            Method::DELETE,
-            "/v1/workspaces/{workspace}/uploads/{upload}",
-            "Drop an open upload; nothing of it is stored",
-        )
-        .json(200, "DeletedUpload"),
+        .answers(Answer::Content),
         op(
             "getContent",
             Method::GET,
-            "/v1/workspaces/{workspace}/content/{content}",
-            "The bytes an action made",
+            "/v1/workspaces/{workspace}/contents/{hash}",
+            "The bytes at a content address, with `Range`",
         )
         .answers(Answer::Bytes),
         op(

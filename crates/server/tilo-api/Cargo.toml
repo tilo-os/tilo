@@ -47,6 +47,8 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+# A content put's address is the BLAKE3 hash of the file's bytes.
+blake3.workspace = true
 # This computer's login (`client::device`): where it is kept, with this computer's one device
 # key and its certificates.
 tilo-paths.workspace = true

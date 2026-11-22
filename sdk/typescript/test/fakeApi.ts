@@ -6,6 +6,8 @@
  * assert what the SDK sent, and its state says what the host answers.
  */
 
+import { blake3 } from "@noble/hashes/blake3.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { Contract } from "./openapiContract.ts";
 
 const contract = new Contract();
@@ -344,15 +346,18 @@ export class FakeApi {
           steps: [{ number: 1, apps: ["notes"], changed: 1 }],
         });
       }
-      case "uploads": {
-        const bytes = new TextEncoder().encode(call.body);
-        this.uploads.push(bytes);
-        const content = `tilo.content:${bytes.length}`;
-        this.contents.set(content, bytes);
-        return this.json({ content, size: bytes.length }, 201);
-      }
-      case "content": {
-        const data = this.contents.get(tail.join("/"));
+      case "contents": {
+        const hash = tail.join("/");
+        if (method === "PUT") {
+          const bytes = new TextEncoder().encode(call.body);
+          this.uploads.push(bytes);
+          this.contents.set(hash, bytes);
+          return this.json(
+            { content: `tilo.content:${hash}`, offset: bytes.length, size: bytes.length },
+            201,
+          );
+        }
+        const data = this.contents.get(hash);
         if (data === undefined) {
           return this.refuse("not_found", 404, "the workspace has no such content");
         }
@@ -516,8 +521,9 @@ export class FakeApi {
     }
     if (whole === "word-processor#export-content") {
       const letter = new TextEncoder().encode("PK cover letter");
-      const content = `tilo.content:${letter.length}`;
-      this.contents.set(content, letter);
+      const hash = bytesToHex(blake3(letter));
+      const content = `tilo.content:${hash}`;
+      this.contents.set(hash, letter);
       return this.json({ status: "ok", invocation, path: whole, resources: [content] });
     }
     if (whole === `${PDF}#read-form-fields`) {

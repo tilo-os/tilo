@@ -17595,6 +17595,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "blake3",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "futures-util",

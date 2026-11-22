@@ -17,6 +17,7 @@
 //!   the account's (`account/webhooks`).
 
 pub mod answers;
+pub mod contents;
 pub mod errors;
 pub mod events;
 pub mod idempotency;
@@ -65,6 +66,9 @@ const MAX_WAIT_SECONDS: u64 = 60;
 pub struct State {
     pub(crate) remembered: idempotency::Remembered,
     pub(crate) deliveries: webhooks::Deliveries,
+    /// The content puts a key has yet to send every byte of: where each
+    /// stands, so a connection that failed continues instead of starting again.
+    pub(crate) contents: contents::Uploads,
     /// Each app's surface version per workspace, as last read.
     surfaces: std::sync::Mutex<HashMap<(String, String), String>>,
 }
@@ -75,10 +79,10 @@ pub fn serves(path: &str) -> bool {
     path == "/v1" || path.starts_with("/v1/")
 }
 
-/// Whether `method` on `path` uploads a file, which may be larger than other
-/// bodies.
+/// Whether `method` on `path` carries a file's bytes, which may be larger than
+/// other bodies.
 #[must_use]
-pub fn uploads(method: &Method, path: &str) -> bool {
+pub fn takes_bytes(method: &Method, path: &str) -> bool {
     routing::find(method, path)
         .is_ok_and(|(operation, _)| operation.body == operations::Body::Bytes)
 }
@@ -494,10 +498,6 @@ impl<'a> Caller<'a> {
     }
 
     /// The workspace's people, programs, files and events.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one match over the workspace's operations, each a few lines"
-    )]
     async fn workspace_operation(&self, id: &str) -> Result<Answer, ApiError> {
         let ws = self.workspace();
         match id {
@@ -530,88 +530,52 @@ impl<'a> Caller<'a> {
                 }
                 shaped::<answers::ProgramAnswer>(typed).map(Answer::ok)
             }
-            "upload" => {
-                let content = crate::content::put(&self.session, &ws, self.body)
-                    .await
-                    .map_err(|refused| {
-                        // A revoked key is told so, and how its person approves another.
-                        if refused.body.code == "key_revoked" {
-                            refused
-                        } else {
-                            ApiError::new("unavailable", refused.body.message)
-                                .next("upload the file again")
-                        }
-                    })?;
-                Ok(Answer::created(
-                    json!({"content": content, "size": self.body.len()}),
-                ))
-            }
-            "putManyContents" => {
-                let put: answers::PutMany = self.json_body()?;
-                let answered = self
-                    .call("tilo_put_many", json!({"files": put.files}))
-                    .await?;
-                shaped::<answers::PutManyAnswer>(answered).map(Answer::ok)
-            }
-            "haveContents" => {
-                let asked: answers::HaveHashes = self.json_body()?;
-                let answered = self
-                    .call("tilo_put_have", json!({"hashes": asked.hashes}))
-                    .await?;
-                shaped::<answers::HeldHashes>(answered).map(Answer::ok)
-            }
-            "openUpload" => {
-                let id = self.params.get("upload").to_owned();
-                if !crate::content::valid_id(&id) {
-                    return Err(ApiError::new(
-                        "invalid_request",
-                        "an upload's id is 8 to 128 letters, digits, `-` or `_`",
-                    )
-                    .next(
-                        "name it after something only this upload's caller knows, such as a UUID",
-                    ));
+            "putContent" => {
+                let hash = self.params.get("hash").to_owned();
+                if !contents::address(&hash) {
+                    return Err(contents::bad_address(&hash));
                 }
-                let new: answers::NewUpload = self.json_body()?;
-                let (placement, opened) = self
-                    .server
-                    .uploads
-                    .open(&self.session, &self.grant.id, &ws, &id, new.size)
-                    .await?;
-                Ok(if opened {
-                    Answer::created(placement)
-                } else {
-                    Answer::ok(placement)
-                })
-            }
-            "uploadStatus" => {
-                let id = self.params.get("upload").to_owned();
-                Ok(Answer::ok(self.server.uploads.status(
-                    &self.grant.id,
-                    &ws,
-                    &id,
-                )?))
-            }
-            "uploadPiece" => {
-                let id = self.params.get("upload").to_owned();
-                let at = self.query("offset").and_then(|at| at.trim().parse().ok());
-                let body = self.body;
-                match self
-                    .server
-                    .uploads
-                    .append(&self.session, &self.grant.id, &ws, &id, at, body)
-                    .await?
+                let (first, total) = match self
+                    .headers
+                    .get(header::CONTENT_RANGE)
+                    .and_then(|value| value.to_str().ok())
                 {
-                    crate::content::Sent::More(placement) => Ok(Answer::ok(placement)),
-                    crate::content::Sent::Done(done) => Ok(Answer::created(done)),
-                }
-            }
-            "abandonUpload" => {
-                let id = self.params.get("upload").to_owned();
-                Ok(Answer::ok(self.server.uploads.abandon(
+                    Some(value) => {
+                        let (from, to, size) = contents::range(value).ok_or_else(|| {
+                            ApiError::invalid("Content-Range is `bytes <from>-<to>/<size>`")
+                        })?;
+                        if to.saturating_sub(from).saturating_add(1) != self.body.len() as u64 {
+                            return Err(ApiError::invalid(
+                                "the body is not the piece Content-Range names",
+                            ));
+                        }
+                        (from, size)
+                    }
+                    None => (0, self.body.len() as u64),
+                };
+                // A content put's future is large: on the heap, not in the frames
+                // of the request that awaits it.
+                let put = Box::pin(contents::put(
+                    &self.server.v1.contents,
+                    &self.session,
                     &self.grant.id,
                     &ws,
-                    &id,
-                )?))
+                    &hash,
+                    first,
+                    total,
+                    self.body,
+                ))
+                .await?;
+                match put {
+                    contents::Put::More { offset, size } => {
+                        shaped::<answers::PutContent>(json!({"offset": offset, "size": size}))
+                            .map(Answer::ok)
+                    }
+                    contents::Put::Done { content, size } => shaped::<answers::PutContent>(
+                        json!({"content": content, "offset": size, "size": size}),
+                    )
+                    .map(Answer::created),
+                }
             }
             "getContent" => self.content().await,
             "events" => {
@@ -764,10 +728,8 @@ impl<'a> Caller<'a> {
     /// bytes=<from>-<to?>` asks for part of it, which a caller downloading a
     /// large file does a piece at a time.
     async fn content(&self) -> Result<Answer, ApiError> {
-        let content = self.params.get("content").to_owned();
-        if content.trim().is_empty() {
-            return Err(ApiError::new("not_found", "no content is named"));
-        }
+        let hash = self.params.get("hash").to_owned();
+        let content = contents::reference(&hash).ok_or_else(|| contents::bad_address(&hash))?;
         let asked = self
             .headers
             .get(hyper::header::RANGE)

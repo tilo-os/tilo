@@ -12,6 +12,7 @@ import json
 from typing import Any
 from urllib.parse import unquote
 
+import blake3
 import httpx
 
 from openapi_contract import Contract
@@ -295,16 +296,23 @@ class FakeApi:
             return self.view(call)
         if after == "programs":
             return self.program(call)
-        if after == "uploads":
-            self.uploads.append(call["body"])
-            content = f"tilo.content:{len(call['body'])}"
-            self.contents[content] = call["body"]
-            return self.answer(201, {"content": content, "size": len(call["body"])})
-        if after.startswith("content/"):
-            content = unquote(after.removeprefix("content/"))
-            data = self.contents.get(content)
+        if after.startswith("contents/"):
+            hash = unquote(after.removeprefix("contents/"))
+            if request.method == "PUT":
+                body = call["body"]
+                self.uploads.append(body)
+                self.contents[hash] = body
+                return self.answer(
+                    201,
+                    {
+                        "content": f"tilo.content:{hash}",
+                        "offset": len(body),
+                        "size": len(body),
+                    },
+                )
+            data = self.contents.get(hash)
             if data is None:
-                return self.refuse(404, "not_found", f"the workspace has no {content}")
+                return self.refuse(404, "not_found", f"the workspace has no {hash}")
             return httpx.Response(
                 200,
                 content=data,
@@ -616,8 +624,9 @@ class FakeApi:
             return self.done(at, {"appended": "c01e"}, [TODO], link_to(TODO))
         if at == "word-processor#export-content":
             letter = b"PK cover letter"
-            content = f"tilo.content:{len(letter)}"
-            self.contents[content] = letter
+            hash = blake3.blake3(letter).hexdigest()
+            content = f"tilo.content:{hash}"
+            self.contents[hash] = letter
             return self.done(at, None, [content])
         if at == f"{PDF}#import-pdf-content":
             return self.done(at, {"imported": args.get("content")})

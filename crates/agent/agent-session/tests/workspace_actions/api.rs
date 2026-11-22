@@ -145,19 +145,20 @@ impl Mcp<'_> {
     }
 }
 
-/// `PUT /w/<workspace>/content` of `body` in `mcp`'s session: the status
-/// and the reply.
+/// `PUT /v1/workspaces/<workspace>/contents/<hash>` of `body` in `mcp`'s
+/// session: the status and the reply.
 pub(super) async fn upload(mcp: &Mcp<'_>, workspace: &str, body: &[u8]) -> (u16, Value) {
     let bearer = format!("Bearer {}", mcp.token);
     let pairs = [
         ("authorization", bearer.as_str()),
         ("content-type", "application/pdf"),
     ];
+    let hash = blake3::hash(body).to_hex().to_string();
     json_of(
         mcp.api
             .dispatch(
-                &hyper::Method::POST,
-                &format!("/v1/workspaces/{workspace}/uploads"),
+                &hyper::Method::PUT,
+                &format!("/v1/workspaces/{workspace}/contents/{hash}"),
                 "",
                 &headers(&pairs),
                 body,

@@ -226,32 +226,42 @@ Check the signature and that `t` is recent; deduplicate by `Tilo-Delivery`.
 
 ## Files
 
-A file goes up in one request, and a file larger than one request should carry goes up in as
-many as it takes. Both end in the same place: `tilo.content:<hash>`, which an action takes the
-file by. Nothing names an app yet — a file's **bytes** say which app opens it. Opening the
-file there is that app's `open` with the file: `POST …/resources/pdf-viewer/actions/open`
+A file's bytes go into the workspace at their own address: the lowercase BLAKE3 hash of the
+bytes, 64 hex characters. The address is what makes a file go up once, whatever a caller would
+have called it, and what a client says to ask whether the workspace already has it. A put of
+bytes it already holds is answered as complete without storing them twice.
+
+| | |
+|---|---|
+| `PUT /v1/workspaces/{workspace}/contents/{hash}` (the file's bytes) | `201` `{"content": "tilo.content:<reference>", "offset": <size>, "size"}`, what an action takes: the whole file in one request, or one piece of it |
+| `GET /v1/workspaces/{workspace}/contents/{hash}` | the bytes a reference names, with `Range` |
+
+A put's `{hash}` is the BLAKE3 hash of the file's bytes, lowercase hex: the same bytes are the
+same address, so a file goes up once, and a put of bytes the server has already kept answers the
+same reference without storing them again. The answer's `content` is the reference the workspace
+keeps them by; in a workspace whose content is sealed it carries the key that opens it after a
+`.`, and a `GET` takes that reference whole.
+
+A file larger than one request should carry goes up in pieces, each request carrying one. Its
+`Content-Range: bytes {from}-{to}/{size}` says where the piece starts and ends and how big the
+whole file is, and the first piece opens the put. One request carries at most 64 MiB.
+
+A piece sent from an offset the put is not at answers `409 offset_mismatch`, naming where it
+stands. A piece sent again after an answer that did not arrive costs nothing: the answer says
+where the put stands now (`200` `{"offset", "size"}`). The piece that completes the file
+answers `201` `{"content", "offset", "size"}`, and a put of content whose every byte is
+already there answers `409 upload_complete`. A put nobody continues is dropped after six
+hours. `tilo files put` sends a large file this way, and resumes it after a connection that
+failed.
+
+Whatever a file ends in is `tilo.content:<hash>`, which an action takes the file by. Nothing
+names an app yet — a file's **bytes** say which app opens it. Opening the file there is that
+app's `open` with the file: `POST …/resources/pdf-viewer/actions/open`
 `{"content": "tilo.content:<hash>", "name": "forms/visa.pdf"}`. PDF Viewer, Writer, Sheets and
 Slides open each file in a resource of its own, so a folder of PDFs is a PDF each; Notes and
 Photos take it into the notebook or library the workspace keeps. The answer's
 `result.provider` names the resource, where a person opens it and search finds it. An app that
 does not open the file's type refuses it and makes no resource.
-
-| | |
-|---|---|
-| `POST /v1/workspaces/{workspace}/uploads` (the file's bytes, its `Content-Type`) | `201` `{"content": "tilo.content:<hash>", "size"}`: what an action takes |
-| `PUT /v1/workspaces/{workspace}/contents` `{"files": [base64…]}` | `200` `{"contents": ["tilo.content:<hash>"…]}`: several small files whole in one request, each reference in order |
-| `POST /v1/workspaces/{workspace}/contents/have` `{"hashes": [hex…]}` | `200` `{"have": [bool…]}`: which of these the workspace already holds, so a folder's unchanged files need no upload |
-| `POST /v1/workspaces/{workspace}/uploads/{upload}` `{size}` | `201` `{"upload", "size", "offset": 0}`: opens an upload under an id you choose, for a file too large for one request. Opening it again answers where it stands (`200`) |
-| `PUT /v1/workspaces/{workspace}/uploads/{upload}?offset={offset}` (the next bytes) | `200` `{"upload", "size", "offset"}` where the next piece goes, or `201` `{"content", "size"}` when this piece completes the file |
-| `GET /v1/workspaces/{workspace}/uploads/{upload}` | `200` `{"upload", "size", "offset"}`: where it stands, to continue it |
-| `DELETE /v1/workspaces/{workspace}/uploads/{upload}` | `200` `{"deleted"}`: drops it, storing nothing |
-| `GET /v1/workspaces/{workspace}/content/{content}` | the bytes an action made (`tilo.content:<hash>`), with `Range` |
-
-One request carries at most 64 MiB. A piece sent from an offset the upload is not at answers
-`409 offset_mismatch` instead of storing its bytes twice, so a client that lost an answer asks
-`GET …/uploads/{upload}` and sends the rest from there; an upload nobody finishes is dropped
-after six hours. `tilo files put` sends a large file this way, and resumes it after a
-connection that failed.
 
 A folder goes into the workspace's own folder in one action: `POST …/resources/files/actions/open`
 with `files`, a list of `content`, `name` and `dir`, each file's bytes uploaded first. A large
