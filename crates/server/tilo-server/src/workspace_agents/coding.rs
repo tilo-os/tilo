@@ -2,23 +2,23 @@
 //!
 //! A coding agent is a sub-agent whose work a coding harness does in the workspace's machine
 //! ([`tilo_workspace_agent::coding`]). Everything else about it is the sub-agent's and is done
-//! by the sub-agents' part ([`super::sub_agents`]): its job and its starter's notes are written
-//! into its own conversation, its turns are found there like every agent's, its item says how
-//! it stands, a stop on its item or on its message ends the turn that is going, and its starter
-//! is told how work it gave ended.
+//! by the sub-agents' part ([`super::sub_agents`]): its job and its starter's notes are asked of
+//! it, its turns are found among the workspace's asks like every agent's, its item says how it
+//! stands, a stop on its item or on its ask ends the turn that is going, and its starter is told
+//! how work it gave ended.
 //!
 //! What differs is who answers a turn. No model loop does: the turn's words are handed to its
 //! harness ([`CodingAgents`]) as the harness's next message, what the harness says is written
-//! into the conversation as it says it, and once it has finished everything it was handed, the
-//! turn's reply gets its last words. What its person writes meanwhile reaches the same process.
-//! Its item says which harness works, the harness's own id for the conversation, its process
-//! and what it spent (`sub-agent-coding`, written here as the sub-agent, by no tool of a turn).
+//! onto the turn's reply as it says it, and once it has finished everything it was handed, the
+//! reply gets its last words. Its item says which harness works, the harness's own id for its
+//! session, its process and what it spent (`sub-agent-coding`, written here as the sub-agent,
+//! by no tool of a turn).
 //!
-//! A harness is started only where its person said so: for words they wrote to it themselves
+//! A harness is started only where its person said so: for words they asked it themselves
 //! ([`Permit::Once`]), or where they let coding agents start unasked in that workspace's
 //! machine ([`Permit::Lasting`], read from their own store each time: [`Workspaces::stands`]).
 //! Its job alone starts nothing without that: it answers that it begins when its person says
-//! so, and their next words start it with the job first.
+//! so, and their next ask starts it with the job first.
 //!
 //! What its model calls cost is counted where every turn's is: on the day of the person's own
 //! agent its line of starters ends at, in the person's own store, which refuses the call that
@@ -31,16 +31,15 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use tilo_actions::remote::person_asking::{ActionName, Asked};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
-use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Id;
 use tilo_workspace_agent::coding::{CodingHarness, CodingProcess, MACHINE};
 use tilo_workspace_agent::{Agent, Stands, Sub, WorkspaceAgents, workspace_agents as verbs};
 
-use super::{Ask, CHAT, Outcome, Reply, Turn, TurnScope, going, invoke_named, sub_agents, today};
+use super::{Ask, Outcome, Reply, Turn, TurnScope, going, sub_agents, today};
 use crate::coding_agents::harness::Harnesses;
 use crate::coding_agents::run::{Conversation, Ended, Ending, Serves};
 use crate::coding_agents::runner::{CodingAgent, CodingAgents, Machines, NotTold, Permit, Permits};
@@ -109,7 +108,7 @@ struct Heard {
     counted: AtomicU64,
     /// The most its item was told it spent in all.
     all: AtomicU64,
-    /// The member who stopped it through Chat while it lived.
+    /// The member who stopped it while it lived, where a stop on its ask did.
     stopped_by: Mutex<String>,
 }
 
@@ -238,8 +237,7 @@ struct Work {
     pending: usize,
     /// What its harness said last that nothing shows yet.
     said: Option<String>,
-    /// What it said that its conversation did not take as a message: the turn's answer
-    /// begins with it.
+    /// What it said that its reply did not take on the way: the turn's answer begins with it.
     unwritten: Vec<String>,
     /// Whether a process of its harness lived when the turn began.
     lived: bool,
@@ -248,28 +246,36 @@ struct Work {
 }
 
 impl Work {
-    /// Write `words` into its conversation as a message of its own. Words Chat does not take
-    /// there are kept for the turn's answer, so nothing it said is lost.
+    /// Write `words` onto the turn's reply as it says them. Words the reply does not take are
+    /// kept for the turn's answer, so nothing it said is lost.
     async fn write(&mut self, reply: &Reply, words: &str) {
-        if !post(reply, &self.sub.conversation, words).await {
+        if let Err(error) = reply.says(words).await {
+            tracing::warn!(workspace = %reply.workspace, %error, "what a coding agent said was not taken onto its reply");
             self.unwritten.push(words.trim().to_owned());
         }
     }
 
-    /// Show what its harness said last, as a message of its own.
+    /// Show what its harness said last, on its reply.
     async fn show(&mut self, reply: &Reply) {
         if let Some(words) = self.said.take() {
             self.write(reply, &words).await;
         }
     }
 
-    /// `answer`, after whatever it said before that its conversation did not take.
+    /// `answer`, after whatever it said before that its reply did not take.
     fn whole(&mut self, answer: String) -> String {
         let mut parts = std::mem::take(&mut self.unwritten);
         parts.push(answer);
         parts.retain(|part| !part.trim().is_empty());
         parts.join("\n\n")
     }
+}
+
+/// What `turn` asks its harness, in words, and whether that is its job: its job and a note as
+/// they were asked, anything else as its person asked it.
+fn asked(turn: &Turn) -> (String, bool) {
+    let job = turn.line.as_ref().is_some_and(|line| line.job);
+    (turn.request.clone(), job)
 }
 
 /// Whether `agent` is a coding agent: a sub-agent with a coding part.
@@ -290,10 +296,10 @@ fn is_keeper(keeper: &str, asker: &str) -> bool {
     keeper.is_some() && keeper == asker
 }
 
-/// Whether `turn` answers words the person who keeps its agent wrote to it themselves, under
-/// no cause (`kind`): their yes to starting its harness.
-fn is_their_yes(turn: &Turn, kind: Option<&str>) -> bool {
-    turn.typed && kind.is_none() && is_keeper(&turn.agent.keeper, &turn.person)
+/// Whether `turn` answers what the person who keeps its agent asked it themselves: their yes
+/// to starting its harness.
+fn is_their_yes(turn: &Turn) -> bool {
+    turn.typed && is_keeper(&turn.agent.keeper, &turn.person)
 }
 
 /// The document that keeps a workspace's agents.
@@ -319,37 +325,6 @@ fn no_turn(request: &Value) -> Option<Value> {
         "id": id,
         "error": {"code": -32000, "message": NO_TURN},
     }))
-}
-
-/// Write `words` into `conversation` as a message of the agent `reply` answers as, through the
-/// turn's own action service: whether Chat took them. A sub-agent's turn writes plain words
-/// into its own conversation and nothing else.
-async fn post(reply: &Reply, conversation: &str, words: &str) -> bool {
-    let words = words.trim();
-    if words.is_empty() {
-        return true;
-    }
-    let route = DocumentRoute {
-        app_id: CHAT.to_owned(),
-        cluster_id: reply.workspace.clone(),
-        document: String::new(),
-    };
-    let mut arguments = Map::new();
-    arguments.insert("channel".into(), json!(conversation));
-    arguments.insert("text".into(), json!(words));
-    let posted = invoke_named(
-        &reply.provider,
-        &reply.caller,
-        &route,
-        &collab_types::document::chain_resource_id(&chat::parts::chain()),
-        "post",
-        arguments,
-    )
-    .await;
-    if let Err(error) = &posted {
-        tracing::warn!(workspace = %reply.workspace, %error, "what a coding agent said was not taken as a message of its conversation");
-    }
-    posted.is_ok()
 }
 
 impl super::ServerAgents {
@@ -657,14 +632,11 @@ impl super::ServerAgents {
         (scope, turn, reply, going): (&TurnScope, &mut Turn, &mut Reply, &going::Going),
     ) -> Outcome {
         let workspace = scope.workspace.clone();
-        let (words, kind) = self.asked(&workspace, turn).await;
-        // Words its person wrote to it themselves, under no cause, are their yes to a start.
-        let typed = is_their_yes(turn, kind.as_deref());
+        let (words, job) = asked(turn);
+        // What its person asked it themselves is their yes to a start.
+        let typed = is_their_yes(turn);
         // A harness that never worked is handed its job before anything else it is told.
-        if !work.lived
-            && work.described.session.is_none()
-            && kind.as_deref() != Some(sub_agents::JOB)
-        {
+        if !work.lived && work.described.session.is_none() && !job {
             let job = work.sub.job.clone();
             if let Err(outcome) = self
                 .tell(work, (&workspace, &turn.agent), &job, typed)
@@ -708,8 +680,8 @@ impl super::ServerAgents {
                     Ok(tools) => *work.heard.tools.lock_recover() = Some(tools),
                     Err(why) => return Outcome::Failed(why),
                 }
-                let (words, kind) = self.asked(&workspace, turn).await;
-                let typed = is_their_yes(turn, kind.as_deref());
+                let (words, _) = asked(turn);
+                let typed = is_their_yes(turn);
                 if let Err(outcome) = self
                     .tell(work, (&workspace, &turn.agent), &words, typed)
                     .await
@@ -734,7 +706,7 @@ impl super::ServerAgents {
     }
 
     /// `turn` was stopped: its harness is asked to end. A stop on its item says there who gave
-    /// it; one on its message, through Chat, is its person's.
+    /// it; one on its ask is its person's.
     async fn stop(&self, work: &Work, workspace: &str, turn: &Turn) {
         let on_item = self
             .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &agents_document())
@@ -751,42 +723,6 @@ impl super::ServerAgents {
             *work.heard.stopped_by.lock_recover() = format!("person:{}", turn.agent.keeper);
         }
         work.coders.kept.stop(workspace, &turn.agent.id.0);
-    }
-
-    /// What `turn` asks in the message's own words, and the kind of the cause it carries. Its
-    /// job and a note are their own words, a note with whose it is; anything else is what the
-    /// message asks as every agent is told it.
-    async fn asked(&self, workspace: &str, turn: &Turn) -> (String, Option<String>) {
-        let remembered = || {
-            (
-                chat::recall::instruction_with_history(&turn.request, &turn.history),
-                None,
-            )
-        };
-        let Ask::Message { part, message, .. } = &turn.ask else {
-            return remembered();
-        };
-        let Ok(Some(held)) = self
-            .read::<chat::parts::ChatMessages>(workspace, CHAT, part)
-            .await
-        else {
-            return remembered();
-        };
-        let Some(found) = held.messages.get(&Id::from_raw(message.clone())) else {
-            return remembered();
-        };
-        let own = found.text.trim();
-        match &found.cause {
-            Some(cause) if cause.kind.0 == sub_agents::NOTE => (
-                format!("A note from {}: {own}", cause.label),
-                Some(cause.kind.0.clone()),
-            ),
-            Some(cause) if cause.kind.0 == sub_agents::JOB => {
-                (own.to_owned(), Some(cause.kind.0.clone()))
-            }
-            Some(cause) => (chat::summons::request(found).0, Some(cause.kind.0.clone())),
-            None => (chat::summons::request(found).0, None),
-        }
     }
 
     /// Take one thing `work`'s harness said: the turn's outcome when that ends the turn.
@@ -886,7 +822,7 @@ impl super::ServerAgents {
     }
 
     /// `agent`'s process is over as `ended`: its item says when, how and why, and who stopped
-    /// it where Chat's stop did.
+    /// it where a stop on its ask did.
     async fn coder_ended(
         &self,
         workspace: &str,

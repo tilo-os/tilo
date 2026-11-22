@@ -161,9 +161,6 @@ pub struct WorkspaceActionProvider {
     own: Vec<Arc<dyn TurnProvider>>,
     /// How the calls those took ended; `None` while it answers none of them.
     ended: Option<turn_provider::Ended>,
-    /// The one conversation a sub-agent's turn writes in, while this serves such a turn
-    /// ([`sub_agents::admits`]).
-    kept_to: Option<sub_agents::Own>,
     /// What its own services answered, for a caller that follows an invocation.
     answered: OwnAnswers,
     /// What the person asked of the turn this serves, in their words: the purpose History
@@ -230,7 +227,6 @@ impl WorkspaceActionProvider {
             events: None,
             own: Vec::new(),
             ended: None,
-            kept_to: None,
             initiative: None,
             answered: OwnAnswers::default(),
             purpose: None,
@@ -366,14 +362,6 @@ impl WorkspaceActionProvider {
         self
     }
 
-    /// The same service, kept to `own` for a turn of the sub-agent that writes there: of Chat it
-    /// takes that turn's answer, its question and its words there, and nothing else.
-    #[must_use]
-    fn keeping_to(mut self, own: Option<sub_agents::Own>) -> Self {
-        self.kept_to = own;
-        self
-    }
-
     fn workspace_caller<'a>(&self, person_work: &'a Caller) -> std::borrow::Cow<'a, Caller> {
         let Some(roster) = &self.roster_caller else {
             return std::borrow::Cow::Borrowed(person_work);
@@ -452,11 +440,6 @@ impl ActionProvider for WorkspaceActionProvider {
             if context.purpose.is_none() {
                 context.purpose = Some(purpose.clone());
             }
-        }
-        if let Some(own) = &self.kept_to
-            && !sub_agents::admits(own, caller, &request)
-        {
-            return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         if let Some(reason) = shares::refuses(caller, &request) {
             return Pending::ready(Err(ActionCallError::InvalidRequest { reason }));
@@ -750,8 +733,6 @@ struct Asks {
     stopped: Vec<Turn>,
     /// The turns their people's answers owe the agents that asked them.
     answered: Vec<answers::Wake>,
-    /// What this server owes the workspace's sub-agents beside their turns.
-    sub: sub_agents::Owed,
 }
 
 /// What the first step of a look read of a workspace: what it owes its agents, and where the
@@ -1006,7 +987,7 @@ impl ServerAgents {
         past: Option<&(String, Ask)>,
     ) -> Result<bool, String> {
         let read = self.read_look(workspace).await?;
-        Ok(Box::pin(self.enter_past(workspace, read, past)).await)
+        Ok(self.enter_past(workspace, read, past))
     }
 
     /// The first step of a look: what `workspace` owes, read once what its people answered and
@@ -1033,12 +1014,12 @@ impl ServerAgents {
     /// The second step of a look: begin every turn `read` holds whose place is free, and hand
     /// the others to the turns that go there. Whether what was read was still current wherever
     /// it was handed on: where it was not, a look reads again.
-    pub async fn enter_look(&self, workspace: &str, read: LookRead) -> bool {
-        Box::pin(self.enter_past(workspace, read, None)).await
+    pub fn enter_look(&self, workspace: &str, read: LookRead) -> bool {
+        self.enter_past(workspace, read, None)
     }
 
     /// [`Self::enter_look`], leaving out the ask `past` names ([`Self::look_past`]).
-    async fn enter_past(
+    fn enter_past(
         &self,
         workspace: &str,
         LookRead { reading, asks }: LookRead,
@@ -1114,9 +1095,7 @@ impl ServerAgents {
                 }
             }
         }
-        // A note is handed on as its person's own words are: with what this look read.
-        let carried = Box::pin(self.carry(workspace, asks.sub, reading)).await;
-        current && carried
+        current
     }
 
     /// Look at `workspace` once a turn ended on `past`: its place is free, so what waited for
@@ -1176,7 +1155,14 @@ impl ServerAgents {
                 .map_err(|error| error.to_string())?;
         }
         let mut asks = self.chat_asks(workspace, &agents, &routes).await?;
-        let (owed, stopped) = asked::turns(&self.workspaces, workspace, &agents).await?;
+        // What the list holds for the sub-agents worked here is asked of them first, so this
+        // look reads those asks with every other.
+        let roster = self.team_roster(workspace).await?;
+        if let Some(roster) = &roster {
+            self.ask_team(workspace, roster, &agents).await?;
+        }
+        let (owed, stopped) =
+            asked::turns(&self.workspaces, workspace, &agents, roster.as_ref()).await?;
         asks.turns.extend(owed);
         asks.stopped.extend(stopped);
         asks.turns.extend(
@@ -1231,7 +1217,6 @@ impl ServerAgents {
             self.workspaces.note_waiting(workspace, waiting);
             return Ok(asks);
         };
-        let mut team = self.team(workspace, agents).await?;
         for (app, document) in routes {
             if app != CHAT
                 || collab_types::document::DocumentId::parse(document)
@@ -1248,12 +1233,10 @@ impl ServerAgents {
             waiting.extend(self::asks::waiting_in(workspace, document, &part, agents));
             answered.extend(answers::answered_in(&part, agents));
             woken.extend(answers::woken_in(&part));
-            team.read(document, &chat, &part);
         }
         self.workspaces.note_waiting(workspace, waiting);
         answered.retain(|wake| !woken.contains(&wake.key));
         asks.answered = answered;
-        team.settle(&mut asks);
         Ok(asks)
     }
 
@@ -1457,7 +1440,6 @@ impl ServerAgents {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
                 .offering_initiative(self.initiative.clone())
-                .keeping_to(self.own_of(workspace, turn).await)
                 .serving_ask(&turn.request),
             person: Caller::authenticated(person, device).in_workspace(workspace),
             roster,
@@ -2065,6 +2047,21 @@ impl Reply {
     async fn taken(&self) {
         if let Ask::Message { .. } = &self.ask {
             let _ = self.work(json!({"state": "taken"}), None).await;
+        }
+    }
+
+    /// Write `words` at the end of the reply while the turn works: what a coding agent's harness
+    /// says on the way.
+    ///
+    /// # Errors
+    /// The turn answers no ask, or its reply did not take them.
+    async fn says(&self, words: &str) -> Result<(), String> {
+        match &self.replying {
+            Some(replying) => match words.trim() {
+                "" => Ok(()),
+                words => replying.say(&format!("{words}\n\n")).await,
+            },
+            None => Err("only the reply to an ask takes words on the way".to_owned()),
         }
     }
 

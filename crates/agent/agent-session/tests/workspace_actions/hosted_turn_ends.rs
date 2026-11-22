@@ -398,7 +398,7 @@ async fn a_look_overtaken_by_the_next_turn_hands_that_turn_nothing() {
     .await;
 
     // The first look enters only now, with what it read before both.
-    let current = agents.enter_look(&workspace, overtaken).await;
+    let current = agents.enter_look(&workspace, overtaken);
     hold.open();
 
     let ordered = ended(&workspaces, &workspace, &second).await;
@@ -531,7 +531,7 @@ async fn a_note_read_before_its_answer_is_not_handed_to_the_next_turn() {
     .await;
 
     // The first look carries the note only now.
-    let current = agents.enter_look(&workspace, overtaken).await;
+    let current = agents.enter_look(&workspace, overtaken);
     person_hold.open();
 
     let answered = reply_of(&workspaces, &workspace, &typed, "usage-drop").await;

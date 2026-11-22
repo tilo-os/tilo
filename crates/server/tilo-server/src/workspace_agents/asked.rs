@@ -20,7 +20,7 @@ use tilo_workspace_service::asks::{self, AskState, Asked};
 use tilo_workspace_service::tl_records::Packages;
 use tilo_workspace_service::work::{self, Taking};
 
-use super::{Ask, Turn};
+use super::{Ask, Turn, sub_agents};
 use crate::workspaces::Workspaces;
 
 /// Whether `app`'s record is one asks are read in: tilolang Chat's, which uses the agent
@@ -33,14 +33,14 @@ pub(super) fn keeps_asks(app: &str) -> bool {
 const AROUND: usize = 30;
 
 /// The packages Chat's record is read through, compiled once for the server.
-fn packages() -> Result<Packages, String> {
+pub(super) fn packages() -> Result<Packages, String> {
     static COMPILED: OnceLock<Result<Packages, String>> = OnceLock::new();
     COMPILED.get_or_init(asks::chat_packages).clone()
 }
 
 /// The member a record is opened as on this server: none, so nothing a mention in it asks is
 /// made here for anyone.
-fn viewer() -> asks::Actor {
+pub(super) fn viewer() -> asks::Actor {
     asks::Actor::App(tilo_app_id::AppId::new(asks::AGENT_APP))
 }
 
@@ -50,7 +50,8 @@ pub(super) fn device(workspaces: &Workspaces) -> String {
 }
 
 /// The turns `workspace`'s asks owe `agents` here, and the turns their askers stopped while this
-/// server worked on them.
+/// server worked on them. What a team asks ([`sub_agents::is_team`]) is read as `roster`, the
+/// workspace's list of its agents, says, and nothing that sits around it.
 ///
 /// # Errors
 /// A record could not be read.
@@ -58,44 +59,49 @@ pub(super) async fn turns(
     workspaces: &Workspaces,
     workspace: &str,
     agents: &std::collections::BTreeMap<String, Agent>,
+    roster: Option<&tilo_workspace_agent::WorkspaceAgents>,
 ) -> Result<(Vec<Turn>, Vec<Turn>), String> {
     let packages = packages()?;
     let me = device(workspaces);
     let now = tilo_clock::unix_now_ms_i64();
     // Each agent by its id, with its keeper where it has one.
-    let wanted: std::collections::BTreeMap<String, Option<tilo_action_policy::MemberId>> = agents
+    let wanted: std::collections::BTreeMap<String, (Agent, Option<tilo_action_policy::MemberId>)> = agents
         .iter()
         .map(|(id, agent)| {
             let keeper = super::keeper_of(agent).map(tilo_action_policy::MemberId::person);
-            (id.clone(), keeper)
+            (id.clone(), (agent.clone(), keeper))
         })
         .collect();
-    let read = workspaces
+    let (all, read) = workspaces
         .with_tl_record(workspace, &packages, viewer(), move |opened| {
+            let all = asks::asks(opened)?;
             let mut read = Vec::new();
-            for asked in asks::asks(opened)? {
-                let Some(agent) = asked.agent.agent_id().map(str::to_owned) else {
+            for (index, asked) in all.iter().enumerate() {
+                let Some((agent, keeper)) = asked.agent.agent_id().and_then(|id| wanted.get(id)) else {
                     continue;
                 };
-                let Some(keeper) = wanted.get(&agent) else {
-                    continue;
+                let team = sub_agents::is_team(agent, asked);
+                let around = if team {
+                    None
+                } else {
+                    asked
+                        .from
+                        .as_ref()
+                        .map(|from| asks::around(opened, from, AROUND))
                 };
-                let around = asked
-                    .from
-                    .as_ref()
-                    .map(|from| asks::around(opened, from, AROUND));
-                let private = keeper
-                    .as_ref()
-                    .is_some_and(|keeper| asks::private_to(opened, &asked, keeper, &asked.agent));
-                read.push((agent, asked, around, private));
+                let private = !team
+                    && keeper
+                        .as_ref()
+                        .is_some_and(|keeper| asks::private_to(opened, asked, keeper, &asked.agent));
+                read.push((agent.id.0.clone(), index, around, private));
             }
-            Ok(read)
+            Ok((all, read))
         })
         .await?;
     let mut owed = Vec::new();
     let mut stopped = Vec::new();
-    for (agent, asked, around, private) in read {
-        let Some(agent) = agents.get(&agent) else {
+    for (agent, index, around, private) in read {
+        let (Some(agent), Some(asked)) = (agents.get(&agent), all.get(index)) else {
             continue;
         };
         let taking = work::takes_turn(&asked.claims, &me, now);
@@ -103,11 +109,24 @@ pub(super) async fn turns(
             && asked
                 .latest()
                 .is_some_and(|reply| reply.state == AskState::Working);
-        let turn = || turn_of(packages.app(), agent, &asked, around.as_ref(), private);
+        let (turn, item_stopped) = if sub_agents::is_team(agent, asked) {
+            match roster
+                .and_then(|roster| sub_agents::team_turn(roster, packages.app(), agent, asked, &all))
+            {
+                Some((turn, stopped)) => (Some(turn), stopped),
+                None => (None, false),
+            }
+        } else {
+            (turn_of(packages.app(), agent, asked, around.as_ref(), private), false)
+        };
         match asked.state {
-            AskState::Stopped if ours_working => stopped.extend(turn()),
-            AskState::Waiting if !matches!(taking, Taking::Theirs(_)) => owed.extend(turn()),
-            AskState::Working if taking == Taking::Mine => owed.extend(turn()),
+            AskState::Stopped if ours_working => stopped.extend(turn),
+            // What a stop on a sub-agent's item ended and nobody took is taken back by its
+            // asker ([`super::ServerAgents::ask_team`]).
+            AskState::Waiting if item_stopped => {}
+            AskState::Waiting if !matches!(taking, Taking::Theirs(_)) => owed.extend(turn),
+            AskState::Working if taking == Taking::Mine && item_stopped => stopped.extend(turn),
+            AskState::Working if taking == Taking::Mine => owed.extend(turn),
             _ => {}
         }
     }
@@ -285,7 +304,7 @@ impl Replying {
     }
 
     /// The reply: the one this run started, else the ask's newest, which an earlier run left.
-    async fn reply(&self) -> Result<asks::ResourceRef, String> {
+    pub(super) async fn reply(&self) -> Result<asks::ResourceRef, String> {
         let started = self.reply.lock_recover().clone();
         if let Some(reply) = started {
             return Ok(reply);
