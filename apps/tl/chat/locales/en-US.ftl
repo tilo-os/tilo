@@ -260,6 +260,8 @@ d-peb7lz2j-body = Body
 
 d-peb7lz2j-reply_to = Reply to
 
+d-peb7lz2j-attachments = Attachments
+
 d-634q3q33 = Write to
     .doc = Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar.
 

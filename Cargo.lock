@@ -4250,6 +4250,7 @@ dependencies = [
  "tilo-server",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilo-workspace-service",
  "tokio",
  "tokio-rustls",
  "tokio-websockets",

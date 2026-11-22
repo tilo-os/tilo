@@ -29,8 +29,12 @@ use tilo_server::workspace_bots::installed::{self, BotRunner};
 use tilo_server::workspace_bots::membership::{HostRootCertifier, keep_member};
 use tilo_server::workspaces::{AddMemberRequest, MemberPlace, Workspaces};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
-use ui::tilo_actions::ActionContext;
-use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
+use tilo_workspace_service::tl_records::runtime::blob::FileValue;
+use tilo_workspace_service::tl_records::runtime::ids::AppId;
+use tilo_workspace_service::tl_records::runtime::rich::RichValue;
+use tilo_workspace_service::tl_records::runtime::{Actor, ResourceRef, Value as TlValue};
+use tilo_workspace_service::tl_records::{Opened, ProgramRecord};
+use ui::tilo_resource::{Id, Invoke, MemberId, Replica, Resource as _};
 
 tilo_automerge_isolate::test_worker!();
 tilo_agent_session::app_worker!();
@@ -81,6 +85,27 @@ fn governor() -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
+/// The id Chat keeps of a resource, out of its published id.
+fn kept(published: &str) -> &str {
+    published
+        .strip_prefix("tl:so.tilo.chat:")
+        .unwrap_or(published)
+}
+
+/// A resource of Chat named by its published id, as Chat's actions take one.
+fn resource(opened: &Opened, kind: &str, published: &str) -> ResourceRef {
+    tilo_server::tl_chat::resource(opened, kind, kept(published))
+        .unwrap_or_else(|error| panic!("{published} is a {kind}: {error}"))
+}
+
+fn none() -> TlValue {
+    TlValue::Opt(None)
+}
+
+fn rich(text: &str) -> TlValue {
+    TlValue::Rich(RichValue::from_text(text))
+}
+
 /// The workspace's documents, read as the governor's copy holds them.
 struct Workspace {
     workspaces: Workspaces,
@@ -90,6 +115,303 @@ struct Workspace {
 }
 
 impl Workspace {
+    /// Chat's tree as the bridge reads it: every conversation with its messages.
+    async fn chat(&self) -> discord::tilo::ChatRead {
+        use tilo_agent_session::bot::held::TilolangRecord as _;
+        let packages = tilo_server::tl_chat::packages().unwrap();
+        let record = self.workspaces.tl_record(&self.id, CHAT).await.unwrap();
+        let held = ProgramRecord::new(packages, record, None);
+        let reader = Actor::App(AppId::from(CHAT));
+        let tree = held.read("tree", &reader).unwrap();
+        discord::tilo::ChatRead::of(&tree)
+    }
+
+    /// Chat's sidebar: its categories and channels.
+    async fn channels(&self) -> discord::tilo::WorkspaceChat {
+        self.chat().await.workspace()
+    }
+
+    /// Every message Chat holds, channel messages and thread replies.
+    async fn messages(&self) -> Vec<discord::tilo::Message> {
+        self.chat().await.messages()
+    }
+
+    /// The message whose body is `text`.
+    async fn message(&self, text: &str) -> Option<discord::tilo::Message> {
+        self.messages()
+            .await
+            .into_iter()
+            .find(|message| message.text == text)
+    }
+
+    /// The message with published id `id`.
+    async fn message_at(&self, id: &str) -> Option<discord::tilo::Message> {
+        self.messages().await.into_iter().find(|m| m.id == id)
+    }
+
+    /// Open Chat's record, run `work` on it as `who`'s viewer, and write it back.
+    async fn with_chat<R: Send + 'static>(
+        &self,
+        who: &str,
+        work: impl FnOnce(&mut Opened) -> Result<R, String> + Send + 'static,
+    ) -> R {
+        let viewer = Actor::Member(MemberId::person(who));
+        let packages = tilo_server::tl_chat::packages().unwrap();
+        self.workspaces
+            .with_tl_record(&self.id, &packages, viewer, work)
+            .await
+            .unwrap()
+    }
+
+    /// The sidebar's root, as Chat's actions on it take it.
+    fn root(chat: &mut Opened) -> TlValue {
+        TlValue::resource(&chat.open_root().unwrap())
+    }
+
+    /// Ada, Bo or anyone posts `text` in the conversation `to` (a published id), its kind one of
+    /// Chat's.
+    async fn post(&self, who: &str, to: &str, kind: &str, text: &str) -> String {
+        let (who, to, kind, text) = (
+            who.to_owned(),
+            to.to_owned(),
+            kind.to_owned(),
+            text.to_owned(),
+        );
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let target = TlValue::resource(&resource(chat, &kind, &to));
+            let made = chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, "send"),
+                vec![target, rich(&text), none()],
+                None,
+            )?;
+            match made {
+                TlValue::Ref(reference) => {
+                    Ok(format!("tl:so.tilo.chat:{}", reference.target.id_string()))
+                }
+                other => Err(format!("send made {other:?}")),
+            }
+        })
+        .await
+    }
+
+    async fn react(&self, who: &str, message: &str, emoji: &str) {
+        let (who, message, emoji) = (who.to_owned(), message.to_owned(), emoji.to_owned());
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let target = TlValue::resource(&resource(chat, "Message", &message));
+            chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, "react"),
+                vec![target, TlValue::Text(emoji)],
+                None,
+            )
+            .map(drop)
+        })
+        .await;
+    }
+
+    async fn edit(&self, who: &str, message: &str, text: &str) {
+        let (who, message, text) = (who.to_owned(), message.to_owned(), text.to_owned());
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let target = TlValue::resource(&resource(chat, "Message", &message));
+            chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, "edit"),
+                vec![target, rich(&text)],
+                None,
+            )
+            .map(drop)
+        })
+        .await;
+    }
+
+    async fn delete(&self, who: &str, conversation: &str, kind: &str, message: &str) {
+        let (who, conversation, kind, message) = (
+            who.to_owned(),
+            conversation.to_owned(),
+            kind.to_owned(),
+            message.to_owned(),
+        );
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let to = TlValue::resource(&resource(chat, &kind, &conversation));
+            let m = TlValue::resource(&resource(chat, "Message", &message));
+            chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, "delete"),
+                vec![to, m],
+                None,
+            )
+            .map(drop)
+        })
+        .await;
+    }
+
+    async fn start_thread(&self, who: &str, conversation: &str, kind: &str, root: &str) -> String {
+        let (who, conversation, kind, root) = (
+            who.to_owned(),
+            conversation.to_owned(),
+            kind.to_owned(),
+            root.to_owned(),
+        );
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let to = TlValue::resource(&resource(chat, &kind, &conversation));
+            let from = TlValue::resource(&resource(chat, "Message", &root));
+            let made = chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, "start_thread"),
+                vec![to, from, TlValue::Text("thread".into())],
+                None,
+            )?;
+            match made {
+                TlValue::Ref(reference) => {
+                    Ok(format!("tl:so.tilo.chat:{}", reference.target.id_string()))
+                }
+                other => Err(format!("start_thread made {other:?}")),
+            }
+        })
+        .await
+    }
+
+    async fn new_category(&self, who: &str, name: &str) -> String {
+        let (who, name) = (who.to_owned(), name.to_owned());
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let all = Self::root(chat);
+            let made = chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, "new_category"),
+                vec![all, TlValue::Text(name)],
+                None,
+            )?;
+            match made {
+                TlValue::Ref(reference) => {
+                    Ok(format!("tl:so.tilo.chat:{}", reference.target.id_string()))
+                }
+                other => Err(format!("new_category made {other:?}")),
+            }
+        })
+        .await
+    }
+
+    async fn new_channel(&self, who: &str, name: &str, category: Option<&str>) -> String {
+        let (who, name, category) = (who.to_owned(), name.to_owned(), category.map(str::to_owned));
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let (action, target, args) = match category {
+                Some(category) => (
+                    "add_channel",
+                    resource(chat, "Category", &category),
+                    vec![TlValue::Text(name)],
+                ),
+                None => (
+                    "new_channel",
+                    chat.open_root().unwrap(),
+                    vec![TlValue::Text(name)],
+                ),
+            };
+            let mut given = vec![TlValue::resource(&target)];
+            given.extend(args);
+            given.push(TlValue::Text(String::new()));
+            let made = chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, action),
+                given,
+                None,
+            )?;
+            match made {
+                TlValue::Ref(reference) => {
+                    Ok(format!("tl:so.tilo.chat:{}", reference.target.id_string()))
+                }
+                other => Err(format!("{action} made {other:?}")),
+            }
+        })
+        .await
+    }
+
+    async fn new_voice_channel(&self, who: &str, name: &str) -> String {
+        let (who, name) = (who.to_owned(), name.to_owned());
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let all = Self::root(chat);
+            let made = chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, "new_voice_channel"),
+                vec![all, TlValue::Text(name)],
+                None,
+            )?;
+            match made {
+                TlValue::Ref(reference) => {
+                    Ok(format!("tl:so.tilo.chat:{}", reference.target.id_string()))
+                }
+                other => Err(format!("new_voice_channel made {other:?}")),
+            }
+        })
+        .await
+    }
+
+    /// Move `channel` (one of `kind`'s) under `category` (a published id; none for the top) at
+    /// `at` among the channels listed there.
+    async fn move_channel(
+        &self,
+        who: &str,
+        channel: &str,
+        kind: &str,
+        category: Option<&str>,
+        at: i64,
+    ) {
+        let (who, channel, kind, category) = (
+            who.to_owned(),
+            channel.to_owned(),
+            kind.to_owned(),
+            category.map(str::to_owned),
+        );
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let category = match category {
+                Some(category) => TlValue::Opt(Some(Box::new(TlValue::resource(&resource(
+                    chat, "Category", &category,
+                ))))),
+                None => none(),
+            };
+            let all = Self::root(chat);
+            let ch = TlValue::resource(&resource(chat, &kind, &channel));
+            chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, "move_channel"),
+                vec![all, ch, category, TlValue::Int(at)],
+                None,
+            )
+            .map(drop)
+        })
+        .await;
+    }
+
+    async fn move_category(&self, who: &str, category: &str, at: i64) {
+        let (who, category) = (who.to_owned(), category.to_owned());
+        let viewer = who.clone();
+        self.with_chat(viewer.as_str(), move |chat| {
+            let all = Self::root(chat);
+            let moved = TlValue::resource(&resource(chat, "Category", &category));
+            chat.invoke(
+                &Actor::Member(MemberId::person(who.as_str())),
+                (CHAT, "move_category"),
+                vec![all, moved, TlValue::Int(at)],
+                None,
+            )
+            .map(drop)
+        })
+        .await;
+    }
+
+    async fn guild(&self) -> Guild {
+        Guild::read(&self.doc(APP).await).unwrap()
+    }
+
     async fn doc(&self, app: &str) -> AutoCommit {
         AutoCommit::load(
             &self
@@ -102,192 +424,14 @@ impl Workspace {
         .unwrap()
     }
 
-    async fn chat(&self) -> chat::Chat {
-        chat::Chat::read(&self.doc(CHAT).await).unwrap()
-    }
-
-    /// The chat's first part of messages, read.
-    async fn part_messages(&self) -> chat::parts::ChatMessages {
-        chat::messages::read_part(&self.part().await)
-    }
-
-    /// The chat's first part of messages, as the workspace holds it.
-    async fn part(&self) -> AutoCommit {
-        self.workspaces
-            .resource_document(&self.id, CHAT, chat::parts::part(0).as_str())
-            .await
-            .ok()
-            .flatten()
-            .map(|bytes| AutoCommit::load(&bytes).unwrap())
-            .unwrap_or_default()
-    }
-
-    /// Do `invoke` to the chat's messages as `author`, as their page does: a
-    /// view of the chat resource and the parts of its messages the workspace
-    /// holds, the verb going through the chain to the part it changes
-    /// (starting the first), each changed part carried to the workspace on its
-    /// own route. The ids of the messages it added.
-    async fn part_as(
-        &self,
-        author: &str,
-        invoke: Invoke<chat::parts::ChatMessages>,
-    ) -> Vec<String> {
-        use tilo_agent_session::{Replica, ReplicaActor, Seed};
-        use ui::collaboration::DocumentMutation;
-        let chat = self
-            .workspaces
-            .resource_document(&self.id, CHAT, "")
-            .await
-            .unwrap()
-            .unwrap();
-        let mut held = Vec::new();
-        for (app, record) in self.workspaces.document_routes(&self.id).await.unwrap() {
-            let Some(part) = ui::resource::DocumentId::parse(&record)
-                .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
-            else {
-                continue;
-            };
-            let bytes = self
-                .workspaces
-                .resource_document(&self.id, CHAT, &record)
-                .await
-                .unwrap()
-                .unwrap();
-            held.push((part, bytes));
-        }
-        let ids = |page: &Replica| -> Vec<String> {
-            page.resources_beside()
-                .iter()
-                .filter_map(|record| page.read_resource(record, chat::messages::read_part))
-                .flat_map(|part| {
-                    part.messages
-                        .ids()
-                        .map(|id| id.as_str().to_owned())
-                        .collect::<Vec<_>>()
-                })
-                .collect()
-        };
-        let (taken, added) = {
-            let mut page = Replica::open(
-                &self.catalogue,
-                CHAT,
-                &self.id,
-                &ui::tilo_actions::MemberId::person(author),
-                ReplicaActor::Owner,
-                Seed::Existing {
-                    record: ui::resource::DocumentId::package_primary(),
-                    changes: vec![chat],
-                },
-            )
-            .unwrap();
-            for (part, bytes) in held {
-                page.apply_document(&part, &DocumentMutation::Snapshot(bytes))
-                    .unwrap();
-            }
-            let before = ids(&page);
-            page.invoke(
-                &invoke.address_on(ui::framework::chain_resource_id(&chat::parts::chain())),
-                &invoke.arguments,
-                true,
-            )
-            .unwrap();
-            let added: Vec<String> = ids(&page)
-                .into_iter()
-                .filter(|id| !before.contains(id))
-                .collect();
-            (page.take_document_mutations().unwrap(), added)
-        };
-        for (record, mutation) in taken {
-            match mutation {
-                DocumentMutation::Snapshot(bytes) => self
-                    .workspaces
-                    .author_workspace_document(
-                        &self.id,
-                        &self.cert,
-                        (CHAT, record.as_str()),
-                        move |doc| {
-                            tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                                .map(drop)
-                                .map_err(|error| error.to_string())
-                        },
-                    )
-                    .await
-                    .unwrap(),
-                DocumentMutation::Incremental(bytes) => self
-                    .workspaces
-                    .author_application(
-                        &self.id,
-                        &self.cert,
-                        &self.catalogue,
-                        CHAT,
-                        record.as_str(),
-                        move |doc| {
-                            tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                                .map(drop)
-                                .map_err(|error| error.to_string())
-                        },
-                    )
-                    .await
-                    .unwrap(),
-            }
-        }
-        added
-    }
-
-    async fn guild(&self) -> Guild {
-        Guild::read(&self.doc(APP).await).unwrap()
-    }
-
-    /// Change the Chat resource as `author`, as their own device would.
-    async fn chat_as<T: Send + 'static>(
-        &self,
-        change: impl FnOnce(&mut AutoCommit) -> Result<T, String> + Send + 'static,
-    ) -> T {
-        self.workspaces
-            .author_application(&self.id, &self.cert, &self.catalogue, CHAT, "", change)
-            .await
-            .unwrap()
-    }
-
-    /// The messages posted under another name, as their text and that name:
-    /// the name a post showed is in its change's entry, and the message it
-    /// made is the one its change added.
+    /// The messages posted under another name, as their text and that name.
     async fn bridged(&self) -> Vec<(String, String)> {
-        let mut doc = self.part().await;
-        let ids = |doc: &AutoCommit| -> Vec<String> {
-            chat::messages::read_part(doc)
-                .messages
-                .ids()
-                .map(|id| id.as_str().to_owned())
-                .collect()
-        };
-        let mut out = Vec::new();
-        for change in doc.get_changes(&[]) {
-            let Some(name) = change
-                .message()
-                .and_then(ActionContext::from_change_message)
-                .and_then(|context| context.invoker?.appearance)
-                .map(|appearance| appearance.name)
-            else {
-                continue;
-            };
-            let (hash, parents) = (change.hash(), change.deps().to_vec());
-            let before = ids(&doc.clone().fork_at(&parents).unwrap());
-            let mut after = doc.clone().fork_at(&[hash]).unwrap();
-            let part = chat::messages::read_part(&after);
-            for id in ids(&mut after) {
-                if !before.contains(&id) {
-                    let text = part
-                        .messages
-                        .iter()
-                        .find(|(m, _)| m.as_str() == id)
-                        .map(|(_, m)| m.text.clone())
-                        .unwrap_or_default();
-                    out.push((text, name.clone()));
-                }
-            }
-        }
-        out
+        self.messages()
+            .await
+            .into_iter()
+            .filter(|message| !message.by.is_empty())
+            .map(|message| (message.text, message.by))
+            .collect()
     }
 }
 
@@ -476,11 +620,6 @@ impl Bridge {
             .await
             .unwrap();
 
-        workspace
-            .workspaces
-            .prepare_application(&workspace.id, &cert, &workspace.catalogue, CHAT, "")
-            .await
-            .unwrap();
         // Ada is a member of the workspace, as anyone who writes in its Chat
         // is: its members are what every name it shows comes from.
         workspace
@@ -497,33 +636,19 @@ impl Bridge {
             )
             .await
             .unwrap();
-        workspace
-            .chat_as({
-                let owner = owner.clone();
-                move |doc| {
-                    lay_out_with_general_and_lounge(doc, &owner)?;
-                    if setup.existing {
-                        seed_channels(doc, &owner)?;
-                    }
-                    if setup.workspace_seeded {
-                        seed_as_a_workspace(doc, &owner)?;
-                    }
-                    Ok(())
-                }
-            })
-            .await;
+        lay_out_with_general_and_lounge(&workspace, &owner, setup).await;
         if setup.existing {
             // Someone wrote in #help before the bridge came.
             let help = workspace
-                .chat()
+                .channels()
                 .await
                 .channels
                 .iter()
-                .find(|(_, c)| c.name == "help")
-                .map(|(id, _)| id.as_str().to_owned())
+                .find(|c| c.name == "help")
+                .map(|c| c.id.clone())
                 .expect("the workspace's #help");
             workspace
-                .part_as(&ada, chat::demo::post(&help, "where do I start?", None))
+                .post(&ada, &help, "TextChannel", "where do I start?")
                 .await;
         }
 
@@ -645,74 +770,62 @@ impl Bridge {
         (bridge, runner)
     }
 
-    /// Ada does `invoke` in Chat from her own device.
-    async fn as_ada(&self, invoke: Invoke<chat::Chat>) {
-        let ada = self.ada.clone();
+    /// Ada posts `text` with one file in #general, out of the content store's `name`, `media`
+    /// and bytes.
+    async fn post_file(&self, text: &str, file: (&str, &str, &[u8])) -> String {
+        let (name, media, bytes) = file;
+        let hash = self.blobs.store(bytes).unwrap();
+        let (name, media) = (name.to_owned(), media.to_owned());
+        let size = i64::try_from(bytes.len()).unwrap();
+        let (to, text) = (self.general.clone(), text.to_owned());
+        let viewer = self.ada.clone();
         self.workspace
-            .chat_as(move |doc| {
-                chat::demo::apply_as(doc, &ada, invoke).map_err(|error| error.to_string())
+            .with_chat(&viewer, {
+                let who = self.ada.clone();
+                move |chat| {
+                    let file =
+                        TlValue::File(std::rc::Rc::new(FileValue::new(name, media, size, hash)));
+                    let att = TlValue::resource(&resource(chat, "TextChannel", &to));
+                    let made = chat.invoke(
+                        &Actor::Member(MemberId::person(who.as_str())),
+                        (CHAT, "send"),
+                        vec![att, rich(&text), none(), TlValue::List(vec![file])],
+                        None,
+                    )?;
+                    match made {
+                        TlValue::Ref(reference) => {
+                            Ok(format!("tl:so.tilo.chat:{}", reference.target.id_string()))
+                        }
+                        other => Err(format!("send made {other:?}")),
+                    }
+                }
             })
-            .await;
+            .await
     }
 
-    /// Ada does `invoke` to Chat's messages from her own device.
-    async fn as_ada_on_messages(&self, invoke: impl Into<Invoke<chat::parts::ChatMessages>>) {
-        self.workspace.part_as(&self.ada, invoke.into()).await;
-    }
-
-    /// Ada reacts to `message` with `emoji` (`added`), or takes it back: the
-    /// framework's field edit of the message's reactions, as her page makes
-    /// it.
-    async fn ada_reacts(&self, message: &str, emoji: &str, added: bool) {
-        let reactions = chat::parts::ChatMessages::paths()
-            .messages
-            .item(&Id::from_raw(message))
-            .reactions;
-        let edit = if added {
-            reactions.react(emoji)
-        } else {
-            reactions.unreact(emoji)
-        };
-        self.as_ada_on_messages(edit).await;
-    }
-
-    /// The reactions on Chat message `id`: emoji, persona and name.
-    async fn reactions_on(&self, id: &str) -> Vec<(String, Option<String>, Option<String>)> {
-        chat::messages::read_part(&self.workspace.part().await)
-            .messages
-            .iter()
-            .find(|(message, _)| message.as_str() == id)
-            .map(|(_, message)| {
-                message
-                    .reactions
-                    .iter()
-                    .map(|r| {
-                        (
-                            r.emoji.0.clone(),
-                            r.persona.as_ref().map(|p| p.0.clone()),
-                            r.name.as_ref().map(|n| n.0.clone()),
-                        )
-                    })
-                    .collect()
-            })
+    /// The reactions on Chat message `id`, each emoji.
+    async fn reactions_on(&self, id: &str) -> Vec<String> {
+        self.workspace
+            .message_at(id)
+            .await
+            .map(|message| message.reactions.into_iter().map(|r| r.emoji).collect())
             .unwrap_or_default()
+    }
+
+    /// Ada reacts to `message` with `emoji`, or takes it back when she had it.
+    async fn ada_reacts(&self, message: &str, emoji: &str) {
+        self.workspace.react(&self.ada, message, emoji).await;
     }
 
     /// Ada posts `text` in #general; the new message's id.
     async fn ada_says(&self, text: &str) -> String {
         self.workspace
-            .part_as(&self.ada, chat::demo::post(&self.general, text, None))
+            .post(&self.ada, &self.general, "TextChannel", text)
             .await
-            .pop()
-            .expect("the post is in a part")
     }
 
-    async fn chat_message(&self, text: &str) -> Option<(String, chat::chat::Message)> {
-        chat::messages::read_part(&self.workspace.part().await)
-            .messages
-            .iter()
-            .find(|(_, message)| message.text == text)
-            .map(|(id, message)| (id.as_str().to_owned(), message.clone()))
+    async fn chat_message(&self, text: &str) -> Option<discord::tilo::Message> {
+        self.workspace.message(text).await
     }
 
     /// The Discord message the bridge mapped Chat message `tilo` to.
@@ -771,11 +884,8 @@ async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
         state.plaintext_routes()
     );
     assert!(
-        state
-            .sealed_routes()
-            .iter()
-            .any(|(app, record)| app == CHAT && !record.is_empty()),
-        "the chat's messages are a sealed channel: {:?}",
+        state.sealed_routes().iter().any(|(app, _)| app == CHAT),
+        "the chat's record is a sealed channel: {:?}",
         state.sealed_routes()
     );
 
@@ -795,10 +905,9 @@ async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
     );
     let texts: Vec<String> = bridge
         .workspace
-        .part_messages()
+        .messages()
         .await
-        .messages
-        .values()
+        .iter()
         .map(|message| message.text.clone())
         .collect();
     assert_eq!(
@@ -947,14 +1056,8 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
 
     // An edit rewrites the webhook's message.
     bridge
-        .as_ada_on_messages(chat::parts::ChatMessages::EDIT_MESSAGE.with(
-            chat::messages::chat_messages::EditMessage {
-                message: Id::from_raw(&first),
-                text: "first, edited".into(),
-                body: None,
-                mentions: None,
-            },
-        ))
+        .workspace
+        .edit(&bridge.ada, &first, "first, edited")
         .await;
     settle(&mut runner, "edit", || async {
         (bridge.fake.message(&sent).unwrap()["content"] == "first, edited").then_some(())
@@ -962,7 +1065,7 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     .await;
 
     // A reaction is the bot's reaction on it.
-    bridge.ada_reacts(&first, "👍", true).await;
+    bridge.ada_reacts(&first, "👍").await;
     settle(&mut runner, "reaction", || async {
         bridge
             .fake
@@ -973,8 +1076,13 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     .await;
 
     // A reply grows a thread from it, holding the reply.
+    let thread = bridge
+        .workspace
+        .start_thread(&bridge.ada, &bridge.general, "TextChannel", &first)
+        .await;
     bridge
-        .as_ada_on_messages(chat::demo::post(&bridge.general, "a reply", Some(&first)))
+        .workspace
+        .post(&bridge.ada, &thread, "Thread", "a reply")
         .await;
     let reply = settle(&mut runner, "reply", || async {
         bridge.in_discord("a reply")
@@ -988,29 +1096,8 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     assert_eq!(reply["author"]["username"], "Ada", "{reply:#}");
 
     // A file is uploaded with the message.
-    let bytes = b"the minutes".to_vec();
-    let blob = bridge.blobs.store(&bytes).unwrap();
     bridge
-        .as_ada_on_messages(chat::parts::ChatMessages::POST.with(
-            chat::messages::chat_messages::Post {
-                message: chat::messages::NewMessage {
-                    id: None,
-                    channel: Id::from_raw(&bridge.general),
-                    text: "the notes".into(),
-                    parent: None,
-                    quoted: None,
-                    body: None,
-                    attachments: vec![tilo_reference::Attached::File {
-                        name: "notes.txt".into(),
-                        blob,
-                        size: bytes.len() as u64,
-                    }],
-                    mentions: None,
-                    written: None,
-                    origin: None,
-                },
-            },
-        ))
+        .post_file("the notes", ("notes.txt", "text/plain", b"the minutes"))
         .await;
     let file = settle(&mut runner, "file", || async {
         bridge.in_discord("the notes")
@@ -1020,11 +1107,8 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
 
     // A delete takes the message out of Discord.
     bridge
-        .as_ada_on_messages(chat::parts::ChatMessages::DELETE_MESSAGE.with(
-            chat::messages::chat_messages::DeleteMessage {
-                message: Id::from_raw(&first),
-            },
-        ))
+        .workspace
+        .delete(&bridge.ada, &bridge.general, "TextChannel", &first)
         .await;
     settle(&mut runner, "delete", || async {
         bridge.fake.message(&sent).is_none().then_some(())
@@ -1049,29 +1133,8 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
     let old = first["webhook_id"].as_str().unwrap().to_owned();
     assert!(bridge.fake.delete_webhook(&old), "the webhook was there");
 
-    let bytes = b"the minutes".to_vec();
-    let blob = bridge.blobs.store(&bytes).unwrap();
     bridge
-        .as_ada_on_messages(chat::parts::ChatMessages::POST.with(
-            chat::messages::chat_messages::Post {
-                message: chat::messages::NewMessage {
-                    id: None,
-                    channel: Id::from_raw(&bridge.general),
-                    text: "after".into(),
-                    parent: None,
-                    quoted: None,
-                    body: None,
-                    attachments: vec![tilo_reference::Attached::File {
-                        name: "notes.txt".into(),
-                        blob,
-                        size: bytes.len() as u64,
-                    }],
-                    mentions: None,
-                    written: None,
-                    origin: None,
-                },
-            },
-        ))
+        .post_file("after", ("notes.txt", "text/plain", b"the minutes"))
         .await;
     let sent = settle(&mut runner, "post after the webhook is gone", || async {
         bridge.in_discord("after")
@@ -1090,14 +1153,8 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
 
     // The old webhook's message cannot be edited any more; that is let go.
     bridge
-        .as_ada_on_messages(chat::parts::ChatMessages::EDIT_MESSAGE.with(
-            chat::messages::chat_messages::EditMessage {
-                message: Id::from_raw(&before),
-                text: "before, edited".into(),
-                body: None,
-                mentions: None,
-            },
-        ))
+        .workspace
+        .edit(&bridge.ada, &before, "before, edited")
         .await;
     bridge.ada_says("and again").await;
     let again = settle(&mut runner, "the next post", || async {
@@ -1120,10 +1177,9 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
     );
     let texts: Vec<String> = bridge
         .workspace
-        .part_messages()
+        .messages()
         .await
-        .messages
-        .values()
+        .iter()
         .map(|message| message.text.clone())
         .collect();
     for text in ["after", "and again"] {
@@ -1140,7 +1196,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     let (bridge, mut runner) = Bridge::start().await;
     let bo = User::new("3001", "Bo");
     let posted = bridge.fake.post(CHANNEL_GENERAL, &bo, "from Bo");
-    let (message, _) = settle(&mut runner, "post", || async {
+    let message = settle(&mut runner, "post", || async {
         bridge.chat_message("from Bo").await
     })
     .await;
@@ -1153,11 +1209,12 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
 
     bridge.fake.react(CHANNEL_GENERAL, &posted, &bo, "🎉");
     settle(&mut runner, "reaction", || async {
-        let (_, edited) = bridge.chat_message("from Bo, edited").await?;
-        edited
+        bridge
+            .chat_message("from Bo, edited")
+            .await?
             .reactions
             .iter()
-            .any(|reacted| reacted.emoji.0 == "🎉")
+            .any(|reacted| reacted.emoji == "🎉")
             .then_some(())
     })
     .await;
@@ -1165,14 +1222,19 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     bridge
         .fake
         .reply(CHANNEL_GENERAL, &bo, "Bo's reply", &posted);
-    let (_, reply) = settle(&mut runner, "reply", || async {
+    let reply = settle(&mut runner, "reply", || async {
         bridge.chat_message("Bo's reply").await
     })
     .await;
     assert_eq!(
-        reply.parent.as_ref().map(Id::as_str),
-        Some(message.as_str()),
-        "a Discord reply answers its message in a thread"
+        reply.parent.as_deref(),
+        None,
+        "a Discord reply is quoted in its conversation"
+    );
+    assert!(
+        reply.text.contains("Bo's reply"),
+        "the reply's words are relayed: {}",
+        reply.text
     );
 
     bridge.fake.post_file(
@@ -1181,7 +1243,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
         "Bo's notes",
         ("notes.txt", "text/plain", b"the minutes"),
     );
-    let (_, file) = settle(&mut runner, "file", || async {
+    let file = settle(&mut runner, "file", || async {
         bridge.chat_message("Bo's notes").await
     })
     .await;
@@ -1199,36 +1261,32 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
         "Bo's photo",
         ("photo.png", "image/png", &png),
     );
-    let (_, photo) = settle(&mut runner, "picture", || async {
+    let photo = settle(&mut runner, "picture", || async {
         bridge.chat_message("Bo's photo").await
     })
     .await;
-    assert!(
-        matches!(
-            photo.attachments.first(),
-            Some(tilo_reference::Attached::Image { name, w: 640, h: 480, .. }) if name == "photo.png"
-        ),
+    assert_eq!(
+        photo.attachments.first().map(|f| f.name.as_str()),
+        Some("photo.png"),
         "{:?}",
         photo.attachments
     );
 
     bridge.fake.delete(&posted, None);
     settle(&mut runner, "delete", || async {
-        (!bridge
+        bridge
             .workspace
-            .part_messages()
+            .message_at(&message.id)
             .await
-            .messages
-            .iter()
-            .any(|(id, _)| id.as_str() == message))
-        .then_some(())
+            .is_none()
+            .then_some(())
     })
     .await;
 }
 
-/// Reactions cross both ways, each Discord member their own reaction in
-/// Tilo, the server's custom emoji for the workspace's emoji of
-/// the same name, and nothing mirrored in going back out.
+/// Reactions cross both ways: a person's reaction in Chat is the bot's in Discord, and a Discord
+/// member's reaction is the bot's own in Chat, the server's custom emoji for the workspace's emoji
+/// of the same name, and nothing mirrored in going back out.
 #[tokio::test(flavor = "multi_thread")]
 async fn reactions_cross_both_ways_and_custom_emoji_by_name() {
     let (bridge, mut runner) = Bridge::start().await;
@@ -1246,14 +1304,14 @@ async fn reactions_cross_both_ways_and_custom_emoji_by_name() {
 
     // Tilo to Discord: a Unicode emoji as itself, a workspace emoji as the
     // server's emoji of its name.
-    bridge.ada_reacts(&first, "👍", true).await;
-    bridge.ada_reacts(&first, ":tilo_hello:", true).await;
+    bridge.ada_reacts(&first, "👍").await;
+    bridge.ada_reacts(&first, ":tilo_hello:").await;
     settle(&mut runner, "Tilo reactions in Discord", || async {
         (bridge.fake.bot_reactions_on(&sent) == ["👍", "tilo_hello:55"]).then_some(())
     })
     .await;
     // A workspace emoji the server has none of stays in Tilo.
-    bridge.ada_reacts(&first, ":pizza:", true).await;
+    bridge.ada_reacts(&first, ":pizza:").await;
     let calls = quiet(&mut runner, &bridge, "after pizza").await;
     assert!(
         !calls.iter().any(|call| call.contains("/reactions/")),
@@ -1261,32 +1319,19 @@ async fn reactions_cross_both_ways_and_custom_emoji_by_name() {
     );
     assert_eq!(bridge.fake.bot_reactions_on(&sent), ["👍", "tilo_hello:55"]);
 
-    // Discord to Tilo: each member's own reaction, under their name; a
-    // custom emoji as its `:name:`.
+    // Discord to Tilo: the bot's own reaction, a custom emoji as its `:name:`.
     let bo = User::new("3001", "Bo");
     let cy = User::new("3002", "Cy");
     bridge.fake.react(CHANNEL_GENERAL, &sent, &bo, "🎉");
     bridge.fake.react(CHANNEL_GENERAL, &sent, &cy, "🎉");
     bridge.fake.react(CHANNEL_GENERAL, &sent, &bo, ":party:");
-    let bridged = |reactions: &[(String, Option<String>, Option<String>)]| {
-        let mut theirs: Vec<(String, String, String)> = reactions
-            .iter()
-            .filter_map(|(emoji, persona, name)| {
-                Some((emoji.clone(), persona.clone()?, name.clone()?))
-            })
-            .collect();
-        theirs.sort();
-        theirs
+    let theirs = |mut emoji: Vec<String>| {
+        emoji.sort();
+        emoji
     };
     settle(&mut runner, "Discord reactions in Tilo", || async {
-        let theirs = bridged(&bridge.reactions_on(&first).await);
-        (theirs
-            == [
-                (":party:".into(), "discord/3001".into(), "Bo".into()),
-                ("🎉".into(), "discord/3001".into(), "Bo".into()),
-                ("🎉".into(), "discord/3002".into(), "Cy".into()),
-            ])
-        .then_some(())
+        let held = bridge.reactions_on(&first).await;
+        (theirs(held) == [":party:".to_owned(), "🎉".to_owned()]).then_some(())
     })
     .await;
     // What came in from Discord does not go back out as the bot's.
@@ -1296,17 +1341,17 @@ async fn reactions_cross_both_ways_and_custom_emoji_by_name() {
     // Taking reactions back follows on both sides.
     bridge.fake.unreact(CHANNEL_GENERAL, &sent, &bo, "🎉");
     settle(&mut runner, "Bo's reaction gone", || async {
-        let theirs = bridged(&bridge.reactions_on(&first).await);
-        (theirs
-            == [
-                (":party:".into(), "discord/3001".into(), "Bo".into()),
-                ("🎉".into(), "discord/3002".into(), "Cy".into()),
-            ])
-        .then_some(())
+        let held = bridge.reactions_on(&first).await;
+        (theirs(held) == [":party:".to_owned(), "🎉".to_owned()]).then_some(())
     })
     .await;
-    bridge.ada_reacts(&first, "👍", false).await;
-    bridge.ada_reacts(&first, ":tilo_hello:", false).await;
+    bridge.fake.unreact(CHANNEL_GENERAL, &sent, &cy, "🎉");
+    settle(&mut runner, "the last taker gone", || async {
+        (bridge.reactions_on(&first).await == [":party:"]).then_some(())
+    })
+    .await;
+    bridge.ada_reacts(&first, "👍").await;
+    bridge.ada_reacts(&first, ":tilo_hello:").await;
     settle(&mut runner, "Ada's reactions gone from Discord", || async {
         bridge.fake.bot_reactions_on(&sent).is_empty().then_some(())
     })
@@ -1425,14 +1470,14 @@ async fn an_existing_server_is_adopted_as_it_is() {
     // own #help, written in, stays in Tilo; #show-and-tell and the workspace's
     // own "Voice" with its Lounge voice channel, none of which the server
     // has and nobody wrote in, go.
-    let chat = bridge.workspace.chat().await;
-    let mut names: Vec<&str> = chat.channels.values().map(|c| c.name.as_str()).collect();
+    let chat = bridge.workspace.channels().await;
+    let mut names: Vec<&str> = chat.channels.iter().map(|c| c.name.as_str()).collect();
     names.sort_unstable();
     assert_eq!(
         names,
         ["general", "goal", "help", "progress", "roadmap", "voice"]
     );
-    let mut categories: Vec<&str> = chat.categories.values().map(|c| c.name.as_str()).collect();
+    let mut categories: Vec<&str> = chat.categories.iter().map(|c| c.name.as_str()).collect();
     categories.sort_unstable();
     assert_eq!(categories, ["Channels", "chat"]);
     let guild = bridge.workspace.guild().await;
@@ -1474,28 +1519,28 @@ async fn a_new_workspace_takes_on_its_servers_layout_and_history() {
         bridge.chat_message("Hi?").await
     })
     .await;
-    assert_eq!(hi.1.channel.as_str(), bridge.general);
+    assert_eq!(hi.channel, bridge.general);
     assert_eq!(
-        hi.1.ts,
+        hi.written,
         i64::try_from(WRITTEN_MS + 60_000).unwrap(),
         "shown when it was written in Discord, to the millisecond"
     );
-    assert_eq!(
-        hi.1.appearance.as_ref().map(|a| a.name.as_str()),
-        Some("Bo")
-    );
+    assert_eq!(hi.by, "Bo");
 
     // Exactly the server's layout: "Channels" is gone, #general is under
     // "chat", and nothing is Tilo's alone.
-    let chat = bridge.workspace.chat().await;
-    let category = |id: &Option<Id>| {
-        id.as_ref()
-            .and_then(|id| chat.categories.get(id))
-            .map(|c| c.name.clone())
+    let chat = bridge.workspace.channels().await;
+    let category = |id: &Option<String>| {
+        id.as_ref().and_then(|id| {
+            chat.categories
+                .iter()
+                .find(|c| &c.id == id)
+                .map(|c| c.name.clone())
+        })
     };
     let mut layout: Vec<(String, Option<String>)> = chat
         .channels
-        .values()
+        .iter()
         .map(|c| (c.name.clone(), category(&c.category)))
         .collect();
     layout.sort();
@@ -1507,7 +1552,7 @@ async fn a_new_workspace_takes_on_its_servers_layout_and_history() {
             ("voice".to_owned(), Some("chat".to_owned())),
         ]
     );
-    let categories: Vec<&str> = chat.categories.values().map(|c| c.name.as_str()).collect();
+    let categories: Vec<&str> = chat.categories.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(categories, ["chat"]);
     assert!(bridge.workspace.guild().await.tilo_only.is_empty());
 }
@@ -1569,22 +1614,16 @@ async fn opted_in_the_bridge_adds_its_own_roles_and_new_channels_only() {
 
     let channels = bridge
         .workspace
-        .chat()
+        .channels()
         .await
         .categories
         .iter()
-        .find(|(_, c)| c.name == "Channels")
-        .map(|(id, _)| id.clone())
+        .find(|c| c.name == "Channels")
+        .map(|c| c.id.clone())
         .unwrap();
     bridge
-        .as_ada(
-            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-                name: "ideas".parse().unwrap(),
-                category: Some(channels),
-                kind: None,
-                topic: None,
-            }),
-        )
+        .workspace
+        .new_channel(&bridge.ada, "ideas", Some(&channels))
         .await;
     let made = settle(&mut runner, "#ideas in Discord", || async {
         bridge
@@ -1674,16 +1713,15 @@ fn discord_list(fake: &FakeDiscord, parent: Option<&str>, kind: u64) -> Vec<Stri
 /// Names of what Chat lists: its categories, or the channels under
 /// `category` (by name; none for the top).
 async fn chat_list(workspace: &Workspace, category: Option<&str>) -> Vec<String> {
-    let chat = workspace.chat().await;
-    let id_of = |name: &str| {
+    let chat = workspace.channels().await;
+    let under = category.and_then(|name| {
         chat.categories
             .iter()
-            .find(|(_, c)| c.name == name)
-            .map(|(id, _)| id.clone())
-    };
-    let under = category.and_then(id_of);
+            .find(|c| c.name == name)
+            .map(|c| c.id.clone())
+    });
     chat.channels
-        .values()
+        .iter()
         .filter(|c| !c.archived && c.category == under)
         .map(|c| c.name.clone())
         .collect()
@@ -1691,10 +1729,10 @@ async fn chat_list(workspace: &Workspace, category: Option<&str>) -> Vec<String>
 
 async fn chat_categories(workspace: &Workspace) -> Vec<String> {
     workspace
-        .chat()
+        .channels()
         .await
         .categories
-        .values()
+        .iter()
         .map(|c| c.name.clone())
         .collect()
 }
@@ -1765,37 +1803,29 @@ async fn moving_channels_in_chat_rearranges_discord() {
     })
     .await;
     quiet(&mut runner, &bridge, "adopted").await;
-    let chat = bridge.workspace.chat().await;
+    let chat = bridge.workspace.channels().await;
     let named = |name: &str| {
         chat.channels
             .iter()
-            .find(|(_, c)| c.name == name)
-            .map(|(id, _)| id.clone())
+            .find(|c| c.name == name)
+            .map(|c| c.id.clone())
             .unwrap()
     };
     let category = |name: &str| {
         chat.categories
             .iter()
-            .find(|(_, c)| c.name == name)
-            .map(|(id, _)| id.clone())
+            .find(|c| c.name == name)
+            .map(|c| c.id.clone())
             .unwrap()
     };
     // #goal one place down, below #roadmap; "chat" above "Channels".
     bridge
-        .as_ada(
-            chat::Chat::MOVE_CHANNEL.with(chat::chat::chat::MoveChannel {
-                channel: named("goal"),
-                up: false,
-            }),
-        )
+        .workspace
+        .move_channel(&bridge.ada, &named("goal"), "TextChannel", None, 2)
         .await;
     bridge
-        .as_ada(
-            chat::Chat::MOVE_CATEGORY.with(chat::chat::chat::MoveCategory {
-                category: category("chat"),
-                up: true,
-            }),
-        )
+        .workspace
+        .move_category(&bridge.ada, &category("chat"), 0)
         .await;
     let fake = &bridge.fake;
     settle(&mut runner, "Discord in Chat's order", || async {
@@ -1807,33 +1837,29 @@ async fn moving_channels_in_chat_rearranges_discord() {
 
     // A channel made in Chat at the top of "Channels" is made there.
     bridge
-        .as_ada(
-            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-                name: "ideas".parse().unwrap(),
-                category: Some(category("Channels")),
-                kind: None,
-                topic: None,
-            }),
-        )
+        .workspace
+        .new_channel(&bridge.ada, "ideas", Some(&category("Channels")))
         .await;
     let ideas = settle(&mut runner, "#ideas in Chat", || async {
         bridge
             .workspace
-            .chat()
+            .channels()
             .await
             .channels
             .iter()
-            .find(|(_, c)| c.name == "ideas")
-            .map(|(id, _)| id.clone())
+            .find(|c| c.name == "ideas")
+            .map(|c| c.id.clone())
     })
     .await;
     for _ in 0..3 {
         bridge
-            .as_ada(
-                chat::Chat::MOVE_CHANNEL.with(chat::chat::chat::MoveChannel {
-                    channel: ideas.clone(),
-                    up: true,
-                }),
+            .workspace
+            .move_channel(
+                &bridge.ada,
+                &ideas,
+                "TextChannel",
+                Some(&category("Channels")),
+                0,
             )
             .await;
     }
@@ -1871,119 +1897,30 @@ async fn moving_channels_in_chat_rearranges_discord() {
     assert_eq!(orders(fake), sent);
 }
 
-/// Lay the workspace's Chat out as its owner did before any bridge ran:
-/// "Channels" with #general, and "Voice" with the Lounge, in place of the
-/// `#chat` and `#voice` a workspace opens with.
-fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
-    let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
-    for channel in chat.channels.ids().cloned() {
-        chat::demo::apply_as(
-            doc,
-            owner,
-            chat::Chat::DELETE_CHANNEL.with(chat::chat::chat::DeleteChannel { channel }),
-        )
-        .map_err(|error| error.to_string())?;
+/// Lay the workspace's Chat out as its owner did before any bridge ran: "Channels" with #general,
+/// and "Voice" with the Lounge; seeded for a public workspace, or with channels of its own.
+async fn lay_out_with_general_and_lounge(workspace: &Workspace, owner: &str, setup: Setup) {
+    if setup.workspace_seeded {
+        // A public workspace's Chat opened with "Channels" › #general.
+        let channels = workspace.new_category(owner, "Channels").await;
+        workspace
+            .new_channel(owner, "general", Some(&channels))
+            .await;
+    } else {
+        let channels = workspace.new_category(owner, "Channels").await;
+        workspace
+            .new_channel(owner, "general", Some(&channels))
+            .await;
+        let voice = workspace.new_category(owner, "Voice").await;
+        workspace.new_voice_channel(owner, "Lounge").await;
+        let _ = voice;
+        if setup.existing {
+            // The workspace's own channels, made before its bridge ran.
+            for name in ["help", "show-and-tell"] {
+                workspace.new_channel(owner, name, Some(&channels)).await;
+            }
+        }
     }
-    for category in chat.categories.ids().cloned() {
-        chat::demo::apply_as(
-            doc,
-            owner,
-            chat::Chat::DELETE_CATEGORY.with(chat::chat::chat::DeleteCategory { category }),
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    for (category, channel, kind) in [
-        ("Channels", "general", chat::model::ChannelKind::Text),
-        ("Voice", "Lounge", chat::model::ChannelKind::Voice),
-    ] {
-        chat::demo::apply_as(
-            doc,
-            owner,
-            chat::Chat::CREATE_CATEGORY.with(chat::chat::chat::CreateCategory {
-                name: category.parse().unwrap(),
-            }),
-        )
-        .map_err(|error| error.to_string())?;
-        let made = chat::Chat::read(doc)
-            .map_err(|error| error.to_string())?
-            .categories
-            .iter()
-            .find(|(_, c)| c.name == category)
-            .map(|(id, _)| id.clone());
-        chat::demo::apply_as(
-            doc,
-            owner,
-            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-                name: channel.parse().unwrap(),
-                category: made,
-                kind: Some(kind),
-                topic: None,
-            }),
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-/// Leave the workspace's Chat as a public workspace's opened: "Channels" with
-/// #general, and nothing else.
-fn seed_as_a_workspace(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
-    let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
-    let channels: Vec<Id> = chat
-        .channels
-        .iter()
-        .filter(|(_, c)| c.name != "general")
-        .map(|(id, _)| id.clone())
-        .collect();
-    let categories: Vec<Id> = chat
-        .categories
-        .iter()
-        .filter(|(_, c)| c.name != "Channels")
-        .map(|(id, _)| id.clone())
-        .collect();
-    for channel in channels {
-        chat::demo::apply_as(
-            doc,
-            owner,
-            chat::Chat::DELETE_CHANNEL.with(chat::chat::chat::DeleteChannel { channel }),
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    for category in categories {
-        chat::demo::apply_as(
-            doc,
-            owner,
-            chat::Chat::DELETE_CATEGORY.with(chat::chat::chat::DeleteCategory { category }),
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-/// The workspace's own "Channels" with #general, #help and #show-and-tell, made
-/// by its owner before any bridge ran.
-fn seed_channels(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
-    // The workspace already has "Channels" with #general in it.
-    let category = chat::Chat::read(doc)
-        .map_err(|error| error.to_string())?
-        .categories
-        .iter()
-        .find(|(_, c)| c.name == "Channels")
-        .map(|(id, _)| id.clone());
-    for name in ["help", "show-and-tell"] {
-        chat::demo::apply_as(
-            doc,
-            owner,
-            chat::Chat::CREATE_CHANNEL.with(chat::chat::chat::CreateChannel {
-                name: name.parse().unwrap(),
-                category: category.clone(),
-                kind: None,
-                topic: None,
-            }),
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    Ok(())
 }
 
 /// A picture an emoji may keep: a PNG's signature and `fill`.
@@ -2124,7 +2061,7 @@ async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
         "{:#?}",
         bridge.fake.messages_in(CHANNEL_GENERAL)
     );
-    bridge.ada_reacts(&first, ":tilo_wave:", true).await;
+    bridge.ada_reacts(&first, ":tilo_wave:").await;
     settle(&mut runner, "reaction", || async {
         (bridge.fake.bot_reactions_on(&sent) == [format!("tilo_wave:{wave}")]).then_some(())
     })
@@ -2203,7 +2140,7 @@ async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
     })
     .await;
     assert_eq!(bridge.uploaded("dog"), None);
-    bridge.ada_reacts(&first, ":dog:", true).await;
+    bridge.ada_reacts(&first, ":dog:").await;
     let calls = quiet(&mut runner, &bridge, "after dog").await;
     assert!(
         !calls.iter().any(|call| call.contains("/reactions/")),

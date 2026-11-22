@@ -536,8 +536,14 @@ action send(
     to: TextChannel | Thread | Direct,
     body: RichText,
     reply_to: Option<Message> = .none,
+    attachments: List<File> = [],
 ) -> Message (icon: .send, label: "Send", did: "wrote a message") {
     let m = Message(body: body, reply_to: reply_to)
+    for f in attachments {
+        m.attachments.insert(
+            Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
+        )
+    }
     match to {
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
