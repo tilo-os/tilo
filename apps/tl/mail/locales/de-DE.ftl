@@ -408,6 +408,9 @@ d-trjwm3gb = Als ungelesen markieren
     .w-mark-as-read = Als gelesen markieren
     .w-mark-as-unread = Als ungelesen markieren
 
+d-hk43bpjp = Beim Öffnen lesen
+    .doc = Das Öffnen einer Unterhaltung liest sie, egal wo sie geöffnet wird: in der Liste, in der Suche, über einen Link oder durch einen Agenten.
+
 d-trjwm3gb-unread = Ungelesen
 
 d-7zk6ua6p = Senden von

@@ -2896,10 +2896,11 @@ mod tests {
     #[test]
     fn workspace_certification_skips_only_windowless_services() {
         let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+        // The one service with nothing to show is certified nowhere.
         assert!(is_windowless_service(&apps.join("thumbnails")));
-        assert!(is_windowless_service(&apps.join("agent")));
-        // A window is always certified, a service's (the keyboard) too.
+        // A window is always certified, a service's own too (the keyboard, the launcher).
         assert!(!is_windowless_service(&apps.join("osk")));
+        assert!(!is_windowless_service(&apps.join("launcher")));
         assert!(!is_windowless_service(&apps.join("calculator")));
     }
 

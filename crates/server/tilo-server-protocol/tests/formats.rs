@@ -294,6 +294,7 @@ users = ["abababababababababababababababababababababababababababababababab"]
 
 [work]
 from = "own_devices"
+agents = false
 
 [work.kinds]
 actions = true

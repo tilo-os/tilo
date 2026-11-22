@@ -917,6 +917,11 @@ d-d64rg4sw = Eigenes Fenster
 
 d-d64rg4sw-place = Platz
 
+d-wln2heq6 = Nach vorn holen
+    .doc = Holt das Fenster der Leiste `s` nach vorn, mit der Tastatur darin: die Sitzung holt seinen Platz nach vorn, wie bei einem Druck, einem Skript oder einem Agenten.
+
+d-wln2heq6-s = S
+
 d-jipcl6u3 = Einstellungen des Stils
     .doc = Die eigenen Einstellungen des Stils und die zwei Wege, einen Stil zu ändern (`docs/designs/app-language/ shell.md` §6): ohne Agent, an dem einen Ort, an dem die Einstellungen einer Person liegen, und mit Agent, über dieselben Aktionen, die die Bedienelemente der Person ausführen.
 
@@ -1013,6 +1018,9 @@ d-iavyg4wt = Shell-Oberflächen
 
 d-54b5rqo4 = Zeilen der Shell
     .w-no-window-here-yet = Noch kein Fenster hier
+
+d-k4p3z4ee = Vorn
+    .doc = Die Leiste, deren Fenster auf diesem Gerät die Tastatur hat, nach ihrem Schlüssel; leer für keine.
 
 d-uykuo63i = Person
     .doc = Die Person an diesem Gerät, mit ihrem Namen.
