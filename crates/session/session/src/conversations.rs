@@ -1,7 +1,7 @@
-//! The turns a person's conversations give this session's agents.
+//! The conversations of the workspaces this session holds, and the turns going in them.
 //! An agent works inside a turn: a person's message in a conversation the agent takes part in
-//! ([`tilo_action_policy::turn`]). Each turn is answered in the agent's session for that
-//! conversation ([`crate::agent_sessions`]): the broker invokes the agent's answer with it.
+//! ([`tilo_action_policy::turn`]). The workspace's agent engine answers it; this session publishes
+//! each going turn's item, on which the agent records its work while it answers.
 //! Nothing here keeps a record of its own: the conversation's own record says what is asked and
 //! what was answered. A message summons its conversation's agents, and an agent's answer is the
 //! reply with the id its summons and its id derive ([`chat::chat::reply_id`]), so a turn is over
@@ -16,12 +16,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use chat::projection::ChatProjection as _;
-use chat::summons::unanswered;
 use tilo_action_policy::WorkspacePolicy;
-use tilo_action_policy::turn::Turn;
 use tilo_app::framework::WorkspaceResource;
 use tilo_app::tilo_workspace_agent::learned::Learned;
-use tilo_broker_core::services::AgentTurn;
 use tilo_resource::{Id, Resource as _};
 use ui::permissions::{LivePermissions, MemberId, PermissionContext};
 use ui::resource::DocumentId;
@@ -44,7 +41,7 @@ const LEARNED_VERBS: [&str; 3] = ["learn", "correct", "forget"];
 
 mod personal_learned;
 
-/// One workspace as the pass hands it over: the grants its turns are decided against.
+/// One workspace as the pass hands it over: the grants its conversations are opened with.
 pub(crate) struct WorkspaceFacts {
     pub(crate) workspace: String,
     pub(crate) policy: WorkspacePolicy,
@@ -55,8 +52,6 @@ pub(crate) struct WorkspaceFacts {
 /// The conversations this session's agents answer in, read from Chat's record of each workspace it
 /// holds.
 pub(crate) struct Conversations {
-    /// The agent sessions the turns are answered in.
-    sessions: Arc<crate::agent_sessions::AgentSessions>,
     /// The workspaces' records, as the workspace holds them.
     records: crate::engine_records::EngineRecords,
     /// Where the person's own workspace keeps what their agents learned of them.
@@ -89,7 +84,6 @@ impl Conversations {
     /// change lands.
     pub(crate) fn new(
         records: crate::engine_records::EngineRecords,
-        sessions: Arc<crate::agent_sessions::AgentSessions>,
         wake: &tilo_service::Wake,
     ) -> Self {
         let mut scope = ui::WakeScope::new();
@@ -98,7 +92,6 @@ impl Conversations {
             tracing::warn!(%error, "the conversations are not woken");
         }
         Self {
-            sessions,
             records,
             personal: RefCell::default(),
             wake: scope,
@@ -143,42 +136,8 @@ impl Conversations {
         Some(previous.save())
     }
 
-    fn learned(&self, opened: &Opened, workspace: &str, person: &str) -> Option<Learned> {
-        let personal = self.personal.borrow();
-        let personal = personal.as_ref()?;
-        let read = |bytes: &[u8]| match personal_learned::read(bytes) {
-            Ok(facts) => Some(facts),
-            Err(error) => {
-                tracing::warn!(%error, "the learned facts could not be read");
-                None
-            }
-        };
-        let key = personal_learned::record_id(workspace);
-        if let Some(held) = personal.document((CHAT_OWNER, key.as_str())) {
-            return read(&held);
-        }
-        let document = Self::previous_learned(opened, person)?;
-        let facts = read(&document)?;
-        personal_learned::restore(personal, &key, document);
-        Some(facts)
-    }
-
-    /// What each of the workspace's agents was told by the workspace about how to work, by
-    /// the agent's id: what a turn's request carries to the model beside what every agent is told.
-    fn agent_instructions(opened: &Opened) -> std::collections::HashMap<String, String> {
-        Self::workspace_agents(opened)
-            .map(|record| {
-                record
-                    .get()
-                    .active()
-                    .filter_map(|agent| Some((agent.id.0.clone(), agent.told()?.to_owned())))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// The workspace's agents record `opened` holds, opened here where it is not. `None` where the
-    /// workspace keeps none — reading an app's record creates none, as [`Self::opened`] reads
+    /// workspace keeps none — reading an app's record creates none, as [`Self::open_chat`] reads
     /// Chat's.
     fn workspace_agents(
         opened: &Opened,
@@ -214,8 +173,7 @@ impl Conversations {
     /// (`chat.workspace.messages:message:<id>`) or by the bare id its item carries. Chat's own verb
     /// derives the reply from the summons and the author, so what it records lands on the very
     /// reply the turn's answer is — the address the agent works from, before the reply exists. The
-    /// record is the one Chat's window writes and the pass reads turns from: no second writer, and
-    /// no second verb.
+    /// record is the one Chat's window writes: no second writer, and no second verb.
     ///
     /// # Errors
     /// No open workspace holds the message `arguments` names, or Chat refused the record.
@@ -417,114 +375,17 @@ impl Conversations {
         ))
     }
 
-    /// Record on `turn` 's message that `agent` stopped before it answered it, through Chat's own
-    /// `record-work` as the agent records its work: the person reads the failure on the reply and
-    /// can ask the message again from there. Nothing is written over an answer the agent gave.
-    pub(crate) fn turn_failed(&self, agent: &str, turn: &Turn, attempt: u32, reason: &str) {
-        let summons = Id::from_raw(turn.message.clone());
-        let reply = chat::chat::reply_id_at(&summons, &MemberId::agent(agent), attempt);
-        // `Some(true)` where a workspace open here holds the message and has no answer for it
-        // yet: anywhere else there is nothing to write the failure to.
-        let record = {
-            let open = self.open.borrow();
-            open.values().find_map(|opened| {
-                let (_, part) = opened.part.as_ref()?;
-                opened.chat.as_ref()?;
-                let part = part.get();
-                // Asked again since: the failure belongs to the attempt it answered, which no
-                // message of the conversation waits on now.
-                let message = part.messages.get(&summons)?;
-                (message.attempts == attempt).then(|| unanswered(part.messages.get(&reply)))
-            })
-        };
-        if record != Some(true) {
-            return;
-        }
-        let arguments = serde_json::Map::from_iter([
-            ("message".to_owned(), serde_json::json!(turn.message)),
-            (
-                "work".to_owned(),
-                serde_json::json!({ "state": "refused", "detail": reason }),
-            ),
-            (
-                "say".to_owned(),
-                serde_json::json!(crate::i18n::t("turn-unanswered")),
-            ),
-        ]);
-        let invoker = tilo_actions::ActionInvoker::agent(agent);
-        if let Err(error) = self.record_work(&invoker, &turn.message, &arguments) {
-            tracing::warn!(%error, %agent, "a turn that ended without an answer is not recorded");
-        }
-    }
-
-    /// Read each workspace's conversations as `person`, and hand the turns they give to the agent
-    /// sessions.
-    ///
-    /// A pass that read different turns than the one before announces them
-    /// ([`tilo_identity::policy_change::announce`]): the broker re-reads the turns when that
-    /// changes, not on a clock, so a new turn — the person typing an ask into a conversation Chat
-    /// had no message in — is only handed to its agent because this says it exists. Nothing is
-    /// announced while the turns are the ones already read.
+    /// Open each workspace's conversations as `person`, where they are not open yet, and follow
+    /// them from then on.
     pub(crate) fn feed(&self, person: &str, workspaces: Vec<WorkspaceFacts>) {
-        let read = workspaces
-            .into_iter()
-            .map(|facts| {
-                let turns = self.turns(&facts, person);
-                (facts.workspace, turns)
-            })
-            .collect();
-        if self.sessions.asked(read) {
-            tilo_identity::policy_change::announce();
+        for facts in &workspaces {
+            self.open_chat(facts, person);
         }
     }
 
-    /// The turns `workspace` 's conversations give, read at the revisions its records are at now.
-    fn turns(&self, workspace: &WorkspaceFacts, person: &str) -> Vec<AgentTurn> {
-        match self.opened(workspace, person) {
-            Some((chat, part)) => {
-                let instructions = self
-                    .open
-                    .borrow()
-                    .get(&workspace.workspace)
-                    .map(Self::agent_instructions)
-                    .unwrap_or_default();
-                // Only the person's devices hold these facts, and only their agents receive them.
-                let opened = self.open.borrow();
-                let opened = opened.get(&workspace.workspace);
-                let agents = opened.and_then(Self::workspace_agents);
-                let agents = agents.as_ref().map(WorkspaceResource::get);
-                let learned =
-                    opened.and_then(|opened| self.learned(opened, &workspace.workspace, person));
-                let learned_for = |agent: &str| {
-                    let entry = agents.as_ref()?.get(&Id::from_raw(agent))?;
-                    entry.is_active().then_some(learned.as_ref()).flatten()
-                };
-                let chat_record = chat.get();
-                let part_record = part.get();
-                turns(
-                    &workspace.workspace,
-                    &chat_record,
-                    &part_record,
-                    person,
-                    &workspace.members,
-                    &instructions,
-                    learned_for,
-                )
-            }
-            None => Vec::new(),
-        }
-    }
-
-    /// The workspace's chat record and the head of its messages, opened here where they are not.
+    /// Open the workspace's chat record and the head of its messages here where they are not.
     /// A workspace whose person never opened Chat holds no record, and the reader creates none.
-    fn opened(
-        &self,
-        workspace: &WorkspaceFacts,
-        person: &str,
-    ) -> Option<(
-        WorkspaceResource<chat::Chat>,
-        WorkspaceResource<chat::parts::ChatMessages>,
-    )> {
+    fn open_chat(&self, workspace: &WorkspaceFacts, person: &str) {
         let mut open = self.open.borrow_mut();
         let id = workspace.workspace.clone();
         let stale = open
@@ -555,7 +416,7 @@ impl Conversations {
                 .holds_resource(CHAT_OWNER, chat_id.as_str(), chat::Chat::KIND)
                 .unwrap_or(false);
             if !held {
-                return None;
+                return;
             }
             opened.chat = WorkspaceResource::<chat::Chat>::open_primary(
                 &opened.records,
@@ -565,14 +426,17 @@ impl Conversations {
                 Some(self.wake.handle()),
             );
         }
-        let chat = opened.chat.clone()?;
-        let head = opened
+        if opened.chat.is_none() {
+            return;
+        }
+        let Some(head) = opened
             .records
             .store_of(CHAT_OWNER)
-            .ok()?
-            .held_parts(&chat::parts::chain())
-            .into_iter()
-            .max()?;
+            .ok()
+            .and_then(|store| store.held_parts(&chat::parts::chain()).into_iter().max())
+        else {
+            return;
+        };
         if opened.part.as_ref().map(|(held, _)| *held) != Some(head) {
             let part = WorkspaceResource::<chat::parts::ChatMessages>::open_at(
                 &opened.records,
@@ -584,8 +448,6 @@ impl Conversations {
             );
             opened.part = part.map(|part| (head, part));
         }
-        let part = opened.part.as_ref().map(|(_, part)| part.clone())?;
-        Some((chat, part))
     }
 
     /// The turn the message `question` opened — the one Chat said it posted for an ask the person
@@ -813,8 +675,8 @@ fn conversation_resource(channel: &str, label: String) -> tilo_actions::Resource
 /// The turns going in the workspaces' conversations as a session service: each turn's summons, as
 /// Chat publishes a message's item, carrying Chat's own `record-work`, so the agent answering it has
 /// the address its answer goes to whether or not Chat's window is open. The verb runs on the
-/// workspace's open Chat record, the same record the pass reads turns from — never a second writer
-/// on the store.
+/// workspace's open Chat record, the one Chat's window writes — never a second writer on the
+/// store.
 pub(crate) struct TurnSummonses {
     conversations: Rc<Conversations>,
     /// The summonses it published last, keyed by each open chat's revision and messages' part:
@@ -1052,9 +914,9 @@ fn message_of(resource: &str) -> Option<String> {
 /// The summons whose turn is going: the person's messages in a conversation an agent takes part
 /// in, whose reply the agent has not finished — absent yet, or still working (no state that ends
 /// it) — or whose reply the person asked again (`chat`'s `retry`, which gives the reply up). The
-/// same rule the pass reads turns by, so the item that records the work is offered exactly while
-/// the agent answers there: from the moment the turn exists, through every record it makes on the
-/// reply it is writing, and again when a failed reply was retried.
+/// same rule the agent engine reads turns by, so the item that records the work is offered exactly
+/// while the agent answers there: from the moment the turn exists, through every record it makes
+/// on the reply it is writing, and again when a failed reply was retried.
 fn summonses(chat: &chat::Chat, part: &chat::parts::ChatMessages) -> Vec<Id> {
     let mut out: Vec<Id> = Vec::new();
     for (id, message) in part.messages.iter() {
@@ -1081,7 +943,7 @@ fn summonses(chat: &chat::Chat, part: &chat::parts::ChatMessages) -> Vec<Id> {
                 .messages
                 .get(&reply)
                 // A reply without work is a plain answer; one that keeps work is going until
-                // its work ends. The same rule `turns` reads the turn by.
+                // its work ends.
                 .is_none_or(|reply| {
                     reply.work.as_ref().is_some_and(|work| {
                         let streamed = work
@@ -1158,82 +1020,6 @@ fn private_turn(chat: &chat::Chat, channel: &Id, person: &str, agent: &str) -> b
         && members.contains(&MemberId::agent(agent))
 }
 
-/// The turns `chat` 's conversations in `workspace` give, read from `part` 's messages
-/// ([`chat::summons::summonses`]).
-fn turns<'a>(
-    workspace: &str,
-    chat: &chat::Chat,
-    part: &chat::parts::ChatMessages,
-    person: &str,
-    members: &chat::projection::PeopleNames,
-    agent_instructions: &std::collections::HashMap<String, String>,
-    learned_for: impl Fn(&str) -> Option<&'a Learned>,
-) -> Vec<AgentTurn> {
-    chat::summons::summonses(chat, part)
-        .into_iter()
-        .filter_map(|summons| {
-            let message = part.messages.get(&summons.message)?;
-            let address = summons.address();
-            let (instruction, subject) = chat::summons::request(message);
-            // What came before it in the conversation, as every turn is told it
-            // ([`chat::recall::told`]): "what did I ask you before?" and "move the reminder to
-            // Friday" are understood through it.
-            let told = chat::recall::told(
-                chat,
-                part,
-                // What was learned about a person is theirs: only a turn they asked is told it,
-                // also on the device that holds their record.
-                learned_for(&summons.agent).filter(|_| {
-                    summons.person == person
-                        && private_turn(chat, &summons.conversation, person, &summons.agent)
-                }),
-                &summons.conversation,
-                &summons.message,
-                &MemberId::agent(&summons.agent),
-                instruction,
-            );
-            let instruction = told.instruction();
-            let fold = told.fold;
-            let agent_instruction = agent_instructions.get(&summons.agent).cloned();
-            Some(AgentTurn {
-                session: session_of(workspace, &address, &summons.agent),
-                agent: summons.agent.clone(),
-                author: summons.person.clone(),
-                turn: Turn::new(address.clone(), summons.message.to_string()),
-                // A person's Retry asks again for the same message, and that is a turn of its
-                // own: the one they gave up on reads as replaced, and the broker hands the agent
-                // the new one.
-                attempt: summons.attempt,
-                request: runtime_collab::TurnRequest {
-                    message: format!("{address}/messages/{}", summons.message),
-                    title: chat.display_names(
-                        &summons.conversation,
-                        Some(&MemberId::person(person)),
-                        members,
-                    ),
-                    instruction,
-                    agent_instruction,
-                    fold,
-                    subject,
-                    spend: None,
-                },
-                asked: chat::summons::asked_words(message),
-            })
-        })
-        .collect()
-}
-
-/// The agent session `agent` answers the turns of the conversation at `conversation` in
-/// `workspace` in: one per conversation and agent, the same on every pass.
-fn session_of(workspace: &str, conversation: &str, agent: &str) -> String {
-    let digest = blake3::hash(format!("{workspace}\0{conversation}\0{agent}").as_bytes());
-    format!(
-        "{}{}",
-        tilo_broker_core::services::AGENT_SESSION_PREFIX,
-        digest.to_hex().get(..32).unwrap_or_default()
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1265,144 +1051,6 @@ mod tests {
         for verb in ["record-work", "keep-summary", "learn", "correct", "forget"] {
             assert!(offered.contains(&verb), "{verb}: {offered:?}");
         }
-    }
-
-    /// What a turn's request carries beside the person's words: what was learned about them,
-    /// what the workspace told the agent, and what to take into the conversation's summary once
-    /// more of it stands outside the summary than a turn is told as written.
-    #[test]
-    fn a_turns_request_carries_what_was_learned_the_instruction_and_the_fold() {
-        use tilo_app::tilo_workspace_agent::learned::{Learned, learned};
-        let mut record = tilo_resource::Replica::<Learned>::new().as_agent_for(AGENT, ME);
-        record
-            .apply(Learned::LEARN.with(learned::Learn {
-                text: tilo_resource::NonBlank::parse("Prefers short answers.").unwrap(),
-                source: tilo_resource::NonBlank::parse("They said so").unwrap(),
-            }))
-            .unwrap();
-        let known = record.state().unwrap();
-        let chat = workspace();
-        let agent = MemberId::agent(AGENT);
-        let long = "a long answer about the launch list ".repeat(30);
-        let mut said = Vec::new();
-        for n in 0..12_i64 {
-            said.push((
-                format!("q{n}"),
-                message(MemberId::person(ME), &format!("question {n}"), 10 + n * 2),
-            ));
-            said.push((format!("a{n}"), message(agent.clone(), &long, 11 + n * 2)));
-        }
-        said.push((
-            "ask".to_owned(),
-            message(MemberId::person(ME), "what do you know about me?", 100),
-        ));
-        let mut head = chat::parts::ChatMessages::default();
-        for (id, message) in said {
-            head.messages.push(Id::from_raw(id), message);
-        }
-        let told =
-            std::collections::HashMap::from([(AGENT.to_owned(), "Answer in German.".to_owned())]);
-        let read = turns(
-            "w1",
-            &chat,
-            &head,
-            ME,
-            &chat::projection::PeopleNames::new(),
-            &told,
-            |agent| (agent == AGENT).then_some(&known),
-        );
-        let [turn] = read.as_slice() else {
-            panic!("one turn, not {} of them", read.len());
-        };
-        let request = &turn.request;
-        assert_eq!(request.request(), "what do you know about me?");
-        assert!(
-            request.instruction.contains(&format!(
-                "{}\n- Prefers short answers. (from: They said so)",
-                runtime_collab::INSTRUCTION_LEARNED
-            )),
-            "{}",
-            request.instruction
-        );
-        assert!(request.instruction.len() <= runtime_collab::recall::INSTRUCTION_BYTES);
-        assert_eq!(
-            request.agent_instruction.as_deref(),
-            Some("Answer in German.")
-        );
-        let fold = request
-            .fold
-            .as_ref()
-            .expect("the oldest messages are to be taken in");
-        assert_eq!(fold.conversation, CONVERSATION);
-        assert!(
-            fold.lines.starts_with("Person: question 0"),
-            "{}",
-            fold.lines
-        );
-        // A person with nothing learned and an agent told nothing carry neither.
-        let plain = turns(
-            "w1",
-            &chat,
-            &head,
-            ME,
-            &chat::projection::PeopleNames::new(),
-            &std::collections::HashMap::new(),
-            |_| None,
-        );
-        let request = &plain[0].request;
-        assert!(
-            !request
-                .instruction
-                .contains(runtime_collab::INSTRUCTION_LEARNED)
-        );
-        assert_eq!(request.agent_instruction, None);
-    }
-
-    /// What was learned about a person is theirs: the device that holds their record tells it to
-    /// a turn they asked, and to no turn somebody else asked.
-    #[test]
-    fn only_a_turn_its_person_asked_is_told_what_was_learned_about_them() {
-        use tilo_app::tilo_workspace_agent::learned::{Learned, learned};
-        let mut record = tilo_resource::Replica::<Learned>::new().as_agent_for(AGENT, ME);
-        record
-            .apply(Learned::LEARN.with(learned::Learn {
-                text: tilo_resource::NonBlank::parse("Prefers short answers.").unwrap(),
-                source: tilo_resource::NonBlank::parse("They said so").unwrap(),
-            }))
-            .unwrap();
-        let known = record.state().unwrap();
-        let chat = workspace();
-        let mut head = chat::parts::ChatMessages::default();
-        head.messages.push(
-            Id::from_raw("ask".to_owned()),
-            message(MemberId::person(ME), "what do you know about me?", 100),
-        );
-        // The same message, read on the device of the person who wrote it and on another's.
-        let told_on_the_device_of = |person: &str| {
-            let read = turns(
-                "w1",
-                &chat,
-                &head,
-                person,
-                &chat::projection::PeopleNames::new(),
-                &std::collections::HashMap::new(),
-                |agent| (agent == AGENT).then_some(&known),
-            );
-            let [turn] = read.as_slice() else {
-                panic!("one turn, not {} of them", read.len());
-            };
-            turn.request.instruction.clone()
-        };
-        let theirs = told_on_the_device_of(ME);
-        assert!(
-            theirs.contains(runtime_collab::INSTRUCTION_LEARNED),
-            "{theirs}"
-        );
-        let another = told_on_the_device_of("someone-else");
-        assert!(
-            !another.contains(runtime_collab::INSTRUCTION_LEARNED),
-            "{another}"
-        );
     }
 
     /// The agent the tests' conversations take in.
@@ -1440,403 +1088,59 @@ mod tests {
         part
     }
 
-    /// The turns `chat` 's conversations give for the messages of `head` .
-    fn read(chat: &chat::Chat, head: &chat::parts::ChatMessages) -> Vec<AgentTurn> {
-        turns(
-            "w1",
-            chat,
-            head,
-            ME,
-            &chat::projection::PeopleNames::new(),
-            &std::collections::HashMap::new(),
-            |_| None,
-        )
-    }
-
-    tilo_test_env::scenario! {
-        fn a_conversations_messages_become_its_agents_turns;
-
-        phase an_unanswered_message_is_a_turn_of_the_conversations_agent;
-        {
-            let chat = workspace();
-            let head = part(vec![("m1", message(MemberId::person(ME), "add the revenue curve", 10))]);
-            let entries = read(&chat, &head);
-            let [entry] = entries.as_slice() else {
-                panic!("one turn, not {entries:?}");
-            };
-            assert_eq!(entry.agent, AGENT);
-            assert_eq!(entry.author, "me");
-            assert_eq!(entry.request.instruction, "add the revenue curve");
-            assert_eq!(entry.request.title, "Tide");
-            assert_eq!(
-                entry.turn,
-                Turn::new("chat.workspace/channels/c_tide", "m1")
-            );
-        }
-
-        phase what_a_message_carries_is_the_subject_of_its_turn;
-        // What a send-to box carried reaches the agent as the record it names: the run's subject is
-        // that record, to act on through its own actions, and a message carrying it with no words is
-        // a turn too.
-        {
-            let chat = workspace();
-            let issue = tilo_reference::ResourceAt {
-                app: "so.tilo.tasks".into(),
-                record: None,
-                reference: tilo_reference::ResourceRef::whole(
-                    "tasks.issue",
-                    "tasks.tracker/issues/42",
-                    "Launch checklist",
-                ),
-            };
-            let mut handed = message(MemberId::person(ME), "", 10);
-            handed.attachments = vec![
-                tilo_reference::Attached::resource(
-                    issue,
-                    Some(tilo_reference::Anchor::item("42")),
-                    "Launch checklist",
-                ),
-                tilo_reference::Attached::Text {
-                    text: "before Friday".into(),
-                    from: None,
-                },
-            ];
-            let entries = read(&chat, &part(vec![("m1", handed)]));
-            let [entry] = entries.as_slice() else {
-                panic!("a message carrying a task alone is a turn, not {entries:?}");
-            };
-            let subject = entry.request.subject.as_ref().expect("the task is the subject");
-            assert_eq!(subject.app_id, "so.tilo.tasks");
-            assert_eq!(subject.resource.id, "tasks.tracker/issues/42");
-            assert_eq!(
-                subject.anchor.place,
-                Some(tilo_actions::SelectionPlace::item("42"))
-            );
-            assert_eq!(entry.request.instruction, "It quotes: \"before Friday\".");
-        }
-
-        phase a_persons_message_is_a_turn;
-        // A person writes messages under their root key, which is the member key their
-        // conversation keeps: a message they post summons its conversation's agent.
-        {
-            let bare = "22503e79b0b80274014ec6333d3561ca89cb3209937b901c4bc2e4bedccc2f85";
-            let chat = workspace();
-            let head = part(vec![("m1", message(MemberId::person(bare), "what is on my task list?", 10))]);
-            let entries = read(&chat, &head);
-            let [entry] = entries.as_slice() else {
-                panic!("one turn, not {entries:?}");
-            };
-            assert_eq!(entry.agent, AGENT);
-            assert_eq!(entry.author, bare, "the turn acts for that person");
-            assert_eq!(entry.request.instruction, "what is on my task list?");
-            assert_eq!(
-                chat::summons::person_of(&MemberId::agent(AGENT)),
-                None,
-                "an agent's message is no person's turn"
-            );
-        }
-
-        phase the_agents_reply_ends_its_turn;
-        {
-            let chat = workspace();
-            let reply = chat::chat::reply_id(&Id::from_raw("m1"), &MemberId::agent(AGENT));
-            let mut head = part(vec![("m1", message(MemberId::person(ME), "add the revenue curve", 10))]);
-            head.messages.push(reply, message(MemberId::agent(AGENT), "done", 20));
-            assert_eq!(read(&chat, &head), Vec::new());
-        }
-
-        phase the_newest_unanswered_message_is_the_turn;
-        {
-            let chat = workspace();
-            let head = part(vec![
-                ("m1", message(MemberId::person(ME), "first", 10)),
-                ("m2", message(MemberId::person(ME), "second", 20)),
-            ]);
-            let entries = read(&chat, &head);
-            let [entry] = entries.as_slice() else {
-                panic!("one turn, not {entries:?}");
-            };
-            assert_eq!(entry.request.request(), "second");
-        }
-
-        phase a_turn_reads_the_conversation_before_it;
-        // "What did I ask you before?" and "move the reminder to Friday" are understood through
-        // the conversation before the turn: the person's words and the agent's answers, oldest
-        // first, after the person's own words, which alone say what the turn asks.
-        {
-            let chat = workspace();
-            let agent = MemberId::agent(AGENT);
-            let reply = chat::chat::reply_id(&Id::from_raw("m1"), &agent);
-            let mut head = part(vec![(
-                "m1",
-                message(MemberId::person(ME), "remind me to call mum", 10),
-            )]);
-            head.messages
-                .push(reply, message(agent, "Added \"Call mum\" for tomorrow.", 20));
-            head.messages.push(
-                Id::from_raw("m2"),
-                message(MemberId::person(ME), "what did I ask you before?", 30),
-            );
-            let entries = read(&chat, &head);
-            let [entry] = entries.as_slice() else {
-                panic!("one turn, not {entries:?}");
-            };
-            assert_eq!(
-                entry.request.instruction,
-                format!(
-                    "what did I ask you before?{}\nPerson: remind me to call mum\nYou: Added \
-                     \"Call mum\" for tomorrow.",
-                    runtime_collab::INSTRUCTION_CONVERSATION
-                )
-            );
-            assert_eq!(entry.request.request(), "what did I ask you before?");
-        }
-
-        phase what_a_cause_asks_is_a_turn_for_the_person_it_names;
-        // A reminder or an event asks through Chat's `ask-agent`: the message it writes is a turn
-        // of the conversation's agent for the person its cause names, whoever wrote it, and the
-        // agent is told what started it. What software posts without a cause is no turn.
-        {
-            let chat = workspace();
-            let cause = chat::cause::Cause {
-                kind: tilo_resource::Atom("reminder".into()),
-                label: "Call mum".into(),
-                key: tilo_resource::Atom("run-1".into()),
-                person: MemberId::person(ME),
-            };
-            let id = cause.message();
-            let mut asked = message(MemberId::bot("b_events"), "Call mum about Sunday", 10);
-            asked.cause = Some(cause);
-            let mut head = part(vec![
-                (id.as_str(), asked),
-                ("m_bridge", message(MemberId::bot("b_bridge"), "do as I say", 20)),
-            ]);
-            let entries = read(&chat, &head);
-            let [entry] = entries.as_slice() else {
-                panic!("one turn, not {entries:?}");
-            };
-            assert_eq!(entry.agent, AGENT);
-            assert_eq!(entry.author, ME, "the turn acts for the person the cause names");
-            assert_eq!(
-                entry.turn,
-                Turn::new("chat.workspace/channels/c_tide", id.as_str())
-            );
-            assert!(
-                entry
-                    .request
-                    .instruction
-                    .starts_with("A reminder your person set is due now: \"Call mum\".")
-                    && entry.request.instruction.ends_with("Call mum about Sunday"),
-                "the agent is told what started the turn: {}",
-                entry.request.instruction
-            );
-            // Its agent records its work on it as on a message its person wrote.
-            assert_eq!(summonses(&chat, &head), vec![id]);
-
-            // A later turn reads it in the conversation as what it was: not as the agent's own
-            // earlier words, and not as something its person typed.
-            head.messages.push(
-                Id::from_raw("m_later"),
-                message(MemberId::person(ME), "did you remind me?", 30),
-            );
-            let entries = read(&chat, &head);
-            let [entry] = entries.as_slice() else {
-                panic!("the person's own words come first: one turn, not {entries:?}");
-            };
-            assert_eq!(entry.request.request(), "did you remind me?");
-            assert!(
-                entry
-                    .request
-                    .instruction
-                    .contains("\nA reminder (\"Call mum\"): Call mum about Sunday")
-                    && !entry.request.instruction.contains("You: Call mum"),
-                "{}",
-                entry.request.instruction
-            );
-        }
-
-        phase an_agents_own_words_are_no_summons;
-        {
-            let chat = workspace();
-            let head = part(vec![("m1", message(MemberId::agent(AGENT), "on it", 10))]);
-            assert_eq!(read(&chat, &head), Vec::new());
-        }
-
-        phase a_channel_of_the_whole_workspace_summons_no_agent;
-        {
-            let mut chat = workspace();
-            chat.channels.push(
-                Id::from_raw("c_general"),
-                chat::chat::Conversation {
-                    name: "general".into(),
-                    ..chat::chat::Conversation::default()
-                },
-            );
-            let head = part(vec![(
-                "m1",
-                chat::chat::Message {
-                    channel: Id::from_raw("c_general"),
-                    ..message(MemberId::person(ME), "hello all", 10)
-                },
-            )]);
-            assert_eq!(read(&chat, &head), Vec::new());
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_retry_gives_the_same_message_a_turn_and_a_run_again;
-
-        phase a_retried_reply_gives_its_summons_a_turn_again;
-        // A reply whose turn failed and that the person asked again no longer answers: the same
-        // message is a turn again, in a later attempt whose reply is its own.
-        {
-            let chat = workspace();
-            let mut asked = message(MemberId::person(ME), "add the revenue curve", 10);
-            let mut head = part(vec![("m1", asked.clone())]);
-            let mut failed = message(MemberId::agent(AGENT), "", 20);
-            failed.parent = Some(Id::from_raw("m1"));
-            failed.work = Some(chat::chat::Work {
-                state: Some(chat::chat::Transition {
-                    state: chat::model::AgentWorkState::ProviderFinished {
-                        outcome: chat::agent_stream::AgentFinish::Failed,
-                    },
-                    since: 20,
-                }),
-                ..chat::chat::Work::default()
-            });
-            head.messages.push(
-                chat::chat::reply_id(&Id::from_raw("m1"), &MemberId::agent(AGENT)),
-                failed,
-            );
-            assert_eq!(
-                read(&chat, &head),
-                Vec::new(),
-                "a failed reply ends the turn until the person asks again"
-            );
-            // The retry moved the question to its next attempt: its reply is the one derived for
-            // that attempt, and nobody has written it.
-            asked.attempts = 1;
-            head.messages.push(Id::from_raw("m1"), asked.clone());
-            let entries = read(&chat, &head);
-            let [entry] = entries.as_slice() else {
-                panic!("the retried summons is a turn again: {entries:?}");
-            };
-            assert_eq!(entry.request.instruction, "add the revenue curve");
-            assert_eq!(
-                entry.turn,
-                Turn::new("chat.workspace/channels/c_tide", "m1"),
-                "the turn is the same message, never a second question"
-            );
-            assert_eq!(
-                summonses(&chat, &head),
-                vec![Id::from_raw("m1")],
-                "the summons's item offers `record-work` again, so the agent's new answer lands"
-            );
-            // The answer lands in the attempt's own reply, never the one that failed.
-            let next = chat::chat::reply_id_at(&Id::from_raw("m1"), &MemberId::agent(AGENT), asked.attempts);
-            assert_ne!(
-                next,
-                chat::chat::reply_id(&Id::from_raw("m1"), &MemberId::agent(AGENT)),
-                "a retried turn is answered in a reply of its own"
-            );
-        }
-
-        phase a_retried_turn_is_a_new_turn_of_the_same_message;
-        // A retried turn is a turn of its own, not the one that failed read again: it is in the
-        // attempt the message moved to. That is what makes it deliverable — the pass announces a
-        // change only when the turns differ ([`crate::agent_sessions::AgentSessions::asked`]), so a
-        // turn that read exactly like the failed one would be handed to nobody.
-        {
-            let chat = workspace();
-            let asker = message(MemberId::person(ME), "add the revenue curve", 10);
-            let mut head = part(vec![("m1", asker.clone())]);
-            // The turn going before the answer was tried: the one the agent was handed first.
-            let first = read(&chat, &head);
-            let [before] = first.as_slice() else {
-                panic!("the ask is a turn: {first:?}");
-            };
-            assert_eq!(before.attempt, 0, "the first attempt");
-            // The try failed: the failed reply ends the turn.
-            let mut failed = message(MemberId::agent(AGENT), "", 20);
-            failed.parent = Some(Id::from_raw("m1"));
-            failed.work = Some(chat::chat::Work {
-                state: Some(chat::chat::Transition {
-                    state: chat::model::AgentWorkState::ProviderFinished {
-                        outcome: chat::agent_stream::AgentFinish::Failed,
-                    },
-                    since: 20,
-                }),
-                ..chat::chat::Work::default()
-            });
-            head.messages.push(
-                chat::chat::reply_id(&Id::from_raw("m1"), &MemberId::agent(AGENT)),
-                failed,
-            );
-            assert_eq!(read(&chat, &head), Vec::new());
-            // The person pressed Retry: the same message is a turn again, and it is a new one.
-            let mut retried = asker;
-            retried.attempts = 1;
-            head.messages.push(Id::from_raw("m1"), retried);
-            let again = read(&chat, &head);
-            let [after] = again.as_slice() else {
-                panic!("the retried summons is a turn again: {again:?}");
-            };
-            assert_eq!(
-                after.request.message, before.request.message,
-                "the retried turn is the same message's"
-            );
-            assert_eq!(after.session, before.session, "in the same session");
-            assert_eq!(
-                after.attempt, 1,
-                "the retried turn is the attempt the message moved to"
-            );
-            assert_ne!(
-                *after, *before,
-                "the retried turn differs from the one that failed, so the pass announces it"
-            );
-            // And the pass reads that as a change to deliver, exactly as it does a new turn.
-            let sessions = crate::agent_sessions::AgentSessions::new();
-            let named = |turns: Vec<AgentTurn>| vec![("w1".to_owned(), turns)];
-            assert!(sessions.asked(named(first)));
-            assert!(
-                sessions.asked(named(again)),
-                "the retry is a change the broker is woken for"
-            );
-        }
-    }
-
-    /// A pass that read different turns than the one before is what wakes the broker to deliver a
-    /// new one: the person typing an ask into a conversation Chat held no message in is only handed
-    /// to its agent because the sessions say the turns changed.
+    /// A summons's item is offered while its turn goes: a message a cause wrote for the person it
+    /// names, as one they wrote; not once its agent's reply failed; and again when the person
+    /// asked it once more.
     #[test]
-    fn a_new_turn_is_a_change_and_the_same_turns_are_not() {
+    fn a_summons_is_offered_while_its_turn_goes() {
         let chat = workspace();
-        let asked = part(vec![(
-            "m1",
-            message(MemberId::person(ME), "what is on my task list?", 10),
-        )]);
-        let read = turns(
-            "w1",
-            &chat,
-            &asked,
-            ME,
-            &chat::projection::PeopleNames::new(),
-            &std::collections::HashMap::new(),
-            |_| None,
+        let cause = chat::cause::Cause {
+            kind: tilo_resource::Atom("reminder".into()),
+            label: "Call mum".into(),
+            key: tilo_resource::Atom("run-1".into()),
+            person: MemberId::person(ME),
+        };
+        let id = cause.message();
+        let mut reminded = message(MemberId::bot("b_events"), "Call mum about Sunday", 10);
+        reminded.cause = Some(cause);
+        let head = part(vec![
+            (id.as_str(), reminded),
+            (
+                "m_bridge",
+                message(MemberId::bot("b_bridge"), "do as I say", 20),
+            ),
+            ("m_own", message(MemberId::agent(AGENT), "on it", 30)),
+        ]);
+        assert_eq!(summonses(&chat, &head), vec![id]);
+
+        let mut asked = message(MemberId::person(ME), "add the revenue curve", 10);
+        let mut head = part(vec![("m1", asked.clone())]);
+        let mut failed = message(MemberId::agent(AGENT), "", 20);
+        failed.parent = Some(Id::from_raw("m1"));
+        failed.work = Some(chat::chat::Work {
+            state: Some(chat::chat::Transition {
+                state: chat::model::AgentWorkState::ProviderFinished {
+                    outcome: chat::agent_stream::AgentFinish::Failed,
+                },
+                since: 20,
+            }),
+            ..chat::chat::Work::default()
+        });
+        head.messages.push(
+            chat::chat::reply_id(&Id::from_raw("m1"), &MemberId::agent(AGENT)),
+            failed,
         );
-        let sessions = crate::agent_sessions::AgentSessions::new();
-        let held = |turns: Vec<AgentTurn>| vec![("w1".to_owned(), turns)];
-        assert!(
-            sessions.asked(held(read.clone())),
-            "a turn that was not there is a change to deliver"
+        assert_eq!(
+            summonses(&chat, &head),
+            Vec::<Id>::new(),
+            "a failed reply ends the turn until the person asks again"
         );
-        assert!(
-            !sessions.asked(held(read)),
-            "the same turns read again are no change"
-        );
-        assert!(
-            sessions.asked(held(Vec::new())),
-            "a turn that ended is a change too: its answer stops"
+        asked.attempts = 1;
+        head.messages.push(Id::from_raw("m1"), asked);
+        assert_eq!(
+            summonses(&chat, &head),
+            vec![Id::from_raw("m1")],
+            "the summons's item offers `record-work` again, so the agent's new answer lands"
         );
     }
 }

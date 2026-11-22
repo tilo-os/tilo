@@ -113,71 +113,12 @@ pub(crate) struct AdmittedJoinIdentity {
 }
 
 impl AdmittedJoinIdentity {
-    /// This admission handed to `agent` by the person's own device, if any.
-    pub(super) fn delegated_to(mut self, agent: Option<&str>) -> Self {
-        if let Some(agent) = agent {
-            // The delegation names an agent, never its actor spelling.
-            self.agent_id = Some(delegated_agent_name(agent).to_owned());
-            self.session_delegated = true;
-        } else {
-            // A fresh admission to the person themselves: no earlier caller's
-            // delegation may survive into it.
-            self.agent_id = None;
-            self.session_delegated = false;
-        }
-        self
-    }
-
-    /// The durable owner of an invocation this admitted identity invokes:
-    /// [`InvocationOwner::AuthenticatedLocal`] naming the agent this session
-    /// was handed to, or no agent for the person themselves. Both apis that
-    /// admit a certified or local identity derive their owner here, so an
-    /// invocation's durable owner, its receipt actor and every later
-    /// validation name the same effective actor.
-    pub(super) fn invocation_owner(&self) -> Result<InvocationOwner, String> {
-        let cert = self
-            .certificate
-            .as_ref()
-            .ok_or("admitted caller certificate missing")?;
-        let owner = InvocationOwner::AuthenticatedLocal {
-            root: cert.user_public_key,
-            device: cert.device_public_key,
-            agent: self.agent_id.clone(),
-        };
-        owner.validate()?;
-        Ok(owner)
-    }
-
     /// The durable owner of an invocation from a certified caller
-    /// ([`VerifiedActionCaller`]).
-    ///
-    /// A session the person's own device handed to an agent is owned exactly
-    /// as the local api owns that same admitted identity
-    /// ([`Self::invocation_owner`]): [`InvocationOwner::AuthenticatedLocal`]
-    /// naming the agent, so the durable owner, the receipt actor and every
-    /// later validation agree on who acted. A plain certified person keeps
-    /// [`InvocationOwner::Certified`], which is how their invocations have
-    /// always been owned.
-    ///
-    /// A delegated session whose admission cannot name its owner (an
-    /// admission made without a retained certificate, as a network API's
-    /// can be) is refused here: falling back to [`InvocationOwner::Certified`]
-    /// would silently drop the delegation the person's device granted.
-    pub(super) fn delegated_invocation_owner(
-        &self,
-        delegated: Option<&str>,
-    ) -> Result<InvocationOwner, String> {
-        if let Some(agent) = delegated {
-            // The person and device this admission proves, and the delegation
-            // this caller says the person handed it.
-            self.invocation_owner()?;
-            if self.agent_id.as_deref() != Some(delegated_agent_name(agent)) {
-                return Err("admitted caller does not carry its delegation".into());
-            }
-            return self.invocation_owner();
-        }
+    /// ([`VerifiedActionCaller`]): the person themselves. An admission that
+    /// names an agent is no certified person's, and is refused.
+    pub(super) fn certified_owner(&self) -> Result<InvocationOwner, String> {
         if self.agent_id.is_some() || self.session_delegated {
-            return Err("admitted caller carries another agent's delegation".into());
+            return Err("admitted caller carries an agent's delegation".into());
         }
         Ok(self.person_owner())
     }

@@ -18,10 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_action_policy::{MemberAccess, WorkspacePolicy};
 use tilo_app::framework::WorkspaceResource;
-use tilo_app::tilo_workspace_agent::{
-    KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
-};
-use tilo_resource::Id;
+use tilo_app::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents as Record};
 use ui::permissions::{LivePermissions, PermissionContext};
 use ui::resource::workspace::WorkspaceResources;
 
@@ -232,37 +229,6 @@ impl Agents {
         (kept, every)
     }
 
-    /// Charge what the runs' agents spent to their day, on each workspace's record of its agents,
-    /// as the person sitting here: a person's device counts what the agents it runs spend.
-    pub(crate) fn charge(
-        &self,
-        workspaces: &[(String, WorkspacePolicy)],
-        person: &str,
-        spent: &[(String, String, u64)],
-    ) {
-        if spent.is_empty() {
-            return;
-        }
-        let day = ui::clock::today().to_string();
-        for (workspace, agent, cost_micros) in spent {
-            let Some((_, policy)) = workspaces.iter().find(|(held, _)| held == workspace) else {
-                continue;
-            };
-            let Held::Open(record) = self.record(workspace, policy, person) else {
-                continue;
-            };
-            let counted =
-                record.invoke(&Record::RECORD_AGENT_SPEND.with(actions::RecordAgentSpend {
-                    agent: Id::from_raw(agent.clone()),
-                    day: day.clone(),
-                    cost_micros: *cost_micros,
-                }));
-            if let Err(error) = counted {
-                tracing::warn!(%error, %workspace, %agent, "an agent's spend is not counted");
-            }
-        }
-    }
-
     /// The workspace's own agent in `workspace`, as `(id, name)`, read as `person`: the one no MCP
     /// client connects as that the record lists first, by its own order — the agent the canvas
     /// asks (shell.md §8.1). `None` where the workspace has none.
@@ -332,10 +298,9 @@ impl Agents {
 
 impl crate::Shared {
     /// Feed the agents every pass what their work is decided against: every workspace with the
-    /// grants its people gave, and the turns the conversations of each give its agents. Who keeps
-    /// each workspace's agents is read from the workspace's own record of them, as the broker
-    /// admits an agent's session on: an agent works in the turns of the conversations it takes part
-    /// in, and its actions are admitted as its person's grants say.
+    /// grants its people gave, and its conversations opened here. Who keeps each workspace's agents
+    /// is read from the workspace's own record of them, as the broker admits an agent's session on,
+    /// and its actions are admitted as its person's grants say.
     pub(crate) fn feed_agents(&self) {
         // What moved in the workspaces' records, and what this session wrote into them, before
         // anything here reads them.
@@ -347,8 +312,6 @@ impl crate::Shared {
                     .map(|held| (held.id().to_string(), held.policy.clone()))
                     .collect()
             });
-        self.agents
-            .charge(&workspaces, &self.person, &self.agent_sessions.take_spent());
         let (kept, listed) = self.agents.feed(&self.person, &workspaces);
         self.search.set_kept_agents(&kept);
         self.search.set_listed_agents(&listed);
@@ -363,11 +326,6 @@ impl crate::Shared {
                 })
                 .collect(),
         );
-        // A turn whose answer ended without one: the person reads it on the message that asked.
-        for (agent, turn, attempt, reason) in self.agent_sessions.take_failed() {
-            self.conversations
-                .turn_failed(&agent, &turn, attempt, &reason);
-        }
         // A turn the person asked on the canvas stands where they asked once Chat said which
         // message it posted for the ask and its record holds it (canvas.md §3).
         let mut layout = self.layout.borrow_mut();

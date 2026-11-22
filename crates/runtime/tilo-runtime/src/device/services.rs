@@ -30,7 +30,7 @@ use std::{
 };
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending,
+    InvocationState, InvokeRequest, Pending, device_agent_id,
 };
 use tilo_api::daemon::DaemonPlace;
 use tilo_desktop_model::WorkspaceId;
@@ -38,6 +38,7 @@ use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed, this_device};
 use tilo_workspace_service::apps::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::{BrokerChannels, BrokerSealChecks},
@@ -46,6 +47,10 @@ use tilo_workspace_service::apps::{
     services::{LauncherServices, ProcessServices, ShortcutLibraryServices, WorkspaceAuthority},
 };
 use tilo_workspace_service::workspaces::Refusal;
+
+/// The name the person's devices list a local MCP client under: one agent, whichever client
+/// connects.
+const MCP_CLIENT: &str = "mcp";
 
 /// Durable collaboration history, where the desktop session keeps it under
 /// the profile's `XDG_STATE_HOME`.
@@ -963,18 +968,16 @@ struct AdmittedRuntimeSession {
     policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
     provider: Arc<dyn ActionProvider + Send + Sync>,
     admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
-    /// The agent the person's device handed this run to.
-    agent: Option<String>,
+    /// The agent this run is, under a key of its own: who its calls go as.
+    agent: Option<Caller>,
     projection: Option<Caller>,
 }
 impl AdmittedRuntimeSession {
-    /// The run's caller as the broker admits it: the agent, for the person.
-    fn acting(&self) -> Caller {
-        let caller = self.admission.caller().clone();
-        match &self.agent {
-            Some(agent) => caller.delegated_to(agent.clone()),
-            None => caller,
-        }
+    /// Who the run's calls go as: its agent, or the admitted person.
+    fn acting(&self) -> &Caller {
+        self.agent
+            .as_ref()
+            .unwrap_or_else(|| self.admission.caller())
     }
 
     /// Whether `caller` is who this run was admitted for. A program the person runs reaches
@@ -1089,34 +1092,46 @@ impl RuntimeActionProvider {
     ) -> tilo_mcp::SessionFactory<Self> {
         let provider = self;
         Arc::new(move || {
-            // The MCP client is an agent the person's device hands this
-            // session to; the admission stays the person's.
-            let (session_host, caller, agent) =
-                provider.agent_session(&workspace, &actor, &policy_time, tilo_mcp::agent_id)?;
-            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_session(agent))
+            // The MCP client is the person's agent, under a key of its own: the admission stays
+            // the person's, and every call the client makes is signed by the agent's key.
+            let (session_host, caller) =
+                provider.agent_session(&workspace, &actor, &policy_time, |person| {
+                    (device_agent_id(person, MCP_CLIENT), MCP_CLIENT.to_owned())
+                })?;
+            let run = tilo_mcp::agent_id(&caller);
+            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_session(run))
         })
     }
 
-    /// A run of an agent the person's device hands it, in `workspace`, as
-    /// `actor`: the provider its calls go through, the caller its admission is,
-    /// and the agent `agent` names for that caller.
+    /// A run of `actor`'s agent in `workspace`, which `agent` names (its id and name) from the
+    /// person's public key: the provider its calls go through and the caller its admission is.
+    /// The agent acts under a key of its own this device makes it, its calls signed by that key
+    /// and taken by the broker as the agent's.
     pub(super) fn agent_session(
         &self,
         workspace: &str,
         actor: &str,
         policy_time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
-        agent: impl FnOnce(&Caller) -> String,
-    ) -> io::Result<(Self, Caller, String)> {
+        agent: impl FnOnce(&[u8; 32]) -> (String, String),
+    ) -> io::Result<(Self, Caller)> {
         let workspaces = Arc::clone(&self.workspaces);
         let (workspace, actor) = (workspace.to_owned(), actor.to_owned());
         let admission =
             block_on_owned(async move { workspaces.admit_execution(&workspace, &actor).await })
                 .map_err(io::Error::other)?;
         let caller = admission.caller().clone();
-        let agent = agent(&caller);
-        let qualified = self
-            .broker
-            .certified_local_agent_provider(&caller, admission.presentation(), &agent)
+        let (Some(person), Some(user), Some(workspace)) = (
+            caller.acting().person_id(),
+            caller.user_public_key(),
+            caller.workspace(),
+        ) else {
+            return Err(io::Error::other(
+                "the admitted run names no person's workspace",
+            ));
+        };
+        let (agent, name) = agent(user);
+        let (signer, agent) = this_device()
+            .and_then(|keys| AgentSigner::grant(keys, workspace, (&agent, &name), person))
             .map_err(io::Error::other)?;
         admission
             .check(self.workspaces.copies())
@@ -1128,14 +1143,14 @@ impl RuntimeActionProvider {
             apps: self.apps.clone(),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: policy_time.clone(),
-                provider: qualified,
+                provider: Arc::new(Signed::new(self.broker.device_host(), Some(signer))),
                 admission,
-                agent: Some(agent.clone()),
+                agent: Some(agent),
                 projection: None,
             })),
             tickets: None,
         };
-        Ok((run, caller, agent))
+        Ok((run, caller))
     }
 
     fn admitted(&self, caller: &Caller) -> bool {
@@ -1221,7 +1236,7 @@ impl ActionProvider for RuntimeActionProvider {
             }
             // Existing general catalogue/builtin APIs retain the exact
             // authenticated run. They make no SDK original-ownership claim.
-            let answer = self.broker.state().action_query(&session.acting(), &query);
+            let answer = self.broker.state().action_query(session.acting(), &query);
             let answer = session.guarded(Arc::clone(&self.workspaces), caller.clone(), answer);
             return self.with_devices(answer, &query);
         }
@@ -1253,7 +1268,7 @@ impl ActionProvider for RuntimeActionProvider {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
             }
-            return session.provider.invoke(session.admission.caller(), request);
+            return session.provider.invoke(session.acting(), request);
         }
         Pending::ready(Err(ActionCallError::NotPermitted))
     }
@@ -1267,7 +1282,7 @@ impl ActionProvider for RuntimeActionProvider {
         }
         if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
-            return session.provider.observe(session.admission.caller(), id);
+            return session.provider.observe(session.acting(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -1283,7 +1298,11 @@ impl ActionProvider for RuntimeActionProvider {
     fn here(&self, caller: &Caller) -> Option<Vec<tilo_actions::remote::Here>> {
         if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
-            return session.provider.here(session.admission.caller());
+            // The broker's signed host keeps no roster: an agent's run reads it as the agent.
+            if let Some(agent) = &session.agent {
+                return self.broker.state().here(agent);
+            }
+            return session.provider.here(session.acting());
         }
         if !self.admitted(caller) {
             return None;
@@ -1297,15 +1316,13 @@ impl ActionProvider for RuntimeActionProvider {
     fn session_state(&self, caller: &Caller) -> Option<tilo_actions::remote::SessionState> {
         let session = self.session.as_ref()?;
         session.check(caller, &self.workspaces).ok()?;
-        session.provider.session_state(session.admission.caller())
+        session.provider.session_state(session.acting())
     }
 
     fn session_state_changed(&self, caller: &Caller) -> Option<Pending<()>> {
         let session = self.session.as_ref()?;
         session.check(caller, &self.workspaces).ok()?;
-        session
-            .provider
-            .session_state_changed(session.admission.caller())
+        session.provider.session_state_changed(session.acting())
     }
 
     /// What a watch of the workspace follows, routed and authorized as [`Self::here`] and
@@ -1319,7 +1336,10 @@ impl ActionProvider for RuntimeActionProvider {
     {
         if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
-            return session.provider.changed(session.admission.caller(), scope);
+            if let Some(agent) = &session.agent {
+                return self.broker.state().changed(agent, scope);
+            }
+            return session.provider.changed(session.acting(), scope);
         }
         if !self.admitted(caller) {
             return None;
@@ -1332,7 +1352,7 @@ impl ActionProvider for RuntimeActionProvider {
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         if let Some(session) = &self.session {
             session.check(caller, &self.workspaces).ok()?;
-            return session.provider.next_change(session.admission.caller(), id);
+            return session.provider.next_change(session.acting(), id);
         }
         if !self.admitted(caller) {
             return None;
@@ -1360,9 +1380,7 @@ impl ActionProvider for RuntimeActionProvider {
         if let Err(refusal) = session.check(caller, &self.workspaces) {
             return Pending::ready(Err(refusal.into()));
         }
-        session
-            .provider
-            .confirm(session.admission.caller(), request)
+        session.provider.confirm(session.acting(), request)
     }
 
     fn cancel(
@@ -1382,7 +1400,7 @@ impl ActionProvider for RuntimeActionProvider {
             if let Err(refusal) = session.check(caller, &self.workspaces) {
                 return Pending::ready(Err(refusal.into()));
             }
-            return session.provider.cancel(session.admission.caller(), id);
+            return session.provider.cancel(session.acting(), id);
         }
         if !self.admitted(caller) {
             return Pending::ready(Err(ActionCallError::UnknownInvocation));

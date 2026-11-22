@@ -2163,7 +2163,7 @@ impl AppBrokerState {
                     )
                     .map_err(refusal)?;
                 }
-                Some(current.admitted.delegated_to(original.delegated.as_deref()))
+                Some(current.admitted)
             }
             Some(super::published_invocation::InvocationCaller::Local {
                 route,

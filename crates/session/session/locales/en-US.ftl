@@ -426,9 +426,6 @@ style-failed-app-name = Shell
 style-failed-title = Your style could not be shown
 style-failed-body = { $style } could not be shown, so the shell shows Strips. Your choice is kept.
 
-## A turn whose agent stopped before it answered the person's message.
-turn-unanswered = The agent stopped before it answered
-
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } mentioned you in ‘{ $place }’
 mention-notice-channel = { $name } mentioned you in { $channel }

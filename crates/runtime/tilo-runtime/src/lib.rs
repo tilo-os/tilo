@@ -108,23 +108,12 @@ pub trait RuntimeServices: Sized {
 
     fn action_provider(&self) -> io::Result<Self::ActionProvider>;
 
-    /// Construct one transport run for this exact configured audience. Hosts
-    /// with original certified ownership override this; client labels never enter.
+    /// Construct one transport run for this exact configured audience: the person's agent,
+    /// under a key of its own. Client labels never enter.
     fn mcp_session_factory(
         &self,
         workspace: &str,
-    ) -> io::Result<tilo_mcp::SessionFactory<Self::ActionProvider>> {
-        let workspace = self.mcp_workspace(Some(workspace))?;
-        let host = self.action_provider()?;
-        let actor = self.actor().to_owned();
-        Ok(std::sync::Arc::new(move || {
-            Ok(tilo_mcp::McpServer::new(
-                host.clone(),
-                workspace.clone(),
-                actor.clone(),
-            ))
-        }))
-    }
+    ) -> io::Result<tilo_mcp::SessionFactory<Self::ActionProvider>>;
 
     /// Spawn `command` as `app_id`, connected to this session's services.
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child>;

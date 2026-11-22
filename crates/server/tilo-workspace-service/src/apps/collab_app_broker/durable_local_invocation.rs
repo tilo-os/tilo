@@ -186,20 +186,6 @@ impl AppBrokerState {
             .workspace()
             .ok_or_else(|| ActionCallError::unavailable("caller workspace unavailable"))?;
         let actor = self.caller_actor(caller, workspace);
-        // Ordinary durable observations may reconcile effects too. A workspace
-        // that confines its agents keeps an agent from observing on a grant
-        // alone: only one in an agent session that still goes observes.
-        if actor.is_agent() && !actor.is_app() && self.confines_agents(workspace) {
-            match self.agent_session_of(Some(caller), workspace) {
-                Some(Ok(_)) => {}
-                Some(Err(ended)) => return Err(ActionCallError::unavailable(ended)),
-                None => {
-                    return Err(ActionCallError::unavailable(
-                        "an agent acts only in an agent session",
-                    ));
-                }
-            }
-        }
         let owner = self
             .invocation_owner(Some(origin), workspace, &actor)
             .map_err(ActionCallError::unavailable)?;

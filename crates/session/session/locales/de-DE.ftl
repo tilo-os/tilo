@@ -431,9 +431,6 @@ style-failed-app-name = Shell
 style-failed-title = Dein Stil konnte nicht angezeigt werden
 style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt die Shell Streifen. Deine Wahl bleibt erhalten.
 
-## A turn whose agent stopped before it answered the person's message.
-turn-unanswered = Der Agent hat aufgehört, bevor er antwortete
-
 ## Someone mentioned the person in a record of the workspace.
 mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
 mention-notice-channel = { $name } hat dich in { $channel } erwähnt

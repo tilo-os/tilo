@@ -33,12 +33,6 @@ struct Native {
     opening: std::sync::atomic::AtomicBool,
     /// The agent sessions going, each with what its person allowed it.
     sessions: Mutex<Vec<(String, crate::apps::services::GoingSession)>>,
-    /// The turns people asked the agents.
-    turns: Mutex<Vec<crate::apps::services::AgentTurn>>,
-    /// What each turn's session reported it spent, in order.
-    spent: Mutex<Vec<(String, u64)>>,
-    /// The turns whose answer ended without one, as the session heard of them.
-    failed: Mutex<Vec<(String, tilo_action_policy::turn::Turn, u32, String)>>,
     /// The agents the workspace's record of its agents names.
     listed: Mutex<Vec<crate::apps::services::ListedAgent>>,
 }
@@ -251,36 +245,6 @@ impl crate::apps::services::AgentSessions for Native {
             going.answers.push(grant);
         }
     }
-
-    fn confines(&self, workspace: &str) -> bool {
-        workspace == workspace_id().to_string()
-    }
-
-    fn turns(&self, _workspace: &str) -> Vec<crate::apps::services::AgentTurn> {
-        self.turns.lock().unwrap().clone()
-    }
-
-    fn spent(&self, session: &str, total_micros: u64) {
-        self.spent
-            .lock()
-            .unwrap()
-            .push((session.to_owned(), total_micros));
-    }
-
-    fn turn_failed(
-        &self,
-        session: &str,
-        turn: &tilo_action_policy::turn::Turn,
-        attempt: u32,
-        reason: &str,
-    ) {
-        self.failed.lock().unwrap().push((
-            session.to_owned(),
-            turn.clone(),
-            attempt,
-            reason.to_owned(),
-        ));
-    }
 }
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -371,9 +335,6 @@ impl Fixture {
             receipts_refused: std::sync::atomic::AtomicBool::new(false),
             opening: std::sync::atomic::AtomicBool::new(false),
             sessions: Mutex::new(Vec::new()),
-            turns: Mutex::new(Vec::new()),
-            spent: Mutex::new(Vec::new()),
-            failed: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
         });
         let membership = OwnerCommitRequest {

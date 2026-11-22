@@ -14,8 +14,8 @@ mod own_device;
 mod workspace_nodes;
 
 pub use agent_sessions::{
-    AGENT_SESSION_PREFIX, AgentRoster, AgentSessions, AgentTurn, GoingSession, ListedAgent,
-    is_agent_session, session_answer_id, session_answer_scope,
+    AGENT_SESSION_PREFIX, AgentRoster, AgentSessions, GoingSession, ListedAgent, is_agent_session,
+    session_answer_id, session_answer_scope,
 };
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use workspace_nodes::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};

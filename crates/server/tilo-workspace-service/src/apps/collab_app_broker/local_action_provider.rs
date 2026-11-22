@@ -275,26 +275,6 @@ impl AppBrokerState {
         ))
     }
 
-    /// [`Self::certified_local_action_provider`] handed to agent `agent` by the
-    /// person's own device (an MCP client): the session stays the person's
-    /// admission, every action through it is the agent's, acting for the
-    /// person with the delegation a device gives its agents.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::certified_local_action_provider`].
-    pub fn certified_local_agent_provider(
-        self: &Arc<Self>,
-        caller: &Caller,
-        presentation: &[u8],
-        agent: &str,
-    ) -> Result<Arc<dyn ActionProvider + Send + Sync>, String> {
-        Ok(Arc::new(
-            self.checked_local_host(caller, presentation)?
-                .delegated_to(agent),
-        ))
-    }
-
     fn checked_local_host(
         self: &Arc<Self>,
         caller: &Caller,
@@ -480,17 +460,6 @@ impl CertifiedLocalActionProvider {
         InvocationCaller::Certified {
             caller: Box::new(self.admission.clone()),
             foreign_restriction: self.effective.is_foreign_device(),
-        }
-    }
-
-    /// This api, handed to agent `agent` by the person's own device.
-    fn delegated_to(&self, agent: &str) -> Self {
-        Self {
-            state: Arc::clone(&self.state),
-            caller: self.caller.clone(),
-            effective: self.effective.clone().delegated_to(agent),
-            admission: self.admission.clone().delegated_to(agent),
-            native_projection: None,
         }
     }
 

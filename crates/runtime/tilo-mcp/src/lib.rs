@@ -590,20 +590,6 @@ pub fn agent_id(caller: &Caller) -> String {
 }
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
-    /// An MCP client of `actor`'s on this device, in `workspace`. The client is
-    /// an agent acting for the person ([`agent_id`]): what it does is the
-    /// agent's, for them, within what both the person and the delegation a
-    /// device gives its agents allow.
-    #[must_use]
-    pub fn new(host: H, workspace: String, actor: String) -> Self {
-        let caller = Caller::local_person(actor)
-            .in_workspace(workspace.clone())
-            .in_new_execution();
-        let agent = agent_id(&caller);
-        let caller = caller.delegated_to(agent);
-        Self::from_caller(host, workspace, caller)
-    }
-
     /// A session of agent `agent_id` for `person` in `workspace`, as a host that admits it by its
     /// own means takes it: the agent is the actor, for the person ([`Self::for_delegated`]).
     #[must_use]

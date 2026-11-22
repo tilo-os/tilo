@@ -87,22 +87,13 @@ impl AppBrokerState {
         }
         Ok(())
     }
-
-    /// Whether agents in `workspace` act only in an agent session
-    /// ([`crate::apps::services::AgentSessions::confines`]).
-    pub fn confines_agents(&self, workspace: &str) -> bool {
-        self.services
-            .agent_sessions
-            .as_deref()
-            .is_some_and(|sessions| sessions.confines(workspace))
-    }
 }
 
 /// Admit agent `agent_id`, listed in `workspace`, to join on the session of a
 /// member running it. The workspace's record of its agents and the member's own
 /// admission are the whole of it: the agent acts for that member, capped
-/// ([`roles::agent_policy::ROLE_CAP`]), inside the turns its conversations
-/// start, so the workspace's grants decide what it does. A record that no
+/// ([`roles::agent_policy::ROLE_CAP`]), so the workspace's grants decide what
+/// it does. A record that no
 /// longer lists it refuses the join and every later revalidation of it.
 pub(super) fn admit_listed_agent(
     roster: &dyn crate::apps::services::AgentRoster,

@@ -739,7 +739,7 @@ mod tests {
             )
         );
         // What was learned opens with a marker of its own, so the turn still reads what is
-        // asked from the person's words alone (`TurnRequest::request` cuts at it).
+        // asked from the person's words alone.
         assert!(
             told.instruction()
                 .starts_with(&format!("what do you know about me?{INSTRUCTION_LEARNED}"))

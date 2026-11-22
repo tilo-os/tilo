@@ -469,17 +469,14 @@ impl Session {
                 Some((app, kind, held, outcome))
             })
         };
-        // The agent sessions served here: one per connection the person admits at the MCP server
-        // and one per conversation an agent is asked a turn in. What the shell and the bar show,
-        // and what the broker admits each session on.
+        // The agent sessions served here: one per connection the person admits at the MCP server.
+        // What the shell and the bar show, and what the broker admits each session on.
         let agent_sessions = crate::agent_sessions::AgentSessions::new();
-        agent_sessions.wake_on_spend(options.wake.handle());
         // Where each workspace's folder on this computer stands, as the files daemon says it over
         // the tree socket: what the shell shows, so a person knows what reached the server.
         let folders = tilo_workspace_service::files::Folders::new(options.wake.handle());
         let conversations = Rc::new(crate::conversations::Conversations::new(
             records.clone(),
-            std::sync::Arc::clone(&agent_sessions),
             &options.wake.handle(),
         ));
         let agents = Rc::new(crate::agents::Agents::new(
@@ -2517,14 +2514,6 @@ impl Session {
     pub fn device_actions(&self) -> Option<tilo_peer_state::actions::ActionService> {
         let devices = self.shared.sync.as_ref()?.device_actions()?;
         Some(devices.action_service())
-    }
-
-    /// Whether an agent in `workspace` acts here only in one of its sessions: true once the session
-    /// read the workspace's conversations, which is when it holds the workspace.
-    #[must_use]
-    pub fn confines_agents(&self, workspace: &str) -> bool {
-        use tilo_broker_core::services::AgentSessions as _;
-        self.shared.agent_sessions.confines(workspace)
     }
 
     /// What the windows ask of the workspace's activity and follow, as this session serves it: the
