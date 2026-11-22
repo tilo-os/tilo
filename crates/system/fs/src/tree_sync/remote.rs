@@ -387,6 +387,7 @@ impl Link {
 
 /// Keep a connection to the session while the sync runs, dialing again whenever one ends.
 async fn keep_linked(link: Arc<Link>, socket: PathBuf, wakes: mpsc::UnboundedSender<Wake>) {
+    let _unlinked = Unlinked(Arc::clone(&link));
     let mut said: Option<String> = None;
     loop {
         let ended = tokio::select! {
@@ -405,6 +406,17 @@ async fn keep_linked(link: Arc<Link>, socket: PathBuf, wakes: mpsc::UnboundedSen
             said = Some(error);
         }
         tokio::time::sleep(RECONNECT).await;
+    }
+}
+
+/// The connection lost when the task keeping it is dropped, as a stopping runtime drops it: a
+/// read waiting for the session's answer then ends at once instead of waiting for good, as does
+/// whoever waits for that read (a stopping runtime waits for its blocking tasks).
+struct Unlinked(Arc<Link>);
+
+impl Drop for Unlinked {
+    fn drop(&mut self) {
+        self.0.lost();
     }
 }
 
@@ -611,5 +623,72 @@ impl TreeWriter for Remote {
                 None => Err(UNREACHABLE.to_owned().into()),
             }
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A read the session never answers ends when the sync's runtime stops: a stopping runtime
+    /// waits for its blocking tasks, and a read left waiting would hold it for good.
+    #[test]
+    fn a_read_the_session_never_answers_ends_with_the_runtime() {
+        const WITHIN: Duration = Duration::from_secs(10);
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("tree.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        // The session takes every ask and answers none.
+        let (asked, read_asked) = std::sync::mpsc::channel();
+        let _session = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            while let Ok(Some(ask)) = FRAMING.read_value::<_, Ask>(&mut stream) {
+                if matches!(ask, Ask::Read { .. }) {
+                    let _ = asked.send(());
+                }
+            }
+        });
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let store = runtime
+            .block_on(crate::ContentStore::open(dir.path().join("content")))
+            .unwrap();
+        let link = Arc::new(Link {
+            workspace: "studio".to_owned(),
+            out: Mutex::new(None),
+            waiting: Mutex::new(BTreeMap::new()),
+            next: AtomicU64::new(0),
+            state: Mutex::new(PeerState::default()),
+            store: Arc::new(store),
+            access: tokio::sync::watch::channel(None).0,
+            shown: Mutex::new(None),
+        });
+        let (wakes, _wake_events) = mpsc::unbounded_channel();
+        runtime.spawn(keep_linked(Arc::clone(&link), socket, wakes));
+        let started = std::time::Instant::now();
+        while link.out.lock_recover().is_none() {
+            assert!(
+                started.elapsed() < WITHIN,
+                "the sync connects to the session"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let remote = Remote(Arc::clone(&link));
+        let (done, read_done) = std::sync::mpsc::channel();
+        let _reader = std::thread::spawn(move || {
+            let _ = done.send(remote.read("studio", FILES_APP, "tree", None));
+        });
+        read_asked
+            .recv_timeout(WITHIN)
+            .expect("the session is asked the read");
+        drop(runtime);
+        let read = read_done
+            .recv_timeout(WITHIN)
+            .expect("the read ends once the runtime stopped");
+        assert_eq!(read.err().as_deref(), Some(UNREACHABLE));
     }
 }
