@@ -1305,7 +1305,7 @@ impl Instance {
             .unwrap_or_else(|| suggestion.action.clone());
         self.out.push(ToUi::Ask(Some(ui::Ask {
             action,
-            invoker: crate::names::unnamed(&suggestion.invoker),
+            invoker: self.names.name(&suggestion.invoker),
         })));
         self.ask = Some(suggestion);
     }

@@ -8,9 +8,8 @@ tilolang-view-failed = This couldn't be shown
 tilolang-seen-failed = What this window showed could not be marked as seen.
 tilolang-back = All apps
 tilolang-detail = Details
-tilolang-ask-title = Allow this change?
-tilolang-ask-by = Requested by { $invoker }
-tilolang-ask-action = { $action }
+# The Ask bar's question, naming the action as its package does ("Allow “Search”?").
+tilolang-ask-action = Allow “{ $action }”?
 tilolang-ask-confirm = Allow
 tilolang-ask-decline = Decline
 tilolang-suggestion-accept = Accept

@@ -106,7 +106,6 @@ mod tests {
             "tilolang-seen-failed",
             "tilolang-back",
             "tilolang-detail",
-            "tilolang-ask-title",
             "tilolang-ask-confirm",
             "tilolang-ask-decline",
             "tilolang-suggestion-accept",
