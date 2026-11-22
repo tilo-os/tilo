@@ -382,7 +382,6 @@ fn session_task(
         refused: (0, String::new()),
         surface_wants: neighbour_wire::content::ContentWants::default(),
         held_live: crate::held_live::HeldLive::new(),
-        positions: BTreeMap::new(),
         opened_records: BTreeMap::new(),
         opened_routes: BTreeSet::new(),
         when_opened: BTreeSet::new(),
@@ -609,10 +608,6 @@ struct Task {
     /// ([`Self::ask_behind_again`]) until a compaction of it is taken: it waits for nothing in
     /// silence.
     behind: BTreeMap<DocumentRoute, Behind>,
-    /// The host's last position per workspace, presented when resubscribing so
-    /// the host replays only what came after it. Kept for the session task's
-    /// lifetime only: it describes what this page has received.
-    positions: BTreeMap<WorkspaceId, Vec<u8>>,
     /// The on-demand records this page opened, by workspace and retained
     /// channel: opened again after every resubscription. A channel names a
     /// record by its app and id alone, so the same record of two workspaces
@@ -795,7 +790,7 @@ impl Task {
                 ..
             } => {
                 if *documents_when_opened {
-                    self.documents_when_opened(*workspace_id, Some(client));
+                    self.documents_when_opened(*workspace_id);
                 }
                 self.announce(client, *workspace_id)
             }
@@ -818,16 +813,10 @@ impl Task {
     }
 
     /// Tell the host, once `workspace_id` admitted this device, its
-    /// certificate (unless the replay's start told it already) and that it
-    /// answers compaction requests. Returns `false` when the session could
-    /// not take them.
+    /// certificate, unless the replay's start told it already. Returns
+    /// `false` when the session could not take it.
     fn announce(&mut self, client: &ServerClient, workspace_id: WorkspaceId) -> bool {
-        if !self.introduce(client, workspace_id) {
-            return false;
-        }
-        client
-            .send(Envelope::CompactVolunteer { workspace_id })
-            .is_ok()
+        self.introduce(client, workspace_id)
     }
 
     /// Take `entry` into what this session announces and send its identity
@@ -1019,15 +1008,11 @@ impl Task {
         }
     }
 
-    /// Subscribe to `workspace_id`, continuing from the position this page
-    /// last received: the host replays only what came after it, and a page
-    /// that holds no position (its first session, or a refresh) gets the
-    /// workspace whole.
-    fn subscribe(&self, workspace_id: WorkspaceId) -> Envelope {
-        Envelope::SubscribeFrom {
-            workspace_id,
-            position: self.positions.get(&workspace_id).cloned(),
-        }
+    /// Subscribe to `workspace_id`: the host's live traffic of it. Its records
+    /// reach a device over its link to the workspace, never a session, so a
+    /// subscription names no position to replay from.
+    fn subscribe(workspace_id: WorkspaceId) -> Envelope {
+        Envelope::Subscribe { workspace_id }
     }
 
     /// Subscribe every joined workspace again, from now on waiting for its
@@ -1042,7 +1027,6 @@ impl Task {
                 })
                 .is_ok();
         }
-        sent_ok &= self.reopen_records(client);
         self.reports.change(|status| {
             for ready in status.workspaces.values_mut() {
                 *ready = false;
@@ -1255,7 +1239,6 @@ impl Task {
                     None | Some(Command::Client(Cmd::Stop)) => return false,
                     Some(Command::Client(Cmd::Reconnect | Cmd::Retry)) => return true,
                     Some(Command::Client(Cmd::Refresh)) => {
-                        self.positions.clear();
                         self.received.clear();
                         return true;
                     }
@@ -1299,7 +1282,6 @@ impl Task {
                 None | Some(Command::Client(Cmd::Stop)) => return false,
                 Some(Command::Client(Cmd::Reconnect)) => return true,
                 Some(Command::Client(Cmd::Refresh)) => {
-                    self.positions.clear();
                     self.received.clear();
                     return true;
                 }
@@ -1336,7 +1318,7 @@ impl Task {
         // for it before anything else is read.
         self.ask_surfaces(client);
         if std::mem::take(&mut self.surfaces_arrived) || !self.replays.is_empty() {
-            self.replay_surfaced(client);
+            self.replay_surfaced();
         }
         for compaction in std::mem::take(&mut self.compactions) {
             self.compact(compaction).await;
@@ -1371,11 +1353,10 @@ impl Task {
     }
 
     /// Ask the host for every joined workspace whole again, as a refresh
-    /// does: no position, no admission failure kept. `false` when the
+    /// does: no admission failure kept. `false` when the
     /// session took no more.
     fn refresh(&mut self, client: &ServerClient) -> bool {
         self.clear_admission_failure();
-        self.positions.clear();
         self.received.clear();
         self.resubscribe(client)
     }
@@ -1773,7 +1754,8 @@ impl Task {
                 }
             }
             Command::Client(Cmd::OpenDocumentAt(workspace_id, route)) => {
-                self.open_resource(workspace_id, route, client)
+                self.open_resource(workspace_id, route);
+                true
             }
             #[cfg(not(target_arch = "wasm32"))]
             Command::LiveSessionJoined(workspace_id, joined) => {
@@ -1825,14 +1807,13 @@ impl Task {
             }
             Command::Client(Cmd::OpenRoute(route)) => {
                 self.open_channel(&route);
-                let asked = match route.workspace_id() {
-                    Ok(workspace_id) if self.when_opened.contains(&workspace_id) => {
-                        self.open_record_once(workspace_id, &route, client)
-                    }
-                    _ => true,
-                };
+                if let Ok(workspace_id) = route.workspace_id()
+                    && self.when_opened.contains(&workspace_id)
+                {
+                    self.open_record_once(workspace_id, &route);
+                }
                 self.opened_routes.insert(route);
-                asked
+                true
             }
             // Its mutation is held already ([`crate::Link`]): draft and publish what waits.
             Command::Client(Cmd::Write(route)) => {
@@ -1983,7 +1964,7 @@ impl Task {
         });
         self.received.clear();
         self.begun.remove(&workspace_id);
-        client.is_none_or(|client| client.send(self.subscribe(workspace_id)).is_ok())
+        client.is_none_or(|client| client.send(Self::subscribe(workspace_id)).is_ok())
     }
 
     /// Join `workspace` once the host governs it ([`Cmd::JoinPlaced`]).
@@ -2051,7 +2032,7 @@ impl Task {
         self.received.clear();
         self.begun.clear();
         for workspace_id in self.workspaces.clone() {
-            sent_ok &= client.send(self.subscribe(workspace_id)).is_ok();
+            sent_ok &= client.send(Self::subscribe(workspace_id)).is_ok();
         }
         let placing = self.placing.keys().copied().collect::<Vec<_>>();
         for workspace_id in placing {
@@ -2059,7 +2040,6 @@ impl Task {
         }
         // The agent this session runs, said after the workspaces it enters, as it was said first.
         sent_ok &= self.declare_agent_run_again(client);
-        sent_ok &= self.reopen_records(client);
         // What this page recorded while it was away is owed again, oldest
         // first: as much as the transport takes now, the rest as the host's
         // answers make room ([`Self::send_ownership`]).

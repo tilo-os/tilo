@@ -62,8 +62,8 @@ fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
     let (first, second) = (WorkspaceId::from_u128(1), WorkspaceId::from_u128(2));
     // Both are asked for before either is answered, as two workspaces' requests
     // arriving together ask.
-    assert!(task.open_resource(first, layout(first), None));
-    assert!(task.open_resource(second, layout(second), None));
+    task.open_resource(first, layout(first));
+    task.open_resource(second, layout(second));
     assert_eq!(
         task.opened_records.len(),
         2,

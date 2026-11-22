@@ -196,12 +196,6 @@ impl Task {
                 delta,
                 ..
             } => self.delta(workspace_id, &delta, author_device_public_key),
-            Envelope::Position {
-                workspace_id,
-                position,
-            } => {
-                self.positions.insert(workspace_id, position);
-            }
             // This session's token for its host's fetch proxy, which dies
             // with the connection.
             Envelope::FetchGrant { token } => self.grant_fetch_proxy(&token),
@@ -883,36 +877,14 @@ impl Task {
         }
     }
 
-    /// Ask the host to replay each record whose writes waited for an app surface that is here
-    /// now, and each one the replica asked to hear again: its writes are decided again.
-    pub(super) fn replay_surfaced(&mut self, client: &ServerClient) {
-        let arrived: Vec<[u8; 32]> = self
-            .awaiting_surface
-            .iter()
-            .filter(|(surface, (_, route))| crate::surfaces::holds(&route.app_id, surface))
-            .map(|(surface, _)| *surface)
-            .collect();
-        for surface in arrived {
-            if let Some((_, route)) = self.awaiting_surface.remove(&surface) {
-                self.replays.insert(route);
-            }
-        }
-        for route in std::mem::take(&mut self.replays) {
-            let Ok(workspace_id) = route.workspace_id() else {
-                continue;
-            };
-            let channel = neighbour_wire::app_document_group(&route.app_id, &route.document);
-            if client
-                .send(Envelope::OpenDocument {
-                    workspace_id,
-                    channel,
-                })
-                .is_err()
-            {
-                self.replays.insert(route);
-                return;
-            }
-        }
+    /// Let each record whose writes waited for an app surface that is here now, and each one the
+    /// replica asked to hear again, wait for its link: a workspace's records reach a device over
+    /// its link to the workspace, which brings them again, never a session, so the host is asked
+    /// for nothing here.
+    pub(super) fn replay_surfaced(&mut self) {
+        self.awaiting_surface
+            .retain(|surface, (_, route)| !crate::surfaces::holds(&route.app_id, surface));
+        self.replays.clear();
     }
 }
 

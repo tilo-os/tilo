@@ -4,19 +4,14 @@
 //! every record when opened (a public one), each route this session opens
 //! is asked for that way ([`Task::documents_when_opened`]).
 
-use super::{DocumentRoute, Envelope, ServerClient, Task};
+use super::{DocumentRoute, Task};
 use tilo_server_protocol::WorkspaceId;
 
 impl Task {
     /// Open the on-demand record `route` of `workspace_id`, and ask for its
-    /// keys at the same time. Returns `false` when the session could not
-    /// take the request.
-    pub(super) fn open_resource(
-        &mut self,
-        workspace_id: WorkspaceId,
-        route: DocumentRoute,
-        client: Option<&ServerClient>,
-    ) -> bool {
+    /// keys. Its records reach this device over its link to the workspace,
+    /// never this session: the host is asked for nothing here.
+    pub(super) fn open_resource(&mut self, workspace_id: WorkspaceId, route: DocumentRoute) {
         let channel = neighbour_wire::app_document_group(&route.app_id, &route.document);
         // A chain's head names a part and holds nothing of its own: the
         // part's keys are asked for as it arrives, like a replayed head's.
@@ -27,42 +22,25 @@ impl Task {
             self.open_channel(&route);
         }
         self.opened_records.insert((workspace_id, channel), route);
-        client.is_none_or(|client| {
-            client
-                .send(Envelope::OpenDocument {
-                    workspace_id,
-                    channel,
-                })
-                .is_ok()
-        })
     }
 
     /// Open `route` as a record ([`Self::open_resource`]) unless this session
     /// opened it already; the shared desktop is replayed to every device
     /// and is never asked for.
-    pub(super) fn open_record_once(
-        &mut self,
-        workspace_id: WorkspaceId,
-        route: &DocumentRoute,
-        client: Option<&ServerClient>,
-    ) -> bool {
+    pub(super) fn open_record_once(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
         let channel = neighbour_wire::app_document_group(&route.app_id, &route.document);
         if self.opened_records.contains_key(&(workspace_id, channel))
             || (route.app_id == tilo_desktop_model::ownership::DESKTOP_APP
                 && route.document == tilo_desktop_model::ownership::DESKTOP_DOCUMENT)
         {
-            return true;
+            return;
         }
-        self.open_resource(workspace_id, route.clone(), client)
+        self.open_resource(workspace_id, route.clone());
     }
 
     /// `workspace_id`'s host said it sends records only when they are opened
     /// (its `Ready`): every route opened in it so far is opened as a record.
-    pub(super) fn documents_when_opened(
-        &mut self,
-        workspace_id: WorkspaceId,
-        client: Option<&ServerClient>,
-    ) {
+    pub(super) fn documents_when_opened(&mut self, workspace_id: WorkspaceId) {
         if !self.when_opened.insert(workspace_id) {
             return;
         }
@@ -73,23 +51,8 @@ impl Task {
             .cloned()
             .collect();
         for route in routes {
-            self.open_record_once(workspace_id, &route, client);
+            self.open_record_once(workspace_id, &route);
         }
-    }
-
-    /// Open every record this session opened again on a new subscription.
-    /// Returns `false` when the session could not take the requests.
-    pub(super) fn reopen_records(&self, client: &ServerClient) -> bool {
-        let mut sent_ok = true;
-        for (workspace_id, channel) in self.opened_records.keys() {
-            sent_ok &= client
-                .send(Envelope::OpenDocument {
-                    workspace_id: *workspace_id,
-                    channel: *channel,
-                })
-                .is_ok();
-        }
-        sent_ok
     }
 
     /// The host answered a record this page opened: it sent everything it holds of it, or it is
