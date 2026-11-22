@@ -2178,6 +2178,12 @@ impl WireConnection {
                             },
                         ))
                     }
+                    Topic::HeldElsewhere(records) => {
+                        let feed = session.held_elsewhere(records).map_err(failed)?;
+                        tokio::task::spawn_local(pump(feed, id, frames, |decisions| {
+                            Some(Event::HeldElsewhere(decisions))
+                        }))
+                    }
                     Topic::Resources(query) => {
                         let opening = session.resources_open(&query).map_err(failed)?;
                         tokio::task::spawn_local(async move {

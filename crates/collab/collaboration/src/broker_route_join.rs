@@ -194,6 +194,7 @@ pub(super) async fn join_route(
             presence: None,
             workspace_controls: std::collections::HashMap::new(),
             resource_queries: std::collections::HashMap::new(),
+            held_elsewhere: None,
             committed: false,
         });
     }
@@ -360,6 +361,7 @@ pub(super) async fn join_route(
         presence,
         workspace_controls: std::collections::HashMap::new(),
         resource_queries: std::collections::HashMap::new(),
+        held_elsewhere: None,
         committed,
     })
 }

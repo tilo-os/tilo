@@ -651,6 +651,12 @@ pub enum CollabRequest {
     CloseResources {
         query_id: u64,
     },
+    /// Ask the host what the workspaces holding `records` say of their actions, replacing what
+    /// was asked before: answered with [`CollabEvent::HeldElsewhereVerdicts`] now and again
+    /// whenever one of those workspaces' grants changes. Empty asks nothing more.
+    DecideHeldElsewhere {
+        records: Vec<runtime_collab::held_elsewhere::HeldRecord>,
+    },
 }
 
 impl CollabRequest {
