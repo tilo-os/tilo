@@ -433,3 +433,38 @@ fn a_late_answer_shows_the_page_after_it_said_it_waited_too_long() {
         "the late answer shows the bookmarks, empty, and the page no longer says it waits"
     );
 }
+
+/// A page whose placeholder showed before the workspace answered (the first page a worker opens
+/// is slow to lay out) shows the answer in the read that follows it: a page is a still frame,
+/// read when its person's browser asks, and has no later frame that would reveal what landed.
+#[test]
+fn a_page_answered_while_its_placeholder_shows_shows_the_answer_in_the_next_read() {
+    use tilo_app::resource::WorkspaceAnswer;
+    let mut page = page_of_reads_once();
+    let opened = tilo_app::time::now();
+    let after = |millis: u64| {
+        opened
+            .checked_add(tilo_app::time::Duration::from_millis(millis))
+            .expect("a time")
+    };
+    assert!(
+        !page_says(&page, "nothing bookmarked"),
+        "not read as none yet"
+    );
+    let shown = tilo_app::time::testing::with_monotonic_time(after(200), || {
+        let asked = page.wanted_resources();
+        assert!(!asked.is_empty(), "the page asks for its bookmarks");
+        for record in asked {
+            page.workspace_answered(record, WorkspaceAnswer::HoldsNone);
+        }
+        page_says(&page, "nothing bookmarked")
+    });
+    assert!(
+        shown,
+        "the read after the answer shows the bookmarks, empty"
+    );
+    let later = tilo_app::time::testing::with_monotonic_time(after(2000), || {
+        page_says(&page, "nothing bookmarked")
+    });
+    assert!(later, "and every read after it");
+}

@@ -17,6 +17,7 @@ impl AttachedView {
     #[must_use]
     pub fn composition(&self) -> ui_core::composition::Composition {
         drop(self.frame());
+        let _still = ui_core::arriving::still_frames();
         let mut frame = self.frame.borrow_mut();
         for _ in 0..PAGE_FRAMES {
             if !frame.poll_frame().unwrap_or(false) {

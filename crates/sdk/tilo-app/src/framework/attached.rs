@@ -1747,8 +1747,10 @@ impl AttachedView {
 /// Lay `frame` out, and take up what that frame asked for: the invocations
 /// it submitted, the replies it asked a worker for. One frame when it asked
 /// for nothing; when what it submitted changed the record, the frames that
-/// shows ([`FrameHarness::settle_owed`]).
+/// shows ([`FrameHarness::settle_owed`]). Laid out as a still frame
+/// ([`ui_core::arriving::still_frames`]): a view no window shows has no later frame.
 fn lay_out(frame: &mut FrameHarness) {
+    let _still = ui_core::arriving::still_frames();
     frame.relayout();
     if frame.settle_if_owed() == (ui_core::headless::OwedSettle::Unframed { moved: true }) {
         frame.settle_owed();

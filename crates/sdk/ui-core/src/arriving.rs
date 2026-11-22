@@ -171,6 +171,33 @@ pub fn frame_budget() -> Duration {
     FRAME_BUDGET.with(std::cell::Cell::get)
 }
 
+thread_local! {
+    static STILL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While the guard lives, this thread's views are drawn as still frames: a page read when its
+/// person's browser asks for it, with no later frame of its own. An answer then shows in the
+/// frame it landed for, never held behind a skeleton or faded in: the skeleton's minimum time
+/// keeps a live screen from flashing, and a page that held the answer would show its
+/// placeholder until something else made it lay out again.
+#[must_use]
+pub fn still_frames() -> StillFrames {
+    StillFrames(STILL.with(|still| still.replace(true)))
+}
+
+/// [`still_frames`]'s guard: dropping it restores what the thread drew before.
+pub struct StillFrames(bool);
+
+impl Drop for StillFrames {
+    fn drop(&mut self) {
+        STILL.with(|still| still.set(self.0));
+    }
+}
+
+fn drawn_still() -> bool {
+    STILL.with(std::cell::Cell::get)
+}
+
 /// The window's display refreshes every `interval`: the frame budget local reads get.
 pub fn set_frame_budget(interval: Duration) {
     if !interval.is_zero() {
@@ -267,7 +294,7 @@ impl ArrivalClock {
     #[must_use]
     pub fn shows_at(&self) -> Option<Instant> {
         let arrived = self.arrived?;
-        if arrived >= self.skeleton_at() {
+        if arrived >= self.skeleton_at() && !drawn_still() {
             let held = self.skeleton_at().checked_add(MIN_SHOWN).unwrap_or(arrived);
             Some(arrived.max(held))
         } else {
@@ -293,6 +320,9 @@ impl ArrivalClock {
     /// the space without it.
     #[must_use]
     pub fn arrives_with_motion(&self) -> bool {
+        if drawn_still() {
+            return false;
+        }
         match self.arrived {
             Some(arrived) => !(self.from.is_local() && arrived <= self.after(self.budget)),
             None => true,
