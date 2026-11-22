@@ -1244,7 +1244,6 @@ doc = false
 "tilo-document" = { path = "../../../crates/doc/tilo-document", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = ["mount"] }
 "tilo-egress" = { path = "../../../crates/runtime/egress", default-features = false, features = [] }
-"tilo-emoji-catalogue" = { path = "../../../crates/text/emoji-catalogue", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../../crates/system/endpoint-reachability", default-features = false, features = ["test-support"] }
 "tilo-engine-loader" = { path = "../../../crates/runtime/engine-loader", default-features = false, features = [] }
 "tilo-enrollment" = { path = "../../../crates/collab/tilo-enrollment", default-features = false, features = [] }
@@ -1397,7 +1396,6 @@ doc = false
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../../crates/sdk/ui-kms", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../../crates/sdk/ui-paint", default-features = false, features = [] }
-"tilo-unicode-emoji" = { path = "../../../crates/platform/tilo-unicode-emoji", default-features = false, features = [] }
 "tilo-unlock-protocol" = { path = "../../../crates/collab/tilo-unlock-protocol", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
@@ -3931,7 +3929,6 @@ doc = false
 "tilo-document" = { path = "../../../crates/doc/tilo-document", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = ["mount"] }
 "tilo-egress" = { path = "../../../crates/runtime/egress", default-features = false, features = [] }
-"tilo-emoji-catalogue" = { path = "../../../crates/text/emoji-catalogue", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../../crates/system/endpoint-reachability", default-features = false, features = ["test-support"] }
 "tilo-engine-loader" = { path = "../../../crates/runtime/engine-loader", default-features = false, features = [] }
 "tilo-enrollment" = { path = "../../../crates/collab/tilo-enrollment", default-features = false, features = [] }
@@ -4084,7 +4081,6 @@ doc = false
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../../crates/sdk/ui-kms", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../../crates/sdk/ui-paint", default-features = false, features = [] }
-"tilo-unicode-emoji" = { path = "../../../crates/platform/tilo-unicode-emoji", default-features = false, features = [] }
 "tilo-unlock-protocol" = { path = "../../../crates/collab/tilo-unlock-protocol", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }

@@ -19476,15 +19476,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-emoji-catalogue"
-version = "0.1.0"
-dependencies = [
- "emoji",
- "tilo-ui",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-emoji-engine"
 version = "0.1.0"
 dependencies = [
@@ -23203,15 +23194,6 @@ version = "0.1.0"
 dependencies = [
  "tilo-face",
  "tilo-vello",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-unicode-emoji"
-version = "0.1.0"
-dependencies = [
- "tilo-emoji-catalogue",
- "tilo-ui",
  "workspace-hack",
 ]
 
@@ -29530,7 +29512,6 @@ dependencies = [
  "tilo-document",
  "tilo-documents",
  "tilo-egress",
- "tilo-emoji-catalogue",
  "tilo-endpoint-reachability",
  "tilo-engine-loader",
  "tilo-enrollment",
@@ -29685,7 +29666,6 @@ dependencies = [
  "tilo-ui-kms",
  "tilo-ui-macros",
  "tilo-ui-paint",
- "tilo-unicode-emoji",
  "tilo-unlock-protocol",
  "tilo-user-identity",
  "tilo-vello",
