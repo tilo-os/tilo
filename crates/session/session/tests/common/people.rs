@@ -2487,6 +2487,13 @@ fn stage(app: &str, programs: &[(PathBuf, &str)]) -> (PathBuf, String) {
         let _ = std::fs::remove_file(&to);
         std::fs::hard_link(from, &to).expect("the program this run built");
     }
+    // The product's font catalog beside the programs, where an app finds the catalog its package
+    // carries: an installed app is handed the one in its runtime bundle, which the manifest here
+    // leaves out ([`manifest_of`]). An app without one sets its text in the system's fonts, found
+    // by parsing every face the system has at each launch, which no installed app does.
+    if let Some(catalog) = ui::font_catalog::catalog_root() {
+        link_tree(&catalog, &payload.join("bin").join("fonts"));
+    }
     let manifest = manifest_of(app).into_bytes();
     let surface_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../apps/{app}/surface.toml"));
@@ -2547,6 +2554,25 @@ fn fresh_id() -> [u8; 32] {
     let mut id = [0; 32];
     id.copy_from_slice(digest.as_bytes());
     id
+}
+
+/// The tree `from` at `to`, each file hardlinked where both are on one filesystem and copied where
+/// they are not. A link in the tree is followed: the sandbox sees none of its targets.
+fn link_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("a linked directory");
+    for entry in std::fs::read_dir(from).expect("a readable directory") {
+        let entry = entry.expect("a directory entry");
+        let target = to.join(entry.file_name());
+        let source = entry.path().canonicalize().expect("a file the tree names");
+        if source.is_dir() {
+            link_tree(&source, &target);
+        } else {
+            let _ = std::fs::remove_file(&target);
+            if std::fs::hard_link(&source, &target).is_err() {
+                std::fs::copy(&source, &target).expect("a copied file");
+            }
+        }
+    }
 }
 
 /// Copy the tree `from` to `to` , keeping the modes files are read with.
