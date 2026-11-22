@@ -303,7 +303,12 @@ impl Decorator for Publishing {
         self.content.as_mut()
     }
 
-    ui_core::provides!(dyn SurfacePublication; inner = content);
+    ui_core::provides!(
+        dyn SurfacePublication,
+        dyn ui_core::widget::decorator::Decorated,
+        dyn ui_core::widget::decorator::DecoratedMut;
+        inner = content
+    );
 
     // Whoever reaches the view's widget by its type (a test, a host that
     // embeds it) finds it through the part that publishes beside it.

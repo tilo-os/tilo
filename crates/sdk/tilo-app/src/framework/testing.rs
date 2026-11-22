@@ -77,7 +77,7 @@ pub fn check_window_sidebar_button<A: ResourceApp>(
 /// the frames that follow; `None` when the view hosts no such surface at its
 /// root. For a test that drives a component mounted another way than
 /// [`HeadlessApp`] (two windows over one record).
-pub fn with_surface<A: ResourceApp, S: 'static, T>(
+pub fn with_surface<A: ResourceApp, S: ui_core::widget::Widget + 'static, T>(
     harness: &mut FrameHarness,
     visit: impl FnOnce(&mut S) -> T,
 ) -> Option<T> {
@@ -89,7 +89,7 @@ pub fn with_surface<A: ResourceApp, S: 'static, T>(
 /// The custom surface of type `S` that `A`'s view hosts, when `widget` is
 /// `A`'s root as a host mounted it: a tab of `A` in a shell, found in the
 /// host's own widget map.
-pub fn surface_in_root<A: ResourceApp, S: 'static>(
+pub fn surface_in_root<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
     widget: &mut dyn ui_core::widget::Widget,
 ) -> Option<&mut S> {
     surface_of::<A, S>(widget.as_any_mut()?.downcast_mut::<ResourceRoot>()?)

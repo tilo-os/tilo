@@ -1382,7 +1382,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         clippy::expect_used,
         reason = "a test naming a surface its app does not host is wrong"
     )]
-    pub fn surface_mut<S: 'static>(&mut self) -> &mut S {
+    pub fn surface_mut<S: ui_core::widget::Widget + 'static>(&mut self) -> &mut S {
         surface_in::<A, S>(self.harness()).expect("the view hosts this surface")
     }
 
@@ -1451,7 +1451,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// now; `None` when the view hosts none. The frame is laid out again
     /// after the visit, so what the visit changed is what the next frame
     /// draws.
-    pub fn with_surface<S: 'static, T>(&mut self, visit: impl FnOnce(&mut S) -> T) -> Option<T> {
+    pub fn with_surface<S: ui_core::widget::Widget + 'static, T>(
+        &mut self,
+        visit: impl FnOnce(&mut S) -> T,
+    ) -> Option<T> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
                 super::root::with_surface::<A::Resource, S, T>(root, visit)
@@ -1826,10 +1829,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// widget its view built — for assertions about view state the
     /// accessibility tree does not show, then run the frame after it.
     /// `None` when the view has no such widget.
-    pub fn with_widget<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
+    pub fn with_widget<T: ui_core::widget::Widget + 'static, O>(
+        &mut self,
+        visit: impl FnOnce(&mut T) -> O,
+    ) -> Option<O> {
         self.harness()
             .with_widget_mut(|root: &mut super::root::ResourceRoot| {
-                find_mut::<T>(root.content.as_mut()).map(visit)
+                ui_core::widget::find_mut::<T>(root.content.as_mut()).map(visit)
             })
             .flatten()
     }
@@ -2516,19 +2522,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
 /// The custom surface of type `S` that `A`'s view hosts in `harness`,
 /// without running a frame (see [`super::testing::with_surface`]).
-pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Option<&mut S> {
+pub fn surface_in<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
+    harness: &mut FrameHarness,
+) -> Option<&mut S> {
     surface_of::<A, S>(harness.widget_mut::<ResourceRoot>()?)
 }
 
-pub(super) fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot) -> Option<&mut S> {
-    fn find<S: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut S> {
-        if widget.as_any().is_some_and(<dyn std::any::Any>::is::<S>) {
-            return widget.as_any_mut()?.downcast_mut::<S>();
-        }
-        widget.children_mut().into_iter().find_map(find::<S>)
-    }
+pub(super) fn surface_of<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
+    root: &mut ResourceRoot,
+) -> Option<&mut S> {
     root.typed::<A::Resource>()?;
-    find::<S>(root.content.as_mut())
+    ui_core::widget::find_mut::<S>(root.content.as_mut())
 }
 
 impl<A: ResourceApp> Drop for HeadlessApp<A> {
@@ -2545,15 +2549,6 @@ impl<A: ResourceApp> Drop for HeadlessApp<A> {
         }
         let _ = self.close();
     }
-}
-
-/// The first widget of type `T` in `widget`, whatever wraps it: a custom
-/// surface is found by its own type.
-fn find_mut<T: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut T> {
-    if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
-        return widget.as_any_mut()?.downcast_mut::<T>();
-    }
-    widget.children_mut().into_iter().find_map(find_mut::<T>)
 }
 
 /// Match the native runner's disposable private profile and built-in flag.

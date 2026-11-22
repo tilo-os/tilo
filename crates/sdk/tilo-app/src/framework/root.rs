@@ -1126,18 +1126,12 @@ fn without_children(resource: &ResourceSpec) -> ResourceSpec {
 /// a test, or a host that mounted the app, reaching the surface between
 /// frames (`App::with_component_root` lends the root of a mounted one).
 /// `None` when `root` is not such a root or shows no `S`.
-pub fn with_surface<R: Resource, S: 'static, T>(
+pub fn with_surface<R: Resource, S: ui_core::widget::Widget + 'static, T>(
     root: &mut dyn std::any::Any,
     visit: impl FnOnce(&mut S) -> T,
 ) -> Option<T> {
-    fn find<S: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut S> {
-        if widget.as_any_mut().is_some_and(|any| any.is::<S>()) {
-            return widget.as_any_mut()?.downcast_mut::<S>();
-        }
-        widget.children_mut().into_iter().find_map(find::<S>)
-    }
     let root = root.downcast_mut::<ResourceRoot>()?;
-    find::<S>(root.view_mut()).map(visit)
+    ui_core::widget::find_mut::<S>(root.view_mut()).map(visit)
 }
 
 impl ui_core::widget::document_effects::DocumentEffects for ResourceRoot {

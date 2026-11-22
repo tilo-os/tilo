@@ -679,9 +679,14 @@ impl super::Decorator for ContextMenuArea {
     // row of its open menu reaches the menu even when the content answers its
     // own, and a row chosen from it hands over its action after the menu
     // closed. Every other capability is the content's.
+    // What it wraps is answered as any decorator's is, so a walk that
+    // reaches into what a view wrapped finds the view (see
+    // [`crate::widget::find_mut`]).
     crate::provides!(
         dyn super::ResourceOperations,
-        dyn crate::widget::controls::ActionControls;
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::widget::decorator::Decorated,
+        dyn crate::widget::decorator::DecoratedMut;
         inner = content
     );
 
