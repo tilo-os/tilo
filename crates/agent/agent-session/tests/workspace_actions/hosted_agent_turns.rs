@@ -1020,6 +1020,38 @@ fn said_in(request: &ModelRequest) -> String {
         .join("\n")
 }
 
+/// The words of the person's request that `request` answers: the message after the
+/// conversation's earlier ones, which come before it in their own roles, and before the turn's own
+/// tool calls and what it is told after them.
+fn asked_in(request: &ModelRequest) -> String {
+    let own = request
+        .messages
+        .iter()
+        .position(|message| {
+            message
+                .content
+                .iter()
+                .any(|content| !matches!(content, Content::Text { .. }))
+        })
+        .unwrap_or(request.messages.len());
+    request.messages[..own]
+        .iter()
+        .rev()
+        .find(|message| matches!(message.role, Role::User))
+        .map(|message| {
+            message
+                .content
+                .iter()
+                .filter_map(|content| match content {
+                    Content::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
 /// The person writes nine long notes to the agent, each its own message, and a second passes: what
 /// is written next is the newest by the clock a message carries.
 async fn long_notes(

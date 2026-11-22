@@ -526,13 +526,17 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
         "at its next step the turn is told what its person wrote since: {told}"
     );
     let apart = format!("{:?}", requests[3].messages);
-    assert_eq!(
-        requests[3].messages.len(),
-        2,
-        "the reminder is a turn of its own, asked afresh: {apart}"
+    assert!(
+        requests[3]
+            .messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .all(|content| matches!(content, Content::Text { .. }))
+            && !apart.contains("your person wrote again"),
+        "the reminder is a turn of its own, asked afresh: no step of the person's turn goes on in it: {apart}"
     );
     assert!(
-        apart.contains("A reminder your person set is due now"),
+        asked_in(&requests[3]).contains("A reminder your person set is due now"),
         "and it is told as what it is: {apart}"
     );
     let part = conversation_part(&workspaces, &workspace).await;

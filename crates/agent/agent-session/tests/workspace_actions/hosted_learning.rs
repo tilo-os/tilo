@@ -39,16 +39,7 @@ impl tilo_agent_session::model::PlanTurns for Minded {
                 1,
             ));
         }
-        let words = request
-            .messages
-            .iter()
-            .filter(|message| matches!(message.role, Role::User))
-            .flat_map(|message| message.content.iter())
-            .find_map(|content| match content {
-                Content::Text { text } => Some(text.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
+        let words = asked_in(request);
         // The ask's own words: what a cause says of itself, then what it asks, and nothing of
         // what the turn is told after them.
         let own = words

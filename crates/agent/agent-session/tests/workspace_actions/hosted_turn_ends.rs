@@ -9,16 +9,7 @@ use super::*;
 
 /// Whether the turn of `request` began with what its person wrote as `words`.
 fn begins_with(request: &ModelRequest, words: &str) -> bool {
-    request
-        .messages
-        .iter()
-        .find(|message| matches!(message.role, Role::User))
-        .is_some_and(|message| {
-            message
-                .content
-                .iter()
-                .any(|content| matches!(content, Content::Text { text } if text.starts_with(words)))
-        })
+    asked_in(request).starts_with(words)
 }
 
 /// Her message is answered, and a look that read the workspace before that answer enters its
@@ -372,7 +363,7 @@ async fn her_next_message_does_not_wait_while_the_summary_is_written() {
         let told = owed
             .iter()
             .find(|turn| turn.cause == third.to_string())
-            .map(|turn| turn.request.clone())
+            .map(|turn| chat::recall::instruction_with_history(&turn.request, &turn.history))
             .unwrap_or_default();
         if told.contains("What came before, as you summarised it")
             && told.contains("The crossings went as planned.")

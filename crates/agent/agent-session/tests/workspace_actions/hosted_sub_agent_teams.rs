@@ -54,26 +54,6 @@ fn of_turn(request: &ModelRequest, whose: &str) -> bool {
     }
 }
 
-/// What the turn of `request` was asked with: the words it began with.
-fn asked_with(request: &ModelRequest) -> String {
-    request
-        .messages
-        .iter()
-        .find(|message| matches!(message.role, Role::User))
-        .map(|message| {
-            message
-                .content
-                .iter()
-                .filter_map(|content| match content {
-                    Content::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
-}
-
 impl Plans {
     /// The next turn of `whose` that is asked with `expects` makes `calls`, in their order,
     /// and then answers `last`. A path after [`READ`] is read; every other is an action.
@@ -109,7 +89,7 @@ impl Plans {
     fn model(&self, asked: &Arc<Mutex<Vec<ModelRequest>>>) -> Model {
         let plans = self.clone();
         plays(asked, move |request| {
-            let words = asked_with(request);
+            let words = asked_in(request);
             let said = tool_answers(request);
             let mut plans = plans.0.lock().unwrap();
             let planned = plans.iter_mut().find(|plan| {
@@ -1014,7 +994,10 @@ async fn a_team_is_answered_to_any_members_turn_of_the_agent() {
         said[1].0.replace("sub-agentz", "sub-agents"),
         "his start is refused in the list's words, not as what does not exist"
     );
-    assert!(said[1].1 && said[3].1, "what does not exist is nothing: {said:?}");
+    assert!(
+        said[1].1 && said[3].1,
+        "what does not exist is nothing: {said:?}"
+    );
     assert!(!said[2].1, "his turn reads the agent's team: {said:?}");
     assert!(
         sub_agents(&workspaces, &workspace, &person)
