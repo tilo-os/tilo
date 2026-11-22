@@ -1,8 +1,7 @@
 //! A workspace's mail account signs in with one entry of its vault on every member's device:
 //! two members' devices sign in to the same mail server with it, each from its own copy of the
-//! vault document; a member whose role leaves Passwords out is refused it in words; and a
-//! password a device kept before, a mail account's or a file account's, is carried into the
-//! vault once, and leaves the device.
+//! vault document; a member whose role leaves Passwords out is refused it in words; and a file
+//! account the cloud service lists signs in by its entry the same way.
 
 #![allow(
     clippy::unwrap_used,
@@ -477,66 +476,7 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
 }
 
 #[tokio::test]
-async fn a_password_the_device_kept_is_carried_into_the_vault_once_and_leaves_the_device() {
-    let server = tokio::task::spawn_blocking(MailServer::start)
-        .await
-        .unwrap();
-    let members = Members::new().await;
-    let workspace = members.workspace.clone();
-    let account = server.account();
-    members.keep_account(&account).await;
-
-    // The owner's device kept the account's password itself, as devices did before.
-    let root = tempfile::tempdir().unwrap();
-    {
-        let mut credentials = accounts::AccountCredentials::open_in(root.path()).unwrap();
-        credentials.put_for(&account, &accounts::Secret::password(PASSWORD));
-        credentials.try_save().unwrap();
-    }
-    let by = Caller::authenticated(
-        members.owner_cert.user_public_key,
-        members.owner_cert.device_public_key,
-    );
-    let mut credentials = accounts::AccountCredentials::open_in(root.path()).unwrap();
-    let carried = members
-        .owner
-        .carry_device_passwords(&mut credentials, &by)
-        .await
-        .unwrap();
-    assert_eq!(carried.carried, vec![ADDRESS.to_owned()], "{carried:?}");
-    assert!(
-        accounts::AccountCredentials::open_in(root.path())
-            .unwrap()
-            .get(&account.id)
-            .is_none(),
-        "the device keeps the password no longer"
-    );
-
-    // The account names the entry, and the member's device signs in with it.
-    let item = named_entry(&members.member, &workspace).await;
-    assert_eq!(
-        released(&members.member, &workspace, &members.member_caller(), &item,)
-            .await
-            .unwrap()
-            .as_str(),
-        PASSWORD
-    );
-
-    // Carried again, nothing moves: the device has nothing left, and the entry stays one.
-    let mut credentials = accounts::AccountCredentials::open_in(root.path()).unwrap();
-    let again = members
-        .owner
-        .carry_device_passwords(&mut credentials, &by)
-        .await
-        .unwrap();
-    assert_eq!(again, super::account_logins::CarriedPasswords::default());
-    assert_eq!(named_entry(&members.owner, &workspace).await, item);
-    let entries = members.owner.open_vault(&workspace).await.unwrap();
-    assert_eq!(entries.entries().len(), 1, "one entry, kept once");
-}
-
-#[tokio::test]
-async fn a_file_accounts_password_the_device_kept_is_carried_and_signs_in_by_its_entry() {
+async fn a_file_accounts_password_signs_in_by_its_entry_on_a_members_device() {
     let members = Members::new().await;
     let workspace = members.workspace.clone();
     let mut account = accounts::Account::new("files-1", accounts::cloud_types::WEBDAV);
@@ -547,30 +487,34 @@ async fn a_file_accounts_password_the_device_kept_is_carried_and_signs_in_by_its
     });
     members.keep_account(&account).await;
 
-    // The owner's device kept the account's password itself, as devices did before.
-    let root = tempfile::tempdir().unwrap();
-    {
-        let mut credentials = accounts::AccountCredentials::open_in(root.path()).unwrap();
-        credentials.put_for(&account, &accounts::Secret::password(PASSWORD));
-        credentials.try_save().unwrap();
-    }
-    let by = Caller::authenticated(
-        members.owner_cert.user_public_key,
-        members.owner_cert.device_public_key,
-    );
-    let mut credentials = accounts::AccountCredentials::open_in(root.path()).unwrap();
-    let carried = members
+    // The owner types the password once, on their device: the workspace's vault keeps it, and
+    // the account names the entry.
+    let item = members
         .owner
-        .carry_device_passwords(&mut credentials, &by)
+        .keep_account_password(
+            &workspace,
+            &members.owner_caller(),
+            None,
+            AccountLogin {
+                title: "Team files".into(),
+                username: "ada".into(),
+                places: super::person_settings::kept_sign_ins::places_of(&account).unwrap(),
+            },
+            Zeroizing::new(PASSWORD.into()),
+        )
         .await
-        .unwrap();
-    assert_eq!(carried.carried, vec!["files-1".to_owned()], "{carried:?}");
+        .expect("the owner keeps the password in the workspace's vault");
+    members
+        .owner
+        .name_account_password(&workspace, "files-1", &item)
+        .await
+        .expect("the account names its entry");
 
     // The member's device lists the account with the entry it names, as the cloud service reads
     // it, and signs in with that entry.
     let is_files =
         |kept: &accounts::Account| kept.type_id.as_str() == accounts::cloud_types::WEBDAV;
-    let item = tilo_test_env::within("the member's copy names the file account's entry", async {
+    let listed = tilo_test_env::within("the member's copy names the file account's entry", async {
         loop {
             if let Some(item) = members
                 .member
@@ -588,6 +532,7 @@ async fn a_file_accounts_password_the_device_kept_is_carried_and_signs_in_by_its
         }
     })
     .await;
+    assert_eq!(listed, item, "the member lists the account with the entry the owner kept");
     let signed_in =
         tilo_test_env::within("the member's copy of the vault keeps the entry", async {
             loop {

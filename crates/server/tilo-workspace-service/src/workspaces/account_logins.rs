@@ -15,7 +15,7 @@ use accounts::vault_items::{ItemError, ItemId, ItemKind, NewItem, Place, Release
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::ItemRef;
 use tilo_peer_state::workspace_documents::DocumentRead;
-use tilo_resource::{Id, Replica, Resource as _};
+use tilo_resource::{Replica, Resource as _};
 use zeroize::Zeroizing;
 
 use super::Workspaces;
@@ -55,6 +55,7 @@ pub struct AccountLogin {
 }
 
 /// The route the workspace's accounts record travels on in `workspace`.
+#[cfg(test)]
 fn accounts_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: accounts::person::ACCOUNTS_OWNER.to_owned(),
@@ -241,12 +242,41 @@ impl Workspaces {
         }
     }
 
+    /// The accounts of every workspace this device holds that `keep` keeps, each with its
+    /// workspace, in the order the workspaces and their records list them. A workspace whose
+    /// accounts do not read here yet lists none.
+    pub async fn held_accounts(
+        &self,
+        keep: impl Fn(&accounts::Account) -> bool,
+    ) -> Vec<(String, accounts::Account)> {
+        let mut held = Vec::new();
+        let mut workspaces = self.held_workspaces();
+        workspaces.sort();
+        for workspace in workspaces {
+            let Ok(accounts) = self.workspace_accounts(&workspace).await else {
+                continue;
+            };
+            held.extend(
+                accounts
+                    .store()
+                    .all()
+                    .iter()
+                    .filter(|account| keep(account))
+                    .map(|account| (workspace.clone(), account.clone())),
+            );
+        }
+        held
+    }
+
     /// Name `item` as where `account` of `workspace`'s accounts keeps its password, as this
     /// device's own write of the accounts record. The rest of the account stays as it is.
     ///
+    /// What Settings does once the session tells it the entry, which tests do here.
+    ///
     /// # Errors
     /// The record does not hold the account, or does not take the write on this device.
-    pub async fn name_account_password(
+    #[cfg(test)]
+    pub(crate) async fn name_account_password(
         &self,
         workspace: &str,
         account: &str,
@@ -274,7 +304,7 @@ impl Workspaces {
             let state = replica.state().map_err(|error| error.to_string())?;
             let kept = state
                 .accounts
-                .get(&Id::from_raw(account.to_owned()))
+                .get(&tilo_resource::Id::from_raw(account.to_owned()))
                 .ok_or("the workspace's accounts hold no such account")?;
             let mut config = kept.config.clone();
             accounts::email::set_password_item(&mut config, Some(&item.to_string()));
@@ -305,176 +335,5 @@ impl Workspaces {
         .await
         .map(drop)
         .map_err(|refusal| refusal.to_string())
-    }
-}
-
-/// Whether a password this device kept for `account` is carried into the workspace's vault: an
-/// email account's, and a file account's that signs in with a password (`WebDAV`, Nextcloud).
-fn carries(account: &accounts::Account) -> bool {
-    use accounts::cloud_types::{NEXTCLOUD, WEBDAV};
-    [accounts::email::TYPE_ID, NEXTCLOUD, WEBDAV].contains(&account.type_id.as_str())
-}
-
-/// What [`Workspaces::carry_device_passwords`] did with a device's mail passwords.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct CarriedPasswords {
-    /// The accounts whose password the workspace's vault keeps now, and the device no longer.
-    pub carried: Vec<String>,
-    /// The accounts whose password stays on the device for now, each with why.
-    pub kept: Vec<(String, String)>,
-}
-
-impl Workspaces {
-    /// The accounts of every workspace this device holds that `keep` keeps, each with its
-    /// workspace, in the order the workspaces and their records list them. A workspace whose
-    /// accounts do not read here yet lists none.
-    pub async fn held_accounts(
-        &self,
-        keep: impl Fn(&accounts::Account) -> bool,
-    ) -> Vec<(String, accounts::Account)> {
-        let mut held = Vec::new();
-        let mut workspaces = self.held_workspaces();
-        workspaces.sort();
-        for workspace in workspaces {
-            let Ok(accounts) = self.workspace_accounts(&workspace).await else {
-                continue;
-            };
-            held.extend(
-                accounts
-                    .store()
-                    .all()
-                    .iter()
-                    .filter(|account| keep(account))
-                    .map(|account| (workspace.clone(), account.clone())),
-            );
-        }
-        held
-    }
-
-    /// Carry the mail passwords this device kept in its own `credentials` before an account's
-    /// password was the workspace's, into each workspace this device holds: every email
-    /// account of a workspace's accounts that names no vault entry yet, and has a password
-    /// here typed for the servers it names, is given an entry with that password and names
-    /// it. Only once every workspace that holds the account names an entry the vault keeps is
-    /// the password taken off the device; an account signed in by its provider's page keeps
-    /// its grant. Carried again it does nothing.
-    ///
-    /// `by` is the device's person in each workspace ([`Caller::in_workspace`]).
-    ///
-    /// # Errors
-    /// The device's credentials could not be saved once passwords were taken off it.
-    pub async fn carry_device_passwords(
-        &self,
-        credentials: &mut accounts::AccountCredentials,
-        by: &Caller,
-    ) -> Result<CarriedPasswords, String> {
-        let mut carried = std::collections::BTreeSet::new();
-        let mut kept = std::collections::BTreeMap::new();
-        for workspace in self.held_workspaces() {
-            let held = match self.workspace_accounts(&workspace).await {
-                Ok(held) => held,
-                Err(error) => {
-                    tracing::debug!(%workspace, %error, "the workspace's accounts do not read here yet");
-                    continue;
-                }
-            };
-            let by = by.clone().in_workspace(workspace.clone());
-            for account in held.store().all() {
-                if !carries(account) {
-                    continue;
-                }
-                let Some(secret) = credentials.get_for(account) else {
-                    continue;
-                };
-                if secret.password.is_empty() {
-                    continue;
-                }
-                let id = account.id.as_str().to_owned();
-                match Box::pin(self.carry_one(&workspace, &by, account, secret.password)).await {
-                    Ok(()) => {
-                        carried.insert(id);
-                    }
-                    Err(error) => {
-                        tracing::info!(%workspace, account = %id, %error, "a mail password stays on this device for now");
-                        kept.insert(id, error);
-                    }
-                }
-            }
-        }
-        carried.retain(|id| !kept.contains_key(id));
-        for id in &carried {
-            let account = accounts::AccountId::from(id.clone());
-            match credentials.get(&account).and_then(|secret| secret.token) {
-                // A grant its provider's page signed in stays the device's own.
-                Some(token) => credentials.put(
-                    &account,
-                    &accounts::Secret {
-                        password: String::new(),
-                        token: Some(token),
-                    },
-                ),
-                None => {
-                    credentials.remove(&account);
-                }
-            }
-        }
-        if !carried.is_empty() {
-            credentials.try_save()?;
-            tracing::info!(
-                carried = carried.len(),
-                "this device's mail passwords are the workspace's vault's now"
-            );
-        }
-        Ok(CarriedPasswords {
-            carried: carried.into_iter().collect(),
-            kept: kept.into_iter().collect(),
-        })
-    }
-
-    /// Give `account` of `workspace` the vault entry `password` is kept in, unless it names one
-    /// the vault keeps already.
-    async fn carry_one(
-        &self,
-        workspace: &str,
-        by: &Caller,
-        account: &accounts::Account,
-        password: String,
-    ) -> Result<(), String> {
-        let named = accounts::email::password_item(&account.config).and_then(ItemRef::parse);
-        if let Some(item) = &named
-            && self.vault_keeps(workspace, item).await?
-        {
-            return Ok(());
-        }
-        let login = if account.type_id.as_str() == accounts::email::TYPE_ID {
-            let config = accounts::email::AccountConfig::from_value(account.config.clone())
-                .map_err(|error| format!("its settings do not read: {error}"))?;
-            AccountLogin {
-                title: config.email.clone(),
-                username: config.username.clone(),
-                places: accounts::email::password_places(&config)
-                    .map_err(|error| error.to_string())?,
-            }
-        } else {
-            AccountLogin {
-                title: if account.display_name.is_empty() {
-                    account.id.as_str().to_owned()
-                } else {
-                    account.display_name.clone()
-                },
-                username: account
-                    .config
-                    .get("username")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                places: super::person_settings::kept_sign_ins::places_of(account)?,
-            }
-        };
-        let item = self
-            .keep_account_password(workspace, by, None, login, Zeroizing::new(password))
-            .await?;
-        self.name_account_password(workspace, account.id.as_str(), &item)
-            .await
     }
 }

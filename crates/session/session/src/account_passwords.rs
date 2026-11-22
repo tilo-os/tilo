@@ -12,9 +12,6 @@
 //! on the app's connection: their role must let them use Passwords in that workspace
 //! ([`Workspaces::may_use_vault`]). Any member's device signs in with the same entry; none
 //! keeps a copy of its own.
-//!
-//! A password this device kept before an account's was the workspace's is carried into the
-//! vault as the session starts ([`Workspaces::carry_device_passwords`]).
 
 use accounts::email::password_item;
 use runtime_collab::{
@@ -117,37 +114,5 @@ async fn answering(
             })
         }
         _ => Err(REFUSED.into()),
-    }
-}
-
-/// Carry the mail passwords this device kept in its own credentials into the workspaces'
-/// vault, as `by` (the device's person).
-pub(crate) async fn carry(workspaces: &Workspaces, by: &Caller) {
-    let Some(root) = accounts::config_root() else {
-        return;
-    };
-    // A device that never sealed a credential has none to carry, and its keyring is not asked.
-    if !accounts::vault_dir_in(&root).join("vault.enc").exists() {
-        return;
-    }
-    // Opening them may ask the keyring, which blocks: never on the service's own tasks.
-    let opened =
-        tokio::task::spawn_blocking(move || accounts::AccountCredentials::open_in(&root)).await;
-    let mut credentials = match opened {
-        Ok(Ok(credentials)) => credentials,
-        Ok(Err(error)) => {
-            tracing::warn!(%error, "this device's account credentials do not open, so its mail passwords stay in them");
-            return;
-        }
-        Err(error) => {
-            tracing::warn!(%error, "this device's account credentials were not opened");
-            return;
-        }
-    };
-    if let Err(error) = workspaces
-        .carry_device_passwords(&mut credentials, by)
-        .await
-    {
-        tracing::warn!(%error, "this device's mail passwords were carried, but its credentials did not save");
     }
 }
