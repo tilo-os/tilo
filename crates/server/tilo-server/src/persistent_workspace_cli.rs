@@ -2274,7 +2274,7 @@ mod tests {
         let (server, workspaces, server_cert) =
             host_with(dir.path(), tilo_user_identity::DeviceCapabilities::member()).await;
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        let apps = ["so.tilo.notes", "so.tilo.chat"];
+        let apps = ["so.tilo.tasks", "so.tilo.chat"];
         let first = seeded(&server_cert, &workspaces, &workspace, &apps).await;
         assert_eq!(
             first,
