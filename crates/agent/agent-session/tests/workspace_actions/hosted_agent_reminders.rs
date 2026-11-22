@@ -110,15 +110,13 @@ impl Up {
             signed: None,
         };
         let workspace = WorkspaceId::parse(workspace).unwrap();
-        let receipt = match self
+        let receipt = self
             .events
             .invoking(workspace, caller, Authority::Turn, request)
             .wait_timeout(std::time::Duration::from_secs(30))
-        {
-            Ok(Some(receipt)) => receipt,
-            Ok(None) => panic!("the server abandoned an action on its events"),
-            Err(_) => panic!("the server did not answer an action on its events"),
-        };
+            .map_err(|_| "the server did not answer an action on its events")
+            .unwrap()
+            .expect("the server abandoned an action on its events");
         match receipt.status {
             ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
             other => panic!("{action} on the workspace's events: {other:?}"),
