@@ -1226,6 +1226,13 @@ where
         if !encode_states(std::slice::from_ref(&env), &mut out) {
             return false;
         }
+        // When an entering session's subscription goes out, beside when its admission is read:
+        // a session asks for its workspace without waiting for the entry's answer.
+        if let Envelope::Subscribe { workspace_id } | Envelope::SubscribeFrom { workspace_id, .. } =
+            &env
+        {
+            tracing::debug!(target: "tilo_server::entering", phase = "subscribing", %workspace_id);
+        }
         if tokio::io::AsyncWriteExt::write_all(send, &out)
             .await
             .is_err()
@@ -1261,6 +1268,9 @@ async fn run_v2_reader<R>(
             Ok(Some(EnvelopeV2::State(env))) => {
                 if scope.is_some_and(|scope| !state_in_scope(scope, &env)) {
                     return;
+                }
+                if let Envelope::Entered(_) = &env {
+                    tracing::debug!(target: "tilo_server::entering", phase = "entered");
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 if crate::correlated_diagnostics()

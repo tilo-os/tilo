@@ -425,10 +425,64 @@ fn wire_traced() -> bool {
     *TRACED.get_or_init(|| std::env::var_os("TILO_CROWD_WIRE").is_some())
 }
 
-/// Print the host's steps, beside the wire when it is traced, timed as it is:
-/// its timings by default, or what `TILO_CROWD_LOG` asks for (a tracing
-/// filter).
+/// When the guest's session sent its subscription and read the entry's
+/// answer, as its client traces them (`tilo_server::entering`).
+static ENTERING: std::sync::Mutex<Vec<(&'static str, Instant)>> = std::sync::Mutex::new(Vec::new());
+
+/// Keeps each `tilo_server::entering` event in [`ENTERING`] with when it came.
+struct EnteringTrace;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EnteringTrace {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct Phase(Option<&'static str>);
+        impl tracing::field::Visit for Phase {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "phase" {
+                    self.0 = ["subscribing", "entered"].into_iter().find(|p| *p == value);
+                }
+            }
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+        }
+        let mut phase = Phase(None);
+        event.record(&mut phase);
+        if let Some(phase) = phase.0 {
+            ENTERING.lock().unwrap().push((phase, Instant::now()));
+        }
+    }
+}
+
+/// The chunk that carried the subscription of the guest that began at
+/// `begun`, and when the one completing its admission reached it: the first
+/// chunk it sent once its client wrote the subscription, and the last that
+/// reached it before its client read the admission.
+fn entry_on_wire(chunks: &[Chunk], begun: Instant) -> (usize, Instant) {
+    let entering = ENTERING.lock().unwrap();
+    let first = |phase: &str| {
+        entering
+            .iter()
+            .find(|(seen, at)| *seen == phase && *at >= begun)
+            .unwrap_or_else(|| panic!("the guest's client never traced `{phase}`"))
+            .1
+    };
+    let (subscribing, entered) = (first("subscribing"), first("entered"));
+    let subscription = chunks
+        .iter()
+        .position(|chunk| chunk.up && chunk.sent >= subscribing)
+        .expect("the subscription left on the wire");
+    let admitted = chunks
+        .iter()
+        .filter_map(|chunk| chunk.delivered.filter(|at| !chunk.up && *at <= entered))
+        .max()
+        .expect("the admission came over the wire");
+    (subscription, admitted)
+}
+
+/// Keep the guest's client's [`EnteringTrace`] events, and print the host's steps,
+/// beside the wire when it is traced, timed as it is: its timings by default,
+/// or what `TILO_CROWD_LOG` asks for (a tracing filter).
 fn trace_steps() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::{Layer as _, util::SubscriberInitExt as _};
     struct SinceOrigin;
     impl tracing_subscriber::fmt::time::FormatTime for SinceOrigin {
         fn format_time(
@@ -438,17 +492,25 @@ fn trace_steps() {
             write!(w, "STEP {:>9.1}", origin().elapsed().as_secs_f64() * 1000.0)
         }
     }
-    if !wire_traced() && std::env::var_os("TILO_CROWD_LOG").is_none() {
-        return;
-    }
-    let filter =
-        std::env::var("TILO_CROWD_LOG").unwrap_or_else(|_| "tilo_server::timing=debug".into());
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+    let filter = match std::env::var("TILO_CROWD_LOG") {
+        Ok(filter) => filter,
+        Err(_) if wire_traced() => "tilo_server::timing=debug".into(),
+        Err(_) => "off".into(),
+    };
+    let steps = tracing_subscriber::fmt::layer()
         .with_timer(SinceOrigin)
         .with_target(false)
         .with_writer(std::io::stderr)
-        .try_init();
+        .with_filter(tracing_subscriber::EnvFilter::new(filter));
+    tracing_subscriber::registry()
+        .with(steps)
+        .with(
+            EnteringTrace.with_filter(
+                tracing_subscriber::filter::Targets::new()
+                    .with_target("tilo_server::entering", tracing::Level::DEBUG),
+            ),
+        )
+        .init();
 }
 
 /// The CPU this process has spent, as the platform counts it, or `None` where it keeps no
@@ -1008,7 +1070,10 @@ impl Way {
                 compute = trials.last().map_or(compute, |slowest| slowest.shown);
             }
             if round_trip == FAR {
-                far = trials.iter().map(|entry| entry.waited.clone()).collect();
+                far = trials
+                    .iter()
+                    .map(|entry| (entry.waited.clone(), entry.subscribed))
+                    .collect();
             }
             entries.push((round_trip, trials.remove(0)));
         }
@@ -1037,7 +1102,14 @@ impl Way {
             empty.shown
         );
         let round_trips = self.round_trips();
-        for waited in &far {
+        for (waited, (subscribed, admitted)) in &far {
+            // The hello carries the guest's subscription, so it leaves before the entry's
+            // answer is back: the replay never waits for the admission.
+            assert!(
+                subscribed < admitted,
+                "over {self:?}, the guest's subscription left at {subscribed:?}, after its \
+                 admission reached it at {admitted:?}"
+            );
             assert!(
                 waited.len() <= round_trips,
                 "over {self:?}, a fresh guest's desktop waited on {} requests one after another \
@@ -1085,8 +1157,10 @@ impl Way {
 /// stays well inside one, so no chunk reads as answering one it came before.
 const FAR: Duration = ROUND_TRIPS[ROUND_TRIPS.len() - 1];
 
-/// The requests a guest's desktop waited on, one after another: their bytes
-/// and when each was sent after the guest began.
+/// The requests a guest's desktop waited on, one after another, up to the
+/// packet that carried its subscription (`subscription`), which the replay of
+/// governance and the desktop answers: their bytes and when each was sent
+/// after the guest began.
 ///
 /// The wire's chunks are QUIC packets, and on the packet relay its frames
 /// besides ([`RelayFrames`]). One carries data when it weighs more than
@@ -1100,33 +1174,39 @@ const FAR: Duration = ROUND_TRIPS[ROUND_TRIPS.len() - 1];
 /// A request is a chunk of data the guest sent. One follows another when the
 /// guest sent it after data reached it that the host sent after that other
 /// one arrived: it could have waited on the answer. The count is the longest
-/// chain of requests each following the one before, the last of which data
-/// followed before the desktop showed. It reads only the order the wire saw
-/// chunks in, each against chunks half the round trip away, so how long the
-/// host or the page computes between them moves no request in or out of the
-/// chain.
+/// chain of requests each following the one before that ends at the
+/// subscription's packet. It reads only the order the wire saw chunks in,
+/// each against chunks half the round trip away, so how long the host or the
+/// page computes between them moves no request in or out of the chain, and
+/// what the page sends after its subscription (its first write once
+/// admitted, another connection) is not on the desktop's path.
 ///
 /// The replay's pacing is flow, not a request: the host sends what the
 /// guest's window and its congestion window allow, and the acknowledgements
 /// and window updates that let it send more are under [`ACK_BYTES`]. The
 /// rounds the replay takes are in the printed timing, not in this count.
-fn dependent_requests(chunks: &[Chunk], begun: Instant, shown: Instant) -> Vec<(usize, Duration)> {
-    let never = shown + Duration::from_secs(3_600);
+fn dependent_requests(
+    chunks: &[Chunk],
+    subscription: usize,
+    begun: Instant,
+) -> Vec<(usize, Duration)> {
+    let never = begun + Duration::from_secs(86_400);
     let mut largest = [QUIC_MIN_DATAGRAM; 2];
-    let data: Vec<&Chunk> = chunks
+    let data: Vec<(usize, &Chunk)> = chunks
         .iter()
-        .filter(|chunk| {
+        .enumerate()
+        .filter(|(at, chunk)| {
             let largest = &mut largest[usize::from(chunk.up)];
             let probe = chunk.bytes > *largest;
             *largest = (*largest).max(chunk.bytes);
-            chunk.bytes > ACK_BYTES && !probe
+            *at == subscription || (chunk.bytes > ACK_BYTES && !probe)
         })
         .collect();
     let arrived = |chunk: &Chunk| chunk.delivered.unwrap_or(never);
     let requests: Vec<&Chunk> = data
         .iter()
-        .copied()
-        .filter(|request| request.up && request.sent < shown)
+        .filter(|(at, chunk)| chunk.up && *at <= subscription)
+        .map(|(_, chunk)| *chunk)
         .collect();
     // For each request, when the first data the host sent after it arrived
     // reached the guest.
@@ -1134,8 +1214,8 @@ fn dependent_requests(chunks: &[Chunk], begun: Instant, shown: Instant) -> Vec<(
         .iter()
         .map(|request| {
             data.iter()
-                .filter(|answer| !answer.up && answer.sent >= arrived(request))
-                .map(|answer| arrived(answer))
+                .filter(|(_, answer)| !answer.up && answer.sent >= arrived(request))
+                .map(|(_, answer)| arrived(answer))
                 .min()
                 .unwrap_or(never)
         })
@@ -1148,9 +1228,7 @@ fn dependent_requests(chunks: &[Chunk], begun: Instant, shown: Instant) -> Vec<(
             .max_by_key(|&earlier| chain[earlier].0);
         chain.push((before.map_or(1, |earlier| chain[earlier].0 + 1), before));
     }
-    let mut last = (0..requests.len())
-        .filter(|&at| answered[at] <= shown)
-        .max_by_key(|&at| chain[at].0);
+    let mut last = requests.len().checked_sub(1);
     let mut waited = Vec::new();
     while let Some(at) = last {
         waited.push((requests[at].bytes, requests[at].sent - begun));
@@ -1180,15 +1258,12 @@ const QUIC_MIN_DATAGRAM: usize = 1_200;
 ///   The host writes the entry's binding as it answers, so the hello waits
 ///   for nothing more;
 /// - the hello, which carries the entry with its proof and the guest's first
-///   requests, and the host's answer with the Welcome first, the replay of
-///   governance and the desktop behind it;
-/// - the page's first write, which it makes once the entry admitted it. The
-///   replay does not wait on it, but it goes out after the admission and the
-///   replay comes after it, so the wire reads it as one.
+///   requests, its subscription among them, and the host's answer with the
+///   Welcome first, the replay of governance and the desktop behind it.
 ///
 /// At 400 ms the desktop shows in about 2.3 to 2.7 s, at 70 ms in about
 /// 0.9 to 1.5 s.
-const WEB_ROUND_TRIPS: usize = 4;
+const WEB_ROUND_TRIPS: usize = 3;
 
 /// How many requests a fresh guest may wait on over iroh through the packet
 /// relay, one after another (see [`dependent_requests`]):
@@ -1200,15 +1275,15 @@ const WEB_ROUND_TRIPS: usize = 4;
 ///   confirmation;
 /// - the hello behind the handshake's end, which carries the entry with its
 ///   proof (bound to the QUIC connection, so no challenge of the host's comes
-///   first) and the guest's first requests, and the host's answer with the
-///   Welcome first, the replay of governance and the desktop behind it;
-/// - the guest's first write once admitted, as over WebTransport.
+///   first) and the guest's first requests, its subscription among them, and
+///   the host's answer with the Welcome first, the replay of governance and
+///   the desktop behind it.
 ///
 /// The desktop's keys take none of their own: the hello carries the guest's
 /// request for them. The host's certificate takes none either: the page's
 /// site hands it over with the page. At 400 ms the desktop shows in about
 /// 2.3 to 3 s.
-const RELAYED_ROUND_TRIPS: usize = 4;
+const RELAYED_ROUND_TRIPS: usize = 3;
 
 /// What a fresh guest may receive before its desktop shows, 0.62 to 0.64 MB
 /// for 300 members who all hold the keys: its Welcome first, once (about
@@ -1255,6 +1330,9 @@ struct Entry {
     /// The requests the desktop waited on one after another, with their bytes
     /// and when each was sent: [`dependent_requests`].
     waited: Vec<(usize, Duration)>,
+    /// When the packet carrying the subscription left the page, and when the
+    /// one completing the entry's admission reached it, on the wire's clock.
+    subscribed: (Duration, Duration),
 }
 
 impl Entry {
@@ -1282,9 +1360,12 @@ impl Entry {
             self.sent
         );
         eprintln!(
-            "ENTRY [{network}] waited on {} requests one after another: {:?}",
+            "ENTRY [{network}] waited on {} requests one after another: {:?}; subscribed at \
+             {:?}, admitted at {:?}",
             self.waited.len(),
-            self.waited
+            self.waited,
+            self.subscribed.0,
+            self.subscribed.1
         );
     }
 }
@@ -1454,7 +1535,14 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         .zip(process_cpu())
         .map(|(from, to)| to.saturating_sub(from));
     let (received, sent) = wire.bytes(shown_at);
-    let waited = dependent_requests(&wire.chunks.0.lock().unwrap(), started, shown_at);
+    let (waited, subscribed) = {
+        let chunks = wire.chunks.0.lock().unwrap();
+        let (subscription, admitted) = entry_on_wire(&chunks, started);
+        (
+            dependent_requests(&chunks, subscription, started),
+            (chunks[subscription].sent - started, admitted - started),
+        )
+    };
     marks.push(("session connected", connected.unwrap_or_default()));
     marks.push(("entry admitted the guest", admitted.unwrap_or_default()));
     marks.push(("host admitted the subscription", ready.unwrap_or(shown)));
@@ -1556,5 +1644,6 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         sent,
         cpu,
         waited,
+        subscribed,
     }
 }
