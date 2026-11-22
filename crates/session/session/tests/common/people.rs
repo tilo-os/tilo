@@ -1911,12 +1911,15 @@ impl Device {
         );
     }
 
-    /// The workspace's open of the installed app `app`, as this device lists it.
+    /// The workspace's open of the installed app `app`, in the workspace in front: what the
+    /// launcher invokes. The catalogue lists it only while the app is closed, and the open of an
+    /// app already running brings its window up the same way, so it is never looked up there.
     pub fn open_target(&self, app: &str) -> RemoteActionTarget {
-        let resource = format!("{}{app}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX);
-        tilo_test_env::wait_for(format!("{} offering to open {app}", self.label), || {
-            self.offered(&resource, tilo_actions::remote::APPLICATION_OPEN_ACTION)
-        })
+        let workspace =
+            tilo_test_env::wait_for(format!("{} showing a workspace", self.label), || {
+                self.showing()
+            });
+        tilo_actions::remote::application_open_target(&workspace, app)
     }
 
     /// What this device publishes as `resource`'s `action`, whoever publishes it.
