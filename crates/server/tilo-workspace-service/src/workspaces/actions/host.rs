@@ -1051,6 +1051,10 @@ impl Workspaces {
     async fn listed(&self, device: &DeviceCert, only: &Listed) -> Vec<WorkspaceListing> {
         let labels = &only.labels;
         let person = device.user_public_key;
+        // The person's own workspace holds what is theirs alone, and is never one of the
+        // workspaces their shell shows them: it is left out of the list as the shell leaves it
+        // out of what it takes in.
+        let their_own = tilo_server_protocol::servers::person_workspace_id(&person);
         if person != self.inner.host.cert.user_public_key {
             let own = self.own().map(|own| own.of(&person)).unwrap_or_default();
             let now = tilo_clock::unix_now_ns();
@@ -1067,7 +1071,11 @@ impl Workspaces {
             let wanted: std::collections::HashSet<String> = own
                 .iter()
                 .chain(&invited)
-                .filter(|workspace| only.names(workspace) && self.lists_to(device, workspace))
+                .filter(|workspace| {
+                    **workspace != their_own
+                        && only.names(workspace)
+                        && self.lists_to(device, workspace)
+                })
                 .cloned()
                 .collect();
             let mut kept = self.listings_of(&wanted).await;
@@ -1112,7 +1120,10 @@ impl Workspaces {
         // listing answers when it was made, which no summary carries.
         let mut listed: Vec<WorkspaceListing> = Vec::new();
         for summary in self.list().await {
-            if !only.names(&summary.workspace) || !self.lists_to(device, &summary.workspace) {
+            if summary.workspace == their_own
+                || !only.names(&summary.workspace)
+                || !self.lists_to(device, &summary.workspace)
+            {
                 continue;
             }
             let mut one = WorkspaceListing {

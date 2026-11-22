@@ -20,7 +20,10 @@ use crate::workspaces::tests::{governor, test_host};
 
 /// Hold `person`'s own workspace on `workspaces`: the list and devices the
 /// host serves for them live there.
-async fn hold_person_workspace(workspaces: &crate::workspaces::Workspaces, person: [u8; 32]) {
+pub(super) async fn hold_person_workspace(
+    workspaces: &crate::workspaces::Workspaces,
+    person: [u8; 32],
+) {
     let id = tilo_server_protocol::servers::person_workspace_id(&person);
     workspaces
         .create_for(crate::workspaces::person_workspace::NAME, Some(&id), person)

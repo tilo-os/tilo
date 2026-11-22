@@ -144,6 +144,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
         .await
         .unwrap_or_default();
     assert_eq!(app_password, "minted-app-password");
+    kept_soon(workspaces, workspace_id, "caldav").await;
     let calendar = kept_of_type(workspaces, workspace_id, "caldav")
         .await
         .expect("the calendar server is kept");
