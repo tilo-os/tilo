@@ -568,7 +568,7 @@ doc = false
 "insta-1_49_0" = { package = "insta", version = "^1.49.0", default-features = false, features = ["colors", "console", "default", "pest", "pest_derive", "redactions", "serde"] }
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-plan" = { path = "../../../crates/session/install-plan", default-features = false, features = [] }
-"install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
+"install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = ["model"] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
