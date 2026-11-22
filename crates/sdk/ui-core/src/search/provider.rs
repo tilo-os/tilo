@@ -667,14 +667,6 @@ impl SearchResult {
         )
     }
 
-    /// Replace this hit's legacy activation id with a canonical action address while
-    /// retaining its display metadata.
-    #[must_use]
-    pub fn with_action_address(mut self, address: impl Borrow<ActionAddress>) -> Self {
-        self.action_id = format!("{ACTION_ADDRESS_PREFIX}{}", address.borrow().encode());
-        self
-    }
-
     /// Decode this hit's canonical action address, if it carries one.
     pub fn action_address(&self) -> Option<ActionAddress> {
         self.action_id
@@ -1140,8 +1132,8 @@ mod tests {
                 } else {
                     "abcd bcde row"
                 };
-                let result = SearchResult::new("Rows", text, &id)
-                    .with_action_address(ActionAddress::new(id.as_str(), "open"));
+                let result =
+                    SearchResult::for_action("Rows", text, ActionAddress::new(id.as_str(), "open"));
                 text_resource(id, text, result)
             }))
             .unwrap();
