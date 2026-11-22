@@ -499,7 +499,7 @@ mod tests {
 
         phase the_hosts_own_arguments_are_read_back;
         {
-            let program = vec!["claude".to_owned(), "--print".to_owned()];
+            let program = vec!["agent".to_owned(), "--print".to_owned()];
             let written = linux_vm_protocol::served::arguments(
                 &["model", "tilo"],
                 Duration::from_millis(1500),

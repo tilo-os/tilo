@@ -5,24 +5,17 @@
 //! That process is mapped once per (pid, start time) to the writer it acts
 //! for, most specific first:
 //!
-//! 1. an agent session: Claude Code's own process (its Edit and Write tools
-//!    write from it) by the file it keeps per process,
-//!    `<claude dir>/sessions/<pid>.json`; else a session the process's
-//!    environment names (`PI_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`,
-//!    `CODEX_THREAD_ID`), so a command an agent runs is that agent's. A
-//!    subagent runs in its parent's process, so it is its parent's session;
-//! 2. a Tilo app, by the cgroup scope its launcher started it in
+//! 1. a Tilo app, by the cgroup scope its launcher started it in
 //!    (`app-tilo-<app id>-<pid>.scope`);
-//! 3. a command in a terminal: the person;
-//! 4. a desktop app, by the desktop id of its scope (`app-<launcher>-<desktop
+//! 2. a command in a terminal: the person;
+//! 3. a desktop app, by the desktop id of its scope (`app-<launcher>-<desktop
 //!    id>-<n>.scope`, the convention desktop environments and Flatpak share);
-//! 5. otherwise the person at this device.
+//! 4. otherwise the person at this device.
 //!
 //! A writer's writes are changes of the tree that name it as their invoker
-//! ([`Writer::invoker`]), for the person at this device: an agent session, a Tilo
-//! app or another program. It grants nothing: the device vouches for the name. A
-//! program writes with the person's own access, through it; an agent with the
-//! delegation the person handed it.
+//! ([`Writer::invoker`]), for the person at this device: a Tilo app or another
+//! program. It grants nothing: the device vouches for the name. A program
+//! writes with the person's own access, through it.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -31,53 +24,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-/// How many ancestors are looked through for an agent's process.
-const MAX_ANCESTORS: usize = 64;
 /// How many resolved processes are remembered.
 const REMEMBERED: usize = 4096;
 /// How long a request waits for a file of a process to be read.
 const PROC_WAIT: Duration = Duration::from_millis(100);
 
-/// Which agent harness a session is of.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Harness {
-    ClaudeCode,
-    Codex,
-    Pi,
-}
-
-impl Harness {
-    /// The agent's id.
-    #[must_use]
-    pub const fn agent(self) -> &'static str {
-        match self {
-            Self::ClaudeCode => "claude",
-            Self::Codex => "codex",
-            Self::Pi => "pi",
-        }
-    }
-
-    /// What a person calls it.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::ClaudeCode => "Claude Code",
-            Self::Codex => "Codex",
-            Self::Pi => "pi",
-        }
-    }
-}
-
 /// Who a process writes for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Writer {
-    /// An agent session: one run in History.
-    Agent {
-        harness: Harness,
-        session: String,
-        /// The session's title, when it has one. Never the person's prompts.
-        title: Option<String>,
-    },
     /// A Tilo app, by its id.
     App { id: String },
     /// Another program: a desktop app by its desktop id, named as its
@@ -89,43 +43,21 @@ pub enum Writer {
 
 impl Writer {
     /// Who the file actions it writes are done by, for `person` (the hex key of the person at
-    /// this device, when the mount knows it): an agent session, a Tilo app or another program
-    /// acting for them, named as it goes by. `None` for the person themselves.
+    /// this device, when the mount knows it): a Tilo app or another program acting for them,
+    /// named as it goes by. `None` for the person themselves.
     #[must_use]
     pub fn invoker(&self, person: Option<&str>) -> Option<tilo_actions::ActionInvoker> {
-        let invoker = match self {
-            Self::Agent {
-                harness,
-                session,
-                title,
-            } => {
-                // A coding agent on the person's own computer works in the session the
-                // person handed it: it carries the delegation a device gives its agents.
-                let acting = tilo_actions::Acting::agent(harness.agent())
-                    .handed()
-                    .in_session(bounded(session));
-                tilo_actions::ActionInvoker::admitted(&acting).named(Some(bounded(
-                    title.as_deref().unwrap_or_else(|| harness.name()),
-                )))
-            }
-            // A program the person uses writes as the person through it: an editor saving
-            // into the folder has the person's access, and history names the program. A
-            // Tilo app goes by the name its catalogue gives it.
-            Self::App { id } => {
-                return Some(tilo_actions::ActionInvoker::admitted(&through(person, id)));
-            }
-            Self::Program { id, name } => {
-                return Some(
-                    tilo_actions::ActionInvoker::admitted(&through(person, id))
-                        .named(Some(bounded(name))),
-                );
-            }
-            Self::Person => return None,
-        };
-        Some(match person {
-            Some(person) => invoker.acting_for(person),
-            None => invoker,
-        })
+        // A program the person uses writes as the person through it: an editor saving into
+        // the folder has the person's access, and history names the program. A Tilo app goes
+        // by the name its catalogue gives it.
+        match self {
+            Self::App { id } => Some(tilo_actions::ActionInvoker::admitted(&through(person, id))),
+            Self::Program { id, name } => Some(
+                tilo_actions::ActionInvoker::admitted(&through(person, id))
+                    .named(Some(bounded(name))),
+            ),
+            Self::Person => None,
+        }
     }
 }
 
@@ -201,8 +133,8 @@ impl WriterResolver {
         }
         let writer = self.find(pid, &stat, &unread);
         if unread.get() {
-            // A process that could not be read now may be an agent's: asked again on its next
-            // request rather than remembered as what it is not.
+            // A process that could not be read now is asked again on its next request rather
+            // than remembered as what it is not.
             return writer;
         }
         let mut remembered = self
@@ -217,9 +149,6 @@ impl WriterResolver {
     }
 
     fn find(&self, pid: u32, stat: &Stat, unread: &Cell<bool>) -> Writer {
-        if let Some(agent) = self.agent(pid, stat, unread) {
-            return agent;
-        }
         let cgroup = self.read_proc(pid, "cgroup", unread).unwrap_or_default();
         let scope = scope_of(&cgroup);
         if let Some(Scope::Tilo(id)) = &scope {
@@ -233,93 +162,6 @@ impl WriterResolver {
             return Writer::Program { id, name };
         }
         Writer::Person
-    }
-
-    /// The agent session `pid` acts in, if any.
-    fn agent(&self, pid: u32, stat: &Stat, unread: &Cell<bool>) -> Option<Writer> {
-        let own = self.environ(pid, unread);
-        // The nearest Claude Code process, the writer itself included.
-        let mut at = pid;
-        let mut at_stat = stat.clone();
-        let mut claude = None;
-        for _ in 0..MAX_ANCESTORS {
-            if let Some(session) = self.claude_session(at, &at_stat, unread) {
-                claude = Some((at, session));
-                break;
-            }
-            if at_stat.parent <= 1 {
-                break;
-            }
-            at = at_stat.parent;
-            let Some(next) = self.stat(at, unread) else {
-                break;
-            };
-            at_stat = next;
-        }
-        let set = |name: &str| own.get(name).filter(|value| !value.is_empty()).cloned();
-        let pi = set("PI_SESSION_ID");
-        let codex = set("CODEX_THREAD_ID");
-        if let Some((claude_pid, (session, title))) = claude {
-            // An agent started from the Claude Code session's commands sets an
-            // id of its own that the Claude Code process does not have.
-            let theirs = self.environ(claude_pid, unread);
-            let started_inside = |name: &str, value: &Option<String>| {
-                value
-                    .as_ref()
-                    .is_some_and(|value| theirs.get(name) != Some(value))
-            };
-            if started_inside("PI_SESSION_ID", &pi) {
-                return pi.map(|session| agent(Harness::Pi, session, None));
-            }
-            if started_inside("CODEX_THREAD_ID", &codex) {
-                return codex.map(|session| agent(Harness::Codex, session, None));
-            }
-            return Some(agent(Harness::ClaudeCode, session, title));
-        }
-        pi.map(|session| agent(Harness::Pi, session, None))
-            .or_else(|| set("CLAUDE_CODE_SESSION_ID").map(|s| agent(Harness::ClaudeCode, s, None)))
-            .or_else(|| codex.map(|session| agent(Harness::Codex, session, None)))
-    }
-
-    /// The session Claude Code's process `pid` records it holds, with its
-    /// title: `sessions/<pid>.json` in its directory (`$CLAUDE_CONFIG_DIR`,
-    /// else `~/.claude`). A file a process of the same pid left before this
-    /// one started is not this process's.
-    fn claude_session(
-        &self,
-        pid: u32,
-        stat: &Stat,
-        unread: &Cell<bool>,
-    ) -> Option<(String, Option<String>)> {
-        let environ = self.environ(pid, unread);
-        let dir = match environ
-            .get("CLAUDE_CONFIG_DIR")
-            .filter(|dir| !dir.is_empty())
-        {
-            Some(dir) => PathBuf::from(dir),
-            None => PathBuf::from(environ.get("HOME")?).join(".claude"),
-        };
-        let file = dir.join("sessions").join(format!("{pid}.json"));
-        let bytes = std::fs::read(&file).ok()?;
-        let record: ClaudeSessionFile = serde_json::from_slice(&bytes).ok()?;
-        if record.pid.is_some_and(|recorded| recorded != pid) {
-            return None;
-        }
-        if let (Some(started), Some(boot)) = (record.started_at, self.boot_ms()) {
-            let began = boot.saturating_add(
-                stat.start
-                    .saturating_mul(1000)
-                    .checked_div(ticks_per_second())
-                    .unwrap_or(0),
-            );
-            // Written by an earlier process of this pid.
-            if started.saturating_add(5_000) < began {
-                return None;
-            }
-        }
-        let session = record.session_id.filter(|id| !id.trim().is_empty())?;
-        let title = record.name.filter(|name| !name.trim().is_empty());
-        Some((session, title))
     }
 
     /// The process thread `tid` is of: its thread group's leader.
@@ -354,31 +196,6 @@ impl WriterResolver {
         }
     }
 
-    /// The environment of process `pid`; empty when it has none or, with `unread` set, when
-    /// it could not be read in time ([`ProcReader`]).
-    fn environ(&self, pid: u32, unread: &Cell<bool>) -> HashMap<String, String> {
-        match self
-            .procs
-            .read(self.proc_root.join(pid.to_string()).join("environ"))
-        {
-            Proc::Read(bytes) => parse_environ(&bytes),
-            Proc::Missing => HashMap::new(),
-            Proc::Late => {
-                unread.set(true);
-                HashMap::new()
-            }
-        }
-    }
-
-    /// When the computer started, in Unix milliseconds.
-    fn boot_ms(&self) -> Option<u64> {
-        let text = std::fs::read_to_string(self.proc_root.join("stat")).ok()?;
-        text.lines()
-            .find_map(|line| line.strip_prefix("btime "))
-            .and_then(|seconds| seconds.trim().parse::<u64>().ok())
-            .map(|seconds| seconds.saturating_mul(1000))
-    }
-
     /// The name a desktop entry gives `id`.
     fn desktop_name(&self, id: &str) -> Option<String> {
         self.applications.iter().find_map(|dir| {
@@ -397,28 +214,8 @@ impl WriterResolver {
     }
 }
 
-fn agent(harness: Harness, session: String, title: Option<String>) -> Writer {
-    Writer::Agent {
-        harness,
-        session,
-        title,
-    }
-}
-
-/// What Claude Code records per process.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaudeSessionFile {
-    session_id: Option<String>,
-    name: Option<String>,
-    pid: Option<u32>,
-    /// Unix milliseconds.
-    started_at: Option<u64>,
-}
-
 #[derive(Clone, Debug)]
 struct Stat {
-    parent: u32,
     tty: i64,
     /// Clock ticks after boot.
     start: u64,
@@ -431,7 +228,6 @@ fn parse_stat(text: &str) -> Option<Stat> {
     let fields: Vec<&str> = rest.split_whitespace().collect();
     // After the command: state(3) ppid(4) pgrp(5) session(6) tty_nr(7) … starttime(22).
     Some(Stat {
-        parent: fields.get(1)?.parse().ok()?,
         tty: fields.get(4)?.parse().ok()?,
         start: fields.get(19)?.parse().ok()?,
     })
@@ -439,7 +235,7 @@ fn parse_stat(text: &str) -> Option<Stat> {
 
 /// Reads the files of processes on a thread of its own, for at most [`PROC_WAIT`].
 ///
-/// Reading what a process is (its `stat`, its environment) waits for its memory map. A process
+/// Reading what a process is (its `stat`, its cgroup) waits for its memory map. A process
 /// faulting in a page of a file mapped from the mount holds that map while the mount serves the
 /// fault, and another of its threads may be queued to change it meanwhile: a read of its files
 /// then waits for the mount, and a mount that waited for that read would never serve the
@@ -504,28 +300,6 @@ impl ProcReader {
             *requests = Some(sender);
         }
         requests.clone()
-    }
-}
-
-fn parse_environ(bytes: &[u8]) -> HashMap<String, String> {
-    bytes
-        .split(|byte| *byte == 0)
-        .filter_map(|entry| {
-            let entry = std::str::from_utf8(entry).ok()?;
-            let (name, value) = entry.split_once('=')?;
-            Some((name.to_owned(), value.to_owned()))
-        })
-        .collect()
-}
-
-fn ticks_per_second() -> u64 {
-    #[cfg(target_os = "linux")]
-    {
-        rustix::param::clock_ticks_per_second()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        100
     }
 }
 

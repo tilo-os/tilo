@@ -4,7 +4,7 @@
 //! policy lets them.
 //!
 //! The document names each item by its reference (`vault.item:<id>`), never its secret. The
-//! server reads it when a command, a terminal or a coding agent starts in the machine, has each
+//! server reads it when a command, a terminal or another program starts in the machine, has each
 //! item released from the vault for whoever started it, and puts the values only in the
 //! environment of the programs it starts there.
 
@@ -40,7 +40,7 @@ pub struct MachineSecrets {
     Model, Default, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
 )]
 pub struct MachineSecret {
-    /// The variable, such as `CLAUDE_CODE_OAUTH_TOKEN`.
+    /// The variable, such as `GITHUB_TOKEN`.
     pub variable: String,
     /// The vault item's reference, `vault.item:<id>`.
     pub item: String,
@@ -69,7 +69,7 @@ impl MachineSecrets {
     #[action]
     pub fn add_secret(
         &mut self,
-        #[param("Variable", example = "CLAUDE_CODE_OAUTH_TOKEN")] variable: String,
+        #[param("Variable", example = "GITHUB_TOKEN")] variable: String,
         #[param(
             "Vault item",
             resource = "vault.item",
@@ -200,21 +200,21 @@ mod tests {
     #[test]
     fn a_variable_takes_one_item_and_is_removed_whole() {
         let mut r = replica();
-        r.apply(add("CLAUDE_CODE_OAUTH_TOKEN", ITEM)).unwrap();
+        r.apply(add("GITHUB_TOKEN", ITEM)).unwrap();
         let other = "vault.item:ffffffffffffffffffffffffffffffff";
-        r.apply(add("CLAUDE_CODE_OAUTH_TOKEN", other)).unwrap();
+        r.apply(add("GITHUB_TOKEN", other)).unwrap();
         assert_eq!(
             r.state().unwrap().secrets,
             vec![MachineSecret {
-                variable: "CLAUDE_CODE_OAUTH_TOKEN".into(),
+                variable: "GITHUB_TOKEN".into(),
                 item: other.into(),
             }]
         );
-        r.apply(MachineSecrets::REMOVE_SECRET.with("CLAUDE_CODE_OAUTH_TOKEN".to_owned()))
+        r.apply(MachineSecrets::REMOVE_SECRET.with("GITHUB_TOKEN".to_owned()))
             .unwrap();
         assert!(r.state().unwrap().secrets.is_empty());
         assert!(
-            r.apply(MachineSecrets::REMOVE_SECRET.with("CLAUDE_CODE_OAUTH_TOKEN".to_owned()))
+            r.apply(MachineSecrets::REMOVE_SECRET.with("GITHUB_TOKEN".to_owned()))
                 .is_err()
         );
     }

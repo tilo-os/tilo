@@ -133,7 +133,7 @@ public enum Drawing {
     public static var subAgents: [SubAgent] {
         [
             SubAgent(id: "usage-drop", title: "Usage drop: investigate", role: "Coder", state: .working,
-                     runsOn: "Claude Code on the cloud machine", started: at(9, 20)),
+                     runsOn: "The cloud machine", started: at(9, 20)),
             SubAgent(id: "board-deck", title: "Find the Q3 board deck", role: "Researcher", state: .needsYou,
                      runsOn: "The cloud machine", started: at(8, 50)),
             SubAgent(id: "yc-batch", title: "YC batch against the thesis", role: "Researcher", state: .working,

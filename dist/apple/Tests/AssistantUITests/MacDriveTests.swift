@@ -125,7 +125,7 @@ final class MacDriveTests: XCTestCase {
         await drive.until("the sub-agent's window") { run.model.place == .chat(.subAgent("usage-drop")) }
         await drive.settle(300)
         let said = drive.tree()
-        XCTAssertTrue(said.contains { $0.isHeading && $0.label.hasPrefix("Usage drop: investigate, Coder, Claude Code on the cloud machine, ")
+        XCTAssertTrue(said.contains { $0.isHeading && $0.label.hasPrefix("Usage drop: investigate, Coder, The cloud machine, ")
             && $0.label.hasSuffix(AssistantWords.cannotReadMain.said) }, "its head says who it is, where it runs and that it cannot read the main chat")
         XCTAssertTrue(said.contains { $0.role == "AXTextArea" && $0.label == AssistantWords.messageSubAgent.said })
         XCTAssertTrue(drive.shows(AssistantWords.jobFromMain.said))

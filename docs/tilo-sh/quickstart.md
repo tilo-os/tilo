@@ -16,10 +16,11 @@ name it `First steps`.
 
 ## 2. Connect your agent
 
-Add the Tilo MCP server to your agent. In Claude Code:
+Add the Tilo MCP server to your agent, as a streamable HTTP server named `tilo` at
+`https://mcp.tilo.sh`. In an agent that reads a JSON MCP configuration:
 
-```sh
-claude mcp add --transport http tilo https://mcp.tilo.sh
+```json
+{"mcpServers": {"tilo": {"type": "http", "url": "https://mcp.tilo.sh"}}}
 ```
 
 On the first call, the agent registers itself and Tilo prompts you once to approve the agent, its

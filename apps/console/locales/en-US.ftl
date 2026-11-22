@@ -63,12 +63,11 @@ console-workspace-made-by-you = Made by you
 console-workspace-made-by = Made by { $agent }
 console-workspace-open = Open in Tilo
 
-console-connect-lead = Run one of these commands where your agent runs. It asks you to sign in once, then works in your workspaces as itself. Everything it does shows under Agents, where you can stop or undo it.
+console-connect-lead = Add this server to the MCP configuration of your agent. It asks you to sign in once, then works in your workspaces as itself. Everything it does shows under Agents, where you can stop or undo it.
 console-connect-heading = Connect an agent
 console-connect-setup-lead = Your agent works here as you once Tilo is set up on its computer. One line you paste into it does that and signs it in as you.
 console-connect-setup = Set up your agent
-console-client-claude-code = Claude Code
-console-client-codex = Codex
+console-client-url = Server address
 console-client-other = Any MCP client
 console-client-every-session = Every { $client } session
 console-grants-heading = Connected agents

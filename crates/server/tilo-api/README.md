@@ -7,10 +7,11 @@ for agents over MCP at `/mcp`. Every `/v1` route is a call of the key's run
 (`session::Session::call`), the very tool call an agent makes, answered typed
 (`v1`): one implementation, two faces.
 
-An agent connects with one line, for example
+An agent connects with nothing configured but the server's URL, the streamable
+HTTP server
 
-```sh
-claude mcp add --transport http tilo https://mcp.tilo.sh
+```text
+https://mcp.tilo.sh
 ```
 
 and authorizes itself through the API server: protected-resource and

@@ -515,7 +515,7 @@ mod tests {
                         read_only: false,
                     }],
                 },
-                HostMessage::LaunchServingAgents(launch(&["claude"])),
+                HostMessage::LaunchServingAgents(launch(&["agent"])),
                 HostMessage::AgentBytes {
                     connection: 3,
                     bytes: b"{}\n".to_vec(),

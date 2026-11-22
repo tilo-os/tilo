@@ -18,7 +18,7 @@ extend what is on the other side of it.
 ## An environment belongs to a workspace
 
 A Terminal is opened in a workspace, and every environment it lists, makes
-and opens is that workspace's. Several coding agents can work on one device
+and opens is that workspace's. Several agents can work on one device
 at once, each in a workspace of its own, each with its own files, shell and
 environment, none seeing another's:
 
@@ -241,24 +241,24 @@ person, and only after the person allowed it once (a `CapOverride` on
 `env-runtime` image has no environment to start: a Terminal asks for one, is
 refused, and opens the Host target instead, with the same allow.
 
-## Coding agents
+## Agents in an environment
 
-Several coding agents (Claude Code, Codex) work on one machine at once, each
+Several agents work on one machine at once, each
 in an environment of its own, each in its own workspace, and each a distinct
 agent the person can tell apart, attribute and stop.
 
 **Two agents in two workspaces.** In the workspace *Studio*, open Terminal in
-the environment *dev* and run `claude`; switch to *Garden*, open Terminal in
-the environment *site* and run `claude` again. Each one's MCP server is
-`tilo-runtime --connect`, with nothing else to
+the environment *dev* and run an agent there; switch to *Garden*, open Terminal
+in the environment *site* and run it again. Each one's MCP server is
+`tilo-runtime --connect` (`tilo-runtime-mcp --connect`), with nothing else to
 configure:
 
 ```json
 {"mcpServers": {"tilo": {"command": "tilo-runtime", "args": ["--connect"]}}}
 ```
 
-The first asks to work in *Studio* as `claude-code@dev#1`, the second in
-*Garden* as `claude-code@site#1`. The person allows each on the sheet; the bar
+For a client that names itself Reviewer, the first asks to work in *Studio* as
+`reviewer@dev#1`, the second in *Garden* as `reviewer@site#1`. The person allows each on the sheet; the bar
 shows both, each in its workspace, and Stop on one ends that one alone.
 
 **The environment's socket.** The session's MCP server
@@ -292,13 +292,13 @@ it let in are stopped.
   is refused there.
 - **The person decides.** Each program is asked about on the sheet, naming
   the environment; "Always allow" is remembered per environment (its
-  `<workspace>/<record>` id), executable and client name, so allowing Claude Code once in *dev* covers its later
+  `<workspace>/<record>` id), executable and client name, so allowing Reviewer once in *dev* covers its later
   sessions there, and only there. A program in an environment works as an
   agent; it never acts as the person.
 - **An agent per connection.** Each connection the person admits is an agent
   of its own: the client's name, where it works from (the environment's record
-  key, or `host`) and an instance number, as in `claude-code@dev#2`. Its
-  changes are attributed to that id, the shell lists it as `Claude Code in dev
+  key, or `host`) and an instance number, as in `reviewer@dev#2`. Its
+  changes are attributed to that id, the shell lists it as `Reviewer in dev
   #2`, and the person's Stop ends it alone. Instance numbers count from one in
   each session of the desktop.
 - **The Host case.** A program in the Host target, or any program of the login
@@ -394,7 +394,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   exist.
 - **A program's `~`:** a program the shell runs in the VM starts with `HOME`
   the environment's shared folder — the same path the shell's `~` names — so
-  what the program or a coding agent writes there is the workspace's files,
+  what the program writes there is the workspace's files,
   versioned and bounded by its grant. What belongs to the machine rather than
   to the workspace stays on the VM's own disk, in the tenant's folders there:
   `XDG_CACHE_HOME=/home/tilo/.cache`, `XDG_DATA_HOME=/home/tilo/.local/share`,
@@ -402,7 +402,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   `RUSTUP_HOME=/home/tilo/.rustup` (the toolchain the image ships), and
   `CARGO_TARGET_DIR=/var/tmp/tilo/target`. The shell sets these over the ones
   a run carries, so no run moves its `~` or its caches into the workspace's
-  files, and a program the machine ships, such as the coding agent, is found
+  files, and a program the machine ships is found
   by its path there rather than under the run's `~`. The guest agent takes a
   launch's `HOME` only when it names a directory the guest has, and the
   tenant's own home otherwise.
@@ -470,7 +470,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   follows, and the output is recorded like any other.
 - **The agent socket:** a program in the VM finds Tilo's MCP server where an
   environment's programs find it on a device, `/run/tilo/agent.sock`, named in
-  `TILO_AGENT_SOCK` (above, "Coding agents"). The guest agent serves it to the
+  `TILO_AGENT_SOCK` (above, "Agents in an environment"). The guest agent serves it to the
   programs a host started for a workspace shell's session
   (`LaunchServingAgents`) and to their descendants alone, by the connecting
   process the kernel names; anything else is closed unread. Each connection
@@ -481,7 +481,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   ([`agent_socket.rs`](../../crates/runtime/linux-vm-agent/src/agent_socket.rs)).
   The server asks the person whose Terminal `run` the workspace admitted for
   that session, on their approving devices, whether the program may work in
-  the workspace as `claude-code@<environment>#n` (numbered from one in each
+  the workspace as `<client>@<environment>#n` (numbered from one in each
   workspace since the server started). "Always allow" is kept for that person
   per environment, executable and client name. Allowed, it acts as that agent
   for them through the workspace's actions, held to their access and an
@@ -493,9 +493,9 @@ that workspace environment's own, never in a guest sharing the host's kernel
 - **Secrets:** a workspace hands items of its vault to the programs its VM
   starts through one Terminal document, its machine secrets
   (`tilo_environment::machine_secrets`): each names a vault item by its
-  reference and the variable it arrives in (`CLAUDE_CODE_OAUTH_TOKEN`), and
+  reference and the variable it arrives in (`GITHUB_TOKEN`), and
   members change it with `add-secret` and `remove-secret` as the workspace's
-  policy lets them. When a command, a terminal session or a coding agent
+  policy lets them. When a command, a terminal session or another program
   starts in the VM, the server reads the document once and releases each item
   for whoever started it, as the workspace's policy lets them read its vault;
   an item the vault does not hold stops the start with "That item is not kept

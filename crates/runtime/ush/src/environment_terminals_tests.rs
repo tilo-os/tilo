@@ -191,13 +191,13 @@ tilo_test_env::scenario! {
     {
         let terminals = Host::start(LEFT_AFTER);
         let mut screen = screen(terminals.open_giving(&[VmSecret {
-            variable: "CLAUDE_CODE_OAUTH_TOKEN".into(),
+            variable: "GITHUB_TOKEN".into(),
             value: "the-vaults-own".into(),
         }]));
         // The quotes keep the echoed command line from reading like its output.
-        screen.type_at_prompt("sh -c 'echo \"p[$CLAUDE_CODE_OAUTH_TOKEN]\"'\r");
+        screen.type_at_prompt("sh -c 'echo \"p[$GITHUB_TOKEN]\"'\r");
         screen.until("p[the-vaults-own]");
-        screen.type_at_prompt("echo \"s[$CLAUDE_CODE_OAUTH_TOKEN]\"\r");
+        screen.type_at_prompt("echo \"s[$GITHUB_TOKEN]\"\r");
         screen.until("s[]");
     }
 

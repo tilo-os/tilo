@@ -103,7 +103,7 @@ fn a_members_change_through_the_published_action_reaches_the_record() {
         "terminal.machine-secrets",
         "add-secret",
         serde_json::json!({
-            "variable": "CLAUDE_CODE_OAUTH_TOKEN",
+            "variable": "GITHUB_TOKEN",
             "item": "vault.item:0123456789abcdef0123456789abcdef",
         }),
     )
@@ -137,7 +137,7 @@ fn the_record_publishes_its_verbs_once_the_workspace_delivers_it() {
         "terminal.machine-secrets",
         "add-secret",
         serde_json::json!({
-            "variable": "CLAUDE_CODE_OAUTH_TOKEN",
+            "variable": "GITHUB_TOKEN",
             "item": "vault.item:0123456789abcdef0123456789abcdef",
         }),
     )
@@ -157,7 +157,7 @@ fn assert_holds_the_secret(app: &TestApp<Terminal>) {
     assert_eq!(
         held,
         vec![Secret {
-            variable: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            variable: "GITHUB_TOKEN".to_owned(),
             item: "vault.item:0123456789abcdef0123456789abcdef".to_owned(),
         }]
     );

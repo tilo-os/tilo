@@ -2,7 +2,7 @@
 //! sees it: where an agent connects, which agents it let in and into which
 //! workspaces, and the person's say over each of them.
 //!
-//! An agent on another machine (Claude Code, Codex, any MCP client) reaches
+//! An agent on another machine (any MCP client) reaches
 //! the person's workspaces over MCP at [`Server::endpoint`]. The person grants
 //! it once, and the grant names the workspaces it may work in. Every change
 //! it makes there is attributed to it in the workspace's history
@@ -50,31 +50,11 @@ pub fn argument(value: &impl Serialize) -> InvokeArgument {
     super::workspace_activity::argument(value)
 }
 
-/// An MCP client and the command that connects it to [`Server::endpoint`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Client {
-    ClaudeCode,
-    Codex,
-    /// Any other client that speaks MCP over HTTP.
-    Other,
-}
-
-impl Client {
-    pub const ALL: [Self; 3] = [Self::ClaudeCode, Self::Codex, Self::Other];
-
-    /// The one line that connects this client to the server at `endpoint`,
-    /// or for [`Client::Other`] the configuration it reads.
-    #[must_use]
-    pub fn command(self, endpoint: &str) -> String {
-        match self {
-            Self::ClaudeCode => format!("claude mcp add --transport http tilo {endpoint}"),
-            Self::Codex => format!("codex mcp add tilo --url {endpoint}"),
-            Self::Other => {
-                format!(r#"{{"mcpServers": {{"tilo": {{"type": "http", "url": "{endpoint}"}}}}}}"#)
-            }
-        }
-    }
+/// The MCP configuration an agent adds to reach the server at `endpoint`, as the server `tilo`
+/// over HTTP: one line, for any client that speaks MCP.
+#[must_use]
+pub fn client_config(endpoint: &str) -> String {
+    format!(r#"{{"mcpServers": {{"tilo": {{"type": "http", "url": "{endpoint}"}}}}}}"#)
 }
 
 /// Where a grant reaches, as the person chose when they let the agent in.
@@ -221,21 +201,13 @@ mod tests {
     tilo_test_env::scenario! {
         fn an_mcp_server_names_its_endpoint_and_grants;
 
-        phase each_client_connects_with_one_line_naming_the_endpoint;
+        phase a_client_connects_with_one_line_naming_the_endpoint;
         {
             let endpoint = "https://mcp.example";
-            assert_eq!(
-                Client::ClaudeCode.command(endpoint),
-                "claude mcp add --transport http tilo https://mcp.example"
-            );
-            for client in Client::ALL {
-                let line = client.command(endpoint);
-                assert!(line.contains(endpoint), "{line}");
-                assert!(!line.contains('\n'), "{line}");
-            }
-            let other: serde_json::Value =
-                serde_json::from_str(&Client::Other.command(endpoint)).expect("the config is JSON");
-            assert_eq!(other["mcpServers"]["tilo"]["url"], endpoint);
+            let line = client_config(endpoint);
+            assert!(!line.contains('\n'), "{line}");
+            let config: serde_json::Value = serde_json::from_str(&line).expect("the config is JSON");
+            assert_eq!(config["mcpServers"]["tilo"]["url"], endpoint);
         }
 
         phase a_session_in_history_finds_its_grant_by_the_name_history_gives_it;

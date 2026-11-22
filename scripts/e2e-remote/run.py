@@ -10,9 +10,8 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    (`tilo-vm vm branch`, which boots B once beside A to have it taken in), which comes up as
    a new device of the same person. Box C is another person's. The boxes meet only on the
    network tilo-vm gives the VMs of one host (`tilolan0`, 198.18.0.0/16).
-2. On A, `tilo agent connect claude --device B` registers B's server with Claude Code; the
-   scripted client (guest/agent.py, clientInfo `claude-code`) runs exactly the command it
-   registered.
+2. On A, an agent adds A's MCP server carried to B (`tilo-runtime --connect --device B`);
+   the scripted client (guest/agent.py, clientInfo `reviewer`) runs exactly that command.
 3. A's own server lists B as reachable (`tilo_devices`).
 4. With B's "Accept agents from my other devices" off, the agent's calls are refused on B,
    saying which setting would let it in, with nobody asked and nothing registered there. With
@@ -106,8 +105,8 @@ OUTPUT = "1280x800"
 FIND_S = 180
 # The MCP server sheet's choice and button, as the person reads them (en-US).
 # The name a shell shows the scripted client by, then its number: its clientInfo name,
-# `claude-code` (r5d40ebffe7 on B: "claude-code #3").
-CLIENT_SHOWN = "claude-code"
+# `reviewer` (r5d40ebffe7 on B: "reviewer #3").
+CLIENT_SHOWN = "reviewer"
 ALLOW_ONCE = "Allow once"
 ALLOW = "Allow"
 DENY = "Deny"
@@ -521,7 +520,7 @@ class Run:
                       lambda res: self.branch(a, b, res), "E01")
             self.step("E03", "B is a new device of A's person: its own key, certified by the same root",
                       lambda res: self.same_person(a, b, res), "E02")
-            self.step("E04", "`tilo agent connect claude --device B` on A registers B's server",
+            self.step("E04", "A has the MCP server an agent adds to reach B (`--connect --device B`)",
                       lambda res: self.register(a, b, res, facts), "E03")
             self.step("E05", "A's server lists B as reachable (tilo_devices)",
                       lambda res: self.reachable(a, b, res), "E04")
@@ -680,31 +679,21 @@ class Run:
             raise Failed(f"A and B are not one person: {ia} and {ib}")
 
     def register(self, a: Box, b: Box, res: Result, facts: dict) -> None:
-        """`tilo agent connect claude --device B`, with Claude Code's `claude` a script that
-        keeps what it was asked to register."""
+        """The MCP server an agent on A adds to reach B: A's own server, carried to B by
+        `--device`, a command A has."""
         label = (b.identity.get("this_device") or {}).get("label") or ""
         if not label:
             raise Failed(f"B's device has no label to name it by: {b.identity}")
-        fake = ('#!/bin/sh\nprintf "%s\\n" "$@" > "$HOME/' + GUEST_DIR + '/claude-args"\n'
-                'echo "Added stdio MCP server"\n')
-        a.vm.write_home_file(f"{GUEST_DIR}/bin/claude", fake.encode())
-        out = a.vm.exec(f'chmod +x "$HOME/{GUEST_DIR}/bin/claude" && '
-                        f'PATH="$HOME/{GUEST_DIR}/bin:$PATH" tilo agent connect claude --device {shlex.quote(label)}'
-                        f' && echo ARGS && cat "$HOME/{GUEST_DIR}/claude-args"', timeout=120)
-        res.facts["said"] = out
-        argv = [line for line in out.split("ARGS\n", 1)[-1].splitlines()
-                if not line.startswith("receipt:")]
-        if argv[:4] != ["mcp", "add", "--scope", "user"] or "--" not in argv:
-            raise Failed(f"`tilo agent connect` registered something else: {argv}")
-        command = argv[argv.index("--") + 1:]
-        res.facts["server"], res.facts["command"] = argv[4], command
-        if "--device" not in command or command[command.index("--device") + 1] != label:
-            raise Failed(f"the registered command does not name B: {command}")
+        command = [*self.server(a), "--device", label]
+        out = a.vm.exec(f"command -v {shlex.quote(command[0])}", timeout=60)
+        res.facts["said"], res.facts["command"] = out, command
+        if not out.strip():
+            raise Failed(f"A has no {command[0]} for an agent to run: {out!r}")
         facts["command"] = command
         self.put_agent(a)
 
     def server(self, a: Box) -> list[str]:
-        """The command `tilo agent connect claude` registers for this desktop's own server."""
+        """The command an agent adds for this desktop's own MCP server."""
         return ["tilo-runtime", "--connect"]
 
     def reachable(self, a: Box, b: Box, res: Result) -> None:

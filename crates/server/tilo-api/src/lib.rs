@@ -2,7 +2,7 @@
 //! connects to with nothing configured but its URL, as in
 //!
 //! ```text
-//! claude mcp add --transport http tilo https://mcp.tilo.sh
+//! https://mcp.tilo.sh
 //! ```
 //!
 //! The agent finds out how to authorize from the server itself (the MCP

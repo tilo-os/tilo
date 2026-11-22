@@ -300,13 +300,12 @@ fn valid_file_name(name: &FileNameV1) -> bool {
         }
 }
 
-/// What wrote a change for a person: an agent through Tilo actions or in a session of a
-/// coding agent, a Tilo app, or a third-party program. Presentation only: it grants nothing.
+/// What wrote a change for a person: an agent, in one of its sessions or not, a Tilo app, or a
+/// third-party program. Presentation only: it grants nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttributedWriter {
-    /// An agent acting through Tilo actions, or one session of a coding agent
-    /// (`claude`, `codex`, `pi`).
+    /// An agent acting through Tilo actions, in one of its sessions or not.
     Agent {
         agent: String,
         session: Option<String>,
@@ -326,7 +325,7 @@ impl AttributedWriter {
         }
     }
 
-    /// One session of the coding agent `agent`.
+    /// One session of the agent `agent`.
     #[must_use]
     pub fn agent_session(agent: impl Into<String>, session: impl Into<String>) -> Self {
         Self::Agent {

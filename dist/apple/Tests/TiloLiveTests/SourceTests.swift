@@ -1617,8 +1617,7 @@ final class TiloSourceTests: XCTestCase {
     }
 
     /// A person's server keeps one word for where a sub-agent works. Its header says it as a
-    /// person reads it: their server itself, or the workspace's machine with the program at
-    /// work there.
+    /// person reads it: their server itself.
     func testWhereASubAgentWorksIsSaidInWordsAPersonReadsAndNotAsTheWordItsServerKeeps() async throws {
         try await start(.assistant)
         var listed: [SubAgent] = []
@@ -1627,19 +1626,13 @@ final class TiloSourceTests: XCTestCase {
         try await enter(device: true, """
             window.byKind = true;
             window.agents = [kept('reed', {name: 'Reed'}),
-              kept('coder', {name: 'Usage drop', created_at: 1794900002000,
-                sub: {role: 'Coder', stands: {$variant: 'working'}, coding: {harness: 'claude-code', harness_name: 'Claude Code'}}}),
-              kept('early', {name: 'Sign-in change', created_at: 1794900001000,
-                sub: {role: 'Coder', stands: {$variant: 'working'}, coding: {harness: '', harness_name: ''}}}),
               kept('reader', {name: 'Open requests', created_at: 1794900000000,
-                sub: {role: 'Researcher', stands: {$variant: 'working'}, coding: null}})]
+                sub: {role: 'Researcher', stands: {$variant: 'working'}}})]
             """)
-        try await until("her three sub-agents are listed") { listed.count == 3 }
-        XCTAssertEqual(listed.map(\.title), ["Usage drop", "Sign-in change", "Open requests"])
+        try await until("her sub-agent is listed") { listed.count == 1 }
+        XCTAssertEqual(listed.map(\.title), ["Open requests"])
         let headers = listed.map { Wording().header($0) }
-        XCTAssertTrue(headers[0].hasPrefix("Coder · Claude Code on the workspace's machine · started "), headers[0])
-        XCTAssertTrue(headers[1].hasPrefix("Coder · the workspace's machine · started "), headers[1])
-        XCTAssertTrue(headers[2].hasPrefix("Researcher · your Tilo server · started "), headers[2])
+        XCTAssertTrue(headers[0].hasPrefix("Researcher · your Tilo server · started "), headers[0])
     }
 
     /// Stopping a sub-agent is her server's own `stop-sub-agent` on the workspace's agents,

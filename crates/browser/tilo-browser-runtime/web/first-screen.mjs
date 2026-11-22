@@ -154,9 +154,10 @@ export function signInPrompt(code, {site} = {}) {
   return `Sign me in to Tilo: run ${loginCommand(code, site)}, then do what it tells you.`;
 }
 
-/** The commands for someone who sets up by hand, one per line. */
+/** The command for someone who sets up by hand: their agent then adds the MCP server
+ * (`MCP_URL`) where its own configuration keeps servers. */
 export function manualCommands(code, {site} = {}) {
-  return [installCommand(site, loginArgs(code, site)), `claude mcp add --transport http tilo ${MCP_URL}`].join('\n');
+  return installCommand(site, loginArgs(code, site));
 }
 
 /** "10 more minutes", the time left until `expiresAt` (ms) at `now` in whole

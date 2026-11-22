@@ -2034,16 +2034,16 @@ async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
 }
 
 /// A write through the mount is named for the process the kernel says asked for it: here a
-/// command an agent session runs, and an atomic save (a temporary file renamed over the
-/// original) is that agent's too. The file's History lists its changes under the agent.
+/// desktop app, and an atomic save (a temporary file renamed over the original) is that app's
+/// too. The file's History lists its changes under the app.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
+async fn a_write_through_the_mount_is_named_for_the_program_that_made_it() {
     require_fuse!();
     let store = Arc::new(ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("writer-peer").unwrap()));
     let hydrator = Arc::new(Hydrator::new(store.clone()));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-    // This test process, as a command an agent session runs would show it.
+    // This test process, as a desktop app would show it.
     let fake = tempdir().unwrap();
     let pid = std::process::id();
     let proc_dir = fake.path().join("proc").join(pid.to_string());
@@ -2051,11 +2051,6 @@ async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
     std::fs::write(
         proc_dir.join("stat"),
         format!("{pid} (test) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5 0 0"),
-    )
-    .unwrap();
-    std::fs::write(
-        proc_dir.join("environ"),
-        b"HOME=/nowhere\0CLAUDE_CODE_SESSION_ID=s1\0",
     )
     .unwrap();
     std::fs::write(
@@ -2131,8 +2126,8 @@ async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
     assert!(
         named
             .iter()
-            .all(|name| name.as_deref() == Some("Claude Code")),
-        "each change names the agent: {named:?}"
+            .all(|name| name.as_deref() == Some("TextEditor")),
+        "each change names the app: {named:?}"
     );
     tilo_fs::fuse_session::unmount_and_join(session, mount_dir.path()).expect("unmount");
 }

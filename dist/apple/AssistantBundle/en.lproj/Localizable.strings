@@ -81,8 +81,6 @@
 "started-by-you" = "started {time} by you";
 "cannot-read-main" = "it cannot read the main chat";
 "works-on-server" = "your Tilo server";
-"works-on-machine" = "the workspace's machine";
-"works-on-machine-with" = "{program} on the workspace's machine";
 "job-from-main" = "The job, from the main agent";
 "main-while-working" = "Main agent, {time}, while it worked";
 "stop" = "Stop";

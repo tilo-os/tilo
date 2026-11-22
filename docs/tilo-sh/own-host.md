@@ -37,8 +37,9 @@ Then use it exactly as the hosted one:
 ```sh
 tilo keys create "My backend"        # approve the link it prints in `stack.sh browser`
 export TILO_API_KEY=tilo_sk_…
-claude mcp add --transport http tilo-local http://localhost:24110/mcp
 ```
+
+and point your agent's MCP configuration at `http://localhost:24110/mcp`.
 
 `stack.sh env` also sets the certificate authority the local site is signed with, for Node and Python,
 so the SDKs trust it. For a browser of your own, import the CA file it names as a trusted authority.

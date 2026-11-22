@@ -12,10 +12,10 @@
 // agent" copies a second prompt, `tilo login <code>` on the computer that is
 // already theirs approves it, and the new tab is signed in as that person.
 //
-// The agent is Claude Code as the `tilo` command finds it: `CLAUDECODE=1` in
-// its environment and a `claude` on PATH that records what it was asked, so
-// the run proves the command registered its tools without touching anyone's
-// real agent. The stack is plain HTTP on this machine, so the command needs
+// The agent is any agent: it names itself to `tilo login`, adds Tilo's MCP
+// server to its own configuration as the login's words say, and confirms it
+// with `tilo agent check --config`, without touching anyone's real agent. The
+// stack is plain HTTP on this machine, so the command needs
 // no test certificate to reach it.
 //
 // usage: node agent-setup.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR
@@ -23,8 +23,8 @@
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
 import {execFile, spawn} from 'node:child_process';
-import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
-import {join, resolve} from 'node:path';
+import {mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, reloaded} from './waits.mjs';
@@ -120,43 +120,17 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
   await fail(`${what} never happened: ${(await pageText(tab)).slice(0, 600)}`);
 };
 
-// The computer the agent runs on: its own home, a `claude` that records how
-// it was asked to add Tilo's tools, and Claude Code's environment marker.
+// The computer the agent runs on: its own home, and the MCP configuration the
+// agent keeps there.
 const computer = join(out, 'computer');
 mkdirSync(join(computer, 'bin'), {recursive: true});
-const claudeCalls = join(computer, 'claude-calls.txt');
-// The `claude` the command finds: it records what it was asked, and does what
-// the real one does about a server — writes it into the user configuration
-// (`~/.claude.json`, `mcpServers`), which is where the command then looks for
-// it and where a restarted agent loads it from.
-writeFileSync(join(computer, 'bin', 'claude'), `#!/bin/sh
-printf '%s\\n' "$*" >> '${claudeCalls}'
-[ "$1 $2" = "mcp add" ] || exit 0
-shift 2
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --scope|-s) shift 2 ;;
-    --*) shift ;;
-    *) break ;;
-  esac
-done
-name=$1; shift
-[ "$1" = "--" ] && shift
-command=$1; shift
-args=
-for arg in "$@"; do args="$args\\"$arg\\","; done
-printf 'wrote name=%s command=%s args=%s\n' "$name" "$command" "$args" >> '${claudeCalls}'
-printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}}}\\n' \
-  "$name" "$command" "\${args%,}" > "$HOME/.claude.json"
-printf 'wrote %s: %s\n' "$HOME/.claude.json" "$(cat "$HOME/.claude.json")" >> '${claudeCalls}'
-`);
-chmodSync(join(computer, 'bin', 'claude'), 0o755);
+const agentName = 'Reviewer';
+const agentConfiguration = join(computer, 'agent-mcp.json');
 const env = {
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
-  CLAUDECODE: '1',
   // The computer's peer logs each window it shows on the person's layout.
   RUST_LOG: 'tilo_runtime::mcp::agent::link=debug,warn',
 };
@@ -354,50 +328,37 @@ if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login /.test(prompt) || p
   await fail(`the prompt is not the short one-line setup: ${prompt}`);
 }
 if (setup.site && new URL(setup.site).origin !== new URL(site).origin) await fail(`the prompt names another site: ${setup.site}`);
-const login = tilo(['login', setup.code, '--site', setup.site ?? site]);
-const steps = await followSteps(first, `document.documentElement.dataset.firstScreen === undefined || document.documentElement.dataset.firstScreen === 'connected'`);
+const login = tilo(['login', setup.code, '--site', setup.site ?? site, '--agent', agentName]);
+// The tab's steps are followed while the agent goes: the screen leaves only
+// once the agent has confirmed Tilo's tools in its own configuration.
+const following = followSteps(first, `document.documentElement.dataset.firstScreen === undefined || document.documentElement.dataset.firstScreen === 'connected'`);
 const loggedIn = await login;
 report.login = loggedIn;
-report.steps = steps;
 if (loggedIn.code !== 0) await fail(`tilo login failed (${loggedIn.code}): ${loggedIn.stderr}${loggedIn.stdout}`);
 if (!/restart/.test(loggedIn.stdout) || !/\btilo_[a-z]+\b/.test(loggedIn.stdout)) {
   await fail(`tilo login did not tell the agent to restart and which tool to call: ${loggedIn.stdout}`);
 }
-if (!/agent check/.test(loggedIn.stdout)) await fail(`tilo login did not leave the agent the check that confirms its tools: ${loggedIn.stdout}`);
+if (!/agent check --config/.test(loggedIn.stdout)) await fail(`tilo login did not leave the agent the check that confirms its tools: ${loggedIn.stdout}`);
+if (!/stdio server \S*tilo with the argument mcp/.test(loggedIn.stdout)) {
+  await fail(`tilo login did not name the command that runs its MCP server: ${loggedIn.stdout}`);
+}
 if (/failed/i.test(loggedIn.stdout)) await fail(`tilo login said something failed: ${loggedIn.stdout}`);
-const registered = (() => { try { return readFileSync(claudeCalls, 'utf8'); } catch { return ''; } })();
-report.claude = registered;
-if (!/mcp add .*tilo .*-- \S*tilo mcp/.test(registered)) await fail(`tilo login did not add its MCP server to Claude Code: ${registered || 'never asked'}`);
-// What the agent's own configuration holds afterwards: the server, running
-// this commit's command with its argument.
-const claudeConfiguration = (() => {
-  try { return JSON.parse(readFileSync(join(computer, '.claude.json'), 'utf8')); } catch { return null; }
-})();
-report.claudeConfiguration = claudeConfiguration;
-const written = claudeConfiguration?.mcpServers?.tilo;
-if (!written || JSON.stringify(written.args) !== '["mcp"]' || resolve(written.command ?? '') !== resolve(tiloBin)) {
-  await fail(`the fake agent wrote no server running Tilo's command: ${JSON.stringify(claudeConfiguration)}`);
-}
-if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${JSON.stringify(steps)}`);
-// The tools the tab says are added are the ones the check found in the
-// agent's own configuration; a step the command did not report is never
-// claimed there.
-if (!steps.some(line => line.includes('Tilo’s tools are added to Claude Code'))) {
-  report.claudeConfiguration = (() => {
-    try { return readFileSync(join(computer, '.claude.json'), 'utf8'); } catch (error) { return `not read: ${error.message}`; }
-  })();
-  report.computer = (() => {
-    try { return readdirSync(computer).join(' '); } catch (error) { return `not read: ${error.message}`; }
-  })();
-  await fail(`the tab never showed Tilo's tools added, though the command confirmed them: ${JSON.stringify(steps)}`);
-}
-// The agent's own confirmation, as the prompt leaves it to run: the server is
-// in its configuration, and it answers.
-const checked = await tilo(['agent', 'check']);
+// The agent adds the server where its own configuration keeps servers, as
+// the login's words ask, then runs the check they name on that file.
+writeFileSync(agentConfiguration, `${JSON.stringify({mcpServers: {tilo: {type: 'stdio', command: tiloBin, args: ['mcp'], env: {}}}})}\n`);
+const checked = await tilo(['agent', 'check', '--config', agentConfiguration]);
 report.check = checked;
 if (checked.code !== 0) await fail(`tilo agent check did not confirm Tilo's server (${checked.code}): ${checked.stderr}${checked.stdout}`);
-if (!/is in .*\.claude\.json/.test(checked.stdout) || !/tilo_ls/.test(checked.stdout)) {
-  await fail(`tilo agent check did not say where the server is and what it answers: ${checked.stdout}`);
+if (!checked.stdout.includes(`holds the MCP server tilo`) || !/tilo_[a-z]+/.test(checked.stdout)) {
+  await fail(`tilo agent check did not say the file holds the server and what to call: ${checked.stdout}`);
+}
+const steps = await following;
+report.steps = steps;
+if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${JSON.stringify(steps)}`);
+// The tools the tab says are added are the ones the agent's check found in
+// its own configuration; a step the command did not report is never claimed.
+if (!steps.some(line => line.includes(`Tilo’s tools are added to ${agentName}`))) {
+  await fail(`the tab never showed Tilo's tools added, though the agent's check confirmed them: ${JSON.stringify(steps)}`);
 }
 
 // The screen leaves for the person's own workspace.
@@ -415,7 +376,7 @@ const ownWorkspace = `(() => {
 report.workspace = await until(first, ownWorkspace, "the person's own workspace drawn", stepLimit(2));
 mark('the agent logged in and the tab is in the person\'s own workspace');
 
-// The agent is present once its MCP server connects, as Claude Code starts it
+// The agent is present once its MCP server connects, as the agent starts it
 // once restarted, and what it does shows beside its name: one tool call, said
 // as the workspace says it ("Looking at the apps" for a look at its apps).
 // Who is here is live presence alone: the agent's own, on the workspace's
@@ -432,18 +393,18 @@ for (const line of [
   {jsonrpc: '2.0', method: 'notifications/initialized'},
   {jsonrpc: '2.0', id: 2, method: 'tools/call', params: {name: 'tilo_ls', arguments: {}}},
 ]) mcp.stdin.write(`${JSON.stringify(line)}\n`);
-const beside = `(() => { const row = (${peopleOf}).find(person => /Claude Code/.test(person.label ?? '')); return !!row && JSON.stringify(row).includes(${JSON.stringify(doing)}); })()`;
+const beside = `(() => { const row = (${peopleOf}).find(person => person.label?.includes(agentName)); return !!row && JSON.stringify(row).includes(${JSON.stringify(doing)}); })()`;
 // Its MCP server's own answers, on a failure: whether the tool call was
 // answered tells a slow presence from a call that never ran.
 if (!await first.waitFor(beside, {timeout: stepLimit(3)}).catch(() => false)) {
-  await fail(`Claude Code present, with "${doing}" beside its name never happened; its MCP server said: ${answers.slice(-1500) || 'nothing'}; the page: ${(await pageText(first)).slice(0, 400)}`);
+  await fail(`${agentName} present, with "${doing}" beside its name never happened; its MCP server said: ${answers.slice(-1500) || 'nothing'}; the page: ${(await pageText(first)).slice(0, 400)}`);
 }
 report.mcp = answers.slice(0, 2000);
 const signedUp = await person(first);
 mark('the agent is present beside its name');
 report.person = signedUp;
 
-// A second agent on the same computer (another Claude Code window, say) starts
+// A second agent on the same computer (another window of the same agent, say) starts
 // its own `tilo mcp` while the first stays connected: both are the one device
 // `tilo login` made, and neither cuts the other off. It does what the login's
 // words tell it to, and the person's tab shows the note it writes.
@@ -526,8 +487,8 @@ if (how !== 'presented') {
 // Who is here is what the workspace's page shows: on the page the server
 // renders, the workspace's people, read there; on a desktop, its mount.
 if (pageWorkspace) await first.navigate(`${site}/w/${pageWorkspace}`);
-await until(first, `(document.querySelector('#tilo-page .tilo-people')?.innerText ?? '').includes('Claude Code')`,
-  'Claude Code present in the workspace after a reload', stepLimit(2));
+await until(first, `(document.querySelector('#tilo-page .tilo-people')?.innerText ?? '').includes(${JSON.stringify(agentName)})`,
+  `${agentName} present in the workspace after a reload`, stepLimit(2));
 mcp.stdin.end();
 const after = await person(first);
 mark('the tab reloaded as the same person, with the agent still there');

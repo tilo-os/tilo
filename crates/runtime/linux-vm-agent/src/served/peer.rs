@@ -191,7 +191,7 @@ mod tests {
         std::fs::create_dir_all(root.join("self")).unwrap();
         process(root, 1, "init", 0, &[]);
         process(root, 100, "tilo-linux-vm-agent", 1, &[500, 501]);
-        process(root, 101, "claude", 100, &[]);
+        process(root, 101, "agent", 100, &[]);
         process(root, 102, "node (mcp) x", 101, &[777]);
         process(root, 200, "curl", 1, &[888]);
         let processes = Processes::at(root);

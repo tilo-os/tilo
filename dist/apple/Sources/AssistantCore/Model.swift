@@ -645,7 +645,7 @@ public struct SubAgent: Identifiable, Equatable, Sendable {
     /// What the main agent made it: "Coder". Empty until it has chosen.
     public var role: String
     public var state: State
-    /// What runs it and where: "Claude Code on the cloud machine".
+    /// Where it runs: "Your Tilo server".
     public var runsOn: String
     public var started: Date
     public var startedBy: Starter

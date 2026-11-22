@@ -7,8 +7,8 @@
 //! computer's one device key, dials the issuing device over the device action service
 //! (`tilo-actions/1`), and calls the certify action there with the secret and its key. Once the
 //! person approves, the answer is the certificate their root signed over this computer's key, with
-//! the workspace and the device to enter it through: the login keeps them, adds Tilo's tools to the
-//! agent and enters the workspace as the person. Nothing is asked of a web site.
+//! the workspace and the device to enter it through: the login keeps them and enters
+//! the workspace as the person, and tells the agent how to add Tilo's MCP server to itself. Nothing is asked of a web site.
 //!
 //! `tilo mcp` ([`crate::mcp`]) is the agent's MCP server over stdio, under the name `tilo`, acting
 //! as that device.
@@ -28,7 +28,7 @@ use tilo_server_client::LinkError;
 use tilo_session_client::Outbox as _;
 use tilo_session_client::device::Device as Entered;
 
-use crate::agent::{self, Agent, Tool};
+use crate::agent::{self, Agent};
 use crate::api::Client;
 pub(crate) use tilo_api::daemon::enter::{
     IROH_ONLY, LOGIN_ENDED, NOT_LOGGED_IN, TOO_OLD, UNREACHED, connect, debug_why, enter_said,
@@ -122,7 +122,7 @@ pub(crate) fn hostname() -> String {
         .unwrap_or_else(|| "this computer".to_owned())
 }
 
-/// `"Claude Code on build-box"`, the name this computer asks the server for,
+/// `"Reviewer on build-box"`, the name this computer asks the server for,
 /// which it keeps unless another device of the person reads by it, within
 /// what a certificate's label carries.
 #[must_use]
@@ -396,16 +396,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
             person.who()
         );
     }
-    let agent =
-        agent
-            .filter(|name| !name.trim().is_empty())
-            .map_or_else(agent::detect_here, |name| {
-                let named = agent::named(name);
-                agent::Agent {
-                    tool: named.tool.or_else(|| agent::detect_here().tool),
-                    ..named
-                }
-            });
+    let agent = agent::given(agent);
     let key = this_device_key()?;
     let label = label(&agent.name, &hostname());
     let cert = held_device_cert(&person, &key, &label)?;
@@ -455,25 +446,6 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
     entered_after_login(&runtime, &key, &device, &agent)
 }
 
-/// What became of Tilo's tools for the agent.
-#[derive(Debug, PartialEq, Eq)]
-enum Tools {
-    /// `tool` has them, in its own configuration, and they answer.
-    Added(Tool),
-    /// The agent adds them itself, where `tilo login` could not: what it
-    /// prints says how.
-    Yours,
-}
-
-/// How the person starts `tool` again with the conversation kept, since it
-/// reads its servers only as it starts.
-pub(crate) fn restart_of(tool: Tool) -> String {
-    tool.restart().map_or_else(
-        || format!("{} rereads its MCP servers as it runs.", tool.title()),
-        |restart| format!("Restart it with this conversation kept: {restart}."),
-    )
-}
-
 /// What the agent does once Tilo's tools are in: the one visible thing that
 /// tells the person, in their own tab, that it is there.
 pub(crate) fn first_act(agent: &Agent) -> String {
@@ -516,77 +488,22 @@ fn mcp_servers(tilo: &Path, http: Option<&str>) -> String {
 
 /// What `tilo login` prints last: what the agent does next, in order. `http` is the streamable
 /// HTTP MCP server that reaches the workspace, when one does ([`http_mcp`]).
-fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path, http: Option<&str>) -> String {
-    let checks = format!(
-        "Run `{} agent check`: it says whether Tilo's server is in you, and answers.",
-        tilo.display()
-    );
-    // The tool's own words for starting again, when Tilo knows the tool but
-    // could not write its configuration.
-    let restart_of_tool = match tools {
-        Tools::Yours => agent.tool.and_then(Tool::restart),
-        Tools::Added(_) => None,
-    };
-    let mut steps: Vec<String> = Vec::new();
-    match tools {
-        Tools::Added(tool) => {
-            if let Some(restart) = tool.restart() {
-                steps.push(format!(
-                    "Ask the person to restart {} with this conversation kept ({restart}): your \
-                     Tilo tools load when it starts, and this conversation is still here after.",
-                    agent.name
-                ));
-            }
-            steps.push(checks);
-        }
-        Tools::Yours => {
-            steps.push(format!(
-                "Add Tilo's MCP server to yourself, as the server tilo: {}. Put it where your own \
-                 MCP configuration keeps servers, beside the ones already there, with your own \
-                 tooling.",
-                mcp_servers(tilo, http)
-            ));
-            steps.push(format!(
-                "{checks} If your configuration is a file, `{} agent check --config <its path>` \
-                 has Tilo read it.",
-                tilo.display()
-            ));
-            steps.push(restart_of_tool.map_or_else(
-                || {
-                    "If your tools load only when you start, ask the person to restart you with \
-                     this conversation kept."
-                        .to_owned()
-                },
-                |restart| {
-                    format!(
-                        "If your tools load only when you start, ask the person to restart you \
-                         with this conversation kept ({restart})."
-                    )
-                },
-            ));
-        }
-    }
-    if let Tools::Added(tool) = tools
-        && let Some(approval) = tool.approval()
-    {
-        steps.push(format!(
-            "Let the server's tools run: {approval}, the way {} keeps servers it may use.",
-            agent.name
-        ));
-    }
-    // An editor runs other agents' prompts in its own terminal: the one
-    // reading this may be another of them, and adds the server itself.
-    if let Tools::Added(tool) = tools
-        && tool.hosts_agents()
-    {
-        steps.push(format!(
-            "If Tilo's tools are not in you — Tilo added them to {}'s configuration, and another \
-             agent may be the one the person's prompt reached — add them to yourself the same \
-             way: the server tilo, {}.",
-            tool.title(),
+fn next_steps(agent: &Agent, tilo: &Path, http: Option<&str>) -> String {
+    let mut steps: Vec<String> = vec![
+        format!(
+            "Add Tilo's MCP server to yourself, as the server tilo: {}. Put it where your own MCP \
+             configuration keeps servers, beside the ones already there, with your own tooling.",
             mcp_servers(tilo, http)
-        ));
-    }
+        ),
+        format!(
+            "Run `{tilo} agent check --config <its path>`: it says whether that file holds \
+             Tilo's server.",
+            tilo = tilo.display()
+        ),
+        "If your tools load only when you start, ask the person to restart you with this \
+         conversation kept."
+            .to_owned(),
+    ];
     steps.push(format!(
         "Call the tilo_ls tool to see what is in their workspace, and tell them what you can do \
          in Tilo: {WHAT_TILO_DOES}."
@@ -604,63 +521,6 @@ fn next_steps(agent: &Agent, tools: &Tools, tilo: &Path, http: Option<&str>) -> 
         .map(|(index, step)| format!("{}. {step}", index.saturating_add(1)))
         .collect();
     format!("Next, in order:\n{}", numbered.join("\n"))
-}
-
-/// Add Tilo's tools to `agent`, saying what became of them.
-fn add_tools(agent: &Agent, tilo: &Path, runner: &dyn agent::Runner) -> Tools {
-    let Some(tool) = agent.tool else {
-        return Tools::Yours;
-    };
-    if let agent::Registered::Failed(said) = agent::register(tool, tilo, runner) {
-        println!(
-            "Adding Tilo's tools to {} failed: {}",
-            agent.name,
-            said.lines().next().unwrap_or_default()
-        );
-    }
-    // What the tool's own configuration holds is what counts: a command
-    // saying it worked is not the same as the server being there, and
-    // answering.
-    match agent::verify(tool, runner) {
-        agent::Configured::Yes {
-            place, answered, ..
-        } => {
-            println!(
-                "Added Tilo's tools to {}: the MCP server {} in {place}, answering as {}.",
-                agent.name,
-                agent::SERVER,
-                answered.name
-            );
-            Tools::Added(tool)
-        }
-        agent::Configured::No { place } => {
-            println!(
-                "Tilo's tools are not in {} yet: {place} holds no server {}.",
-                agent.name,
-                agent::SERVER
-            );
-            Tools::Yours
-        }
-        agent::Configured::Unknown { why } => {
-            println!("Tilo could not confirm its tools in {}: {why}.", agent.name);
-            Tools::Yours
-        }
-    }
-}
-
-/// The agent `--agent` names, run by the tool found here, else the agent found here.
-pub(crate) fn agent_named(agent: Option<&str>) -> Agent {
-    // A name of its own (`--agent "Reviewer"`) is another agent of the person's than the one
-    // the tool goes by, run by the same tool: its tools are still added to it.
-    agent
-        .filter(|name| !name.trim().is_empty())
-        .map_or_else(agent::detect_here, |name| {
-            let named = agent::named(name);
-            agent::Agent {
-                tool: named.tool.or_else(|| agent::detect_here().tool),
-                ..named
-            }
-        })
 }
 
 /// What a string that is no ticket says.
@@ -681,7 +541,7 @@ fn not_a_ticket(text: &str) -> anyhow::Error {
 pub fn login(ticket: &str, agent: Option<&str>) -> Result<ExitCode> {
     crate::identity::convert_earlier()?;
     Ticket::parse(ticket).map_err(|_| not_a_ticket(ticket))?;
-    let agent = agent_named(agent);
+    let agent = agent::given(agent);
     let key = this_device_key()?;
     let login_place = Place::here(crate::identity::paths())?;
     let place = DaemonPlace::of(login_place.dir(), &key.verifying_key().to_bytes())
@@ -772,7 +632,6 @@ fn entered_after_login(
     agent: &Agent,
 ) -> Result<ExitCode> {
     let tilo = std::env::current_exe().context("finding this program")?;
-    let tools = add_tools(agent, &tilo, &agent::System);
     let place = format!(
         "{} on {}",
         device.workspace_name.as_deref().unwrap_or("the workspace"),
@@ -806,7 +665,7 @@ fn entered_after_login(
     println!();
     println!(
         "{}",
-        next_steps(agent, &tools, &tilo, http_mcp(device).as_deref())
+        next_steps(agent, &tilo, http_mcp(device).as_deref())
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -929,13 +788,13 @@ mod tests {
     fn device() -> (SigningKey, SigningKey, Device) {
         let root = SigningKey::from_bytes(&[3; 32]);
         let key = SigningKey::from_bytes(&[7; 32]);
-        let cert = certified_for_test(&root, &key, "Claude Code on build-box");
+        let cert = certified_for_test(&root, &key, "Reviewer on build-box");
         let device = Device {
             site: "https://tilo.sh/".into(),
             host_origin: "https://eu1.tilo.sh".into(),
             workspace: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0".into(),
             workspace_name: Some("Studio".into()),
-            agent: "Claude Code".into(),
+            agent: "Reviewer".into(),
             server_cert: certified_for_test(&root, &root, "eu1.tilo.sh"),
             cert,
             server_address: None,
@@ -1037,7 +896,7 @@ mod tests {
             // A certificate for a key this computer no longer has asks for a new login.
             let other = SigningKey::from_bytes(&[8; 32]);
             let stale = Device {
-                cert: certified_for_test(&root, &other, "Claude Code on build-box"),
+                cert: certified_for_test(&root, &other, "Reviewer on build-box"),
                 ..device
             };
             tilo_device_identity::persist::write_device_cert(
@@ -1055,8 +914,8 @@ mod tests {
         phase a_label_names_the_agent_and_the_computer_within_bounds;
         {
             assert_eq!(
-                label("Claude Code", "build-box"),
-                "Claude Code on build-box"
+                label("Reviewer", "build-box"),
+                "Reviewer on build-box"
             );
         }
     }
@@ -1110,81 +969,37 @@ mod tests {
     tilo_test_env::scenario! {
         fn the_agent_is_told_its_next_steps;
 
-        phase the_agent_is_told_what_to_do_next_in_its_own_terms;
-        // A tool's own servers load only as it starts: the agent asks the person
-        // to restart it, and says what it does after.
+        phase the_agent_is_told_to_add_the_server_itself;
+        // Every agent adds Tilo's server to its own configuration, checks it, and says what
+        // it does after.
         {
             let tilo = Path::new("/home/me/.local/bin/tilo");
-            let claude = agent::named("claude");
-            let next = next_steps(&claude, &Tools::Added(Tool::Claude), tilo, Some(agent::MCP_URL));
+            let other = agent::named("Reviewer");
+            let next = next_steps(&other, tilo, Some(agent::MCP_URL));
             let steps: Vec<&str> = next.lines().collect();
             assert_eq!(steps[0], "Next, in order:");
-            assert_eq!(
-                steps[1],
-                "1. Ask the person to restart Claude Code with this conversation kept (/exit, then \
-             `claude --continue`): your Tilo tools load when it starts, and this conversation is \
-             still here after."
-            );
-            assert_eq!(
-                steps[2],
-                "2. Run `/home/me/.local/bin/tilo agent check`: it says whether Tilo's server is in \
-             you, and answers."
-            );
-            assert!(steps[3].starts_with("3. Call the tilo_ls tool"), "{next}");
             assert!(
-                steps[4].contains("\"path\": \"notes#open\"")
-                    && steps[4].contains("\"title\": \"Hello from Claude Code\""),
-                "the agent does one thing the person sees: {next}"
-            );
-        }
-
-        phase an_agent_that_reads_its_servers_while_it_runs_is_not_told_to_restart;
-        // A tool whose servers are there as it runs is not asked to restart; one
-        // Tilo could not write for is told to add the server itself.
-        {
-            let tilo = Path::new("/home/me/.local/bin/tilo");
-            let cursor = agent::named("cursor");
-            let next = next_steps(&cursor, &Tools::Added(Tool::Cursor), tilo, Some(agent::MCP_URL));
-            assert!(!next.contains("restart"), "{next}");
-            // Cursor holds a server's tools back until it is told to let it run.
-            assert!(next.contains("run `agent mcp enable tilo`"), "{next}");
-            // An editor's terminal runs other agents too: this one is told how to
-            // add the server itself if the prompt reached it instead.
-            assert!(
-                next.contains("another agent may be the one the person's prompt reached"),
-                "{next}"
-            );
-            assert!(next.contains("https://mcp.tilo.sh"), "{next}");
-            // Claude Code is not such an editor: nothing hedges its steps.
-            assert!(
-                !next_steps(
-                    &agent::named("claude"),
-                    &Tools::Added(Tool::Claude),
-                    tilo,
-                    Some(agent::MCP_URL)
-                )
-                    .contains("another agent may be the one"),
-                "only an editor's steps say another agent may be reading them"
-            );
-            assert!(
-                next.contains("1. Run `/home/me/.local/bin/tilo agent check`"),
-                "{next}"
-            );
-            let other = agent::named("Your agent");
-            let next = next_steps(&other, &Tools::Yours, tilo, Some(agent::MCP_URL));
-            assert!(
-                next.contains(
+                steps[1].starts_with(
                     "1. Add Tilo's MCP server to yourself, as the server tilo: the stdio server \
                  /home/me/.local/bin/tilo with the argument mcp, or the streamable HTTP server \
                  https://mcp.tilo.sh"
                 ),
                 "{next}"
             );
-            assert!(next.contains("agent check --config"), "{next}");
-            assert!(next.contains("Call the tilo_ls tool"), "{next}");
+            assert!(
+                steps[2].starts_with("2. Run `/home/me/.local/bin/tilo agent check --config"),
+                "{next}"
+            );
+            assert!(steps[3].contains("restart you"), "{next}");
+            assert!(steps[4].starts_with("4. Call the tilo_ls tool"), "{next}");
+            assert!(
+                steps[5].contains("\"path\": \"notes#open\"")
+                    && steps[5].contains("\"title\": \"Hello from Reviewer\""),
+                "the agent does one thing the person sees: {next}"
+            );
             // A workspace no HTTP server reaches (one on a company's own server, joined over
             // iroh) is offered the stdio server alone.
-            let elsewhere = next_steps(&other, &Tools::Yours, tilo, None);
+            let elsewhere = next_steps(&other, tilo, None);
             assert!(
                 elsewhere.contains(
                     "the stdio server /home/me/.local/bin/tilo with the argument mcp. Put it"
@@ -1198,10 +1013,10 @@ mod tests {
         // What the agent's own check says once the server is in: the one visible
         // thing it does for the person.
         {
-            let said = first_act(&agent::named("codex"));
+            let said = first_act(&agent::named("Scout"));
             assert!(said.starts_with("Start with the tilo_ls tool"), "{said}");
             assert!(said.contains("notes#new-note"), "{said}");
-            assert!(said.contains("Hello from Codex"), "{said}");
+            assert!(said.contains("Hello from Scout"), "{said}");
         }
     }
 }

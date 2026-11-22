@@ -2657,10 +2657,9 @@ EOF
     printf '%s\n' '# No key yet: eval "$(stack.sh owner --here)" makes an owner and one.'
   fi
   cat <<EOF
-# An agent's MCP client, e.g. Claude Code:
-#   claude mcp add --transport http tilo-local $api_origin/mcp
-# a one-workspace key's MCP: $api_origin/w/<workspace>/mcp with
-#   --header "Authorization: Bearer <token>"
+# An agent's MCP client: the streamable HTTP server $api_origin/mcp;
+# a one-workspace key's MCP: $api_origin/w/<workspace>/mcp with the header
+#   "Authorization: Bearer <token>"
 EOF
 }
 

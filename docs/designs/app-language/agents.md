@@ -64,10 +64,10 @@ opens them. The task host is not an app, so it gets its own admission instead of
   it (`Caller::local_agent(agent).acting_for(person)`; `BrokerActor` agent for person, never
   session-delegated, so no preset widens it). The task host's only connection is its program
   connection to the server: it holds no app's route, no broker connection and publishes nothing.
-  Each connection the person admits is an agent of its own (`claude-code@dev#2`: the client,
+  Each connection the person admits is an agent of its own (`reviewer@dev#2`: the client,
   the environment it works from or `host`, an instance), so two sessions of one program are
   two authors; a program in a confined environment comes in by that environment's own socket and
-  works in its workspace ([environments.md, "Coding agents"](../../app-model/environments.md#coding-agents)).
+  works in its workspace ([environments.md, "Agents in an environment"](../../app-model/environments.md#agents-in-an-environment)).
 - **Reads, per resource.** The task host asks the MCP server for each resource it reads, once per
   program (`{"resource": {app, resource}}`; the person's own document for an app with
   `resources: .own`). The server answers for every app whose package the session runs: a tilolang

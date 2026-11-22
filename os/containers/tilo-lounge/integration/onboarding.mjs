@@ -15,7 +15,7 @@
 //      address from the workspace's own wait list, which mails the invitation;
 //   3. the stranger follows the invitation's link and joins; the workspace
 //      opens, and the setup offered inside it sets Tilo up through their
-//      agent (`tilo login`, which adds Tilo's MCP server) in that workspace;
+//      agent (`tilo login`, then the agent adds Tilo's MCP server) in that workspace;
 //   3b. the same person on a browser new to the site signs in with their
 //      agent: the entry's wait list offers it, and the computer `tilo login`
 //      set up is a device of theirs, which signs the new tab in;
@@ -359,37 +359,15 @@ const addOwner = async user => {
   execFileSync('bash', [stack, 'owner', user], {stdio: ['ignore', 'inherit', 'inherit']});
 };
 
-// The agent's computer: its own home, a `claude` that records what the command
-// asked it and writes the server where a real one would, and the test
-// certificate the command trusts for this run's site.
+// The agent's computer: its own home, the MCP configuration the agent keeps
+// there, and the test certificate the command trusts for this run's site.
 mkdirSync(join(computer, 'bin'), {recursive: true});
-const claudeCalls = join(computer, 'claude-calls.txt');
-writeFileSync(join(computer, 'bin', 'claude'), `#!/bin/sh
-printf '%s\\n' "$*" >> '${claudeCalls}'
-[ "$1 $2" = "mcp add" ] || exit 0
-shift 2
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --scope|-s) shift 2 ;;
-    --*) shift ;;
-    *) break ;;
-  esac
-done
-name=$1; shift
-[ "$1" = "--" ] && shift
-command=$1; shift
-args=
-for arg in "$@"; do args="$args\\"$arg\\","; done
-printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}}}\\n' \\
-  "$name" "$command" "\${args%,}" > "$HOME/.claude.json"
-`);
-chmodSync(join(computer, 'bin', 'claude'), 0o755);
+const agentConfiguration = join(computer, 'agent-mcp.json');
 const agentEnv = async () => ({
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
-  CLAUDECODE: '1',
 });
 const tilo = async (env, args) => new Promise(resolve => {
   execFile(tiloBin, args, {env, timeout: 180_000, maxBuffer: 1 << 20},
@@ -633,10 +611,13 @@ try {
   const login = await tilo(env, ['login', setup.code, '--site', setup.site ?? site]);
   report.login = login;
   if (login.code !== 0) await fail(`tilo login failed (${login.code}): ${login.stderr}${login.stdout}`);
-  const registered = (() => { try { return readFileSync(claudeCalls, 'utf8'); } catch { return ''; } })();
-  report.claude = registered;
-  if (!/mcp add .*tilo .*-- \S*tilo mcp/.test(registered)) await fail(`tilo login did not add its MCP server to the agent: ${registered || 'never asked'}`);
-  console.log('ok: tilo login ran and added Tilo’s MCP server to the agent');
+  // The agent adds Tilo's server to its own configuration, as the login's
+  // words ask, and confirms it: the setup leaves only once it has.
+  writeFileSync(agentConfiguration, `${JSON.stringify({mcpServers: {tilo: {type: 'stdio', command: tiloBin, args: ['mcp'], env: {}}}})}\n`);
+  const checked = await tilo(env, ['agent', 'check', '--config', agentConfiguration]);
+  report.check = checked;
+  if (checked.code !== 0) await fail(`tilo agent check did not confirm Tilo's server (${checked.code}): ${checked.stderr}${checked.stdout}`);
+  console.log('ok: tilo login ran and the agent confirmed Tilo’s MCP server in its configuration');
   await until(stranger.tab, `!${firstScreenShown}`, 'the first screen leaving', stepLimit(4));
   const still = JSON.parse(await until(stranger.tab, `(() => {
     const root = document.documentElement;

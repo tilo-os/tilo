@@ -1,4 +1,4 @@
-//! Connect: the one line that connects an MCP client to the person's workspaces, and every
+//! Connect: where an MCP client reaches the person's workspaces, and every
 //! agent the MCP server let in, with Revoke.
 
 use ui::framework::ReadFailure;
@@ -9,14 +9,6 @@ use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ButtonRole, ChipStyle, ListRow, Property, PropertyList, Section};
 
 use crate::{Console, Reads, Resources, ago, faced, page, tr, trf};
-
-const fn client_label(client: mcp_server::Client) -> &'static str {
-    match client {
-        mcp_server::Client::ClaudeCode => "console-client-claude-code",
-        mcp_server::Client::Codex => "console-client-codex",
-        mcp_server::Client::Other => "console-client-other",
-    }
-}
 
 pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
     let resources = Resources::of(cx);
@@ -43,7 +35,7 @@ fn set_up(resources: &Resources) -> Element {
     ])
 }
 
-/// The commands that connect an agent to the MCP server, and every agent it let in.
+/// Where an agent reaches the MCP server, and every agent it let in.
 fn connected(
     cx: &ViewCx<Console>,
     resources: &Resources,
@@ -51,14 +43,20 @@ fn connected(
 ) -> Element {
     let resources = resources.clone();
     Box::new(cx.arriving(answer, move |_, server| {
-        let commands = mcp_server::Client::ALL
-            .into_iter()
-            .map(|client| {
-                Property::new(tr(client_label(client)), client.command(&server.endpoint))
-                    .with_kind(ui::text_render::TextKind::Code)
-                    .copyable()
-            })
-            .collect();
+        let commands = [
+            ("console-client-url", server.endpoint.clone()),
+            (
+                "console-client-other",
+                mcp_server::client_config(&server.endpoint),
+            ),
+        ]
+        .into_iter()
+        .map(|(label, value)| {
+            Property::new(tr(label), value)
+                .with_kind(ui::text_render::TextKind::Code)
+                .copyable()
+        })
+        .collect();
         let mut parts: Vec<Element> = vec![
             Box::new(Text::new(&tr("console-connect-lead"))),
             Box::new(Section::titled(

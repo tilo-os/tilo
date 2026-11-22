@@ -558,7 +558,6 @@ The copies:
 | `tilo-app` `framework/` (`ResourceApp`, `Dispatcher<R>`, `ViewCx`, `ResourceSurface`) after the Rust apps port | ~62,000 |
 | The Rust apps, each replaced by its tilolang port in the same push | ~900k of 1.28M; the rest becomes engine crates |
 | The Rust shell, replaced by `apps/tl/shell` | ~140,000 |
-| `tilo-server` `coding_agents` (a Claude Code harness) and every other path written for one outside agent (`claude`/`anthropic` outside the model-provider entry), once the Tilo agent does their job | ~4,000 plus what the sweep finds |
 
 This is the largest piece by far. A port lands together with the deletion of
 the Rust app, after a side-by-side walk of the first hour of use, and gaps

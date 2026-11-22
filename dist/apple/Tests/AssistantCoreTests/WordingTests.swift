@@ -31,7 +31,7 @@ final class WordingTests: XCTestCase {
             "Coder · working", "Researcher · needs you", "Researcher · working", "Researcher · done yesterday",
         ])
         XCTAssertEqual(wording.header(Drawing.subAgents[0]),
-                       "Coder · Claude Code on the cloud machine · started 9:20 by the main agent · it cannot read the main chat")
+                       "Coder · The cloud machine · started 9:20 by the main agent · it cannot read the main chat")
         // One the main agent has not given a role yet says only how it stands.
         let fresh = SubAgent(id: "new", title: "Job", started: Drawing.now, startedBy: .person)
         XCTAssertEqual(wording.sidebarLine(fresh), "working")

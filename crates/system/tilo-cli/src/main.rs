@@ -380,13 +380,13 @@ enum Cmd {
         json: bool,
         /// Which of your agents runs here, by the name your workspace shows
         /// it under: every computer logged in under one name is one agent,
-        /// with its history; another name is another agent. Found by itself
-        /// when not given (Claude Code, Codex, Gemini CLI, ...).
+        /// with its history; another name is another agent. "Your agent"
+        /// when not given.
         #[arg(long)]
         agent: Option<String>,
     },
     /// Tilo's MCP server over stdio, for the agent on this computer
-    /// (`tilo agent connect` adds it).
+    /// (an agent adds it to its own MCP configuration).
     Mcp,
     /// Your workspaces' synced folders on this computer: each workspace's
     /// one folder, at ~/<workspace> unless moved (`tilo login` adds the first).
@@ -660,7 +660,7 @@ fn command_here(here: Here) -> clap::Command {
                 // its migrations land through that login (a desktop has its
                 // own, in its setup).
                 "login" | "folders" | "migrate" => here.desktop || (here.has)(agent::MCP_SERVER),
-                // Started by agent tools (`tilo agent connect`), not typed.
+                // Started by agent tools, not typed.
                 "mcp" => true,
                 _ => return sub,
             };
@@ -734,13 +734,12 @@ fn device_examples(here: Here) -> String {
 
 fn agent_here(agent: clap::Command, here: Here) -> clap::Command {
     agent
-        .mut_subcommand("connect", |sub| {
-            sub.hide(!((here.has)(agent::MCP_SERVER) || login::logged_in()))
-        })
         .mut_subcommand("models", |sub| sub.hide(!(here.has)(agent::MODELS)))
         // Checking says whether Tilo's server is in the agent, which only a
-        // computer logged in to the person's workspace has one of.
-        .mut_subcommand("check", |sub| sub.hide(!login::logged_in()))
+        // desktop or a computer logged in to the person's workspace has one of.
+        .mut_subcommand("check", |sub| {
+            sub.hide(!((here.has)(agent::MCP_SERVER) || login::logged_in()))
+        })
 }
 
 /// The examples under `tilo --help`: real commands, only ones that work here.
@@ -768,12 +767,6 @@ fn examples(here: Here) -> String {
     }
     if here.apps || here.system {
         lines.push(("tilo update", "Update apps and this device"));
-    }
-    if (here.has)(agent::MCP_SERVER) {
-        lines.push((
-            "tilo agent connect claude",
-            "Let Claude Code act on this desktop",
-        ));
     }
     if nouns::any_present(nouns::PACKAGE, here.has) {
         lines.push(("tilo package pack", "Make a package of your app"));
@@ -2573,7 +2566,6 @@ mod tests {
                     "  tilo status                       What runs on this device\n",
                     "  tilo device update                Move onto the newest system\n",
                     "  tilo update                       Update apps and this device\n",
-                    "  tilo agent connect claude         Let Claude Code act on this desktop\n",
                     "  tilo package pack                 Make a package of your app\n",
                     "  tilo keys create \"Visa backend\"   A key for your own backend: you approve it in your Tilo\n",
                     "  tilo workspace create \"Jane Doe\"  A hosted workspace, one per customer\n",

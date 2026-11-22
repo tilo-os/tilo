@@ -254,12 +254,12 @@ mod tests {
 
         phase the_launchers_arguments_name_its_endpoints_then_the_program;
         {
-            let program = vec!["claude".to_owned(), "-p".to_owned(), "--".to_owned()];
+            let program = vec!["agent".to_owned(), "-p".to_owned(), "--".to_owned()];
             assert_eq!(
                 arguments(&["model", "tilo"], Duration::from_millis(2500), &program),
                 [
                     "serve-run", "--endpoint", "model", "--endpoint", "tilo", "--stop-grace-ms",
-                    "2500", "--", "claude", "-p", "--"
+                    "2500", "--", "agent", "-p", "--"
                 ]
             );
             assert_eq!(placeholder("model"), "{endpoint:model}");
@@ -272,7 +272,7 @@ mod tests {
             for header in ["authorization", "x-api-key", "cookie", "proxy-authorization"] {
                 assert!(stays_behind(header), "{header}");
             }
-            for header in ["content-type", "anthropic-version", "accept", "mcp-session-id"] {
+            for header in ["content-type", "user-agent", "accept", "mcp-session-id"] {
                 assert!(!stays_behind(header), "{header}");
             }
         }

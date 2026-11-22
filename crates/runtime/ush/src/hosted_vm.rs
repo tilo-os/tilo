@@ -20,8 +20,8 @@
 //! travel to the VM's agent in the launch alone. It also records who the run is for, a person
 //! or an agent, as git's author and committer ([`HostedPrograms::carrying_identity`]).
 //!
-//! Its `~` is the workspace's files, the folder the shell's `~` names, so what a program or a
-//! coding agent writes there is the workspace's, versioned and bounded by its grant. What is the
+//! Its `~` is the workspace's files, the folder the shell's `~` names, so what a program
+//! writes there is the workspace's, versioned and bounded by its grant. What is the
 //! machine's rather than the workspace's stays on the VM's own disk, in the tenant's folders
 //! there (`/home/tilo`), and a run moves neither ([`HostedPrograms::machine_environment`]).
 //!
@@ -266,13 +266,15 @@ impl HostedPrograms {
     /// set is kept.
     fn own_programs(&self, env: &mut Vec<(String, String)>) {
         let bin = format!("{}/.local/bin", self.home.display());
-        let path = env
-            .iter()
-            .position(|(name, _)| name == "PATH")
-            .map(|at| env.remove(at).1)
-            .unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".to_owned());
+        let path = env.iter().position(|(name, _)| name == "PATH").map_or_else(
+            || "/usr/local/bin:/usr/bin:/bin".to_owned(),
+            |at| env.remove(at).1,
+        );
         let rest = path.split(':').filter(|dir| !dir.is_empty() && *dir != bin);
-        let path = std::iter::once(bin.as_str()).chain(rest).collect::<Vec<_>>().join(":");
+        let path = std::iter::once(bin.as_str())
+            .chain(rest)
+            .collect::<Vec<_>>()
+            .join(":");
         env.push(("PATH".to_owned(), path));
         if !env.iter().any(|(name, _)| name == "NPM_CONFIG_PREFIX") {
             env.push((
@@ -1523,7 +1525,10 @@ print("answered " + s.makefile("rb").readline().decode().strip(), flush=True)
         assert_eq!(get("CARGO_TARGET_DIR"), Some("/var/tmp/tilo/target".into()));
         assert_eq!(
             get("PATH"),
-            Some(format!("{}/.local/bin:/usr/local/bin:/usr/bin:/bin", files.display())),
+            Some(format!(
+                "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+                files.display()
+            )),
             "what the person installed in `~` comes first"
         );
         assert_eq!(

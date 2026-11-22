@@ -40,89 +40,19 @@ pub fn desktop_server() -> io::Result<Option<PathBuf>> {
 }
 
 /// What the agent's harness calls this session ([`SESSION_NAME`]), when it calls it anything: the
-/// name a person or harness set for it (`T_SESSION_NAME`, as a session is named), else the title
-/// Claude Code keeps for its session in the file it writes for the process
-/// (`<config>/sessions/<pid>.json`), which its own interface shows. `None` when neither says: the
-/// agent is then shown by its product's name.
-///
-/// The file is read for this process's nearest ancestor that has one, so a `tilo mcp` started by
-/// an agent is that agent's session, and an agent started from its commands is its own (Claude
-/// Code writes its file anew, with the session it holds after `/clear` too).
+/// name a person or harness set for it in `T_SESSION_NAME`, as a session is named. `None` when
+/// none is set: the agent is then shown by its product's name.
 #[must_use]
 pub fn session_name() -> Option<String> {
     session_name_in(&|name| std::env::var(name).ok())
 }
 
-/// [`session_name`], from the environment `var` reads and this process's ancestors.
+/// [`session_name`], from the environment `var` reads.
 fn session_name_in(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
-    let named = var("T_SESSION_NAME")
+    let name = var("T_SESSION_NAME")
         .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty());
-    let name = named.or_else(|| fallback_name(var))?;
+        .filter(|name| !name.is_empty())?;
     Some(name.chars().take(MAX_SESSION_NAME).collect())
-}
-
-/// The title Claude Code gives this session, when `T_SESSION_NAME` named none: the name in its
-/// file for the nearest ancestor, if that file has one yet.
-fn fallback_name(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
-    let config = var("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from(var("HOME")?).join(".claude")))?;
-    let ancestors = ancestor_pids(std::os::unix::process::parent_id);
-    claude_title(&config.join("sessions"), ancestors)
-}
-
-/// The session title Claude Code's file for the nearest of `pids` in `sessions` holds. The
-/// nearest file is the agent's, whether or not it has named its session yet: a file under it is
-/// another agent's.
-fn claude_title(sessions: &Path, pids: impl IntoIterator<Item = u32>) -> Option<String> {
-    let text = pids
-        .into_iter()
-        .find_map(|pid| std::fs::read_to_string(sessions.join(format!("{pid}.json"))).ok())?;
-    title_in(&text)
-}
-
-/// What one of Claude Code's session files says the session is called: its `name`, when it has one
-/// yet (Claude Code names a session after its first exchange, and renames it as the work moves on).
-fn title_in(text: &str) -> Option<String> {
-    let file: serde_json::Value = serde_json::from_str(text).ok()?;
-    let name = file.get("name")?.as_str()?.trim();
-    (!name.is_empty()).then(|| name.to_owned())
-}
-
-/// This process's ancestors' pids, nearest first, as far as the platform can say them.
-#[cfg(target_os = "linux")]
-fn ancestor_pids(mut parent: impl FnMut() -> u32) -> Vec<u32> {
-    /// How far up the process tree to look for the agent that started this one.
-    const ANCESTORS: usize = 16;
-    let mut found = Vec::new();
-    let mut pid = parent();
-    while pid > 1 && found.len() < ANCESTORS {
-        found.push(pid);
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            break;
-        };
-        // `pid (comm) state ppid …`: the name may hold whitespace and parentheses.
-        let Some(next) = stat
-            .rsplit_once(')')
-            .and_then(|(_, rest)| rest.split_whitespace().nth(1))
-            .and_then(|ppid| ppid.parse().ok())
-        else {
-            break;
-        };
-        if next == pid {
-            break;
-        }
-        pid = next;
-    }
-    found
-}
-
-/// Elsewhere only the direct parent is read: nothing here walks another platform's process tree.
-#[cfg(not(target_os = "linux"))]
-fn ancestor_pids(mut parent: impl FnMut() -> u32) -> Vec<u32> {
-    let pid = parent();
-    (pid > 1).then_some(pid).into_iter().collect()
 }
 
 /// Bridge this process's stdio to the desktop's MCP server at `server`, whose `initialize` also
@@ -965,9 +895,7 @@ mod tests {
     }
 
     /// The session's name is what its harness calls it: `T_SESSION_NAME` when one is set (the way
-    /// a session is named), else the title Claude Code keeps for it in the file it writes for the
-    /// process, which is what its thread shows. A file with no name yet, or one that is no file
-    /// of Claude Code's, names nothing: the agent is then shown by its product.
+    /// a session is named). None set names nothing: the agent is then shown by its product.
     #[test]
     fn a_sessions_name_comes_from_its_harness() {
         let named = |vars: &'static [(&'static str, &'static str)]| {
@@ -982,19 +910,12 @@ mod tests {
             Some("Office Hours"),
             "the name a harness set wins, trimmed"
         );
-        let file = r#"{"pid":7,"sessionId":"8e41","name":"Office Hours","nameSource":"auto"}"#;
-        assert_eq!(title_in(file).as_deref(), Some("Office Hours"));
         assert_eq!(
-            title_in(r#"{"pid":7,"sessionId":"8e41"}"#),
-            None,
-            "unnamed yet"
-        );
-        assert_eq!(
-            title_in(r#"{"name":"  "}"#),
+            named(&[("T_SESSION_NAME", "  ")]),
             None,
             "a blank name names nothing"
         );
-        assert_eq!(title_in("not JSON"), None);
+        assert_eq!(named(&[]), None);
     }
 
     tilo_test_env::scenario! {

@@ -1097,16 +1097,6 @@ public final class TiloSource: AssistantSource {
         ChatConversation.direct([ChatMember(namesKinds ? .person : nil, id: person), ChatMember(namesKinds ? .agent : nil, id: agent)])
     }
 
-    /// Where a sub-agent works, in words a person reads, as the assistant view tells the two
-    /// places apart: a server keeps a coding part for a sub-agent exactly where a coding
-    /// program does the work in the workspace's machine, with what that program is called.
-    /// Every other sub-agent is worked by the person's server itself.
-    static func place(of sub: JSON) -> String {
-        guard let coding = sub["coding"], !coding.isNull else { return AssistantWords.worksOnServer.said }
-        let program = coding["harness_name"]?.string ?? ""
-        return program.isEmpty ? AssistantWords.worksOnMachine.said : AssistantWords.worksOnMachineWith.said(["program": program])
-    }
-
     /// An enum's case, however the read spells it: the bare word, or `{"$variant": word}`.
     private static func variant(_ value: JSON?) -> String? {
         value?.string ?? value?["$variant"]?.string
@@ -2316,7 +2306,7 @@ public final class TiloSource: AssistantSource {
             let since = sub["since"]?.number.map { Date(timeIntervalSince1970: $0 / 1000) }
             listed.append(SubAgent(
                 id: .init(id), title: agent["name"]?.string ?? id, role: sub["role"]?.string ?? "", state: state,
-                runsOn: TiloSource.place(of: sub),
+                runsOn: AssistantWords.worksOnServer.said,
                 started: Date(timeIntervalSince1970: (agent["created_at"]?.number ?? 0) / 1000),
                 startedBy: sub["started_by"]?.string == assistant ? .mainAgent : .person,
                 finished: state == .done ? since : nil))

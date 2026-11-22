@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Claude Code, as far as an MCP server can tell, run on a Tilo box by the e2e-remote harness.
+"""An agent, as far as an MCP server can tell, run on a Tilo box by the e2e-remote harness.
 
     agent.py SCENARIO
 
-It spawns the server command `E2E_CMD` names (a JSON list, base64-encoded: what
-`tilo agent connect claude [--device NAME]` registered with `claude mcp add`), speaks
-newline-delimited JSON-RPC over its stdio with clientInfo `claude-code`, as Claude Code does,
+It spawns the server command `E2E_CMD` names (a JSON list, base64-encoded: the server an
+agent adds, `tilo-runtime --connect [--device NAME]`), speaks newline-delimited JSON-RPC
+over its stdio with clientInfo `reviewer`, as an agent does,
 and prints one line, `E2E-MCP <json>`, with everything it saw. It judges nothing: the harness
 reads the transcript. Python standard library only (the guest image's).
 
@@ -41,7 +41,7 @@ import tempfile
 import time
 
 PROTOCOL = "2025-06-18"
-CLIENT = {"name": "claude-code", "version": "2.1.0"}
+CLIENT = {"name": "reviewer", "version": "2.1.0"}
 INITIALIZE_S = float(os.environ.get("E2E_INITIALIZE_S", "120"))
 CALL_S = float(os.environ.get("E2E_CALL_S", "60"))
 WAIT_S = float(os.environ.get("E2E_WAIT_S", "60"))

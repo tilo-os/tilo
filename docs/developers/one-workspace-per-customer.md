@@ -278,11 +278,13 @@ then on). To act as a person of your own instead, open the administrator link `s
 
 ## What the agent's key reaches
 
-Hand the agent its MCP URL and token. Any MCP client connects with them. For example, with Claude Code:
+Hand the agent its MCP URL and token. Any MCP client connects with them: the streamable HTTP server
+`https://mcp.tilo.sh/w/<workspace>/mcp`, with the header `Authorization: Bearer <token>`. In a JSON MCP
+configuration:
 
-```sh
-claude mcp add --transport http jane https://mcp.tilo.sh/w/<workspace>/mcp \
-  --header "Authorization: Bearer <token>"
+```json
+{"mcpServers": {"jane": {"type": "http", "url": "https://mcp.tilo.sh/w/<workspace>/mcp",
+  "headers": {"Authorization": "Bearer <token>"}}}}
 ```
 
 The agent sees that one workspace's apps through the same tools a person's agent gets: `tilo_ls`,

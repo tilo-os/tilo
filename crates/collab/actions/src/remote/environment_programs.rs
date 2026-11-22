@@ -2,10 +2,11 @@
 //! member device that takes the workspace's work (`docs/app-model/environments.md`,
 //! "Members that take work").
 //!
-//! A coding agent's program needs what only the server may hold: its person's model and the
-//! workspace's actions. Where the workspace's machine is on another computer than the
-//! server, the server asks that computer's member device to start the program there, and
-//! carries its frames both ways over the device action service, as the device it is:
+//! A program that needs what only the server may hold, such as its person's model and the
+//! workspace's actions, is served from there. Where the workspace's machine is on another
+//! computer than the server, the server asks that computer's member device to start the
+//! program there, and carries its frames both ways over the device action service, as the
+//! device it is:
 //!
 //! - [`serve_target`] starts one: the argument is a [`ServeProgram`]. The invocation lasts as
 //!   long as the program does. Each [`InvocationUpdate::Item`](crate::InvocationUpdate) is a
