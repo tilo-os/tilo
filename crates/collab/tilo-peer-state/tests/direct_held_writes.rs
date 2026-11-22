@@ -17,7 +17,7 @@ use iroh::protocol::Router;
 use neighbour_wire::{NeighbourMsg, peer_handle};
 use std::sync::Arc;
 use std::time::Duration;
-use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Heard, Serving};
+use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Heard, Kept, Serving};
 use tilo_peer_state::store::{Appetite, Frame, Store};
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -270,4 +270,71 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     router.shutdown().await.unwrap();
     host_endpoint.close().await;
     b_endpoint.close().await;
+}
+
+/// A member's frame whose signature no longer matches what it signed is
+/// refused at admission: the engine decides nothing it carries, and the store
+/// keeps none of it. The store's own keep finds it unsigned too
+/// (`retained::Frame::of`), but only after the engine has already decided it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_frame_not_signed_by_its_author_is_refused_at_admission() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let (host_key, server_cert) =
+        crate::common::device_with(&root, 2, DeviceCapabilities::member());
+    let (b_key, b_cert) = device(&root, 3);
+    let now = SystemTime::now();
+    let devices = vec![server_cert.clone(), b_cert.clone()];
+    let mut govern = StatePeer::new(
+        WORKSPACE,
+        server_cert.clone(),
+        devices.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    govern.select_exact_admissions().unwrap();
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "value", "from the host").unwrap();
+    document.commit_edit("fixture", "value");
+    govern
+        .install_seed(
+            SeedState {
+                workspace_changes: seed_workspace(WORKSPACE, &server_cert, &devices).unwrap(),
+                documents: vec![SeedDocument {
+                    app_id: APP.into(),
+                    document_id: RECORD.into(),
+                    kind: "test".into(),
+                    bytes: document.save(),
+                }],
+            },
+            &host_key,
+            now,
+        )
+        .unwrap();
+    let host = DirectSync::over(
+        tilo_peer_state::direct::Replica::new(govern),
+        host_key.clone(),
+    );
+
+    // A member's own write, its signature scrambled after it was signed.
+    let mut author = host.read(Clone::clone);
+    let mut forged = write(&mut author, &b_key, "forged", "value");
+    let NeighbourMsg::AppDocument { envelope, .. } = &mut forged else {
+        panic!("a write is a document frame");
+    };
+    envelope.signature.0[0] ^= 0xff;
+
+    let (_, kept) = host
+        .admit_one(b_key.verifying_key().to_bytes(), forged)
+        .await;
+    assert_eq!(
+        kept,
+        Some(Kept::Refused),
+        "an unsigned frame is refused for good"
+    );
+    assert_eq!(
+        value(&host.read(Clone::clone), "forged"),
+        None,
+        "nothing the frame carried is readable"
+    );
 }

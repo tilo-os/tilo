@@ -117,6 +117,12 @@ impl StatePeer {
         {
             return Err("transport author or document workspace mismatch".into());
         }
+        // A frame is admitted only as the device whose key signed it. The
+        // store's keep checks this too (`retained::Frame::of`), but it runs
+        // after the engine has decided the frame, so a write that reached the
+        // engine any other way would otherwise decide an op no key signed.
+        collab_types::verify_op(&envelope)
+            .map_err(|error| format!("the change is not signed by its author: {error}"))?;
         self.check_document_key_scope(
             (&app_id, &document_id),
             readers.as_deref(),

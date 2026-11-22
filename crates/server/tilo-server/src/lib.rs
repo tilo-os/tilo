@@ -119,7 +119,7 @@ tilo_agent_session::app_worker!();
 
 // The records and wire messages shared with server clients live in
 // `tilo-server-protocol`, the frame codec in `tilo-server-client`, and the
-// session clients (server, co-edit, anti-entropy, workspace administration and
+// session clients (server, co-edit and workspace administration, and
 // workspace join) in `tilo-server-session`, so clients need not link the
 // daemon. The daemon keeps addressing them here.
 #[cfg(not(target_arch = "wasm32"))]
@@ -133,7 +133,7 @@ use tilo_workspace_service::{authority_epoch, handshake, workspace_access};
 
 pub use tilo_server_client::frame;
 pub use tilo_server_protocol::{auth, certify, config, devices, live, mesh, policy, process_lease};
-pub use tilo_server_session::{antientropy, client, coedit, position};
+pub use tilo_server_session::{client, coedit};
 
 /// The server wire messages ([`tilo_server_protocol::transport`]) together with
 /// the envelope frame codec ([`frame`]), under the path the daemon and its
@@ -143,7 +143,6 @@ pub mod transport {
     pub use tilo_server_protocol::transport::*;
 }
 
-pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 #[cfg(not(target_arch = "wasm32"))]
 pub use app_serving::{ActionProviderServer, AppActionServer};
 pub use client::{ClientError, ServerClient};

@@ -1,10 +1,9 @@
 //! `tilo-server-session` — the client side of a Tilo server session.
 //!
 //! A device that talks to a server needs the authenticated session client
-//! ([`ServerClient`]), the co-edit session over it ([`ServerCoeditSession`]),
-//! anti-entropy ([`antientropy`]), resume positions ([`position`]) and
-//! workspace administration ([`workspaces`]: the names of the actions a server
-//! serves). None of them needs the daemon's
+//! ([`ServerClient`]), the co-edit session over it ([`ServerCoeditSession`])
+//! and workspace administration ([`workspaces`]: the names of the actions a
+//! server serves). None of them needs the daemon's
 //! store, delivery or join records, so they live here and the daemon
 //! (`tilo-server`) depends on this crate rather than the other way round.
 //! Clients link this crate alone and are not rebuilt by a daemon edit.
@@ -20,10 +19,8 @@
         reason = "a page runs on one thread, and its signer and HTTP handles to JavaScript are never `Send`"
     )
 )]
-pub mod antientropy;
 pub mod client;
 pub mod coedit;
-pub mod position;
 mod session_carrier;
 pub mod workspaces;
 
@@ -40,7 +37,6 @@ mod transport {
     pub use tilo_server_protocol::transport::*;
 }
 
-pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 pub use client::{ClientCredentials, ClientError, Entrance, Entry, ServerClient};
 #[cfg(not(target_arch = "wasm32"))]
 pub use coedit::retention_metadata;
