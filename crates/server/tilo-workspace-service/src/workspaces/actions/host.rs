@@ -253,6 +253,16 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 19] = [
         },
         ServiceOperation::TakeInPersonDevice,
     ),
+    (
+        Verb {
+            id: ADMIT_SERVER,
+            label: "Take a server into your servers",
+            check: ADMIT_SERVER,
+            kind: roles::GOVERNANCE_KIND,
+            params: admit_server_params,
+        },
+        ServiceOperation::AdmitServer,
+    ),
 ];
 
 /// Plan a machine: the plan document the person's window or command wrote,
@@ -268,7 +278,25 @@ pub(super) const SHOW_MACHINE: &str = "machine.show";
 /// Take a machine that enrolled with a plan's token into its entry under its
 /// device key.
 pub(super) const ADMIT_MACHINE: &str = "machine.admit";
+/// Take a server in among the person's servers, by the certificate its ticket's login answered
+/// with and where its endpoint is dialled.
+pub(super) const ADMIT_SERVER: &str = "server.admit";
 use tilo_server_session::workspaces::TAKE_IN_PERSON as TAKE_IN_PERSON_DEVICE;
+
+fn admit_server_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "cert",
+            ParamType::Text,
+            "The certificate the ticket's login answered with, in hex.",
+        ),
+        ActionParam::required(
+            "endpoint",
+            ParamType::Text,
+            "Where the server is dialled, as its endpoint advertises it (JSON).",
+        ),
+    ]
+}
 
 fn take_in_person_device_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
@@ -736,6 +764,11 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 Box::pin(machine::invoke(self, operation, &args)).await
             }
+            ServiceOperation::AdmitServer => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                Box::pin(machine::admit_server(self, &args)).await
+            }
             ServiceOperation::TakeInPersonDevice => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
@@ -892,6 +925,16 @@ impl Workspaces {
             _ => false,
         };
         if entering {
+            return Ok(());
+        }
+        // A machine's own record, written when the person certified the machine with their root:
+        // their device asks it as itself (the session's agent is that device's run), so no agent
+        // is asked on their behalf.
+        if matches!(verb.id, SHOW_MACHINE | ADMIT_MACHINE | ADMIT_SERVER)
+            && !device.capabilities.stand_in
+            && caller.user_public_key() == Some(&device.user_public_key)
+            && caller.device_public_key() == Some(&device.device_public_key)
+        {
             return Ok(());
         }
         self.admit_operation(

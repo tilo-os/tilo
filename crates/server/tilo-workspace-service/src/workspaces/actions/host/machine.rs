@@ -165,6 +165,26 @@ async fn shown(workspaces: &Workspaces, plan: &str) -> Result<WaitingPlan, Actio
         .map_err(|error| refused(&error))
 }
 
+/// Take the server `args` names in among the person's servers: its entry in their Servers
+/// document, under its device key, as the server's own start would have made it
+/// ([`servers::admit`]).
+pub(super) async fn admit_server(
+    workspaces: &Workspaces,
+    args: &Args,
+) -> Result<Value, ActionCallError> {
+    let encoded = args.required_text("cert")?;
+    let bytes = hex::decode(encoded).map_err(|_| refused(&"a server's certificate is hex"))?;
+    let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&bytes)
+        .map_err(|_| refused(&"a server's certificate is its own bytes"))?;
+    let endpoint: iroh_base::EndpointAddr =
+        serde_json::from_str(args.required_text("endpoint")?)
+            .map_err(|_| refused(&"a server's endpoint is its own JSON"))?;
+    servers::admit(workspaces, &cert, &endpoint)
+        .await
+        .map_err(|error| refused(&error))?;
+    answer(&"admitted")
+}
+
 /// Take the machine `args` names into its entry, under its device key, as the
 /// device that approved it does: the drives and questions it reported ride
 /// along, and a later report of them from the machine itself updates the same

@@ -334,7 +334,7 @@ impl Daemon {
                     workspace: workspace.to_string(),
                     name: FOUNDED_NAME.to_owned(),
                 }),
-                Some(Arc::clone(workspaces.service())),
+                Some(Arc::clone(&workspaces)),
                 identity.place.clone(),
             )
         });

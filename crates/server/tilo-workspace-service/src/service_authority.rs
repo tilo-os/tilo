@@ -123,6 +123,11 @@ pub enum ServiceOperation {
     /// person's workspace, which the host holds: it holds the workspace from
     /// then on. Only a device of the person, never an agent's grant.
     TakeInPersonDevice,
+    /// Take the server `cert` names, reached at `endpoint`, in among the host's
+    /// person's servers: a new entry under its device key in their Servers
+    /// document, which this host holds and governs, as the server's own start
+    /// would have made it. Only a device of the person, never an agent's grant.
+    AdmitServer,
 }
 
 impl ServiceOperation {
@@ -154,6 +159,7 @@ impl ServiceOperation {
             Self::ListServers => "machine.servers",
             Self::AdmitMachine => "machine.admit",
             Self::TakeInPersonDevice => "person.take-in",
+            Self::AdmitServer => "server.admit",
         }
     }
 
@@ -240,7 +246,8 @@ impl ServiceOperation {
             | Self::ShowMachine
             | Self::ListServers
             | Self::AdmitMachine
-            | Self::TakeInPersonDevice => false,
+            | Self::TakeInPersonDevice
+            | Self::AdmitServer => false,
         }
     }
 }
@@ -275,6 +282,7 @@ mod tests {
         ServiceOperation::ListServers,
         ServiceOperation::AdmitMachine,
         ServiceOperation::TakeInPersonDevice,
+        ServiceOperation::AdmitServer,
     ];
 
     fn device(person: [u8; 32], capabilities: DeviceCapabilities) -> DeviceCert {

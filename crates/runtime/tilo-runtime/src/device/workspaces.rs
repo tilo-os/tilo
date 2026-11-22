@@ -63,6 +63,9 @@ pub(crate) struct ServiceWorkspaces {
     keys: Option<KeyService>,
     /// The workspace founded here, which the service governs, once it is.
     own: OnceLock<WorkspaceId>,
+    /// The session this device entered with, once a holder ran: what the device's own actions are
+    /// asked of its host through.
+    session: std::sync::OnceLock<Entered>,
     /// The record content service of these workspaces, once it is made.
     content: OnceLock<Arc<RouteContent>>,
     /// What the service hands the content its members answer this device with,
@@ -135,6 +138,7 @@ impl ServiceWorkspaces {
             bound,
             keys: None,
             own: OnceLock::new(),
+            session: std::sync::OnceLock::new(),
             content: OnceLock::new(),
             keepers: Mutex::new(Vec::new()),
         }
@@ -177,6 +181,7 @@ impl ServiceWorkspaces {
     /// Hold each workspace `device` takes part in as a member copy here, synced with the server
     /// that hosts it: those not held yet.
     pub(crate) async fn hold(&self, device: &Entered) {
+        let _ = self.session.set(device.clone());
         let engine = device.session().engine();
         let held = engine
             .workspaces()
@@ -191,6 +196,12 @@ impl ServiceWorkspaces {
     pub(crate) async fn shutdown(&self) {
         self.service.shutdown().await;
         self.endpoint.close().await;
+    }
+
+    /// The session this device entered with, once a holder ran: its own actions are asked of its
+    /// host through it.
+    pub(crate) fn session(&self) -> Option<&Entered> {
+        self.session.get()
     }
 
     /// The workspace service this device runs.

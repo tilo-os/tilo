@@ -12,10 +12,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::workspaces::ServiceWorkspaces;
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::{Signer as _, SigningKey};
 use iroh::Endpoint;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionCallError, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
@@ -32,8 +33,8 @@ use tilo_enrollment::root::PersonSigner;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_peer_state::new_device::ServedTicket;
+use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::{DeviceCert, RevocationList, StatementSigner};
-use tilo_workspace_service::service::WorkspaceService;
 
 /// How long the issuer keeps serving once the computer is certified, for it to read its answer.
 const TELL_WAIT: Duration = Duration::from_secs(30);
@@ -201,7 +202,7 @@ pub(crate) enum Role {
 /// it through: its member copy of the person's Servers workspace, or the one it founded.
 pub(crate) struct Admission {
     pub role: Role,
-    pub service: Option<Arc<WorkspaceService>>,
+    pub service: Option<Arc<ServiceWorkspaces>>,
     /// Whether this daemon founded the person's own workspaces: a device with the person's root
     /// and no login makes the Servers document when nothing holds it yet.
     pub founds: bool,
@@ -254,10 +255,12 @@ impl Admission {
             Role::Plan(plan) => Role::Plan(plan.clone()),
         };
         let founds = self.founds;
+        let session = service.session().cloned();
         self.runtime.spawn(async move {
+            let session = session.as_ref();
             let written = match role {
-                Role::Server => server_entry(service.workspaces(), &cert, founds).await,
-                Role::Plan(plan) => plan_entry(service.workspaces(), &plan, &cert).await,
+                Role::Server => server_entry(service.copies(), session, &cert, founds).await,
+                Role::Plan(plan) => plan_entry(service.copies(), session, &plan, &cert).await,
             };
             if let Err(error) = written {
                 tracing::warn!(%error, "a certified computer was not taken into the person's servers");
@@ -271,11 +274,33 @@ impl Admission {
 /// server itself when it first starts.
 pub(super) async fn server_entry(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    session: Option<&Entered>,
     cert: &DeviceCert,
     founds: bool,
 ) -> Result<(), String> {
     use tilo_workspace_service::workspaces::servers;
 
+    let endpoint = iroh::EndpointAddr::from_parts(
+        iroh::EndpointId::from_bytes(&cert.device_public_key)
+            .map_err(|error| format!("the server's device key: {error}"))?,
+        Vec::new(),
+    );
+    if let Some(device) = session {
+        let bytes = tilo_user_identity::canonical::canonical_bytes(cert)
+            .map_err(|error| format!("the server's certificate: {error}"))?;
+        let endpoint = serde_json::to_string(&endpoint).map_err(|error| error.to_string())?;
+        return device
+            .host_action(
+                "server.admit",
+                Map::from_iter([
+                    ("cert".to_owned(), hex::encode(bytes).into()),
+                    ("endpoint".to_owned(), endpoint.into()),
+                ]),
+            )
+            .await
+            .map(drop)
+            .map_err(|error| format!("{error}"));
+    }
     if !servers::holds_person_workspace(workspaces).await {
         if !founds {
             return Err(
@@ -284,11 +309,6 @@ pub(super) async fn server_entry(
         }
         servers::founded(workspaces).await?;
     }
-    let endpoint = iroh::EndpointAddr::from_parts(
-        iroh::EndpointId::from_bytes(&cert.device_public_key)
-            .map_err(|error| format!("the server's device key: {error}"))?,
-        Vec::new(),
-    );
     servers::admit(workspaces, cert, &endpoint).await
 }
 
@@ -297,11 +317,39 @@ pub(super) async fn server_entry(
 /// governs the Servers workspace hands it over from there.
 pub(super) async fn plan_entry(
     workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    session: Option<&Entered>,
     plan: &str,
     cert: &DeviceCert,
 ) -> Result<(), String> {
     use tilo_workspace_service::workspaces::servers::{self, Servers};
 
+    if let Some(device) = session {
+        let shown = device
+            .host_action(
+                "machine.show",
+                Map::from_iter([("plan".to_owned(), plan.into())]),
+            )
+            .await
+            .map_err(|error| format!("{error}"))?;
+        let nonce = shown
+            .pointer("/plan/token/nonce")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("plan {plan} names no token"))?;
+        return device
+            .host_action(
+                "machine.admit",
+                Map::from_iter([
+                    (
+                        "device".to_owned(),
+                        hex::encode(cert.device_public_key).into(),
+                    ),
+                    ("nonce".to_owned(), nonce.into()),
+                ]),
+            )
+            .await
+            .map(drop)
+            .map_err(|error| format!("{error}"));
+    }
     let nonce = servers::read(workspaces)
         .await?
         .waiting_plan(plan)?
@@ -334,8 +382,9 @@ struct Inner {
     root: RootSource,
     /// The workspace founded here, when this computer has no login: a computer it adds enters it.
     founded: Option<Founded>,
-    /// The workspace service this daemon's device writes a certified computer's entry through.
-    workspaces: Option<Arc<WorkspaceService>>,
+    /// The workspace service this daemon's device writes a certified computer's entry through,
+    /// and the session it asks its host through while it is a member.
+    workspaces: Option<Arc<ServiceWorkspaces>>,
     place: Place,
     service: ActionService,
     /// The ticket the service answers for now, while it waits for its computer.
@@ -357,7 +406,7 @@ impl Tickets {
         login: Option<(SigningKey, Device)>,
         root: RootSource,
         founded: Option<Founded>,
-        workspaces: Option<Arc<WorkspaceService>>,
+        workspaces: Option<Arc<ServiceWorkspaces>>,
         place: Place,
     ) -> Self {
         let service = ActionService::new(key.clone(), Arc::new(NoActions));
@@ -462,7 +511,7 @@ impl Tickets {
     fn serving_cert(&self) -> DeviceCert {
         self.0.workspaces.as_ref().map_or_else(
             || self.0.cert.clone(),
-            |service| service.workspaces().serving_certificate().clone(),
+            |service| service.copies().serving_certificate().clone(),
         )
     }
 
