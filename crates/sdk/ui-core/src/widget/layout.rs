@@ -1022,6 +1022,11 @@ impl CompositionFocus {
                     .map(|key| format!("semantic:{key}"))
             })
     }
+    /// The semantic key a widget's [`Self::key`] names, without building its accessibility node:
+    /// a named widget's is read only when its name alone is not unique.
+    fn semantic_of(key: Option<&str>) -> Option<String> {
+        key?.strip_prefix("semantic:").map(str::to_owned)
+    }
     /// Whether `widget`'s [`Self::key`] is `key`. A name is compared without
     /// building the widget's accessibility node (and resolving its translated
     /// label), which a rebuild would otherwise do for every widget.
@@ -1074,14 +1079,13 @@ impl CompositionFocus {
             if target {
                 targets = targets.saturating_add(1);
                 if found.is_none() {
+                    let key = CompositionFocus::key(widget);
                     found = Some((
                         visited,
                         CompositionFocus {
                             ambiguous: false,
-                            key: CompositionFocus::key(widget),
-                            semantic_key: widget
-                                .accessibility_root()
-                                .and_then(|access| access.semantic_key),
+                            semantic_key: CompositionFocus::semantic_of(key.as_deref()),
+                            key,
                             qualified_semantic: false,
                             binding: binding.clone(),
                             state: crate::undo::get_state(widget),
@@ -1134,9 +1138,7 @@ impl CompositionFocus {
             crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| Self {
                 ambiguous: false,
                 key: Self::key(widget),
-                semantic_key: widget
-                    .accessibility_root()
-                    .and_then(|access| access.semantic_key),
+                semantic_key: None,
                 qualified_semantic: false,
                 binding: bindings.binding_for(node),
                 state: None,
@@ -1172,9 +1174,6 @@ impl CompositionFocus {
             let _ = unsafe {
                 crate::bound_dispatch::inspect_bound_node(bindings, nodes, *aggregate, |widget| {
                     focus.key = Self::key(widget);
-                    focus.semantic_key = widget
-                        .accessibility_root()
-                        .and_then(|access| access.semantic_key);
                     state_node = *aggregate;
                 })
             };
@@ -1184,6 +1183,7 @@ impl CompositionFocus {
         // Anonymous controls retain only their own live state. Without a
         // stable identity, no snapshot may cross this rebuild.
         focus.key.as_ref()?;
+        focus.semantic_key = Self::semantic_of(focus.key.as_deref());
         if let Some(key) = &focus.key {
             let matches = nodes
                 .keys()
@@ -1198,6 +1198,22 @@ impl CompositionFocus {
                 })
                 .take(2)
                 .count();
+            if matches > 1 && focus.semantic_key.is_none() {
+                focus.semantic_key = unsafe {
+                    crate::bound_dispatch::inspect_bound_node(
+                        bindings,
+                        nodes,
+                        state_node,
+                        |widget| {
+                            widget
+                                .accessibility_root()
+                                .and_then(|access| access.semantic_key)
+                        },
+                    )
+                }
+                .ok()
+                .flatten();
+            }
             let matches = if matches > 1 && focus.semantic_key.is_some() {
                 focus.qualified_semantic = true;
                 nodes
@@ -1931,7 +1947,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn focus_follows_identity_across_rebuilds;
 
-        phase focus_captured_across_a_rebuild_builds_only_the_focused_accessibility_node;
+        phase focus_captured_across_a_rebuild_builds_no_accessibility_node_for_a_named_target;
         {
             use crate::widget::Column;
             let built = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -1959,7 +1975,7 @@ mod tests {
             let focus = CompositionFocus::capture_live(&list(Some(Some("target")))).unwrap();
             assert_eq!(focus.key.as_deref(), Some("named:target"));
             assert!(!focus.ambiguous, "no other control has its name");
-            assert_eq!(built.get(), 1, "a named target's own node only");
+            assert_eq!(built.get(), 0, "a name alone identifies its target");
 
             built.set(0);
             let focus = CompositionFocus::capture_live(&list(Some(None))).unwrap();
