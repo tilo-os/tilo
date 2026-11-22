@@ -89,10 +89,23 @@ if ((${#images[@]} == 0)); then
 fi
 lounge=${images[0]} web=${images[1]} api=${images[2]}
 commit=$(revision "$lounge")
-for image in "$web" "$api"; do
-  [[ $(revision "$image") == "$commit" ]] || die "$image is not built from $commit, as $lounge is"
+web_commit=$(revision "$web")
+# The release's commit and the live one are read here: a fetch that fails is fine as long as this
+# checkout already has them.
+git -C "$repo" fetch -q origin main || true
+for known in "$commit" "$live"; do
+  git -C "$repo" cat-file -e "$known^{commit}" 2>/dev/null || die "this checkout lacks commit $known: fetch tilo/tilo's main"
 done
-git -C "$repo" fetch -q origin main
+# t carries an image whose inputs did not change from the build that made it, so the web entry
+# may name an earlier commit than the Lounge: never a later or another one.
+for image in "$web" "$api"; do
+  built=$(revision "$image")
+  # The API server's image names no commit: it is built from packages, and the run that
+  # published it is the one this release follows.
+  [[ -n $built || $image != *"/tilo/api@"* ]] || continue
+  git -C "$repo" merge-base --is-ancestor "$built" "$commit" \
+    || die "$image is built from $built, which is not $commit or before it, as $lounge is"
+done
 say "the release is $(git -C "$repo" log -1 --format='%h %cs %s' "$commit"), $(git -C "$repo" rev-list --count "$live..$commit") commits after the live build"
 
 # -- 2. the pins -------------------------------------------------------------------------------
@@ -137,12 +150,20 @@ took "pushed"
 # Argo polls tilo/infra every few minutes, and the relay's pod is recreated (one writer of its
 # volume), so tilo.sh is briefly away while the new one starts.
 deadline=$((SECONDS + 1200))
-for url in https://eu1.tilo.sh/mode https://tilo.sh/version.json; do
-  until [[ $(curl -fsS -m 10 "$url" 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("revision",""))' 2>/dev/null) == "$commit" ]]; do
-    ((SECONDS < deadline)) || die "$url does not report $commit after 20 minutes: look at Argo's tilo-sh-vm-host and tilo-web"
+for served in "https://eu1.tilo.sh/mode $commit" "https://tilo.sh/version.json $web_commit"; do
+  read -r url want <<<"$served"
+  until [[ $(curl -fsS -m 10 "$url" 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("revision",""))' 2>/dev/null) == "$want" ]]; do
+    ((SECONDS < deadline)) || die "$url does not report $want after 20 minutes: look at Argo's tilo-sh-vm-host and tilo-web"
     sleep 10
   done
-  say "$url serves $short"
+  say "$url serves $(git -C "$repo" rev-parse --short=11 "$want")"
 done
+# The site sends newcomers to the Lounge's entry by its workspace's id: it must be one the
+# Lounge's server lists, or everyone new is turned away instead of meeting the wait list.
+entry=$(curl -fsS -m 10 https://tilo.sh/entry.json | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["home"]["admission"].rstrip("/").rsplit("/",1)[-1])')
+curl -fsS -m 10 -X POST https://eu1.tilo.sh/peer/v1/directory \
+  | python3 -I -c 'import json,sys; sys.exit(sys.argv[1] not in {w["entry"].strip("/").rsplit("/",1)[-1] for w in json.load(sys.stdin)["workspaces"]})' "$entry" \
+  || die "tilo.sh sends newcomers to workspace $entry, which eu1.tilo.sh does not list: set TILO_WEB_HOME_ENTRY in apps/tilo-web to the Lounge's entry"
+say "tilo.sh sends newcomers to the Lounge's entry ($entry)"
 took "serving"
 say "tilo.sh runs $short, $(((SECONDS - started) / 60)) minutes after the release started"
