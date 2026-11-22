@@ -343,11 +343,10 @@ boundaries:
 
 ## 8.1 The conversation
 
-The agent chat is a Chat conversation, not a shell part. An agent's work is the turns of the
-conversations it takes part in (`crates/session/session/src/conversations.rs`): a person's
-message the agent has not answered is a turn, and the kept agent's process (`so.tilo.agent`,
-started per workspace by `Apps::start_agent`) answers it in the same channel. The shell owns
-no run and no transcript; it places the channel like any resource.
+The agent chat is a Chat conversation, not a shell part. Mentioning an agent in a message asks
+it: the ask is a resource of the agent package (`so.tilo.lang.agent`), and the agent engine
+answers it with a reply shown under the message. The shell owns no run and no transcript; it
+places the channel like any resource.
 
 - **Asking from the canvas.** The canvas entry reads "Find something, or ask". Enter calls
   `session.place_found(text, x, y)`. When the text is a question (`answers::question::asks`)

@@ -397,8 +397,7 @@ impl Session {
                 search.place_soon(needle, None, layout::canvas_find_within(), done);
             })
         };
-        // The conversations this session's agents answer in, and the agents each workspace keeps,
-        // both read from Chat's records of them.
+        // The agents each workspace keeps, read from its record of them.
         let records = crate::engine_records::EngineRecords::new(options.wake.handle());
         // What a text that names an app's type does when the text names nothing held: ask that
         // app, through the search action its package tags `outside:<origin>.search` (shell.md §8,
@@ -472,11 +471,6 @@ impl Session {
         // and what the broker admits each session on.
         let agent_sessions = crate::agent_sessions::AgentSessions::new();
         agent_sessions.wake_on_spend(options.wake.handle());
-        let conversations = Rc::new(crate::conversations::Conversations::new(
-            records.clone(),
-            std::sync::Arc::clone(&agent_sessions),
-            &options.wake.handle(),
-        ));
         let agents = Rc::new(crate::agents::Agents::new(
             records.clone(),
             options.wake.handle(),
@@ -736,9 +730,6 @@ impl Session {
             Some(peer_documents.clone()),
             (workspace_service.clone(), &changes),
         );
-        if let Some(personal) = sync.as_ref().and_then(|sync| sync.personal()) {
-            conversations.use_personal_store(personal.sync().clone());
-        }
         // The records the session itself writes are the workspaces' own, and its writes reach this
         // device's apps as a member's do. Search finds the records the workspaces hold, and
         // brings one here, through them.
@@ -1474,14 +1465,6 @@ impl Session {
                 Rc::clone(&commands),
                 Rc::clone(&controls_reading),
             )));
-        // The turns' summonses, each offering Chat's own `record-work` to the agent answering it.
-        services
-            .borrow_mut()
-            .add(Box::new(crate::conversations::TurnSummonses::new(
-                Rc::clone(&conversations),
-                sends.clone(),
-                Rc::clone(&layout),
-            )));
         services
             .borrow_mut()
             .add(Box::new(crate::send_to::SendToService::new(sends.clone())));
@@ -1683,7 +1666,6 @@ impl Session {
             capabilities_fed: Cell::new(None),
             fs_authority: crate::fs_authority::Publisher::for_session(),
             workspace_tabs,
-            conversations,
             agents,
             records,
             directory,
