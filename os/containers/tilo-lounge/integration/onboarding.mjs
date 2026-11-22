@@ -771,7 +771,9 @@ try {
     const chosen = JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null');
     const entered = JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]');
     const kept = (Array.isArray(entered) ? entered : []).find(entry => entry.workspace === chosen?.workspace);
-    const open = document.documentElement.dataset.entry === 'open'
+    // The entry says it opened the workspace; the page the server renders
+    // for it (\`/w/<workspace>\`) is past the entry and only says it arrived.
+    const open = (document.documentElement.dataset.entry === 'open' || location.pathname.startsWith('/w/'))
       && ['done', 'stopped'].includes(document.documentElement.dataset.arrival);
     return open && kept?.name === ${JSON.stringify(named)} ? chosen.workspace : '';
   })()`;

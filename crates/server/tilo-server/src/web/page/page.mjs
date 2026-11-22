@@ -663,11 +663,8 @@ function start() {
     follow();
     armBrowserRows();
     // The page says it arrived, as the entry it came from did: what a tool
-    // waits for is the same marker on either. An entry that opened the
-    // workspace this page is says so too, as the entry page's own marker
-    // names it.
+    // waits for is the same marker on either.
     document.documentElement.dataset.arrival = 'done';
-    document.documentElement.dataset.entry = 'open';
     if (!performance.getEntriesByName('tilo-page-shown').length) performance.mark('tilo-page-shown');
   };
 
