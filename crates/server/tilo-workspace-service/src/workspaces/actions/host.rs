@@ -580,6 +580,48 @@ impl Workspaces {
         rows
     }
 
+    /// Take `device`'s person into the workspace `args` names, and hand the
+    /// device an invitation of its own to redeem there.
+    async fn enter_invoke(
+        &self,
+        device: &DeviceCert,
+        args: &Args,
+        request_id: [u8; 32],
+        now: u64,
+        local_address: Option<iroh_base::EndpointAddr>,
+    ) -> Result<Value, ActionCallError> {
+        let workspace = args.required_text("workspace")?;
+        let seconds = args
+            .integer("expires_in_seconds")?
+            .unwrap_or(OWN_INVITATION_SECONDS);
+        let changed = self
+            .enter(workspace, device)
+            .await
+            .map_err(|error| refused(&error))?;
+        let own = IssueInvitationRequest {
+            request_id,
+            role: Role::Editor,
+            recipient_user_public_key: Some(device.user_public_key),
+            invitee_name: None,
+            expires_at_ns: expiry(now, seconds),
+            inviter_name: None,
+        };
+        // The local device redeems in process. An invitation sent to
+        // another device needs to wait for the host's reachable address.
+        let address = match local_address {
+            Some(address) => address,
+            None => self.invitation_addr().await,
+        };
+        let issued = self
+            .issue_from(workspace, device, own, false, None, address)
+            .await
+            .map_err(|error| refused(&error))?;
+        answer(&EnteredWorkspace {
+            changed,
+            invitation: ActionInvitation::of(&issued),
+        })
+    }
+
     /// Run the host operation `request` names for `caller` on `device`, the
     /// certificate the server's handshake verified for it, asked in the
     /// workspace `workspace_id` carries: an agent's call as its grants there
@@ -645,36 +687,8 @@ impl Workspaces {
                 answer(&self.revocations().iter().cloned().collect::<Vec<_>>())
             }
             ServiceOperation::EnterWorkspace => {
-                let workspace = args.required_text("workspace")?;
-                let seconds = args
-                    .integer("expires_in_seconds")?
-                    .unwrap_or(OWN_INVITATION_SECONDS);
-                let changed = self
-                    .enter(workspace, device)
+                self.enter_invoke(device, &args, request_id, now, local_address)
                     .await
-                    .map_err(|error| refused(&error))?;
-                let own = IssueInvitationRequest {
-                    request_id,
-                    role: Role::Editor,
-                    recipient_user_public_key: Some(device.user_public_key),
-                    invitee_name: None,
-                    expires_at_ns: expiry(now, seconds),
-                    inviter_name: None,
-                };
-                // The local device redeems in process. An invitation sent to
-                // another device needs to wait for the host's reachable address.
-                let address = match local_address {
-                    Some(address) => address,
-                    None => self.invitation_addr().await,
-                };
-                let issued = self
-                    .issue_from(workspace, device, own, false, None, address)
-                    .await
-                    .map_err(|error| refused(&error))?;
-                answer(&EnteredWorkspace {
-                    changed,
-                    invitation: ActionInvitation::of(&issued),
-                })
             }
             ServiceOperation::HostWorkspace | ServiceOperation::UnhostWorkspace => {
                 Box::pin(self.serving_invoke(device, operation, &args, now)).await

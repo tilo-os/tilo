@@ -962,7 +962,6 @@ impl Workspaces {
                         .map_err(|error| error.to_string())?,
                 )
             }
-            Command::Versions { .. } => Reply::Versions(Vec::new()),
             Command::VersionEnd { kind, id, last } if store.get(kind, id, &may_read).is_some() => {
                 Reply::Versions(
                     store
@@ -972,7 +971,8 @@ impl Workspaces {
                         .collect(),
                 )
             }
-            Command::VersionEnd { .. } => Reply::Versions(Vec::new()),
+            // A record the caller may not read has no versions for them.
+            Command::Versions { .. } | Command::VersionEnd { .. } => Reply::Versions(Vec::new()),
             _ => read(store, command, &may_read).unwrap_or(Reply::Written),
         };
         drop(governed);
