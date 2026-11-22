@@ -158,12 +158,23 @@ impl<S: SheetState> Sheet<S> {
         &self.state
     }
 
+    /// Up and taking input: as its presentation says, or while its window asks the person about
+    /// an action one of its controls ran. The question outlives the card that asked it: the power
+    /// menu closes as its row is chosen, and Shut down is asked about after.
     fn open(&self) -> bool {
-        self.state.presentation().is_open()
+        self.state.presentation().is_open() || self.asking()
     }
 
     fn drawn(&self) -> bool {
-        self.state.presentation().is_drawn()
+        self.state.presentation().is_drawn() || self.asking()
+    }
+
+    /// Whether the sheet's window is asking the person something.
+    fn asking(&self) -> bool {
+        self.host
+            .app()
+            .action_palette()
+            .is_some_and(|palette| palette.asking().is_some())
     }
 
     /// The sheet covers the display the session placed it on, or the first one while it named none;

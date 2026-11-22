@@ -13,7 +13,7 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, ControlSize, DateField, Element, EmptyState, ListRow, MenuItem,
+    Button, ButtonRole, Column, ControlSize, DateField, Dropdown, Element, EmptyState, ListRow,
     Row, Section, Segment, Text, TimeField, ToggleGroup,
 };
 
@@ -212,21 +212,6 @@ fn document_access(documents: &DocumentAccess, who: &str, parts: &Parts) -> Elem
     ) else {
         return Box::new(Column::new().with_no_padding());
     };
-    let choices = documents
-        .documents
-        .iter()
-        .map(|(key, label)| {
-            let (select, key) = (parts.clone(), key.clone());
-            let checked = &key == route;
-            MenuItem::action(label.clone(), move || {
-                select.local.update(|local| {
-                    local.draft.document = Some(key.clone());
-                    local.draft.document_access = None;
-                });
-            })
-            .with_checked(checked)
-        })
-        .collect();
     let (app, document) = route.clone();
     let effect = WorkspaceSettingsEffect::SetDocumentAccess {
         app,
@@ -238,12 +223,7 @@ fn document_access(documents: &DocumentAccess, who: &str, parts: &Parts) -> Elem
     Box::new(Section::titled(
         documents.title.clone(),
         vec![
-            caption(&documents.document_label),
-            Box::new(
-                Button::new("ws-document-access-document", label)
-                    .with_accessible_name(&format!("{}: {label}", documents.document_label))
-                    .with_menu(choices),
-            ),
+            document_picker(documents, route, label, parts),
             Box::new(
                 Row::new()
                     .with_rhythm(Rhythm::Related)
@@ -277,6 +257,50 @@ fn document_access(documents: &DocumentAccess, who: &str, parts: &Parts) -> Elem
             ]),
         ],
     ))
+}
+
+/// Which document's access is shown, chosen by its place in the list: its route is two names.
+fn document_picker(
+    documents: &DocumentAccess,
+    route: &(String, String),
+    label: &str,
+    parts: &Parts,
+) -> Element {
+    let choices: Vec<Choice> = documents
+        .documents
+        .iter()
+        .enumerate()
+        .map(|(at, (_, label))| Choice {
+            key: at.to_string(),
+            label: label.clone(),
+        })
+        .collect();
+    let at = documents.documents.iter().position(|(key, _)| key == route);
+    let shown = Choice {
+        key: at.unwrap_or_default().to_string(),
+        label: label.to_owned(),
+    };
+    let routes: Vec<(String, String)> = documents
+        .documents
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect();
+    picker(
+        "ws-document-access-document",
+        &documents.document_label,
+        &shown,
+        &choices,
+        true,
+        parts,
+        move |draft, at| {
+            draft.document = at
+                .parse::<usize>()
+                .ok()
+                .and_then(|at| routes.get(at))
+                .cloned();
+            draft.document_access = None;
+        },
+    )
 }
 
 fn choose<'a>(choices: &'a [Choice], key: Option<&str>) -> Option<&'a Choice> {
@@ -414,7 +438,9 @@ fn ends_at(day: Option<Date>, time: Option<Time>) -> Option<u64> {
         .flatten()
 }
 
-/// A button saying what is chosen, whose menu chooses another.
+/// A chooser showing what is chosen, under its caption. What it chooses is the composer's draft,
+/// the sheet's own until the person grants: the chooser's own change, which a script and an agent
+/// make as a person does, moves it.
 fn picker(
     id: &str,
     caption_text: &str,
@@ -422,30 +448,32 @@ fn picker(
     choices: &[Choice],
     enabled: bool,
     parts: &Parts,
-    set: fn(&mut Draft, String),
+    set: impl Fn(&mut Draft, String) + 'static,
 ) -> Element {
-    let items = choices
-        .iter()
-        .map(|choice| {
-            let (choose, key) = (parts.clone(), choice.key.clone());
-            MenuItem::action(choice.label.clone(), move || {
-                let key = key.clone();
-                choose.local.update(|local| set(&mut local.draft, key));
-            })
-            .with_checked(choice.key == chosen.key)
-        })
-        .collect();
+    let choose = parts.clone();
+    let mut chooser = Dropdown::from_state(
+        choices.iter().map(|choice| choice.label.clone()).collect(),
+        &ui::LocalState::new(chosen.key.clone()),
+    )
+    .with_id(id)
+    .with_accessible_name(caption_text)
+    .with_enabled(enabled)
+    .on_change_view(move |key| {
+        let key = key.to_owned();
+        choose.local.update(|local| set(&mut local.draft, key));
+    });
+    chooser.set_value_options(
+        choices
+            .iter()
+            .map(|choice| (choice.key.clone(), choice.label.clone()))
+            .collect(),
+    );
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .push(caption(caption_text))
-            .push(Box::new(
-                Button::new(id, &chosen.label)
-                    .with_accessible_name(&format!("{caption_text}: {}", chosen.label))
-                    .with_enabled(enabled)
-                    .with_menu(items),
-            )),
+            .push(Box::new(chooser)),
     )
 }
 

@@ -190,6 +190,11 @@ impl AppProcess {
         ran
     }
 
+    /// The app, to read what it shows now.
+    pub const fn app(&self) -> &App {
+        &self.app
+    }
+
     /// The app, to hand it events of its own (external events, settings).
     pub fn app_mut(&mut self) -> &mut App {
         &mut self.app

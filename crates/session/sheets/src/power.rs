@@ -5,7 +5,9 @@
 //! script and the menu's own rows reach the same action API. The menu hangs from
 //! the trailing end of the top bar, over the desktop. What it offers and
 //! where it hangs come from the shell ([`PowerState`]); what is chosen goes
-//! back to it, which alone powers the machine down.
+//! back to it, which alone powers the machine down. Each row presses its
+//! published action, so a row the effect asks about first is asked about
+//! there, as from anywhere else.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -13,14 +15,12 @@ use std::rc::Rc;
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
-use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ViewCx,
-};
+use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ViewCx};
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
-use ui::widget::{ContextMenu, Element, MenuItem, PanelAlign, TaffyTreeExt, Widget};
+use ui::widget::{ContextMenu, Element, MenuItem, PanelAlign, Press, TaffyTreeExt, Widget};
 
 use crate::SheetState as _;
 use crate::presentation::{Phase, Presentation};
@@ -276,12 +276,8 @@ struct PowerMenu {
     /// How far the menu stays from the sheet's edges, as the theme last
     /// drawn says.
     margin: f64,
-    /// The row a press or Enter chose, taken once the menu has handled it.
-    chosen: Rc<Cell<Option<PowerEffect>>>,
-    dispatch: Option<Dispatcher<Power>>,
-    /// Each effect's address on the published resource, so a row names the
-    /// action it runs.
-    addresses: HashMap<PowerEffect, ui::tilo_actions::ActionAddress>,
+    /// What pressing each effect's row does: its published action.
+    presses: HashMap<PowerEffect, Press>,
     /// A screenshot scenario to stage on the next sync.
     staged: Rc<RefCell<Option<Staged>>>,
 }
@@ -296,26 +292,27 @@ impl PowerMenu {
             shown: Vec::new(),
             opening: None,
             margin: f64::from(ui::tokens::Spacing::BASE.s2),
-            chosen: Rc::default(),
-            dispatch: None,
-            addresses: HashMap::new(),
+            presses: HashMap::new(),
             staged: Rc::default(),
         }
     }
 
-    /// Run through the view's action API: rows name the actions they run, and
-    /// a press that is not the person's own goes through `dispatch`.
+    /// Bind each row to its effect's published action. Every row stands in the
+    /// menu from the start, so the window owns their presses before the first
+    /// opening; an opening shows the offered ones.
     fn attach(&mut self, cx: &ViewCx<Power>) {
         let actions = cx.actions();
-        self.addresses = PowerEffect::ALL
+        self.presses = PowerEffect::ALL
             .into_iter()
             .filter_map(|effect| {
                 actions
                     .effect(&effect)
-                    .map(|binding| (effect, binding.address().clone()))
+                    .map(|binding| (effect, Press::of(ui::component::Event::Action(binding))))
             })
             .collect();
-        self.dispatch = Some(cx.dispatcher());
+        self.shown = PowerEffect::ALL.to_vec();
+        self.menu.set_items(self.items());
+        self.shown.clear();
         if let Some(state) = &self.state {
             state.presentation().wake_with(cx.waker());
         }
@@ -360,15 +357,12 @@ impl PowerMenu {
     fn items(&self) -> Vec<MenuItem> {
         let mut items = vec![MenuItem::caption(t("power-menu-title"))];
         items.extend(self.shown.iter().map(|&effect| {
-            let chosen = Rc::clone(&self.chosen);
-            let item = MenuItem::icon_action(effect.icon(), effect.label(), move || {
-                chosen.set(Some(effect));
-            })
-            .with_description(self.detail(effect));
-            match self.addresses.get(&effect) {
-                Some(address) => item.for_action(address.clone()),
-                None => item,
-            }
+            let press = self.presses.get(&effect).cloned().unwrap_or_default();
+            let bound = !press.is_none();
+            MenuItem::bound(effect.label(), press)
+                .with_icon(effect.icon())
+                .with_description(self.detail(effect))
+                .with_enabled(bound)
         }));
         items
     }
@@ -422,18 +416,9 @@ impl PowerMenu {
         }
     }
 
-    /// Carry out what a row chose, and tell the shell once the menu closed.
-    fn settle(&mut self) {
-        if let Some(effect) = self.chosen.take() {
-            match &self.dispatch {
-                // The person's own press is their decision, as a key is.
-                Some(dispatch) if dispatch.is_own_gesture(&effect) => self.choose(effect),
-                // Anyone acting for them goes through the action API, which asks
-                // first where the effect says so.
-                Some(dispatch) => dispatch.effect(&effect),
-                None => self.choose(effect),
-            }
-        }
+    /// Tell the shell once the menu closed. A row's action, and the question it
+    /// asks first, are the window's: the session keeps the sheet up while it asks.
+    fn dismiss_when_closed(&self) {
         if !self.menu.is_open()
             && let Some(state) = &self.state
         {
@@ -490,7 +475,31 @@ impl PowerMenu {
     }
 }
 
+/// The rows' presses are the menu's, which the walk does not reach through the menu's own drawing.
+impl ui::widget::controls::ActionControls for PowerMenu {
+    fn attach_controls(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_domain::DomainAttachment,
+    ) {
+        ui::widget::controls::attach_controls(&mut self.menu, domain, attachment);
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        ui::widget::controls::take_control_invocation(&mut self.menu)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
+    ) {
+        ui::widget::controls::refresh_control_action_availability(&mut self.menu, allowed);
+    }
+}
+
 impl Widget for PowerMenu {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     /// The menu it offers, as a page shows it: a caption, then a real button per choice with its
     /// name and what it does, where the menu stands each.
     fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
@@ -619,7 +628,7 @@ impl Widget for PowerMenu {
         self.menu.handle_event(event, ctx);
         // The menu is modal: nothing it leaves reaches what is under it.
         *ctx.handled = true;
-        self.settle();
+        self.dismiss_when_closed();
         self.report();
     }
 
@@ -710,7 +719,7 @@ impl Widget for PowerMenu {
             .menu
             .perform_semantic_action(target, action, state, path);
         if done {
-            self.settle();
+            self.dismiss_when_closed();
             self.report();
         }
         done
