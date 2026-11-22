@@ -254,10 +254,17 @@ pub fn entered_workspace(keys: IdentityPaths) -> Result<Option<(String, String)>
 /// home's state directory need not be.
 ///
 /// # Errors
-/// `login_dir` is not readable, or the directory is not this account's own.
+/// `login_dir` could not be made or is not readable, or the directory is not this account's own.
 #[cfg(unix)]
 pub fn holder_dir(login_dir: &Path) -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    // A computer that made its own identity and never logged in keeps no login yet, so the
+    // directory one goes in is made here, this account's alone, to read whose it is.
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(login_dir)
+        .map_err(|error| format!("{} could not be made: {error}", login_dir.display()))?;
     let owner = std::fs::metadata(login_dir)
         .map_err(|error| format!("{} is not readable: {error}", login_dir.display()))?
         .uid();
@@ -317,25 +324,16 @@ pub fn held_api(keys: IdentityPaths) -> Result<Option<PathBuf>> {
 /// [`held_api`] for the login `place` keeps.
 #[cfg(unix)]
 fn held_api_in(place: &Place) -> Result<Option<PathBuf>> {
-    // Whose the holders' directory must be is read off what names the device: the login, or
-    // with none (a computer that made its own identity and never logged in, whose state
-    // directory holds no login) its certificate.
-    let (key, named_by) = if let Some(device) = load_public(place)? {
-        (device.cert.device_public_key, place.dir())
-    } else {
+    let key = match load_public(place)? {
+        Some(device) => device.cert.device_public_key,
         // No login: the device key the daemon serves as, named by its certificate so the secret
         // is not read here.
-        let path = &place.keys().device_cert;
-        let Ok(cert) = read_device_cert(path) else {
-            return Ok(None);
-        };
-        (
-            cert.device_public_key,
-            path.parent()
-                .context("a device certificate is in a directory")?,
-        )
+        None => match read_device_cert(&place.keys().device_cert) {
+            Ok(cert) => cert.device_public_key,
+            Err(_) => return Ok(None),
+        },
     };
-    let holders = holder_dir(named_by).map_err(|why| anyhow!(why))?;
+    let holders = holder_dir(place.dir()).map_err(|why| anyhow!(why))?;
     Ok(Some(holder_api_socket(&holders, &holder_name(&key))))
 }
 
@@ -468,13 +466,13 @@ mod tests {
         write_device_cert(&keys.device_cert, &cert).unwrap();
         assert!(!login_dir.exists(), "this computer never logged in");
 
-        let socket = held_api_in(&Place::at(login_dir, keys.clone()))
+        let socket = held_api_in(&Place::at(login_dir.clone(), keys))
             .unwrap()
             .expect("a device of its own names its daemon");
         assert_eq!(
             socket,
             holder_api_socket(
-                &holder_dir(keys.device_cert.parent().unwrap()).unwrap(),
+                &holder_dir(&login_dir).unwrap(),
                 &holder_name(&cert.device_public_key),
             ),
             "the daemon is the one the device's certificate names"
