@@ -224,7 +224,12 @@ That includes signing in: `tilo login <ticket>` connects straight to the
 device that issued the ticket (its iroh endpoint id, a relay hint and a
 one-time secret) and calls the certify action there, before the new device
 holds a certificate. The issuer is any device of the person: a browser tab,
-a desktop or a server. There is no site lookup. `/v1` REST is only an edge
+a desktop or a server. A tab has no endpoint, so the page's host serves its
+ticket and the tab signs the approval. A tab that holds no root signs in the
+other way round: its ticket names the tab's pending request, and the person runs
+`tilo device add <ticket>` on a device that is logged in, which signs the tab's
+certificate with its device key (member, 30 days; a certificate a device signed
+signs nothing). `tilo login` is always this computer logging in. There is no site lookup. `/v1` REST is only an edge
 for callers outside Tilo.
 
 ### Views
