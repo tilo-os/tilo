@@ -193,6 +193,8 @@ struct TxnState {
     dirty: HashMap<String, Dirty>,
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
     collections: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// The key of the item last put at the end of each collection (holder, field) here.
+    last_keys: HashMap<(String, String), String>,
     /// What [`Inner::local`] held when it began, put back on rollback.
     before: HashMap<String, Before>,
 }
@@ -2452,8 +2454,14 @@ impl ResourceStore {
     }
 
     /// The order key of the last item of the collection `field` of `at`: one item read, however
-    /// many the collection holds.
+    /// many the collection holds, and none after a transaction put one at its end.
     fn last_key(&self, at: &ResourceRef, field: &str) -> Result<Option<String>, StoreError> {
+        let holder = id_of(at);
+        if let Some(open) = self.inner.txn.borrow().as_ref()
+            && let Some(last) = open.last_keys.get(&(holder.clone(), field.to_owned()))
+        {
+            return Ok(Some(last.clone()));
+        }
         let Some(item_types) = self.field(&at.ty, field).map(|entry| entry.items) else {
             return Err(StoreError::Invalid(format!("{field} is not a collection")));
         };
@@ -2469,7 +2477,6 @@ impl ResourceStore {
             return Err(StoreError::Invalid(format!("{field} is not a collection")));
         };
         let kind = self.kind_of_type(item_ty)?;
-        let holder = id_of(at);
         let local = self.inner.local.borrow();
         // What was written here and not sent stands in for what the store holds of it: the
         // store's last is the first of its items, newest first, that none of them overrides, so
@@ -2670,6 +2677,11 @@ impl ResourceStore {
                     .clone()
                     .unwrap_or_else(|| self.fresh(&format!("{}-", short(&item.ty))));
                 let order = self.insert_key(at, field, *index, None)?;
+                let collection = (id.clone(), field.clone());
+                self.txn_mut(txn, |state| match index {
+                    None => state.last_keys.insert(collection, order.clone()),
+                    Some(_) => state.last_keys.remove(&collection),
+                })?;
                 let mut held = self.new_held(item, Some(id), Some(order))?;
                 self.stand_in(&mut held, &at.ty, field);
                 let edits = self.initial_edits(&item.ty, &mut held);
@@ -2695,6 +2707,8 @@ impl ResourceStore {
                 let child = self.item_of(at, field, item)?;
                 let mut held = self.held_at(&child)?;
                 let old = held.parent.clone();
+                let collection = (id.clone(), field.clone());
+                self.txn_mut(txn, |state| state.last_keys.remove(&collection))?;
                 held.order = Some(self.insert_key(at, field, Some(*index), Some(item))?);
                 held.parent = Some(id.clone());
                 self.stand_in(&mut held, &at.ty, field);

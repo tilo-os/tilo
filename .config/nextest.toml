@@ -342,14 +342,10 @@ test-group = "gpu-golden"
 # it is written in (`cost`), which the filter has to name: a `test(=…)` names
 # the whole test, so the table was never printed. One override serves both
 # profiles: a profile that names no overrides of its own inherits these, so the
-# run the CI makes prints the table too. Seeding ten thousand tasks and driving
-# a window over them takes minutes on a machine busy with other work, so its
-# hang bound is eight minutes: a slow run reports the table rather than a
-# termination.
+# run the CI makes prints the table too.
 [[profile.default.overrides]]
 filter = 'package(tilolang-app) and binary(it) and test(=hosted::cost::what_the_interactions_a_person_feels_cost)'
 success-output = "final"
-slow-timeout = { period = "60s", terminate-after = 8 }
 
 # A company's workspace at real size: a thousand notes and five hundred issues
 # written through the API one at a time, then every call an agent makes most

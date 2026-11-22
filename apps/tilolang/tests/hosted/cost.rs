@@ -1762,17 +1762,6 @@ fn choosing_another_task_keeps_the_windows_composition(
     );
 }
 
-// -- One seeded workspace, the windows a test opens over it --------------------------------
-//
-// Seeding ten thousand tasks takes a development build as long as opening a window over them,
-// and every reading above opens a window of its own. A test below seeds the workspace once and
-// hands each of its readings a copy ([`own`]): the reading's window, route, storage and counts
-// are its own, and only the seeding is the test's. The reading an optimised build holds to a
-// time, and the ones that count what a process which has drawn a window before could have
-// ready (text shaped, layout nodes built), are the first of their test: they run in a process
-// that has only seeded, as they did as tests of their own. Two readings to a test, so that the
-// longest of them stays about as long as the longest test that seeds for itself.
-
 /// Opening a window at a thousand tasks and at ten thousand: the work the open does.
 #[test]
 fn opening_a_window_does_the_work_it_shows() {
