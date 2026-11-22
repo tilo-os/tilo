@@ -335,9 +335,8 @@ There are seven ways to add a device:
 - **One key per device, in one store.** `IdentityPaths` is the only place a
   native device keeps its key and certificate. The browser keeps its key in
   IndexedDB because it has no file system, but it holds the same `DeviceCert`
-  bytes. The CLI login keeps only `site`, `workspace` and `server_cert` as a
-  `login.json` beside `device/`, and signs with the device key that is
-  already there.
+  bytes. A device logged in with a ticket keeps nothing beside its key and
+  certificate: no site, no server certificate, no `login.json`.
 - **One certificate format.** `DeviceCert`, checked by `verify_device_cert`
   for every caller. Before a disk is unlocked the device key is inside it,
   so the unlock request is signed by a boot key on the unencrypted
@@ -345,14 +344,12 @@ There are seven ways to add a device:
   The signed request names the volume and slot, and the approving device
   checks them against what it recorded when unlock was set up. There is no
   `BootKeyCert` and no second verifier.
-- **One device list.** `DeviceFleetStore` persists it, and `CertifiedFleet`
-  verifies it. A workspace's device view is derived from the fleet, not
-  stored a second time. Revocation is an entry in the fleet and reaches every
-  device of the identity.
-- **One way to add a device.** `tilo-enrollment`. A login code, a pairing
-  code, a QR code and a boot-key request are only token sources feeding
-  `join_with_token`. Adding a computer is one command, `tilo login`, and
-  that computer is then a device of the person like any other.
+- **One device list**: the person's devices, a resource of the person's own
+  workspace, signed by their root. Nothing keeps a second copy. Revocation is
+  an entry in it and reaches every device of the identity.
+- **One way to add a device**: a ticket. `tilo device add` issues one and
+  `tilo login <ticket>` uses it; the root certifies the new device. There are
+  no tokens, codes or a join to wait on.
 
 ### What goes
 
@@ -406,7 +403,6 @@ used.
 - **One sign-in proof**, `SignInProof`. The greeter, the web page, the API
   and `tilo login` all prove the same thing (a current device of this
   identity) and differ only in how the person approves it.
-- The runtime's `DeviceIdentity` is renamed `DeviceSigner`.
 
 ### What goes
 
@@ -476,8 +472,8 @@ and screen share only, never documents, and stays as it is.
   rebuilt from the kept signed frames.
 - **One wire and one link**: `NeighbourMsg` on one device link. Device to
   device and device to host are the same link, over iroh, and the page uses
-  the same framing over WebTransport. `tilo-server/1` keeps only what comes
-  before a session (join and address lookup).
+  the same framing over WebTransport. `tilo-server/1` goes: joining is a ticket and
+  there is no address lookup.
 - **One compaction**: `tilo-peer-state` `sealed_compaction`.
 - **One resource index**: `resource-store`, with a persistent backend taken
   from the tilolang redb pager. Every host of resources (the workspace
@@ -711,9 +707,10 @@ what it keeps and which work it takes, set per workspace.
 The relay is a mode of that daemon. `tilo-api` reads grants from the
 workspace, not from its own file. The agent runner is in the workspace
 service (`agents`, under its `agents` feature) and reaches what only a server
-has today (its Browser windows, its coding runner, its signing sessions and
-its bot runner) through traits; the bot runner (`tilo-server`
-`workspace_bots`) follows it, so any device that takes agent work runs it. A
+has today (its Browser windows and its signing sessions) through traits, so
+any device that takes agent work runs it. There are no bots: an installed
+bot (`bot_members`, `workspace_bots`, with its own device identity and
+program) is an automation with triggers, run like any other, and that code goes. A
 device's first run needs no server: it creates the person's identity and
 their first workspace, an ordinary workspace whose signed member list names
 them as owner.
