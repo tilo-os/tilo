@@ -307,7 +307,8 @@ run here on every full run instead, on the dev disk under KVM:
   its own", how its main process ended, and `data/<check>-<n>-session-restart.log`: the
   unit's state, the ended run's flight record (`previous.log`) and panic reports, and the
   kernel's, coredump's and user manager's lines (`acceptance/session_unit.py`). P03 reads
-  the same unit at the end of the run.
+  the same unit at the end of the run, and each failed unit's own journal for what it last
+  said (the boot's whole user journal is larger than one `tilo-vm` command returns).
 - A16 is `app_startup_check.py`'s judgement over every app the run launched.
 - A17 opens and closes Files, ends the account's compositor with SIGSEGV from root (as the
   crash A15 caught did), waits for `Restart=`'s next session to answer and opens Files

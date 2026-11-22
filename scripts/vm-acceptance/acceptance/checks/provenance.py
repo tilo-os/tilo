@@ -54,9 +54,12 @@ def _logical(spec: str) -> str:
     return f"{round(w / s)}x{round(h / s)}"
 
 
+RESTART_MARKER = "Scheduled restart job, restart counter is at "
+
+
 def _this_boot_restarts(journal: str) -> dict[str, int]:
     """Highest 'Scheduled restart job' counter in this boot's user journal."""
-    marker = ": Scheduled restart job, restart counter is at "
+    marker = f": {RESTART_MARKER}"
     restarts: dict[str, int] = {}
     for line in journal.splitlines():
         if marker not in line:
@@ -68,6 +71,24 @@ def _this_boot_restarts(journal: str) -> dict[str, int]:
             n = int(digits)
             restarts[unit] = max(restarts.get(unit, 0), n)
     return restarts
+
+
+def _unit_said(vm, unit: str) -> str:
+    """What the failed unit itself last logged, this boot.
+
+    Its own journal, not the boot's: a session's journal runs past the size a
+    `tilo-vm` command returns, so asking for all of it loses the lines that
+    say why. The user manager's lines about the unit (`<unit>: Main process
+    exited ...`, `Failed to start ...`) are dropped: they say it failed, never
+    why."""
+    out = vm.exec(
+        f"journalctl --user -u {shlex.quote(unit)} -b -o cat --no-pager -n 200 2>&1",
+        check=False)
+    manager = (f"{unit}: ", f"Failed to start {unit}", f"Started {unit}",
+               f"Stopping {unit}", f"Stopped {unit}")
+    said = [line.strip() for line in out.splitlines()
+            if line.strip() and not line.startswith(manager)]
+    return " | ".join(said[-3:])[:600]
 
 
 def session_unit_problem(fields: dict | None, during: list[str], account: str, caused: int = 0) -> str | None:
@@ -97,7 +118,10 @@ def services(ctx, res):
         "systemctl --user list-units --failed --plain --no-legend")
     failed = [line.split()[0] for line in failed_out.splitlines() if line.strip()]
     try:
-        journal = ctx.vm.exec("journalctl --user -b -o cat --no-pager")
+        # Only the marker lines: the boot's whole user journal is larger than a
+        # `tilo-vm` command returns, and the rest of it says nothing about restarts.
+        journal = ctx.vm.exec(
+            f"journalctl --user -b -o cat --no-pager --grep {shlex.quote(RESTART_MARKER)}")
     except VmError as exc:
         # Some images have no readable user journal. Keep the live-counter fallback,
         # but every query must succeed before an empty result can mean healthy.
@@ -116,7 +140,7 @@ def services(ctx, res):
         res.metrics["restart_source"] = "NRestarts (user journal unavailable)"
     else:
         restarts = _this_boot_restarts(journal)
-        res.metrics["restart_source"] = "journalctl --user -b"
+        res.metrics["restart_source"] = "journalctl --user -b --grep 'Scheduled restart job'"
     looping = {u: n for u, n in restarts.items() if n >= 3}
     res.metrics.update(failed=failed, restarts={u: n for u, n in restarts.items() if n})
     fields = session_unit.show(ctx)
@@ -125,10 +149,7 @@ def services(ctx, res):
                                    ctx.facts.get("session_restarts_caused", 0))
     # A failed run publishes no report data: each failed unit says in the detail what it
     # last logged, so the cause is in the log and not only in a file nobody can read.
-    said = {unit: " | ".join(line.strip() for line in ctx.vm.exec(
-                f"journalctl --user -u {shlex.quote(unit)} -b -o cat --no-pager -n 3 2>&1",
-                check=False).splitlines() if line.strip())[:600]
-            for unit in failed[:4]}
+    said = {unit: _unit_said(ctx.vm, unit) for unit in failed[:4]}
     problems = ([f"failed: {failed}" + "".join(f"; {unit} last logged: {text}" for unit, text in said.items()
                                                 if text)] if failed else []) \
         + ([f"restart loops: {looping}"] if looping else [])
