@@ -14,6 +14,11 @@ use tilolang_tilo::resource::{DynResource, DynValue};
 pub const COUNTER: &str = include_str!("../../../../apps/tl/counter/app.tl");
 
 /// The Tasks package (`apps/tl/tasks`): its app and the scenarios staged beside it.
+/// The agents' package: what Chat and every app that asks an agent `use`s.
+pub const AGENT: (&str, &str) = (
+    include_str!("../../../../apps/tl/agent/app.tl"),
+    include_str!("../../../../apps/tl/agent/app.ids"),
+);
 pub const TASKS_SOURCE: &str = concat!(
     include_str!("../../../../apps/tl/tasks/app.tl"),
     "\n",

@@ -396,6 +396,8 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     );
 }
 
+const AGENT: &str = include_str!("../../../../../apps/tl/agent/app.tl");
+const AGENT_IDS: &str = include_str!("../../../../../apps/tl/agent/app.ids");
 const CHAT: &str = include_str!("../../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../../apps/tl/chat/app.ids");
 const DISCUSSION: &str = include_str!("../../../../../apps/tl/discussion/app.tl");
@@ -455,6 +457,7 @@ fn room() -> Room {
         || None,
     )
     .unwrap();
+    host.load_builtin(AGENT, AGENT_IDS).unwrap();
     let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
     host.load_builtin(DISCUSSION, DISCUSSION_IDS).unwrap();
     let tasks = host.load_builtin(TASKS, TASKS_IDS).unwrap();

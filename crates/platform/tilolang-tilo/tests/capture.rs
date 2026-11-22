@@ -135,6 +135,7 @@ fn one_line_from_anywhere_makes_the_task_its_words_say() {
         AutoCommit::new(),
         &[
             (DISCUSSION, DISCUSSION_IDS),
+            crate::fixtures::AGENT,
             (CHAT, CHAT_IDS),
             (TASKS, TASKS_IDS),
         ],
@@ -191,6 +192,7 @@ fn a_task_captured_from_a_message_says_what_it_was_made_from() {
         AutoCommit::new(),
         &[
             (DISCUSSION, DISCUSSION_IDS),
+            crate::fixtures::AGENT,
             (CHAT, CHAT_IDS),
             (TASKS, TASKS_IDS),
         ],
