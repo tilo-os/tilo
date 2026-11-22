@@ -26,6 +26,8 @@ use tilo_desktop_model::Layout;
 #[cfg(target_os = "linux")]
 use tilo_desktop_surface::DesktopHandle;
 #[cfg(target_os = "linux")]
+use tilo_endpoint_reachability::Nearby;
+#[cfg(target_os = "linux")]
 use tilo_live::live::Track;
 #[cfg(target_os = "linux")]
 use tilo_live::live_session::Heard;
@@ -1401,12 +1403,8 @@ impl Client {
         let (user, device) = certified_as(identity.as_ref());
         // What this device hears on its local network wakes the session, which shows which of the
         // person's devices are nearby.
-        let lan = entry
-            .lan
-            .unwrap_or_else(|| tilo_endpoint_reachability::Nearby::new(Arc::clone(&wake)));
-        let host_outbox = HostOutbox {
-            commands: commands.clone(),
-        };
+        let lan = entry.lan.unwrap_or_else(|| Nearby::new(Arc::clone(&wake)));
+        let host_outbox = HostOutbox { commands: commands.clone() };
         let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
         let link_outbox = host_outbox.clone();
         let fabric = fabric_of(
@@ -1482,6 +1480,28 @@ impl Client {
             reachability,
             live,
         });
+        Ok(Self::started(
+            inner,
+            hosting,
+            outgoing,
+            thread,
+            reached,
+            answering,
+            entry.hosts,
+        ))
+    }
+
+    /// The client, hearing the person's other devices and then the hosts the entry names.
+    #[cfg(target_os = "linux")]
+    fn started(
+        inner: SessionClient,
+        hosting: Rc<Hosting>,
+        outgoing: Arc<dyn Outbox>,
+        thread: std::thread::JoinHandle<()>,
+        reached: network::Reached,
+        answering: crate::network::Answering,
+        hosts: Vec<EndpointAddr>,
+    ) -> Self {
         inner.attach_host(Rc::clone(&hosting) as Rc<dyn Host>);
         let client = Self {
             inner,
@@ -1496,10 +1516,10 @@ impl Client {
         let _ = client.outgoing.send(Cmd::WatchSiblings);
         // The hosts next: a workspace joined before them is replayed to this device when its host
         // session comes up, never lost.
-        for host in entry.hosts {
+        for host in hosts {
             let _ = client.outgoing.send(Cmd::Connect(host));
         }
-        Ok(client)
+        client
     }
 
     /// A client on a transport another host brings, with this desktop's host beside it: what a test
