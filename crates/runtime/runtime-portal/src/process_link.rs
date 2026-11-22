@@ -203,11 +203,6 @@ pub struct InstanceRequest {
     pub instance: u64,
     pub person: String,
     pub module_len: u64,
-    /// The id whose workspace document the instance opens, when it is not the app's own: an app
-    /// renamed keeps using the document of its earliest id, as the installed catalogue believes
-    /// the same publisher signed it. The broker admits the instance's connection to that document
-    /// only on the same belief.
-    pub documents_under: Option<String>,
     /// Whether the call shows a view, or nothing ([`Shows`]).
     pub shows: Shows,
     /// The person's formats (`locale` in their settings): the clock a time of day reads by and the
@@ -607,7 +602,6 @@ mod tests {
             instance: 7,
             person: "ada".into(),
             module_len: 12,
-            documents_under: Some("so.tilo.lang.older-notes".into()),
             shows: Shows::View,
             formats: RegionFormats {
                 time: tilo_formats::TimeStyle::H12,

@@ -414,19 +414,12 @@ impl Processes {
         };
         let module_len = module.len() as u64;
         let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
-        let documents_under = Some(
-            tilo_action_policy::earlier::held()
-                .documents_under(&instance.app)
-                .to_owned(),
-        )
-        .filter(|id| *id != instance.app);
         let request = InstanceRequest {
             app: instance.app.clone(),
             workspace: instance.workspace.clone(),
             instance: instance.instance,
             person: instance.person,
             module_len,
-            documents_under,
             // An instance with no patch connection draws nothing: it runs the app's actions for
             // whoever invokes them.
             shows: if instance.patch.is_some() {

@@ -59,10 +59,8 @@ use tilolang_tilo::instance::LaterBuilds;
 /// document of the workspace for an app whose documents are each member's own (`documents: .own`),
 /// which only their devices are admitted to, else the workspace's document of the app.
 ///
-/// The route keeps the document of an id the app had before only when this host honours that id
-/// ([`tilo_action_policy::earlier`], filled from the installed catalogue): the same table the
-/// broker maps a route back with, so a route is the app's own on both sides or neither. A package
-/// claiming `previously:` alone does not rename its route.
+/// The route keeps the document of an id the app had before only when the installed catalogue
+/// honours it ([`tilo_action_policy::earlier`]): the same table the broker maps a route back with.
 #[must_use]
 pub fn route_of(
     meta: &tilolang_tilo::tilolang::PackageMeta,
@@ -119,11 +117,6 @@ pub enum AdmitError {
          instance runs a module only under the id it was launched as"
     )]
     IdMismatch { launched: String, declared: String },
-    #[error(
-        "the session opened the documents of `{records}` for `{app}`, an id the module does not \
-         say it had before"
-    )]
-    Records { app: String, records: String },
     #[error("the workspace `{0}` is no workspace id")]
     Workspace(String),
     #[error(
@@ -712,16 +705,6 @@ impl TilolangProcess {
             return Err(AdmitError::IdMismatch {
                 launched: request.app,
                 declared: bundle.meta.app,
-            });
-        }
-        // The session asks the instance to open the document of an id the app had before: one the
-        // module says it had. Whether this host keeps that document is the catalogue's call, below.
-        if let Some(records) = &request.documents_under
-            && !bundle.meta.previously.contains(records)
-        {
-            return Err(AdmitError::Records {
-                app: request.app,
-                records: records.clone(),
             });
         }
         // The ids the session believes each app had before are the ones this host honours: a
