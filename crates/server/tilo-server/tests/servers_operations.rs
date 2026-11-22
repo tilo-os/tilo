@@ -534,6 +534,10 @@ async fn a_persons_device_renames_and_retires_a_server() {
     .await
     .unwrap();
     assert_eq!(retired["retired"], true);
+    assert_eq!(
+        retired["answered"], true,
+        "the server took its retirement itself"
+    );
     let servers = servers::read(fixture.workspaces()).await.unwrap();
     assert!(servers.active(&nas).is_none(), "its entry is retired");
     assert!(

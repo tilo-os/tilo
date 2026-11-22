@@ -224,6 +224,9 @@ pub fn follow(
     // applies the document again, and must not run the same one twice.
     let running = Arc::new(Mutex::new(HashSet::new()));
     tokio::spawn(async move {
+        let mut again = tokio::time::interval(super::attach::NAMED_TICK);
+        again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut seen = read(&workspaces).await.ok();
         apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await;
         answer_now(&workspaces, &state_root, &running).await;
         loop {
@@ -236,6 +239,12 @@ pub fn follow(
                     Err(error) => Err(error),
                 },
                 change = governance.recv() => change.map(|workspace| workspace == admin),
+                // A write another holder made reaches this copy without the write watch hearing
+                // it: the document is applied again once it reads otherwise than it did.
+                _ = again.tick() => {
+                    let now = read(&workspaces).await.ok();
+                    Ok(now.is_some() && std::mem::replace(&mut seen, now.clone()) != now)
+                }
             };
             match ours {
                 Ok(true) => apply_now(&workspaces, &requests, endpoint.as_ref(), &state_root).await,
@@ -247,9 +256,7 @@ pub fn follow(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
-            // An ask reaches this copy through a holder's, which the write
-            // watch does not always hear: what is asked of this server is
-            // carried out as it is found.
+            // What is asked of this server is carried out as it is found.
             answer_now(&workspaces, &state_root, &running).await;
         }
     })
