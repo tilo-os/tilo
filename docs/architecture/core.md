@@ -147,7 +147,11 @@ agent engine runs inside each device's one daemon and reads asks; it never
 reads an app's own fields. Which eligible device takes a turn is decided in
 one function, `tilo_workspace_service::work::takes_turn`: an eligible device
 claims the ask with an ordinary change, the earliest claim wins, and a claim
-that writes nothing for a minute may be taken over. Everything a turn writes
+that writes nothing for a minute may be taken over. A lease is workspace state
+every device reads, published as the read-only resource
+`workspace/leases/<key>`, whose `device` is the device that holds the claim now. A
+require reads it like any record, and sees the device that signed an
+invocation as `invoker.device`; the refusal notice's require is that the two match. Everything a turn writes
 is a member write for the agent, signed by the device that runs it.
 
 An agent is a reader in its own right. Its member key is in the reader set
