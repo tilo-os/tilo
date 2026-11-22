@@ -78,6 +78,9 @@ impl HostStepServices for AgentToolSteps {
         if !actor.is_agent() {
             return Err("an agent's tools are its own".into());
         }
+        let person = actor
+            .acting_for()
+            .ok_or("an agent's tools work for its person")?;
         let session = actor
             .session()
             .ok_or("an agent calls its tools as a step of its session")?;
@@ -88,6 +91,7 @@ impl HostStepServices for AgentToolSteps {
         self.0.start(&tilo_mcp::agent_tools::Step {
             workspace: request.workspace,
             agent: actor.member().id(),
+            person,
             session,
             provider,
             action: &request.address.action,

@@ -3,7 +3,7 @@
 //! there ([`crate::key_sessions`]).
 //!
 //! A key's run is admitted as an MCP client of this runtime is: the profile's
-//! person on this device, handing the run to an agent named after the key.
+//! person on this device, with an agent named after the key acting under a key of its own.
 
 use super::services::RuntimeActionProvider;
 use collab_types::WorkspaceId;
@@ -31,10 +31,13 @@ impl crate::key_sessions::Sessions for HostRuns {
         workspace: &str,
         key: &DeviceCert,
     ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
-        let (run, caller, _) = self
+        let (run, caller) = self
             .provider
             .agent_session(workspace, &self.actor, &self.policy_time, |_| {
-                tilo_mcp::devices::agent_id("agent", key)
+                (
+                    tilo_mcp::devices::agent_id("agent", key),
+                    key.device_label.clone(),
+                )
             })
             .map_err(|error| error.to_string())?;
         Ok((Arc::new(run), caller))

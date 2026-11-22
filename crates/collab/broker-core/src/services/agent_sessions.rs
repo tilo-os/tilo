@@ -1,5 +1,4 @@
-//! The agents a workspace keeps, and the sessions they work in: an MCP client's connection, or the
-//! turns people ask an agent in a conversation.
+//! The agents a workspace keeps, and the sessions they work in: an MCP client's connection.
 
 /// The prefix of an agent session's id: the desktop names each session beneath it by an id of its
 /// own.
@@ -85,69 +84,22 @@ pub trait AgentRoster: Send + Sync {
     }
 }
 
-/// The agent sessions a host serves: each MCP connection whose agent certificate the broker admits,
-/// for as long as it lasts, and each turn an agent is asked in, for as long as it goes.
+/// The agent sessions a host serves: each MCP connection the person admitted, for as long as it
+/// lasts.
 pub trait AgentSessions: Send + Sync {
     /// The session `session` of `agent` in `workspace`, while it goes.
     fn going(&self, workspace: &str, agent: &str, session: &str) -> Option<GoingSession>;
     /// Keep `grant`, the person's "allow" for every later step like the one
     /// `session` asked about, for as long as the session lasts.
     fn keep_answer(&self, session: &str, grant: tilo_action_policy::Grant);
-    /// Whether an agent in `workspace` acts only in one of its sessions, never on a workspace grant
-    /// alone.
-    fn confines(&self, workspace: &str) -> bool {
-        let _ = workspace;
-        false
-    }
-    /// The turns people asked the agents of `workspace`, each answered in its own session.
-    fn turns(&self, workspace: &str) -> Vec<AgentTurn> {
-        let _ = workspace;
-        Vec::new()
-    }
-    /// What the turn of `session` spent by now, in millionths of the currency, as the model gateway
-    /// charged it: the turn's total, not its last call's.
-    fn spent(&self, session: &str, total_micros: u64) {
-        let _ = (session, total_micros);
-    }
-    /// The answer `session` was giving `turn` ended without one, `attempt` being the time the
-    /// person asked, and `reason` why: nobody answered the person's message.
-    fn turn_failed(
-        &self,
-        session: &str,
-        turn: &tilo_action_policy::turn::Turn,
-        attempt: u32,
-        reason: &str,
-    ) {
-        let _ = (session, turn, attempt, reason);
-    }
 }
 
 /// An agent session while it goes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GoingSession {
     /// The other device of the person's that the connection came from; `None`
-    /// for a program on this device and for a turn.
+    /// for a program on this device.
     pub origin: Option<tilo_actions::InvokerDevice>,
     /// What the person allowed it for every later step like the one it asked about.
     pub answers: Vec<tilo_action_policy::Grant>,
-}
-
-/// A turn a person asked an agent in a conversation: the agent answers it in its session, acting
-/// for that person.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentTurn {
-    /// The session the agent answers in: one per conversation the agent takes part in.
-    pub session: String,
-    /// The agent, by its bare id.
-    pub agent: String,
-    /// The person whose message asked: the agent acts for them.
-    pub author: String,
-    /// The message the turn answers.
-    pub turn: tilo_action_policy::turn::Turn,
-    /// Which time the person asked it: a retry asks the same message again.
-    pub attempt: u32,
-    /// What the agent is asked, without what it may spend.
-    pub request: runtime_collab::TurnRequest,
-    /// The person's own words, else what they sent the agent: what its session is labelled by.
-    pub asked: String,
 }

@@ -237,10 +237,11 @@ impl Session {
         );
         let account = Account::new(server, grant.clone(), reach.clone(), caller.clone());
         let grant = grant.id.clone();
-        let own = McpServer::new(
+        let own = McpServer::for_agent(
             Joined::provider(ROOT_TREE, None, account.clone()),
             ROOT_TREE.to_owned(),
-            person.clone(),
+            &tilo_actions::policy::key_agent_id(&cert.device_public_key),
+            &person,
         )
         .with_agent_session(&id);
         Self {
@@ -384,7 +385,12 @@ impl Session {
         let actions = Joined::provider(workspace, Some(actions), self.account.clone());
         let catalogue =
             tilo_mcp::task_hosts::WorkspaceCatalogue::new(Arc::clone(&actions), self.caller());
-        McpServer::new(actions, workspace.to_owned(), self.person.clone())
+        let agent = self
+            .caller
+            .device_public_key()
+            .map(tilo_actions::policy::key_agent_id)
+            .expect("a key's session names its key");
+        McpServer::for_agent(actions, workspace.to_owned(), &agent, &self.person)
             .with_agent_session(&self.id)
             .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
                 Some(&self.person),
