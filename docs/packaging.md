@@ -103,7 +103,7 @@ Use `trixie` instead of `noble` on Debian 13. Fedora 44 users must first
 bootstrap the RPM release key and maintained repo definition from the exact
 `desktop-vX.Y.Z` release they are installing. Forgejo's generated RPM repo file
 does not advertise a Tilo key or enable package verification; the release
-workflow publishes a repo definition with those settings already present:
+publishes a repo definition with those settings already present:
 `https://code.tilo.so/api/packages/tilo/rpm/fedora/44.repo` is the upstream
 Forgejo-generated endpoint, retained for diagnostics and private-server
 fallbacks only.
@@ -346,7 +346,7 @@ composition downloads; `publish-desktop-payload` publishes it and advances the
 `TILO_DESKTOP_PAYLOAD_*` channel variables. Distribution packages are built and
 validated on t; t does not publish them to a package registry.
 
-The workflow uses the existing `runner` Forgejo label. amd64 containers run
+The check runs on a native node for its architecture. amd64 containers run
 directly, and every target userspace is pinned to a verified OCI digest rather
 than a mutable distribution tag. `desktop-package-{arch}` runs all five
 distribution targets for that architecture as one sequential job on a native

@@ -88,7 +88,7 @@ immutably and advances `TILO_DESKTOP_PAYLOAD_{URL,SHA256}_{X86_64,AARCH64}`.
 Trusted OS composition downloads the matching architecture and omits those four
 Cargo packages from its build. OS-only changes therefore test the desktop/OS integration without
 recompiling the desktop. Scheduled/manual OS builds exercise this immutable
-integration boundary; ordinary PRs do not run the OS image workflow. The OS
+integration boundary; ordinary PRs do not run the OS image check. The OS
 build reuses the payload only while it is current: the payload's
 `manifest.json` records its source revision, and if any Rust or Cargo input
 (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo`, `crates`, `apps`,
