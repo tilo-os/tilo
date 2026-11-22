@@ -220,7 +220,11 @@ pub fn metadata(root: &Path, path: &Path) -> Result<Option<Zeroizing<String>>, (
     check_components(root, path)?;
     use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
     use cap_primitives::fs::{FollowSymlinks, OpenOptions};
-    let root_handle = std::fs::File::open(root).map_err(|_| ())?;
+    // A directory opens as a directory on every host; `File::open` refuses one
+    // on Windows, which would make every saved account unreadable there.
+    let root_handle =
+        cap_primitives::fs::open_ambient_dir(root, cap_primitives::ambient_authority())
+            .map_err(|_| ())?;
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
     let file = cap_primitives::fs::open(
