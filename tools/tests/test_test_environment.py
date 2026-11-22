@@ -770,6 +770,40 @@ class CargoRunnerTests(unittest.TestCase):
             self.assertNotIn("TILO_TEST_ENVIRONMENT", env)
             self.assertEqual(env["WAYLAND_DISPLAY"], "wayland-0")
 
+    def test_a_wrapped_jobs_skips_reach_only_its_packages_test_binaries(self) -> None:
+        # tools/test-env.sh leaves the tests this machine cannot run beside the
+        # environment, per package: a test binary of that package is started
+        # without them, as a nextest run leaves them out, and nothing else is.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            target, binary = self.build_tree(work, 'printf "%s\\n" "$@"')
+            (target / "test-env-vars").write_text(f"pid={os.getpid()}\n")
+            skips = target / "test-env-skips"
+            skips.write_text(f"pid={os.getpid()}\n"
+                             "tilo-device-identity\tpersist::tests::a\n"
+                             "other-package\tsome::test\n")
+            result = self.start(binary, "user-filter",
+                                CARGO_PKG_NAME="tilo-device-identity")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(),
+                             ["user-filter", "--skip", "persist::tests::a"])
+            # Another package gets its own tests left out, never this one's.
+            result = self.start(binary, CARGO_PKG_NAME="other-package")
+            self.assertEqual(result.stdout.splitlines(), ["--skip", "some::test"])
+            # A package with no gated test is started as given.
+            result = self.start(binary, "user-filter", CARGO_PKG_NAME="elsewhere")
+            self.assertEqual(result.stdout.splitlines(), ["user-filter"])
+            # A program that is no test harness reads none of it.
+            program = target / "debug" / "tool"
+            program.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            program.chmod(0o755)
+            result = self.start(program, CARGO_PKG_NAME="tilo-device-identity")
+            self.assertEqual(result.stdout.splitlines(), [""], "no argument was added")
+            # A file a killed job left behind is not read.
+            skips.write_text("pid=999999999\ntilo-device-identity\tpersist::tests::a\n")
+            result = self.start(binary, CARGO_PKG_NAME="tilo-device-identity")
+            self.assertEqual(result.stdout.splitlines(), [""], "no argument was added")
+
     def test_a_wrapped_jobs_environment_reaches_its_programs_but_never_a_stale_file(self) -> None:
         # tools/test-env.sh writes the test environment beside the build directory, so a build's
         # scripts never carry it (it is keyed into every build script's cache entry there). Every
@@ -1024,6 +1058,108 @@ class CargoRunnerTests(unittest.TestCase):
             result = self.start(binary)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(result.stdout.startswith("/tmp/tilo-test-env."), result.stdout)
+
+
+class CapabilitySkipTests(unittest.TestCase):
+    """A plain `cargo test` leaves out the tests whose capability this machine lacks, as a
+    nextest run does, and says so: tools/test-env.sh writes the skips beside the environment,
+    and tools/cargo-runner.sh hands them to the package's test binaries."""
+
+    def wrapped(self, work: Path, probe: str, *arguments: str, uname: str | None = None):
+        """`cargo test ARGUMENTS` through tools/test-env.sh, with PROBE's report: the run's
+        result, the command the fake cargo was given, the variables it found, and the skips."""
+        programs = work / "bin"
+        programs.mkdir(exist_ok=True)
+        (programs / "cargo").write_text(
+            f'#!/bin/sh\nprintf "%s\\n" "$*" >"{work}/argv"\n'
+            f'cp -- "$CARGO_TARGET_DIR/test-env-vars" "{work}/vars" 2>/dev/null || true\n'
+            f'cp -- "$CARGO_TARGET_DIR/test-env-skips" "{work}/skips" 2>/dev/null || true\n')
+        (programs / "cargo").chmod(0o755)
+        if uname is not None:
+            # The kernel test-env.sh asks for: `-s` answers it, everything else is the host's.
+            (programs / "uname").write_text(
+                f'#!/bin/sh\ncase $1 in -s) echo {uname} ;; *) exec /usr/bin/uname "$@" ;; esac\n')
+            (programs / "uname").chmod(0o755)
+        report = work / "probe"
+        report.write_text(f"#!/bin/sh\n{probe}\n")
+        report.chmod(0o755)
+        env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+               "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
+               "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
+               "TILO_TEST_NTFS_FIXTURES": "0",
+               "TILO_FONT_ASSET_CACHE": str(work / "fonts"),
+               "NEXTEST_BIN_EXE_tilo-capability-probe": str(report)}
+        result = subprocess.run(["bash", str(TEST_ENV), "cargo", "test", *arguments],
+                                env=env, capture_output=True, text=True, check=False)
+        argv = (work / "argv").read_text().strip() if (work / "argv").exists() else ""
+        provided = (dict(line.split("=", 1)
+                         for line in (work / "vars").read_text().splitlines()[1:])
+                    if (work / "vars").exists() else {})
+        skips = (work / "skips").read_text().splitlines() if (work / "skips").exists() else []
+        return result, argv, provided, skips
+
+    def test_a_gated_test_is_left_out_and_the_run_says_which_check_runs_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            result, argv, provided, skips = self.wrapped(
+                work,
+                "echo 'tilo-capability-probe non-root-identity unavailable: this process "
+                "executes as uid 0'",
+                "--locked", "-p", "tilo-device-identity")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(argv, "test --locked -p tilo-device-identity")
+            # The run says what it left out, why, and where it does run.
+            self.assertIn("not run:", result.stderr)
+            self.assertIn("NonRoot", result.stderr)
+            self.assertIn("this process executes as uid 0", result.stderr)
+            self.assertIn("run by check identity-accounts", result.stderr)
+            # The runner's file: the command that wrote it, and the test the group names.
+            self.assertTrue(skips[0].startswith("pid="), skips)
+            self.assertIn("tilo-device-identity\tpersist::tests::"
+                          "an_unreachable_device_key_is_an_error_not_a_fresh_machine",
+                          skips[1:])
+            # The capability stays promised: the tests that do run still fail loudly
+            # where a capability they need is missing.
+            self.assertEqual(provided["TILO_REQUIRE_NONROOT"], "1")
+            self.assertFalse((work / "target" / "test-env-skips").exists(),
+                             "the skips are removed afterwards")
+
+    def test_a_capability_this_machine_has_leaves_nothing_out(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            result, _, _, skips = self.wrapped(
+                work, "echo 'tilo-capability-probe non-root-identity available'",
+                "-p", "tilo-device-identity")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("not run:", result.stderr)
+            self.assertEqual(skips, [])
+
+    def test_a_run_of_no_package_the_manifest_names_probes_nothing(self) -> None:
+        # The probe named here cannot run: asking it would fail the command.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            result, _, _, skips = self.wrapped(work, "exit 9", "-p", "no-such-package")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(skips, [])
+
+    def test_a_run_that_starts_no_test_probes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            result, _, _, skips = self.wrapped(work, "exit 9", "-p", "tilo-device-identity",
+                                               "--no-run")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(skips, [])
+
+    def test_a_machine_without_the_probes_leaves_nothing_out(self) -> None:
+        # The probes are Linux's: a macOS run of the same package starts none,
+        # and its tests state their own premises.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            result, _, _, skips = self.wrapped(work, "exit 9", "-p", "tilo-device-identity",
+                                               uname="Darwin")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("not run:", result.stderr)
+            self.assertEqual(skips, [])
 
 
 class DesktopIsolationHelperTests(unittest.TestCase):

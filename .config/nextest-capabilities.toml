@@ -10,7 +10,11 @@
 # leaves out each group whose probe fails, so the run reports those tests as
 # not run, naming the capability. tools/ci/nextest.sh asks it for that filter
 # before every run it makes, so a job t shards leaves them out exactly as a
-# workflow's shard does. A capability not yet mapped keeps the
+# workflow's shard does. A plain `cargo test` asks for the same answer as
+# libtest skips (tools/test-env.sh, tools/cargo-runner.sh), so it leaves them
+# out too, and says so: a group there is a test(=NAME), or a test(/regex/) that
+# is a literal, anchored or not at its start, which a skip can stand in for.
+# A capability not yet mapped keeps the
 # old behaviour: its tests skip with a message where it is missing.
 #
 # A test that fails with "TILO_REQUIRE_... is set but ... is unavailable"

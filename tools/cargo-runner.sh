@@ -16,7 +16,9 @@
 # environment (a private audio endpoint, the fixtures, the capabilities the
 # image promises) and writes it beside the build directory, so that a build's
 # scripts never carry it. Every target such a command starts then gets it, and
-# the isolation above, the way the test harnesses do.
+# the isolation above, the way the test harnesses do. It also writes there the
+# tests this machine cannot run, and a test binary of that package is started
+# without them (`--skip`), as a nextest run leaves them out.
 #
 # A suite starts a process per test, so what a start costs here it pays tens
 # of thousands of times. This shell is therefore the only one a start runs:
@@ -70,15 +72,31 @@ if [ -r "$env_file" ]; then
         fi
     } <"$env_file"
 fi
+# The tests this machine cannot run, which tools/test-env.sh left beside the
+# environment: a test binary of a package they name skips them, as a nextest
+# run leaves them out. Its first line names the command too.
+args=("$@")
+skip_file=$dir/test-env-skips
+if [ "$harness" = 1 ] && [ "$handoff" = 1 ] && [ -r "$skip_file" ]; then
+    {
+        IFS= read -r owner || true
+        if [ "${owner%%=*}" = pid ] && kill -0 "${owner#pid=}" 2>/dev/null; then
+            while IFS='	' read -r package pattern; do
+                [ -z "$pattern" ] || [ "$package" != "${CARGO_PKG_NAME:-}" ] ||
+                    args+=("--skip" "$pattern")
+            done
+        fi
+    } <"$skip_file"
+fi
 if [ "$handoff" = 0 ] && [ "$harness" = 0 ]; then
-    exec "$@"
+    exec "${args[@]}"
 fi
 
 if tilo_test_environment_intact; then
-    exec "$@"
+    exec "${args[@]}"
 fi
 tilo_test_environment_enter
 # Started here rather than exec'd: this shell stays to remove the environment
 # after it, as tools/with-test-environment.sh does.
-if "$@"; then status=0; else status=$?; fi
+if "${args[@]}"; then status=0; else status=$?; fi
 exit "$status"

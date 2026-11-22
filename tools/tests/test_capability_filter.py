@@ -71,6 +71,12 @@ class ExclusionTests(unittest.TestCase):
         self.assertIn("UserNamespace", notes[0])
         self.assertIn(FAILED, notes[0])
 
+    def test_a_left_out_group_names_the_check_that_runs_it(self):
+        # The run says where the tests it left out do run, so a passing run
+        # that missed nothing still shows where they were covered.
+        _, notes = capability.exclusions(report(**{"bubblewrap-overlay": FAILED}), {"env-tools"})
+        self.assertIn("run by check sandbox-host-ids", notes[0])
+
     def test_a_group_of_another_package_is_not_left_out(self):
         # Only what the run tests is left out of it: a group of a package this
         # run does not test has no say in its filter.
@@ -83,6 +89,72 @@ class ExclusionTests(unittest.TestCase):
         left_out, notes = capability.exclusions(report(), {"env-tools"})
         self.assertEqual(left_out, "")
         self.assertEqual(notes, [])
+
+
+def synthetic(text: str, report_text: str, packages: set[str] | None = None):
+    """`text` as the manifest, read from where capability_filter.py looks."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "nextest-capabilities.toml"
+        path.write_text(text)
+        with mock.patch.object(capability, "MANIFEST", path):
+            return capability.skip_patterns(report_text, packages)
+
+
+MANIFEST_ONE = """\
+[capabilities.P]
+variable = "TILO_REQUIRE_P"
+mapped = true
+
+[[capabilities.P.tests]]
+probe = "p"
+checks = ["check-a", "check-b"]
+filter = "package(alpha) and (test(=exact::name) or test(/^prefix::/)) or package(beta) and test(/middle::/)"
+"""
+UNAVAILABLE = "tilo-capability-probe p unavailable: no p here\n"
+
+
+class SkipPatternTests(unittest.TestCase):
+    """A gated group's filter, as the libtest skips a plain cargo test takes."""
+
+    def test_an_exact_test_and_a_literal_prefix_become_skips(self):
+        patterns, notes = synthetic(MANIFEST_ONE, UNAVAILABLE)
+        # libtest skips by substring: the exact name is the whole test path, and
+        # a regex that is a literal prefix (an optional `^` and nothing else
+        # alive) is the literal.
+        self.assertEqual(patterns,
+                         {"alpha": ["exact::name", "prefix::"], "beta": ["middle::"]})
+        self.assertEqual(len(notes), 1, notes)
+        self.assertIn("P", notes[0])
+        self.assertIn("no p here", notes[0])
+        self.assertIn("run by checks check-a, check-b", notes[0])
+
+    def test_only_the_tested_packages_tests_are_translated(self):
+        patterns, _ = synthetic(MANIFEST_ONE, UNAVAILABLE, {"beta"})
+        self.assertEqual(patterns, {"beta": ["middle::"]})
+
+    def test_a_filter_a_skip_cannot_express_ends_the_run(self):
+        # A skip is a substring: `a.*` or a trailing anchor would skip tests the
+        # group does not name. Saying so beats leaving a gated test to fail.
+        for filter_text in ("package(alpha) and test(/^a.*/)", "package(alpha) and test(/x$/)",
+                            "package(alpha) and test(name)"):
+            with self.subTest(filter=filter_text):
+                text = MANIFEST_ONE.replace(
+                    "package(alpha) and (test(=exact::name) or test(/^prefix::/)) or "
+                    "package(beta) and test(/middle::/)", filter_text)
+                with self.assertRaises(SystemExit) as raised:
+                    synthetic(text, UNAVAILABLE)
+                self.assertIn("capability", str(raised.exception))
+
+    def test_nothing_gated_leaves_nothing_out(self):
+        patterns, notes = synthetic(MANIFEST_ONE, "tilo-capability-probe p available\n")
+        self.assertEqual((patterns, notes), ({}, []))
+
+    def test_a_group_no_check_names_says_its_family_runs_it(self):
+        # A group the manifest gives no `checks` runs in a t.toml cargo
+        # family, and the line says so instead of naming none.
+        text = MANIFEST_ONE.replace('checks = ["check-a", "check-b"]\n', "")
+        _, notes = synthetic(text, UNAVAILABLE)
+        self.assertIn("no check names it (a t.toml family runs it)", notes[0])
 
 
 class ProbeTests(unittest.TestCase):
