@@ -485,7 +485,7 @@ suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
 name = "imager-packaging"
-inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/desktop-catalog.json", "os/dev/probe-release-signer.py", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", ".forgejo/workflows/release-desktop.yml", "dist/session/vm-e2e/run.py"]
+inputs = ["apps/imager/packaging/", "apps/imager/tilo-app.toml", "apps/imager/desktop-catalog.json", "os/dev/probe-release-signer.py", "tools/tests/test_imager_enabled_platforms.py", ".forgejo/workflows/release-imager.yml", "dist/session/vm-e2e/run.py"]
 suites = ["apps/imager/packaging/test_build_desktop_catalog.py", "apps/imager/packaging/test_desktop_catalog_release.py", "apps/imager/packaging/test_continuous_release.py", "apps/imager/packaging/test_capture_build_evidence.py", "apps/imager/packaging/test_capture_qualification.py", "apps/imager/packaging/test_capture_release_pipeline.py", "apps/imager/packaging/test_capture_runtime_pins.py", "apps/imager/packaging/test_product_display_name.py", "apps/imager/packaging/test_capture_admission.py", "apps/imager/packaging/test_capture_build_phases.py", "apps/imager/packaging/test_capture_build_script.py", "apps/imager/packaging/test_capture_openpgp.py", "apps/imager/packaging/test_capture_protocol.py", "apps/imager/packaging/test_service_source_assets.py", "apps/imager/packaging/test_target_policy.py"]
 
 [[group]]
@@ -1745,9 +1745,8 @@ reason = "installs and verifies the built Arch package in an Arch userspace; des
 
 [[unrequired]]
 suite = "dist/ci/run-dev-session-test.sh"
-reason = "needs Docker to create and start a container, and pulls its digest-pinned Ubuntu from Docker Hub, so it runs in a VM of its own; the dev-session-test check does that on every main commit. release-desktop.yml's quality runner runs it too"
+reason = "needs Docker to create and start a container, and pulls its digest-pinned Ubuntu from Docker Hub, so it runs in a VM of its own; the dev-session-test check does that on every main commit"
 check = "dev-session-test"
-workflow = "release-desktop.yml"
 
 [[unrequired]]
 suite = "dist/ci/test-installed-host-startup.sh"

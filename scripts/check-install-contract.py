@@ -224,7 +224,6 @@ linux_clipboard_dependencies = clipboard_manifest["target"]['cfg(target_os = "li
 ]
 assert "wayland-backend" in linux_clipboard_dependencies
 
-session_workflow = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text()
 # The package jobs build the same immutable app store as releases. Exercise the job's own
 # preflight before it fetches or compiles anything: an absent authority must fail at once,
 # without weakening the staging checks (dist/rpm/stage-app-store.sh).
@@ -254,7 +253,6 @@ for owner, accepted in (
     assert (result.returncode == 0) == accepted, "package-job registry-owner preflight"
 
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
-rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
 rpm_signer = (ROOT / "dist/rpm/sign-rpms.sh").read_text()
 rpm_signing_tests = (ROOT / "dist/rpm/test-signing-contract.sh").read_text()
 rpm_repo_generator = (ROOT / "dist/rpm/make-repo-file.sh").read_text()
@@ -262,7 +260,6 @@ rpm_build_deps = (ROOT / "dist/ci/install-build-deps.sh").read_text()
 rpm_release_verifier = (ROOT / "dist/ci/verify-release-artifacts.sh").read_text()
 rpm_spec = (ROOT / "dist/rpm/tilo-session.spec").read_text()
 assert "https://code.tilo.so/api/packages/tilo/rpm/fedora/44.repo" in packaging_docs
-assert "/api/packages/$owner/rpm/fedora/44/upload" in rpm_publisher
 assert "sudo rpm-ostree install tilo-session" in packaging_docs
 assert "sudo rpm-ostree update" in packaging_docs
 assert "sudo rpm-ostree uninstall tilo-session" in packaging_docs
@@ -280,20 +277,6 @@ assert "dnf config-manager` persists credentials" in packaging_docs
 assert "dnf stores the credential" not in packaging_docs.lower()
 assert "isolated broker" in packaging_docs
 assert "desktop-rpm-broker.md" in packaging_docs
-assert "TILO_RPM_SIGNING_FINGERPRINT" in session_workflow
-package_job = session_workflow.split("  package:\n", 1)[1].split("  sign-rpm:\n", 1)[0]
-signing_job = session_workflow.split("  sign-rpm:\n", 1)[1].split("  publish-os-payload:\n", 1)[0]
-assert "    needs: validate\n" in package_job
-assert "secrets.TILO_RPM_SIGNING" not in session_workflow
-assert "enable-openid-connect" not in package_job
-assert "enable-openid-connect: true" in signing_job
-assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/desktop-v')" in signing_job
-assert "needs: [validate, package]" in signing_job
-assert "dist/rpm/sign-rpms.sh signed-fedora" in signing_job
-assert "vars.TILO_RPM_SIGNING_FINGERPRINT" in signing_job
-validation = session_workflow.split("  validate:\n", 1)[1].split("  package:\n", 1)[0]
-assert 'git merge-base --is-ancestor "$GITHUB_SHA" origin/stable' in validation
-assert "needs: [validate, package, sign-rpm]" in session_workflow
 rpm_job = (ROOT / "dist/ci/run-package-job.sh").read_text()
 assert "--env TILO_RPM_SIGNING" not in rpm_job
 assert "ACTIONS_ID_TOKEN_REQUEST_" in rpm_job
@@ -314,7 +297,6 @@ assert "TILO_FAKE_RPM_MODE=unsigned" in rpm_signing_tests
 assert "TILO_FAKE_RPM_MODE=wrong" in rpm_signing_tests
 assert "gpgcheck=1" in rpm_repo_generator
 assert "repo_gpgcheck=0" in rpm_repo_generator
-assert "make-repo-file.sh" in signing_job
 assert "rpm-sign" in rpm_build_deps
 assert "expected_count=20" in rpm_release_verifier
 assert "expected_count=30" in rpm_release_verifier
@@ -328,32 +310,15 @@ assert "cmp -- \"$expected_repo\" \"$release_dir/tilo-fedora-44.repo\"" in rpm_r
 trust_pin = "%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt"
 assert f"%config(noreplace) {trust_pin}" not in rpm_spec
 assert f"\n{trust_pin}\n" in rpm_spec
-assert "Select native release jobs" in session_workflow
-assert 'TILO_DESKTOP_ARM64_RELEASES: "1"' in session_workflow
-assert '[[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow
 for desktop in contract["desktopSession"]:
     assert len(desktop["architectures"]) == 1
     assert len(desktop["plannedArchitectures"]) == 1
-assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
-assert "amd64_runner=runner-large" in session_workflow
-assert "arm64_runner=runner-large-arm64" in session_workflow
-assert '{arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}' in session_workflow
-assert '{arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}' in session_workflow
-
-# Workflow enablement is not a support claim. The ARM64 jobs are enabled, so no
-# page may still describe them as switched off or name a pool the workflow does
-# not ask for, and none may turn an enabled job into a supported public
-# platform: the contract keeps ARM64 in `plannedArchitectures`, and every page
-# that names the release job says a tag or `full_native` is what selects it.
-for desktop in contract["desktopSession"]:
     assert any(
         arch in desktop["plannedArchitectures"]
         for arch in ("arm64", "aarch64", "aarch64-linux")
     ), desktop["distribution"]
 getting_started = (ROOT / "docs/getting-started.md").read_text()
 release_pipeline = (ROOT / "docs/release-pipeline.md").read_text()
-packaging_flat = packaging_docs.replace("\n", " ")
-release_flat = release_pipeline.replace("\n", " ")
 for name, page in (
     ("docs/getting-started.md", getting_started),
     ("docs/packaging.md", packaging_docs),
@@ -361,69 +326,15 @@ for name, page in (
 ):
     assert "when enabled" not in page, name
     assert "not release-guarded" not in page, name
-assert "releases build and install-test ARM64" in getting_started
-assert "x86-64 currently" in getting_started
-assert "not a qualified public platform yet" in getting_started
-assert "workflow fact, not a support claim" in getting_started
-assert "`arm64` in tagged and full-native builds" in packaging_docs
-assert "`aarch64` in tagged and full-native builds" in packaging_docs
-assert "runner-large-arm64" in packaging_docs
-assert "runner-arm64" not in packaging_docs
-assert "not a release qualification" in packaging_docs
-assert "no ARM64 combination is release-qualified or publicly supported" in packaging_flat
-assert "native `runner-large-arm64` package jobs" in release_flat
-assert "still marks ARM64 desktop sessions as" in release_pipeline
-
-# Workflow enablement is not a support claim. The ARM64 jobs are enabled, so no
-# page may still describe them as switched off or name a pool the workflow does
-# not ask for, and none may turn an enabled job into a supported public
-# platform: the contract keeps ARM64 in `plannedArchitectures`, and every page
-# that names the release job says a tag or `full_native` is what selects it.
-for desktop in contract["desktopSession"]:
-    assert any(
-        arch in desktop["plannedArchitectures"]
-        for arch in ("arm64", "aarch64", "aarch64-linux")
-    ), desktop["distribution"]
-getting_started = (ROOT / "docs/getting-started.md").read_text()
-release_pipeline = (ROOT / "docs/release-pipeline.md").read_text()
-packaging_flat = packaging_docs.replace("\n", " ")
-release_flat = release_pipeline.replace("\n", " ")
-for name, page in (
-    ("docs/getting-started.md", getting_started),
-    ("docs/packaging.md", packaging_docs),
-    ("docs/release-pipeline.md", release_pipeline),
-):
-    assert "when enabled" not in page, name
-    assert "not release-guarded" not in page, name
-assert "releases build and install-test ARM64" in getting_started
-assert "x86-64 currently" in getting_started
-assert "not a qualified public platform yet" in getting_started
-assert "workflow fact, not a support claim" in getting_started
-assert "`arm64` in tagged and full-native builds" in packaging_docs
-assert "`aarch64` in tagged and full-native builds" in packaging_docs
-assert "runner-large-arm64" in packaging_docs
-assert "runner-arm64" not in packaging_docs
-assert "not a release qualification" in packaging_docs
-assert "no ARM64 combination is release-qualified or publicly supported" in packaging_flat
-assert "native `runner-large-arm64` package jobs" in release_flat
-assert "still marks ARM64 desktop sessions as" in release_pipeline
 package_targets = (ROOT / "dist/ci/package-targets.txt").read_text()
 assert "amd64|arch|docker.io/menci/archlinuxarm@sha256:" in package_targets
 assert "arm64|arch|docker.io/gomasy/archlinuxarm@sha256:" in package_targets
-assert "amd64_targets=$(dist/ci/package-targets.sh amd64)" in session_workflow
-assert "arm64_targets=$(dist/ci/package-targets.sh arm64)" in session_workflow
-assert "release_arches=amd64,arm64" in session_workflow
-assert "release_arches: ${{ steps.jobs.outputs.release_arches }}" in session_workflow
-assert "RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}" in session_workflow
-assert 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' in session_workflow
-assert "TILO_JOB_TARGETS" in session_workflow
-assert "while IFS='|' read -r distro image revision" in session_workflow
-assert 'echo "::endgroup::"\n              exit 1' in session_workflow
-assert "max-parallel:" not in session_workflow
 assert "TILO_BLAKE3_PURE=1" in rpm_job
 assert 'CARGO_FEATURE_PURE="$TILO_BLAKE3_PURE"' in rpm_job
 assert "cargo_jobs=${TILO_CARGO_JOBS:-2}" in rpm_job
-assert 'TILO_CARGO_JOBS: "6"' in session_workflow
+assert "cores = '\"${CARGO_BUILD_JOBS:-2}\"" in rpm_job
+assert "CARGO_PROFILE_RELEASE_LTO=thin" in rpm_job
+assert "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" in rpm_job
 assert "cores = '\"${CARGO_BUILD_JOBS:-2}\"" in rpm_job
 assert "CARGO_PROFILE_RELEASE_LTO=thin" in rpm_job
 assert "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" in rpm_job

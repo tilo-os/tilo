@@ -55,24 +55,18 @@ PACKAGING_INPUTS = {
     "os/scripts/collect-runtime-dependencies.py",
     "os/scripts/stamp-runtime.sh",
     "tools/apps/stage_sdk_services.py",
-    "tools/assemble_verified_apps.py",
-    "tools/app_packaging_plan.py",
 }
 VERIFICATION_INPUTS = {
-    "tools/ci/app_release_history.py",
     "tools/apps/app_release.py",
     "tools/ci/__init__.py",
     "tools/ci/workspace_graph.py",
     "tools/ci/runner_labels.py",
     "tools/apps/app_channel_manifest.py",
     "tools/apps/canonical_app_verifier.py",
-    "tools/apps/create_app_receipt.py",
     "tools/apps/final_app_receipt.py",
     "os/scripts/verify-elf-hardening.sh",
     "os/scripts/verify-runtime-bundle-closure.sh",
     "tools/canonical_verifier_bundle.py",
-    "tools/app_packaging_qualification.py",
-    ".forgejo/workflows/release-apps.yml",
 }
 GLOBAL_INPUTS = BINARY_INPUTS | PACKAGING_INPUTS | VERIFICATION_INPUTS
 GLOBAL_PREFIXES = (".cargo/", "vendor/", "tools/web/wasm-split/")

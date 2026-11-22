@@ -7,10 +7,10 @@ budget in `tools/perf/tapp-size-budget/budget.toml`, set at its measured size
 plus 1 % headroom, rounded up to 64 KiB. `tools/perf/tapp_size_ratchet.py`
 enforces the budgets in these places:
 
-- **Release / apps** (`Shipped tapps within their size budget`) measures each
+- **the app release** (`Shipped tapps within their size budget`) measures each
   tapp it has just packaged and signed, which is the affected apps only. It
   fails when an app is over its budget or has none, so nothing is published.
-  To measure apps the pull request job did not pick, dispatch Release / apps
+  To measure apps the pull request job did not pick, dispatch the app release
   on the branch with `apps=<dir>`, the architecture you need, and publish
   off. The same job also packages Calculator twice
   (`tools/apps/check-reproducible-tapp.sh`, the second time compiled again
@@ -70,7 +70,7 @@ aarch64 = 65536
 p50 = 65536
 ```
 
-A failing Release / apps job prints this file with each over-budget app's
+A failing the app release job prints this file with each over-budget app's
 numbers. Each architecture's job prints its own lines, so merge them. A raise
 may at most double a budget. When an app shrinks, both checks print the lower
 budget to commit (`[apps."<id>"] <arch> = <bytes>`), with the app removed from

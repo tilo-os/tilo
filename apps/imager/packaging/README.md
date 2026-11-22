@@ -10,7 +10,7 @@ catalog keeps Desktop installation unavailable; it does not block other Imager
 features or invent a release.
 
 For a qualified Desktop release, retain the exact signed RPMs and their native
-reports from `release-desktop.yml`. The login test of those packages is
+reports from the `desktop-package-{arch}` checks. The login test of those packages is
 `dist/session/vm-e2e/run.py`;
 its report and `source.json` record each RPM's size and SHA-256. That basic
 session test does not by itself prove return to the prior session, selected

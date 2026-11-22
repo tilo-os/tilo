@@ -809,8 +809,8 @@ updates nothing from it. So a change of the format ships in
 this order: deploy the registry-server of the commit that changed it, sign a
 snapshot with it (the signing command chains the older-format predecessor by
 its hash), and only then release apps and devices that read the new format;
-the app release's submit stage refuses to submit to a registry at another
-format (tools/apps/publish-collections.sh). The compact form:
+an app publication refuses to submit to a registry at another format. The
+compact form:
 
 - Per entry it keeps only the newest release and the newest pre-release of
   each exact target (`newest_versions`), in their original order. Any

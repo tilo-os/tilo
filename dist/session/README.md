@@ -78,7 +78,7 @@ host-session issue and requires a live password-prompt check after login.
 ## VM test
 
 `dist/session/vm-e2e/run.py` runs the packaged session as a Fedora user does:
-the fedora-44 RPMs from Release / desktop installed with dnf on the Fedora 44
+the fedora-44 RPMs from `desktop-package-amd64` installed with dnf on the Fedora 44
 Cloud image under KVM, a gnome-keyring Secret Service unlocked on the user's
 bus, the identity provisioned there (`--provision-identity`, the same
 platform-storage minting the setup screen does), GNOME input sources seeded

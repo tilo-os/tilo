@@ -217,9 +217,9 @@ app_model_runtime="$app_models/app-model-runtime"
     printf 'no model runtime at %s; build it with `t outputs app-models`\n' "$app_model_runtime" >&2
     exit 1
 }
-# Keep the public runtime and publisher key under the root transported by
-# release-apps.yml and consumed by assemble-collection.sh. Private identities
-# stay in work/ (or the caller's external identity files), outside that root.
+# Keep the public runtime and publisher key under the root the app release
+# checks transport and assemble-collection.sh consumes. Private identities stay
+# in work/ (or the caller's external identity files), outside that root.
 OUT_DIR="$out/runtime" RUNTIME_RELEASE="$runtime_release" FROM=/ \
     VERSION_OUT="$out/work/runtime-version" \
     SOURCE_DATE_EPOCH="$source_epoch" \

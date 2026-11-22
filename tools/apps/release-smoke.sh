@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What a Release / apps build must show before its packages may be signed, run from the
+# What a the app release build must show before its packages may be signed, run from the
 # repository root after dist/apps/package-apps.sh built every app of the default collection for
 # this machine's architecture into target/thin-app and packaged them into dist/app-release.
 # Each measurement waits for its own subject: a tapp over its

@@ -7,7 +7,7 @@ is the bytes of the signed
 max <= 6 MB, ratcheted per app. Two checks hold it:
 
 - **Per app, when the tapp is packaged.** `measure DIR` reads what
-  dist/apps/package-apps.sh wrote (`index.json` and `tapp/`): Release / apps
+  dist/apps/package-apps.sh wrote (`index.json` and `tapp/`): the app release
   runs it on the tapps it has just built and signed, which are the affected
   apps only. It fails when an app is over its budget or has none.
 - **The fleet, nightly.** `fleet ENTRIES_JSON` reads the public registry's
@@ -31,7 +31,7 @@ changes never edit the same line. When an app shrinks, `measure` and `fleet`
 print the lower budget to commit. docs/measurements/app-package-size.md says how
 to raise a budget.
 
-The population is the default collection's apps: what Release / apps builds
+The population is the default collection's apps: what the app release builds
 and publishes as apps. The runtime package (`so.tilo.runtime`, its own KPI)
 and the runtime and provider stubs are not apps. Packages the registry still
 lists without a source in this repository are not counted either. `fleet`
@@ -165,7 +165,7 @@ def app_release(root: pathlib.Path = REPO) -> Any:
 
 
 def default_collection(root: pathlib.Path = REPO) -> set[str]:
-    """Package ids of the default collection: what Release / apps publishes as apps."""
+    """Package ids of the default collection: what the app release publishes as apps."""
     module = app_release(root)
     catalog = module.app_catalog(root)
     names = module.resolve_collection("default", catalog, module.config(root / "dist/apps/app-collections.toml"))
@@ -178,7 +178,7 @@ def budget_for(size: int, headroom: float) -> int:
 
 def run_label() -> str:
     number = os.environ.get("GITHUB_RUN_NUMBER", "")
-    return number if number.isdigit() else "<the Release / apps run number>"
+    return number if number.isdigit() else "<the the app release run number>"
 
 
 def raise_hint(over: dict[str, tuple[int, int]], arch: str) -> str:
@@ -365,7 +365,7 @@ def shape_problems(budget: Budget) -> list[str]:
 def raise_problems(name: str, raised: dict[str, Any], budget: Budget) -> list[str]:
     problems = []
     reason, run = raised.get("reason"), raised.get("run")
-    # The run that measured the growth: a Release / apps run number, or the t run
+    # The run that measured the growth: a the app release run number, or the t run
     # (`r` and its hex id, as `t test` prints it) of an app-sizes check.
     measured = ((isinstance(run, int) and not isinstance(run, bool) and run > 0)
                 or (isinstance(run, str) and re.fullmatch(r"r[0-9a-f]{6,}", run) is not None))

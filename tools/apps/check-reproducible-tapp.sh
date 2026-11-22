@@ -4,7 +4,7 @@
 #   tools/apps/check-reproducible-tapp.sh APP
 #
 # APP is a directory under apps/. Both builds go through dist/apps/package-apps.sh,
-# the path Release / apps publishes through: the thin binary, the runtime
+# the path the app release publishes through: the thin binary, the runtime
 # bundle it links, the signed tapp, the registry's runtime package and the
 # collection archive. The first takes Cargo's and the compiler cache's outputs
 # as they are; the second removes the app's own build outputs and compiles
