@@ -185,16 +185,16 @@ fn read(opened: &Opened, at: &ResourceRef, field: &str) -> Option<Value> {
 
 fn text(value: Option<Value>) -> String {
     match value {
-        Some(Value::Text(text)) => text.to_string(),
+        Some(Value::Text(text)) => text,
         Some(Value::Rich(rich)) => rich.written_text(),
         Some(Value::Opt(Some(inner))) => text(Some(*inner)),
         _ => String::new(),
     }
 }
 
-fn int(value: Option<Value>) -> i64 {
+fn int(value: Option<&Value>) -> i64 {
     match value {
-        Some(Value::Int(n)) => n,
+        Some(Value::Int(n)) => *n,
         _ => 0,
     }
 }
@@ -253,7 +253,7 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
             .iter()
             .map(|claim| Claim {
                 device: text(read(opened, claim, "device")),
-                at: int(read(opened, claim, "at")),
+                at: int(read(opened, claim, "at").as_ref()),
             })
             .collect();
         let made = opened
@@ -267,7 +267,7 @@ pub fn asks(opened: &Opened) -> Result<Vec<Asked>, String> {
             .filter(|(_, ask)| ask.as_ref().is_some_and(|ask| ask.same(&at)))
             .map(|(reply, _)| Replied {
                 at: reply.clone(),
-                attempt: int(read(opened, reply, "attempt")),
+                attempt: int(read(opened, reply, "attempt").as_ref()),
                 state: state_of(&meta, read(opened, reply, "state")),
                 body: text(read(opened, reply, "body")),
                 superseded: matches!(read(opened, reply, "superseded"), Some(Value::Bool(true))),
