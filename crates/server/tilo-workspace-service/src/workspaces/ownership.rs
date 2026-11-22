@@ -181,6 +181,7 @@ mod tests {
             answer: Answer::Allow,
             lifetime: Lifetime::UntilRevoked,
             granted_by: Grantee::person(host.to_owned()),
+            services: Vec::new(),
         }
     }
 

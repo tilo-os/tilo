@@ -348,6 +348,7 @@ pub fn administrator_grant(workspace: &str, person: &str, granted_by: Grantee) -
         answer: Answer::Allow,
         lifetime: Lifetime::UntilRevoked,
         granted_by,
+        services: Vec::new(),
     }
 }
 
@@ -372,6 +373,7 @@ pub fn administrator_moderation_grant(workspace: &str, person: &str, granted_by:
         answer: Answer::Allow,
         lifetime: Lifetime::UntilRevoked,
         granted_by,
+        services: Vec::new(),
     }
 }
 
@@ -477,6 +479,7 @@ pub fn block_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant 
         answer: Answer::Deny,
         lifetime: Lifetime::UntilRevoked,
         granted_by,
+        services: Vec::new(),
     }
 }
 
@@ -505,6 +508,7 @@ pub fn restriction_grant(
         answer: Answer::Deny,
         lifetime: Lifetime::Until(until_ms),
         granted_by,
+        services: Vec::new(),
     }
 }
 
@@ -631,6 +635,7 @@ impl Preset {
                 answer: rule.answer,
                 lifetime: *lifetime,
                 granted_by: granted_by.clone(),
+                services: Vec::new(),
             })
             .collect()
     }
@@ -936,6 +941,7 @@ pub fn agent_bound(agent: &str, person: &str, bound: &[Rule]) -> Vec<Grant> {
             answer: rule.answer,
             lifetime: Lifetime::UntilRevoked,
             granted_by: granted_by.clone(),
+            services: Vec::new(),
         })
         .collect()
 }

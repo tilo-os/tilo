@@ -293,6 +293,7 @@ pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGr
             answer: rule.answer,
             lifetime: Lifetime::UntilRevoked,
             granted_by: subject.clone(),
+            services: Vec::new(),
         })
         .collect();
     let decision = decide(

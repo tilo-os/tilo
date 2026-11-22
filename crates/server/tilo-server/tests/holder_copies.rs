@@ -358,6 +358,7 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
         answer: Answer::Allow,
         lifetime: Lifetime::UntilRevoked,
         granted_by: Grantee::person(hex::encode(operator.user_pk)),
+        services: Vec::new(),
     };
     made_on
         .host

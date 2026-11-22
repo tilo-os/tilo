@@ -506,6 +506,7 @@ mod tests {
                 answer: Answer::Deny,
                 lifetime: Lifetime::UntilRevoked,
                 granted_by: Grantee::person(PERSON),
+                services: Vec::new(),
             });
             let explicit_allow = CapOverride::grant(
                 Grantee::person(MEMBER),

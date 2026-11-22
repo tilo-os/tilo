@@ -402,6 +402,11 @@ pub struct Grant {
     pub answer: Answer,
     pub lifetime: Lifetime,
     pub granted_by: Grantee,
+    /// The outside services an outside grant is narrowed to, by name (`youtube`): it covers an
+    /// action only when every service the action reaches is one of them. Empty for a grant that
+    /// names none, which covers whatever else it covers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
 }
 
 impl Grant {
@@ -437,7 +442,26 @@ impl Grant {
             answer,
             lifetime: Lifetime::UntilRevoked,
             granted_by,
+            services: Vec::new(),
         }
+    }
+
+    /// The same grant, narrowed to the outside services `services` (see [`Self::services`]).
+    #[must_use]
+    pub fn for_services(mut self, services: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.services = services.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Whether it covers an action reaching the outside services `reached`: any action, when it
+    /// names no service; otherwise one that reaches some service, every one of them named here.
+    #[must_use]
+    pub fn covers_services(&self, reached: &[String]) -> bool {
+        self.services.is_empty()
+            || (!reached.is_empty()
+                && reached
+                    .iter()
+                    .all(|service| self.services.contains(service)))
     }
 
     #[must_use]
@@ -466,6 +490,9 @@ pub struct Context<'a> {
     /// own it is. Only that person decides anything in it, whatever their role
     /// or the workspace's grants.
     pub own: Option<(&'a str, &'a str)>,
+    /// The outside services the action decided about reaches, by name (`youtube`): what a
+    /// grant narrowed to services ([`Grant::services`]) is checked against.
+    pub services: &'a [String],
 }
 
 impl<'a> Context<'a> {
@@ -475,7 +502,15 @@ impl<'a> Context<'a> {
             now_unix_ms,
             earlier: None,
             own: None,
+            services: &[],
         }
+    }
+
+    /// Deciding about an action that reaches the outside services `services` (`youtube`).
+    #[must_use]
+    pub const fn with_services(mut self, services: &'a [String]) -> Self {
+        self.services = services;
+        self
     }
 
     /// Deciding about `resource`, which is `person`'s own document (the hex of

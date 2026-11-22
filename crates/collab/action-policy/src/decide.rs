@@ -60,6 +60,7 @@ pub fn decide<'g>(
         if !grant.kinds.contains(kind)
             || !names(grant, grantees, cx)
             || !cx.covers(&grant.node, node)
+            || !grant.covers_services(cx.services)
             || !grant.is_live(cx)
         {
             continue;

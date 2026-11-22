@@ -5,7 +5,7 @@
 Decisions are made by Tilo's one policy (`crates/collab/action-policy`): grants answer
 **Allow**, **Ask** or **Deny** on the tree workspace › app › type › resource › item › field ›
 action. A person's own gestures and their agent default to allowing reads and undoable changes,
-and asking before anything that reaches outside.
+and asking before anything that reaches outside the services the workspace granted the app.
 
 tilolang adds one input: **who wrote the code.**
 
@@ -16,11 +16,16 @@ tilolang adds one input: **who wrote the code.**
    everything they wrote loses it at once.
 3. Code may change its own types' resources freely. Anything else (another app's actions,
    other resources, reaching outside) needs a grant.
-4. A stranger's code has no grants, so everything foreign it does asks first. An agent's code
+4. An app reaches an outside service it declares (`outside("youtube.search", …)`) once the
+   workspace grants the app that service: a member whose role may grant gives it once, for
+   everyone, and every member who may change the workspace then reaches that service through
+   the app's own actions without being asked. A viewer does not. Another service, another app's
+   actions, or an agent beyond its delegation still ask. Revoking the grant ends it at once.
+5. A stranger's code has no grants, so everything foreign it does asks first. An agent's code
    can do at most what the agent may do.
-5. Keeping code (pinning a view your agent made) trusts that exact
+6. Keeping code (pinning a view your agent made) trusts that exact
    version, by hash. A new version asks again for anything it adds.
-6. Asks are shown by the system, never by the code: the prompt shows the action itself, not the
+7. Asks are shown by the system, never by the code: the prompt shows the action itself, not the
    label the view gave it. History records the whole chain ("you, via Alex's view").
 
 **Code can ask who reads what.** `members(r)` lists the workspace's members who may read the

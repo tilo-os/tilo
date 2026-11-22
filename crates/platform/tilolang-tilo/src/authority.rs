@@ -8,7 +8,9 @@
 //! the person running it, as trusted as the package; code a person or an agent wrote (an embedded
 //! block) is that person or agent. Built-in and installed packages are trusted, an agent's code as
 //! far as its person admitted the agent; a stranger's code asks. Trusted code still asks before
-//! reaching outside, unless the workspace grants the person that.
+//! reaching outside, unless the workspace grants the person that, or granted the app the outside
+//! service its own action reaches ([`tilo_action_policy::authorship::service_grant`]): then every
+//! member who may change the workspace reaches that service through the app without asking.
 //!
 //! Where the host has no member access for the person (a window outside a host, a test), the person's
 //! own part is not decided here, as a native window's detached dispatcher does not decide it: the
@@ -60,8 +62,51 @@ struct State {
     own: HashSet<String>,
     /// The hosts each app's package declares its `uses web` requests may reach, as installed.
     web: HashMap<String, Vec<String>>,
+    /// The outside services each action hands an effect to (`youtube` for
+    /// `outside("youtube.search", …)`), by the action's id, as its package declares them.
+    services: HashMap<String, Vec<String>>,
     /// The `(app, host)` the workspace took away: a request to one answers as a value.
     revoked_web: HashSet<(String, String)>,
+}
+
+impl State {
+    /// Each author of the code in `chain` that led to `action`, once, with what it holds of its
+    /// own: a block is its writer's code, a package's code is `runner`, the person running it.
+    fn authors(
+        &self,
+        chain: &[ModuleHash],
+        workspace: &str,
+        runner: &Grantee,
+        action: &ActionInfo,
+    ) -> Vec<(Author, Vec<Grant>)> {
+        let mut authors: Vec<(Author, Vec<Grant>)> = Vec::new();
+        for module in chain {
+            let trusted = self.trusted.contains(module);
+            let (author, own) = if let Some(writer) = module.writer() {
+                let writer_grantee = grantee(&writer);
+                let own = authorship::code_grants(workspace, &writer_grantee, trusted);
+                (Author::Block(writer_grantee), own)
+            } else {
+                let app = self
+                    .apps
+                    .get(module)
+                    .cloned()
+                    .unwrap_or_else(|| format!("tl-module:{}", module.0));
+                let mut own = authorship::code_grants(workspace, runner, trusted);
+                if action.own && *module == action.module {
+                    own.push(own_resources(workspace, &app, runner));
+                }
+                (Author::Package(app), own)
+            };
+            match authors.iter_mut().find(|(known, _)| *known == author) {
+                Some((_, held)) if trusted => held.extend(own),
+                // An untrusted version of the same author asks for all of them.
+                Some((_, held)) => *held = own,
+                None => authors.push((author, own)),
+            }
+        }
+        authors
+    }
 }
 
 /// The platform's authority. Clones share their state.
@@ -99,6 +144,19 @@ impl TiloAuthority {
                 .target_of(&action.params)
                 .map_or_else(|| meta.package_kind(), |ty| meta.kind_of(&ty.name));
             state.kinds.insert(action.id.clone(), kind);
+            let mut services: Vec<String> = action
+                .outside
+                .iter()
+                .map(|capability| {
+                    capability
+                        .split_once('.')
+                        .map_or(capability.as_str(), |(service, _)| service)
+                        .to_owned()
+                })
+                .collect();
+            services.sort();
+            services.dedup();
+            state.services.insert(action.id.clone(), services);
         }
     }
 
@@ -221,6 +279,29 @@ fn own_resources(workspace: &str, app: &str, runner: &Grantee) -> Grant {
     )
 }
 
+/// `party`, a member using `app` at `node`, answered too by the outside services the workspace
+/// granted the app ([`authorship::service_grant`]) when the member may change the workspace there:
+/// a viewer reaches nothing through them.
+fn with_granted_services<'g>(
+    party: Party<'g>,
+    app: &str,
+    node: &TreePath,
+    cx: &Context<'_>,
+) -> Party<'g> {
+    let may_change = Policy::person(party.clone())
+        .decide(node, tilo_action_policy::ActionKind::Undoable, cx)
+        .answer
+        == Answer::Allow;
+    if !may_change {
+        return party;
+    }
+    let mut party = party.also_as(Grantee::App(app.to_owned()));
+    party.grants.retain(|grant| {
+        !matches!(grant.grantee, Grantee::App(_)) || authorship::is_service_grant(grant)
+    });
+    party
+}
+
 const fn decision(answer: Answer) -> Decision {
     match answer {
         Answer::Allow => Decision::Allow,
@@ -289,6 +370,19 @@ impl Authority for TiloAuthority {
         // its triggers) runs on the workspace's origin: no person's grants decide it, the
         // package's code still bounds it.
         let alone = invoker.app().is_some();
+        let services = state
+            .services
+            .get(&action.action)
+            .cloned()
+            .unwrap_or_default();
+        // A grant written under an id the app had before (`previously:`) is the app's.
+        let earlier = crate::schema::earlier_ids();
+        let mut cx = Context::at_time(tilo_clock::wall())
+            .with_earlier_ids(&earlier)
+            .with_services(&services);
+        if let Some((record, person)) = &own_document {
+            cx = cx.with_own_resource(record, person);
+        }
         let person_party = match (&access, person, agent) {
             _ if alone => Party::default().owning(TreePath::root()),
             (Some(access), Some(person), _) => access.policy.party(person),
@@ -297,6 +391,11 @@ impl Authority for TiloAuthority {
             // No member access here: the API decides the person's own part.
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
+        let person_party = if alone || services.is_empty() {
+            person_party
+        } else {
+            with_granted_services(person_party, action.app.as_str(), &node, &cx)
+        };
         let delegation = match (agent, person) {
             (Some(_), Some(person)) => Some(
                 tilo_action_policy::Acting::handed_agent(invoker.id(), person)
@@ -304,39 +403,11 @@ impl Authority for TiloAuthority {
             ),
             _ => None,
         };
-        // Each author of the code that led here, once, with what it holds of its own. A block is
-        // its writer's code. A package's code is the person running it, as trusted as the package
-        // is: it asks before reaching outside unless the workspace grants the person that, and
-        // code nobody installed asks before everything but its own documents.
+        // A package's code is the person running it, as trusted as the package is: it asks before
+        // reaching outside unless the workspace grants that, and code nobody installed asks
+        // before everything but its own documents.
         let runner = person.map_or_else(|| grantee(invoker), Grantee::person);
-        let mut authors: Vec<(Author, Vec<Grant>)> = Vec::new();
-        for module in chain {
-            let trusted = state.trusted.contains(module);
-            let (author, own) = if let Some(writer) = module.writer() {
-                let writer_grantee = grantee(&writer);
-                let own = authorship::code_grants(workspace, &writer_grantee, trusted);
-                (Author::Block(writer_grantee), own)
-            } else {
-                let app = state
-                    .apps
-                    .get(module)
-                    .cloned()
-                    .unwrap_or_else(|| format!("tl-module:{}", module.0));
-                let mut own = authorship::code_grants(workspace, &runner, trusted);
-                if action.own && *module == action.module {
-                    own.push(own_resources(workspace, &app, &runner));
-                }
-                (Author::Package(app), own)
-            };
-            match authors.iter_mut().find(|(known, _)| *known == author) {
-                Some((_, held)) if trusted => held.extend(own),
-                // An untrusted version of the same author asks for all of them.
-                Some((_, held)) => *held = own,
-                None => authors.push((author, own)),
-            }
-        }
-        // A grant written under an id the app had before (`previously:`) is the app's.
-        let earlier = crate::schema::earlier_ids();
+        let authors = state.authors(chain, workspace, &runner, action);
         let mut policy = Policy::person(person_party);
         if let Some(delegation) = &delegation {
             policy = policy.bounded_by(
@@ -347,13 +418,12 @@ impl Authority for TiloAuthority {
             policy = policy.bounded_by(match author {
                 // A block's author holds only what its code may.
                 Author::Block(grantee) => authorship::code_party(grantee, own, &[]),
-                // The workspace's grants to the person running a package bound its code too.
-                Author::Package(_) => authorship::code_party(&runner, own, workspace_grants),
+                // The workspace's grants to the person running a package bound its code too, and
+                // the outside services the workspace granted its app.
+                Author::Package(app) => {
+                    authorship::package_party(&runner, app, own, workspace_grants)
+                }
             });
-        }
-        let mut cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
-        if let Some((record, person)) = &own_document {
-            cx = cx.with_own_resource(record, person);
         }
         decision(policy.decide(&node, action_kind(action.class), &cx).answer)
     }
@@ -498,6 +568,139 @@ mod tests {
             assert_eq!(
                 authority.decide(&me, &[], &info(EffectClass::Undoable, true)),
                 Decision::Allow
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_apps_granted_service_is_reached_without_asking;
+
+        phase each_member_who_may_change_reaches_the_granted_service_and_nothing_else;
+        {
+            use std::cell::RefCell;
+            use tilo_action_policy::Role;
+            const TUBE: &str = "so.tilo.tube";
+            let owner = "ab".repeat(32);
+            let editor = "cd".repeat(32);
+            let viewer = "ef".repeat(32);
+            let grants: Rc<RefCell<Vec<Grant>>> = Rc::default();
+            // The authority of a window `person` is at, over the workspace's grants as they stand.
+            let at_window = |person: &str| {
+                let (grants, owner, editor, viewer, person) = (
+                    Rc::clone(&grants),
+                    owner.clone(),
+                    editor.clone(),
+                    viewer.clone(),
+                    person.to_owned(),
+                );
+                let authority =
+                    TiloAuthority::new(Actor::from(MemberId::person(person.clone())), move || {
+                        let mut policy = WorkspacePolicy::new(WORKSPACE, owner.clone());
+                        policy.members.insert(editor.clone(), Role::Editor);
+                        policy.members.insert(viewer.clone(), Role::Viewer);
+                        policy.grants.extend(grants.borrow().iter().cloned());
+                        Some(MemberAccess::person(policy, person.clone()))
+                    });
+                // A package of `app` whose one action `id` hands effects to `outside`.
+                let package = |app: &str, id: &str, outside: &[&str]| Meta {
+                    app: app.to_owned(),
+                    actions: vec![
+                        serde_json::from_value(serde_json::json!({
+                            "id": id,
+                            "name": id,
+                            "doc": "",
+                            "params": [],
+                            "result": null,
+                            "class": EffectClass::Outside,
+                            "proposal": null,
+                            "reaches": [],
+                            "outside": outside,
+                        }))
+                        .expect("an action's metadata"),
+                    ],
+                    ..Meta::default()
+                };
+                authority.load(
+                    &ModuleHash("tube-v1".to_owned()),
+                    &package(TUBE, "search", &["youtube.search"]),
+                );
+                authority.load(
+                    &ModuleHash("mail-v1".to_owned()),
+                    &package("so.tilo.mail", "check", &["imap.check"]),
+                );
+                authority
+            };
+            let tube = ModuleHash("tube-v1".to_owned());
+            let mail = ModuleHash("mail-v1".to_owned());
+            let action = |app: &str, id: &str, module: &ModuleHash| ActionInfo {
+                action: id.to_owned(),
+                app: AppId::from(app),
+                class: EffectClass::Outside,
+                own: true,
+                module: module.clone(),
+            };
+            let search = action(TUBE, "search", &tube);
+            let person = |id: &str| Actor::from(MemberId::person(id.to_owned()));
+            // Before the workspace grants YouTube its service, the person's own search asks.
+            assert_eq!(
+                at_window(&owner).decide(&person(&owner), std::slice::from_ref(&tube), &search),
+                Decision::Ask
+            );
+            grants.borrow_mut().push(authorship::service_grant(
+                WORKSPACE,
+                TUBE,
+                "youtube",
+                Grantee::person(owner.clone()),
+            ));
+            // Granted once for the workspace, every member who may change it searches unasked.
+            for member in [&owner, &editor] {
+                assert_eq!(
+                    at_window(member).decide(&person(member), std::slice::from_ref(&tube), &search),
+                    Decision::Allow,
+                    "a member's own search runs as them"
+                );
+            }
+            assert_ne!(
+                at_window(&viewer).decide(&person(&viewer), std::slice::from_ref(&tube), &search),
+                Decision::Allow,
+                "a viewer reaches nothing through the grant"
+            );
+            // Someone who is no member is refused, grant or not.
+            assert_eq!(
+                at_window(&owner).decide(&person("stranger"), std::slice::from_ref(&tube), &search),
+                Decision::Deny
+            );
+            // An agent acting for the owner still asks, as its delegation says.
+            let agent = Actor::from(MemberId::agent("helper"));
+            let owners = at_window(&owner);
+            owners.admit_agent(&agent, Some(&owner));
+            assert_eq!(
+                owners.decide(&agent, std::slice::from_ref(&tube), &search),
+                Decision::Ask
+            );
+            // A service nobody granted asks: Mail's check reaches its server.
+            assert_eq!(
+                at_window(&owner).decide(
+                    &person(&owner),
+                    std::slice::from_ref(&mail),
+                    &action("so.tilo.mail", "check", &mail)
+                ),
+                Decision::Ask
+            );
+            // YouTube's code reaching through Mail's action is not YouTube's own action.
+            assert_eq!(
+                at_window(&owner).decide(
+                    &person(&owner),
+                    std::slice::from_ref(&tube),
+                    &action("so.tilo.mail", "check", &mail)
+                ),
+                Decision::Ask
+            );
+            // Revoked, it asks again at once.
+            grants.borrow_mut().clear();
+            assert_eq!(
+                at_window(&owner).decide(&person(&owner), std::slice::from_ref(&tube), &search),
+                Decision::Ask
             );
         }
     }
