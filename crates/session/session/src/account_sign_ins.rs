@@ -25,10 +25,15 @@ use std::path::{Path, PathBuf};
 use tilo_actions::remote::Caller;
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_service::workspaces::Workspaces;
+use tilo_workspace_service::workspaces::account_logins::ASKS_FIRST;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::platform::records::Changes;
+
+/// The longest a refused sign-in is held to be decided again as the workspace's copy on this
+/// device catches up ([`sign_in`]).
+const SIGN_IN_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// What a connector's ask for the sign-in of another workspace's account is refused with.
 const OTHER_WORKSPACE: &str = "That account is another workspace's";
@@ -78,6 +83,8 @@ struct Answering {
     by: Caller,
     changes: Changes,
     tasks: tokio::runtime::Handle,
+    /// How long a refused sign-in is held to be decided again: [`SIGN_IN_WAIT`].
+    sign_in_wait: std::time::Duration,
 }
 
 static SERVED: std::sync::Mutex<Served> = std::sync::Mutex::new(Served::Waiting(Vec::new()));
@@ -104,6 +111,7 @@ impl Answering {
             by,
             changes,
             tasks: tokio::runtime::Handle::current(),
+            sign_in_wait: SIGN_IN_WAIT,
         }
     }
 
@@ -208,25 +216,55 @@ async fn connection(
 ) -> std::io::Result<()> {
     let (read, mut write) = stream.into_split();
     let mut read = BufReader::new(read);
+    // An ask that came while another was held, answered once that one is.
+    let mut queued: Option<zeroize::Zeroizing<Vec<u8>>> = None;
+    // A hurry that came while no ask for accounts was held: the next one is answered at once.
+    let mut hurried = false;
     loop {
-        let mut line = zeroize::Zeroizing::new(Vec::new());
-        let limit = u64::try_from(sign_ins::MAX_LINE).map_or(u64::MAX, |max| max.saturating_add(1));
-        if (&mut read).take(limit).read_until(b'\n', &mut line).await? == 0 {
-            return Ok(());
-        }
-        if line.pop() != Some(b'\n') {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "a line of the account sign-ins socket is too long",
-            ));
-        }
-        let answer = match serde_json::from_slice::<Ask>(&line) {
-            // An asker that went away is answered nothing: what its ask waited on is let go.
-            Ok(ask) => tokio::select! {
-                biased;
-                answer = answer(answering, scope, ask) => answer,
-                gone = gone(&mut read) => return gone,
+        let line = match queued.take() {
+            Some(line) => line,
+            None => match read_ask(&mut read).await? {
+                Some(line) => line,
+                None => return Ok(()),
             },
+        };
+        let answer = match serde_json::from_slice::<Ask>(&line) {
+            // No ask for accounts is held: the next is let go at once, and a hurry is answered
+            // nothing.
+            Ok(Ask::Hurry) => {
+                hurried = true;
+                continue;
+            }
+            Ok(Ask::Accounts { .. }) if std::mem::take(&mut hurried) => {
+                answer(answering, scope, Ask::Accounts { after: None }).await
+            }
+            Ok(ask) => {
+                let accounts = matches!(ask, Ask::Accounts { .. });
+                let held = answer(answering, scope, ask);
+                tokio::pin!(held);
+                loop {
+                    // An asker that went away is answered nothing: what its ask waited on is let
+                    // go.
+                    tokio::select! {
+                        biased;
+                        answer = &mut held => break answer,
+                        // Waiting for the next ask leaves it unread, so an answer that comes
+                        // first loses nothing of it.
+                        ready = read.fill_buf(), if queued.is_none() => {
+                            if ready?.is_empty() {
+                                return Ok(());
+                            }
+                            let Some(next) = read_ask(&mut read).await? else { return Ok(()) };
+                            if accounts && matches!(serde_json::from_slice::<Ask>(&next), Ok(Ask::Hurry)) {
+                                // The asker has something to ask now: the accounts are answered
+                                // as they are, and its next ask follows.
+                                break self::answer(answering, scope, Ask::Accounts { after: None }).await;
+                            }
+                            queued = Some(next);
+                        }
+                    }
+                }
+            }
             Err(error) => Answer::Refused {
                 error: format!("That is no ask of the account sign-ins socket: {error}"),
             },
@@ -235,13 +273,30 @@ async fn connection(
     }
 }
 
-/// Once the asker on `read` went away: the end of its connection, or a read of it that failed.
-/// An asker that asks again before its answer is kept waiting for it.
-async fn gone(read: &mut BufReader<tokio::net::unix::OwnedReadHalf>) -> std::io::Result<()> {
-    if read.fill_buf().await?.is_empty() {
-        return Ok(());
+/// The next ask on `read`, without its newline; `None` once the asker ended the connection.
+///
+/// # Errors
+/// The read failed, or the line is longer than an ask is.
+async fn read_ask(
+    read: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+) -> std::io::Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
+    let mut line = zeroize::Zeroizing::new(Vec::new());
+    let limit = u64::try_from(sign_ins::MAX_LINE).map_or(u64::MAX, |max| max.saturating_add(1));
+    if (&mut *read)
+        .take(limit)
+        .read_until(b'\n', &mut line)
+        .await?
+        == 0
+    {
+        return Ok(None);
     }
-    std::future::pending().await
+    if line.pop() != Some(b'\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "a line of the account sign-ins socket is too long",
+        ));
+    }
+    Ok(Some(line))
 }
 
 /// The answer to `ask` within `scope`. An ask for accounts that changed since a revision is held
@@ -287,7 +342,11 @@ async fn answer(answering: &Answering, scope: &Scope, ask: Ask) -> Answer {
                 }
             }
         }
-        Ask::SignIn { workspace, item } => {
+        Ask::SignIn {
+            workspace,
+            item,
+            confirmed,
+        } => {
             if scope
                 .workspace
                 .as_ref()
@@ -298,22 +357,74 @@ async fn answer(answering: &Answering, scope: &Scope, ask: Ask) -> Answer {
                 };
             }
             let by = answering.by.clone().in_workspace(workspace.clone());
-            let command = Command::ReleaseAccountSecret { item };
-            match crate::account_passwords::answer(
-                &answering.workspaces,
-                &workspace,
-                &scope.signs_in_for,
-                &by,
-                command,
-            )
-            .await
-            {
-                Ok(Reply::AccountSecret { secret, .. }) => Answer::SignIn { secret },
-                Ok(_) => Answer::Refused {
-                    error: crate::account_passwords::REFUSED.into(),
-                },
-                Err(error) => Answer::Refused { error },
+            sign_in(answering, scope, (&workspace, &item, confirmed), &by).await
+        }
+        // The connection takes a hurry in ([`connection`]): it asks for nothing to answer.
+        Ask::Hurry => Answer::Refused {
+            error: "A hurry asks for nothing".into(),
+        },
+    }
+}
+
+/// The sign-in kept in `item` for `workspace`'s account, as `by`: released, asked about first, or
+/// refused. A refusal is decided again each time the workspace's records or rules change on this
+/// device, until [`SIGN_IN_WAIT`] passed: a device that just joined, or just had the entry kept
+/// on another device, holds the workspace's rules, the vault's keys and its document a moment
+/// after the account names the entry, and a sign-in asked in that moment is answered once they
+/// are here rather than refused for good.
+async fn sign_in(
+    answering: &Answering,
+    scope: &Scope,
+    (workspace, item, confirmed): (&str, &str, bool),
+    by: &Caller,
+) -> Answer {
+    let now = tokio::time::Instant::now();
+    let deadline = now.checked_add(answering.sign_in_wait).unwrap_or(now);
+    // Followed before the first decision, so a change while it is made is not missed.
+    let mut records = answering.changes.waiter();
+    let mut rules = answering.workspaces.governance_changes();
+    loop {
+        let command = Command::ReleaseAccountSecret {
+            item: item.to_owned(),
+        };
+        let refused = match crate::account_passwords::answer(
+            &answering.workspaces,
+            workspace,
+            (&scope.signs_in_for, confirmed),
+            by,
+            command,
+        )
+        .await
+        {
+            Ok(Reply::AccountSecret { secret, .. }) => return Answer::SignIn { secret },
+            Ok(_) => crate::account_passwords::REFUSED.to_owned(),
+            // The workspace's rules ask the person first: the asker asks them, and asks again
+            // with their yes.
+            Err(error) if error == ASKS_FIRST => return Answer::Asks { question: error },
+            Err(error) => error,
+        };
+        let changed = async {
+            loop {
+                tokio::select! {
+                    told = records.recv() => match told {
+                        Some(changed) if changed.workspace == workspace => return,
+                        Some(_) => {}
+                        None => std::future::pending::<()>().await,
+                    },
+                    told = rules.recv() => match told {
+                        // Behind on the rules: one missed may be this workspace's.
+                        Ok(changed) if changed == workspace => return,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return,
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            std::future::pending::<()>().await;
+                        }
+                    },
+                }
             }
+        };
+        if tokio::time::timeout_at(deadline, changed).await.is_err() {
+            return Answer::Refused { error: refused };
         }
     }
 }

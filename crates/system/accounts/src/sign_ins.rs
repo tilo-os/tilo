@@ -63,8 +63,17 @@ pub enum Ask {
     /// [`LONGEST_WAIT`] passed.
     Accounts { after: Option<String> },
     /// The sign-in kept in the vault entry `item` (`vault.item:<id>`), which an account of
-    /// `workspace` names.
-    SignIn { workspace: String, item: String },
+    /// `workspace` names; `confirmed` once its person said yes to a sign-in the session answered
+    /// with [`Answer::Asks`].
+    SignIn {
+        workspace: String,
+        item: String,
+        #[serde(default)]
+        confirmed: bool,
+    },
+    /// Let the ask for accounts the session holds go now, answered with the accounts as they
+    /// are: the asker has a sign-in to ask. Answered nothing itself.
+    Hurry,
 }
 
 /// A file account and the workspace whose accounts record it is in.
@@ -87,6 +96,9 @@ pub enum Answer {
     SignIn { secret: Zeroizing<String> },
     /// What the ask was refused with, in words a person reads.
     Refused { error: String },
+    /// The workspace's rules ask the person first: `question` is what they are asked, and the
+    /// sign-in is asked again, `confirmed`, once they say yes.
+    Asks { question: String },
 }
 
 impl std::fmt::Debug for Answer {
@@ -99,6 +111,7 @@ impl std::fmt::Debug for Answer {
                 .finish(),
             Self::SignIn { .. } => f.debug_struct("SignIn").finish_non_exhaustive(),
             Self::Refused { error } => f.debug_struct("Refused").field("error", error).finish(),
+            Self::Asks { question } => f.debug_struct("Asks").field("question", question).finish(),
         }
     }
 }
@@ -162,6 +175,15 @@ impl Client {
         })
     }
 
+    /// What hurries this connection's held ask for accounts from another thread
+    /// ([`Ask::Hurry`]).
+    ///
+    /// # Errors
+    /// The connection cannot be shared.
+    pub fn hurrier(&self) -> std::io::Result<Hurrier> {
+        Ok(Hurrier(self.reader.get_ref().try_clone()?))
+    }
+
     /// Ask `ask` and read its answer.
     ///
     /// # Errors
@@ -173,6 +195,22 @@ impl Client {
         read_line(&mut self.reader)?
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
             .and_then(|line| serde_json::from_slice(&line).map_err(std::io::Error::other))
+    }
+}
+
+/// A connection's other end for [`Ask::Hurry`], which is answered nothing: the ask it lets go
+/// is answered to whoever asked it.
+pub struct Hurrier(UnixStream);
+
+impl Hurrier {
+    /// Let the session answer the ask for accounts it holds now.
+    ///
+    /// # Errors
+    /// The connection broke.
+    pub fn hurry(&mut self) -> std::io::Result<()> {
+        let mut line = serde_json::to_vec(&Ask::Hurry).map_err(std::io::Error::other)?;
+        line.push(b'\n');
+        self.0.write_all(&line)
     }
 }
 
@@ -371,6 +409,7 @@ pub mod fixture {
                 return;
             };
             let answer = match ask {
+                Ask::Hurry => continue,
                 Ask::Accounts { after } => {
                     let mut waited = Duration::ZERO;
                     loop {

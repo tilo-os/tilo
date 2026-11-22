@@ -31,6 +31,11 @@ pub const MAY_NOT_USE_PASSWORDS: &str = "Your role in this workspace does not in
                                          vault. Ask an owner of the workspace to let you use \
                                          Passwords.";
 
+/// What a release the workspace's rules ask about first is answered with, until the person
+/// asking answers yes ([`Workspaces::account_secret`]'s `confirmed`).
+pub const ASKS_FIRST: &str = "The workspace asks you first before this account's password leaves \
+                              its vault.";
+
 /// The words for somebody who may not read the app asking to sign in.
 pub const MAY_NOT_READ_APP: &str = "Your role in this workspace does not let you use this app, so \
                                     it signs in to none of the workspace's accounts. Ask an owner \
@@ -96,12 +101,15 @@ impl Workspaces {
     /// decision every route to an account's password takes. The device `by` asks from must be
     /// a member's now, with its role and approved keys, bounded by `by`'s acting (an agent's
     /// approval and its turn's rules); a password is released only to the person's own device.
+    /// Where the rules ask first, the person's own yes (`confirmed`, never an agent's) lets it.
     pub(crate) async fn using_vault(
         &self,
         workspace: &str,
         by: &Caller,
         app: Option<&str>,
+        confirmed: bool,
     ) -> Result<(), String> {
+        use tilo_action_policy::{ActionKind, Answer, Context};
         let now = tilo_clock::wall();
         let device = by.device_public_key().ok_or(NOT_A_MEMBER_DEVICE)?;
         let state = self
@@ -118,19 +126,41 @@ impl Workspaces {
             return Err(NOT_ON_A_FOREIGN_DEVICE.to_owned());
         }
         let access = access.invoked_by(by.acting()).granted(by.granted(&[]));
-        let read = |node| access.allows(&node, tilo_action_policy::ActionKind::Read, now);
-        let vault = collab_types::document_node(
-            workspace,
-            super::vault::APP,
-            tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
-        );
-        if !read(vault) {
-            return Err(MAY_NOT_USE_PASSWORDS.to_owned());
-        }
-        if let Some(app) = app
-            && !read(tilo_action_policy::TreePath::workspace(workspace).app(app))
-        {
-            return Err(MAY_NOT_READ_APP.to_owned());
+        let asked = confirmed && by.agent_called().is_none();
+        let reads = |node: &tilo_action_policy::TreePath, refused: &str| match access.answer(
+            node,
+            ActionKind::Read,
+            &Context::at_time(now),
+        ) {
+            Answer::Allow => Ok(()),
+            Answer::Ask if asked => Ok(()),
+            Answer::Ask => Err(ASKS_FIRST.to_owned()),
+            Answer::Deny => {
+                let person = access.person_id().unwrap_or_default();
+                tracing::warn!(
+                    %workspace,
+                    person,
+                    role = ?access.policy.role_of(person),
+                    members = access.policy.members.len(),
+                    %node,
+                    "the workspace's rules on this device refused its person"
+                );
+                Err(refused.to_owned())
+            }
+        };
+        reads(
+            &collab_types::document_node(
+                workspace,
+                super::vault::APP,
+                tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+            ),
+            MAY_NOT_USE_PASSWORDS,
+        )?;
+        if let Some(app) = app {
+            reads(
+                &tilo_action_policy::TreePath::workspace(workspace).app(app),
+                MAY_NOT_READ_APP,
+            )?;
         }
         Ok(())
     }
@@ -150,7 +180,8 @@ impl Workspaces {
         login: AccountLogin,
         password: Zeroizing<String>,
     ) -> Result<ItemRef, String> {
-        self.using_vault(workspace, by, None).await?;
+        // The person typing the password is the yes a rule that asks first waits for.
+        self.using_vault(workspace, by, None, true).await?;
         let id = item.and_then(|item| ItemId::parse(item.id()));
         let AccountLogin {
             title,
@@ -180,6 +211,8 @@ impl Workspaces {
     /// now, with the use written into the entry first, saying which app signed in to which
     /// account. Any kind of account and any app: what decides is whether `by` may use
     /// Passwords. A grant a provider's own page left is released as its access token alone.
+    /// Where the workspace's rules ask first, it is released once the person said yes
+    /// (`confirmed`); until then it is answered with [`ASKS_FIRST`].
     ///
     /// # Errors
     /// `by` may not use the vault, no enabled account names the entry, the account names no
@@ -188,10 +221,11 @@ impl Workspaces {
         &self,
         workspace: &str,
         by: &Caller,
-        app: &str,
+        (app, confirmed): (&str, bool),
         item: &ItemRef,
     ) -> Result<Released, String> {
-        self.using_vault(workspace, by, Some(app)).await?;
+        self.using_vault(workspace, by, Some(app), confirmed)
+            .await?;
         let held = self.workspace_accounts(workspace).await?;
         let store = held.store();
         let account = store

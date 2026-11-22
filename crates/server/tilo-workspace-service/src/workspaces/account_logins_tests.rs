@@ -25,7 +25,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use zeroize::Zeroizing;
 
 use super::account_logins::{
-    AccountLogin, MAY_NOT_USE_PASSWORDS, NOT_NAMED, NOT_ON_A_FOREIGN_DEVICE,
+    ASKS_FIRST, AccountLogin, MAY_NOT_USE_PASSWORDS, NOT_NAMED, NOT_ON_A_FOREIGN_DEVICE,
 };
 use super::fixtures::{
     TestGroupKeys, TestHost, device_cert, governor, signed_pre_admission, test_host_holding,
@@ -252,10 +252,10 @@ impl Members {
         item
     }
 
-    /// Leave Passwords out of the member's role: a rule of the workspace that refuses them
-    /// every read of it.
-    async fn refuse_passwords_to_the_member(&self) {
-        use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    /// A rule of the workspace that answers the member's every read of Passwords with `answer`:
+    /// refused ([`Answer::Deny`], Passwords left out of their role) or asked first.
+    async fn rule_passwords_for_the_member(&self, answer: tilo_action_policy::Answer) {
+        use tilo_action_policy::{Grant, Grantee, KindSet, TreePath};
         let state = self.owner.workspace(&self.workspace).await.unwrap();
         let mut governed = state.lock().await;
         let refused = Grant::new(
@@ -263,7 +263,7 @@ impl Members {
             Grantee::person(hex::encode(self.member_cert.user_public_key)),
             TreePath::workspace(&self.workspace).app(tilo_app_id::apps::PASSWORDS),
             KindSet::ALL,
-            Answer::Deny,
+            answer,
             Grantee::person(hex::encode(self.owner_cert.user_public_key)),
         );
         let key = self.owner_key.clone();
@@ -287,10 +287,11 @@ impl Members {
         drop(governed);
         assert!(
             self.owner
-                .using_vault(&self.workspace, &self.member_caller(), None)
+                .using_vault(&self.workspace, &self.member_caller(), None, false)
                 .await
                 .is_err(),
-            "the owner's device refuses the member Passwords once the rule is the workspace's"
+            "the owner's device releases the member no password unasked once the rule is the \
+             workspace's"
         );
     }
 }
@@ -320,6 +321,7 @@ async fn released(
     workspaces: &Workspaces,
     workspace: &str,
     by: &Caller,
+    asking: (&str, bool),
     item: &ItemRef,
 ) -> Result<Zeroizing<String>, String> {
     tilo_test_env::within("the device's copy of the vault keeps the entry", async {
@@ -332,7 +334,7 @@ async fn released(
     })
     .await;
     workspaces
-        .account_secret(workspace, by, MAIL, item)
+        .account_secret(workspace, by, asking, item)
         .await
         .map(|released| released.secret)
 }
@@ -358,7 +360,7 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
             named, item,
             "every device reads the one entry the account names"
         );
-        let password = released(device, &workspace, &by, &named)
+        let password = released(device, &workspace, &by, (MAIL, false), &named)
             .await
             .expect("a member who may use Passwords is released the account's password");
         let signing = Arc::clone(&server);
@@ -405,7 +407,12 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
     assert_eq!(
         members
             .member
-            .account_secret(&workspace, &members.member_caller(), MAIL, &unnamed)
+            .account_secret(
+                &workspace,
+                &members.member_caller(),
+                (MAIL, false),
+                &unnamed
+            )
             .await
             .map(|released| released.secret),
         Err(NOT_NAMED.to_owned()),
@@ -422,7 +429,9 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     let workspace = members.workspace.clone();
     members.owner_keeps_the_password(&server).await;
     let named = named_entry(&members.member, &workspace).await;
-    members.refuse_passwords_to_the_member().await;
+    members
+        .rule_passwords_for_the_member(tilo_action_policy::Answer::Deny)
+        .await;
 
     // Once the member's device reads the rule, it is refused, in the words its person sees,
     // though the device holds the vault's keys.
@@ -430,7 +439,10 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     let by = members.member_caller();
     let refused = tilo_test_env::within("the member's device reads the rule", async {
         loop {
-            match member.account_secret(&workspace, &by, MAIL, &named).await {
+            match member
+                .account_secret(&workspace, &by, (MAIL, false), &named)
+                .await
+            {
                 Err(error) if error == MAY_NOT_USE_PASSWORDS => return error,
                 _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
             }
@@ -456,12 +468,50 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
     assert_eq!(
         members
             .owner
-            .account_secret(&workspace, &members.owner_caller(), MAIL, &named)
+            .account_secret(&workspace, &members.owner_caller(), (MAIL, false), &named)
             .await
             .unwrap()
             .secret
             .as_str(),
         PASSWORD
+    );
+}
+
+#[tokio::test]
+async fn a_rule_that_asks_first_waits_on_its_persons_yes_and_no_agents() {
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+    members
+        .rule_passwords_for_the_member(tilo_action_policy::Answer::Ask)
+        .await;
+
+    // Once the member's device reads the rule, the vault asks its person: it is not refused.
+    let member = members.member.clone();
+    let by = members.member_caller();
+    tilo_test_env::within("the member's device reads the rule", async {
+        loop {
+            match member.using_vault(&workspace, &by, Some(MAIL), false).await {
+                Err(error) if error == ASKS_FIRST => return,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+            }
+        }
+    })
+    .await;
+
+    // Their yes is what the rule waits for.
+    assert_eq!(
+        member.using_vault(&workspace, &by, Some(MAIL), true).await,
+        Ok(())
+    );
+
+    // An agent's yes is not its person's: the rule still waits on them.
+    let agent = members.member_caller().delegated_to("agent:helper");
+    assert!(
+        member
+            .using_vault(&workspace, &agent, Some(MAIL), true)
+            .await
+            .is_err(),
+        "an agent says no yes for its person"
     );
 }
 
@@ -481,7 +531,7 @@ async fn a_device_not_its_persons_own_is_not_released_the_password() {
     assert_eq!(
         members
             .owner
-            .account_secret(&workspace, &members.member_caller(), MAIL, &named)
+            .account_secret(&workspace, &members.member_caller(), (MAIL, false), &named)
             .await
             .map(|released| released.secret),
         Err(NOT_ON_A_FOREIGN_DEVICE.to_owned())
@@ -557,7 +607,7 @@ async fn a_file_accounts_password_signs_in_by_its_entry_on_a_members_device() {
                     .account_secret(
                         &workspace,
                         &members.member_caller(),
-                        tilo_app_id::apps::FILE_EXPLORER,
+                        (tilo_app_id::apps::FILE_EXPLORER, false),
                         &item,
                     )
                     .await
@@ -629,6 +679,7 @@ async fn an_account_a_providers_page_signed_in_is_released_its_access_token_alon
         &members.member,
         &workspace,
         &members.member_caller(),
+        (MAIL, false),
         &named,
     )
     .await

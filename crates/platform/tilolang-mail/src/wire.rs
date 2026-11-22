@@ -50,6 +50,11 @@ pub enum ToConnector {
     Watch {
         account: String,
     },
+    /// The person said yes to the account signing in with the password the workspace's rules
+    /// ask them about first.
+    Allow {
+        account: String,
+    },
 }
 
 /// What the connector tells the origin.
@@ -59,8 +64,12 @@ pub enum FromConnector {
     Accounts(Vec<AccountRef>),
     /// What a server answered, or said on its own (new mail).
     Event(Event),
-    /// The device came online again: what could not reach its server is tried again.
+    /// What could not reach its server is tried again: the device came online again, or an
+    /// account got the password it waited for.
     Online,
+    /// The accounts whose sign-in waits on the person's yes now: sent when the origin attaches
+    /// and whenever they change.
+    Asks(Vec<String>),
 }
 
 /// Write `message` as one frame.

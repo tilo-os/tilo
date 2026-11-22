@@ -62,11 +62,13 @@ pub fn imap_message(m: &Message) -> ImapMessage {
 }
 
 /// An account the connector signs in to: its settings, with the password the session released
-/// for it, or the session's words for why it released none.
+/// for it, or the session's words for why it released none: it refused, or the workspace's
+/// rules ask the person first.
 #[derive(Clone)]
 pub struct MailAccount {
     pub config: AccountConfig,
     pub refused: Option<String>,
+    pub asks: Option<String>,
 }
 
 impl From<AccountConfig> for MailAccount {
@@ -74,6 +76,7 @@ impl From<AccountConfig> for MailAccount {
         Self {
             config,
             refused: None,
+            asks: None,
         }
     }
 }
@@ -150,7 +153,7 @@ impl EngineConnector {
         (self.source)()
             .into_iter()
             .find(|signed| signed.config.email == account)
-            .and_then(|signed| signed.refused)
+            .and_then(|signed| signed.refused.or(signed.asks))
             .unwrap_or(message)
     }
 

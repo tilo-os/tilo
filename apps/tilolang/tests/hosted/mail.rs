@@ -152,6 +152,19 @@ struct MailConnector {
 
 impl MailConnector {
     fn new(source: impl Fn() -> Vec<AccountConfig> + Send + 'static) -> Self {
+        Self::signing(
+            move || source().into_iter().map(Into::into).collect(),
+            |_| {},
+        )
+    }
+
+    /// The connector for the accounts `source` names, each with the password the session
+    /// released for it or why it released none; the person's yes to an account's sign-in goes to
+    /// `allow`, as it goes to the session.
+    fn signing(
+        source: impl Fn() -> Vec<tilolang_mail::engine::MailAccount> + Send + 'static,
+        allow: impl Fn(&str) + Send + 'static,
+    ) -> Self {
         let (wakeups, woken) = std::sync::mpsc::channel::<Wakeup>();
         let looping = wakeups.clone();
         let online = Arc::new(AtomicBool::new(false));
@@ -168,8 +181,9 @@ impl MailConnector {
             )
             .expect("the engine starts");
             let (requests, events) = ::mail_engine::engine::spawn_waking(Box::new(engine), wake);
-            let source = move || source().into_iter().map(Into::into).collect();
-            Connector::new(Box::new(source), requests, events, device).run(&woken, &looping);
+            Connector::new(Box::new(source), requests, events, device)
+                .allowing(allow)
+                .run(&woken, &looping);
         });
         Self { wakeups, online }
     }
@@ -1019,6 +1033,72 @@ fn a_troubled_account_says_so_in_its_window_and_clears_when_the_server_answers()
     assert!(
         !said.iter().any(|text| text.contains(&trouble)),
         "the words the mark carried are gone with it: {said:#?}"
+    );
+}
+
+// USER REQUIREMENT: where the workspace's rules ask the person first before an account's
+// password leaves its vault, their Mail window asks them on its Ask bar, and their yes signs the
+// account in.
+#[test]
+fn an_account_the_rules_ask_about_signs_in_once_its_person_says_yes_on_the_ask_bar() {
+    const ASKS_FIRST: &str = "The workspace asks you first";
+    let servers = servers();
+    let config = account(&servers);
+    let allowed = Arc::new(AtomicBool::new(false));
+    let said_yes = Arc::clone(&allowed);
+    let connector = MailConnector::signing(
+        move || {
+            // The session releases the password once the person said yes, and asks before.
+            let released = allowed.load(Ordering::Acquire);
+            vec![tilolang_mail::engine::MailAccount {
+                config: AccountConfig {
+                    password: if released {
+                        config.password.clone()
+                    } else {
+                        String::new()
+                    },
+                    ..config.clone()
+                },
+                refused: None,
+                asks: (!released).then(|| ASKS_FIRST.to_owned()),
+            }]
+        },
+        move |account| {
+            assert_eq!(account, ME);
+            said_yes.store(true, Ordering::Release);
+        },
+    );
+    let mut session = connector.window();
+    let asked = session.wait_for("the window to ask the person", |session| {
+        session
+            .hosted()
+            .view()
+            .and_then(tilo_app_window::AppWindow::asks)
+            .map(|ask| ask.action.clone())
+    });
+    assert!(
+        asked.contains(ME),
+        "the Ask bar names the account it signs in to: {asked}"
+    );
+    assert!(
+        session.threads().is_empty(),
+        "nothing is read before the yes"
+    );
+
+    session
+        .hosted()
+        .view()
+        .expect("the window is connected")
+        .answer(tilo_render_protocol::patch::Answer::Allow);
+    synced(&mut session);
+    assert_eq!(session.threads().len(), 2);
+    assert!(
+        session
+            .hosted()
+            .view()
+            .and_then(tilo_app_window::AppWindow::asks)
+            .is_none(),
+        "nothing waits on the person any more"
     );
 }
 

@@ -181,7 +181,8 @@ impl BrowserServiceSessionServices for ServiceSessions {
         )
         .in_workspace(workspace.clone());
         let answering = tasks.spawn(async move {
-            crate::account_passwords::answer(&workspaces, &workspace, &app, &by, command).await
+            crate::account_passwords::answer(&workspaces, &workspace, (&app, false), &by, command)
+                .await
         });
         Box::pin(async move {
             answering
