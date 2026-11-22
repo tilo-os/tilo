@@ -780,11 +780,12 @@ set -e
 [ ! -e "$failed" ] || { echo 'the failed restart is still said after the login ended' >&2; exit 1; }
 
 # A restarted desktop that was usable and then ends is the compositor's own end: the login ends
-# at once, as it does for the first run.
+# at once, as it does for the first run, and never holds itself for the restart to be asked again.
 : >"$log"
-rm -f "$log.runs" "$log.markers" "$log.holding" "$log.request-path" "$runtime_dir/tilo-session/desktop-ready"
+rm -f "$log.runs" "$log.markers" "$log.holding" "$log.request-path" "$log.out" \
+  "$runtime_dir/tilo-session/desktop-ready"
 XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_HOLD_FIRST=1 \
-  TILO_SESSION_PUBLISH_READY=1 TILO_SESSION_DESKTOP_STATUS=7 "$test_wrapper" --backend drm >/dev/null &
+  TILO_SESSION_PUBLISH_READY=1 TILO_SESSION_DESKTOP_STATUS=7 "$test_wrapper" --backend drm >"$log.out" &
 session_pid=$!
 for _ in $(seq 1 500); do
   [ -s "$log.holding" ] && break
@@ -792,18 +793,15 @@ for _ in $(seq 1 500); do
 done
 [ -s "$log.holding" ]
 kill -USR1 "$session_pid"
-ended=0
-for _ in $(seq 1 75); do
-  kill -0 "$session_pid" 2>/dev/null || { ended=1; break; }
-  sleep 0.02
-done
-[ "$ended" = 1 ] || { echo 'a usable desktop that ended kept the login waiting' >&2; exit 1; }
 set +e
 wait "$session_pid"
 status=$?
 set -e
 [ "$status" = 7 ] || { echo "a usable restarted desktop ended the login with $status" >&2; exit 1; }
 [ "$(cat "$log.runs")" = 2 ]
+! grep -q 'the login stays .* s for the restart to be asked again' "$log.out" \
+  || { echo 'a usable desktop that ended kept the login waiting' >&2; exit 1; }
+rm -f "$log.out"
 rm -rf "$runtime_dir/tilo-session"
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 
