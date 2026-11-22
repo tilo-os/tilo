@@ -163,7 +163,11 @@ chain, so it does no more than everyone before it may. Any device of the
 person an agent belongs to may approve that agent. Any member who may write where an agent is may talk to it,
 whoever the agent belongs to. A turn answering a person runs with no more
 than both of them may do: the agent's own grants and the grants of the person
-whose message it answers, the smaller of the two on every resource. Ada's
+whose message it answers, the smaller of the two on every resource. An
+agent's own grants are ordinary grants in the workspace's policy, granted to
+the agent's member id, never a separate limit kept in the agent's record, so
+every device that admits its changes caps them the same way. A change signed
+by an agent's key is weighed as that agent, with the chain it acted for. Ada's
 agent answering Bo reads and changes only what Ada's agent and Bo both may. An agent nobody has approved is not
 triggered; the agent shows that it waits for approval.
 
