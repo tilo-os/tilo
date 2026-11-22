@@ -464,8 +464,10 @@ function start() {
   // own. A title nobody's caret reached takes no typing, and the keys a
   // person types land on the app's shortcuts instead.
   const focusAsked = () => {
+    // A field a patch brought in to be typed in (the first of an action's
+    // fields) goes before the view's own.
     const focus = page.querySelector('[data-focus]')?.dataset.focus ?? null;
-    const focused = focus && page.querySelector(`[data-p="${focus}"]`);
+    const focused = page.querySelector('[autofocus]') ?? (focus && page.querySelector(`[data-p="${focus}"]`));
     if (!focused || !editing(focused) || document.activeElement === focused) return;
     const active = document.activeElement;
     if (active && page.contains(active) && editing(active)) return;
@@ -602,6 +604,12 @@ function start() {
       if (behind) { delete front.dataset.front; behind.dataset.front = ''; }
       else if (history.state?.tilo) history.back();
     }
+  });
+  // A form's Enter runs what its own button runs; the browser never sends it.
+  page.addEventListener('submit', event => {
+    event.preventDefault();
+    const run = event.target.querySelector('button[type=submit][data-a=activate]');
+    if (run) act(run, 'activate');
   });
   page.addEventListener('change', event => {
     const element = event.target;

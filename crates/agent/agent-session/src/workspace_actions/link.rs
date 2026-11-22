@@ -246,6 +246,32 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     fn records(&self, _channel: &str) -> Option<Vec<(String, String)>> {
         None
     }
+    /// The actions of `workspace` this host runs itself, not a record's (its
+    /// governance: giving yourself a name, inviting someone), whose words hold
+    /// `needle`, as `caller` may run them: what a page's search lists beside
+    /// the records' actions. Empty where it runs none.
+    fn own_actions(
+        &self,
+        _workspace: WorkspaceId,
+        _caller: &Caller,
+        _needle: &str,
+    ) -> Vec<tilo_actions::remote::CatalogueRow> {
+        Vec::new()
+    }
+    /// Run `request`, one of [`Self::own_actions`], for `caller`: what it
+    /// answered, or why it refused.
+    ///
+    /// # Errors
+    ///
+    /// The host refused it, or runs no such action.
+    fn run_own_action(
+        &self,
+        _workspace: WorkspaceId,
+        _caller: &Caller,
+        _request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        Err(ActionCallError::UnknownAction)
+    }
     /// The listener-owned public locator; absence cannot mint a browser link.
     fn view_locator(
         &self,

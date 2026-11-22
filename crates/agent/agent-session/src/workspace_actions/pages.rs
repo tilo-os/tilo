@@ -101,7 +101,17 @@ pub(super) enum HeldPage {
         pending: Option<PendingRun>,
         /// What the last run answered, as the person reads it.
         notice: Option<String>,
+        /// The row whose action asks for what it needs, and what the person
+        /// has typed into its fields so far.
+        asking: Option<Asking>,
     },
+}
+
+/// A row's action that takes what the person types: its fields, shown under
+/// the rows, and what each holds.
+pub(super) struct Asking {
+    row: u32,
+    values: Vec<String>,
 }
 
 /// One row of a search page: what it says, the page it opens, or the action
@@ -128,6 +138,66 @@ struct RowRun {
     /// The catalogue revision the row was listed at: what an action whose
     /// contract asks for confirmation is shown and refused at.
     revision: Option<String>,
+    /// What the action needs from the person before it runs: one field each.
+    fields: Vec<RowField>,
+    /// Whether the host runs it itself (the link's `own_actions`)
+    /// rather than a record of the workspace.
+    host: bool,
+}
+
+/// One thing a row's action needs typed: the parameter it fills, as the
+/// action describes it.
+struct RowField {
+    name: String,
+    hint: String,
+    number: bool,
+}
+
+impl RowField {
+    /// The fields the action's required parameters ask for, when each is one
+    /// a line of typed text fills; `None` when one is not (an object, a
+    /// list), which the page has no field for.
+    fn of(params: &[tilo_actions::ActionParam]) -> Option<Vec<Self>> {
+        use tilo_actions::ParamType;
+        params
+            .iter()
+            .filter(|param| param.required)
+            .map(|param| {
+                let number = match param.ty {
+                    ParamType::Text | ParamType::DateTime | ParamType::Secret => false,
+                    ParamType::Integer | ParamType::Number => true,
+                    _ => return None,
+                };
+                Some(Self {
+                    name: param.name.to_string(),
+                    hint: param.description.to_string(),
+                    number,
+                })
+            })
+            .collect()
+    }
+
+    /// What `typed` gives this parameter: a number field's text as the number
+    /// it says, `None` when it says none.
+    fn value(&self, typed: &str) -> Option<serde_json::Value> {
+        let typed = typed.trim();
+        if typed.is_empty() {
+            return None;
+        }
+        if !self.number {
+            return Some(typed.into());
+        }
+        typed
+            .parse::<i64>()
+            .map(serde_json::Value::from)
+            .ok()
+            .or_else(|| {
+                typed
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(|n| serde_json::Number::from_f64(n).map(Into::into))
+            })
+    }
 }
 
 /// The action a search page ran and waits on.
@@ -321,7 +391,11 @@ impl Worker {
             return self.open_home(workspace_id);
         }
         if address.app == SEARCH_APP {
-            return self.open_search(workspace_id, caller, address.show.as_deref().unwrap_or_default());
+            return self.open_search(
+                workspace_id,
+                caller,
+                address.show.as_deref().unwrap_or_default(),
+            );
         }
         let app = self.page_app(&address.app).ok_or(PageRefusal::NoSuchApp)?;
         // A page shows an app's own document of the workspace; an app that
@@ -545,6 +619,7 @@ impl Worker {
                 notes,
                 pending: None,
                 notice: None,
+                asking: None,
             },
         );
         Ok(OpenedPage {
@@ -582,7 +657,12 @@ impl Worker {
                     || app.title().to_lowercase().contains(&query)
                     || app.app_id().to_lowercase().contains(&query)
             })
-            .map(|app| (app.title().to_owned(), page_app_name(app.app_id()).to_owned()))
+            .map(|app| {
+                (
+                    app.title().to_owned(),
+                    page_app_name(app.app_id()).to_owned(),
+                )
+            })
             .collect();
         apps.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (title, name) in apps {
@@ -619,10 +699,14 @@ impl Worker {
                         page_app_name(app.app_id()),
                         sub = encode_part(&found.resource),
                     );
-                    if rows.iter().any(|row| row.href.as_deref() == Some(href.as_str())) {
+                    if rows
+                        .iter()
+                        .any(|row| row.href.as_deref() == Some(href.as_str()))
+                    {
                         continue;
                     }
-                    let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+                    let id = SEARCH_FIRST_ROW
+                        .saturating_add(u32::try_from(rows.len()).unwrap_or_default());
                     rows.push(SearchRow {
                         id,
                         label: found.label,
@@ -635,6 +719,24 @@ impl Worker {
             }
             Err(_) => notes.push("The workspace's records could not be searched here."),
         }
+        if !self.action_rows(workspace_id, caller, typed, &mut rows) {
+            notes.push("The workspace's actions could not be searched here.");
+        }
+        if rows.iter().all(|row| row.app) && notes.is_empty() {
+            notes.push("Nothing here matches.");
+        }
+        (rows, (!notes.is_empty()).then(|| notes.join(" ")))
+    }
+
+    /// The actions the workspace's records offer for `typed`, as rows after
+    /// `rows`: whether the catalogue could be asked.
+    fn action_rows(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        typed: &str,
+        rows: &mut Vec<SearchRow>,
+    ) -> bool {
         // The actions the workspace's records offer, which the row runs: the
         // same invocation an agent or a script makes, decided for this person
         // by the same admission, and answered as the action alone answers.
@@ -647,7 +749,9 @@ impl Worker {
             Ok(page) => {
                 for row in page.rows {
                     let Some(action) = row.action else { continue };
-                    let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+                    let fields = RowField::of(&action.params).unwrap_or_default();
+                    let id = SEARCH_FIRST_ROW
+                        .saturating_add(u32::try_from(rows.len()).unwrap_or_default());
                     rows.push(SearchRow {
                         id,
                         label: action.action_label,
@@ -658,17 +762,43 @@ impl Worker {
                             resource: row.resource.id,
                             action: action.address.action,
                             revision: Some(page.revision.clone()),
+                            fields,
+                            host: false,
                         }),
                         app: false,
                     });
                 }
             }
-            Err(_) => notes.push("The workspace's actions could not be searched here."),
+            Err(_) => return false,
         }
-        if rows.iter().all(|row| row.app) && notes.is_empty() {
-            notes.push("Nothing here matches.");
+        // The workspace's own business, which the host runs: giving yourself a
+        // name, inviting someone.
+        let Some(link) = self.shared.link.get().cloned() else {
+            return true;
+        };
+        for row in link.own_actions(workspace_id, caller, typed) {
+            let Some(action) = row.action else { continue };
+            let Some(fields) = RowField::of(&action.params) else {
+                continue;
+            };
+            let id = SEARCH_FIRST_ROW.saturating_add(u32::try_from(rows.len()).unwrap_or_default());
+            rows.push(SearchRow {
+                id,
+                label: action.action_label,
+                secondary: row.resource.label,
+                href: None,
+                run: Some(RowRun {
+                    provider: row.provider,
+                    resource: action.address.resource,
+                    action: action.address.action,
+                    revision: None,
+                    fields,
+                    host: true,
+                }),
+                app: false,
+            });
         }
-        (rows, (!notes.is_empty()).then(|| notes.join(" ")))
+        true
     }
 
     /// Act on the search page `page`: typing narrows it, and a row runs its
@@ -685,6 +815,31 @@ impl Worker {
             return Ok(self.settled_search(page));
         };
         match action {
+            PageAction::Value(text) if id >= SEARCH_FIRST_FIELD => {
+                // What the person types into a field of the action they chose
+                // is kept until they run it.
+                if let Some(HeldPage::Search {
+                    asking: Some(asking),
+                    ..
+                }) = self.pages.held.get_mut(&page)
+                    && let Some(value) = id
+                        .checked_sub(SEARCH_FIRST_FIELD)
+                        .and_then(|field| usize::try_from(field).ok())
+                        .and_then(|field| asking.values.get_mut(field))
+                {
+                    *value = text;
+                }
+                Ok(Vec::new())
+            }
+            PageAction::Activate if id == SEARCH_FORM_CANCEL => {
+                if let Some(HeldPage::Search { asking, .. }) = self.pages.held.get_mut(&page) {
+                    *asking = None;
+                }
+                self.patch_search(page)
+            }
+            PageAction::Activate if id == SEARCH_FORM_RUN => {
+                self.run_asked(page, workspace_id, &caller)
+            }
             PageAction::Value(text) => {
                 // Typing narrows the page; what it was showing (a row's
                 // answer still running, say) is kept until the answer is.
@@ -715,12 +870,15 @@ impl Worker {
             rows: held,
             notes: held_notes,
             notice,
+            asking,
             ..
         }) = self.pages.held.get_mut(&page)
         {
             *held = rows;
             *held_notes = notes;
             *notice = None;
+            // The rows are new, so is what the person asks for next.
+            *asking = None;
         }
         self.patch_search(page)
     }
@@ -735,29 +893,120 @@ impl Worker {
         caller: &Caller,
         id: u32,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
-        let running = match self.pages.held.get(&page) {
-            Some(HeldPage::Search {
-                rows, pending, ..
-            }) => {
-                if pending.is_some() {
-                    return self.patch_search(page);
-                }
-                rows.iter().find(|row| row.id == id).and_then(|row| {
-                    row.run.as_ref().map(|run| (row.label.clone(), run))
-                })
-            }
-            _ => return Err(unavailable("the page was closed")),
+        let Some(HeldPage::Search {
+            rows,
+            pending,
+            asking,
+            ..
+        }) = self.pages.held.get_mut(&page)
+        else {
+            return Err(unavailable("the page was closed"));
         };
-        let Some((label, run)) = running else {
+        if pending.is_some() {
+            return self.patch_search(page);
+        }
+        let Some(run) = rows
+            .iter()
+            .find(|row| row.id == id)
+            .and_then(|row| row.run.as_ref())
+        else {
             return Ok(Vec::new());
         };
+        // An action that needs something typed asks for it first, in fields
+        // of its own under the row.
+        if !run.fields.is_empty() {
+            *asking = Some(Asking {
+                row: id,
+                values: vec![String::new(); run.fields.len()],
+            });
+            return self.patch_search(page);
+        }
+        self.run_row(
+            page,
+            workspace_id,
+            caller,
+            id,
+            tilo_actions::remote::InvokeArgument::None,
+        )
+    }
+
+    /// Run the action the page asked the person's fields for, with what they
+    /// typed. A field left empty is said, and nothing runs.
+    fn run_asked(
+        &mut self,
+        page: u64,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+    ) -> Result<Vec<PagePatch>, PageRefusal> {
+        let Some(HeldPage::Search {
+            rows,
+            asking: Some(asking),
+            notice,
+            ..
+        }) = self.pages.held.get_mut(&page)
+        else {
+            return self.patch_search(page);
+        };
+        let Some(run) = rows
+            .iter()
+            .find(|row| row.id == asking.row)
+            .and_then(|row| row.run.as_ref())
+        else {
+            return self.patch_search(page);
+        };
+        let mut arguments = serde_json::Map::new();
+        for (field, typed) in run.fields.iter().zip(&asking.values) {
+            let Some(value) = field.value(typed) else {
+                *notice = Some(format!(
+                    "{}: {}",
+                    field_title(&field.name),
+                    if field.number && !typed.trim().is_empty() {
+                        "write a number."
+                    } else {
+                        "write something first."
+                    }
+                ));
+                return self.patch_search(page);
+            };
+            arguments.insert(field.name.clone(), value);
+        }
+        let row = asking.row;
+        self.run_row(
+            page,
+            workspace_id,
+            caller,
+            row,
+            tilo_actions::remote::InvokeArgument::Json(arguments),
+        )
+    }
+
+    /// Run the action of the row numbered `id` with `argument`.
+    fn run_row(
+        &mut self,
+        page: u64,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        id: u32,
+        argument: tilo_actions::remote::InvokeArgument,
+    ) -> Result<Vec<PagePatch>, PageRefusal> {
+        let Some(HeldPage::Search { rows, .. }) = self.pages.held.get(&page) else {
+            return Err(unavailable("the page was closed"));
+        };
+        let Some((label, run)) = rows
+            .iter()
+            .find(|row| row.id == id)
+            .and_then(|row| row.run.as_ref().map(|run| (row.label.clone(), run)))
+        else {
+            return Ok(Vec::new());
+        };
+        let host = run.host;
         let request = InvokeRequest {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: run.provider.clone(),
                 address: ActionAddress::new(run.resource.clone(), run.action.clone()),
             },
-            argument: tilo_actions::remote::InvokeArgument::None,
+            argument,
             context: None,
             confirmation: None,
             revision: run.revision.clone(),
@@ -766,6 +1015,32 @@ impl Worker {
             appearance: None,
             signed: None,
         };
+        if host {
+            // The host answers its own actions as it runs them.
+            let Some(link) = self.shared.link.get().cloned() else {
+                return Err(unavailable("the host is not here"));
+            };
+            let notice = match link.run_own_action(workspace_id, caller, &request) {
+                Ok(value) => said_of(
+                    &label,
+                    &ActionOutput {
+                        value: Some(value),
+                        ..ActionOutput::default()
+                    },
+                ),
+                Err(error) => format!("{label}: {error}"),
+            };
+            if let Some(HeldPage::Search {
+                notice: held,
+                asking,
+                ..
+            }) = self.pages.held.get_mut(&page)
+            {
+                *held = Some(notice);
+                *asking = None;
+            }
+            return self.patch_search(page);
+        }
         let invocation = request.invocation;
         let logged = self.log().insert(caller, request);
         let (notice, pending) = if logged {
@@ -773,7 +1048,10 @@ impl Worker {
             // for a part of what it changes ends on a later pass
             // (`settled_search`).
             let _ = self.invoke(workspace_id, invocation);
-            (format!("Running {label}…"), Some(PendingRun { invocation, label }))
+            (
+                format!("Running {label}…"),
+                Some(PendingRun { invocation, label }),
+            )
         } else {
             (
                 "The workspace is running as many actions as it keeps track of: ask again in a moment."
@@ -781,11 +1059,16 @@ impl Worker {
                 None,
             )
         };
-        if let Some(HeldPage::Search { notice: held, pending: held_pending, .. }) =
-            self.pages.held.get_mut(&page)
+        if let Some(HeldPage::Search {
+            notice: held,
+            pending: held_pending,
+            asking,
+            ..
+        }) = self.pages.held.get_mut(&page)
         {
             *held = Some(notice);
             *held_pending = pending;
+            *asking = None;
         }
         self.patch_search(page)
     }
@@ -807,9 +1090,7 @@ impl Worker {
             .get(&invocation)
             .map(|entry| entry.update.clone());
         let notice = match settled {
-            Some(InvocationUpdate::Succeeded { output, .. }) => {
-                Some(said_of(&label, &output))
-            }
+            Some(InvocationUpdate::Succeeded { output, .. }) => Some(said_of(&label, &output)),
             Some(InvocationUpdate::Failed { error, .. }) => {
                 Some(format!("{label}: {}", error.message))
             }
@@ -817,7 +1098,11 @@ impl Worker {
                 Some(message) => format!("{label}: {message}"),
                 None => format!("{label}: stopped."),
             }),
-            Some(InvocationUpdate::Accepted { .. } | InvocationUpdate::Progress { .. } | InvocationUpdate::Item { .. })
+            Some(
+                InvocationUpdate::Accepted { .. }
+                | InvocationUpdate::Progress { .. }
+                | InvocationUpdate::Item { .. },
+            )
             | None => None,
         };
         let Some(notice) = notice else {
@@ -841,12 +1126,20 @@ impl Worker {
             rows,
             notes,
             notice,
+            asking,
             ..
         }) = self.pages.held.get(&page)
         else {
             return Err(unavailable("the page was closed"));
         };
-        let html = results_div(&results_html(rows, notice.as_deref(), notes.as_deref()));
+        let mut html = results_html(rows, notice.as_deref(), notes.as_deref());
+        if let Some(asking) = asking
+            && let Some(row) = rows.iter().find(|row| row.id == asking.row)
+            && let Some(run) = &row.run
+        {
+            html = asking_html(&row.label, &run.fields, &asking.values) + &html;
+        }
+        let html = results_div(&html);
         Ok(vec![PagePatch {
             id: SEARCH_RESULTS,
             html,
@@ -1034,11 +1327,60 @@ const MOST_ROWS: usize = 40;
 /// results stand before it.
 const SEARCH_FIRST_ROW: u32 = 10;
 
+/// The element numbers of the button that runs the action a row asks fields
+/// for, and of the one that puts it away.
+const SEARCH_FORM_RUN: u32 = 3;
+const SEARCH_FORM_CANCEL: u32 = 4;
+
+/// The element number of that action's first field: past every row.
+const SEARCH_FIRST_FIELD: u32 = 1 << 20;
+
+/// A parameter's name as a field's title: `display_name` reads "Display name".
+fn field_title(name: &str) -> String {
+    let words = name.replace(['_', '-'], " ");
+    let mut chars = words.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The fields the action `label` asks for, holding what was typed: a form
+/// over the rows, its first field taking the caret.
+fn asking_html(label: &str, fields: &[RowField], values: &[String]) -> String {
+    let mut out = format!(
+        "<form class=\"tilo-search-form\" aria-label=\"{label}\"><h2>{label}</h2>",
+        label = escape(label)
+    );
+    for (index, (field, value)) in fields.iter().zip(values).enumerate() {
+        let id = SEARCH_FIRST_FIELD.saturating_add(u32::try_from(index).unwrap_or_default());
+        let _ = write!(
+            out,
+            "<label class=\"tilo-search-form-field\"><span>{title}</span>\
+             <input name=\"{name}\" type=\"{kind}\" data-a=\"value\" data-p=\"{id}\" \
+             value=\"{value}\"{focus}><small>{hint}</small></label>",
+            title = escape(&field_title(&field.name)),
+            name = escape(&field.name),
+            kind = if field.number { "number" } else { "text" },
+            value = escape(value),
+            focus = if index == 0 { " autofocus" } else { "" },
+            hint = escape(&field.hint),
+        );
+    }
+    let _ = write!(
+        out,
+        "<div class=\"tilo-search-form-actions\">\
+         <button type=\"button\" data-a=\"activate\" data-p=\"{SEARCH_FORM_CANCEL}\">Cancel</button>\
+         <button type=\"submit\" data-a=\"activate\" data-p=\"{SEARCH_FORM_RUN}\">{}</button>\
+         </div></form>",
+        escape(label)
+    );
+    out
+}
+
 /// An app's page name: the last part of its id (`notes` for `so.tilo.notes`).
 fn page_app_name(app_id: &str) -> &str {
-    app_id
-        .rsplit_once('.')
-        .map_or(app_id, |(_, last)| last)
+    app_id.rsplit_once('.').map_or(app_id, |(_, last)| last)
 }
 
 /// The rows of the search page as HTML, grouped: the apps, then what the
@@ -1224,7 +1566,19 @@ color:var(--tilo-text);text-decoration:none;font-size:14px;}\
 .tilo-search-row:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
 .tilo-search-row-label{font-weight:500;}\
 .tilo-search-row-kind{margin-left:auto;font-size:12px;color:var(--tilo-text-tertiary);}\
-.tilo-search-note{margin:0;font-size:14px;color:var(--tilo-text-dim);}";
+.tilo-search-note{margin:0;font-size:14px;color:var(--tilo-text-dim);}\
+.tilo-search-form{display:flex;flex-direction:column;gap:12px;padding:16px;border-radius:12px;\
+background:var(--tilo-raised);}\
+.tilo-search-form h2{margin:0;font-size:15px;font-weight:600;}\
+.tilo-search-form-field{display:flex;flex-direction:column;gap:4px;font-size:13px;font-weight:500;}\
+.tilo-search-form-field input{box-sizing:border-box;padding:8px 10px;border:1px solid var(--tilo-border);\
+border-radius:8px;background:var(--tilo-ground);color:var(--tilo-text);font:inherit;font-size:14px;}\
+.tilo-search-form-field input:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-1px;}\
+.tilo-search-form-field small{font-weight:400;color:var(--tilo-text-dim);}\
+.tilo-search-form-actions{display:flex;justify-content:flex-end;gap:8px;}\
+.tilo-search-form-actions button{padding:7px 14px;border:0;border-radius:8px;font:inherit;font-size:14px;\
+background:var(--tilo-hover);color:var(--tilo-text);}\
+.tilo-search-form-actions button[type=submit]{background:var(--tilo-accent);color:var(--tilo-on-accent);}";
 /// `text` as HTML shows it.
 fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());

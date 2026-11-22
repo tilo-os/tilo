@@ -442,14 +442,20 @@ try {
   step('the operator giving their name, so those they invite know who asked them in');
   const operatorName = 'Maya Chen';
   await search(operator.tab, 'set your name', 'Set your name');
-  await until(operator.tab, `!!document.querySelector('input[name=display-name]')`, 'the name form', stepLimit(4));
+  await until(operator.tab, `!!document.querySelector('.tilo-search-form input[name=name]')`, 'the name form', stepLimit(4));
   await operator.tab.evaluate(`(() => {
-    const input = document.querySelector('input[name=display-name]');
+    const input = document.querySelector('.tilo-search-form input[name=name]');
     input.value = ${JSON.stringify(operatorName)};
     input.dispatchEvent(new Event('input', {bubbles: true}));
     input.closest('form').querySelector('button[type=submit]').click();
   })()`);
-  await until(operator.tab, `!document.querySelector('input[name=display-name]')`, 'the name kept', stepLimit(6));
+  // The action answers on the page: done, or why it was not.
+  const nameSaid = await until(operator.tab, `(() => {
+    if (document.querySelector('.tilo-search-form input[name=name]')) return '';
+    const said = document.querySelector('#tilo-page .tilo-search-notice')?.textContent?.trim() ?? '';
+    return said.startsWith('Running ') ? '' : said;
+  })()`, 'the name kept', stepLimit(6));
+  if (nameSaid !== 'Set your name: Done.') await fail(`setting the operator's name answered "${nameSaid}"`);
   report.operator = {user: operatorPerson, name: operatorName};
   mark('the operator gave their name, so those they invite know who asked them in');
 

@@ -1054,6 +1054,37 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         })
     }
 
+    fn own_actions(
+        &self,
+        workspace: WorkspaceId,
+        caller: &tilo_actions::remote::Caller,
+        needle: &str,
+    ) -> Vec<tilo_actions::remote::CatalogueRow> {
+        self.workspaces
+            .as_ref()
+            .map_or_else(Vec::new, |workspaces| {
+                self.host_device
+                    .runtime
+                    .block_on(workspaces.page_actions(workspace, caller, needle))
+                    .rows
+            })
+    }
+
+    fn run_own_action(
+        &self,
+        workspace: WorkspaceId,
+        caller: &tilo_actions::remote::Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+        let workspaces = self
+            .workspaces
+            .as_ref()
+            .ok_or(tilo_actions::remote::ActionCallError::UnknownAction)?;
+        self.host_device
+            .runtime
+            .block_on(workspaces.page_invoke(workspace, caller, request))
+    }
+
     fn view_read_policy(
         &self,
         workspace: WorkspaceId,

@@ -314,7 +314,7 @@ const VERBS: [Verb; 27] = [
     },
     Verb {
         id: NAME,
-        label: "Name yourself",
+        label: "Set your name",
         // Nothing checks it: what a person is called in a workspace is theirs,
         // not a grant's. Whoever asks names themselves, or is refused.
         check: "",
@@ -1260,6 +1260,45 @@ impl Workspaces {
             .or_else(|| (host.device_public_key == *device).then(|| host.clone()))?;
         drop(workspace);
         (cert.user_public_key == *user).then_some((governed, cert))
+    }
+
+    /// The actions of the workspace `workspace_id` this server runs itself (its
+    /// governance, a person's own business in it) whose words hold `needle`,
+    /// as `caller` may run them: what a page's search lists beside the
+    /// actions of the workspace's records.
+    pub async fn page_actions(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        needle: &str,
+    ) -> CataloguePage {
+        let query = CatalogueQuery {
+            needle: needle.to_owned(),
+            provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.to_owned()),
+            max_results: 40,
+            ..CatalogueQuery::default()
+        };
+        self.catalogue(Some(workspace_id), caller, None, &query)
+            .await
+    }
+
+    /// Run `request`, one of the actions [`Self::page_actions`] offered, for
+    /// `caller` on a page of the workspace `workspace_id`: decided as the
+    /// same call from any other caller is.
+    ///
+    /// # Errors
+    ///
+    /// The action refused, or is not one `caller` may run.
+    pub async fn page_invoke(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        if request.target.provider != WORKSPACE_GOVERNANCE_PROVIDER {
+            return Err(ActionCallError::UnknownAction);
+        }
+        self.invoke(Some(workspace_id), caller, None, request).await
     }
 
     /// What `caller`, on the device `certificate` when the transport named
