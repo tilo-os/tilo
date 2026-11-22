@@ -428,7 +428,7 @@ The copies:
 | Resource index | `resource-store` (7,475, used only by the workspace service); `tilolang-tilo` `index/` on redb (10,614); `collaboration::resource::store`; `tilolang-tilo` `TiloStore` |
 | Brokers | `collaboration` `broker*.rs` (13,813); `collab_app_broker` (65,255) |
 | Settings | `settings-store` (19,419), two Automerge documents behind its own `settings.sock`; the host's `person_settings` |
-| File tree | `fs` `tree_sync.rs` (the workspace service, the standalone runtime, and the fs daemon through the session's `files-tree` socket), with two `tree_put`s |
+| File tree | `fs` `tree_sync.rs` (the workspace service, the standalone runtime, and the fs daemon through the session's `files-tree` socket), with one tree writer since a60e81727f2 |
 | File bytes and keys | `fs` `FileArea` with iroh-blobs and its own ALPNs (`tilo-fs/session-link/1`, `tilo-fs/file-keys/1`, `tilo/fs/certify/1`, `tilo-fs-workspace-authority/1`); `tilo-content` (4,004) with `content-device` (706); `runtime-fs` blobs |
 | File presentation | FUSE in `fs/src/fs/fuse.rs`; native Btrfs and fanotify in `fs-native` (10,340); the mirror folder `sync_folder`; `runtime-fs` (14,011) with its own FUSE in `runtime-fs-fuse` (1,771) |
 
@@ -473,7 +473,7 @@ and screen share only, never documents, and stays as it is.
 | The tilolang redb index and the `TiloStore` mirror, keeping the pager | ~15,000 |
 | The overlap in `collab_app_broker` | ~30,000 |
 | `settings-store`'s document layer and socket, keeping the typed readers | ~8,000 |
-| `tilo_fs::sync` and the fs ALPNs, the second `tree_put` | ~2,000 |
+| `tilo_fs::sync` and the fs ALPNs | ~2,000 |
 | `fs` `kept_documents`, `runtime-fs` blobs, `content-device` | ~3,000 |
 | `app-state` `FsStore` once every document is a replica scope | ~10,000 |
 
@@ -842,7 +842,7 @@ waits on, if anything.
 | Piece | Left on main | On a branch now | Session |
 |---|---|---|---|
 | Devices, identity | `tilo-enroll` and `tilo-approve` (first boot still enrols with a token), `tilo-device-admin`, `threshold-identity`, `https::server_info`, the browser root and `device-key.mjs` (2 person stores left: `tilo_identity::store` and the browser's) | `server_info` alone (one `TILO_API_HOST` names the host); then one push: `tilo device add` and `tilo login` as daemon actions, first boot and onboarding's existing-identity card on tickets, the imager's pairing call gone, `tilo-enroll`, `tilo-approve` and the browser store deleted. The boot key is an ordinary device certificate since 3ec9b6ef0b1 | One identity |
-| Sync | host retained store (`store/`, `persistence.rs`, `compaction.rs`, `tilo-server-store`), delta and co-edit envelopes, the file path's tail (the second `tree_put`; the Files daemon's keys from the identity service; `kept_documents`, which goes because a mount write is durable once it is in the device's one store; `runtime-fs` blobs and `content-device`, after apps read content through the broker; `DISCOVERY_ALPN` at the next peer-version bump), broker overlap, `settings-store` document layer, `app-state` `FsStore` | one store −40k (waits on the company move's OK), the file path's tail; one file path landed in c4f20cecac1 (−15.1k) | One engine |
+| Sync | host retained store (`store/`, `persistence.rs`, `compaction.rs`, `tilo-server-store`), delta and co-edit envelopes, the file path's tail (the Files daemon's keys from the identity service; `kept_documents`, which goes because a mount write is durable once it is in the device's one store; `runtime-fs` blobs and `content-device`, after apps read content through the broker; `DISCOVERY_ALPN` at the next peer-version bump), broker overlap, `settings-store` document layer, `app-state` `FsStore` | one store −40k (waits on the company move's OK), the file path's tail; one file path landed in c4f20cecac1 (−15.1k) | One engine |
 | tilolang store | the redb pager outside resource-store; open, switch and scroll above their bars after the move (465, 108 and 43 ms against 289, 60 and 25) | the costs first, then the pager into resource-store; the store move landed in e39e9557706 (−49.7k) | tilolang onto the resource store |
 | App framework | Rust Chat (71k), Rust Tasks (13.5k), `apps/tilolang` (21k), 65 `*-model` crates, `tilo-view`, `tilo-app` `framework/` (64k) after the ports, the Rust shell, the toolkit's second action path, `PreparedIdentity` in the imager (an identity prepared on the install media) and the in-Tilo imager app; the standalone writer and the installer stay programs that run before Tilo exists and write no identity; a capture before the wipe goes to a folder on the new encrypted disk, which `tilo migrate` reads after login | Chat deletion −145k on one branch, Tasks with Notes on the web −14k, shell context menu | Delete Rust Chat; Rust apps to tilolang; cleanup |
 | Agents | `coding_agents` (4k) and every Claude-specific path, the other agent engines | C −6k | Agent engines |
