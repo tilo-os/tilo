@@ -2748,6 +2748,41 @@ mod tests {
             }
         }
 
+        phase concurrent_launch_waiters_all_wake_on_one_publication;
+        // Many invocations of a closed app wait at once without a thread
+        // each: one launch of the app runs for all of them, and one
+        // publication admits them all, also when the app publishes before
+        // every ask has begun to wait for it.
+        {
+            const WAITERS: usize = 16;
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let launches = app_comes_up_later(&state);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+            let invoking = (0..WAITERS)
+                .map(|_| invoke_in_background(&state, &owner, &provider, "new-window"))
+                .collect::<Vec<_>>();
+            wait_for_the_launch(&launches);
+            let mut stream = state.capture_invocations_for_test(8);
+            state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
+
+            for invocation in invoking {
+                invocation
+                    .join()
+                    .expect("invoking thread")
+                    .expect("every waiter is admitted");
+            }
+            let mut delivered = 0_usize;
+            while let Ok(envelope) = stream.try_recv() {
+                assert_eq!(envelope.action, "new-window");
+                delivered = delivered.saturating_add(1);
+            }
+            assert_eq!(delivered, WAITERS);
+            assert_eq!(launches.lock().expect("launches").len(), 1);
+        }
+
         phase launch_then_deliver_stops_when_caller_abandons;
         // A caller that drops its answer while the app is still starting ends
         // the wait then — long before the delivery timeout — and the app that

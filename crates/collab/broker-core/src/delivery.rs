@@ -245,8 +245,12 @@ impl<E> Publishers<E> {
     /// asks waiting.
     fn begin_launch(&self, app_id: &str, workspace: &str) -> Option<LaunchRunning<'_, E>> {
         let key = (workspace.to_owned(), app_id.to_owned());
-        let mut launching = self.launching.lock().ok()?;
-        launching.insert(key.clone()).then_some(LaunchRunning {
+        // The guard exists only once the launch is this ask's: dropping one built for a launch
+        // that runs already would end that launch, under the lock its drop takes.
+        if !self.launching.lock().ok()?.insert(key.clone()) {
+            return None;
+        }
+        Some(LaunchRunning {
             publishers: self,
             key,
         })
