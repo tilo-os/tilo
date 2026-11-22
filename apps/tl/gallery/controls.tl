@@ -27,13 +27,7 @@ view controls(g: Gallery) {
     stack(max: 44rem, gap: .section) {
         ui.Section("Boxes and switches") {
             ui.Checkbox(bind: g.controls_by_email, label: "Send by email")
-            ui.Checkbox(
-                bind: g.controls_locked,
-                label: "Keep a copy, as the workspace asks",
-                enabled: false,
-            )
             ui.Toggle(bind: g.controls_repeating, label: "Repeat weekly")
-            ui.Toggle(bind: g.controls_locked, label: "Locked by the workspace", enabled: false)
         }
         ui.Section("Numbers") {
             form {
@@ -53,16 +47,6 @@ view controls(g: Gallery) {
                         label: "Share of the time",
                         step: 0.05,
                         shows_value: true,
-                    )
-                }
-                field("Margin, locked") {
-                    ui.NumberInput(
-                        bind: g.controls_margin,
-                        label: "Margin, locked",
-                        min: 0.0,
-                        max: 64.0,
-                        suffix: "px",
-                        enabled: false,
                     )
                 }
             }
@@ -178,9 +162,6 @@ view controls(g: Gallery) {
                         lines: 3,
                         placeholder: "Anything else worth saying",
                     )
-                }
-                field("Signed") {
-                    ui.TextInput(bind: g.controls_signed, enabled: false)
                 }
             }
             ui.Link("https://tilo.sh", label: "Read about Tilo")

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.gallery@5940e35060b13b9a";
+export const SURFACE = "so.tilo.lang.gallery@6f87c3e7553d2ff3";
 
 /** What a pinned app is, and the picture it shows on a dock. One of "notes", "tasks", "mail". */
 export type Kind = "notes" | "tasks" | "mail";
@@ -92,7 +92,6 @@ export interface Gallery extends tilo.Resource {
   kwuh65ek: string;  // controls_title
   gfaekx4h: boolean;  // controls_by_email
   wqgo62si: boolean;  // controls_repeating
-  ljvsyqet: boolean;  // controls_locked
   "4a4siddd": number;  // controls_margin
   "3aihctss": number;  // controls_share
   bfnlu2pr: string;  // controls_room
@@ -107,7 +106,6 @@ export interface Gallery extends tilo.Resource {
   icvcwg6u: string;  // controls_recipient
   socb2mg5: string;  // controls_note
   jxnozq52: string;  // controls_notes
-  h42gcfal: string;  // controls_signed
   fqnths44: boolean;  // controls_background
   "6fezt7u6": boolean;  // controls_lettering
   "5fbblehc": Array<tilo.Entry<Item>>;  // backlog_items

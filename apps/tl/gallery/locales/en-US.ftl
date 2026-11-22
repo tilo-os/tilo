@@ -38,9 +38,6 @@ d-gfaekx4h = Controls by email
 
 d-wqgo62si = Controls repeating
 
-d-ljvsyqet = Controls locked
-    .doc = Whether the workspace holds the report locked, which nobody here can change.
-
 d-4a4siddd = Controls margin
 
 d-3aihctss = Controls share
@@ -68,8 +65,6 @@ d-icvcwg6u = Controls recipient
 d-socb2mg5 = Controls note
 
 d-jxnozq52 = Controls notes
-
-d-h42gcfal = Controls signed
 
 d-fqnths44 = Controls background
 
@@ -107,8 +102,6 @@ d-wivzmqm3 = Chrome apps
 d-x3epwv5u-filter-controls_by_email = Controls by email
 
 d-x3epwv5u-filter-controls_repeating = Controls repeating
-
-d-x3epwv5u-filter-controls_locked = Controls locked
 
 d-x3epwv5u-filter-controls_margin = Controls margin
 
@@ -452,6 +445,7 @@ d-7chkyi44 = Basics
     .w-details = Details
     .w-open-in-the-browser = Open in the browser
     .w-archived = Archived
+    .w-nothing-is-chosen-to-archive = Nothing is chosen to archive
     .w-rich-text-and-a-quote = Rich text and a quote
     .w-a-message-s-own-text-and = A message's own text, and the message it answers above it.
     .w-can-we-ship-the-screenshots-with = Can we ship the screenshots with the notes?
@@ -537,14 +531,11 @@ d-z5ai6zk5 = Controls
     .w-fields-switches-sliders-pickers-dates-and = Fields, switches, sliders, pickers, dates and colours, each bound to the document's own.
     .w-boxes-and-switches = Boxes and switches
     .w-send-by-email = Send by email
-    .w-keep-a-copy-as-the-workspace = Keep a copy, as the workspace asks
     .w-repeat-weekly = Repeat weekly
-    .w-locked-by-the-workspace = Locked by the workspace
     .w-numbers = Numbers
     .w-margin = Margin
     .w-px = px
     .w-share-of-the-time = Share of the time
-    .w-margin-locked = Margin, locked
     .w-choices = Choices
     .w-room = Room
     .w-studio = Studio
@@ -586,7 +577,6 @@ d-z5ai6zk5 = Controls
     .w-a-note-for-the-team = A note for the team
     .w-notes = Notes
     .w-anything-else-worth-saying = Anything else worth saying
-    .w-signed = Signed
     .w-read-about-tilo = Read about Tilo
     .w-layers = Layers
     .w-background = Background

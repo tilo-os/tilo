@@ -247,6 +247,7 @@ d-7chkyi44 = Grundlagen
     .w-save = Speichern
     .w-upload = Hochladen
     .w-archived = Archiviert
+    .w-nothing-is-chosen-to-archive = Nichts zum Archivieren ausgewählt
     .w-chip-and-avatar = Chip und Avatar
     .w-a-tag-a-thing-carries-one = Ein Schlagwort, das eine Sache trägt, eines zum Auswählen oder Entfernen, und wer sich um sie kümmert.
     .w-design = Design
@@ -321,12 +322,9 @@ d-z5ai6zk5 = Bedienelemente
     .w-boxes-and-switches = Kästchen und Schalter
     .w-send-by-email = Per E-Mail senden
     .w-repeat-weekly = Wöchentlich wiederholen
-    .w-keep-a-copy-as-the-workspace = Eine Kopie behalten, wie der Arbeitsbereich es verlangt
-    .w-locked-by-the-workspace = Vom Arbeitsbereich gesperrt
     .w-margin = Rand
     .w-px = px
     .w-share-of-the-time = Anteil der Zeit
-    .w-margin-locked = Rand, gesperrt
     .w-room = Raum
     .w-repeats = Wiederholt sich
     .w-daily = Täglich
@@ -374,7 +372,6 @@ d-z5ai6zk5 = Bedienelemente
     .w-a-note-for-the-team = Eine Notiz für das Team
     .w-notes = Notizen
     .w-anything-else-worth-saying = Noch etwas, das gesagt werden sollte
-    .w-signed = Unterschrieben
     .w-pictures = Bilder
     .w-small = Klein
     .w-regular = Normal
@@ -755,9 +752,6 @@ d-cbwtcaei = Notiz der Grundlagen
 d-kwuh65ek = Titel der Bedienelemente
     .doc = Der Bericht, den die Seite der Bedienelemente bearbeitet: jedes Bedienelement dort schreibt eines dieser Felder.
 
-d-ljvsyqet = Bedienelemente gesperrt
-    .doc = Ob der Arbeitsbereich den Bericht gesperrt hält, was hier niemand ändern kann.
-
 d-frzefp4n = Einträge der Veröffentlichung
     .doc = Die Einträge der Veröffentlichung, eine Liste pro Phase.
 
@@ -794,8 +788,6 @@ d-socb2mg5 = Bedienelemente Notiz
 
 d-jxnozq52 = Bedienelemente Notizen
 
-d-h42gcfal = Bedienelemente unterzeichnet
-
 d-fqnths44 = Bedienelemente Hintergrund
 
 d-rbbe5kqg = Entwurf des Backlogs
@@ -815,8 +807,6 @@ d-x3epwv5u-filter-controls_clock = Bedienelemente Zeit
 d-x3epwv5u-filter-controls_ends = Bedienelemente Ende
 
 d-x3epwv5u-filter-controls_lettering = Bedienelemente Schrift
-
-d-x3epwv5u-filter-controls_locked = Bedienelemente gesperrt
 
 d-x3epwv5u-filter-controls_margin = Bedienelemente Rand
 

@@ -76,7 +76,7 @@ SeekToArgs = TypedDict("SeekToArgs", {
 
 class Item(Resource):
     """Item — `tl.so.tilo.lang.gallery.Item`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     n5clkmib: str  # title
     znpp3agb: str  # notes
     xttl6aec: str  # stage
@@ -112,13 +112,12 @@ class Item(Resource):
 
 class Gallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery.Gallery`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     bmdkc22s: str  # name
     cbwtcaei: str  # basics_note
     kwuh65ek: str  # controls_title
     gfaekx4h: bool  # controls_by_email
     wqgo62si: bool  # controls_repeating
-    ljvsyqet: bool  # controls_locked
     @property
     def _4a4siddd(self) -> float:
         """controls_margin (`4a4siddd` on the wire)."""
@@ -154,7 +153,6 @@ class Gallery(Resource):
     icvcwg6u: str  # controls_recipient
     socb2mg5: str  # controls_note
     jxnozq52: str  # controls_notes
-    h42gcfal: str  # controls_signed
     fqnths44: bool  # controls_background
     @property
     def _6fezt7u6(self) -> bool:
@@ -237,7 +235,7 @@ class Gallery(Resource):
 
 class Row(Resource):
     """Row — `tl.so.tilo.lang.gallery.Row`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     od2pk6d3: str  # title
     jqhagvfx: str  # state
     pu34cefb: int  # size
@@ -245,7 +243,7 @@ class Row(Resource):
 
 class Node(Resource):
     """Node — `tl.so.tilo.lang.gallery.Node`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     sartpsxo: str  # title
     iqq34vjp: Node | None  # parent
     jd5rkocy: bool  # folder
@@ -261,7 +259,7 @@ class Node(Resource):
 
 class Message(Resource):
     """Message — `tl.so.tilo.lang.gallery.Message`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     lcfap66g: str  # title
     ssylkjtu: str  # from
     vyexrz4i: str  # body
@@ -271,21 +269,21 @@ class Message(Resource):
 
 class Card(Resource):
     """Card — `tl.so.tilo.lang.gallery.Card`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     y5gdkqew: str  # title
     ii4dp5pl: int  # count
 
 
 class Change(Resource):
     """Change — `tl.so.tilo.lang.gallery.Change`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     dmejdwow: str  # title
     kbnmru3y: str  # summary
 
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.lang.gallery.Photo`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     @property
     def _6zq4etzb(self) -> str:
         """title (`6zq4etzb` on the wire)."""
@@ -308,7 +306,7 @@ class Photo(Resource):
 
 class Pinned(Resource):
     """Pinned — `tl.so.tilo.lang.gallery.Pinned`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     ciwf3kva: str  # title
     @property
     def _5tfi5mod(self) -> Kind:
@@ -322,7 +320,7 @@ class Pinned(Resource):
 
 class LangGallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery`."""
-    __surface__ = "so.tilo.lang.gallery@5940e35060b13b9a"
+    __surface__ = "so.tilo.lang.gallery@6f87c3e7553d2ff3"
     def note_item(self,
         *,
         last: str,

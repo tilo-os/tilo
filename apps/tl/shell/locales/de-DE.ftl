@@ -517,6 +517,7 @@ d-s7yqm7cb = Fläche
     .w-caret = Schreibmarke
     .w-ask-or-find-anything = Frag oder finde etwas
     .w-send = Senden
+    .w-type-what-you-want-first = Schreib zuerst, was du willst
 
 d-kzhftbrb = Platz auf der Fläche
 
@@ -707,9 +708,11 @@ d-teccuwja = Schnelleinstellungen
 
 d-yxl6yq2r = WLAN-Kachel
     .w-wi-fi = WLAN
+    .w-this-device-has-no-wi-fi = Dieses Gerät hat kein WLAN
 
 d-d5wzqn37 = Bluetooth-Kachel
     .w-bluetooth = Bluetooth
+    .w-this-device-has-no-bluetooth = Dieses Gerät hat kein Bluetooth
 
 d-uzi5ah2q = Dunkel-Kachel
     .w-dark-mode = Dunkler Modus

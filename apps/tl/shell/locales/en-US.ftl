@@ -885,6 +885,7 @@ d-s7yqm7cb = Canvas
     .w-caret = Caret
     .w-ask-or-find-anything = Ask or find anything
     .w-send = Send
+    .w-type-what-you-want-first = Type what you want first
 
 d-vi5fveaq = Model choice
 
@@ -1069,9 +1070,11 @@ d-teccuwja = Quick settings
 
 d-yxl6yq2r = Wifi tile
     .w-wi-fi = Wi-Fi
+    .w-this-device-has-no-wi-fi = This device has no Wi-Fi
 
 d-d5wzqn37 = Bluetooth tile
     .w-bluetooth = Bluetooth
+    .w-this-device-has-no-bluetooth = This device has no Bluetooth
 
 d-uzi5ah2q = Dark tile
     .w-dark-mode = Dark mode

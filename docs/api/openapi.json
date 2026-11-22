@@ -30567,7 +30567,6 @@
               "controls_recipient",
               "controls_note",
               "controls_notes",
-              "controls_signed",
               "backlog_draft",
               "media_source"
             ],
@@ -30590,7 +30589,6 @@
             "enum": [
               "controls_by_email",
               "controls_repeating",
-              "controls_locked",
               "controls_background",
               "controls_lettering"
             ],

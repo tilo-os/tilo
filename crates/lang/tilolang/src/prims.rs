@@ -100,7 +100,12 @@ pub const PRIMS: &[Prim] = &[
     prim_of("fragment", &[], &[]),
     // A button for a declared action, whose label, icon and role are the action's; or a plain
     // button with its own label and `on:`.
-    prim_as("button", "Button", &["label"], &["on", "enabled"]),
+    prim_as(
+        "button",
+        "Button",
+        &["label"],
+        &["on", "enabled", "description"],
+    ),
     prim_of("divider", &[], &[]),
     // A block's source rendered inline. `source` is `Text`, `author` an `Actor`, `invocation`
     // the `host.Invocation` recorded for an action block.

@@ -1108,11 +1108,15 @@ impl Checker<'_> {
                         let v = self.expr_as(value, &Ty::Bool);
                         self.prop(node.clone(), "icon_only", v, value.span);
                         continue;
-                    } else if name == "enabled" || prims::NODE_ARGS.contains(&name) {
+                    } else if name == "enabled" {
+                        // Dimmed, it would not say why: what keeps an action from running is
+                        // its `require`, whose reason the button shows.
+                        self.err("E063", value.span, format!("a button for `{}` is dimmed by the action's `require`, which says why; remove `enabled:`", callee.name));
+                    } else if prims::NODE_ARGS.contains(&name) {
                         self.apply_arg(n, "button", name, value);
                         continue;
                     } else {
-                        self.err("E063", value.span, format!("`button` has no argument `{name}`; a button for an action takes `enabled:`, `icon_only:` and the sizing arguments"));
+                        self.err("E063", value.span, format!("`button` has no argument `{name}`; a button for an action takes `icon_only:` and the sizing arguments"));
                     }
                     let _ = self.expr(value, None);
                 }

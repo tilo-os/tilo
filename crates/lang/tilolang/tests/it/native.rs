@@ -984,8 +984,27 @@ tilo_test_env::scenario! {
                 "action go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    button(go(x), on: go(x))\n}",
             ),
         );
+        expect(
+            "E063",
+            &with_t(
+                "action go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    button(go(x), enabled: x.b)\n}",
+            ),
+        );
+        // A control dimmed by the view says why, and one with no place for the reason is never
+        // dimmed.
+        expect(
+            "E022",
+            &with_t("view v(x: T) {\n    ui.Button(\"Go\", enabled: x.b)\n}"),
+        );
+        expect(
+            "E022",
+            &with_t("view v(x: T) {\n    ui.Toggle(bind: x.b, label: \"On\", enabled: false)\n}"),
+        );
         ok(&with_t(
-            "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    state k: K = .a\n    stack {\n        choice(bind: k)\n        facts(x)\n        toggle(bind: x.b)\n        button(go(x), enabled: x.b)\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
+            "view v(x: T) {\n    stack {\n        ui.Button(\"Go\", enabled: x.b, description: \"Not yet\")\n        ui.Toggle(bind: x.b, label: \"On\", enabled: true)\n    }\n}",
+        ));
+        ok(&with_t(
+            "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    state k: K = .a\n    stack {\n        choice(bind: k)\n        facts(x)\n        toggle(bind: x.b)\n        button(go(x))\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
         ));
     }
 }
