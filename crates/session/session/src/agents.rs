@@ -338,12 +338,10 @@ impl Agents {
 
 impl crate::Shared {
     /// Feed the agents every pass what their work is decided against: every workspace with the
-    /// grants its people gave, and the turns the conversations of each give its agents. Who keeps
-    /// each workspace's agents is read from the workspace's own record of them, as the broker
-    /// admits an agent's session on: an agent works in the turns of the conversations it takes part
-    /// in, and its actions are admitted as its keeper's grants say. The agents kept here are this
-    /// device's to run: it starts each one's process, which answers the turns the broker delivers
-    /// it.
+    /// grants its people gave. Who keeps each workspace's agents is read from the workspace's
+    /// own record of them, as the broker admits an agent's session on: its actions are admitted
+    /// as its keeper's grants say. The agents kept here are this device's to run: it starts each
+    /// one's process.
     pub(crate) fn feed_agents(&self) {
         // What moved in the workspaces' records, and what this session wrote into them, before
         // anything here reads them.
@@ -367,58 +365,16 @@ impl crate::Shared {
             // Each agent whose process is up here is in its workspace, as present as its people.
             self.agent_sessions.processes(&apps.agent_processes());
         }
-        self.conversations.feed(
-            &self.person,
-            workspaces
-                .into_iter()
-                .map(|(workspace, policy)| crate::conversations::WorkspaceFacts {
-                    members: self.member_names(&workspace, &listed),
-                    workspace,
-                    policy,
-                })
-                .collect(),
-        );
-        // A turn whose answer ended without one: the person reads it on the message that asked.
-        for (agent, turn, attempt, reason) in self.agent_sessions.take_failed() {
-            self.conversations
-                .turn_failed(&agent, &turn, attempt, &reason);
-        }
-        // A turn the person asked on the canvas stands where they asked once Chat said which
-        // message it posted for the ask and its record holds it (canvas.md §3).
-        let mut layout = self.layout.borrow_mut();
-        if layout.awaits_turns() {
-            // What Chat answered the asks' sends, once they settled.
-            self.search.poll_answers();
-            layout.stand_asked(
-                &|sent| {
-                    let message = self.sends.posted(sent)?;
-                    self.conversations.asked_turn(&message)
-                },
-                tilo_session_core::layout::Busy::default(),
-            );
-        }
-    }
-
-    /// What `workspace`'s member list calls its people and agents, as apps are told it: its people
-    /// as its governance names them, its agents as its record of them does (`listed`).
-    fn member_names(&self, workspace: &str, listed: &[Listed]) -> chat::projection::PeopleNames {
-        let people = self
-            .engine
-            .as_ref()
-            .and_then(|engine| engine.people(workspace).ok())
-            .unwrap_or_default()
+        // Agents on this device answer no turn of their own here: a workspace held here gives
+        // them none, so the broker admits their sessions to nothing beyond what an MCP client
+        // was admitted to. Every workspace is named, so none of them is left unlimited.
+        let turns = workspaces
             .into_iter()
-            .map(|member| (member.id, member.name));
-        let agents = listed
-            .iter()
-            .filter(|agent| agent.workspace == workspace)
-            .map(|agent| {
-                (
-                    ui::permissions::MemberId::agent(&agent.id),
-                    agent.name.clone(),
-                )
-            });
-        people.chain(agents).collect()
+            .map(|(workspace, _)| (workspace, Vec::new()))
+            .collect();
+        if self.agent_sessions.asked(turns) {
+            tilo_identity::policy_change::announce();
+        }
     }
 
     /// The person's agent member for the MCP client `client` in `workspace`, by id and by the name

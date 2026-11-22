@@ -440,7 +440,7 @@ impl super::ServerAgents {
         let ended = reply.finished(&outcome).await;
         if matches!(outcome, Outcome::Cancelled) {
             // Its person stopped it: what it asked them and still waits is taken back.
-            self.take_back_asked(&scope.workspace, &turn, &began).await;
+            self.take_back_asked(&scope.workspace, &turn, &began);
         }
         self.sub_ended(scope, &turn, &outcome, from_starter || told_job)
             .await;

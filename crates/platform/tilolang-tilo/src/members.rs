@@ -1,7 +1,7 @@
 //! The workspace's members as tilolang reads them (`workspace.members`, `members(r)`): the
 //! workspace's own policy, the one the API decides by, read with the person's access. Nothing
 //! here keeps a list of its own: the members are the policy's owner and members with their
-//! roles and the agents its grants name, and who reads a resource is what the policy answers
+//! roles and the agents its member list holds, and who reads a resource is what the policy answers
 //! for each of them.
 //!
 //! The policy names people by their person id, as the API, presence and the member list do;
@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority as Policy, Context, Grantee, MemberAccess, TreePath,
+    Acting, ActionKind, Answer, Authority as Policy, Context, Grantee, MemberAccess, TreePath,
 };
 use tilo_action_policy::{MemberId, PersonId};
 use tilolang_runtime::members::{Member, Reads};
@@ -43,7 +43,8 @@ fn person_of<'a>(access: &'a MemberAccess, me: &PersonId, who: &'a PersonId) -> 
 }
 
 /// Everyone in the workspace by `access`'s policy: the owner, the members by their role
-/// (none who are blocked: they hold nothing), then the agents its grants name.
+/// (none who are blocked: they hold nothing), then its agents: those its member list holds,
+/// and those an older grant admitted (`agent-member:…`).
 #[must_use]
 pub fn members_of(access: &MemberAccess, me: &PersonId) -> Vec<Member> {
     let policy = &access.policy;
@@ -66,17 +67,19 @@ pub fn members_of(access: &MemberAccess, me: &PersonId) -> Vec<Member> {
             role: Some(role),
         });
     }
-    let mut agents: Vec<&str> = policy
-        .grants
-        .iter()
-        // An agent admitted to the workspace holds its preset's grants (`agent-member:…`); the
-        // answers a person gave an agent working for them admit nobody.
-        .filter(|grant| grant.id.0.starts_with("agent-member:"))
-        .filter_map(|grant| match &grant.grantee {
-            Grantee::Member(MemberId::Agent(agent)) => Some(agent.as_str()),
-            _ => None,
-        })
-        .collect();
+    let mut agents: Vec<&str> = policy.agents.keys().map(String::as_str).collect();
+    agents.extend(
+        policy
+            .grants
+            .iter()
+            // An agent admitted to the workspace holds its preset's grants (`agent-member:…`); the
+            // answers a person gave an agent working for them admit nobody.
+            .filter(|grant| grant.id.0.starts_with("agent-member:"))
+            .filter_map(|grant| match &grant.grantee {
+                Grantee::Member(MemberId::Agent(agent)) => Some(agent.as_str()),
+                _ => None,
+            }),
+    );
     agents.sort_unstable();
     agents.dedup();
     out.extend(agents.into_iter().map(Member::agent));
@@ -155,10 +158,23 @@ impl Host {
     }
 }
 
-/// Whether `who` may read `node` by `access`'s policy: a person by their own party, an
-/// agent by the grants the workspace gave it.
+/// Whether `who` may read `node` by `access`'s policy: a person by their own party; an
+/// agent of the member list as its turns are decided, by its preset narrowed to its person's
+/// reach; any other agent by the grants the workspace gave it.
 fn reads_node(access: &MemberAccess, me: &PersonId, who: &Actor, node: &TreePath) -> bool {
     let policy = &access.policy;
+    let earlier = crate::schema::earlier_ids();
+    let cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
+    if let Some(MemberId::Agent(agent)) = who.member_id()
+        && let Some(member) = policy.agents.get(agent.as_str())
+    {
+        let acting = Acting::handed_agent(agent.as_str(), member.for_person.as_str());
+        let preset = acting.handed_preset(&policy.workspace);
+        return Policy::of_acting(&acting, policy, &preset)
+            .decide(node, ActionKind::Read, &cx)
+            .answer
+            == Answer::Allow;
+    }
     let party = match who.member_id() {
         Some(MemberId::Person(person)) => policy.party(person_of(access, me, person)),
         Some(_) => match who.grantee() {
@@ -168,8 +184,6 @@ fn reads_node(access: &MemberAccess, me: &PersonId, who: &Actor, node: &TreePath
         // An automation or an app is no member: it reads as the member it runs for.
         None => return false,
     };
-    let earlier = crate::schema::earlier_ids();
-    let cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
     Policy::person(party)
         .decide(node, ActionKind::Read, &cx)
         .answer
@@ -205,6 +219,13 @@ mod tests {
             Answer::Deny,
             Grantee::person("ada"),
         ));
+        // Cy's own agent, of the member list: it reads what Cy reads.
+        policy.agents.insert(
+            "cys-scout".to_owned(),
+            tilo_action_policy::AgentMember {
+                for_person: "cy".to_owned(),
+            },
+        );
         MemberAccess::person(policy, "ada")
     }
 
@@ -220,6 +241,7 @@ mod tests {
                     Member::person("me", Role::Owner),
                     Member::person("bo", Role::Editor),
                     Member::person("cy", Role::Viewer),
+                    Member::agent("cys-scout"),
                     Member::agent("planner"),
                 ]
             );
@@ -234,11 +256,12 @@ mod tests {
                     .kind("tl.notes.Note")
                     .resource(id)
             };
-            let all: [Actor; 4] = [
+            let all: [Actor; 5] = [
                 MemberId::person("me").into(),
                 MemberId::person("bo").into(),
                 MemberId::person("cy").into(),
                 MemberId::agent("planner").into(),
+                MemberId::agent("cys-scout").into(),
             ];
             for who in &all {
                 assert!(
@@ -254,7 +277,7 @@ mod tests {
             assert_eq!(
                 secret,
                 ["me", "bo", "planner"],
-                "Cy, whom the grant keeps out, does not"
+                "Cy, whom the grant keeps out, does not, nor does the agent acting for him"
             );
         }
     }

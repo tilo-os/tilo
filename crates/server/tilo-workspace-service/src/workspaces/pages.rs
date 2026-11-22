@@ -281,7 +281,7 @@ impl Workspaces {
                 request_id,
                 change,
             } => {
-                self.edit_roles(&workspace, device, request_id, change)
+                self.edit_member_list(&workspace, device, request_id, change)
                     .await?;
                 self.page_roles(&workspace, device, now).await?
             }

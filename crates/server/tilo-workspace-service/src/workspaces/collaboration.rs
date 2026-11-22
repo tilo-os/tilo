@@ -626,15 +626,89 @@ impl Workspaces {
         .await
     }
 
-    pub(super) async fn edit_roles(
+    /// Make `agent` a member of `workspace` acting for `person`, written for the member `by`
+    /// ([`tilo_action_policy::Change::add_agent`]): what every place a turn or this server
+    /// makes an agent calls. `by` is the person, or an agent acting for them, whose right
+    /// decides, narrowed by this server's own: a member adds their own agents, and this device
+    /// signs the change as a member write for them. An agent the workspace holds already is
+    /// no change.
+    ///
+    /// # Errors
+    /// The workspace refuses the change, or its governance cannot be updated.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked from the check through the signed write"
+    )]
+    pub async fn add_agent(
+        &self,
+        workspace: &str,
+        by: tilo_action_policy::MemberId,
+        agent: &str,
+        person: &str,
+    ) -> Result<(), CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        let workspace = self.workspace(workspace).await?;
+        let mut workspace = workspace.lock().await;
+        let host = &self.inner.host;
+        let member = workspace
+            .peer()
+            .permissions(host.cert.device_public_key, system_time(now))?;
+        if member.policy.agents.contains_key(agent) {
+            return Ok(());
+        }
+        let change = tilo_action_policy::Change::add_agent(agent, person, Some(by));
+        let signer = hex::encode(host.cert.user_public_key);
+        member
+            .policy
+            .check(
+                &signer,
+                &member.policy.person_on_device(&signer, false),
+                &change,
+                &tilo_action_policy::Context::at_time(system_time(now)),
+                false,
+            )
+            .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
+        let request_id = *blake3::hash(format!("add-agent:{agent}").as_bytes()).as_bytes();
+        let key = host.key.clone();
+        self.administer(
+            &mut workspace,
+            request_id,
+            request_digest(&("member-list", &change))?,
+            |peer| {
+                peer.governance_mut()
+                    .change_member_list(change, &key, system_time(now))
+            },
+            now,
+        )
+        .await
+        .map(drop)
+    }
+
+    /// Make `change`, a custom role's or an agent's, to `workspace`'s member list as
+    /// `caller`, whom the workspace must allow it. An agent change this server signs for a
+    /// caller of another person names them as whom it is made for.
+    pub(super) async fn edit_member_list(
         &self,
         workspace: &str,
         caller: &DeviceCert,
         request_id: [u8; 32],
-        change: tilo_action_policy::Change,
+        mut change: tilo_action_policy::Change,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        if !change.is_custom_role_change() {
-            return Err(CollaborationError::new("expected a custom role change"));
+        use tilo_action_policy::Change;
+        match &mut change {
+            Change::AddAgent { by, .. } | Change::RemoveAgent { by, .. } => {
+                if caller.user_public_key != self.inner.host.cert.user_public_key {
+                    *by = Some(tilo_action_policy::MemberId::person(hex::encode(
+                        caller.user_public_key,
+                    )));
+                }
+            }
+            change if change.is_custom_role_change() => {}
+            _ => {
+                return Err(CollaborationError::new(
+                    "expected a custom role or agent change",
+                ));
+            }
         }
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
@@ -647,7 +721,7 @@ impl Workspaces {
             request_digest(&("custom-role", &change))?,
             |peer| {
                 peer.governance_mut()
-                    .change_custom_role(change, &key, system_time(now))
+                    .change_member_list(change, &key, system_time(now))
             },
             now,
         )

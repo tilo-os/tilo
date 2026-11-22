@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use tilo_actions::remote::environment_device::{self, ItemUsed};
+use tilo_actions::remote::person_telling::Kind;
 use tilo_actions::remote::{
     ActionCallError, InvocationReceipt, InvokeRequest, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage,
@@ -22,6 +23,8 @@ use tilo_server::hosted_browser::{
     BrowserSessions, FILL_PAGE_ITEM, HostedBrowsers, Unmetered, Window,
 };
 use tilo_server_protocol::hosted::Material;
+use tilo_workspace_service::asks as tl_asks;
+use ui::tilo_resource::{Id, Resource as _};
 use ui::tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents};
 
 /// The made-up site whose sign-in page the window shows.
@@ -467,7 +470,19 @@ impl SignIn {
     /// vault item: what its tool told it, and below that what the server warned of and what
     /// reached the window, for a test that fails to say why.
     async fn asks_to_fill(&self, words: &str, call: &str) -> String {
-        let fill = does(
+        self.hosted
+            .turn(
+                words,
+                vec![self.fill(call), Reply::text("I did what I could.")],
+            )
+            .await;
+        self.reported()
+    }
+
+    /// The model's call `call` that asks for the page's password field to be filled from the
+    /// vault item.
+    fn fill(&self, call: &str) -> Reply {
+        does(
             call,
             "vault/vault#fill-page",
             &serde_json::json!({
@@ -475,10 +490,24 @@ impl SignIn {
                 "item": self.reference,
                 "reason": "To sign in to the made-up site for you.",
             }),
-        );
-        self.hosted
-            .turn(words, vec![fill, Reply::text("I did what I could.")])
+        )
+    }
+
+    /// The person answers the question that waits with `answer`, and the assistant, asked again
+    /// with it, asks for the same fill: what it was told of the answer, then what
+    /// [`Self::asks_to_fill`] says.
+    async fn answers_then_fills(&self, answer: &str, call: &str) -> String {
+        self.hosted.answers(answer).await;
+        let woken = self
+            .hosted
+            .woken_doing(vec![self.fill(call), Reply::text("I did what I could.")])
             .await;
+        format!("{woken}\n-- then:\n{}", self.reported())
+    }
+
+    /// What the last tool call told the assistant, and below that what the server warned of and
+    /// what reached the window.
+    fn reported(&self) -> String {
         format!(
             "{}\n-- the server warned:\n{}\n-- the window saw:\n{}\n-- before the window was \
              let go:\n{}",
@@ -551,15 +580,11 @@ impl SignIn {
             last.contains("vault.item:"),
             "the model works with the reference"
         );
-        let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
-        let said = format!("{:?}", part.messages.iter().collect::<Vec<_>>());
-        assert!(!said.contains(SECRET), "a message holds the password");
-        let saved = hosted
-            .workspaces
-            .resource_document(&hosted.workspace, CHAT, chat::parts::part(0).as_str())
-            .await
-            .unwrap()
-            .unwrap();
+        assert!(
+            !hosted.said().await.contains(SECRET),
+            "an ask or a reply holds the password"
+        );
+        let saved = hosted.record_bytes().await;
         assert!(
             !saved
                 .windows(SECRET.len())
@@ -642,8 +667,9 @@ async fn narrow(hosted: &Hosted, bound: Vec<Bound>) {
     }
 }
 
-/// The chain. The first fill of the item at the site asks its person and fills nothing; their
-/// allow fills nothing by itself and lets the next fill there through, once; the page's field
+/// The chain. The first fill of the item at the site asks its person in the assistant's reply
+/// and fills nothing; their allow fills nothing by itself and lets the assistant's next fill
+/// there through, once; the page's field
 /// then holds the password; the fill after asks again; and the password is nowhere but in the
 /// page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -659,39 +685,43 @@ async fn the_assistant_has_a_sign_in_field_filled_with_a_password_only_the_page_
         "the agent is told its person is asked: {told}"
     );
     assert!(signing.filled().is_empty(), "nothing is filled unasked");
-    let asked = hosted.questions(chat::question::ACTION).await;
+    let asked = hosted.questions().await;
     assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    let (question, held) = &asked[0];
-    let asks = held.question.as_ref().unwrap();
-    assert_eq!(
-        asks.person,
-        MemberId::person(hosted.person()),
-        "only its own person is asked"
-    );
-    let shown = asks.kept().unwrap_or_default().to_string();
+    let question = hosted
+        .workspaces
+        .told_after(&hosted.root.verifying_key().to_bytes(), 0)
+        .told
+        .into_iter()
+        .find(|told| told.kind == Kind::Question)
+        .expect("its person is told the question");
     assert!(
-        shown.contains("\"name\":\"sign-in.example.test\"") && shown.contains(SITE),
-        "the question names the site by its name and by its whole origin: {shown}"
+        question
+            .words
+            .contains("Site: sign-in.example.test (https://sign-in.example.test)"),
+        "the question names the site by its name and by its whole origin: {}",
+        question.words
     );
     assert!(
-        !shown.contains(SECRET) && !shown.contains(&signing.reference),
-        "and shows nothing of the item but its kind: {shown}"
+        !question.words.contains(SECRET) && !question.words.contains(&signing.reference),
+        "and shows nothing of the item but its kind: {}",
+        question.words
     );
 
-    hosted.answers(question, chat::question::ALLOW).await;
-    assert_eq!(reworded::ended(hosted).await, chat::question::DONE);
+    // Her allow fills nothing by itself: the assistant, asked again with it, asks for the same
+    // fill, and that one goes through.
+    let told = signing.answers_then_fills("allow", "call-2").await;
     assert!(
-        signing.filled().is_empty(),
-        "an allow fills nothing by itself"
+        told.contains("They answered: allowed, this once"),
+        "the assistant is told she allowed it: {told}"
     );
-    let told = signing.asks_to_fill("I allowed it.", "call-2").await;
     assert_eq!(
         signing.filled(),
         [(FIELD.to_owned(), "password".to_owned(), SECRET.to_owned())],
         "the page's password field holds the password: {told}"
     );
+    let fill_told = signing.hosted.last_tool_result();
     assert!(
-        !told.contains(ASKED) && !told.contains(SECRET),
+        !fill_told.contains(ASKED) && !told.contains(SECRET),
         "the agent is told the field is filled, and not with what: {told}"
     );
 
@@ -713,17 +743,14 @@ async fn a_no_fills_nothing_and_the_next_fill_asks_again() {
     let told = signing
         .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
         .await;
-    let asked = hosted.questions(chat::question::ACTION).await;
+    let asked = hosted.questions().await;
     assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    hosted.answers(&asked[0].0, chat::question::DENY).await;
-    let ended = reworded::ended(hosted).await;
-
-    let told = signing
-        .asks_to_fill("Please try once more.", "call-2")
-        .await;
+    let told = signing.answers_then_fills("no", "call-2").await;
     assert!(
-        ended == chat::question::DROPPED && signing.filled().is_empty() && told.contains(ASKED),
-        "a no: it ended {ended:?}, the page holds {:?}, and the next fill asks again: {told}",
+        told.contains("They answered: not allowed")
+            && signing.filled().is_empty()
+            && signing.hosted.last_tool_result().contains(ASKED),
+        "a no: the page holds {:?}, and the next fill asks again: {told}",
         signing.filled()
     );
     assert!(
@@ -732,65 +759,6 @@ async fn a_no_fills_nothing_and_the_next_fill_asks_again() {
         signing.travelled()
     );
     hosted.page.peer.close();
-}
-
-/// A question its agent edited is not what its person was asked: their "Always" fills nothing,
-/// the question says it was not done, the item keeps no leave, and the next fill asks again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn always_to_an_edited_question_fills_nothing_and_lets_nothing_stand() {
-    let mut signing = Box::pin(at_the_sign_in_page(SITE)).await;
-    let told = signing
-        .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
-        .await;
-    let asked = signing.hosted.questions(chat::question::ACTION).await;
-    assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    let question = asked[0].0.clone();
-
-    // The assistant puts other words on what it asked, and its person answers what they read.
-    reworded::the_assistant_rewords(&signing.hosted, &question, "May I tidy up our chat?").await;
-    let edited = signing.hosted.questions(chat::question::ACTION).await;
-    assert!(edited[0].1.edited, "the question shows other words now");
-    signing
-        .hosted
-        .answers(&question, chat::question::ALWAYS)
-        .await;
-    let ended = reworded::ended(&signing.hosted).await;
-
-    // Whether anything stands for the assistant: the same fill, asked for once more, and what
-    // the item remembers, as its person reads it.
-    let told = signing
-        .asks_to_fill("Please try once more.", "call-2")
-        .await;
-    assert!(
-        ended == chat::question::FAILED && signing.filled().is_empty() && told.contains(ASKED),
-        "always to an edited question: it ended {ended:?} (not done is {:?}), the page holds \
-         {:?}, and the next fill asks again: {told}",
-        chat::question::FAILED,
-        signing.filled()
-    );
-    let reference = signing.reference.clone();
-    let remembers = signing
-        .hosted
-        .on_device(
-            (
-                person_vault::PROVIDER,
-                person_vault::RESOURCE,
-                person_vault::USES,
-            ),
-            serde_json::json!({"item": reference}),
-        )
-        .await;
-    assert_eq!(
-        (remembers.get("always"), &remembers["uses"]),
-        (None, &serde_json::json!([])),
-        "the item keeps no leave and was never used: {remembers}"
-    );
-    assert!(
-        !signing.travelled().contains("released"),
-        "nothing was released to the window: {}",
-        signing.travelled()
-    );
-    signing.hosted.page.peer.close();
 }
 
 /// One fill is decided once. A window that asks a second time for a fill it was answered is
@@ -802,13 +770,11 @@ async fn a_second_ask_for_one_fill_is_refused_and_one_allow_is_one_text() {
     let told = signing
         .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
         .await;
-    let asked = hosted.questions(chat::question::ACTION).await;
+    let asked = hosted.questions().await;
     assert_eq!(asked.len(), 1, "one question about the fill: {told}");
-    hosted.answers(&asked[0].0, chat::question::ALLOW).await;
-    assert_eq!(reworded::ended(hosted).await, chat::question::DONE);
 
     signing.shown.strays.lock().unwrap().twice = true;
-    let told = signing.asks_to_fill("I allowed it.", "call-2").await;
+    let told = signing.answers_then_fills("allow", "call-2").await;
     assert_eq!(
         signing.filled(),
         [(FIELD.to_owned(), "password".to_owned(), SECRET.to_owned())],
@@ -857,7 +823,7 @@ async fn another_device_that_asks_for_a_waiting_fills_item_is_refused() {
         "the window's own ask is answered as ever: {told}"
     );
     assert_eq!(
-        hosted.questions(chat::question::ACTION).await.len(),
+        hosted.questions().await.len(),
         1,
         "the person is asked once, for the window's ask"
     );
@@ -903,11 +869,7 @@ async fn a_window_that_asks_for_another_item_than_its_fill_names_is_refused() {
         "the agent is told nothing was filled: {told}"
     );
     assert!(
-        signing
-            .hosted
-            .questions(chat::question::ACTION)
-            .await
-            .is_empty(),
+        signing.hosted.questions().await.is_empty(),
         "nobody is asked about an item no fill names"
     );
     assert!(
@@ -938,7 +900,7 @@ async fn an_item_of_another_site_is_refused_and_nobody_is_asked() {
         "the agent is told it was refused: {told}"
     );
     assert!(
-        hosted.questions(chat::question::ACTION).await.is_empty(),
+        hosted.questions().await.is_empty(),
         "nobody is asked about a site the item does not belong to"
     );
     assert!(
@@ -959,7 +921,11 @@ async fn an_agent_whose_rules_do_not_name_the_fill_is_refused_before_any_window_
     narrow(
         hosted,
         vec![Bound {
-            node: format!("workspace:{}/app:{CHAT}", hosted.workspace),
+            node: format!(
+                "workspace:{}/app:{}",
+                hosted.workspace,
+                tl_asks::chat_packages().unwrap().app()
+            ),
             kinds: vec!["read".into(), "undoable".into()],
             answer: "allow".into(),
         }],
@@ -976,10 +942,7 @@ async fn an_agent_whose_rules_do_not_name_the_fill_is_refused_before_any_window_
         !told.contains(ASKED) && !told.contains(SECRET),
         "the agent is told it may not: {told}"
     );
-    assert!(
-        hosted.questions(chat::question::ACTION).await.is_empty(),
-        "nobody is asked"
-    );
+    assert!(hosted.questions().await.is_empty(), "nobody is asked");
     assert!(signing.filled().is_empty() && signing.travelled().is_empty());
     hosted.page.peer.close();
 }

@@ -85,9 +85,6 @@ mod api_v1;
 #[path = "workspace_actions/branch_files.rs"]
 mod branch_files;
 #[cfg(test)]
-#[path = "workspace_actions/key.rs"]
-mod key;
-#[cfg(test)]
 #[path = "workspace_actions/computer_agent.rs"]
 mod computer_agent;
 #[cfg(test)]
@@ -96,6 +93,9 @@ mod computer_restart;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_machine_agents.rs"]
 mod hosted_machine_agents;
+#[cfg(test)]
+#[path = "workspace_actions/key.rs"]
+mod key;
 #[cfg(test)]
 #[path = "workspace_actions/owner_signs_governance.rs"]
 mod owner_signs_governance;
@@ -146,9 +146,6 @@ mod governed_agent;
 #[path = "workspace_actions/governed_sealed.rs"]
 mod governed_sealed;
 #[cfg(test)]
-#[path = "workspace_actions/hosted_agent_questions.rs"]
-mod hosted_agent_questions;
-#[cfg(test)]
 #[path = "workspace_actions/hosted_agent_sessions.rs"]
 mod hosted_agent_sessions;
 #[cfg(test)]
@@ -161,9 +158,6 @@ mod hosted_agent_turns;
 #[path = "workspace_actions/hosted_browser.rs"]
 mod hosted_browser;
 #[cfg(test)]
-#[path = "workspace_actions/hosted_consent_notification.rs"]
-mod hosted_consent_notification;
-#[cfg(test)]
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
 #[cfg(test)]
@@ -175,6 +169,9 @@ mod hosted_mail_account_migrate;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_mail_turn.rs"]
 mod hosted_mail_turn;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_questions.rs"]
+mod hosted_questions;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_secret_use.rs"]
 mod hosted_secret_use;
@@ -218,6 +215,9 @@ mod own_agent;
 #[path = "workspace_actions/packaged_model.rs"]
 mod packaged_model;
 #[cfg(test)]
+#[path = "workspace_actions/person_before_agent.rs"]
+mod person_before_agent;
+#[cfg(test)]
 #[path = "workspace_actions/put_files.rs"]
 mod put_files;
 #[cfg(test)]
@@ -228,6 +228,9 @@ mod resource_support;
 #[cfg(test)]
 #[path = "workspace_actions/share_link.rs"]
 mod share_link;
+#[cfg(test)]
+#[path = "workspace_actions/slow_read.rs"]
+mod slow_read;
 #[cfg(test)]
 #[path = "workspace_actions/throughput.rs"]
 mod throughput;
@@ -240,12 +243,6 @@ mod tracker_listing;
 #[cfg(test)]
 #[path = "workspace_actions/update_reads_older_writes.rs"]
 mod update_reads_older_writes;
-#[cfg(test)]
-#[path = "workspace_actions/person_before_agent.rs"]
-mod person_before_agent;
-#[cfg(test)]
-#[path = "workspace_actions/slow_read.rs"]
-mod slow_read;
 #[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
 mod workspace_per_customer;

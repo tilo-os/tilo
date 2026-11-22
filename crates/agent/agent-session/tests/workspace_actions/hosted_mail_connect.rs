@@ -182,8 +182,7 @@ async fn her_mail(hosted: &mut Hosted) -> Vec<serde_json::Value> {
         .clone()
 }
 
-/// `typed` reached the sign-in and nothing else: no request a model was sent, no message of
-/// the conversation, no log line and no file of the server in the clear.
+/// `typed` reached the sign-in and nothing else: no request a model was sent, no ask or reply, no log line and no file of the server in the clear.
 async fn it_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines, typed: &str) {
     for call in hosted.model.asked() {
         let sent = format!("{:?}", call.request);
@@ -193,15 +192,9 @@ async fn it_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines,
             "on this way a model holds not even the item's reference: {sent}"
         );
     }
-    let part = conversation_part(&hosted.workspaces, &hosted.workspace).await;
-    let said = format!("{:?}", part.messages.iter().collect::<Vec<_>>());
+    let said = hosted.said().await;
     assert!(said.contains(ADDRESS) && !said.contains(typed));
-    let saved = hosted
-        .workspaces
-        .resource_document(&hosted.workspace, CHAT, chat::parts::part(0).as_str())
-        .await
-        .unwrap()
-        .unwrap();
+    let saved = hosted.record_bytes().await;
     assert!(
         !saved
             .windows(typed.len())
@@ -221,11 +214,10 @@ async fn it_is_nowhere_a_model_or_a_reader_looks(hosted: &Hosted, lines: &Lines,
     );
 }
 
-/// Nothing she answers reaches her conversation: no question of Chat asks her anything.
+/// Nothing she answers is asked in the assistant's reply: nothing asks her to allow a use.
 async fn nothing_asks_in_chat(hosted: &Hosted) {
-    assert!(hosted.questions(chat::question::CHOICE).await.is_empty());
     assert!(
-        hosted.questions(chat::question::ACTION).await.is_empty(),
+        hosted.questions().await.is_empty(),
         "nothing asks her to allow a use"
     );
 }

@@ -418,10 +418,7 @@ impl Workspaces {
     /// The authority `workspace` records, as this host's device reads it: the
     /// one policy lookup the entry, the directory and a member's role answer
     /// from.
-    pub(crate) async fn policy_of(
-        &self,
-        workspace: &str,
-    ) -> Option<tilo_action_policy::WorkspacePolicy> {
+    pub async fn policy_of(&self, workspace: &str) -> Option<tilo_action_policy::WorkspacePolicy> {
         let state = self.workspace(workspace).await.ok()?;
         let state = state.lock().await;
         state

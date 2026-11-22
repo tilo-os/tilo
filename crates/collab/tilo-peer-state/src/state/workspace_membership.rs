@@ -152,9 +152,11 @@ impl StatePeer {
             Change::DefineRole { .. }
             | Change::RemoveRole { .. }
             | Change::SetMemberRoles { .. }
-            | Change::SetMemberCustomRole { .. } => {
+            | Change::SetMemberCustomRole { .. }
+            | Change::AddAgent { .. }
+            | Change::RemoveAgent { .. } => {
                 self.governance_mut()
-                    .change_custom_role(change.clone(), key, now)
+                    .change_member_list(change.clone(), key, now)
             }
         }
     }
