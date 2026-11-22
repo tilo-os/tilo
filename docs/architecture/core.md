@@ -166,6 +166,11 @@ published types. An action names the view that shows it, so every open view
 of the resource shows the change and who made it, and an agent can attach
 that view to its answer.
 
+Our own code calls only over the device link (`tilo-actions/1` on iroh).
+That includes signing in: `tilo login` is an action to the server, with the
+login code as its input, which the server admits before the device holds a
+certificate. `/v1` REST is only an edge for callers outside Tilo.
+
 ### Views
 
 A view is published at an address and takes a resource. Any view can show
