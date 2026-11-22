@@ -344,8 +344,8 @@ impl Initiative {
     }
 
     /// The look-round's day, where the ask `key` names is one a look of
-    /// `person`'s made in `workspace`: a look asks under its event and its
-    /// own id ([`super::assistant::cause_key`]). Whoever carries out the turn
+    /// `person`'s made in `workspace`: a look asks under its own id, the
+    /// invocation of the step it hands over. Whoever carries out the turn
     /// counts every model call of it on this day beside the assistant's
     /// own, so the turn stops where the look-round's limit is reached.
     /// `None` for every other turn.
@@ -369,7 +369,7 @@ impl Initiative {
             return None;
         }
         let event = kept.event.as_deref()?;
-        let asked_by = |look: &str| super::assistant::cause_key(event, look) == key;
+        let asked_by = |look: &str| look == key;
         let handing = self.inner.handing.lock_recover().get(workspace).cloned();
         let theirs = handing.as_deref().is_some_and(&asked_by)
             || kept.looks.iter().any(|past| asked_by(&past.look.id));
@@ -806,7 +806,7 @@ impl Initiative {
         let now_ms = tilo_clock::unix_now_ms_i64();
         self.listen(workspace);
         let workspaces = &self.inner.workspaces;
-        let mut gathered = on_the_runtime(|runtime| {
+        let gathered = on_the_runtime(|runtime| {
             runtime
                 .block_on(async {
                     let assistant = assistant_of(workspaces, workspace, &person)
@@ -851,15 +851,7 @@ impl Initiative {
                 .lock_recover()
                 .insert(workspace.to_owned(), id.clone());
             match steps.instruct(handed) {
-                Ok(said) => {
-                    // The look's own ask, made as its person, is no news to the next look.
-                    let seen = &mut gathered.seen;
-                    let _ = on_the_runtime(|runtime| {
-                        runtime.block_on(look::asked(workspaces, workspace, seen));
-                        Ok(())
-                    });
-                    (LookEnded::Told, Ok(said))
-                }
+                Ok(said) => (LookEnded::Told, Ok(said)),
                 // Refused, or nothing took it now: the look says why, and
                 // what it found is still new at the next one. Where
                 // nothing took it, the invocation takes the step again and the

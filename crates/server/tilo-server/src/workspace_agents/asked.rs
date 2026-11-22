@@ -25,7 +25,7 @@ use crate::workspaces::Workspaces;
 
 /// Whether `app`'s record is one asks are read in: tilolang Chat's, which uses the agent
 /// package.
-pub(crate) fn keeps_asks(app: &str) -> bool {
+pub(super) fn keeps_asks(app: &str) -> bool {
     packages().is_ok_and(|packages| packages.app() == app)
 }
 
@@ -190,7 +190,12 @@ fn turn_of(
         request,
         history: Vec::new(),
         asked: said,
-        typed: true,
+        // What an event of theirs asked, they did not write.
+        typed: asked
+            .from
+            .as_ref()
+            .and_then(crate::workspace_bots::events::event_named)
+            .is_none(),
         line: None,
         ask: Ask::Asked {
             app: app.to_owned(),
@@ -203,45 +208,57 @@ fn turn_of(
     })
 }
 
-/// Ask `agent` as the person `person` (their root, hex), keyed by `key`, from the person's direct
-/// conversation with the agent in Chat: what a reminder, an event or a look-round of theirs asks
-/// of their assistant. The conversation is opened as Chat's `message_person` opens it, the one
-/// already there or a new one, and the ask is the base's one keyed ask
-/// ([`asks::ask`]): a cause that fires again asks nothing new. Answers the ask.
+/// Ask `agent` as the person `person` (their root, hex) from their event `event`, keyed by `key`:
+/// what a reminder, an event or a look-round of theirs asks of their assistant when its
+/// instruction is handed over. The ask is made from the event's resource
+/// ([`crate::workspace_bots::events::resource_of`]), which is what tells what asked, and is the
+/// base's one keyed ask ([`asks::ask`]): a step that is handed over again asks nothing new. What
+/// it writes is a run of the event's
+/// ([`tilo_workspace_service::tl_records::Opened::in_run_of`]), so the event's own look never
+/// takes it for news. Answers the ask.
 ///
 /// # Errors
-/// Chat's record could not be read, or the conversation or the ask was refused.
-pub async fn ask_in_direct(
+/// Chat's record could not be read, or the ask was refused.
+pub async fn ask_for_event(
     workspaces: &Workspaces,
     workspace: &str,
     (person, agent): (&str, &str),
+    (event, key): (&str, &str),
     said: String,
-    key: String,
 ) -> Result<asks::ResourceRef, String> {
-    use tilo_workspace_service::tl_records::runtime::Value;
     let packages = packages()?;
-    let chat = packages.app().to_owned();
     let asker = asks::Actor::Member(tilo_action_policy::MemberId::person(person.to_owned()));
     let agent = tilo_action_policy::MemberId::agent(agent.to_owned());
+    let from = crate::workspace_bots::events::resource_of(event);
+    let (event, key) = (event.to_owned(), key.to_owned());
     workspaces
         .with_tl_record(workspace, &packages, viewer(), move |opened| {
-            let all = opened
-                .host()
-                .root_of(&chat)
-                .map_err(|error| error.to_string())?;
-            let direct = match opened.invoke(
-                &asker,
-                (&chat, "message_person"),
-                vec![
-                    Value::resource(&all),
-                    Value::Actor(asks::Actor::Member(agent.clone())),
-                ],
-                None,
-            )? {
-                Value::Ref(reference) => (*reference.target).clone(),
-                other => return Err(format!("Chat opened no conversation: {other:?}")),
-            };
-            asks::ask(opened, &asker, &agent, &said, &key, &direct)
+            opened.in_run_of(event);
+            asks::ask(opened, &asker, &agent, &said, &key, &from)
+        })
+        .await
+}
+
+/// What the ask `ask` (by its id, of type `ty`) in Chat's record of `workspace` is made from;
+/// `None` for an ask the record does not hold, or one made from nothing.
+///
+/// # Errors
+/// The record could not be read.
+pub(crate) async fn made_from(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (ask, ty): (&str, &str),
+) -> Result<Option<asks::ResourceRef>, String> {
+    let packages = packages()?;
+    let Some(ask) = asks::ResourceRef::parse_id(ask, ty) else {
+        return Ok(None);
+    };
+    workspaces
+        .with_tl_record(workspace, &packages, viewer(), move |opened| {
+            Ok(asks::asks(opened)?
+                .into_iter()
+                .find(|asked| asked.at.same(&ask))
+                .and_then(|asked| asked.from))
         })
         .await
 }

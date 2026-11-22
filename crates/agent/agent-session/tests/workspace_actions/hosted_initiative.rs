@@ -18,7 +18,7 @@ use tilo_agent_session::bot::host_steps::{
 };
 use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_server::{
-    workspace_agents::{Ask, WorkspaceActionProvider, ask_in_direct, invoke_named},
+    workspace_agents::{Ask, WorkspaceActionProvider, invoke_named},
     workspace_bots::{
         assistant::{self, Starter},
         events::Authority,
@@ -33,6 +33,9 @@ use tilo_server::{
         },
     },
 };
+use tilo_workspace_service::asks;
+use tilo_workspace_service::tl_records::runtime::Value;
+use tilo_workspace_service::tl_records::runtime::rich::RichValue;
 
 /// One `action` of `resource` as `caller` takes it, through what the app action server and an
 /// agent's turn both answer with.
@@ -164,18 +167,58 @@ async fn furnished(
     tasks::issue_list::chain().part(0).as_str().to_owned()
 }
 
-/// The person writes `text` to their assistant, in their direct conversation with it: an ask of
-/// the assistant, made from that conversation.
-async fn asks_their_assistant(workspaces: &Workspaces, workspace: &str, person: &str, text: &str) {
-    ask_in_direct(
-        workspaces,
-        workspace,
-        (person, SCOUT),
-        text.to_owned(),
-        InvocationId::new().0.to_string(),
-    )
-    .await
-    .expect("the person asks their assistant");
+/// The person writes `text` to their assistant in their direct conversation with it, as its
+/// composer sends it: the message, and an ask of the assistant made from the conversation.
+/// Answers the ask.
+pub(crate) async fn writes_to_assistant(
+    workspaces: &Workspaces,
+    workspace: &str,
+    person: &str,
+    text: &str,
+) -> asks::ResourceRef {
+    let packages = asks::chat_packages().unwrap();
+    let chat = packages.app().to_owned();
+    let me = asks::Actor::Member(MemberId::person(person.to_owned()));
+    let text = text.to_owned();
+    workspaces
+        .with_tl_record(workspace, &packages, me.clone(), move |opened| {
+            let all = opened
+                .host()
+                .root_of(&chat)
+                .map_err(|error| error.to_string())?;
+            let assistant = asks::Actor::Member(MemberId::agent(SCOUT));
+            let direct = opened.invoke(
+                &me,
+                (&chat, "message_person"),
+                vec![Value::resource(&all), Value::Actor(assistant.clone())],
+                None,
+            )?;
+            let said = Value::Rich(RichValue::from_text(&text));
+            opened.invoke(
+                &me,
+                (&chat, "send"),
+                vec![direct.clone(), said.clone(), Value::Opt(None)],
+                None,
+            )?;
+            let Value::Ref(direct) = direct else {
+                return Err(format!("Chat opened no conversation: {direct:?}"));
+            };
+            let agents = opened
+                .host()
+                .root_of(asks::AGENT_APP)
+                .map_err(|error| error.to_string())?;
+            match opened.invoke(
+                &me,
+                (asks::AGENT_APP, "ask"),
+                vec![Value::resource(&agents), Value::Actor(assistant), said],
+                Some(&*direct.target),
+            )? {
+                Value::Ref(ask) => Ok((*ask.target).clone()),
+                other => Err(format!("the ask made nothing: {other:?}")),
+            }
+        })
+        .await
+        .expect("the person writes to their assistant")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -203,7 +246,7 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
 
     // The person writes to their assistant, and the server owes it a turn. The assistant acts as
     // that turn's caller: the person's device behind it, the session handed to the agent.
-    asks_their_assistant(
+    writes_to_assistant(
         &workspaces,
         &workspace,
         &person,
@@ -363,7 +406,7 @@ async fn the_model_of_a_hosted_turn_proposes_through_the_tools_its_turn_has() {
 
     // The person asks, and the server answers the turn with what its agents are given: the
     // workspace's resources, the person's events and what their assistant does on its own.
-    asks_their_assistant(
+    writes_to_assistant(
         &workspaces,
         &workspace,
         &person,
@@ -459,7 +502,7 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     furnished(&page, &workspaces, &workspace, &person).await;
     let (initiative, events) = Initiative::start(workspaces.clone(), Some(actions.clone()));
 
-    asks_their_assistant(
+    writes_to_assistant(
         &workspaces,
         &workspace,
         &person,
@@ -692,8 +735,8 @@ async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_l
     assert_eq!(turns.len(), 1, "{turns:?}");
     assert_eq!(turns[0].person, person, "it works for the look's person");
     assert!(
-        matches!(&turns[0].ask, Ask::Asked { key, .. } if key.starts_with(&format!("{event}:"))),
-        "the look asked, keyed by the look-round: {:?}",
+        matches!(&turns[0].ask, Ask::Asked { .. }) && !turns[0].typed,
+        "the look asked, and its person did not write it: {:?}",
         turns[0].ask
     );
     tokio::time::timeout(

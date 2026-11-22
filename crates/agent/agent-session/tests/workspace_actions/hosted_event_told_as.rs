@@ -162,28 +162,6 @@ async fn told_to(up: &Up, devices: (&Device, &Device), workspace: &str) -> Vec<T
         .told
 }
 
-/// The message the event its person calls `label` asked the assistant with, once the
-/// conversation holds it.
-async fn asked_as(up: &Up, workspace: &str, label: &str) -> Id {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let part = conversation_part(&up.workspaces, workspace).await;
-        let asked = part.messages.iter().find(|(_, held)| {
-            held.cause
-                .as_ref()
-                .is_some_and(|cause| cause.label == label)
-        });
-        if let Some((id, _)) = asked {
-            return id.clone();
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the event {label:?} never asked the assistant"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
 /// The person's assistant, `theirs`, sets an event called `name` up for a moment from now, told
 /// as `told_as` where it says so. The moment comes with nothing of the person's on, and their
 /// assistant answers the turn it starts. The event as setting it up answered it.
@@ -203,7 +181,9 @@ async fn fired(
         set_up["toldAs"] = serde_json::json!(told_as);
     }
     let event = up.take(workspace, theirs, workspace_events::SET_UP, &set_up);
-    let ask = asked_as(up, workspace, name).await;
+    let person = hex::encode(theirs.user_public_key().expect("a person's assistant"));
+    let id = event["id"].as_str().expect("an event has an id");
+    let ask = asked_from(up, workspace, &person, id).await;
     let model = waits(
         vec![says(SAID)],
         usize::MAX,
@@ -214,11 +194,10 @@ async fn fired(
     let turns = agents.turns(workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
     agents.answer(workspace, &turns[0]).await.unwrap();
-    let reply = ended(&up.workspaces, workspace, &ask).await;
+    let reply = answer_of(up, workspace, &person, &ask.at).await;
     assert!(
-        reply.text.contains(SAID),
-        "the assistant answered {name:?}: {}",
-        reply.text
+        reply.contains(SAID),
+        "the assistant answered {name:?}: {reply}"
     );
     event
 }

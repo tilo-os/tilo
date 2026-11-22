@@ -17,15 +17,15 @@
 //!
 //! An instruction a program hands over starts a turn of its person's
 //! assistant, where the server keeps its workspaces' agents working: it is
-//! an ask of the agent package, made by that person from their direct
-//! conversation with their assistant in Chat and keyed by the step's own
-//! invocation ([`crate::workspace_agents::ask_in_direct`]), so a step taken
-//! again after a restart asks nothing twice. The turn is the assistant's own
-//! work under its own bounds: what it would send or change outside the
-//! workspace still asks its person. Where nothing takes the instruction (a
-//! server that keeps no agents working), the invocation is tried again, and
-//! kept as a dead letter once its attempts are spent, so what was not
-//! delivered can be read and invoked again.
+//! an ask of the agent package, made by that person from the program, an
+//! event of theirs, and keyed by the step's own invocation
+//! ([`crate::workspace_agents::ask_for_event`]), so a step taken again after
+//! a restart asks nothing twice. The turn is the assistant's own work under
+//! its own bounds: what it would send or change outside the workspace still
+//! asks its person. Where nothing takes the instruction (a server that
+//! keeps no agents working), the invocation is tried again, and kept as a
+//! dead letter once its attempts are spent, so what was not delivered can
+//! be read and invoked again.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,14 +86,6 @@ pub fn steps_starting_turns(workspaces: Workspaces, starter: Starter) -> Arc<dyn
         workspaces,
         turns: Some(starter),
     })
-}
-
-/// What names the ask a program's step makes: the program, by its
-/// installation, and the step's invocation. A step taken again is the same
-/// ask.
-#[must_use]
-pub fn cause_key(installation: &str, invocation: &str) -> String {
-    format!("{installation}:{invocation}")
 }
 
 /// The assistant `person` keeps in `workspace`: of the active agents they
@@ -289,20 +281,17 @@ impl Hosted {
                         .into(),
                 )
             })?;
-        let key = cause_key(
-            &instruction.cause.installation,
-            &instruction.cause.invocation.0.to_string(),
-        );
+        let step = instruction.cause.invocation.0.to_string();
         runtime
-            .block_on(crate::workspace_agents::ask_in_direct(
+            .block_on(crate::workspace_agents::ask_for_event(
                 &self.workspaces,
                 &instruction.workspace,
                 (&instruction.person, &assistant.id.0),
+                (&instruction.cause.installation, &step),
                 told(instruction, starter),
-                key,
             ))
             // The turn is started, not waited for: its answer is the
-            // assistant's reply to the ask, under the conversation.
+            // assistant's reply to the ask.
             .map(|_| String::new())
             .map_err(StepError::Unavailable)
     }
@@ -405,7 +394,7 @@ mod tests {
     use tilo_agent_session::bot::host_steps::StepCause;
 
     #[test]
-    fn an_instruction_tells_what_started_it_and_one_step_is_one_ask() {
+    fn an_instruction_tells_what_started_it() {
         let invocation = tilo_actions::InvocationId::new();
         let instruction = Instruction {
             person: "ab".repeat(32),
@@ -436,23 +425,6 @@ mod tests {
         for said in ["7f0c1c0e", "One line.", "\"seen\":3"] {
             assert!(text.contains(said), "{said}: {text}");
         }
-        // Handed over again, as an invocation tried again hands it, it is the same ask.
-        let key = |of: &Instruction| {
-            cause_key(&of.cause.installation, &of.cause.invocation.0.to_string())
-        };
-        assert_eq!(key(&instruction), key(&instruction.clone()));
-        let other = Instruction {
-            cause: StepCause {
-                invocation: tilo_actions::InvocationId::new(),
-                ..instruction.cause.clone()
-            },
-            ..instruction.clone()
-        };
-        assert_ne!(
-            key(&instruction),
-            key(&other),
-            "another step is another ask"
-        );
         assert_eq!(told(&instruction, &starter), text);
     }
 

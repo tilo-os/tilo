@@ -1,126 +1,12 @@
-//! What a person is told when a turn that a cause started for them ends, with nothing of theirs
-//! on. A reminder that is due starts a turn of their assistant on the server, and how that turn
-//! ended joins the person's own list of what they were told, as a reminder: what the assistant
-//! answered, or the sentence its reply carries where the turn could not work. Whatever else asks
-//! for them is told as news, whatever it names itself, and what they asked themselves tells
-//! them nothing. Read as their own device reads it from the server.
+//! What a person is told when a turn that an event of theirs started ends, with nothing of
+//! theirs on. A reminder that is due asks their assistant on the server, the ask made from the
+//! reminder, and how that turn ended joins the person's own list of what they were told, as a
+//! reminder: what the assistant answered, or the sentence its reply carries where the turn could
+//! not work. An ask made from an event this server keeps nothing of for them is told as news,
+//! and what they asked themselves tells them nothing. Read as their own device reads it from the
+//! server.
 use super::*;
 use tilo_actions::remote::person_telling::{self, Kind, ToldList};
-
-impl Up {
-    /// The message a cause asked the assistant with, once the conversation holds one.
-    pub(super) async fn asked_by_a_cause(&self, workspace: &str) -> (Id, chat::chat::Message) {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let part = conversation_part(&self.workspaces, workspace).await;
-            if let Some((id, held)) = part.messages.iter().find(|(_, held)| held.cause.is_some()) {
-                return (id.clone(), held.clone());
-            }
-            assert!(
-                Instant::now() < deadline,
-                "no reminder ever asked the assistant"
-            );
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    }
-}
-
-/// The assistant's model, written out. Asked to remind its person, it sets the reminder up with
-/// the server's own action, through the tools every turn has, for a moment `in_ms` after it is
-/// asked, and then says so. The moment it chose is kept in `at_ms`.
-struct Reminds {
-    in_ms: i64,
-    at_ms: Arc<Mutex<Option<i64>>>,
-    asked: Arc<Mutex<Vec<ModelRequest>>>,
-}
-
-impl tilo_agent_session::model::PlanTurns for Reminds {
-    fn turn(
-        &mut self,
-        request: &ModelRequest,
-        _: &str,
-        _: std::time::Instant,
-        _: bool,
-    ) -> Result<ModelResponse, ModelError> {
-        self.asked.lock().unwrap().push(request.clone());
-        let mut chosen = self.at_ms.lock().unwrap();
-        if chosen.is_some() {
-            return Ok(says("I will remind you to call home."));
-        }
-        let (when, at_ms) = in_a_moment(self.in_ms);
-        *chosen = Some(at_ms);
-        Ok(answer(
-            vec![Content::ToolCall(ToolCall {
-                id: "call-1".into(),
-                name: "tilo_do".into(),
-                input: serde_json::json!({
-                    "path": "events#set-up",
-                    "args": {
-                        "name": "Call home",
-                        "when": when,
-                        "instruction": "Say that it is time to call home.",
-                    },
-                }),
-                extra_content: None,
-            })],
-            StopReason::ToolCalls,
-            1_000,
-        ))
-    }
-
-    fn model(&self) -> &'static str {
-        "reminds"
-    }
-}
-
-/// The person asks their assistant on `up` for a reminder and closes their page at once. The
-/// assistant's turn, with nothing of the person's on, sets the reminder up for a moment `in_ms`
-/// after it is asked. The reminder as its person then reads it, and its moment.
-pub(super) async fn reminded(
-    up: &Up,
-    workspace: &str,
-    (root, browser): (&SigningKey, &Device),
-    page: &Browser,
-    in_ms: i64,
-) -> (EventView, i64) {
-    let wish = write_to_agent(
-        &up.actions,
-        &up.workspaces,
-        workspace,
-        (root, browser),
-        "Remind me in a moment to call home.",
-    )
-    .await;
-    page.peer.close();
-    let at_ms = Arc::new(Mutex::new(None));
-    let asked = Arc::new(Mutex::new(Vec::new()));
-    let model: Model = {
-        let (at_ms, asked) = (Arc::clone(&at_ms), Arc::clone(&asked));
-        Arc::new(move || {
-            Some(Box::new(Reminds {
-                in_ms,
-                at_ms: Arc::clone(&at_ms),
-                asked: Arc::clone(&asked),
-            })
-                as Box<dyn tilo_agent_session::model::PlanTurns>)
-        })
-    };
-    let agents = up.agents(Some(model));
-    let turns = agents.turns(workspace).await.unwrap();
-    assert_eq!(turns.len(), 1, "{turns:?}");
-    agents.answer(workspace, &turns[0]).await.unwrap();
-    let said = ended(&up.workspaces, workspace, &wish).await;
-    assert!(said.text.contains("I will remind you"), "{}", said.text);
-    let theirs = up.events_of(workspace, &themselves(root, browser, workspace));
-    assert_eq!(
-        theirs.len(),
-        1,
-        "the assistant's own tool call sets the reminder up; its model was last asked {:?}",
-        asked.lock().unwrap().last()
-    );
-    let at_ms = at_ms.lock().unwrap().expect("the assistant chose a moment");
-    (theirs[0].clone(), at_ms)
-}
 
 /// What the person finds they were told, as their own device reads it from the server once it
 /// is on again.
@@ -140,26 +26,12 @@ async fn told_to(up: &Up, (browser, device): (&Device, &Device), workspace: &str
     serde_json::from_value(listed).expect("a list of what a person was told")
 }
 
-/// The message the reminder its person calls `label` asked the assistant with, once the
-/// conversation holds it.
-async fn asked_as(up: &Up, workspace: &str, label: &str) -> Id {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let part = conversation_part(&up.workspaces, workspace).await;
-        let asked = part.messages.iter().find(|(_, held)| {
-            held.cause
-                .as_ref()
-                .is_some_and(|cause| cause.label == label)
-        });
-        if let Some((id, _)) = asked {
-            return id.clone();
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the reminder {label:?} never asked the assistant"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+/// The one turn owed in `workspace`, worked with `model`.
+async fn works_the_turn(up: &Up, workspace: &str, model: Option<Model>) {
+    let agents = up.agents(model);
+    let turns = agents.turns(workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
+    agents.answer(workspace, &turns[0]).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -170,83 +42,59 @@ async fn a_turn_a_reminder_started_tells_its_person_how_it_ended_and_their_own_a
     let state = crate::support::scratch_dir();
     let (up, workspace, page) = team_on(&root, (&device, &browser), state.path()).await;
     let me = themselves(&root, &browser, &workspace);
+    let person = hex::encode(root.verifying_key().to_bytes());
 
-    // The person asks for a reminder and closes their page: nothing of theirs is on from here
-    // until they come back. Their assistant answers their own words and sets the reminder up.
-    reminded(&up, &workspace, (&root, &browser), &page, 2_000).await;
+    // The person writes to their assistant themselves and closes their page: nothing of theirs
+    // is on from here until they come back. Their assistant answers their own words.
+    let own = writes_to_assistant(&up.workspaces, &workspace, &person, "What is due today?").await;
+    page.peer.close();
+    works_the_turn(&up, &workspace, Some(says_what_is_due())).await;
+    answer_of(&up, &workspace, &person, &own).await;
 
-    // The moment comes. The server asks their assistant, and the assistant answers.
-    let (first, _) = up.asked_by_a_cause(&workspace).await;
-    let agents = up.agents(Some(says_what_is_due()));
-    let turns = agents.turns(&workspace).await.unwrap();
-    assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
-    agents.answer(&workspace, &turns[0]).await.unwrap();
-    let answer = ended(&up.workspaces, &workspace, &first).await;
-    assert!(
-        answer.text.contains("It is time to call home"),
-        "{}",
-        answer.text
-    );
-    drop(agents);
+    // A reminder of theirs comes due. The server asks their assistant, and the assistant answers.
+    let (call_home, _) = set_up(&up, &workspace, &me, "Call home", 1_500);
+    let first = asked_from(&up, &workspace, &person, &call_home.id).await;
+    works_the_turn(&up, &workspace, Some(says_what_is_due())).await;
+    let answer = answer_of(&up, &workspace, &person, &first.at).await;
+    assert!(answer.contains("It is time to call home"), "{answer}");
 
     // A second reminder is due while no model is linked for the assistant's work: its turn
     // cannot work, and its reply says why.
-    let (when, _) = in_a_moment(1_500);
-    let theirs = me.delegated_to(SCOUT).named("Scout");
-    let set_up = serde_json::json!({
-        "name": "Stand up",
-        "when": when,
-        "instruction": "Say that it is time to stand up.",
-    });
-    up.take(&workspace, &theirs, workspace_events::SET_UP, &set_up);
-    let second = asked_as(&up, &workspace, "Stand up").await;
-    let agents = up.agents(None);
-    let turns = agents.turns(&workspace).await.unwrap();
-    assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
-    agents.answer(&workspace, &turns[0]).await.unwrap();
-    let could_not = ended(&up.workspaces, &workspace, &second).await;
-    assert!(
-        could_not.text.contains("No model is linked"),
-        "{}",
-        could_not.text
-    );
-    drop(agents);
+    let (stand_up, _) = set_up(&up, &workspace, &me, "Stand up", 1_500);
+    let second = asked_from(&up, &workspace, &person, &stand_up.id).await;
+    works_the_turn(&up, &workspace, None).await;
+    let could_not = answer_of(&up, &workspace, &person, &second.at).await;
+    assert!(could_not.contains("No model is linked"), "{could_not}");
 
-    // Something else that acts for the person, and is no event of theirs, asks their assistant
-    // and names itself a reminder.
-    let person = hex::encode(root.verifying_key().to_bytes());
-    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
-    let planner = themselves(&root, &browser, &workspace)
-        .delegated_to("planner")
-        .named("Planner");
-    ask_agent(&up.actions, &workspace, &planner, &thread, "plan-1")
-        .await
-        .expect("what acts for the person asks their agent");
-    let third = chat::cause::message_id(&MemberId::person(person), "plan-1");
-    let agents = up.agents(Some(says_what_is_due()));
-    let turns = agents.turns(&workspace).await.unwrap();
-    assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
-    agents.answer(&workspace, &turns[0]).await.unwrap();
-    let named = ended(&up.workspaces, &workspace, &third).await;
-    drop(agents);
+    // An ask made from an event this server keeps nothing of for the person.
+    let third = tilo_server::workspace_agents::ask_for_event(
+        &up.workspaces,
+        &workspace,
+        (&person, SCOUT),
+        ("planner", "plan-1"),
+        "Plan the week.".to_owned(),
+    )
+    .await
+    .expect("the ask is made");
+    works_the_turn(&up, &workspace, Some(says_what_is_due())).await;
+    let named = answer_of(&up, &workspace, &person, &third).await;
 
-    // The person comes back. They were told how each turn a cause started ended, in the words
-    // that are in their conversation and no others. What they asked themselves, and its answer,
-    // told them nothing.
+    // The person comes back. They were told how each turn an event asked for ended, in the words
+    // of its reply and no others. What they asked themselves, and its answer, told them nothing.
     let told = told_to(&up, (&browser, &device), &workspace).await.told;
     assert_eq!(
         told.len(),
         3,
-        "one thing for each turn a cause started, and nothing else: {told:?}"
+        "one thing for each turn an event asked for, and nothing else: {told:?}"
     );
     // A reminder of theirs is told as one, and reaches them.
     assert_eq!(
         (told[0].kind, told[0].title.as_str(), told[0].words.as_str()),
-        (Kind::Reminder, "Call home", answer.text.as_str())
+        (Kind::Reminder, "Call home", answer.as_str())
     );
     assert_eq!(
         (told[1].kind, told[1].title.as_str(), told[1].words.as_str()),
-        (Kind::Reminder, "Stand up", could_not.text.as_str())
+        (Kind::Reminder, "Stand up", could_not.as_str())
     );
     for (thing, ask) in told.iter().zip([&first, &second]) {
         assert!(thing.reaches, "a reminder reaches its person: {thing:?}");
@@ -259,23 +107,21 @@ async fn a_turn_a_reminder_started_tells_its_person_how_it_ended_and_their_own_a
             thing.cause.as_ref().map(|cause| cause.kind.as_str()),
             Some("reminder")
         );
-        assert!(
-            thing
-                .about
-                .as_ref()
-                .is_some_and(|about| about.resource.contains(ask.as_str())),
-            "it leads to the message that asked: {thing:?}"
+        assert_eq!(
+            thing.about.as_ref().map(|about| about.resource.clone()),
+            Some(ask.at.id_string()),
+            "it leads to the ask: {thing:?}"
         );
     }
-    // What names itself a reminder and is no event of theirs is news: their own rule marks it,
-    // and with no rule it does not reach them.
+    // What an event this server keeps nothing of for them asked is news: their own rule marks
+    // it, and with no rule it does not reach them.
     assert_eq!(
         (told[2].kind, told[2].title.as_str(), told[2].words.as_str()),
-        (Kind::News, "Call mum", named.text.as_str())
+        (Kind::News, "", named.as_str())
     );
     assert!(
         !told[2].reaches,
-        "nothing reaches a person by naming itself a reminder: {:?}",
+        "nothing reaches a person by asking for them: {:?}",
         told[2]
     );
     up.down().await;

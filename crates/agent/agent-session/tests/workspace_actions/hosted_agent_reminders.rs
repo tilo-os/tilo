@@ -1,11 +1,13 @@
 //! A reminder a person's assistant set up, from its moment to the answer. The person's page is
-//! closed; the moment comes; the server asks the assistant once, as the person, from their
-//! conversation with it, keyed by the reminder's invocation: an ask of the agent package; the
-//! answer is the ask's reply. Also where the server was down at the moment, and where it starts
-//! again after. All through the server's own interfaces.
+//! closed; the moment comes; the server asks the assistant once, as the person, made from the
+//! reminder and keyed by the step that handed it over: an ask of the agent package; the answer is
+//! the ask's reply. Also where the server was down at the moment, and where it starts again
+//! after. All through the server's own interfaces.
 use super::*;
+use crate::workspace_actions::hosted_agent_turns::hosted_initiative::writes_to_assistant;
 use tilo_actions::remote::ReceiptStatus;
 use tilo_actions::remote::workspace_events::{self, Ended, EventView, Events, Sort};
+use tilo_server::workspace_bots::events::event_named;
 use tilo_server::{
     ServerConfig as Config,
     agents::{AgentOptions, start_workspace_documents},
@@ -213,19 +215,56 @@ async fn asks_now(workspaces: &Workspaces, workspace: &str, person: &str) -> Vec
         .unwrap()
 }
 
-/// The ask a cause made of the person's assistant, once Chat's record holds one: an ask made
-/// outright, keyed by what made it.
+/// The event an ask is made from, where it is made from one.
+fn event_of(asked: &asks::Asked) -> Option<&str> {
+    asked.from.as_ref().and_then(event_named)
+}
+
+/// The ask an event of the person's made of their assistant, once Chat's record holds one.
 async fn asked_by_a_cause(up: &Up, workspace: &str, person: &str) -> asks::Asked {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let all = asks_now(&up.workspaces, workspace, person).await;
-        if let Some(asked) = all.into_iter().find(|asked| !asked.mention.is_empty()) {
+        if let Some(asked) = all.into_iter().find(|asked| event_of(asked).is_some()) {
             return asked;
         }
         assert!(
             Instant::now() < deadline,
             "no reminder ever asked the assistant"
         );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// The ask the event `event` made of the person's assistant, once Chat's record holds it.
+async fn asked_from(up: &Up, workspace: &str, person: &str, event: &str) -> asks::Asked {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let all = asks_now(&up.workspaces, workspace, person).await;
+        if let Some(asked) = all.into_iter().find(|asked| event_of(asked) == Some(event)) {
+            return asked;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the event {event} never asked the assistant"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// What the assistant answered `ask` with, once its reply ended.
+async fn answer_of(up: &Up, workspace: &str, person: &str, ask: &asks::ResourceRef) -> String {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let now = asks_now(&up.workspaces, workspace, person)
+            .await
+            .into_iter()
+            .find(|asked| asked.at.same(ask))
+            .expect("the ask is kept");
+        if let Some(reply) = now.latest().filter(|reply| !reply.state.owed()) {
+            return reply.body.clone();
+        }
+        assert!(Instant::now() < deadline, "the ask was never answered");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
@@ -274,7 +313,7 @@ async fn a_reminder_asks_its_persons_assistant_once_with_their_page_closed() {
     );
 
     // The moment comes with nothing of the person's on. The server asks their assistant itself,
-    // as them, from their conversation with it, keyed by the reminder's invocation.
+    // as them, made from the reminder, keyed by the step that handed it over.
     let ask = asked_by_a_cause(&up, &workspace, &person).await;
     assert!(
         tilo_clock::unix_now_ms_i64() >= at_ms,
@@ -286,12 +325,12 @@ async fn a_reminder_asks_its_persons_assistant_once_with_their_page_closed() {
         Some(asks::Actor::Member(MemberId::person(person.clone()))),
         "for the person the reminder is of"
     );
-    assert!(
-        ask.mention.starts_with(&format!("{}:", reminder.id)),
-        "keyed by the reminder: {}",
-        ask.mention
+    assert_eq!(
+        event_of(&ask),
+        Some(reminder.id.as_str()),
+        "made from the reminder"
     );
-    assert!(ask.from.is_some(), "made from their conversation");
+    assert!(!ask.mention.is_empty(), "keyed by its step");
     let agents = up.agents(Some(says_what_is_due()));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
@@ -379,7 +418,7 @@ async fn a_reminder_due_while_its_server_was_down_asks_once_the_server_is_up_aga
 
     // Up again, it asks what it owes, and the assistant answers it.
     let ask = asked_by_a_cause(&up, &workspace, &person).await;
-    assert!(ask.mention.starts_with(&format!("{}:", reminder.id)));
+    assert_eq!(event_of(&ask), Some(reminder.id.as_str()));
     let agents = up.agents(Some(says_what_is_due()));
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "one turn is owed: {turns:?}");
@@ -412,7 +451,7 @@ async fn a_reminder_due_while_its_server_was_down_asks_once_the_server_is_up_aga
 
 /// The step that hands an instruction over is taken again, as an invocation tried again takes
 /// it: it is the same ask, and the assistant owes one turn. Another step of the same reminder is
-/// another ask, from the same conversation.
+/// another ask, made from the same reminder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_step_handed_over_again_asks_nothing_new() {
     use tilo_agent_session::bot::host_steps::{Instruction, StepCause};
@@ -465,12 +504,8 @@ async fn a_step_handed_over_again_asks_nothing_new() {
     let all = asks_now(&up.workspaces, &workspace, &person).await;
     assert_eq!(all.len(), 2, "another step is another ask: {all:?}");
     assert!(
-        all[0]
-            .from
-            .as_ref()
-            .zip(all[1].from.as_ref())
-            .is_some_and(|(one, other)| one.same(other)),
-        "both from the one conversation of the person and their assistant"
+        all.iter().all(|asked| event_of(asked) == Some("call-home")),
+        "both made from the reminder: {all:?}"
     );
     up.down().await;
 }
@@ -545,15 +580,7 @@ impl Killed {
         let (up, workspace, page) = team_on(&root, (&device, &browser), state.path()).await;
         page.peer.close();
         let person = hex::encode(root.verifying_key().to_bytes());
-        tilo_server::workspace_agents::ask_in_direct(
-            &up.workspaces,
-            &workspace,
-            (&person, SCOUT),
-            "What is due today?".into(),
-            "due-today".into(),
-        )
-        .await
-        .unwrap();
+        writes_to_assistant(&up.workspaces, &workspace, &person, "What is due today?").await;
         let asked = Arc::new(Mutex::new(Vec::new()));
         let agents = up.agents(Some(waits(
             vec![looks(), says("Nothing is due today.")],

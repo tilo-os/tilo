@@ -890,12 +890,12 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
     assert_eq!(told.ended, LookEnded::Told);
 
     // The turn that look started counts on the look-round's own day: the
-    // ask its handing over makes is keyed by the look-round and the look's
-    // id, and no other ask is.
+    // ask its handing over makes is keyed by the look's id, and no other ask
+    // is.
     let person = hex::encode(cert.user_public_key);
     let place = WorkspaceId::parse(&workspace).unwrap().to_string();
     let day = crate::workspace_agents::today();
-    let asks = crate::workspace_bots::assistant::cause_key(&event, &told.id);
+    let asks = told.id;
     assert_eq!(
         initiative.day_of_turn(&place, &person, &asks, &day),
         Some(look_round_spender(

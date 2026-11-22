@@ -74,8 +74,8 @@ use turn_provider::TurnProvider;
 mod across;
 mod answers;
 mod asked;
-pub use asked::ask_in_direct;
-pub(crate) use asked::keeps_asks;
+pub use asked::ask_for_event;
+pub(crate) use asked::made_from;
 mod asking;
 mod asks;
 mod calendar_connect;
@@ -662,8 +662,8 @@ pub enum Ask {
         /// The ask, by its id in that record, and its type.
         ask: String,
         ty: String,
-        /// What names the ask with what it is made from: the mention that asked, or the cause
-        /// that asked outright ([`asked::ask_in_direct`]).
+        /// What names the ask with what it is made from: the mention that asked, or the step
+        /// of an event that asked outright ([`asked::ask_for_event`]).
         key: String,
         /// Which time it is asked: its first reply is 1.
         attempt: u32,

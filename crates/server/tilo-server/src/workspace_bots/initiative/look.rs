@@ -7,7 +7,7 @@
 //! already said were due. The first look only notes where everything
 //! stands, as a bot starts at a document's heads: the workspace's past is
 //! not news. What the assistant did itself is not news to it either: its
-//! own changes, the look-round's own asks ([`asked`]), and what the server
+//! own changes, the look-round's own asks, and what the server
 //! keeps about the workspace's agents (what each spent, how each stands).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,38 +57,14 @@ pub(super) struct Own {
 
 impl Own {
     /// Whether `event` is the assistant's own doing: a change it or its
-    /// look-round made.
+    /// look-round made. What a look asks is written as its person, in a run
+    /// of the look-round, which the change carries.
     fn made(&self, event: &DocumentEvent) -> bool {
-        event
+        let by_own = event
             .actor
             .agent_id()
-            .is_some_and(|agent| self.assistant.as_deref() == Some(agent) || agent == self.event)
-    }
-}
-
-/// Take where the documents of Chat's record stand now into `seen`: a look
-/// that told its assistant asked it there, as its person, from their
-/// conversation, and that ask is no news to the next look. A document that
-/// cannot be read is left as `seen` had it.
-pub(super) async fn asked(workspaces: &Workspaces, workspace: &str, seen: &mut Seen) {
-    let Ok(routes) = workspaces.workspace_document_routes(workspace).await else {
-        return;
-    };
-    for (app, document) in routes {
-        if !crate::workspace_agents::keeps_asks(&app) {
-            continue;
-        }
-        let Ok(Some(bytes)) = workspaces
-            .resource_document(workspace, &app, &document)
-            .await
-        else {
-            continue;
-        };
-        let Ok(mut doc) = AutoCommit::load(&bytes) else {
-            continue;
-        };
-        let heads = doc.get_heads().iter().map(ToString::to_string).collect();
-        seen.documents.insert(format!("{app}/{document}"), heads);
+            .is_some_and(|agent| self.assistant.as_deref() == Some(agent) || agent == self.event);
+        by_own || event.shortcut.as_deref() == Some(self.event.as_str())
     }
 }
 

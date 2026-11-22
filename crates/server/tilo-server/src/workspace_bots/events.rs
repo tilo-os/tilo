@@ -189,6 +189,28 @@ struct Inner {
     running: Mutex<BTreeMap<String, BTreeMap<String, Running>>>,
 }
 
+/// The resource the event `event` is, as what is made from it names it: the
+/// ask its instruction makes of its person's assistant is made from it, so
+/// what reads the ask knows which event asked.
+#[must_use]
+pub fn resource_of(event: &str) -> tilo_workspace_service::asks::ResourceRef {
+    tilo_workspace_service::asks::ResourceRef {
+        doc: workspace_events::RESOURCE.to_owned(),
+        item: Some(event.to_owned()),
+        ty: workspace_events::KIND.to_owned(),
+    }
+}
+
+/// The event `resource` is ([`resource_of`]), where it is one.
+#[must_use]
+pub fn event_named(resource: &tilo_workspace_service::asks::ResourceRef) -> Option<&str> {
+    if resource.doc == workspace_events::RESOURCE {
+        resource.item.as_deref()
+    } else {
+        None
+    }
+}
+
 /// The events of this server's workspaces: every one it keeps runs for as
 /// long as this, or a clone of it, is held.
 #[derive(Clone)]
@@ -344,17 +366,19 @@ impl WorkspaceEvents {
         })
     }
 
-    /// Whether an event of `workspace` this server keeps has the id `event`.
-    /// For the server's own code, which carries out turns with no caller to
-    /// weigh: an action is answered as the workspace's policy decides it
-    /// instead.
+    /// What `person` (their root, hex) calls their event `event` of
+    /// `workspace`, and how what it starts is told; `None` for an event this
+    /// server does not keep for them.
     #[must_use]
-    pub fn keeps(&self, workspace: &str, event: &str) -> bool {
+    pub fn told_as(&self, workspace: &str, event: &str, person: &str) -> Option<(String, Kind)> {
         self.inner
             .running
             .lock_recover()
-            .get(workspace)
-            .is_some_and(|theirs| theirs.contains_key(event))
+            .get(workspace)?
+            .get(event)
+            .map(|running| &running.stored)
+            .filter(|stored| stored.person == person)
+            .map(|stored| (stored.definition.name.clone(), stored.definition.tells_as()))
     }
 
     /// Answer `message` for `workspace_id`: the actions' rows, or one

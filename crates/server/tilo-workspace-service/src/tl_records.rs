@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use automerge::ChangeHash;
-use tilo_actions::{ActionContext, ActionInvoker, InvocationId};
+use tilo_actions::{ActionContext, ActionFacet, ActionInvoker, InvocationId};
 use tilolang_tilo::action::DynAction;
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks, FIRST};
 use tilolang_tilo::host::Host;
@@ -54,8 +54,8 @@ impl Packages {
     pub fn compile(sources: &[(&str, &str)]) -> Result<Self, String> {
         let mut compiled: Vec<tilolang_tilo::tilolang::Compiled> = Vec::new();
         for (source, ids) in sources {
-            let lock = tilolang_tilo::tilolang::IdsLock::parse(ids)
-                .map_err(|error| error.to_string())?;
+            let lock =
+                tilolang_tilo::tilolang::IdsLock::parse(ids).map_err(|error| error.to_string())?;
             let imports: Vec<_> = compiled.iter().map(|done| done.meta.clone()).collect();
             let package = tilolang_tilo::tilolang::compile_package(source, &lock, &imports)
                 .map_err(|diagnostics| {
@@ -73,7 +73,9 @@ impl Packages {
     /// The app the record is of: the last package's.
     #[must_use]
     pub fn app(&self) -> &str {
-        self.0.last().map_or("", |package| package.meta.app.as_str())
+        self.0
+            .last()
+            .map_or("", |package| package.meta.app.as_str())
     }
 }
 
@@ -123,6 +125,8 @@ pub struct Opened {
     chunks: Chunks,
     /// The heads each document stood at when it was read; a chunk missing here was not held.
     read_at: BTreeMap<ChunkNo, Vec<ChangeHash>>,
+    /// The Shortcut whose run what is invoked here is ([`Opened::in_run_of`]).
+    run_of: Option<String>,
 }
 
 impl Opened {
@@ -176,6 +180,7 @@ impl Opened {
             app: packages.app().to_owned(),
             chunks,
             read_at,
+            run_of: None,
         };
         // What the host did of its own as it took the record in (a mention's ask) is the
         // viewer's, written as any change made here.
@@ -207,6 +212,14 @@ impl Opened {
             .map(tilolang_tilo::runtime::members::Member::who)
             .filter(|who| runtime.may_read(who, at))
             .collect()
+    }
+
+    /// Mark what is invoked from here on as a run of the Shortcut `shortcut` (an event, a
+    /// reminder) acting for its person: each change it makes carries the `shortcut` facet, so
+    /// what reads the workspace's changes (a look-round, the Shortcut's own trigger) knows its
+    /// own output by it rather than by who it acted as.
+    pub fn in_run_of(&mut self, shortcut: impl Into<String>) {
+        self.run_of = Some(shortcut.into());
     }
 
     /// Run `app`'s action `action` with `args` as `who`, made from `from` when given (what it
@@ -287,6 +300,12 @@ impl Opened {
             .with_source_invocation(Some(invocation))
             .in_gesture(action.authorship.gesture)
             .with_invoker(invoker.clone());
+            let context = match &self.run_of {
+                Some(shortcut) => {
+                    context.with_facet(ActionFacet::new("shortcut", shortcut.clone()))
+                }
+                None => context,
+            };
             let doc = self.chunks.open(chunk);
             self.host
                 .with_schemas(|| {
