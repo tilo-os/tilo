@@ -43,15 +43,16 @@ async fn a_member_device_cannot_issue_an_admin_ticket() {
         state.path().to_path_buf(),
         tilo_device_identity::IdentityPaths::under(state.path().join("keys")),
     );
+    let service = ActionService::new(key.clone(), Arc::new(NoActions));
     let tickets = Tickets::new(
-        key.clone(),
-        cert,
+        (key.clone(), cert),
         endpoint,
         Some((key, login)),
         no_root(),
         None,
         None,
         place,
+        service,
     );
     let refused = ask_device(&tickets, ISSUE, json!({"capability": "admin"}))
         .await
@@ -306,14 +307,14 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     tilo_device_identity::persist::adopt_device_key(&keys, &desk_key.to_bytes()).unwrap();
     let place = tilo_device_identity::login::Place::at(state.path().join("desk"), keys);
     let desk = Tickets::new(
-        desk_key.clone(),
-        desk_cert,
+        (desk_key.clone(), desk_cert),
         desk_endpoint,
         None,
         no_root(),
         None,
         None,
         place.clone(),
+        ActionService::new(desk_key.clone(), Arc::new(NoActions)),
     );
 
     // A wrong secret is refused.
@@ -397,15 +398,13 @@ fn root_in(dir: std::path::PathBuf) -> RootSource {
 
 /// The device actions `Tickets` answers on `workspaces`' endpoint, with the workspace service's
 /// own protocols: what a daemon serves a computer that enters with a ticket.
-fn serve(
-    workspaces: &super::workspaces::ServiceWorkspaces,
-    tickets: &Tickets,
-) -> iroh::protocol::Router {
+fn serve(workspaces: &super::workspaces::ServiceWorkspaces) -> iroh::protocol::Router {
+    // One handler per protocol: the tickets answer on the workspaces' own action service.
     let mut router = iroh::protocol::Router::builder(workspaces.endpoint());
     for (alpn, handler) in workspaces.service().protocols() {
         router = router.accept(alpn, handler);
     }
-    router.accept(ACTIONS_ALPN, tickets.service()).spawn()
+    router.spawn()
 }
 
 /// A daemon of the person's device with no login, governing the workspace it founded, issues a
@@ -427,8 +426,7 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
     foreign.capabilities.foreign = true;
     sign_device_cert(&mut foreign, &root().unwrap().unwrap()).unwrap();
     let tickets = Tickets::new(
-        issuer_key.clone(),
-        foreign,
+        (issuer_key.clone(), foreign),
         issuer.endpoint(),
         None,
         root,
@@ -438,8 +436,9 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
         }),
         Some(Arc::clone(&issuer)),
         place,
+        issuer.copies().action_service(),
     );
-    let router = serve(&issuer, &tickets);
+    let router = serve(&issuer);
 
     let printed = ask_device(&tickets, ISSUE, json!({"capability": "member"}))
         .await
@@ -460,14 +459,14 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
     tilo_device_identity::persist::adopt_device_key(desk_place.keys(), &desk_key.to_bytes())
         .unwrap();
     let desk = Tickets::new(
-        desk_key.clone(),
-        desk_cert,
+        (desk_key.clone(), desk_cert),
         desk_endpoint.clone(),
         None,
         no_root(),
         None,
         None,
         desk_place.clone(),
+        ActionService::new(desk_key.clone(), Arc::new(NoActions)),
     );
     let answer = ask_device(
         &desk,
@@ -692,16 +691,16 @@ async fn a_logged_in_issuers_server_ticket_leaves_the_entry_on_the_host() {
         tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
     );
     let tickets = Tickets::new(
-        host.issuer_key.clone(),
-        host.issuer_cert.clone(),
+        (host.issuer_key.clone(), host.issuer_cert.clone()),
         service.endpoint(),
         Some((host.issuer_key.clone(), login.clone())),
         root_in(identity.path().to_path_buf()),
         None,
         Some(Arc::clone(&service)),
         place,
+        service.copies().action_service(),
     );
-    let router = serve(&service, &tickets);
+    let router = serve(&service);
     let issued = ask_device(&tickets, ISSUE, json!({"server": true}))
         .await
         .expect("a server ticket is issued from the logged-in device");
@@ -720,14 +719,14 @@ async fn a_logged_in_issuers_server_ticket_leaves_the_entry_on_the_host() {
     tilo_device_identity::persist::adopt_device_key(desk_place.keys(), &desk_key.to_bytes())
         .unwrap();
     let desk = Tickets::new(
-        desk_key.clone(),
-        desk_cert,
+        (desk_key.clone(), desk_cert),
         desk_endpoint,
         None,
         no_root(),
         None,
         None,
         desk_place,
+        ActionService::new(desk_key.clone(), Arc::new(NoActions)),
     );
     ask_device(
         &desk,

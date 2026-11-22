@@ -319,14 +319,19 @@ impl Daemon {
         let taking = take_work.is_some();
         let take_work =
             take_work_action_service(root, &workspaces, take_work, &replica_slot, stage)?;
-        // The device actions the daemon answers itself, and the one service that serves a
-        // ticket's certify call on the router already open below.
+        // The one action service the daemon's router answers the device actions on: the work
+        // this member takes from its server when it takes any, else its workspaces'. A ticket's
+        // certify call is admitted on it while a computer asks.
+        let actions = take_work.as_ref().map_or_else(
+            || workspaces.copies().action_service(),
+            take_work::TakesWork::actions,
+        );
+        // The device actions the daemon answers itself.
         stage("opening the device's tickets");
         let tickets = Arc::new({
             let _entered = tilo_rt::app().handle().enter();
             Tickets::new(
-                identity.key.clone(),
-                identity.cert.clone(),
+                (identity.key.clone(), identity.cert.clone()),
                 workspaces.endpoint(),
                 identity.login.clone(),
                 Arc::new(super::person::root),
@@ -336,6 +341,7 @@ impl Daemon {
                 }),
                 Some(Arc::clone(&workspaces)),
                 identity.place.clone(),
+                actions.clone(),
             )
         });
         stage("opening the person's store to their other devices");
@@ -348,7 +354,7 @@ impl Daemon {
             channels: Arc::clone(&brokers),
             fanout: Arc::clone(&fanout),
             take_work,
-            tickets: Some(tickets.service()),
+            actions,
             host: founded.map(|_| workspaces.service().as_ref()),
         })?;
         // What the person answers about this device's camera and microphone is kept in their own
@@ -1360,8 +1366,9 @@ struct PersonalServing<'a> {
     /// The device action service this profile answers its server's work on, when it
     /// takes work at all.
     take_work: Option<take_work::TakesWork>,
-    /// The action service that serves a ticket's certify call while a new computer logs in.
-    tickets: Option<tilo_peer_state::actions::ActionService>,
+    /// The one action service the device actions are answered on: its workspaces', or the work
+    /// it takes from its server, admitting a ticket's certify call while a computer asks.
+    actions: tilo_peer_state::actions::ActionService,
     /// The workspace host this device runs, when it governs the workspace founded here: the
     /// person's keys open their sessions with it here.
     host: Option<&'a tilo_workspace_service::service::WorkspaceService>,
@@ -1396,7 +1403,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         channels,
         fanout,
         take_work,
-        tickets,
+        actions,
         host,
     } = serving;
     let person = cert.user_public_key;
@@ -1416,35 +1423,21 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         let _entered = runtime.enter();
         let mut router = iroh::protocol::Router::builder(workspaces.endpoint())
             .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
-        // The workspace host answers the person's keys as every host does.
-        // Without one this device still answers its workspaces' devices on the
-        // device action service. A member that takes its server's work answers
-        // that service with that work's action service instead, registered
-        // after it.
-        let protocols = host.map_or_else(
-            || {
-                vec![(
-                    tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
-                    workspaces.copies().action_service().into(),
-                )]
-            },
-            tilo_workspace_service::service::WorkspaceService::protocols,
-        );
-        for (alpn, handler) in protocols {
-            router = router.accept(alpn, handler);
-        }
-        for (alpn, handler) in take_work
-            .map(take_work::TakesWork::protocols)
+        // The workspace host answers the person's keys as every host does. Every device answers
+        // the device actions once, on `actions`; a member that takes its server's work answers
+        // that work's terminals beside it.
+        for (alpn, handler) in host
+            .map(tilo_workspace_service::service::WorkspaceService::protocols)
             .into_iter()
             .flatten()
+            .filter(|(alpn, _)| alpn != tilo_peer_state::actions::ACTIONS_ALPN)
         {
             router = router.accept(alpn, handler);
         }
-        // A ticket's certify call, answered on the one router while a new computer asks: never a
-        // second endpoint of its own.
-        if let Some(tickets) = tickets {
-            router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, tickets);
+        if let Some((alpn, handler)) = take_work.map(take_work::TakesWork::terminals) {
+            router = router.accept(alpn, handler);
         }
+        router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, actions);
         router.spawn()
     };
     // The person's device fleet is filed under the identity this computer holds for them, when

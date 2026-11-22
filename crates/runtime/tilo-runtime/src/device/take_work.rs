@@ -189,6 +189,17 @@ impl TakesWork {
             (ush_alpn(), self.terminals),
         ]
     }
+
+    /// The device action service this member answers its server's work on: the one its
+    /// daemon answers the device actions on.
+    pub(crate) fn actions(&self) -> ActionService {
+        self.actions.clone()
+    }
+
+    /// The terminal streams of the shells it opened for its server, and their protocol.
+    pub(crate) fn terminals(self) -> (&'static [u8], Box<dyn iroh::protocol::DynProtocolHandler>) {
+        (ush_alpn(), self.terminals)
+    }
 }
 
 /// The protocol the terminal streams are dialled on.

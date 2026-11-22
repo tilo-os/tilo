@@ -31,7 +31,7 @@ use tilo_device_identity::login::{
 };
 use tilo_enrollment::root::PersonSigner;
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::actions::{ActionService, NoActions};
+use tilo_peer_state::actions::ActionService;
 use tilo_peer_state::new_device::ServedTicket;
 use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::{DeviceCert, RevocationList, StatementSigner};
@@ -397,21 +397,21 @@ struct Inner {
 }
 
 impl Tickets {
-    /// Serve tickets from this daemon.
+    /// Serve tickets from this daemon, on `service`: the one action service its router answers
+    /// the device actions on, which admits a ticket's certify call while a computer asks.
     ///
     /// # Panics
     /// Outside a runtime context, where an answer could not be followed.
     pub(crate) fn new(
-        key: SigningKey,
-        cert: DeviceCert,
+        (key, cert): (SigningKey, DeviceCert),
         endpoint: Endpoint,
         login: Option<(SigningKey, Device)>,
         root: RootSource,
         founded: Option<Founded>,
         workspaces: Option<Arc<ServiceWorkspaces>>,
         place: Place,
+        service: ActionService,
     ) -> Self {
-        let service = ActionService::new(key.clone(), Arc::new(NoActions));
         Self(Arc::new(Inner {
             key,
             cert,
@@ -426,11 +426,6 @@ impl Tickets {
             calls: std::sync::Mutex::new(HashMap::new()),
             runtime: tokio::runtime::Handle::current(),
         }))
-    }
-
-    /// The action service the daemon's router answers the device actions ALPN with.
-    pub(crate) fn service(&self) -> ActionService {
-        self.0.service.clone()
     }
 
     /// Whether `request` is one of the two device actions.
@@ -721,8 +716,11 @@ impl Tickets {
         let serde_json::Value::Object(argument) = serde_json::to_value(&input)? else {
             bail!("the certify input is an object");
         };
-        let service = ActionService::new(self.0.key.clone(), Arc::new(NoActions));
-        let device = Arc::new(service.remote(&self.0.endpoint, &dialed.addr(), SCOPE));
+        let device = Arc::new(
+            self.0
+                .service
+                .remote(&self.0.endpoint, &dialed.addr(), SCOPE),
+        );
         let request = InvokeRequest {
             on_behalf_of: None,
             invocation: InvocationId::new(),
