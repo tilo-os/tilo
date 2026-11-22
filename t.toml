@@ -2971,8 +2971,8 @@ on = ["dispatch"]
 
 # ---- App and engine releases -------------------------------------------------------------
 #
-# Per architecture, what `Release / apps` publishes through, in two steps: the compile, which
-# holds no key and builds every selected app once, then the packaging that signs with the release
+# Per architecture, the app release, in two steps: the compile, which holds no key and builds
+# every selected app once, then the packaging that signs with the release
 # identities, which only a trusted run has. They are checks of their own so that a run without
 # identities can never produce a signed package, and so that the compile's result serves the
 # package, the size budgets and the dev shapes alike. `dist/apps/package-apps.sh` is the one path

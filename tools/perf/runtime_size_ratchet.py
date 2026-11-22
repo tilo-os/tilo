@@ -40,7 +40,7 @@ bytes`, with the same headroom, rounding and raise files.
 
 Three checks, as for the per-app tapp budgets (tapp_size_ratchet.py):
 
-- **The build.** `measure FILE --arch ARCH` reads the dylib Release / apps has
+- **The build.** `measure FILE --arch ARCH` reads the dylib the app release has
   just built (`target/thin-app/libruntime_dylib.so`) and fails when a number
   is over its budget.
 - **The published runtime, nightly.** `published ENTRIES_JSON` reads the
@@ -286,7 +286,7 @@ def budget_for(metric: str, value: int, headroom: float) -> int:
 
 def run_label() -> str:
     number = os.environ.get("GITHUB_RUN_NUMBER", "")
-    return number if number.isdigit() else "<the Release / apps run number>"
+    return number if number.isdigit() else "<the the app release run number>"
 
 
 def describe(stats: ElfStats) -> list[str]:
@@ -682,7 +682,7 @@ def engine_library(name: str) -> bool:
 def raise_problems(name: str, raised: dict[str, Any], budget: Budget) -> list[str]:
     problems = []
     reason, run = raised.get("reason"), raised.get("run")
-    # The run that measured the growth: a Release / apps run number, or the t run
+    # The run that measured the growth: a the app release run number, or the t run
     # (`r` and its hex id, as `t test` prints it) of an app-sizes check.
     measured = ((isinstance(run, int) and not isinstance(run, bool) and run > 0)
                 or (isinstance(run, str) and re.fullmatch(r"r[0-9a-f]{6,}", run) is not None))

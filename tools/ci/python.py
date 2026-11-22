@@ -38,13 +38,8 @@ class TrustedLocalModules:
         'app_package_isa': 'apps/app_package_isa.py',
         'app_channel_manifest': 'apps/app_channel_manifest.py',
         'canonical_app_verifier': 'apps/canonical_app_verifier.py',
-        'create_app_receipt': 'apps/create_app_receipt.py',
         'final_app_receipt': 'apps/final_app_receipt.py',
         'assemble_app_collection': 'apps/assemble_app_collection.py',
-        'app_packaging_contract': 'app_packaging_contract.py',
-        'app_packaging_plan': 'app_packaging_plan.py',
-        'app_packaging_qualification': 'app_packaging_qualification.py',
-        'assemble_verified_apps': 'assemble_verified_apps.py',
         'canonical_verifier_bundle': 'canonical_verifier_bundle.py',
     }
 

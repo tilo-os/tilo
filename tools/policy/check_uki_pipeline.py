@@ -49,10 +49,6 @@ IMAGES = (REFERENCE, "os/Containerfile.board", "os/Containerfile.dev-installer-b
 PACKAGES = "os/dev/uki-tools.packages"
 DERIVE = "os/dev/derive-rpm-package-set.py"
 BOARD_IGNORE = "os/Containerfile.board.dockerignore"
-ADAPTER_WORKFLOW = ".forgejo/workflows/os-dev-installer.yml"
-ADAPTER_IMAGE = "os/Containerfile.dev-installer-base"
-ADAPTER_COPY = re.compile(r'\bcp\s+((?:[^\n"]|\\\n)*?)\s*"\$adapter_context/os/dev/"')
-
 SEAL_INPUTS = (
     "ARG TILO_CFS_DIGEST=",
     "ENV CFS_DIGEST=${TILO_CFS_DIGEST}",
@@ -320,20 +316,6 @@ def audit_contexts(root: Path, sources: list[str]) -> list[Finding]:
                 BOARD_IGNORE, f"the board's sparse context does not include `{source}`",
                 "os/Containerfile.board's uki-tools stage copies it, and BuildKit sends only what this file allows",
                 f"add `!{source}`"))
-    workflow = root / ADAPTER_WORKFLOW
-    match = ADAPTER_COPY.search(workflow.read_text(encoding="utf-8")) if workflow.exists() else None
-    copied = set(shlex.split(match.group(1).replace("\\\n", " "))) if match else set()
-    if not match:
-        findings.append(Finding(
-            ADAPTER_WORKFLOW, "no `cp ... \"$adapter_context/os/dev/\"` assembling the dev installer's context",
-            f"{ADAPTER_IMAGE} builds from that hand-assembled context, so this check cannot see what it holds",
-            "keep the adapter context a single cp into \"$adapter_context/os/dev/\", or update this check"))
-    for source in sources if match else []:
-        if source not in copied:
-            findings.append(Finding(
-                ADAPTER_WORKFLOW, f"the dev installer's adapter context does not copy `{source}`",
-                f"{ADAPTER_IMAGE}'s uki-tools stage copies it from that context, and the build fails without it",
-                f"add {source} to the cp into \"$adapter_context/os/dev/\""))
     return findings
 
 

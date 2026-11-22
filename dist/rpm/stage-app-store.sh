@@ -54,9 +54,9 @@ trap cleanup EXIT
 
 tar -xzf "$collection" -C "$work"
 # App collection v1 deliberately keeps the signed bundle below `runtime/`.
-# This is the same tree transported by release-apps.yml and consumed by the
-# image build; accepting a second RPM-only archive layout let the package
-# fixture drift away from every collection produced by package-apps.sh.
+# This is the same tree the app release checks transport and the image build
+# consumes; accepting a second RPM-only archive layout let the package fixture
+# drift away from every collection produced by package-apps.sh.
 collection_runtime=$work/runtime/tilo-runtime
 [[ -f $work/index.json && -f $work/SHA256SUMS && -d $work/tapp && -d $collection_runtime ]] || {
     echo "app collection has an unexpected layout" >&2

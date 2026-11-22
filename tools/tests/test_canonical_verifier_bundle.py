@@ -179,16 +179,5 @@ class BundleTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'URL must pin'):
                         bundle.fetch(policy, bundle.channel.sha(policy), root / 'out', BUILDER, 'secret', 'x86_64')
                     network.assert_not_called()
-        with self.subTest(phase='workflow consumes platform bundle without shipping per build tools'):
-            root = Path(__file__).parents[2]
-            text = ((root / '.forgejo/workflows/release-apps.yml').read_text()
-                    + (root / 'tools/apps/publish-collections.sh').read_text())
-            self.assertNotIn('name: canonical-verifiers-', text)
-            self.assertNotIn('cp target/release/tilo-app-package target/release/tilo-runtime-bundle', text)
-            self.assertEqual(text.count('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch'), 2)
-            # Releases run from the promotion ref, never from main.
-            self.assertIn('    branches: [stable]', text)
-
-
 if __name__ == '__main__':
     unittest.main()

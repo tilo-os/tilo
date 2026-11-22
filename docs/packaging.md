@@ -37,18 +37,16 @@ the journal keeps the host's normal per-user/root access controls.
 
 | Distribution | Release files                                                    | Architectures                                |
 | ------------ | ---------------------------------------------------------------- | -------------------------------------------- |
-| Ubuntu 24.04 | `tilo-session_*+ubuntu24.04*.deb`                                | `amd64`, plus `arm64` in tagged and full-native builds |
-| Debian 13    | `tilo-session_*+deb13*.deb`                                      | `amd64`, plus `arm64` in tagged and full-native builds |
-| Fedora 44    | `tilo-session-*.rpm`, `tilo-session-devel-*.rpm`                 | `x86_64`, plus `aarch64` in tagged and full-native builds |
-| Arch Linux   | `tilo-session-*.pkg.tar.zst`, `tilo-session-devel-*.pkg.tar.zst` | `x86_64`, plus `aarch64` in tagged and full-native builds |
-| NixOS        | flake package and NixOS module; tagged store-closure export      | `x86_64-linux`, plus `aarch64-linux` in tagged and full-native builds |
+| Ubuntu 24.04 | `tilo-session_*+ubuntu24.04*.deb`                                | `amd64`, plus `arm64` when both checks are dispatched |
+| Debian 13    | `tilo-session_*+deb13*.deb`                                      | `amd64`, plus `arm64` when both checks are dispatched |
+| Fedora 44    | `tilo-session-*.rpm`, `tilo-session-devel-*.rpm`                 | `x86_64`, plus `aarch64` when both checks are dispatched |
+| Arch Linux   | `tilo-session-*.pkg.tar.zst`, `tilo-session-devel-*.pkg.tar.zst` | `x86_64`, plus `aarch64` when both checks are dispatched |
+| NixOS        | flake package and NixOS module; tagged store-closure export      | `x86_64-linux`, plus `aarch64-linux` when both checks are dispatched |
 
-The complete ARM64 package definitions and release verifier are enabled by
-`TILO_DESKTOP_ARM64_RELEASES`, which the workflow sets to `"1"`. Tagged and
-explicit full-native builds therefore select the native `runner-large-arm64`
-package job and publish both architecture sets; weekly and default manual runs
-select only the amd64 job for faster feedback. The single workflow switch
-remains the emergency control for temporarily pausing ARM64 scheduling.
+Both architectures build and install-test when their checks are dispatched:
+`desktop-package-amd64` on an x86_64 node and `desktop-package-arm64` on an
+aarch64 node. There is no separate architecture switch; dispatching one check
+builds and tests that architecture's userspaces.
 
 Building and install-testing the ARM64 packages is not a release qualification:
 `docs/install-contract.json` still lists ARM64 as a planned architecture for
@@ -340,13 +338,13 @@ can build or substitute the package declaratively.
 
 ## CI and publishing
 
-`.forgejo/workflows/release-desktop.yml` is the release check. Pull requests that
-touch packaging or the packaged binaries execute preflight contracts only.
-`desktop-v*` tags execute the job matrix regardless of changed paths, wait for
-every enabled native-architecture install test, download the artifacts, require
-the complete current output set, and only then publish the apt, RPM, pacman, and
-generic Nix registries plus a checksummed Forgejo release. The five target
-userspaces run sequentially in one capacity-bounded job per architecture.
+`desktop-preflight` runs the packaging preflight contracts. `desktop-package-{amd64,aarch64}`
+builds and install-tests every distribution userspace, one after another in a
+single job per architecture, and is dispatched rather than run on an ordinary
+change. The Fedora job also emits the small deterministic OS payload the OS
+composition downloads; `publish-desktop-payload` publishes it and advances the
+`TILO_DESKTOP_PAYLOAD_*` channel variables. Distribution packages are built and
+validated on t; t does not publish them to a package registry.
 
 The workflow uses the existing `runner` Forgejo label. amd64 containers run
 directly, and every target userspace is pinned to a verified OCI digest rather

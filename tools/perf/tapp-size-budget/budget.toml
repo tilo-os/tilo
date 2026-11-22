@@ -1,7 +1,7 @@
 # Byte budgets for the signed .tapp of every app, per architecture, and the
 # fleet ceilings over them. tools/perf/tapp_size_ratchet.py reads this file.
 #
-# - Release / apps fails when a tapp it has just packaged is over its app's
+# - the app release fails when a tapp it has just packaged is over its app's
 #   budget, which is the `bytes` below plus every raise under raises/.
 # - t's perf-footprint (the performance run) fails when a published app is over its budget, or when
 #   the median (p50), p90 or max of the apps in the registry is over its
@@ -49,10 +49,10 @@ p90 = 4521984   # 4,447,232 (osk)
 # #3374 (OS dictation) and #3969 (the resource action cache), the two
 # intended growth steps #3981 found. The exception is so.tilo.code-editor:
 # the registry still served a tapp built at 0.1.76490, so its budget is the
-# current source packaged by Release / apps runs 90043 (x86_64, 2,963,456 B)
+# current source packaged by the app release runs 90043 (x86_64, 2,963,456 B)
 # and 90066 (aarch64, 2,706,432 B).
 #
-# Lowered to what Release / apps 118009 (main at 28fe888fa3) packaged, for
+# Lowered to what the app release 118009 (main at 28fe888fa3) packaged, for
 # every app that came in under its budget by more than the ratchet's slack,
 # with those apps dropped from their raise files. Agent and Discord fell
 # furthest (x86_64 5,505,024 -> 1,179,648 and 5,963,776 -> 1,572,864 B).

@@ -23,7 +23,7 @@ runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
 reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
 provide one before the library loads.
 
-- **Release / apps** (`Shared runtime within its size budget`) measures the
+- **the app release** (`Shared runtime within its size budget`) measures the
   dylib it has just built, and the closures above. Its next steps report the
   loader's cost for an app without media (statistics, the objects it loads,
   its private dirty memory) and, when Video Player is built, decode its H.264
@@ -39,7 +39,7 @@ To raise a budget for an intended growth, add one file per change:
 ```toml
 # tools/perf/runtime-size-budget/raises/<change>.toml
 reason = "the toolkit gained a PDF engine"  # at least 20 characters
-run = 90210                  # the Release / apps run that measured the growth
+run = 90210                  # the the app release run that measured the growth
 
 [runtime.x86_64]             # added to each metric's budget
 bytes = 4194304
@@ -150,7 +150,7 @@ relies on:
   engine's crate comes back (Calendar's `live` asking tilo-dav for the
   account credentials its sign-in reaches, for one).
 
-Release / apps reports each engine's bytes, relocations and dirtied pages
+the app release reports each engine's bytes, relocations and dirtied pages
 beside the runtime's, holds each engine's file to its budget (`[engines.<arch>]`
 in the budget, by library name, with the runtime's headroom, rounding and
 raise files: a raise adds `"lib<name>.so" = <bytes>` under

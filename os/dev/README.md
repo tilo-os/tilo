@@ -249,17 +249,16 @@ runs the graphical installer (`installer/`, binary `tilo-installer`) under `cage
 and **self-installs the booted image** onto a target disk — offline, no network
 pull.
 
-For Windows ARM64 development, dispatch `os-dev-installer.yml` with
-`installer_rootfs=ext4` and the exact
-`registry.tilo.so/tilo/tilo-ci@sha256:<digest>` from a successful `os-dev.yml`
-ARM64 run. It layers the installer on that already-built unsigned image and
-uploads a compressed qcow2; it does not rebuild or sign the OS. Download the
-`tilo-dev-installer-aarch64-<run>` artifact, verify its SHA-256, decompress the
-qcow2 once, then run `tilo device scenario install --medium <qcow2> --graphics
-software` on the Windows WHPX host. Keep the medium as the immutable base for
-later throwaway install overlays. Component changes in a running dev VM use
-`tilo device vm deploy`; normal OS image changes use `tilo device vm upgrade`.
-When building that disposable medium in WSL instead, set
+For Windows ARM64 development, `t test dev-installer-medium-aarch64` builds the
+ARM64 installer medium from the OS image of the same commit, and `t outputs
+dev-installer-medium-aarch64` writes it out; it does not rebuild or sign the OS.
+Set `TILO_INSTALLER_ROOTFS=ext4` to build an ext4 live root, which WHPX needs
+where Btrfs fs-verity reads fail. Uncompress the qcow2 once, then run `tilo
+device scenario install --medium <qcow2> --graphics software` on the Windows
+WHPX host. Keep the medium as the immutable base for later throwaway install
+overlays. Component changes in a running dev VM use `tilo device vm deploy`;
+normal OS image changes use `tilo device vm upgrade`. When building a
+disposable medium by hand in WSL instead, set
 `TILO_PODMAN_BUILD_NETWORK=host` only if Podman's private build namespace
 cannot reach the package mirrors while the WSL host can.
 Keep `TILO_INSTALLER_OUTPUT` on WSL's native ext4 filesystem during the
@@ -374,15 +373,9 @@ board images); the backend rejects other origins.
 
 ### Separate development target on Windows ARM64
 
-`os-dev-installer.yml` can reuse a generic ARM64 CI dev image for the live UI
-and install a separate Lenovo dev image. Set `os_image` to the generic digest,
-`target_image` to the board digest, `target_ci_run_id` to the internal Forgejo
-build run ID, `target_update_origin` to its published `tilo-vm` tag, and
-`target_profile` to `lenovo-83ed`. Both images must name the same source revision.
-The workflow exports the target with `skopeo --preserve-digests` and reuses the
-existing native installer components; it does not rebuild the target OS.
-
-For a local disposable medium, prepare that same transport with
+A disposable medium can reuse a generic ARM64 CI dev image for the live UI and
+install a separate Lenovo dev image. Both images must name the same source
+revision. Prepare that transport with
 `python3 os/dev/prepare-dev-installer-target.py --help`, then set
 `TILO_INSTALLER_OFFLINE_TARGET_DIR`, `TILO_INSTALLER_DEV_TARGET=1`, and
 `TILO_UNVERIFIED_VM_INSTALL=1` when building the installer. Normal transports

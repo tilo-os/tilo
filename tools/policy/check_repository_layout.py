@@ -57,15 +57,11 @@ RETIRED_SOURCE_ROOTS = {
     "ui/": "crates/sdk/ui-core/",
 }
 
-# release-apps.yml fetches these application tools by exact reviewed path and
-# digest, so moving them means moving those pins with them. This is a closed
-# exception, not a precedent for adding more application code to the tools root.
+# The verifier bundle packs this controller with the tools it verifies, so it lives at
+# the tools root. This is a closed exception, not a precedent for adding more
+# application code to the tools root.
 ROOT_APPLICATION_CONTROLLER_FILES = frozenset(
     {
-        "tools/app_packaging_contract.py",
-        "tools/app_packaging_plan.py",
-        "tools/app_packaging_qualification.py",
-        "tools/assemble_verified_apps.py",
         "tools/canonical_verifier_bundle.py",
     }
 )
@@ -98,7 +94,6 @@ def flat_application_tooling_violations(paths: list[str]) -> list[str]:
         path
         for path in paths
         if path.startswith(("tools/app_", "tools/accept_app_"))
-        or path == "tools/assemble_verified_apps.py"
     )
     return sorted(
         "new application tooling must live under `tools/apps/`; the root-level "
