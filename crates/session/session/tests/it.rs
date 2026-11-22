@@ -95,6 +95,8 @@ mod directory;
 mod display_settings;
 #[path = "displays.rs"]
 mod displays;
+#[path = "do_action.rs"]
+mod do_action;
 #[path = "fabric.rs"]
 mod fabric;
 #[path = "file_clipboard.rs"]

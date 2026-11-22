@@ -14,6 +14,7 @@
 //! ([`tilo_actions::tree::pick_action`]); `place#action` names one where
 //! several places offer an action of that name.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 
@@ -256,17 +257,38 @@ fn name_of(row: &Offer, rows: &[Offer]) -> String {
     }
 }
 
-/// The row `name` picks among `rows`: `place#action`, or an action by its id
-/// or its title, as the published tree picks one.
+/// Where `row` stands, as a full address names it: its provider and its
+/// resource, so two rows whose place reads alike are told apart.
+fn full_place(row: &Offer) -> String {
+    format!("{}:{}", row.provider, row.action.address.resource)
+}
+
+/// The full address of the action `row` offers: its provider, resource and
+/// action, the one name that finds it alone.
+fn full_name(row: &Offer) -> String {
+    format!("{}#{}", full_place(row), row.action.address.action)
+}
+
+/// The row `name` picks among `rows`: a full address
+/// (`provider:resource#action`), `place#action`, or an action by its id or
+/// its title, as the published tree picks one.
 fn find<'a>(rows: &'a [Offer], name: &str, spelling: &Spelling) -> Result<&'a Offer, String> {
     let (within, wanted) = match name.rsplit_once('#') {
         Some((place, wanted)) => (Some(place), wanted),
         None => (None, name),
     };
-    let here: Vec<&Offer> = rows
-        .iter()
-        .filter(|row| within.is_none_or(|within| at(row, within)))
-        .collect();
+    let here: Vec<&Offer> = match within {
+        // A provider and a resource name one row's place, however several
+        // others read alike.
+        Some(within) if rows.iter().any(|row| full_place(row) == within) => rows
+            .iter()
+            .filter(|row| full_place(row) == within)
+            .collect(),
+        _ => rows
+            .iter()
+            .filter(|row| within.is_none_or(|within| at(row, within)))
+            .collect(),
+    };
     let actions: Vec<ActionDescriptor> = here.iter().map(|row| row.action.clone()).collect();
     let picked = pick_action(wanted, &actions, "this desktop")
         .or_else(|_| pick_action(&wanted.replace('-', " "), &actions, "this desktop"))
@@ -289,20 +311,30 @@ fn find<'a>(rows: &'a [Offer], name: &str, spelling: &Spelling) -> Result<&'a Of
             }
         })
         .collect();
-    fits.dedup_by(|a, b| a.provider == b.provider && a.action.address == b.action.address);
+    // One action has one entry: a row a provider offers twice, or the same
+    // action published under one provider more than once, is read once.
+    let mut seen = HashSet::new();
+    fits.retain(|row| {
+        seen.insert((
+            row.provider.clone(),
+            row.action.address.resource.clone(),
+            row.action.address.action.clone(),
+        ))
+    });
     match fits.as_slice() {
         [one] => Ok(one),
         [] => Err("That didn't work.".into()),
         several => {
             use std::fmt::Write as _;
             let mut text = format!("“{name}” could be more than one thing. Say which:");
+            // Each suggestion is a full address, so what is typed finds the
+            // one row it names rather than asking again.
             for row in several.iter().take(AMBIGUOUS_SHOWN) {
                 let _ = write!(
                     text,
-                    "\n  {} {}#{}    {}",
+                    "\n  {} {}    {}",
                     spelling.run,
-                    place(row),
-                    row.action.address.action,
+                    full_name(row),
                     row.action.action_label
                 );
             }

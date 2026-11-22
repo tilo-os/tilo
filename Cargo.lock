@@ -22048,6 +22048,7 @@ dependencies = [
  "tilo-compositor",
  "tilo-connectivity-service",
  "tilo-content",
+ "tilo-control",
  "tilo-copy-lint",
  "tilo-crash-reports",
  "tilo-delivery-protocol",

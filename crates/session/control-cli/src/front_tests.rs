@@ -228,14 +228,27 @@ fn do_picks_by_id_title_or_place_and_invokes_the_one_frame() {
     let ambiguous = ran(|io| run(&sockets, "rename", &["x".into()], false, &spelling, io));
     assert_eq!(ambiguous.code, 1);
     assert!(
-        ambiguous.err.contains("tilo do todo#rename")
-            && ambiguous.err.contains("tilo do budget#rename"),
-        "{}",
+        ambiguous.err.contains("tilo do 7:notes.page:1#rename")
+            && ambiguous.err.contains("tilo do 8:sheets.sheet:1#rename"),
+        "each suggestion is the full address that runs as typed: {}",
         ambiguous.err
     );
     let unknown = ran(|io| run(&sockets, "fly", &[], false, &spelling, io));
     assert_eq!(unknown.code, 1);
     assert_eq!(desktop.invoked().len(), 3, "nothing unclear is invoked");
+    // A suggestion typed back finds the one row it names.
+    let picked = ran(|io| {
+        run(
+            &sockets,
+            "7:notes.page:1#rename",
+            &["x".into()],
+            false,
+            &spelling,
+            io,
+        )
+    });
+    assert_eq!(picked.code, 0, "{}", picked.err);
+    assert_eq!(desktop.invoked()[3].target.provider, "7");
 
     let json = ran(|io| {
         run(
@@ -274,6 +287,26 @@ fn do_picks_by_id_title_or_place_and_invokes_the_one_frame() {
         "{}",
         shown.out
     );
+}
+
+/// One action has one entry: a provider that offers the same address twice,
+/// with another row between the copies, is still one action to pick.
+#[test]
+fn one_address_is_one_action_however_often_it_is_offered() {
+    let duplicate = row("p", ("res", "Res"), ("do-thing", "Do thing"), Vec::new());
+    let elsewhere = row(
+        "p",
+        ("other", "Other"),
+        ("other-thing", "Other thing"),
+        Vec::new(),
+    );
+    let offers: Vec<Offer> = [duplicate.clone(), elsewhere, duplicate]
+        .into_iter()
+        .filter_map(Offer::of)
+        .collect();
+    let found = find(&offers, "do-thing", &Spelling::tilo()).expect("one action, not two");
+    assert_eq!(found.provider, "p");
+    assert_eq!(found.action.address.resource, "res");
 }
 
 #[test]

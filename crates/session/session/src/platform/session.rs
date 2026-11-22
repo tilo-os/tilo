@@ -2811,7 +2811,21 @@ impl Session {
         {
             return;
         }
-        let rows = tilo_actions::api::survey_placed(&self.shared.published.resources());
+        let mut resources = self.shared.published.resources();
+        // The settings are published by the session's settings service, and offered under
+        // their own provider ([`crate::settings_steps::SettingsSteps`]) wherever the session
+        // serves a broker. The session's own provider must not offer a second copy of them:
+        // one address has one entry.
+        if self
+            .app_wire
+            .as_ref()
+            .and_then(AppWire::agent_broker)
+            .is_some()
+            && self.settings_steps.is_some()
+        {
+            crate::settings_steps::SettingsSteps::leave_out(&mut resources);
+        }
+        let rows = tilo_actions::api::survey_placed(&resources);
         if actions.offer(rows)
             && let Some(broker) = self.app_wire.as_ref().and_then(AppWire::agent_broker)
         {
