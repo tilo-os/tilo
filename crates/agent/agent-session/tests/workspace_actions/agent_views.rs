@@ -37,7 +37,8 @@ async fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, home.cert.device_public_key);
-    let mcp = McpServer::new(actions, WORKSPACE.into(), person).with_agent_session("views");
+    let mcp = McpServer::for_agent(actions, WORKSPACE.into(), "claude-code", &person)
+        .with_agent_session("views");
 
     // A sheet is made in the person's Sheets, the one their page shows.
     let (made, failed) = tool(

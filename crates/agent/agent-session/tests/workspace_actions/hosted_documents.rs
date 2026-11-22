@@ -386,10 +386,11 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
     // Its session runs the agent, as `tilo login` makes it say.
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, INVOCATION_LABEL).await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_agent(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        "visa-agent",
+        &person,
     )
     .with_agent_session(INVOCATION);
 

@@ -203,18 +203,17 @@ async fn what_an_assistant_proposes_stands_among_its_persons_tasks_and_starts_on
         browser.cert.device_public_key,
     )
     .in_workspace(workspace.clone());
-    let theirs = me
-        .clone()
-        .delegated_to(SCOUT)
+    let person_key = root.verifying_key().to_bytes();
+    let theirs = Caller::delegated_agent(SCOUT, person_key, browser.cert.device_public_key)
+        .in_workspace(workspace.clone())
         .named("Scout")
         .in_agent_session("agent-session:server-proposing")
-        .on_turn(
-            tilo_actions::policy::turn::Turn::new(
-                turns[0].conversation.clone(),
-                turns[0].cause.clone(),
-            ),
-            turns[0].agent.bound_rules().unwrap_or_default(),
-        );
+        .on_roster(turns[0].agent.created_at, person_key)
+        .on_roster_turn(tilo_actions::policy::turn::Turn::new(
+            turns[0].conversation.clone(),
+            turns[0].cause.clone(),
+        ))
+        .held_to(turns[0].agent.bound_rules().unwrap_or_default());
 
     // It proposes a piece of work: a task of its own that nobody gave it, so nothing starts.
     let first = proposal(tidy(&initiative, &workspace, &theirs, "Tidy the meeting notes").await);

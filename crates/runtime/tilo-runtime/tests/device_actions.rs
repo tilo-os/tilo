@@ -285,7 +285,7 @@ async fn agent_on(key: &(SigningKey, DeviceCert), b: &B) -> (McpServer<RemoteDev
     );
     let person = hex::encode(key.1.user_public_key);
     (
-        McpServer::new(remote, WORKSPACE.to_owned(), person),
+        McpServer::for_agent(remote, WORKSPACE.to_owned(), "agent", &person),
         endpoint,
     )
 }

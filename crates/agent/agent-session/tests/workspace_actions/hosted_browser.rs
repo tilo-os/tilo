@@ -195,10 +195,11 @@ async fn an_agents_key_opens_browser_and_the_workspace_lists_it_like_any_app() {
     )
     .await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let server = McpServer::new(
+    let server = McpServer::for_agent(
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
-        person,
+        "visa-agent",
+        &person,
     )
     .with_agent_session(hosted_documents::INVOCATION);
 

@@ -186,11 +186,6 @@ async fn no_agent_signs_in_on_its_own(
     }
     let person = hex::encode(ada.user_public_key);
     let nobodies = [
-        Caller::agent_turn(
-            "assistant",
-            person.clone(),
-            tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-        ),
         Caller::local_agent("assistant"),
         Caller::local_app("so.tilo.chat").acting_for(person),
     ];

@@ -727,15 +727,6 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
         )
         .await,
     );
-    let bare_turn = Caller::agent_turn(
-        "assistant",
-        hex::encode(ada.device.user_public_key),
-        tilo_action_policy::turn::Turn::new("chat/main", "message-1"),
-    );
-    nobody(
-        "an agent turn with no device of hers behind it",
-        asked(&ada.page(), &bare_turn, target.clone(), json!({})).await,
-    );
     let app =
         Caller::local_app("so.tilo.calendar").acting_for(hex::encode(ada.device.user_public_key));
     nobody(

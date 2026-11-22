@@ -1195,14 +1195,12 @@ mod tests {
             reply: Some("m_reply_own".to_owned()),
             followed: super::super::written::Followed::default(),
         };
-        let caller = Caller::agent_turn(
-            "writer",
-            tilo_action_policy::PersonId::from_root([7; 32]),
-            tilo_action_policy::turn::Turn::new(
+        let caller = Caller::delegated_agent("writer", [7; 32], [8; 32])
+            .on_roster(0, [7; 32])
+            .on_roster_turn(tilo_action_policy::turn::Turn::new(
                 chat::summons::conversation_address(&Id::from_raw("own")),
                 "m1",
-            ),
-        );
+            ));
         // What Chat's `stream-output` is given: where, which reply, the words, and whatever
         // `beside` adds.
         let said = |to: &str, reply: &str, beside: Option<(&str, Value)>| {
