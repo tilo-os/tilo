@@ -110,7 +110,8 @@ pub(super) enum HeldPage {
 /// A row's action that takes what the person types: its fields, shown under
 /// the rows, and what each holds.
 pub(super) struct Asking {
-    row: u32,
+    label: String,
+    run: RowRun,
     values: Vec<String>,
 }
 
@@ -131,6 +132,7 @@ pub(super) struct SearchRow {
 
 /// The action a search row runs: the target a caller invokes, as the
 /// catalogue named it.
+#[derive(Clone)]
 struct RowRun {
     provider: String,
     resource: String,
@@ -147,6 +149,7 @@ struct RowRun {
 
 /// One thing a row's action needs typed: the parameter it fills, as the
 /// action describes it.
+#[derive(Clone)]
 struct RowField {
     name: String,
     hint: String,
@@ -870,15 +873,14 @@ impl Worker {
             rows: held,
             notes: held_notes,
             notice,
-            asking,
             ..
         }) = self.pages.held.get_mut(&page)
         {
+            // An action's fields the person opened stay open while they type
+            // here: they hold the action itself, not the row it stood on.
             *held = rows;
             *held_notes = notes;
             *notice = None;
-            // The rows are new, so is what the person asks for next.
-            *asking = None;
         }
         self.patch_search(page)
     }
@@ -905,10 +907,10 @@ impl Worker {
         if pending.is_some() {
             return self.patch_search(page);
         }
-        let Some(run) = rows
+        let Some((label, run)) = rows
             .iter()
             .find(|row| row.id == id)
-            .and_then(|row| row.run.as_ref())
+            .and_then(|row| row.run.clone().map(|run| (row.label.clone(), run)))
         else {
             return Ok(Vec::new());
         };
@@ -916,8 +918,9 @@ impl Worker {
         // of its own under the row.
         if !run.fields.is_empty() {
             *asking = Some(Asking {
-                row: id,
+                label,
                 values: vec![String::new(); run.fields.len()],
+                run,
             });
             return self.patch_search(page);
         }
@@ -925,7 +928,7 @@ impl Worker {
             page,
             workspace_id,
             caller,
-            id,
+            (label, run),
             tilo_actions::remote::InvokeArgument::None,
         )
     }
@@ -939,7 +942,6 @@ impl Worker {
         caller: &Caller,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
         let Some(HeldPage::Search {
-            rows,
             asking: Some(asking),
             notice,
             ..
@@ -947,13 +949,7 @@ impl Worker {
         else {
             return self.patch_search(page);
         };
-        let Some(run) = rows
-            .iter()
-            .find(|row| row.id == asking.row)
-            .and_then(|row| row.run.as_ref())
-        else {
-            return self.patch_search(page);
-        };
+        let run = &asking.run;
         let mut arguments = serde_json::Map::new();
         for (field, typed) in run.fields.iter().zip(&asking.values) {
             let Some(value) = field.value(typed) else {
@@ -970,46 +966,36 @@ impl Worker {
             };
             arguments.insert(field.name.clone(), value);
         }
-        let row = asking.row;
+        let asked = (asking.label.clone(), asking.run.clone());
         self.run_row(
             page,
             workspace_id,
             caller,
-            row,
+            asked,
             tilo_actions::remote::InvokeArgument::Json(arguments),
         )
     }
 
-    /// Run the action of the row numbered `id` with `argument`.
+    /// Run the action `label` names, as `run` reaches it, with `argument`.
     fn run_row(
         &mut self,
         page: u64,
         workspace_id: WorkspaceId,
         caller: &Caller,
-        id: u32,
+        (label, run): (String, RowRun),
         argument: tilo_actions::remote::InvokeArgument,
     ) -> Result<Vec<PagePatch>, PageRefusal> {
-        let Some(HeldPage::Search { rows, .. }) = self.pages.held.get(&page) else {
-            return Err(unavailable("the page was closed"));
-        };
-        let Some((label, run)) = rows
-            .iter()
-            .find(|row| row.id == id)
-            .and_then(|row| row.run.as_ref().map(|run| (row.label.clone(), run)))
-        else {
-            return Ok(Vec::new());
-        };
         let host = run.host;
         let request = InvokeRequest {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
-                provider: run.provider.clone(),
-                address: ActionAddress::new(run.resource.clone(), run.action.clone()),
+                provider: run.provider,
+                address: ActionAddress::new(run.resource, run.action),
             },
             argument,
             context: None,
             confirmation: None,
-            revision: run.revision.clone(),
+            revision: run.revision,
             on_behalf_of: None,
             wait_ms: None,
             appearance: None,
@@ -1133,11 +1119,8 @@ impl Worker {
             return Err(unavailable("the page was closed"));
         };
         let mut html = results_html(rows, notice.as_deref(), notes.as_deref());
-        if let Some(asking) = asking
-            && let Some(row) = rows.iter().find(|row| row.id == asking.row)
-            && let Some(run) = &row.run
-        {
-            html = asking_html(&row.label, &run.fields, &asking.values) + &html;
+        if let Some(asking) = asking {
+            html = asking_html(&asking.label, &asking.run.fields, &asking.values) + &html;
         }
         let html = results_div(&html);
         Ok(vec![PagePatch {
