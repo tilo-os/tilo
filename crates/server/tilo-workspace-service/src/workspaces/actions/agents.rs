@@ -391,10 +391,7 @@ fn operation_of(own: bool, action: &'static str) -> Operation<'static> {
             .find(|verb| verb.id == action);
         (super::host::ACCOUNT, verb)
     } else {
-        let verb = super::VERBS
-            .iter()
-            .chain(&super::OWNER_CONFIRMED)
-            .find(|verb| verb.id == action);
+        let verb = super::VERBS.iter().find(|verb| verb.id == action);
         (super::GOVERNANCE, verb)
     };
     verb.map_or(

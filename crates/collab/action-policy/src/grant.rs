@@ -84,7 +84,8 @@ pub enum Role {
     Commenter,
     Editor,
     /// An Editor who also moderates: other people's content through the
-    /// `moderation` node, and the membership of those ranked below.
+    /// `moderation` node, and who is in the workspace through the membership
+    /// actions its role grants.
     Moderator,
     Owner,
 }
@@ -101,25 +102,8 @@ impl Role {
     /// Whether a holder of `self` may hand out `other` through an invite: an
     /// invite never carries more than its inviter's preset.
     #[must_use]
-    pub const fn includes(self, other: Self) -> bool {
-        self.rank() >= other.rank()
-    }
-
-    /// Whether `self` ranks strictly above `other`: a Moderator's
-    /// governance reaches only the members it outranks.
-    #[must_use]
-    pub const fn outranks(self, other: Self) -> bool {
-        self.rank() > other.rank()
-    }
-
-    const fn rank(self) -> u8 {
-        match self {
-            Self::Viewer => 0,
-            Self::Commenter => 1,
-            Self::Editor => 2,
-            Self::Moderator => 3,
-            Self::Owner => 4,
-        }
+    pub fn includes(self, other: Self) -> bool {
+        self >= other
     }
 
     #[must_use]

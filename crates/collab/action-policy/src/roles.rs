@@ -692,9 +692,9 @@ pub fn restriction_grant(
     }
 }
 
-/// The governance a Moderator may exercise: the membership actions and
-/// restrictions, on members ranked below Moderator, stopping or restarting a
-/// bot, so a misbehaving bot can be halted without the authority to widen
+/// The governance a Moderator may exercise: removing, banning and
+/// restricting members, which the workspace keeps its owner through, stopping
+/// or restarting a bot, so a misbehaving bot can be halted without the authority to widen
 /// it, and naming the workspace, which is what people find it by.
 pub const MODERATOR_GOVERNANCE: [&str; 8] = [
     governance::REMOVE_MEMBER,
@@ -827,12 +827,8 @@ impl Preset {
 /// | Viewer | Read: Allow |
 /// | Commenter | Read: Allow; comments, reactions: Allow (Undoable) |
 /// | Editor | Read, Undoable: Allow; Outside: Ask; governance, moderation, people's views of the layout: Deny |
-/// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `pause-bot`, `resume-bot`, `rename`: Allow |
+/// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `restrict`, `unrestrict`, `pause-bot`, `resume-bot`, `rename`: Allow |
 /// | Owner | everything: Allow |
-///
-/// A Moderator's membership actions reach only members ranked below
-/// Moderator; [`crate::WorkspacePolicy`] enforces that, since it depends on the
-/// target and not on the tree.
 #[must_use]
 pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {
     let mut rules = shown_role_rules(role, workspace);
@@ -897,7 +893,7 @@ pub fn role_preset(role: Role, workspace: &str) -> Preset {
             "Can read and make undoable changes, except the workspace's own settings; outside effects ask first."
         }
         Role::Moderator => {
-            "Can do what an Editor can, moderate other people's content, and remove or ban members ranked below Moderator."
+            "Can do what an Editor can, moderate other people's content, and remove, ban or restrict members."
         }
         Role::Owner => "Can do everything, including governing the workspace.",
     };

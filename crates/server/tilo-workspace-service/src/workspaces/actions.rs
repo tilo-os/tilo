@@ -31,14 +31,11 @@
 //! take is absent, and invoking one is the same `UnknownAction` as invoking
 //! one that does not exist.
 //!
-//! Removing or banning a member and ending a call are destructive: they run
-//! only on a confirmation the person gave on their own device. The workspace's
-//! owner removes and bans by asking from a device of their own: their
-//! request is that confirmation. For anyone else this holder cannot ask yet:
-//! the action is left out of their catalogue, and a caller the workspace would
-//! let take one is refused with [`ActionCallError::ConfirmationRequired`]; a
-//! caller's own `confirm` is never taken for the person's. Ending a call
-//! waits for everyone.
+//! Adding, placing, removing and banning a member are admitted by the
+//! workspace's grants like any other action; where someone wants a change
+//! confirmed, an Ask grant asks for it. Ending a call is destructive and waits
+//! for everyone: it is refused with [`ActionCallError::ConfirmationRequired`],
+//! and a caller's own `confirm` is never taken for the person's.
 //!
 //! The holder also serves its own person's MCP server
 //! ([`mcp_server::PROVIDER`]): the devices they run an agent on, read live,
@@ -227,7 +224,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 29] = [
+const VERBS: [Verb; 30] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -263,12 +260,17 @@ const VERBS: [Verb; 29] = [
         kind: roles::GOVERNANCE_KIND,
         params: add_member_params,
     },
-    // A member removes someone ranked below them, as the workspace's roles say; an agent of
-    // theirs, once they said yes.
     Verb {
         id: governance::REMOVE_MEMBER,
         label: "Remove member",
         check: governance::REMOVE_MEMBER,
+        kind: roles::GOVERNANCE_KIND,
+        params: person_params,
+    },
+    Verb {
+        id: governance::BAN,
+        label: "Ban",
+        check: governance::BAN,
         kind: roles::GOVERNANCE_KIND,
         params: person_params,
     },
@@ -440,17 +442,6 @@ const VERBS: [Verb; 29] = [
         params: key_params,
     },
 ];
-
-/// Destructive governance: run for the workspace's owner, whose own request is
-/// their confirmation, and for nobody else until the person's own
-/// confirmation can be asked for.
-const OWNER_CONFIRMED: [Verb; 1] = [Verb {
-    id: governance::BAN,
-    label: "Ban",
-    check: governance::BAN,
-    kind: roles::GOVERNANCE_KIND,
-    params: person_params,
-}];
 
 fn person_param() -> ActionParam {
     ActionParam::required(
@@ -956,7 +947,6 @@ fn admitted_change(change: &str) -> Option<(&'static str, &'static str)> {
 fn check_of(action: &str) -> Option<&'static str> {
     VERBS
         .iter()
-        .chain(&OWNER_CONFIRMED)
         .find(|verb| verb.id == action)
         .map(|verb| verb.check)
 }
@@ -974,12 +964,10 @@ fn minting_issuer(cert: &DeviceCert, device: &[u8; 32]) -> Option<DeviceCert> {
     None
 }
 
-/// Whether `action` with `args` by a device of `owner`'s person or not needs
-/// the person's own confirmation, which this holder cannot ask for yet. The
-/// workspace's owner confirms removing and banning by asking.
-fn unconfirmed(action: &str, args: &Args, owner: bool) -> bool {
-    (OWNER_CONFIRMED.iter().any(|verb| verb.id == action) && !owner)
-        || (action == governance::CALL && args.text("operation").ok().flatten() == Some(END_CALL))
+/// Whether `action` with `args` ends a call, which waits for everyone's own
+/// confirmation, which this holder cannot ask for yet.
+fn unconfirmed(action: &str, args: &Args) -> bool {
+    action == governance::CALL && args.text("operation").ok().flatten() == Some(END_CALL)
 }
 
 /// The arguments `request` names, to show the person asked about it.
@@ -1570,15 +1558,12 @@ impl Workspaces {
                 let workspace = governed.lock().await;
                 offer.generation = workspace.record.generation;
                 let now = tilo_clock::unix_now_ns();
-                let owner = device.user_public_key == self.inner.host.cert.user_public_key;
-                let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
                 let offered = |verb: &Verb| {
                     self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now)
                 };
                 // Removing is published on each person, under the workspace's people.
                 let mut rows: Vec<CatalogueRow> = VERBS
                     .iter()
-                    .chain(confirmed)
                     .filter(|verb| verb.id != governance::REMOVE_MEMBER && offered(verb))
                     .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
                     .collect();
@@ -1934,19 +1919,13 @@ impl Workspaces {
             }
             workspace.workspace().to_owned()
         };
-        let owner = device.user_public_key == self.inner.host.cert.user_public_key;
-        if unconfirmed(action, &args, owner) {
+        if unconfirmed(action, &args) {
             return Err(ActionCallError::confirmation_required());
         }
         // A key's own grant is its own business; anything else an agent asks
         // is decided by its grants here, and by its person's own checks, before
         // its person is asked: last, so their yes is never refused after.
-        if !listed_key
-            && let Some(verb) = VERBS
-                .iter()
-                .chain(&OWNER_CONFIRMED)
-                .find(|verb| verb.id == action)
-        {
+        if !listed_key && let Some(verb) = VERBS.iter().find(|verb| verb.id == action) {
             self.check_governance(&device, &workspace, verb.id, &args, admitting, published)
                 .await?;
             self.admit_operation(

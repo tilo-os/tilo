@@ -228,13 +228,9 @@ pub enum Refusal {
     },
     /// A grant on a node outside this workspace.
     OutsideWorkspace(TreePath),
-    /// A membership action on someone the actor does not outrank: a
-    /// Moderator reaches only members below Moderator, and nobody bans
-    /// themselves.
-    NotBelowActor {
-        actor: Option<Role>,
-        target: Role,
-    },
+    /// Banning or restricting oneself: leaving is how someone stops being
+    /// in a workspace.
+    Themselves,
     /// Making or unmaking an administrator, or inviting one, by someone who
     /// may not: the owner and its administrators make administrators; only
     /// the owner unmakes or removes them.
@@ -293,10 +289,7 @@ impl std::fmt::Display for Refusal {
             Self::OutsideWorkspace(node) => {
                 write!(f, "{node} is not in this workspace")
             }
-            Self::NotBelowActor { actor, target } => match actor {
-                Some(actor) => write!(f, "a {actor} cannot do this to a {target}"),
-                None => write!(f, "only members ranked above a {target} can do this"),
-            },
+            Self::Themselves => f.write_str("nobody bans or restricts themselves"),
             Self::Administrators { actor, unmaking } => {
                 if *unmaking {
                     write!(
@@ -891,7 +884,7 @@ impl WorkspacePolicy {
     ///
     /// Leaving needs no grant: whoever removes themselves from a workspace does
     /// it by being who they are, and a ban or a restriction stops it no more
-    /// than the `remove` action would (`check_reach`).
+    /// than the `remove` action would.
     ///
     /// # Errors
     /// When the action is not granted, or the change breaks a structural rule:
@@ -1048,41 +1041,17 @@ impl WorkspacePolicy {
             .retain(|grant| grant.grantee.person_id() != Some(person));
     }
 
-    /// Whether `actor_person` reaches `person` with a membership action: the
-    /// owner reaches everyone else, anyone else only those they outrank (a
-    /// non-member target ranks lowest). Leaving, removing oneself, is always
-    /// in reach.
-    fn check_reach(&self, actor_person: &str, person: &str, ban: bool) -> Result<(), Refusal> {
+    /// Whether `actor_person` may ban or restrict `person`, beyond the grant
+    /// on the action: the workspace keeps its owner, and nobody bans or
+    /// restricts themselves.
+    fn check_bannable(&self, actor_person: &str, person: &str) -> Result<(), Refusal> {
         if self.is_owner(person) {
             return Err(Refusal::Owner);
         }
-        let actor = self.role_of(actor_person);
         if actor_person == person {
-            return if ban {
-                Err(Refusal::NotBelowActor {
-                    actor,
-                    target: actor.unwrap_or(Role::Viewer),
-                })
-            } else {
-                Ok(())
-            };
+            return Err(Refusal::Themselves);
         }
-        if self.is_owner(actor_person) {
-            return Ok(());
-        }
-        // An administrator reaches every member who is not one, whatever
-        // their role: two people who share a workspace as equals each
-        // remove, ban and restrict its other members. Other administrators
-        // are the owner's to reach.
-        if self.is_administrator(actor_person) && !self.is_administrator(person) {
-            return Ok(());
-        }
-        match self.role_of(person) {
-            Some(target) if !actor.is_some_and(|actor| actor.outranks(target)) => {
-                Err(Refusal::NotBelowActor { actor, target })
-            }
-            _ => Ok(()),
-        }
+        Ok(())
     }
 
     /// Whether `grant` gives no more than `actor` holds on its node, for each
@@ -1127,7 +1096,7 @@ impl WorkspacePolicy {
                 self.check_member_addition(actor_person, person, *role)
             }
             Change::SetRole { person, role } => self.check_member_role(actor_person, person, *role),
-            Change::RemoveMember { person } => self.check_member_removal(actor_person, person),
+            Change::RemoveMember { person } => self.check_member_removal(person),
             Change::Ban { person } => self.check_ban(actor_person, person),
             Change::Unban { person } => self.check_unban(person),
             Change::Restrict { person, until_ms } => {
@@ -1203,12 +1172,9 @@ impl WorkspacePolicy {
     /// gave them was taken back first ([`super::super::members`] replay), has
     /// only those grants left to take: removing them is the same change, and
     /// removing them twice changes nothing.
-    fn check_member_removal(&self, actor_person: &str, person: &str) -> Result<(), Refusal> {
+    fn check_member_removal(&self, person: &str) -> Result<(), Refusal> {
         if self.is_owner(person) {
             return Err(Refusal::Owner);
-        }
-        if self.members.contains_key(person) {
-            self.check_reach(actor_person, person, false)?;
         }
         Ok(())
     }
@@ -1217,7 +1183,7 @@ impl WorkspacePolicy {
         if self.is_banned(person) {
             return Err(Refusal::Banned(person.to_owned()));
         }
-        self.check_reach(actor_person, person, true)
+        self.check_bannable(actor_person, person)
     }
 
     fn check_unban(&self, person: &str) -> Result<(), Refusal> {
@@ -1237,7 +1203,7 @@ impl WorkspacePolicy {
         if until_ms <= cx.now_unix_ms {
             return Err(Refusal::InThePast(until_ms));
         }
-        self.check_reach(actor_person, person, true)
+        self.check_bannable(actor_person, person)
     }
 
     fn check_restriction_lift(
@@ -1249,7 +1215,7 @@ impl WorkspacePolicy {
         if self.restricted_until(person, cx).is_none() {
             return Err(Refusal::NotRestricted(person.to_owned()));
         }
-        self.check_reach(actor_person, person, true)
+        self.check_bannable(actor_person, person)
     }
 
     /// A grant is revoked by its own id, and a role's built-in grants are not

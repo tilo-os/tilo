@@ -235,8 +235,8 @@ pub const WORKSPACE_MEMBER_ADDED: &str = "add";
 /// workspace holds. A person it does not hold is added by [`WORKSPACE_MEMBER_ADDED`], never
 /// given a place here.
 pub const WORKSPACE_MEMBER_PLACED: &str = "role";
-/// The action `workspace/members/<person>#remove` publishes: remove the person, ranked below
-/// whoever removes them or themselves.
+/// The action `workspace/members/<person>#remove` publishes: remove the person, as the
+/// workspace's grants on removing let whoever asks, or themselves.
 pub const WORKSPACE_MEMBER_REMOVED: &str = "remove";
 /// The invitations a workspace has open, under its governance root
 /// (`workspace/invitations`).

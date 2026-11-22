@@ -1003,8 +1003,8 @@ impl Workspaces {
     }
 
     /// Remove, ban or unban, decided by who asks: a device of the server's
-    /// user governs its workspaces, and any other member by the workspace's policy (a
-    /// Moderator reaches members ranked below Moderator).
+    /// user governs its workspaces, and any other member by the workspace's grants on
+    /// the action (the Moderator role holds them).
     async fn change_membership(
         &self,
         workspace: &str,

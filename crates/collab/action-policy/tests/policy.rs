@@ -2014,32 +2014,30 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_moderator_reaches_only_members_below_moderator;
+    phase membership_changes_are_decided_by_grants_and_keep_the_owner;
     {
         let mut workspace = workspace_with_members(&[
             (BOB, Role::Editor),
             (CAROL, Role::Moderator),
-            ("m2", Role::Moderator),
+            ("d0d", Role::Moderator),
         ]);
         let policy = workspace.clone();
         let carol = Authority::person(policy.party(CAROL));
-        for person in ["m2", ALICE] {
-            for change in [
-                Change::RemoveMember {
-                    person: person.into(),
-                },
-                Change::Ban {
-                    person: person.into(),
-                },
-            ] {
-                let before = workspace.clone();
-                assert!(
-                    workspace
-                        .apply(CAROL, &carol, change, &cx(), false)
-                        .is_err()
-                );
-                assert_eq!(workspace, before, "nothing is written");
-            }
+        // The workspace keeps its owner, whoever asks.
+        for change in [
+            Change::RemoveMember {
+                person: ALICE.into(),
+            },
+            Change::Ban {
+                person: ALICE.into(),
+            },
+        ] {
+            let before = workspace.clone();
+            assert_eq!(
+                workspace.apply(CAROL, &carol, change, &cx(), false),
+                Err(Refusal::Owner)
+            );
+            assert_eq!(workspace, before, "nothing is written");
         }
         assert_eq!(
             workspace.apply(
@@ -2051,21 +2049,62 @@ tilo_test_env::scenario! {
                 &cx(),
                 false
             ),
-            Err(Refusal::NotBelowActor {
-                actor: Some(Role::Moderator),
-                target: Role::Moderator
-            })
+            Err(Refusal::Themselves)
         );
+        // The Moderator role's grant on removing reaches another Moderator as
+        // it reaches an Editor: no role ranks a member out of reach.
         workspace
             .apply(
                 CAROL,
                 &carol,
-                Change::RemoveMember { person: BOB.into() },
+                Change::RemoveMember {
+                    person: "d0d".into(),
+                },
                 &cx(),
                 false,
             )
             .unwrap();
-        assert!(!workspace.is_member(BOB));
+        assert!(!workspace.is_member("d0d"));
+
+        // An Editor holds no grant on removing, so removes nobody.
+        let bob = Authority::person(workspace.party(BOB));
+        let remove_carol = Change::RemoveMember {
+            person: CAROL.into(),
+        };
+        assert!(matches!(
+            workspace.check(BOB, &bob, &remove_carol, &cx(), true),
+            Err(Refusal::NotPermitted(_))
+        ));
+        // Given an Ask grant on it, the Editor's removal asks first, and an
+        // approved one goes ahead, a Moderator's included.
+        let owner = workspace.clone();
+        let owner = Authority::person(owner.party(ALICE));
+        workspace
+            .apply(
+                ALICE,
+                &owner,
+                Change::Grant(Grant::new(
+                    "bob-remove",
+                    Grantee::person(BOB),
+                    roles::governance_action("r", governance::REMOVE_MEMBER),
+                    KindSet::OUTSIDE,
+                    Answer::Ask,
+                    Grantee::person(ALICE),
+                )),
+                &cx(),
+                false,
+            )
+            .unwrap();
+        let policy = workspace.clone();
+        let bob = Authority::person(policy.party(BOB));
+        assert!(matches!(
+            workspace.check(BOB, &bob, &remove_carol, &cx(), false),
+            Err(Refusal::NeedsApproval(_))
+        ));
+        workspace
+            .apply(BOB, &bob, remove_carol, &cx(), true)
+            .unwrap();
+        assert!(!workspace.is_member(CAROL));
     }
 
     phase a_change_naming_software_as_a_person_is_refused;
@@ -2188,7 +2227,7 @@ tilo_test_env::scenario! {
         assert_eq!(workspace.restricted_until(BOB, &Context::at(until)), None);
     }
 
-    phase a_restriction_reaches_only_below_and_lifts_once;
+    phase a_restriction_keeps_the_owner_and_lifts_once;
     {
         let mut workspace = workspace_with_members(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);
         let policy = workspace.clone();
@@ -2206,10 +2245,10 @@ tilo_test_env::scenario! {
             workspace.check(CAROL, &carol, &on(ALICE), &cx(), false),
             Err(Refusal::Owner)
         );
-        assert!(matches!(
+        assert_eq!(
             workspace.check(CAROL, &carol, &on(CAROL), &cx(), false),
-            Err(Refusal::NotBelowActor { .. })
-        ));
+            Err(Refusal::Themselves)
+        );
         assert_eq!(
             workspace.check(
                 CAROL,

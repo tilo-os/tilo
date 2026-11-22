@@ -1,14 +1,14 @@
 //! A governed workspace's administration as `tilo.workspace` actions: offered as
-//! far as the workspace's governance lets the caller, run through the same workspace
-//! methods as the wire API does, and destructive governance held back until the
-//! person's own confirmation can be asked for.
+//! far as the workspace's grants let the caller, run through the same workspace
+//! methods as the wire API does, and ending a call held back until everyone's
+//! own confirmation can be asked for.
 
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, Confirmation,
-    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, InvokeArgument,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MEMBER_ADDED, WORKSPACE_MEMBER_ADMIT,
     WORKSPACE_MEMBER_PLACED, workspace_governance_operation,
 };
@@ -250,9 +250,9 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
 
-    // The server's person runs every action the provider serves, on the
-    // workspace's own governance resource, removing and banning included: their
-    // own request confirms it.
+    // The server's person, the workspace's owner, runs every action the
+    // provider serves on the workspace's own governance resource, removing and
+    // banning included.
     let owners = offered(&host, workspace_id, &caller(&owner)).await;
     for verb in INVITE_FAMILY
         .iter()
@@ -287,8 +287,8 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
         offered_in_catalogue(INVITE_FAMILY.iter().chain(&OWN).copied())
     );
 
-    // A Moderator is offered removing and unbanning members below them, but no
-    // invitations. Roles, restrictions and the workspace's settings are written
+    // A Moderator is offered removing, banning and unbanning members, as its
+    // role's grants say, but no invitations. Roles, restrictions and the workspace's settings are written
     // by a member's own device, not asked of the host.
     workspaces
         .set_member_role(
@@ -305,7 +305,12 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     let moderator = offered(&host, workspace_id, &caller(&bo)).await;
     assert_eq!(
         moderator,
-        offered_in_catalogue([governance::REMOVE_MEMBER, NAME, governance::UNBAN])
+        offered_in_catalogue([
+            governance::REMOVE_MEMBER,
+            governance::BAN,
+            NAME,
+            governance::UNBAN
+        ])
     );
 
     // An agent governs nothing, even on the server person's own key, and a
@@ -702,7 +707,7 @@ async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
 }
 
 #[tokio::test]
-async fn destructive_governance_waits_for_the_person() {
+async fn banning_is_decided_by_grants_and_ending_a_call_waits_for_everyone() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -711,7 +716,23 @@ async fn destructive_governance_waits_for_the_person() {
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
+    let ban = |cert: &DeviceCert| {
+        request(
+            &workspace,
+            governance::BAN,
+            json!({ "person": person(cert) }),
+        )
+    };
 
+    // An Editor holds no grant on banning, and is not told a ban exists:
+    // unknown and forbidden answer alike.
+    assert_eq!(
+        invoke(&host, workspace_id, &caller(&ada), ban(&bo)).await,
+        Err(ActionCallError::UnknownAction)
+    );
+
+    // The Moderator role's grant on banning lets Bo ban Ada, with no
+    // confirmation beside the grant.
     workspaces
         .set_member_role(
             &workspace,
@@ -724,19 +745,17 @@ async fn destructive_governance_waits_for_the_person() {
         )
         .await
         .unwrap();
+    invoke(&host, workspace_id, &caller(&bo), ban(&ada))
+        .await
+        .unwrap();
+    let members = workspaces.summary(&workspace).await.unwrap().members;
+    assert!(
+        members
+            .iter()
+            .any(|member| member.root() == Some(ada.user_public_key) && member.removed),
+        "{members:?}"
+    );
 
-    // Banning would remove Ada: it waits for Bo's own confirmation, which
-    // a caller's word is not, and nothing changes.
-    let mut ban = request(
-        &workspace,
-        governance::BAN,
-        json!({ "person": person(&ada) }),
-    );
-    ban.confirmation = Some(Confirmation::Confirmed);
-    assert_eq!(
-        invoke(&host, workspace_id, &caller(&bo), ban).await,
-        Err(ActionCallError::confirmation_required())
-    );
     let end = request(
         &workspace,
         governance::CALL,
@@ -746,30 +765,12 @@ async fn destructive_governance_waits_for_the_person() {
         invoke(&host, workspace_id, &caller(&owner), end).await,
         Err(ActionCallError::confirmation_required())
     );
-    let members = workspaces.summary(&workspace).await.unwrap().members;
-    assert!(
-        members
-            .iter()
-            .any(|member| member.root() == Some(ada.user_public_key) && !member.removed),
-        "{members:?}"
-    );
-
-    // An Editor is not told a ban exists: unknown and forbidden answer alike.
-    let ban = request(
-        &workspace,
-        governance::BAN,
-        json!({ "person": person(&bo) }),
-    );
-    assert_eq!(
-        invoke(&host, workspace_id, &caller(&ada), ban).await,
-        Err(ActionCallError::UnknownAction)
-    );
 
     server.shutdown().await;
 }
 
 #[tokio::test]
-async fn a_member_removes_someone_ranked_below_them_or_themselves() {
+async fn a_member_granted_removing_removes_anyone_but_the_owner() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -808,19 +809,22 @@ async fn a_member_removes_someone_ranked_below_them_or_themselves() {
         invoke(&host, workspace_id, &caller(&owner), remove(&owner)).await,
         Err(ActionCallError::Refused { reason }) if reason.contains("owner cannot be removed")
     ));
-    // A Moderator removes an Editor, answered with the people as they are then.
-    workspaces
-        .set_member_role(
-            &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [32; 32],
-                user_public_key: bo.user_public_key,
-                role: Role::Moderator,
-            },
-        )
-        .await
-        .unwrap();
+    // A Moderator removes another Moderator, answered with the people as they are then: the
+    // role's grant on removing reaches every member but the owner.
+    for (request_id, cert) in [([32; 32], &bo), ([33; 32], &ada)] {
+        workspaces
+            .set_member_role(
+                &workspace,
+                &owner,
+                SetMemberRoleRequest {
+                    request_id,
+                    user_public_key: cert.user_public_key,
+                    role: Role::Moderator,
+                },
+            )
+            .await
+            .unwrap();
+    }
     let removed = invoke(&host, workspace_id, &caller(&bo), remove(&ada))
         .await
         .unwrap();

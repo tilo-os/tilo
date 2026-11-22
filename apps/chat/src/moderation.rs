@@ -3,8 +3,8 @@
 //! Membership is the workspace's, not chat's: a ban is the workspace's own `ban`
 //! action on its governance resource (`workspace.permissions:<workspace>`,
 //! provider `tilo.workspace`), invoked through the host like any other
-//! action, and decided there by the workspace's policy (the owner, or a
-//! Moderator for people ranked below Moderator).
+//! action, and decided there by the workspace's grants on banning (the
+//! Moderator role holds one).
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{

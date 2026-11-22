@@ -305,7 +305,7 @@ pub enum PeopleCmd {
     /// Remove someone from the workspace, with every device of theirs.
     #[command(
         after_help = "Example:\n  tilo workspace people rm 3f9c…e1 -w Acme\n\n\
-                      Its owners remove people, and a moderator removes those ranked below them."
+                      Whoever the workspace grants removing removes people, a moderator included."
     )]
     Rm {
         /// Their user public key, as `tilo workspace people ls` names it.

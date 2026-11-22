@@ -326,7 +326,7 @@ tilo_test_env::scenario! {
                 "an administrator {change:?}"
             );
         }
-        // Nor the administrator who made them, whom no administrator outranks.
+        // Nor the administrator who made them: only the owner unmakes one.
         assert!(workspace
             .check(BOB, &bob, &Change::Revoke(roles::administrator_grant_id(ADMIN)), &cx(), false)
             .is_err());
