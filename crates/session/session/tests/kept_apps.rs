@@ -808,6 +808,15 @@ fn a_window_the_app_closed_while_no_desktop_was_there_closes_its_tab() {
     second.end(Teardown::Logout);
 }
 
+/// Whether the session tells that the app stopped, with Reopen, in `tab`, the one tab it shows:
+/// the notice put where its window was.
+fn tells_stop(session: &Session, tab: TabId) -> bool {
+    let labels = session.accessible_labels();
+    labels.iter().any(|label| label == "Kept stopped working")
+        && labels.iter().any(|label| label == "Reopen")
+        && tabs(session).iter().map(|(shown, _)| *shown).eq([tab])
+}
+
 /// The kept app ends (a signal, so it stopped rather than closed) after the desktop went away
 /// for an in-place restart, and its keeper notes how: the app's one tab, by id.
 fn ended_while_away(rig: &Rig) -> TabId {
@@ -823,7 +832,7 @@ fn ended_while_away(rig: &Rig) -> TabId {
 }
 
 #[test]
-fn an_app_that_ended_while_no_desktop_was_there_closes_its_tab_and_says_it_stopped() {
+fn an_app_that_ended_while_no_desktop_was_there_says_it_stopped_in_its_tab() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let tab = ended_while_away(&rig);
@@ -832,61 +841,57 @@ fn an_app_that_ended_while_no_desktop_was_there_closes_its_tab_and_says_it_stopp
     };
 
     let mut second = rig.desktop(true);
-    // Its end is told in a tab of its own, and the tab it stood in closes, as one the app closed
-    // itself would.
-    until(&mut second.session, "the stop is told", |session| {
-        tabs(session).iter().any(|(other, _)| *other != tab)
-    });
-    until(&mut second.session, "its tab closes", |session| {
-        !tabs(session).iter().any(|(other, _)| *other == tab)
-    });
+    // Its end is told in the tab it stood in, where the person looks for it, with Reopen.
+    until(
+        &mut second.session,
+        "the stop is told in its tab",
+        |session| tells_stop(session, tab),
+    );
     for _ in 0..100 {
         second.session.step(Duration::from_millis(1)).expect("step");
     }
-    let shown: Vec<Option<TileContent>> = tabs(&second.session)
+    let shown: Vec<(TabId, Option<TileContent>)> = tabs(&second.session)
         .into_iter()
-        .map(|(other, _)| tile_of(&second.session, other))
+        .map(|(other, _)| (other, tile_of(&second.session, other)))
         .collect();
     assert!(
-        matches!(&shown[..], [Some(TileContent::AppPlaceholder { label, .. })] if label == APP),
-        "only the notice that it stopped: {shown:?}"
+        tells_stop(&second.session, tab),
+        "only the notice that it stopped, in its own tab, and nothing else opened: {shown:?}"
     );
     assert_eq!(rig.starts(), [pid], "and the app is not started again");
     second.end(Teardown::Logout);
 }
 
-/// The tab an app that ended while the desktop was away stood in closes for good: the workspace's
-/// saved layout loses it as it does a tab the person closed, so the next login neither shows it
-/// nor starts the app for it.
+/// The tab an app that ended while the desktop was away stood in tells that it stopped; the
+/// notice is that session's. The tab is still the window the person left there, so the next login
+/// opens the app in it again, once, as a start after a reboot does, and the notice is gone.
 #[test]
-fn the_tab_of_an_app_that_ended_while_away_stays_closed_at_the_next_login() {
+fn the_tab_of_an_app_that_ended_while_away_opens_it_again_at_the_next_login() {
     let _settled = ui::motion::testing::settled();
     let rig = Rig::new(&["Only"]);
     let tab = ended_while_away(&rig);
-    let [pid] = rig.starts()[..] else {
-        panic!("one start: {:?}", rig.starts());
-    };
     let mut second = rig.desktop(true);
-    until(&mut second.session, "its tab closes", |session| {
-        !tabs(session).iter().any(|(other, _)| *other == tab)
-    });
+    until(
+        &mut second.session,
+        "the stop is told in its tab",
+        |session| tells_stop(session, tab),
+    );
     second.end(Teardown::Logout);
 
-    // A fresh login lays the saved layout out and asks for what it holds within moments: long
-    // enough for a tab that came back to show, or for its app to be started.
     let mut third = rig.desktop(false);
-    let looked = std::time::Instant::now();
-    while looked.elapsed() < Duration::from_secs(3)
-        && !tabs(&third.session).iter().any(|(other, _)| *other == tab)
-    {
-        third.session.step(Duration::from_millis(5)).expect("step");
-    }
+    crate::common::wait_for(&mut third.session, "the app opens in its tab", |session| {
+        (tab_showing(session, "Only") == Some(tab)).then_some(())
+    });
+    assert_eq!(rig.starts().len(), 2, "the app started once more");
     assert!(
-        !tabs(&third.session).iter().any(|(other, _)| *other == tab),
-        "the closed tab stays closed at the next login: {:?}",
-        tabs(&third.session)
+        !third
+            .session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Kept stopped working"),
+        "the last session's notice is not shown again"
     );
-    assert_eq!(rig.starts(), [pid], "and nothing starts the app for it");
+    assert_eq!(tabs(&third.session).len(), 1, "and nothing opens beside it");
     third.end(Teardown::Logout);
 }
 
