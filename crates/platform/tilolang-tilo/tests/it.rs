@@ -55,6 +55,7 @@ mod naming;
 mod native_chat;
 mod native_mail;
 mod native_notes;
+mod native_tasks;
 mod note_import;
 mod notebook_order;
 mod notes;

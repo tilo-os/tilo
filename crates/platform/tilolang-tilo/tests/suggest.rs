@@ -15,7 +15,7 @@ const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const APP: &str = "so.tilo.lang.tasks";
+const APP: &str = "so.tilo.tasks";
 
 fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;

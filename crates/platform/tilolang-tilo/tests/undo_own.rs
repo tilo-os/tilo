@@ -21,7 +21,7 @@ const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = crate::fixtures::TASKS_SOURCE;
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const NOTES_APP: &str = "so.tilo.notes";
-const TASKS_APP: &str = "so.tilo.lang.tasks";
+const TASKS_APP: &str = "so.tilo.tasks";
 const AGENT: &str = "helper";
 
 fn helper() -> tilolang_tilo::runtime::Actor {

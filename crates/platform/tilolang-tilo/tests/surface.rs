@@ -905,7 +905,7 @@ action attach(b: Board, list: todo.TodoList) {
         );
         let meta = packages
             .iter()
-            .find(|package| package.meta.app == "so.tilo.lang.tasks")
+            .find(|package| package.meta.app == "so.tilo.tasks")
             .expect("the tasks package compiles")
             .meta
             .clone();

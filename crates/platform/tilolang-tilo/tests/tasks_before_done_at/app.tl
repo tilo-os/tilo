@@ -1,4 +1,4 @@
-app so.tilo.lang.tasks "Tasks" (
+app so.tilo.tasks "Tasks" (
     icon: .list_checks,
     category: .office,
     previously: so.tilo.lang.todo,

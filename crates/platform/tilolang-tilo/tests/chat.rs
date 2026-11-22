@@ -142,9 +142,22 @@ fn post(r: &mut Replica, view: &ViewInstance, text: &str) {
     r.commit();
 }
 
-/// Phrases say their id and arguments, so a count shows in what a chip says.
-fn echo_words(replicas: &[&Replica]) {
-    for r in replicas {
+#[test]
+fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
+    let (mut ada, loaded) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[crate::fixtures::AGENT, (CHAT, CHAT_IDS)],
+    );
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let team = call(&ada, "new_category", vec![all, Value::text("Team")]);
+    let design = call(&ada, "add_channel", vec![team, Value::text("design")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[crate::fixtures::AGENT, (CHAT, &loaded[1].ids)]);
+    ben.host.sync_from(&ben.doc);
+    // Phrases say their id and arguments, so a count shows in what a chip says.
+    for r in [&ada, &ben] {
         r.host.set_words(EchoWords);
     }
 }
