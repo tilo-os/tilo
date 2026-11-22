@@ -122,6 +122,8 @@ d-v7cub7aw = Notizen
 d-tmqqtkeb = Notizen
 
 d-akcqjax3 = Notizbuch
+    .w-outline = Gliederung
+    .w-write-something = Etwas schreiben
 
 d-x4im3xs5 = Notizbuchkopf
 
@@ -132,6 +134,7 @@ d-qrsfr4a5 = Notizbuchmenü
     .w-export-the-notebook = Das Notizbuch exportieren…
     .w-insert-an-image = Ein Bild einfügen…
     .w-export-this-note = Diese Notiz exportieren…
+    .w-new-sub-note = Neue Unternotiz
 
 d-kdl43aw7 = Notizen
     .w-no-notes-yet = Noch keine Notizen
@@ -139,6 +142,7 @@ d-kdl43aw7 = Notizen
 d-xqxkoqbj = Notizzeile
 
 d-6wqou47w = Notizeditor
+    .w-write-something = Etwas schreiben
 
 d-nki6assy = Notizangaben
     .w-from = Von { $service }
@@ -190,3 +194,81 @@ d-3u3bevec-t = T
 d-4s5iqnfo-image = Bild
 
 d-h3zczsen-file = Datei
+
+d-eo4enwxh = Von
+    .doc = Wer die Seite dort geschrieben hat, als ein anderer Dienst sie vor diesem Notizbuch hielt: mit der Notiz bewahrt, damit eine übernommene Seite weiter sagt, wessen Worte sie sind.
+
+d-yzessjhr = Dienst
+    .doc = Der Dienst, von dem die Seite stammt, wenn sie von einem stammt (`Outline`).
+
+d-zex2vawx = Seite
+    .doc = Wo die Seite dort gelesen wird, wenn sie von dort stammt: dieselbe Seite noch einmal zu importieren öffnet diese Notiz, statt eine zweite anzulegen.
+
+d-rnhwkv6z = Erstellt
+    .doc = Wann die Seite dort geschrieben und zuletzt dort geändert wurde, wie jener Dienst es sagte.
+
+d-2od7mwir = Geändert
+
+d-qgq6mcy7 = Zur Seite gelegt
+    .doc = Notizen, die aus der früheren Notizen-App übernommen wurden und die sie nicht mehr zeigte: eine Seite, deren übergeordnete Seite gelöscht wurde, hier außerhalb des Baums bewahrt statt verworfen.
+
+d-qvjedq2v = Früheres Notizbuch übernehmen
+    .doc = Das Notizbuch, das die frühere Notizen-App vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: jede Seite als Notiz, unter der Notiz, unter der ihre Seite stand, und in der Reihenfolge, in der ihre Seiten dort standen, mit Titel, Text, Schlagwörtern und der Kennung ihrer Seite.
+
+d-pjxiode5 = Einrücken
+    .doc = Setzt eine Notiz unter die Notiz, über der sie steht, mit den Notizen unter ihr, wie `Tab` es im Baum tut; ohne benannte unter die Notiz darüber.
+    .w-nothing-over-it-to-move-under = Nichts darüber, worunter sie passt
+
+d-pjxiode5-above = Darüber
+
+d-bosv7337 = Ausrücken
+    .doc = Setzt eine Notiz neben die Notiz, in der sie steht, direkt hinter sie und die Notizen unter ihr, wie `Shift-Tab` es im Baum tut.
+    .w-it-is-at-the-top-level = Sie steht bereits auf der obersten Ebene
+
+d-gsiqqwwd = Nach oben verschieben
+    .doc = Setzt eine Notiz direkt über die Notiz darüber, mit den Notizen unter ihr, wie `Alt-Up` es im Baum tut; ohne benannte über die Notiz direkt darüber.
+    .w-nothing-over-it-to-move-it = Nichts darüber, wohin sie käme
+
+d-gsiqqwwd-above = Darüber
+
+d-qi2ysxan = Nach unten verschieben
+    .doc = Setzt eine Notiz direkt unter die Notiz darunter und die Notizen unter dieser, mit ihren eigenen Notizen danach, wie `Alt-Down` es im Baum tut.
+
+d-s4ewx4fo = Einer Notiz hinzufügen
+    .doc = Schreibt `text` (Markdown) an das Ende der Notiz mit dem Titel `title`, unabhängig von der Groß- und Kleinschreibung: wie ein Agent oder Skript, das eine Notiz bei ihrem Namen kennt ('das zu Besprechungsnotizen hinzufügen'), in sie schreibt, ohne erst nachzusehen, welche Notiz das ist.
+    .did = hat einer Notiz hinzugefügt
+    .w-no-note-is-titled = Keine Notiz heißt { $title }
+
+d-s4ewx4fo-title = Titel
+
+d-s4ewx4fo-text = Text
+
+d-tmlnqj7q = Bild behalten
+    .doc = Behält ein Bild, das der Editor in eine Notiz geschrieben hat, dort, wo die Person es eingefügt oder abgelegt hat: die Notiz hält die Adresse seiner Bytes und den Namen, unter dem es kam, den ein Export daneben schreibt.
+    .did = hat ein Bild hinzugefügt
+
+d-tmlnqj7q-picture = Bild
+
+d-l23y3cjf = Eine Seite aus einem Dienst importieren
+    .doc = Importiert eine Seite, die ein anderer Dienst als Notiz hielt, und bewahrt, wessen Worte sie sind und wo sie dort stand: was `tilo migrate` für jede übernommene Seite aufruft, und was der eigene Import einer Datei ohne die Worte eines Dienstes tut.
+    .did = hat eine Notiz importiert
+
+d-l23y3cjf-file = Datei
+
+d-l23y3cjf-by = Von
+
+d-l23y3cjf-service = Dienst
+
+d-l23y3cjf-page = Seite
+
+d-l23y3cjf-created = Erstellt
+
+d-l23y3cjf-updated = Geändert
+
+d-hy2uefpy = Dateien importieren
+    .doc = Auf das Notizbuch abgelegte Dateien kommen nacheinander herein. Eine Markdown-Datei wird zu einer Notiz. Ein Archiv wird zu den Seiten, die es enthält, ob das eigene ausgegebene Notizbuch oder der Export einer anderen App.
+    .did = hat eine Datei importiert
+
+d-hy2uefpy-files = Dateien
+
+d-i653dg7r = An eine Notiz anhängen~present

@@ -246,3 +246,15 @@ d-6uysx57s-c = C
 d-6uysx57s-m = M
 
 d-6uysx57s-name = Name
+
+d-tz5yw5dt = Von
+    .doc = Wer ihn im früheren Chat geschrieben hat, so wie jene App die Person nannte, für eine von dort übernommene Nachricht: die eigene Historie nennt, wer sie übernommen hat, und wann.
+
+d-mmlcexsa = Geschrieben
+    .doc = Wann er im früheren Chat geschrieben wurde, in Millisekunden seit 1970; 0 für eine hier geschriebene Nachricht.
+
+d-jcgolgdf = Reagiert
+    .doc = Die Reaktionen, die er im früheren Chat hatte, jedes Emoji mit der Zahl derer, die damit reagiert haben: wer dort reagiert hat, wird nicht übernommen, da diese App Personen nur als ihre eigenen Mitglieder nennt.
+
+d-aod7dups = Früheren Chat übernehmen
+    .doc = Die Unterhaltungen, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeweils mit Name und Thema, und jede Nachricht eines Kanals mit ihrem Wortlaut, ob sie angeheftet war und welche Kennung sie dort hatte.

@@ -325,3 +325,6 @@ d-z642pnnw = Videozeile
 d-uiu73od5 = Kanalzeile
 
 d-pgyjhoe2 = Verlaufszeile
+
+d-t3cwabaw = Früheres Tube übernehmen
+    .doc = Was das frühere Tube vor der Übernahme dieser Kennung hielt, einmalig in dieses übernommen: die abonnierten Kanäle, die mit Gefällt mir markierten und für später aufgehobenen Videos und der Verlauf mit der Zeit, zu der jedes Video angesehen wurde.

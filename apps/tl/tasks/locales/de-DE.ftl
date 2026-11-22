@@ -201,6 +201,7 @@ d-berwb3de = Verschieben nach
 
 d-he6qkhh4 = Einrücken
     .doc = Verschiebt eine Aufgabe unter die Aufgabe, die die Ansicht direkt über ihr in ihrer Gruppe zeigt, wie es `Ctrl+]` tut.
+    .w-nothing-over-it-to-move-under = Nichts darüber, worunter sie passt
 
 d-khy6tj7s = Ausrücken
     .doc = Verschiebt eine Aufgabe unter ihrer übergeordneten hervor, direkt hinter sie, wie es `Ctrl+[` in einer Gliederung tut.
