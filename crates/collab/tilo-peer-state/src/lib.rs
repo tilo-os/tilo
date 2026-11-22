@@ -66,6 +66,8 @@ pub mod store;
 pub mod workspace;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
+/// The invocation a change a host made for a caller keeps, as a peer checks it.
+pub mod signed_invocation;
 pub use collab_types::work_delegation::WorkDelegation;
 pub use state::ChangeRefused;
 /// The durable layout a replica's state is written in ([`StatePeer::durable`]).

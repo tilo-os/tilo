@@ -52,6 +52,22 @@ type Written = (
     Option<collab_types::work_delegation::WorkDelegation>,
 );
 
+/// A caller a change was made for, as the change's history entry names them
+/// and the signed invocation it keeps proves it: the person who asked, and
+/// their access in the governance this copy judges the write by.
+struct CallerAccess {
+    person: String,
+    access: MemberAccess,
+}
+
+/// The person a change's invoker is decided as: the actor itself when it is a
+/// person, else the person it acts for.
+fn caller_person(acting: &tilo_action_policy::Acting) -> Option<&str> {
+    acting
+        .person_id()
+        .or_else(|| acting.acted_for_person())
+}
+
 /// `person`'s access under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
 fn access_of(
@@ -1485,6 +1501,10 @@ impl StatePeer {
 
     /// [`Self::authorize_document`] by the governance this peer holds, and
     /// whether the change was a server's work under a live delegation.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the one decision of a change: each check builds on the previous"
+    )]
     fn decide_written(
         &self,
         source: &[u8; 32],
@@ -1553,6 +1573,19 @@ impl StatePeer {
         if let Some(delegation) = &delegation {
             Self::delegated_work_is_theirs(source, delegation, envelope)?;
         }
+        // A change a host made for a caller on another device proves who asked
+        // with the invocation the caller signed; work a server takes under a
+        // member's delegation is the member's by that signed delegation and
+        // makes no invocation.
+        let caller = if delegation.is_some() {
+            None
+        } else {
+            self.recorded_caller(app_id, record, source, envelope, &member, authorization_time)?
+        };
+        // What the caller was refused, when the author was granted the claim
+        // but the caller was not: the node and kind the claim was decided at,
+        // as the one builder of decision nodes names them.
+        let caller_refused = std::cell::RefCell::new(None);
         let allows =
             |invoker: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
                 if delegation
@@ -1561,8 +1594,34 @@ impl StatePeer {
                 {
                     return false;
                 }
-                collab_types::ChangeAuthor::answer(&member, invoker, node, kind, &cx)
-                    == tilo_action_policy::Answer::Allow
+                if collab_types::ChangeAuthor::answer(&member, invoker, node, kind, &cx)
+                    != tilo_action_policy::Answer::Allow
+                {
+                    return false;
+                }
+                // The caller asked for this action, so the member list must let
+                // them take it, not only the device that ran it for them.
+                match (&caller, invoker) {
+                    (Some(caller), Some(acting))
+                        if caller_person(acting) == Some(caller.person.as_str()) =>
+                    {
+                        if collab_types::ChangeAuthor::answer(
+                            &caller.access,
+                            Some(acting),
+                            node,
+                            kind,
+                            &cx,
+                        ) == tilo_action_policy::Answer::Allow
+                        {
+                            true
+                        } else {
+                            *caller_refused.borrow_mut() =
+                                Some((caller.person.clone(), node.to_string(), kind));
+                            false
+                        }
+                    }
+                    _ => true,
+                }
             };
         let decided = collab_types::decide_op_pinned(
             envelope,
@@ -1592,6 +1651,14 @@ impl StatePeer {
                 false,
             )),
             Err(refusal) => {
+                // The author was granted the claim and its caller was not:
+                // the refusal is the caller's, not the author's.
+                let refusal = match caller_refused.borrow().clone() {
+                    Some((person, node, kind)) => {
+                        collab_types::ReceiptRefusal::CallerNotGranted { person, node, kind }
+                    }
+                    None => refusal,
+                };
                 let mut said = refused_change(&refusal, &route, source, envelope);
                 // Another member's write of a person's view of the layout is refused because the
                 // view is that person's alone, which says more than the grant it lacks.
@@ -1606,6 +1673,115 @@ impl StatePeer {
             }
         }
     }
+
+    /// The caller a change `envelope` of `record` in `app_id` was made for, if
+    /// any: a history entry names a caller on another device, so the change
+    /// must carry the invocation that caller signed, and it must check.
+    /// `Ok(None)` for a change a device made for itself, which names no caller
+    /// on another device and needs none.
+    ///
+    /// The caller's access is taken under the governance this copy judges the
+    /// write by ([`Self::decide_written`]), never the governance it holds now
+    /// when that is not the one the write names.
+    fn recorded_caller(
+        &self,
+        app_id: &str,
+        record: &str,
+        source: &[u8; 32],
+        envelope: &SignedOp,
+        member: &MemberAccess,
+        authorization_time: SystemTime,
+    ) -> Result<Option<CallerAccess>, AuthorizeRefusal> {
+        if envelope.encryption.is_some() {
+            return Ok(None);
+        }
+        let Ok(collab_types::DocumentMutation::Incremental(bytes)) =
+            collab_types::DocumentMutation::decode(&envelope.payload)
+        else {
+            return Ok(None);
+        };
+        let Ok(changes) = collab_types::claim::parse_changes(&bytes) else {
+            return Ok(None);
+        };
+        let route = Route {
+            app: app_id.into(),
+            record: record.into(),
+        };
+        let mut caller: Option<CallerAccess> = None;
+        for change in &changes {
+            let Some(context) = change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)
+            else {
+                continue;
+            };
+            // Every invocation a change keeps is checked, whether or not it
+            // names a caller on another device.
+            let certificate = crate::signed_invocation::verify_recorded(
+                &context,
+                &self.core.workspace,
+                &self.core.revocations,
+            )
+            .map_err(|error| {
+                refused_invocation(
+                    &route,
+                    source,
+                    envelope,
+                    &format!("the invocation a change made for a caller does not check: {error}"),
+                )
+            })?;
+            if context
+                .invoker
+                .as_ref()
+                .is_none_or(|invoker| invoker.device.is_none())
+            {
+                continue;
+            }
+            let Some(certificate) = certificate else {
+                return Err(refused_invocation(
+                    &route,
+                    source,
+                    envelope,
+                    "a change made for a caller carries no invocation that caller signed",
+                ));
+            };
+            let person = hex::encode(certificate.user_public_key);
+            match &caller {
+                Some(held) if held.person != person => {
+                    return Err(refused_invocation(
+                        &route,
+                        source,
+                        envelope,
+                        "the changes of one action name more than one caller",
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    // The member list at the write's heads decides the caller:
+                    // the role and grants its person had then, and the keys
+                    // approved then.
+                    let access = MemberAccess::person(member.policy.clone(), person.clone())
+                        .granted(self.approved_keys(authorization_time));
+                    caller = Some(CallerAccess { person, access });
+                }
+            }
+        }
+        Ok(caller)
+    }
+}
+
+/// `reason` as a change of `route` from `source` is refused: typed as the
+/// workspace's rules refuse a change, and in words that name who made it and
+/// which device signed it.
+fn refused_invocation(
+    route: &Route,
+    source: &[u8; 32],
+    envelope: &SignedOp,
+    reason: &str,
+) -> AuthorizeRefusal {
+    let refusal = collab_types::ReceiptRefusal::SignedInvocation(reason.to_owned());
+    let said = refused_change(&refusal, route, source, envelope);
+    AuthorizeRefusal::Rules(refusal, said)
 }
 
 /// What a change the workspace's rules refuse by `refusal` is told, logged

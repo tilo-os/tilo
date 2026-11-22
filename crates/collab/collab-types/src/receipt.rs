@@ -135,6 +135,18 @@ pub enum ReceiptRefusal {
     /// claimed twice.
     #[error("the claims do not name exactly the op's changes")]
     Unclaimed,
+    /// A change made for a caller carries no invocation that caller signed, or
+    /// one that does not check.
+    #[error("{0}")]
+    SignedInvocation(String),
+    /// The person a change was made for is not granted its action under the
+    /// governance the change names.
+    #[error("the caller {person} is not granted {kind:?} on {node}")]
+    CallerNotGranted {
+        person: String,
+        node: String,
+        kind: ActionKind,
+    },
     /// The claimed action is not one the record's app publishes.
     #[error("the document's app publishes no {0}")]
     NotPublished(String),

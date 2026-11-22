@@ -5,8 +5,10 @@
 //! each invocation it sends a host with its own key ([`sign_invocation`]);
 //! the host runs it as the verified signer ([`verify_invocation`]) and never
 //! signs one in a caller's place. A change the host makes for it keeps it, and
-//! a peer reading the change checks it there ([`verify_recorded`]). What the envelope proves, and what it does
-//! not, is in docs/security/README.md ("Signed invocations").
+//! a peer reading the change checks it with
+//! `tilo_peer_state::signed_invocation::verify_recorded`. What the envelope
+//! proves, and what it does not, is in docs/security/architecture.md ("Signed
+//! invocations").
 
 use collab_types::signer::DeviceSigner;
 use tilo_actions::remote::signed_invocation::{
@@ -220,58 +222,10 @@ pub fn verify_invocation(
     signer_of(signed, workspace, revocations, now_ns)
 }
 
-/// Check the invocation a change made for it keeps (`context`'s
-/// [`tilo_actions::ActionContext::signed`]), as a peer reading the change in
-/// `workspace` does, and return the certificate of the caller who asked.
-/// `Ok(None)` for a change that keeps none: the host made it of its own
-/// accord, or for someone who asked under no key of theirs.
-///
-/// Checks the signature, that it is this workspace's and the change's own
-/// invocation ([`tilo_actions::ActionContext::source_invocation`]), the
-/// argument kept beside it against the signed hash, the certificate's chain
-/// and validity when it signed, its revocation in `revocations`, a grant's
-/// reach, and that the person who signed is the one the change names as its
-/// invoker. Freshness is the host's to check when it runs the invocation: a
-/// change is read long after.
-///
-/// # Errors
-///
-/// The first check that fails, as [`InvocationError`]:
-/// [`InvocationError::NotInvoker`] when another person signed than the one
-/// the change names.
-pub fn verify_recorded(
-    context: &tilo_actions::ActionContext,
-    workspace: &str,
-    revocations: &RevocationList,
-) -> Result<Option<DeviceCert>, InvocationError> {
-    let Some(call) = context.signed.as_deref() else {
-        return Ok(None);
-    };
-    let signed = &call.signed;
-    check_signature(signed)?;
-    let statement = signed.statement();
-    if statement.workspace != workspace {
-        return Err(StatementMismatch::Workspace.into());
-    }
-    if context.source_invocation != Some(statement.invocation) {
-        return Err(StatementMismatch::Invocation.into());
-    }
-    if call.argument_signed() == Some(false) {
-        return Err(StatementMismatch::Arguments.into());
-    }
-    let cert = signer_of(signed, workspace, revocations, statement.issued_at_ns)?;
-    let person = hex::encode(cert.user_public_key);
-    let names_signer = context.invoker.as_ref().is_some_and(|invoker| {
-        [invoker.acting.person_id(), invoker.acting.acted_for_person()].contains(&Some(&person))
-    });
-    if !names_signer {
-        return Err(InvocationError::NotInvoker);
-    }
-    Ok(Some(cert))
-}
-
-/// That `signed`'s signature verifies under the key it names.
-fn check_signature(signed: &SignedInvocation) -> Result<(), InvocationError> {
+/// That `signed`'s signature verifies under the key it names. A peer checking
+/// an invocation a change keeps uses this with [`signer_of`]; each then adds
+/// what it needs of the request or the change.
+pub fn check_signature(signed: &SignedInvocation) -> Result<(), InvocationError> {
     let statement = signed.statement();
     let key = ed25519_dalek::VerifyingKey::from_bytes(&statement.signer)
         .map_err(|_| InvocationError::Signature)?;
@@ -284,8 +238,9 @@ fn check_signature(signed: &SignedInvocation) -> Result<(), InvocationError> {
 
 /// The certificate `signed` carries, checked: it certifies the signing key,
 /// chains to its person's root and is valid at `at_ns`, is not revoked in
-/// `revocations`, and a grant reaches `workspace`.
-fn signer_of(
+/// `revocations`, and a grant reaches `workspace`. Shared with a peer checking
+/// an invocation a change keeps.
+pub fn signer_of(
     signed: &SignedInvocation,
     workspace: &str,
     revocations: &RevocationList,

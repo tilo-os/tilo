@@ -1095,7 +1095,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let workspace = browser.workspace.to_string();
     let revocations = tilo_user_identity::RevocationList::default();
     let recorded = |context: &tilo_actions::ActionContext| {
-        tilo_server_protocol::invocation::verify_recorded(context, &workspace, &revocations)
+        tilo_peer_state::signed_invocation::verify_recorded(context, &workspace, &revocations)
     };
     let signer = recorded(&kept)
         .unwrap()
